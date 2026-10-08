@@ -2,7 +2,7 @@
  * Mailbox item "cancellable" derivation — single source of truth for whether
  * the ✕ 取消 button should render in 「运行与注意力」.
  *
- * Defect this fixes (docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.3b):
+ * Defect this fixes (docs/records/message-stop-cancel-fix-plan.md §2.3b):
  * the button used to render whenever `item.status === 'processing'`, but core
  * cancel-processing is a no-op unless the item is ACTUALLY in-flight (current
  * focus of the attention loop). After stop/resend or a restart the DB row can

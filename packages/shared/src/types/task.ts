@@ -15,7 +15,7 @@ export type TaskStatus = ItemStatus;
 
 /**
  * Declarative task state transition matrix — single source of truth.
- * Must match docs/architecture/STATE-MACHINES.md §2.
+ * Must match docs/architecture/state-machines.md §2.
  *
  * Maps each status to the set of statuses it may legally transition TO.
  * `updateTaskStatus()` rejects any transition not present here.

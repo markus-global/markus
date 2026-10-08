@@ -1,5 +1,5 @@
 /**
- * mailbox 行展示状态派生 —— 展示以在途流为权威（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 H2/2d）。
+ * mailbox 行展示状态派生 —— 展示以在途流为权威（docs/records/message-stop-cancel-fix-plan.md §2.6 H2/2d）。
  * Pure-function tests only —— 本包无 jsdom。
  */
 import { describe, it, expect } from 'vitest';

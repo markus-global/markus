@@ -18,27 +18,27 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 
 | Document | Domain (single responsibility) |
 |----------|-------------------------------|
-| [ARCHITECTURE.md](./ARCHITECTURE.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
-| [ARCHITECTURE-FRAGILITY.md](./ARCHITECTURE-FRAGILITY.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
-| [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) | Agent lifecycle, execution model, workspace isolation |
-| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
-| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
-| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
-| [STATE-MACHINES.md](./STATE-MACHINES.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
-| [STATE-OWNERSHIP.md](./STATE-OWNERSHIP.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
-| [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) | How one agent handles multiple sessions / mailbox items in parallel |
-| [TOOL-SYSTEM.md](./TOOL-SYSTEM.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
-| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
-| [LLM-PROVIDER-TIMEOUTS.md](./LLM-PROVIDER-TIMEOUTS.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
-| [LEARNING-LOOP.md](./LEARNING-LOOP.md) | Agent self-improvement, distillation, memory consolidation |
-| [frontend/TEAM-CHAT.md](./frontend/TEAM-CHAT.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
-| [../api/API.md](../api/API.md) | REST / WebSocket API reference |
-| [../guides/GUIDE.md](../guides/GUIDE.md) | Setup, deployment, and usage guide |
-| [../guides/CODING-TOOLS.md](../guides/CODING-TOOLS.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
-| [../guides/REMOTE-ACCESS.md](../guides/REMOTE-ACCESS.md) | Remote access configuration |
-| [../guides/RELEASE-AND-DISTRIBUTION.md](../guides/RELEASE-AND-DISTRIBUTION.md) | Release process and distribution |
-| [../design/DELIVERABLE-SHARING-DESIGN.md](../design/DELIVERABLE-SHARING-DESIGN.md) | Sharing deliverables to Markus Hub |
+| [architecture.md](./architecture.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
+| [architecture-fragility.md](./architecture-fragility.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
+| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [cognitive-architecture.md](./cognitive-architecture.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
+| [memory-system.md](./memory-system.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
+| [prompt-engineering.md](./prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
+| [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
+| [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
+| [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
+| [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
+| [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
+| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
+| [llm-provider-timeouts.md](./llm-provider-timeouts.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
+| [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
+| [frontend/team-chat.md](./frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [../api/api.md](../api/api.md) | REST / WebSocket API reference |
+| [../guides/guide.md](../guides/guide.md) | Setup, deployment, and usage guide |
+| [../guides/coding-tools.md](../guides/coding-tools.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
+| [../guides/remote-access.md](../guides/remote-access.md) | Remote access configuration |
+| [../guides/release-and-distribution.md](../guides/release-and-distribution.md) | Release process and distribution |
+| [../design/deliverable-sharing.md](../design/deliverable-sharing.md) | Sharing deliverables to Markus Hub |
 | [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md) | Liveness / self-healing audit record (heartbeat-storm root cause + completion state of refactors 1–4); the current design lives in §3.10 below |
 
 ### 0.2 Relationship Graph
@@ -184,12 +184,12 @@ The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagen
 
 ### 3.2 Mailbox & Attention (Serialised Per Entity, Concurrent Across Entities)
 
-Each agent routes **every LLM invocation** through a per-agent **Mailbox** (priority queue), and an **AttentionController** decides which item the agent focuses on. By default the agent runs a **pool of concurrent worker loops** (`agent.concurrent`, default `enabled: true, maxWorkers: 3`); each worker is an independent consumer of the mailbox, but the mailbox serialises **per entity** (task / requirement / conversation / user) via an entity-affinity lock, so a single line of work is never processed by two workers at once. With `maxWorkers = 1` the behaviour is the original strictly-serial attention model. See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
+Each agent routes **every LLM invocation** through a per-agent **Mailbox** (priority queue), and an **AttentionController** decides which item the agent focuses on. By default the agent runs a **pool of concurrent worker loops** (`agent.concurrent`, default `enabled: true, maxWorkers: 3`); each worker is an independent consumer of the mailbox, but the mailbox serialises **per entity** (task / requirement / conversation / user) via an entity-affinity lock, so a single line of work is never processed by two workers at once. With `maxWorkers = 1` the behaviour is the original strictly-serial attention model. See [concurrent-processing.md](./concurrent-processing.md).
 
 Key components:
-- **AgentMailbox** — Priority queue accepting 15 item types including `human_chat`, `a2a_message`, `callback_result`, `heartbeat`, `memory_consolidation`, and task/requirement events (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md))
+- **AgentMailbox** — Priority queue accepting 15 item types including `human_chat`, `a2a_message`, `callback_result`, `heartbeat`, `memory_consolidation`, and task/requirement events (see [mailbox-system.md](./mailbox-system.md))
 - **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals. Runs either a single serial loop (`maxWorkers = 1`) or a pool of concurrent worker loops
-- **Concurrent worker pool** — `N` independent consumers of the mailbox; each mounts an isolated `SessionWorkspace` via `AsyncLocalStorage` and writes to a shared `ConcurrentHandoffLog` so workers stay aware of one another ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md))
+- **Concurrent worker pool** — `N` independent consumers of the mailbox; each mounts an isolated `SessionWorkspace` via `AsyncLocalStorage` and writes to a shared `ConcurrentHandoffLog` so workers stay aware of one another ([concurrent-processing.md](./concurrent-processing.md))
 - **Entity-affinity lock** — mailbox-level guarantee that one task/requirement/conversation/user is never processed by two workers at once
 - **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
 - **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
@@ -218,7 +218,7 @@ Internal processes (heartbeat, daily report, memory consolidation) also enqueue 
 
 **Task status notifications** (`task_status_update` with `invokesLLM: false`) are **informational only** — the side-effect system in `updateTaskStatus()` handles all real actions automatically (execution start/cancel, reviewer notification, dependency unblocking). These notifications exist as episodic memory and triage decision context, not as work items requiring agent processing.
 
-See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the complete design.
+See [mailbox-system.md](./mailbox-system.md) for the complete design.
 
 ### 3.2.1 Cognitive System
 
@@ -241,7 +241,7 @@ Stimulus (Mailbox) → Triage → Deterministic Context Assembly → Main LLM �
 
 **Goal/Loop mechanism** — Requirements can carry a `GoalConfig` (`loopEnabled`, `completionCriteria`, `maxIterations`, etc.) turning them into standing objectives. Heartbeat injects active goals; agents manage them via `goal_create`, `goal_update`, and `goal_status` tools.
 
-See [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for the full design with theoretical foundations.
+See [cognitive-architecture.md](./cognitive-architecture.md) for the full design with theoretical foundations.
 
 ### 3.3 Organization Structure
 
@@ -272,7 +272,7 @@ Organization (Org)
 | **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, triage/working-memory outputs | Always loaded as `## Notebook` |
 | **`knowledge.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
 
-The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — consolidating observations into curated sections and pruning stale content. Post-task learning uses a separate `distillation` scenario ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §0 / §2).
+The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — consolidating observations into curated sections and pruning stale content. Post-task learning uses a separate `distillation` scenario ([learning-loop.md](./learning-loop.md) §0 / §2).
 
 **Memory layers (Tulving's classification):**
 
@@ -285,7 +285,7 @@ The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — 
 
 The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
 
-See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the complete architecture.
+See [memory-system.md](./memory-system.md) for the complete architecture.
 
 **Project knowledge base (three scopes):**
 
@@ -323,7 +323,7 @@ Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`,
 
 ### 3.6 Task System
 
-See [Task & Requirement State Machines](./STATE-MACHINES.md) for the complete FSM specification.
+See [Task & Requirement State Machines](./state-machines.md) for the complete FSM specification.
 
 Tasks and requirements share a **unified status vocabulary**: `pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `rejected`, `cancelled`, `archived`. Not every status applies to both types, but the same name always means the same thing.
 
@@ -409,7 +409,7 @@ Before each conversation, the ContextEngine dynamically builds the system prompt
 14. Current conversation identity (sender info)
 15. Environment info (OS, toolchain, runtime)
 
-See [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) for the complete section ordering and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for deterministic context assembly (the former cognitive preparation pipeline was retired).
+See [prompt-engineering.md](./prompt-engineering.md) for the complete section ordering and [cognitive-architecture.md](./cognitive-architecture.md) for deterministic context assembly (the former cognitive preparation pipeline was retired).
 
 ### 3.8 LLM Routing
 
@@ -756,7 +756,7 @@ Connection: `ws://localhost:8056`
 | `system:resume-all` | Global resume event |
 | `system:emergency-stop` | Emergency stop event |
 
-**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See [`MAILBOX-SYSTEM.md`](./MAILBOX-SYSTEM.md) §19 for the full forwarding table.
+**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See [`mailbox-system.md`](./mailbox-system.md) §19 for the full forwarding table.
 
 ---
 
@@ -860,9 +860,9 @@ completion behavior are visible.
   - **compression count** — how often per-call context packing had to compress (over budget),
   - **empty-turn rate** — share of non-chat turns that produced NO output at all, plus
     **turn-ended-via-tool rate** — share that closed themselves out via the typed `end_turn`
-    signal (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) "Completion protocol"),
+    signal (see [mailbox-system.md](./mailbox-system.md) "Completion protocol"),
   - **prompt cache-hit rate** — from provider usage where reported (see the injection-point
-    audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md)),
+    audit in [prompt-engineering.md §2.2](./prompt-engineering.md)),
   - **per-turn cost** — cost attributed per completed turn.
 - **Invariants**: each metric increments on its triggering event and is exposed in the
   snapshot under `AgentMetricsSnapshot.harness`; adding them does not change agent behavior
@@ -901,7 +901,7 @@ arises:
   consolidation, but a default closed loop where the agent authors/edits its own `SKILL.md`
   is roadmap, not core (weaker than Hermes here by choice, for now).
 - **Maximal always-on tool registry** — Markus keeps a small always-on core + discovery
-  rather than exposing the full registry every call (see [TOOL-SYSTEM.md](./TOOL-SYSTEM.md)).
+  rather than exposing the full registry every call (see [tool-system.md](./tool-system.md)).
 
 ---
 

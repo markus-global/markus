@@ -19,7 +19,7 @@
  * 迁移策略：**读旧、只写新**。已退场的 `state.md` 不再作为写入目标；其遗留内容
  * 由 MemoryStore 的「Migration-read layer」读入并入 knowledge.md（见 store.ts 文件头）。
  *
- * 设计依据：docs/architecture/MEMORY-SYSTEM.md §10.2（state.md 退场，方案 A）。
+ * 设计依据：docs/architecture/memory-system.md §10.2（state.md 退场，方案 A）。
  */
 
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';

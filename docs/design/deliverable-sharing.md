@@ -1,6 +1,7 @@
 # Deliverable Sharing to Hub — Design Proposal
 
-> Author: CTO | Date: 2026-08-12 | Status: Pending review
+> Author: CTO | Date: 2026-08-12 | **Status: partially implemented** — the Markus client side
+> shipped; the Hub (cloud) side is still pending. See the As-built note below.
 > Scope: joint work across both ends — the Markus client (desktop) + Markus Hub (cloud)
 
 > **As built:** the client side shipped. `DeliverableShareService` (`packages/core/src/deliverable-share.ts`) plus the

@@ -246,7 +246,7 @@ describe('会话连续性 HTTP 层（POST /api/agents/:id/message）', () => {
    *
    * 第 0/1 步落地后已修复（会话身份契约 TurnSessionHint + 唯一解析点 resolveTurnSession()
    * + 入口显式传 dbSessionId），所以从 `it.fails` 改回普通 `it` —— 它现在是真正的回归门禁。
-   * （当时的证据保留在 docs/records/SESSION-IDENTITY-PLAN.md 的「本次核查的边界」一节。）
+   * （当时的证据保留在 docs/records/session-identity-plan.md 的「本次核查的边界」一节。）
    */
   it('HTTP 非流式首轮必须建立 DB→内存 绑定', { timeout: 15000 }, async () => {
     const rec = makeRecordingRouter();

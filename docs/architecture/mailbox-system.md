@@ -13,7 +13,7 @@ This is implemented through two core abstractions:
 - **Agent Mailbox** — A priority queue that serialises all incoming stimuli.
 - **Attention Controller** — An event-driven focus manager that processes mailbox items one at a time, with interrupt handling at safe yield points.
 
-**Concurrent processing (default on, opt-out).** The attention loop can instead run as a pool of N isolated **worker loops** so the agent handles several *independent* entities at once — see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md). Serialisation is preserved **per entity**: an entity-affinity lock in the mailbox guarantees a given task / requirement / conversation / user is never processed by two workers simultaneously, and each worker holds its own `SessionWorkspace`, so the "one thing at a time" guarantee still holds for any single line of work. Setting `agent.concurrent.enabled = false` (or `maxWorkers = 1`) restores a strictly single-worker loop with identical behaviour to the original design.
+**Concurrent processing (default on, opt-out).** The attention loop can instead run as a pool of N isolated **worker loops** so the agent handles several *independent* entities at once — see [concurrent-processing.md](./concurrent-processing.md). Serialisation is preserved **per entity**: an entity-affinity lock in the mailbox guarantees a given task / requirement / conversation / user is never processed by two workers simultaneously, and each worker holds its own `SessionWorkspace`, so the "one thing at a time" guarantee still holds for any single line of work. Setting `agent.concurrent.enabled = false` (or `maxWorkers = 1`) restores a strictly single-worker loop with identical behaviour to the original design.
 
 ### Why was processing originally serialised?
 
@@ -28,7 +28,7 @@ The mailbox model fixed this by treating the agent's attention as a scarce, seri
 - **Cognitive interference** → concurrent worker loops are pure consumers; triage / deliberation / preempt logic runs only in the serial loop.
 - **Non-deterministic races** → entity-affinity lock in the mailbox + an agent-level tool write-lock.
 
-See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) for the full guarantees, configuration, and known limitations.
+See [concurrent-processing.md](./concurrent-processing.md) for the full guarantees, configuration, and known limitations.
 
 ---
 
@@ -65,7 +65,7 @@ PendingCallbackRegistry ──enqueue('callback_result')──► AgentMailbox  
 > another worker, so a single entity is still processed one item at a time. The diagram
 > above shows the single-worker (serial) shape; the concurrent shape is
 > `AttentionController → N × (dequeueAsync → lockEntities → processFocusedItem → unlockEntities)`.
-> See [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md).
+> See [concurrent-processing.md](./concurrent-processing.md).
 
 <!-- verified-against-code: 2026-09-11, packages/core/src/attention.ts:798-806 -->
 
@@ -364,7 +364,7 @@ reply). B3 keeps that principle but distinguishes revocation from preemption: an
 mid-answer truncation). Backstop-timeout abort is shared with A1's `cancelProcessing`.
 
 - **Status**: implemented. Full behavior/invariants/tests live in
-  [STREAMING-AND-REATTACH.md §4.2](./STREAMING-AND-REATTACH.md).
+  [streaming-and-reattach.md §4.2](./streaming-and-reattach.md).
 
 ---
 
@@ -627,7 +627,7 @@ Every task and requirement status transition generates a `task_status_update` or
 - State transitions are **recorded in the mailbox timeline**, providing full traceability.
 - The agent can **react** to state changes (e.g., start working when approved, reflect when rejected).
 
-See [STATE-MACHINES.md](./STATE-MACHINES.md) for the full FSM specifications.
+See [state-machines.md](./state-machines.md) for the full FSM specifications.
 
 ---
 
@@ -643,7 +643,7 @@ The mailbox system feeds into the agent's memory layers:
 
 The full stimulus/response record (`mailbox_items` + `agent_decisions`) and the action/outcome record (`agent_activities` + `agent_activity_logs`) together form the agent's **episodic memory** — retrievable via the `recall_activity` tool.
 
-See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for details.
+See [memory-system.md](./memory-system.md) for details.
 
 ---
 
@@ -737,7 +737,7 @@ tool: agent_send_message ──►  AgentManager.sendMessage()
 
 Benefits over ephemeral session IDs:
 
-- **Persistent history** — both agents recall past exchanges via `recall_context` with `scope: "channel"` and `channel_key`. Personal user↔agent DM **chat sessions** (`chat_sessions` table) use `recall_context` with `scope: "chat_session"` and `session_id` (pagination via `before` / `limit`) — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §9.3.
+- **Persistent history** — both agents recall past exchanges via `recall_context` with `scope: "channel"` and `channel_key`. Personal user↔agent DM **chat sessions** (`chat_sessions` table) use `recall_context` with `scope: "chat_session"` and `session_id` (pagination via `before` / `limit`) — see [learning-loop.md](./learning-loop.md) §9.3.
 - **Stable sessions** — all messages in a pair share one session ID derived from the channel key
 - **Enqueue-time dedup** — messages from the same `channelKey` coalesce (§14)
 - **Group chat parity** — DM channels use the same `groupChatRepo`, member resolution, and API paths as custom group chats
@@ -921,7 +921,7 @@ Every `notify_user` message is persisted with **two layers of context**:
 
 The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
 
-> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [PROMPT-ENGINEERING.md §2.2 "Referencing Markus Resources"](./PROMPT-ENGINEERING.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
+> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [prompt-engineering.md §2.2 "Referencing Markus Resources"](./prompt-engineering.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
 
 #### Real-time Visibility
 
@@ -1219,7 +1219,7 @@ purpose, and the mailbox/attention layer receives the typed sentinel `[end_turn]
 (`END_TURN_REPLY_SENTINEL`). A tool call cannot be paraphrased into prose, cannot leak into a
 reply, and needs no detection heuristic or cleanup — the old `<<HANDLE_COMPLETE>>` string, its
 prompt injection, its `<think>`-aware detector and its leak regex were all deleted (see
-[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §6).
+[platform-hardening-2026-10.md](../records/platform-hardening-2026-10.md) §6).
 
 `detectAbnormalCompletion()` now judges exactly one thing: **did the turn produce any output at
 all?** `[preempted]`, `[cancelled]` and `[end_turn]` are deliberate typed signals → normal. An
@@ -1242,14 +1242,14 @@ finish cleanly.
   this adds visibility only.
 - **Invariants**: each condition emits exactly one corresponding event; no additional retries
   are triggered by making it visible. See the mailbox-item terminal states in
-  [STATE-MACHINES.md](./STATE-MACHINES.md) and the event contract in
-  [STREAMING-AND-REATTACH.md §4.1](./STREAMING-AND-REATTACH.md).
+  [state-machines.md](./state-machines.md) and the event contract in
+  [streaming-and-reattach.md §4.1](./streaming-and-reattach.md).
 - **Testing** (`packages/core/test/attention.test.ts` — "A3: emits agent:incomplete…"):
   a marker-missing completion emits exactly one `agent:incomplete` event, adds no retry, and
   completes the item.
 - **Status**: implemented (`AttentionController.emitIncomplete`, emitted from the
   complete-without-retry and max-retries-exhausted terminals; consumers can forward it to the
-  activity log / SSE per [STREAMING-AND-REATTACH.md §4.1](./STREAMING-AND-REATTACH.md)).
+  activity log / SSE per [streaming-and-reattach.md §4.1](./streaming-and-reattach.md)).
 
 ---
 

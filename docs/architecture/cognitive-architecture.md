@@ -2,7 +2,7 @@
 
 This document describes the unified cognitive architecture that governs how Markus agents perceive stimuli, prepare context, deliberate, act, and learn. It is a **continuous cognitive cycle** backed by persistent stores (`NOTEBOOK.md`, `knowledge.md`). Context preparation is **deterministic** — the former optional **Cognitive Preparation Pipeline (CPP)** was removed (see §3).
 
-> **Memory SSOT**: Prefer [`MEMORY-SYSTEM.md`](./MEMORY-SYSTEM.md) — durable knowledge is `knowledge.md`, working (short-lived) state is `NOTEBOOK.md` (`system` tier). Writing is **single-writer**: `knowledge.md` / `NOTEBOOK.md` are written only through memory tools. `MEMORY.md` / `memories.json` / `state.md` are **legacy read-only sources**, read and migrated on load (see MEMORY-SYSTEM.md → “Migration-read”). Below, historical “MEMORY.md” references mean the older dual-store model.
+> **Memory SSOT**: Prefer [`memory-system.md`](./memory-system.md) — durable knowledge is `knowledge.md`, working (short-lived) state is `NOTEBOOK.md` (`system` tier). Writing is **single-writer**: `knowledge.md` / `NOTEBOOK.md` are written only through memory tools. `MEMORY.md` / `memories.json` / `state.md` are **legacy read-only sources**, read and migrated on load (see memory-system.md → “Migration-read”). Below, historical “MEMORY.md” references mean the older dual-store model.
 >
 > **Implementation status**: Core cycle, Notebook, knowledge memory, Attention Controller, Goal/Loop heartbeat integration, A2A DM channels, and `PendingCallbackRegistry` are implemented. **CPP was removed** — `packages/core/src/cognitive.ts` no longer exists and no pre-call LLM runs (§3).
 
@@ -34,7 +34,7 @@ Stimulus ──► Triage / Appraisal ──► Context Assembly ──► Delib
 
 The cycle is **continuous**: heartbeat patrols re-enter the loop, checking active goals, timed-out callbacks, and stalled work even when the mailbox is quiet.
 
-**Concurrency note.** This five-stage cycle describes the **serial** (single-worker) attention loop. When an agent runs a concurrent worker pool ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)), each worker executes a *reduced* loop — Stimulus → Context Assembly → Deliberation → Action → Reflection — and deliberately **skips Triage / Appraisal and interrupt/preempt logic** ("concurrency without interruption", Scheme A). Triage, deliberation-over-queue, preemption and cancellation remain the serial loop's responsibility. Cross-worker consistency is instead handled structurally: an entity-affinity lock in the mailbox plus a `ConcurrentHandoffLog` whose records are injected into each worker's volatile context.
+**Concurrency note.** This five-stage cycle describes the **serial** (single-worker) attention loop. When an agent runs a concurrent worker pool ([concurrent-processing.md](./concurrent-processing.md)), each worker executes a *reduced* loop — Stimulus → Context Assembly → Deliberation → Action → Reflection — and deliberately **skips Triage / Appraisal and interrupt/preempt logic** ("concurrency without interruption", Scheme A). Triage, deliberation-over-queue, preemption and cancellation remain the serial loop's responsibility. Cross-worker consistency is instead handled structurally: an entity-affinity lock in the mailbox plus a `ConcurrentHandoffLog` whose records are injected into each worker's volatile context.
 
 ---
 
@@ -55,7 +55,7 @@ Additional influences preserved from earlier design:
 - **Metacognition (Flavell)**: the agent asks "do I know enough?" — now answered by active `memory_search` / `kb_search` rather than a pre-call appraisal LLM.
 - **Global Workspace Theory (Baars)**: Notebook is the broadcast workspace — selected context competes for limited prompt capacity.
 
-See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for storage-layer detail.
+See [memory-system.md](./memory-system.md) for storage-layer detail.
 
 ---
 
@@ -129,7 +129,7 @@ The Notebook is the agent's **persistent cognitive workspace** — Baddeley's ce
 
 The Notebook holds *situational* state. Durable knowledge flows to `knowledge.md` via `memory_save` / `memory_update` (`notebook_read` is the read-only view).
 
-> **Why the notebook needs its own lifecycle** (see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2): the Notebook is a *resident* prompt region, unlike `## _observations` which is retrieved on demand. Resident regions must be bounded (count), decayed (TTL), deduplicated (key discipline), size-capped (per-entry + total), and made **single-writer** — otherwise every feature that writes to them accretes forever. All four were missing or partial here: three of four writers bypassed the entry cap, there was no TTL anywhere, and the load path trimmed nothing, so a real notebook grew to 26 entries / 33 KB including month-old situational state re-injected every turn.
+> **Why the notebook needs its own lifecycle** (see [memory-system.md](./memory-system.md) §2): the Notebook is a *resident* prompt region, unlike `## _observations` which is retrieved on demand. Resident regions must be bounded (count), decayed (TTL), deduplicated (key discipline), size-capped (per-entry + total), and made **single-writer** — otherwise every feature that writes to them accretes forever. All four were missing or partial here: three of four writers bypassed the entry cap, there was no TTL anywhere, and the load path trimmed nothing, so a real notebook grew to 26 entries / 33 KB including month-old situational state re-injected every turn.
 
 ---
 
@@ -154,7 +154,7 @@ The **dream cycle** (`memory_consolidation`) consolidates observations into cura
 
 **Budget is reported, not rewritten.** The curated budget is a **soft** line: exceeding it is *reported* (log + in-prompt health banner) and the agent consolidates with `memory_organize` / `memory_update`. A **hard ceiling** (3× the soft budget) refuses the write fail-closed. The injected `## Your Knowledge` block carries a **health banner** when curated usage ≥70% (curated %, observation-buffer %, section count, observation count, archived chars, last consolidation time).
 
-**Migration-read.** `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources, read and migrated on load; only `knowledge.md` is written, and observation metadata is emitted as a single `<!-- type: X, data-meta: {…} -->` line (the old `, tags: a, b` form is read but converged on write). See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+**Migration-read.** `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources, read and migrated on load; only `knowledge.md` is written, and observation metadata is emitted as a single `<!-- type: X, data-meta: {…} -->` line (the old `, tags: a, b` form is read but converged on write). See [memory-system.md](./memory-system.md).
 
 ---
 
@@ -207,7 +207,7 @@ could disagree with the agent's configured timezone.
 
 > Prompt-cache note: heartbeat situational content (mailbox meta, notebook, timestamps) is
 > injected in the volatile `[Live context]` tail, never into the byte-stable system prefix — see
-> the injection-point ownership audit in [PROMPT-ENGINEERING.md §2.2](./PROMPT-ENGINEERING.md).
+> the injection-point ownership audit in [prompt-engineering.md §2.2](./prompt-engineering.md).
 
 ### Goal / Loop Mechanism
 
@@ -290,10 +290,10 @@ Types: `requirement.ts` (`GoalConfig`). (The former `packages/shared/src/types/c
 
 | Document | Relationship |
 |----------|-------------|
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Storage model detail, dream cycle, tool reference, migration-read |
-| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Mailbox types, priority, triage protocol |
-| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | Prompt section taxonomy |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | System-wide component overview |
+| [memory-system.md](./memory-system.md) | Storage model detail, dream cycle, tool reference, migration-read |
+| [mailbox-system.md](./mailbox-system.md) | Mailbox types, priority, triage protocol |
+| [prompt-engineering.md](./prompt-engineering.md) | Prompt section taxonomy |
+| [architecture.md](./architecture.md) | System-wide component overview |
 
 ---
 

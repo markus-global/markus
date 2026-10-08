@@ -48,8 +48,8 @@ Every contribution matters: bug reports, documentation, tests, examples, new ada
 
 We are building dedicated community channels:
 
-- **Discord (English/global)** — real-time help and community chat. *Coming soon — see [docs/guides/COMMUNITY.md](docs/guides/COMMUNITY.md) for the launch plan and invite.*
-- **微信群 (Chinese / WeChat)** — 中文用户交流群，获取帮助、反馈与内测资格。*建设中，加入方式见 [docs/guides/COMMUNITY.md](docs/guides/COMMUNITY.md)。*
+- **Discord (English/global)** — real-time help and community chat. *Coming soon — see [docs/guides/community.md](docs/guides/community.md) for the launch plan and invite.*
+- **微信群 (Chinese / WeChat)** — 中文用户交流群，获取帮助、反馈与内测资格。*建设中，加入方式见 [docs/guides/community.md](docs/guides/community.md)。*
 
 Maintainers and regular contributors are most responsive in GitHub Discussions.
 
@@ -68,11 +68,11 @@ The best way to start is with an issue explicitly sized for newcomers. Look for 
 **Not sure where to start?** Anything in our curated backlog is fair game:
 
 - **Add example workflows** to `examples/` — turn real use cases ("research a competitor", "write release notes") into runnable scripts.
-- **Expand API docs** — `docs/api/API.md` needs more endpoint examples, request/response shapes, and error codes.
+- **Expand API docs** — `docs/api/api.md` needs more endpoint examples, request/response shapes, and error codes.
 - **Add unit tests** — `packages/comms`, `packages/storage` and `packages/a2a` have untested paths. Pick a function, write deterministic tests, watch the coverage go up.
 - **Add a locale** — the Web UI ships `en` and `zh-CN`; adding `ja`, `es`, or `de` follows the same pattern (`packages/web-ui/src/locales/`).
 - **Build a communication adapter** — a Discord adapter following the Slack/Telegram/WhatsApp pattern in `packages/comms/` also unlocks our community plan.
-- **New skill format support** — `markus skill import` already normalizes skills.sh, SkillHub, OpenClaw, SOUL.md, AgentScope and MCP formats; known gaps are listed in `docs/guides/SKILL-ECOSYSTEM.md` §7.
+- **New skill format support** — `markus skill import` already normalizes skills.sh, SkillHub, OpenClaw, SOUL.md, AgentScope and MCP formats; known gaps are listed in `docs/guides/skill-ecosystem.md` §7.
 
 1. Comment on the issue that you are taking it (or open a draft PR).
 2. Read [Development Setup](#development-setup) below.
@@ -84,7 +84,7 @@ Need help picking an issue or getting started? Ask in [Discussions](https://gith
 
 ## Development Setup
 
-We wrote a full walkthrough: **[docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md)** — prerequisites, first run, each `dev` script, debugging tips, and common issues.
+We wrote a full walkthrough: **[docs/guides/development.md](docs/guides/development.md)** — prerequisites, first run, each `dev` script, debugging tips, and common issues.
 
 The short version:
 
@@ -106,7 +106,7 @@ pnpm dev
 - Initial admin: `admin@markus.local` / `markus123` (the onboarding wizard will prompt you to set your own credentials)
 - Storage: SQLite by default — zero external dependencies. PostgreSQL is optional for production.
 
-**Requirements:** Node.js ≥ 22, pnpm ≥ 9. See `docs/guides/DEVELOPMENT.md` for exact setup on macOS / Linux / Windows.
+**Requirements:** Node.js ≥ 22, pnpm ≥ 9. See `docs/guides/development.md` for exact setup on macOS / Linux / Windows.
 
 ---
 
@@ -133,7 +133,7 @@ examples/    # Runnable example workflows
 scripts/     # Build, release, and utility scripts
 ```
 
-> New to the runtime? Read [docs/architecture/ARCHITECTURE.md](docs/architecture/ARCHITECTURE.md) (system design) and [docs/architecture/AGENT-RUNTIME.md](docs/architecture/AGENT-RUNTIME.md) (agent lifecycle) first — they are short and will save you hours.
+> New to the runtime? Read [docs/architecture/architecture.md](docs/architecture/architecture.md) (system design) and [docs/architecture/agent-runtime.md](docs/architecture/agent-runtime.md) (agent lifecycle) first — they are short and will save you hours.
 
 ---
 
@@ -159,7 +159,7 @@ scripts/     # Build, release, and utility scripts
 
 **Hot reload:** `pnpm dev` runs the API in watch mode; edits to `packages/*/src/**` are rebuilt automatically. The Web UI hot-reloads via Vite. Change API types? Restart the API process (`Ctrl+C`, then `pnpm dev:api`) to pick up new schema.
 
-See [docs/guides/DEVELOPMENT.md](docs/guides/DEVELOPMENT.md) for details on each command, debugging tips, and troubleshooting.
+See [docs/guides/development.md](docs/guides/development.md) for details on each command, debugging tips, and troubleshooting.
 
 ---
 
@@ -228,7 +228,7 @@ test(agent): add unit tests for role assignment
    - A clear description: **what** changed, **why**, and **how you tested** it
    - The issue number it closes (e.g. `Closes #123`)
    - Screenshots/GIFs for UI changes
-   - Notes for the reviewer (e.g., "I followed `docs/guides/DEVELOPMENT.md` on macOS 14, Node 22")
+   - Notes for the reviewer (e.g., "I followed `docs/guides/development.md` on macOS 14, Node 22")
 7. **Keep the PR small** — maintainers review faster; large PRs are split on request.
 8. **Address review feedback** — push fix commits (no force-push to your PR branch).
 9. **Merge** — a maintainer merges after approval. Two approvals required for core-runtime changes (`core`, `org-manager`).
@@ -293,11 +293,11 @@ git rebase --signoff HEAD~N
 
 ## Resources
 
-- [Architecture](docs/architecture/ARCHITECTURE.md) — system design, agent runtime, memory, governance
-- [User Guide](docs/guides/GUIDE.md) — setup, configuration, Web UI walkthrough
-- [API Reference](docs/api/API.md) — REST API endpoints and WebSocket events
-- [Skill Ecosystem](docs/guides/SKILL-ECOSYSTEM.md) — import/export external skill formats
-- [Development Guide](docs/guides/DEVELOPMENT.md) — local setup, dev scripts, debugging
+- [Architecture](docs/architecture/architecture.md) — system design, agent runtime, memory, governance
+- [User Guide](docs/guides/guide.md) — setup, configuration, Web UI walkthrough
+- [API Reference](docs/api/api.md) — REST API endpoints and WebSocket events
+- [Skill Ecosystem](docs/guides/skill-ecosystem.md) — import/export external skill formats
+- [Development Guide](docs/guides/development.md) — local setup, dev scripts, debugging
 - [Release Notes](RELEASELOG.md) — what changed in each release
 
 ---

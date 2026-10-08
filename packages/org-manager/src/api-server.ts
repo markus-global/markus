@@ -5659,7 +5659,7 @@ export class APIServer {
     // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
     // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
     // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
-    // 对应 docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.3c 残余 → §2.6 步骤 2c。
+    // 对应 docs/records/message-stop-cancel-fix-plan.md §2.3c 残余 → §2.6 步骤 2c。
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
       try {

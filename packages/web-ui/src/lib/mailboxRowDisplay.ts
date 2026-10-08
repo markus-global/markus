@@ -1,7 +1,7 @@
 /**
  * Mailbox 行的「展示状态」派生态 —— 单一来源：在途流（currentFocus）为权威。
  *
- * 缺陷（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 H2 / 步骤 2d）：
+ * 缺陷（docs/records/message-stop-cancel-fix-plan.md §2.6 H2 / 步骤 2d）：
  * mailbox history 行的状态点直接使用 `STATUS_COLORS[item.status]`，其中
  * `processing: 'bg-blue-400 animate-pulse'` —— 但 `item.status` 是 **DB 持久化状态**，
  * 取消落空 / 停止 / 崩溃后一行可能长期停在 `processing`（概览页「处理中」的假象来源），

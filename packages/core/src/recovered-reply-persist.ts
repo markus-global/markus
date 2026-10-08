@@ -1,7 +1,7 @@
 /**
  * 【P3】回复落库执行者决策 —— 见 p3-restart-reply-persist.test.ts 头注。
  *
- * 正确语义（docs/records/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.4）：
+ * 正确语义（docs/records/message-stop-cancel-fix-plan.md §2.4）：
  * - 正常 SSE / 正常非流式 sendMessage：发起方（SSEHandler / api-server 请求线程）
  *   持有 `metadata.responsePromise`、`extra.onEvent` 闭包，回合完成后由发起方
  *   `persistAssistantMessage` 落库 → worker 绝不重复写（避免双写）。

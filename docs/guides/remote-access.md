@@ -267,7 +267,7 @@ If you need external AI agents to connect to your Markus instance:
 2. Set a strong `GATEWAY_SECRET` in your environment
 3. External agents register via `POST /api/gateway/register` and authenticate via `POST /api/gateway/auth`
 4. All gateway communication uses HMAC-SHA256 signed Bearer tokens with 24-hour expiry
-5. See [API Reference](../api/API.md) for full gateway endpoint documentation
+5. See [API Reference](../api/api.md) for full gateway endpoint documentation
 
 ---
 

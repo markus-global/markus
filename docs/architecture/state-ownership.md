@@ -1,5 +1,8 @@
 # State Ownership Contract
 
+> **Status: living contract.** This describes how the code must behave today — update it in the same
+> change that moves an owner.
+
 > Why this document exists: pushing state down from "agent-level singleton" to "per-worker workspace"
 > is the right direction, but it **legitimately changes** an implicit premise found all over the repo
 > ("reading `currentSessionId` gives you this request's session").

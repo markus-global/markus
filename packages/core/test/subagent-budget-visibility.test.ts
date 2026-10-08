@@ -13,7 +13,7 @@ import type { AgentToolHandler } from '../src/agent.js';
 
 /**
  * H6 — subagent budget exhaustion must be VISIBLE and must never serialise to an
- * empty string (see docs/records/PLATFORM-HARDENING-2026-10.md §5).
+ * empty string (see docs/records/platform-hardening-2026-10.md §5).
  *
  * Pre-fix behaviour this file pins against:
  *   - `runSubagentLoop` returned a bare `string`. A child stopped by the iteration cap

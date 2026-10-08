@@ -6,9 +6,9 @@ How Markus streams an agent turn to the browser over SSE, how a **client refresh
 navigation reattaches** to an in-flight generation without killing it, and how the agent
 surfaces **structured lifecycle events** (including failures) to the client.
 
-Related docs: [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (the attention loop and interrupt/
-preempt semantics that a stream must honor), [TOOL-SYSTEM.md](./TOOL-SYSTEM.md) (tool
-progress and tool-result events), [STATE-MACHINES.md](./STATE-MACHINES.md) (mailbox-item
+Related docs: [mailbox-system.md](./mailbox-system.md) (the attention loop and interrupt/
+preempt semantics that a stream must honor), [tool-system.md](./tool-system.md) (tool
+progress and tool-result events), [state-machines.md](./state-machines.md) (mailbox-item
 terminal states, including "completed without marker").
 
 ---
@@ -82,10 +82,10 @@ tool progress events, and terminal `done` / `error`.
   events (and activity-log entries), without changing retry semantics:
   - a turn that produced nothing and exhausted its retries (or a user-interaction turn whose
     reply was empty) → `incomplete`
-    (see [STATE-MACHINES.md](./STATE-MACHINES.md) mailbox-item terminal states),
+    (see [state-machines.md](./state-machines.md) mailbox-item terminal states),
   - a tool returning a structured failure (`isToolErrorResult`) → `tool_error`,
   - a `knowledge.md` write refused for exceeding its limits → surfaced (see
-    [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §8.8).
+    [memory-system.md](./memory-system.md) §8.8).
 - **Invariants**:
   - Each condition is surfaced without being mistaken for success.
   - No **additional** retries are triggered by making these visible (visibility only).
@@ -97,13 +97,13 @@ tool progress events, and terminal `done` / `error`.
 - **Status**: implemented, surfaced across layers (visibility only, no new retries):
   - *incomplete* — `AttentionController.emitIncomplete` emits one `agent:incomplete` event on
     the agent bus (empty-reply / max-retries terminals); see
-    [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) and [STATE-MACHINES.md](./STATE-MACHINES.md).
+    [mailbox-system.md](./mailbox-system.md) and [state-machines.md](./state-machines.md).
   - *tool failure* — the SSE handler marks the tool segment `status: 'error'` when
     `event.success === false` and persists `success:false`, so a failed tool never renders as
     a green result (`sse-handler.ts`).
   - *MEMORY.md refusal* — `addLongTermMemory` returns `{ ok:false, reason }` and the memory
     tools return a structured `{ status:'error', ok:false }` (recognized by
-    `isToolErrorResult`), see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+    `isToolErrorResult`), see [memory-system.md](./memory-system.md).
   - Remaining (roadmap): a *dedicated* SSE `incomplete` frame forwarded from the agent bus to
     the client (today the bus event + activity log carry it; the streamed reply is still
     delivered).
@@ -137,7 +137,7 @@ narrows the gap without breaking that principle by distinguishing **revocation**
 
 ### 4.3 Spec: directed cancel under concurrency (Scheme B)
 
-Under concurrent processing ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)) a stop
+Under concurrent processing ([concurrent-processing.md](./concurrent-processing.md)) a stop
 request can no longer target "the agent" — several workers may have in-flight streams. The
 cancel API is therefore **directed**:
 

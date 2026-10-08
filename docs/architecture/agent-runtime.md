@@ -2,9 +2,9 @@
 
 > Single source of truth for **Context Economics + Learning Loop**.
 > Spec language: **MUST** / **SHOULD** / **MUST NOT**. Test IDs map to plan Wave A/B/C.
-> Related: [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md), [TOOL-SYSTEM.md](./TOOL-SYSTEM.md),
-> [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md), [LEARNING-LOOP.md](./LEARNING-LOOP.md),
-> [STATE-MACHINES.md](./STATE-MACHINES.md).
+> Related: [prompt-engineering.md](./prompt-engineering.md), [tool-system.md](./tool-system.md),
+> [memory-system.md](./memory-system.md), [learning-loop.md](./learning-loop.md),
+> [state-machines.md](./state-machines.md).
 
 **Formula**: `Agent = LLM + Harness + Learning Loop`.
 **Hard constraint**: the Context Surface keeps cold-start fixed prefix cheap while skills/experience grow unbounded.
@@ -43,7 +43,7 @@ Test IDs: `A-skill-l0-only`, `A-tooldef-budget`.
 
 MUST: Task execution MUST NOT write new team skills. Distillation runs after **`completed`**
 (including rejection→revision→approval) via the Learning Loop hook with **`scenario: distillation`**
-([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2) — MUST NOT reuse Dream's `memory_consolidation`.
+([learning-loop.md](./learning-loop.md) §2) — MUST NOT reuse Dream's `memory_consolidation`.
 MUST NOT: Distill on `failed`.
 
 Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-hook-skip-failed`,
@@ -52,7 +52,7 @@ Test IDs: `B-hook-skip-trivial`, `B-hook-fire-complex`, `B-hook-skip-failed`,
 ### §1.4 Human gate for evolution
 
 MUST: High-impact (or impact-omitted) skill installs require human approve via HITL
-([LEARNING-LOOP.md](./LEARNING-LOOP.md) §8.3). Low-impact skill installs MAY proceed without HITL.
+([learning-loop.md](./learning-loop.md) §8.3). Low-impact skill installs MAY proceed without HITL.
 Optional `.pending/` staging (§3) remains a helper path.
 
 MUST NOT: Couple skill usage/success metrics to trust score.
@@ -94,7 +94,7 @@ MUST: When `scenario: distillation`, the runtime MAY widen the allowlist with:
 `package_list`, `package_install` (plus reflex core, which already includes `request_user_input`).
 MUST NOT: Add `hub_install` on the distillation turn.
 MUST: Skill `package_install` follows Learning Habits impact/HITL
-([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2.2 / §8.3) — high/omitted impact asks first.
+([learning-loop.md](./learning-loop.md) §2.2 / §8.3) — high/omitted impact asks first.
 MUST: Inject Learning Habits for `distillation`; MUST NOT inject them for `memory_consolidation`.
 
 Test IDs: `A-pack-reflex-tools`, `B-hb-no-evolution-essay`, `B-distill-package-install-allowed`,
@@ -254,13 +254,13 @@ MUST: Persistent semantic storage MUST use:
 | File | Role |
 |------|------|
 | `knowledge.md` | Permanent curated knowledge |
-| ~~`state.md`~~ | Retired 2026-09-16 — folded into the notebook's `system` tier via a one-time migration (key `legacy-state`). See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2 |
+| ~~`state.md`~~ | Retired 2026-09-16 — folded into the notebook's `system` tier via a one-time migration (key `legacy-state`). See [memory-system.md](./memory-system.md) §2 |
 | `NOTEBOOK.md` | Situational workspace |
 | observations buffer | Raw insights; never fully injected |
 
 MUST: On first load, migrate legacy `MEMORY.md` (heuristic: dated/silent/current → state; else knowledge).
 
-Details: [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+Details: [memory-system.md](./memory-system.md).
 
 Test IDs: `A-knowledge-cap`, `C-dream-state-ttl`.
 
@@ -273,7 +273,7 @@ State machine: `task completed → DistillationHook → Habits encode (memory / 
 Also: platform **Learning Habits** L0 (look-back / encode-where / skill impact) and user-initiated
 **Remember-from-message** → child evolution session (user↔agent DM only).
 
-Details and MUST rules: [LEARNING-LOOP.md](./LEARNING-LOOP.md) §2–§9.
+Details and MUST rules: [learning-loop.md](./learning-loop.md) §2–§9.
 
 Test IDs (habits / remember): `B-prompt-learning-habits-*`, `B-skill-install-*`,
 `B-self-evolution-skill-retired`, `B-evolve-*`, `B-recall-chat-session-*`, `B-ui-remember-*`.
@@ -288,7 +288,7 @@ Test IDs (habits / remember): `B-prompt-learning-habits-*`, `B-skill-install-*`,
 - Deep sleep after idle heartbeats
 - Subtask soft cap warning
 
-Details: [STATE-MACHINES.md](./STATE-MACHINES.md) and TOOL/MEMORY docs.
+Details: [state-machines.md](./state-machines.md) and TOOL/MEMORY docs.
 
 Test IDs: `C-review-notes`, `C-task-context-inject`, `C-deliv-version`, `C-subtask-soft-cap`, `A-deep-sleep-skip`, `A-deep-sleep-wake`.
 

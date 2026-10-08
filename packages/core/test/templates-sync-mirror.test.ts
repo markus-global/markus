@@ -85,13 +85,13 @@ describe('§27 syncDir — 可选 ignore（随包发布的 docs 要排除 README
     fs.mkdirSync(path.join(src, 'images'), { recursive: true });
     fs.mkdirSync(path.join(src, 'architecture'), { recursive: true });
     fs.writeFileSync(path.join(src, 'images', 'preview.gif'), 'GIF', 'utf8');
-    fs.writeFileSync(path.join(src, 'architecture', 'ARCHITECTURE.md'), 'A', 'utf8');
+    fs.writeFileSync(path.join(src, 'architecture', 'architecture.md'), 'A', 'utf8');
     fs.writeFileSync(path.join(src, 'README.md'), 'R', 'utf8');
 
     syncDir(src, dest, { ignore: ['images'] });
 
     expect(fs.existsSync(path.join(dest, 'README.md'))).toBe(true);
-    expect(fs.existsSync(path.join(dest, 'architecture', 'ARCHITECTURE.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'architecture', 'architecture.md'))).toBe(true);
     expect(fs.existsSync(path.join(dest, 'images'))).toBe(false);
     fs.rmSync(root, { recursive: true, force: true });
   });

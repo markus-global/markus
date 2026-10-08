@@ -1,7 +1,7 @@
 /**
  * H17 —— 观察/片段条目的**边界**必须锚在机器产物上，而不是 markdown 记号。
  *
- * 回归背景（见 docs/records/PLATFORM-HARDENING-2026-10.md §13）：
+ * 回归背景（见 docs/records/platform-hardening-2026-10.md §13）：
  *
  *   `parseEntryBlocks()` 曾用 `obsContent.split(/\n### /)` 划分条目。但 `### ` 是
  *   **markdown H3 标题**，Agent 正文（任意 markdown）可以自由生产它。于是一条正文含

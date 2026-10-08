@@ -1,5 +1,8 @@
 # Markus Architecture Fragility Root-Cause Analysis
 
+> **Status: analysis record (2026-09), largely resolved.** Fragilities fixed since are marked ✅
+> in place rather than deleted, so the reasoning stays available.
+
 > 2026-09-11 · Origin: after fixing "later requests in the same session can't see history", the boss raised
 > a more fundamental question — why does this system always have fragile bugs? Is it an architecture problem?
 > Why are we always patching, always depending on manual test feedback?

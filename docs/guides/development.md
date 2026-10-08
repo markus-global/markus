@@ -98,7 +98,7 @@ packages/
 └── examples/         Runnable examples
 ```
 
-**Getting started**: read `docs/architecture/ARCHITECTURE.md` (system architecture) and `docs/architecture/AGENT-RUNTIME.md` (agent lifecycle) first, then look at the package you want to change.
+**Getting started**: read `docs/architecture/architecture.md` (system architecture) and `docs/architecture/agent-runtime.md` (agent lifecycle) first, then look at the package you want to change.
 
 ---
 
@@ -123,9 +123,12 @@ packages/
 > Last updated: 2026-09 (evergreen baseline after the v0.9.9 release assessment).
 
 - **Backend thresholds** (`packages/core` / `org-manager` / `storage` / combined): **71 / 61 / 73 / 74**.
-  The whole repo has roughly **360 test files**; the backend tests are solid and a trustworthy precondition for a release.
-- **CI gate composition**: 3 architecture-gate rules, session invariants as their own step, a coverage ratchet (only up, never down),
-  HOME isolation (`MARKUS_*` environment variables are not isolated — a known gap).
+  The whole repo has roughly **420 test files**; the backend tests are solid and a trustworthy precondition for a release.
+- **CI gate composition** (`.github/workflows/ci.yml`, job `quality`): typecheck → lint → architecture guard →
+  tests (`node` project) → tests (`web-ui` project) → skipped-test audit → frontend coverage (blocking) →
+  coverage ratchet (the floor must not drop). A second job, `backend-coverage`, builds the compiled `dist`
+  (the tests import it) and reports backend coverage behind its own ratchet.
+  `MARKUS_*` environment variables are **not** isolated in CI — a known gap.
 - **Frontend coverage history lesson**: it was once shut out entirely (vitest include omitted `.tsx`, exclude ruled out
   `packages/web-ui`), showing up as a fake 0% — a **wrong denominator**, not broken collection. The frontend must explicitly collect
   `.tsx` and configure its own coverage include.
@@ -160,7 +163,7 @@ packages/
 | `pnpm install` reports a peer conflict | Use `pnpm install --fix-lockfile` (do not delete the lockfile) |
 | Development data got dirty | Delete and recreate the corresponding database file under `~/.markus/` (acceptable during development; back up production data first) |
 | Want to connect a real LLM | Configure a provider key in `~/.markus/markus.json` or on the Web UI settings page |
-| Debugging the API | `curl http://localhost:8056/api/health` to check liveness; for REST endpoints see `docs/api/API.md` |
+| Debugging the API | `curl http://localhost:8056/api/health` to check liveness; for REST endpoints see `docs/api/api.md` |
 
 ---
 

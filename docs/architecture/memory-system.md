@@ -9,8 +9,8 @@ read once on load and migrate into `knowledge.md` (migration-read layer: read ol
 Grounded in Tulving-style procedural / semantic / episodic persistence plus cognitive-science
 working-memory models.
 
-> **SSOT budgets/injection**: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §6.
-> **Learning / dream librarian**: [LEARNING-LOOP.md](./LEARNING-LOOP.md).
+> **SSOT budgets/injection**: [agent-runtime.md](./agent-runtime.md) §6.
+> **Learning / dream librarian**: [learning-loop.md](./learning-loop.md).
 
 ## 1. Design Principles
 
@@ -41,7 +41,7 @@ MUST: `MEMORY_MD_CURATED_MAX_CHARS` (injected-section budget, 15,000) is a **sof
 **report-only** mode: `MemoryStore.enforceMemoryBudgets()` runs on construction/load and only
 logs + feeds the in-prompt health banner. The platform never rewrites the agent's curated prose
 (the old load-time archiving of the largest curated sections was removed — see
-[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §24). The **hard ceiling**
+[platform-hardening-2026-10.md](../records/platform-hardening-2026-10.md) §24). The **hard ceiling**
 `MEMORY_MD_CURATED_HARD_MAX_CHARS` (3× the soft budget) IS enforced, but **fail-closed on the
 write path**: `addLongTermMemory` refuses the write (nothing written, actionable reason) and the
 agent consolidates with its own tools (`memory_organize` / `memory_update`). The observation
@@ -195,7 +195,7 @@ MEMORY.md                   ← DEPRECATED legacy; migrate → knowledge/state o
 |-------|------|------|
 | **Inject** | Curated sections → `## Your Knowledge` (capped; omitted for reflex). Observations **not** injected. Notebook always (it carries the situational state that the retired `state.md` used to hold). | Every non-reflex turn packing |
 | **Update** | `memory_save` → `_observations` (one entry; `content` required). `memory_update` / `memory_update_longterm` → named curated section (`replace` / `patch`; `append` aliases `patch`). | Immediate on tool call |
-| **Clean** | Dream (`memory_consolidation` only): dedupe / merge / promote (3+ theme) when ≥50 observations (≤1×/day; ≤4×/day if ≥500). Empty observations rejected on write and pruned on load. Section ≤3000 (`MEMORY_MD_SECTION_MAX_CHARS`) enforced on write; the curated soft budget (≤15000, `MEMORY_MD_CURATED_MAX_CHARS`) is **report-only** at load, and the write path refuses only at the hard ceiling `MEMORY_MD_CURATED_HARD_MAX_CHARS` (45000). (The old load-time convergence/rewrite of an over-budget file was **removed** — see §8.8.) Notebook per-tier TTL prune runs on every notebook write. Post-task encode is **Distillation** (`scenario: distillation`), not Dream — see [LEARNING-LOOP.md](./LEARNING-LOOP.md) §0. | `consolidateMemory()` + write-time guards |
+| **Clean** | Dream (`memory_consolidation` only): dedupe / merge / promote (3+ theme) when ≥50 observations (≤1×/day; ≤4×/day if ≥500). Empty observations rejected on write and pruned on load. Section ≤3000 (`MEMORY_MD_SECTION_MAX_CHARS`) enforced on write; the curated soft budget (≤15000, `MEMORY_MD_CURATED_MAX_CHARS`) is **report-only** at load, and the write path refuses only at the hard ceiling `MEMORY_MD_CURATED_HARD_MAX_CHARS` (45000). (The old load-time convergence/rewrite of an over-budget file was **removed** — see §8.8.) Notebook per-tier TTL prune runs on every notebook write. Post-task encode is **Distillation** (`scenario: distillation`), not Dream — see [learning-loop.md](./learning-loop.md) §0. | `consolidateMemory()` + write-time guards |
 
 ### Curated Sections
 
@@ -262,7 +262,7 @@ Everything the agent has experienced. Two substores serving different time horiz
 | Format | `ConversationSession` — `{ id, agentId, messages: LLMMessage[], startedAt, lastActivityAt }` |
 | Write triggers | `appendMessage()` on every LLM turn |
 | Prompt injection | Automatically included as conversation history |
-| Compaction | Full transcript kept by default; storage-side safety compaction only at `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages → keep `SESSION_STORAGE_COMPACT_KEEP = 1000`. Per-LLM-call token packing is separate (see [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) §3.2) |
+| Compaction | Full transcript kept by default; storage-side safety compaction only at `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages → keep `SESSION_STORAGE_COMPACT_KEEP = 1000`. Per-LLM-call token packing is separate (see [prompt-engineering.md](./prompt-engineering.md) §3.2) |
 | Lifetime | Per-session; new session per task or chat |
 
 Session ID prefixes identify type: `hb_` (heartbeat), `a2a_`, `comment_`, `sys_`, `task_`.
@@ -342,7 +342,7 @@ How the agent operates — managed outside `MemoryStore` by the role/skill syste
 | HEARTBEAT.md | `~/.markus/agents/{id}/role/HEARTBEAT.md` | Loaded by heartbeat processor |
 | Skills | Installed via `discover_tools` | Skill registry + MCP |
 
-ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `file_edit`. Changes require proven experience — platform **Learning Habits** ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §8) govern when and how agents modify identity, memory, HEARTBEAT, or skills (including user-initiated Remember sessions in §9).
+ROLE.md is loaded at startup and hot-reloaded when the agent modifies it via `file_edit`. Changes require proven experience — platform **Learning Habits** ([learning-loop.md](./learning-loop.md) §8) govern when and how agents modify identity, memory, HEARTBEAT, or skills (including user-initiated Remember sessions in §9).
 
 ---
 
@@ -406,7 +406,7 @@ Periodic process that maintains semantic memory health. Runs via `consolidateMem
 There is **no** load-time hygiene pass over the file. The platform does not rewrite, prune or
 dedupe the agent's curated prose — that was `pruneMemoryMd()` (**removed**; it did title/size
 heuristic surgery on the agent's own sections). See
-[PLATFORM-HARDENING-2026-10.md](../records/PLATFORM-HARDENING-2026-10.md) §24.
+[platform-hardening-2026-10.md](../records/platform-hardening-2026-10.md) §24.
 
 What remains is **single-point cleaning at the write entry**: `sanitizeSectionBody()` strips
 leaked `<think>` blocks (closed and unclosed) and demotes a sibling `## ` inside a body to
@@ -420,7 +420,7 @@ writes are dropped when the observation pool is read.
 
 Before the working context fills up, the agent is prompted to persist anything important so
 lossy compaction never silently discards decisions or learned facts. The prompt-side
-mechanics live in [PROMPT-ENGINEERING.md §5.7](./PROMPT-ENGINEERING.md); this is the
+mechanics live in [prompt-engineering.md §5.7](./prompt-engineering.md); this is the
 authoritative behavior spec.
 
 - **Behavior**: a **turn-level preflight** runs `memoryFlush` once per session when the
@@ -457,7 +457,7 @@ write is **refused** fail-closed — nothing written, with an actionable reason.
 
 - **Behavior**: a refused write returns a structured failure (`{ ok:false, reason }`,
   recognized by `isToolErrorResult`) and is surfaced to the activity log / stream (see
-  [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) §4.1) — never a silent no-op the
+  [streaming-and-reattach.md](./streaming-and-reattach.md) §4.1) — never a silent no-op the
   model mistakes for success.
 - **Testing** (`packages/core/test/memory-store.test.ts` "B1:", `memory-tools-extended.test.ts`):
   an over-cap write returns `{ ok:false, reason }`; the memory tools propagate it as a
@@ -502,7 +502,7 @@ merges below are the reason the count is now small; **do not re-introduce the re
 | Removed | Why it existed | Folded into | Date |
 |---|---|---|---|
 | `state.md` (store) | "short-lived situational state" half of a knowledge/state dual store — it had a reader (reflex prompt) and a TTL pruner (dream) but **no write tool at all**, so every writer actually went to the notebook | `NOTEBOOK.md` `system` tier; existing files migrate once to notebook key `legacy-state` with a tombstone left behind | 2026-09-16 (option A) |
-| `working-memory` (lock domain) | the notebook's older name; kept as a second *domain* after the tool alias was added | `agent-memory:notebook` — one resource, one lock key (see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) §4.3) | 2026-09-16 |
+| `working-memory` (lock domain) | the notebook's older name; kept as a second *domain* after the tool alias was added | `agent-memory:notebook` — one resource, one lock key (see [concurrent-processing.md](./concurrent-processing.md) §4.3) | 2026-09-16 |
 | knowledge/state **split** on migration | `splitLegacyMemory` guessed which `MEMORY.md` sections were "state" by keywords | whole-file migration into `knowledge.md` (keyword guessing was itself an incident source) | 2026-09-16 |
 | `getStateMemory` / `pruneStateMemory` / `STATE_TTL_DAYS` / `STATE_PROMPT_MAX_LINES_REFLEX` | supported the retired `state.md` | notebook per-tier TTL (`NOTEBOOK_TTL_MS_*`); constants deleted with in-place NOTE comments | 2026-09-16 |
 
@@ -511,7 +511,7 @@ Principles this produced:
   pruned, yet unwritable. Documentation and tooling drifted apart; the tool surface is the truth.
 - **A store with no delete inflates** — the curated half had no removal path, so superseded
   knowledge could only be overwritten. `mode="forget"` closes this (§1.1).
-- **One resource must have one lock key** — see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md) §4.3.
+- **One resource must have one lock key** — see [concurrent-processing.md](./concurrent-processing.md) §4.3.
 
 ### 10.3 Known limits / deliberate non-goals
 
@@ -526,8 +526,8 @@ Principles this produced:
 
 | Document | Relationship |
 |----------|-------------|
-| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | How agents use memory for context preparation |
-| [PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) | How memory is assembled into system prompts |
-| [ARCHITECTURE.md](./ARCHITECTURE.md) | Overall system architecture |
-| [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) | Mailbox stimulus/response feeds into episodic memory |
-| [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) | Surfaces memory-write refusals as visible events |
+| [cognitive-architecture.md](./cognitive-architecture.md) | How agents use memory for context preparation |
+| [prompt-engineering.md](./prompt-engineering.md) | How memory is assembled into system prompts |
+| [architecture.md](./architecture.md) | Overall system architecture |
+| [mailbox-system.md](./mailbox-system.md) | Mailbox stimulus/response feeds into episodic memory |
+| [streaming-and-reattach.md](./streaming-and-reattach.md) | Surfaces memory-write refusals as visible events |

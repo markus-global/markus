@@ -6,11 +6,11 @@
 > Design origin: the original design memo (rationale, alternatives, phase plan) — superseded by this
 > document and retired; recoverable from git history.
 
-Related docs: [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (queue, priority, attention),
-[ARCHITECTURE.md](./ARCHITECTURE.md) (runtime overview),
-[STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) (streaming, stop / reattach),
-[COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) (attention & cognition),
-[STATE-MACHINES.md](./STATE-MACHINES.md) (task/requirement FSM).
+Related docs: [mailbox-system.md](./mailbox-system.md) (queue, priority, attention),
+[architecture.md](./architecture.md) (runtime overview),
+[streaming-and-reattach.md](./streaming-and-reattach.md) (streaming, stop / reattach),
+[cognitive-architecture.md](./cognitive-architecture.md) (attention & cognition),
+[state-machines.md](./state-machines.md) (task/requirement FSM).
 
 ---
 
@@ -450,7 +450,7 @@ ambiguous — the wrong worker could be cancelled. The fix is a **directed cance
 - Frontend **stop** and **retry** paths pass a stable `sessionId` target so a stop in one
   session tab never touches another tab's in-flight stream.
 
-See [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) for the stream lifecycle.
+See [streaming-and-reattach.md](./streaming-and-reattach.md) for the stream lifecycle.
 
 ## 6. Serial-mode equivalence (the regression contract)
 
@@ -519,7 +519,7 @@ These are deliberate trade-offs, documented rather than hidden:
    `NOTEBOOK.md` / the handoff log. Atomic file writes bound the damage (a torn file is never
    parsed back) but do not prevent a lost update. Closing this needs an architecture-level
    mechanism — file-based advisory locks or single-instance election — and is tracked as its
-   own piece of work; see [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §10.3.
+   own piece of work; see [memory-system.md](./memory-system.md) §10.3.
 
 ## 8. Testing
 

@@ -84,7 +84,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `in_progress` → anything else | Cancel running execution (cancel token) |
 | → `completed` / `failed` / `cancelled` / `rejected` / `archived` | Set `completedAt`; check dependent tasks for unblocking |
 | → `review` | Notify reviewer (agent via mailbox, or human via approval request) |
-| **Most status changes** | Enqueue `task_status_update` to assigned agent's mailbox (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)). Skipped when: (a) auto-start triggers execution (the execution-mode item serves as both trigger and notification), or (b) `in_progress → review` (assignee self-initiated via `task_submit_review`) |
+| **Most status changes** | Enqueue `task_status_update` to assigned agent's mailbox (see [mailbox-system.md](./mailbox-system.md)). Skipped when: (a) auto-start triggers execution (the execution-mode item serves as both trigger and notification), or (b) `in_progress → review` (assignee self-initiated via `task_submit_review`) |
 
 ### FSM Enforcement
 
@@ -245,14 +245,14 @@ Test IDs: `A-deep-sleep-skip`, `A-deep-sleep-wake`.
 ### Spec: Post-task distillation
 
 MUST: On task `completed` (and gated predicates), enqueue Learning Loop distillation
-([LEARNING-LOOP.md](./LEARNING-LOOP.md)) without blocking the status transition.
+([learning-loop.md](./learning-loop.md)) without blocking the status transition.
 MUST NOT: Distill on `failed` — wait for completion or human Remember.
 
 ---
 
 ## 6. Comment & Notification Rules
 
-Comments on tasks and requirements trigger agent notifications via the agent's **mailbox**. Notifications are enqueued as `task_comment` or `requirement_comment` mailbox items. The system ensures **each agent receives at most one notification per comment**, regardless of how many rules match. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for details on the mailbox architecture.
+Comments on tasks and requirements trigger agent notifications via the agent's **mailbox**. Notifications are enqueued as `task_comment` or `requirement_comment` mailbox items. The system ensures **each agent receives at most one notification per comment**, regardless of how many rules match. See [mailbox-system.md](./mailbox-system.md) for details on the mailbox architecture.
 
 **Structural reply-to**: Comment notifications include `replyToId` linking to a parent comment. The notification payload also includes an agent streak count (consecutive agent-only comments without human input) to help agents self-moderate reply frequency.
 
@@ -419,7 +419,7 @@ requirement status change → agent.enqueueToMailbox('requirement_update', {
   - **→ `review`**: Notifies the reviewer (agent or human)
   - **Terminal states** (`completed`, `failed`, `cancelled`): Checks and unblocks dependent tasks
 - **Agents should NOT duplicate these actions**: Do not send A2A messages to notify about task status changes — the system handles everything. A2A should only be used for substantive coordination that goes beyond a status change.
-- **Episodic memory**: These notifications become part of the agent's mailbox timeline — the authoritative record of everything that happened. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md).
+- **Episodic memory**: These notifications become part of the agent's mailbox timeline — the authoritative record of everything that happened. See [mailbox-system.md](./mailbox-system.md).
 - **Event-driven**: Notifications are fire-and-forget (`enqueueToMailbox`). The agent's attention controller uses them as context during triage deliberation.
 
 ---
@@ -481,13 +481,13 @@ loopEnabled=false      (re-enable / raise max)
 1. **Heartbeat-driven** — active goals appear in the heartbeat **Active Goals** section via `goalFetcher`; the agent creates follow-up tasks and reassesses each iteration
 2. **Orthogonal to requirement status** — goal loop states apply only while the requirement is `in_progress`; terminal requirement statuses (`completed`, `cancelled`, `rejected`) end the loop
 3. **Safety cap** — `maxIterations` prevents unbounded heartbeat cycles; hitting the limit enters `goal_max_iterations`, not automatic completion
-4. **Tools** — `goal_create`, `goal_update`, `goal_status` manage the loop; see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.4
+4. **Tools** — `goal_create`, `goal_update`, `goal_status` manage the loop; see [mailbox-system.md](./mailbox-system.md) §11.4
 
 ---
 
 ## 12. Pending Callback States
 
-`PendingCallbackRegistry` tracks async operations (e.g., `background_exec`) that must report results through the mailbox. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.3.
+`PendingCallbackRegistry` tracks async operations (e.g., `background_exec`) that must report results through the mailbox. See [mailbox-system.md](./mailbox-system.md) §11.3.
 
 ### State Diagram
 
@@ -526,7 +526,7 @@ registerBackgroundSession()
 
 ## 13. Mailbox Item Lifecycle (`callback_result`)
 
-All mailbox items, including `callback_result`, follow the standard attention pipeline. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §6.5.
+All mailbox items, including `callback_result`, follow the standard attention pipeline. See [mailbox-system.md](./mailbox-system.md) §6.5.
 
 ### Pipeline
 
@@ -543,7 +543,7 @@ AttentionController triage → handleMessage(originSessionId)
 complete (completed)
 ```
 
-> **Concurrent mode.** With a worker pool ([CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)),
+> **Concurrent mode.** With a worker pool ([concurrent-processing.md](./concurrent-processing.md)),
 > a worker takes an **entity-affinity lock** right after `dequeueAsync` and releases it in a
 > `finally` after processing; items whose entity is already locked are skipped by
 > `dequeue()` (put back and retried after a back-off). The worker loop **does not run
@@ -565,7 +565,7 @@ After `processFocusedItem` runs, exactly one terminal outcome is chosen (impleme
 | **completed (incomplete)** | Marker still missing after in-session continuation, or abnormal reply on a user-interaction item | `complete(id)` | No |
 
 **Specs that refine these outcomes** (behavior/invariants/tests live in
-[MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md)):
+[mailbox-system.md](./mailbox-system.md)):
 
 - **Timeout → requeue must be single-flight**: on backstop timeout the in-flight processing
   is cancelled and any late result is discarded, so a requeue cannot double side effects.
@@ -617,7 +617,7 @@ A2A messaging routes through **deterministic DM channels** (`dm:a2a:{sorted_id_1
 1. **One channel per agent pair** — IDs sorted lexicographically; same key regardless of sender
 2. **Stable sessions** — session ID derived from `channel_{channelKey}_{agentId}`; history recallable via `recall_context`
 3. **Fire-and-forget** — `agent_send_message` is always async; no `wait_for_reply`
-4. **No teardown** — channels survive agent restarts and idle periods; see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §11.1
+4. **No teardown** — channels survive agent restarts and idle periods; see [mailbox-system.md](./mailbox-system.md) §11.1
 
 ---
 
@@ -662,4 +662,4 @@ agent stop
 | Debounced persist | 2s after last mutation → `saveNotebook()` |
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
 
-See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) for storage format and deterministic context assembly.
+See [memory-system.md](./memory-system.md) and [cognitive-architecture.md](./cognitive-architecture.md) for storage format and deterministic context assembly.

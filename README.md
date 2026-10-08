@@ -99,7 +99,7 @@ Markus assembles the team, breaks the goal into tasks, and starts executing — 
 - 🤖 **Any LLM** — Anthropic, OpenAI, Google, DeepSeek, MiniMax, Ollama, OpenRouter, and more — with unified model discovery and automatic failover.
 - 🔒 **Bring your own keys** — credentials live in your deployment, never in a third-party cloud.
 
-> Full skill details: [Skill Ecosystem](docs/guides/SKILL-ECOSYSTEM.md)
+> Full skill details: [Skill Ecosystem](docs/guides/skill-ecosystem.md)
 
 ---
 
@@ -153,25 +153,25 @@ TypeScript monorepo with modular packages:
 |-------|-------------|
 Start at the **[documentation index](docs/README.md)**.
 
-| [Architecture](docs/architecture/ARCHITECTURE.md) | System design, agent runtime, memory, governance |
-| [Agent Runtime](docs/architecture/AGENT-RUNTIME.md) | Agent lifecycle, execution model, workspace isolation |
-| [Tool System](docs/architecture/TOOL-SYSTEM.md) | Built-in tools, MCP integration, tool contracts |
-| [Memory System](docs/architecture/MEMORY-SYSTEM.md) | Three-layer memory architecture (Tulving) |
-| [Cognitive Architecture](docs/architecture/COGNITIVE-ARCHITECTURE.md) | Deterministic context assembly (CPP retired) |
-| [Mailbox System](docs/architecture/MAILBOX-SYSTEM.md) | Agent attention model, priority queue, triage |
-| [Prompt Engineering](docs/architecture/PROMPT-ENGINEERING.md) | System prompt assembly, tool loop, compression |
-| [State Machines](docs/architecture/STATE-MACHINES.md) | Task & requirement FSM specification |
-| [Concurrent Processing](docs/architecture/CONCURRENT-PROCESSING.md) | How one agent handles multiple sessions / mailbox items in parallel |
-| [Streaming & Reattach](docs/architecture/STREAMING-AND-REATTACH.md) | Streaming events, reconnection, tool-loop integrity |
-| [Team Chat (frontend)](docs/architecture/frontend/TEAM-CHAT.md) | Team Chat page state model and interaction contracts |
-| [Learning Loop](docs/architecture/LEARNING-LOOP.md) | Agent self-improvement and memory consolidation |
-| [API Reference](docs/api/API.md) | REST API endpoints and WebSocket events |
-| [User Guide](docs/guides/GUIDE.md) | Setup, configuration, Web UI walkthrough |
-| [Development Guide](docs/guides/DEVELOPMENT.md) | Local setup, dev scripts, debugging |
-| [Coding Tools](docs/guides/CODING-TOOLS.md) | Claude Code / Codex / Cursor integration |
-| [Skill Ecosystem](docs/guides/SKILL-ECOSYSTEM.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
-| [Remote Access](docs/guides/REMOTE-ACCESS.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
-| [Release & Distribution](docs/guides/RELEASE-AND-DISTRIBUTION.md) | Build, packaging, publishing pipeline |
+| [Architecture](docs/architecture/architecture.md) | System design, agent runtime, memory, governance |
+| [Agent Runtime](docs/architecture/agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [Tool System](docs/architecture/tool-system.md) | Built-in tools, MCP integration, tool contracts |
+| [Memory System](docs/architecture/memory-system.md) | Three-layer memory architecture (Tulving) |
+| [Cognitive Architecture](docs/architecture/cognitive-architecture.md) | Deterministic context assembly (CPP retired) |
+| [Mailbox System](docs/architecture/mailbox-system.md) | Agent attention model, priority queue, triage |
+| [Prompt Engineering](docs/architecture/prompt-engineering.md) | System prompt assembly, tool loop, compression |
+| [State Machines](docs/architecture/state-machines.md) | Task & requirement FSM specification |
+| [Concurrent Processing](docs/architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
+| [Streaming & Reattach](docs/architecture/streaming-and-reattach.md) | Streaming events, reconnection, tool-loop integrity |
+| [Team Chat (frontend)](docs/architecture/frontend/team-chat.md) | Team Chat page state model and interaction contracts |
+| [Learning Loop](docs/architecture/learning-loop.md) | Agent self-improvement and memory consolidation |
+| [API Reference](docs/api/api.md) | REST API endpoints and WebSocket events |
+| [User Guide](docs/guides/guide.md) | Setup, configuration, Web UI walkthrough |
+| [Development Guide](docs/guides/development.md) | Local setup, dev scripts, debugging |
+| [Coding Tools](docs/guides/coding-tools.md) | Claude Code / Codex / Cursor integration |
+| [Skill Ecosystem](docs/guides/skill-ecosystem.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
+| [Remote Access](docs/guides/remote-access.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
+| [Release & Distribution](docs/guides/release-and-distribution.md) | Build, packaging, publishing pipeline |
 | [Engineering Records](docs/records/) | Dated audits, post-mortems, hardening logs |
 | [Blog](https://markus.global/blog) | Articles and tutorials on Markus and AI agents |
 
@@ -184,7 +184,7 @@ Start at the **[documentation index](docs/README.md)**.
 - **Discord** — real-time chat with users and contributors (English/global) — *coming soon*
 - **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
 
-Join details and the contributor escalation path are in [docs/guides/COMMUNITY.md](docs/guides/COMMUNITY.md). All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+Join details and the contributor escalation path are in [docs/guides/community.md](docs/guides/community.md). All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ---
 

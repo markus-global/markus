@@ -1,5 +1,7 @@
 # 设置页模型路由首访「选项先空后填」问题 — 调研结论与修复方案
 
+> **状态：已修复**（commit `ccdc74e6`）。
+
 > 任务：tsk_c280fee9f5a231f5f93e7bf0
 > 分支：feat/ui-optimize-0815 · commit `ccdc74e6`
 > 日期：2026-08-15

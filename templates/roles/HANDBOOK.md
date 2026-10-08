@@ -62,14 +62,14 @@ Markus maintains detailed documentation about its architecture and subsystems, a
 | Document | Contents |
 |----------|----------|
 | `docs/README.md` | Index of every document, grouped by kind |
-| `docs/architecture/ARCHITECTURE.md` | System architecture, component relationships, data model |
-| `docs/architecture/MEMORY-SYSTEM.md` | Memory layers (identity / knowledge / working / session), consolidation lifecycle, budgets |
-| `docs/architecture/PROMPT-ENGINEERING.md` | How your system prompt is assembled, context compression, tool loop |
-| `docs/architecture/STATE-MACHINES.md` | Task / requirement / mailbox state transitions and triggers |
-| `docs/architecture/TOOL-SYSTEM.md` | Tool selection, result envelope, subagent budgets |
-| `docs/architecture/MAILBOX-SYSTEM.md` | Priority queue, attention model, interrupts, stop / cancel |
-| `docs/api/API.md` | REST API endpoints and WebSocket events |
-| `docs/guides/GUIDE.md` | Setup and usage guide |
+| `docs/architecture/architecture.md` | System architecture, component relationships, data model |
+| `docs/architecture/memory-system.md` | Memory layers (identity / knowledge / working / session), consolidation lifecycle, budgets |
+| `docs/architecture/prompt-engineering.md` | How your system prompt is assembled, context compression, tool loop |
+| `docs/architecture/state-machines.md` | Task / requirement / mailbox state transitions and triggers |
+| `docs/architecture/tool-system.md` | Tool selection, result envelope, subagent budgets |
+| `docs/architecture/mailbox-system.md` | Priority queue, attention model, interrupts, stop / cancel |
+| `docs/api/api.md` | REST API endpoints and WebSocket events |
+| `docs/guides/guide.md` | Setup and usage guide |
 
 `docs/architecture/` describes **current** behaviour. `docs/records/` holds dated engineering records (audits, post-mortems, hardening logs) kept for the rationale behind changes that are already in the code — it is **historical and frozen**, so never read it as a description of how the platform behaves today.
 

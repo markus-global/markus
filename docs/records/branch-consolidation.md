@@ -1,5 +1,7 @@
 # 分支整顿报告：`refactor/team-chat-state-machine`
 
+> **状态：已完成（历史记录，冻结）**——PR #313。
+
 > 所属需求：Markus 客户端核心机制全面审计 → 分支整顿 → 问题修复（`req_1e663c568c5d895535b2f09d`）第二部分
 > 任务：`tsk_7882d679439917bacbc9dfa3`
 > 执行时间：2026-09-11 23:05–23:20 (Asia/Shanghai)

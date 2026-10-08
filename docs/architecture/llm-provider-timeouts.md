@@ -1,5 +1,8 @@
 # LLM Provider Timeout Governance
 
+> **Status: risk inventory / target design (2026-09).** Rows resolved since are marked **RESOLVED**
+> in place rather than deleted, so the reasoning stays available.
+
 > Last updated: 2026-09. Distilled from the provider timeout audits (set A + set B).
 > This is the **current-state design reference** for how each LLM provider adapter
 > handles timeouts / hangs / retries — what is bounded, what is not, and the agreed
@@ -43,9 +46,9 @@
   while tokens flow), plus a **hard cap** as the outer bound.
 - **Configurable durations** with sane defaults; no hardcoded magic numbers.
 - **External abort**: all adapters accept a caller-provided `AbortController`/signal and
-  cooperate with it (used by streaming cancel — see STREAMING-AND-REATTACH.md §4.2).
+  cooperate with it (used by streaming cancel — see streaming-and-reattach.md §4.2).
 - **Fail-loud**: timeouts and degradations surface as structured errors, never as silent
-  success (see MAILBOX-SYSTEM.md §27.3 fail-loud chain).
+  success (see mailbox-system.md §27.3 fail-loud chain).
 - **Single-timer consolidation**: one timer mechanism per adapter (roadmap item from the
   frontend resilience audit §5.5).
 - **Reference baseline**: `openai` and `markus-provider` are the alignment targets.
@@ -54,4 +57,4 @@
 
 Every new provider adapter MUST implement: non-stream timeout, stream idle timeout,
 hard cap, external abort, and fail-loud error wrapping — before being merged. A provider
-call that can hang without bound is a scheduling-chain violation (MAILBOX-SYSTEM.md §27).
+call that can hang without bound is a scheduling-chain violation (mailbox-system.md §27).

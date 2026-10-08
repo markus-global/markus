@@ -1,5 +1,5 @@
 /**
- * Post-task distillation prompt builder — docs/architecture/LEARNING-LOOP.md §2
+ * Post-task distillation prompt builder — docs/architecture/learning-loop.md §2
  *
  * Only for completed tasks. Failed tasks wait for completion / Remember.
  * No structured JSON outcome — Learning Habits tools are enough.

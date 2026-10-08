@@ -1,5 +1,5 @@
 /**
- * Learning Loop primitives — docs/architecture/LEARNING-LOOP.md
+ * Learning Loop primitives — docs/architecture/learning-loop.md
  */
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

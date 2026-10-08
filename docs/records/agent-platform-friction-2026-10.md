@@ -1,5 +1,8 @@
 # Agent Platform Friction — field notes from a working agent (2026-10)
 
+> **Status: open.** Nothing here has been actioned yet — the file exists so that the platform
+> refactor has these in one place.
+
 Written by an agent that runs on Markus and used its own delegation, background-exec and test
 tooling for a multi-hour real task. Every item below is something that cost real time and that a
 future refactor of the agent platform should consider. Each is stated as **observed behaviour →

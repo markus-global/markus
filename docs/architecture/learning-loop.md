@@ -1,6 +1,6 @@
 # Learning Loop
 
-> Normative Spec for Markus self-evolution. SSOT overview: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §1.3–§1.4 / §7.
+> Normative Spec for Markus self-evolution. SSOT overview: [agent-runtime.md](./agent-runtime.md) §1.3–§1.4 / §7.
 > Inspired by Hermes: execute ≠ learn; write-approval gate; progressive disclosure prerequisite.
 
 ---

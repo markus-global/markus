@@ -1,6 +1,6 @@
 # Prompt Engineering & Context Assembly
 
-This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [STATE-MACHINES.md](./STATE-MACHINES.md) (task lifecycle), [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) (storage layers), and [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) (deterministic context assembly).
+This document specifies how Markus constructs prompts, manages context, and orchestrates LLM interactions across all scenarios. It complements [state-machines.md](./state-machines.md) (task lifecycle), [memory-system.md](./memory-system.md) (storage layers), and [cognitive-architecture.md](./cognitive-architecture.md) (deterministic context assembly).
 
 ---
 
@@ -207,7 +207,7 @@ names and its `… +N` tail tracked the per-turn keyword selection and changed o
 nearly every call — under a comment that claimed it was cache-friendly. It is now
 derived from the tool **registry** (minus `TOOL_DEF_CORE_KEEP`) and sorted, so it
 changes only when a tool or skill is genuinely installed or removed. This is also
-what `TOOL-SYSTEM.md` §1.0.1 already required (`MUST NOT` append a catalog to
+what `tool-system.md` §1.0.1 already required (`MUST NOT` append a catalog to
 `discover_tools.description`); the code had been violating its own spec.
 
 **Invariant 7 — why a checkpoint and not just "re-send less".** See §2.1.2: the
@@ -391,7 +391,7 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
     mailbox/task/date/skills markers appear only in the `volatile` tail).
   - Every system segment carries a `cacheBreakpoint`; the deterministic `## Cognitive Context`
     block and `## Relevant Memories` ride the `volatile`/dynamic tail, never a stable
-    system-prompt section (see [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) §3).
+    system-prompt section (see [cognitive-architecture.md](./cognitive-architecture.md) §3).
 - **Note — CPP retired; the deterministic block is always injected**: the deterministic situational
   block (recent activity + working-memory keys) is now **always** injected as the `## Cognitive
   Context` section — there is no CPP toggle and no pre-call LLM (see §1.1). It is **complementary
@@ -409,7 +409,7 @@ injection point cannot silently land in a stable tier and bust the cache prefix.
   deterministic `## Cognitive Context` block rides the volatile tail rather than being injected as a stable system-prompt section,
   and (e) two turns with different per-turn context yield byte-identical `text` but different
   `volatile`. The cache-hit-rate metric is tracked separately (see
-  [ARCHITECTURE.md §11.1](./ARCHITECTURE.md) observability).
+  [architecture.md §11.1](./architecture.md) observability).
 - **Status**: implemented (Scheme A — volatile tail; adds the enforcing guard tests, the
   byte-stability regression, and the `usage.compressed`-driven cache/compression metrics).
 
@@ -434,7 +434,7 @@ Source: `getDynamicContext()` — three sources:
 | `agent` | `notebook_upsert` / `notebook_clear` | Agent-chosen keys (priorities, blockers, decisions) |
 | `system` | Runtime (triage, mechanical retrieval) | `triage-decision`, `relevant-context` |
 
-**Bounding ([MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2).** The block is bounded on four independent axes, because each alone is insufficient:
+**Bounding ([memory-system.md](./memory-system.md) §2).** The block is bounded on four independent axes, because each alone is insufficient:
 
 | Axis | Limit | Failure it prevents |
 |------|-------|---------------------|
@@ -447,7 +447,7 @@ Overflow is handled by **inline truncation**, not omission: an entry too large f
 
 **Ordering is deterministic**: `updatedAt` DESC with a `key` ASC tie-break. Ranking matters for staleness; determinism matters for caching — for the same logical state the block must serialize to the same bytes, or every assembly dirties the volatile tail and re-bills those tokens. (Map insertion order did neither: evict + re-insert permuted the block.)
 
-The `notebookWriter` dual-destination was **removed**: relevance-matched memories are injected **only** for the current turn as `## Relevant Memories`, and a small deterministic `## Cognitive Context` block (recent activity + working-memory keys) may be injected — neither is written to Notebook. Notebook holds only deliberate working state. See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+The `notebookWriter` dual-destination was **removed**: relevance-matched memories are injected **only** for the current turn as `## Relevant Memories`, and a small deterministic `## Cognitive Context` block (recent activity + working-memory keys) may be injected — neither is written to Notebook. Notebook holds only deliberate working state. See [memory-system.md](./memory-system.md).
 
 The legacy notebook aliases `update_working_memory` / `clear_working_memory` were **removed** — use `notebook_upsert` / `notebook_clear`.
 
@@ -455,16 +455,16 @@ The legacy notebook aliases `update_working_memory` / `clear_working_memory` wer
 
 | Layer | Content | When |
 |-------|---------|------|
-| **L0** | Role, tool rules, search, **Learning Habits** (≤1600 chars; look-back / encode-where / skill impact — [LEARNING-LOOP.md](./LEARNING-LOOP.md) §8), autonomy, security, resource refs, user language, shortest task workflow | Always (non-dream) |
+| **L0** | Role, tool rules, search, **Learning Habits** (≤1600 chars; look-back / encode-where / skill impact — [learning-loop.md](./learning-loop.md) §8), autonomy, security, resource refs, user language, shortest task workflow | Always (non-dream) |
 | **L1** | Identity (capped roster), org/workspace, knowledge, active tasks | Identity always; tasks when present |
 | **L2** | Skill catalog metadata (name + one-line description) | Always via identity / discover_tools |
 | **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `deliberation` / `comment_response` |
 
-> **SSOT**: Budgets, packs, and afford fail-closed rules live in [AGENT-RUNTIME.md](./AGENT-RUNTIME.md). The sections below are normative Spec supplements.
+> **SSOT**: Budgets, packs, and afford fail-closed rules live in [agent-runtime.md](./agent-runtime.md). The sections below are normative Spec supplements.
 
 ### 2.3 Spec: Prompt profiles (`promptProfile`)
 
-MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 'execute' | 'govern'` derived from the scenario pack ([AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §2 / §4).
+MUST: `buildSystemPrompt()` MUST accept `promptProfile: 'reflex' | 'converse' | 'execute' | 'govern'` derived from the scenario pack ([agent-runtime.md](./agent-runtime.md) §2 / §4).
 
 | Section | reflex | converse | execute/govern |
 |---------|--------|----------|----------------|
@@ -586,12 +586,12 @@ their mailbox on demand using `check_mailbox` in any scenario.
 
 **Task status notifications** are purely informational — the system's side-effect mechanism handles all actions (execution start/cancel, reviewer notification, dependency unblocking). Agents are instructed not to send redundant A2A messages for routine status changes.
 
-All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) for the full design.
+All 12 mailbox item types (`human_chat`, `task_status_update`, `session_reply`, `daily_report`, `memory_consolidation`, `heartbeat`, etc.) route through this section. Internal agent processes like heartbeats, daily reports, and memory consolidation also enqueue to the mailbox, meaning the agent always has full situational awareness about its own cognitive state. See [mailbox-system.md](./mailbox-system.md) for the full design.
 
 #### Concurrency Context (volatile tail)
 Source: `buildSystemPrompt()` with `opts.concurrentContext` in `ContextEngine`.
 Injected **only** when concurrent processing is enabled *and* `workerCount > 1` (see
-[CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)). It is a **volatile-tail** segment,
+[concurrent-processing.md](./concurrent-processing.md)). It is a **volatile-tail** segment,
 never a system-prompt section, so its per-turn churn cannot invalidate the STABLE /
 SEMI-STABLE prefix cache. It injects:
 - **Worker identity**: "this session is one of N workers (worker W)".
@@ -611,8 +611,8 @@ Placed at the **end of Tier 2** so the identity/org prefix remains stable across
 | `chat` | Inline immediate-answer work. Sustained implementation → `task_create`. | **Directly visible** to the chatting human (real-time stream) | Speak naturally; `agent_send_message` for agents |
 | `task_execution` | Isolated session. Decompose → execute → `task_submit_review`. | Visible in **task execution logs** (Work page) | `notify_user` for critical updates; `agent_send_message` for agents |
 | `heartbeat` | Brief check-in: review tasks, retry failures, active goals; at most one-line `memory_save` (no long evolution essays). Inline prompt includes `## Active Goals` when standing goals exist. | **Not visible** to anyone | `notify_user` (only way to reach humans); `agent_send_message` for agents |
-| `chat` (evolution child) | User-initiated Remember session ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §9): seeded with parent DM transcript + `parentSessionId`; agent follows Learning Habits and may page history via `recall_context(scope=chat_session)`. | Visible to the human in that personal session | Same as chat; high-impact skill/ROLE changes use `request_user_input` |
-| `distillation` | Post-task Learning Loop ([LEARNING-LOOP.md](./LEARNING-LOOP.md) §2): on **completed** only; Habits encode (memory/skill); `package_install` with §8.3 impact/HITL. No JSON outcome ritual. | **Not visible**; system session | Memory / file encode + skill create/install (approval for high impact) |
+| `chat` (evolution child) | User-initiated Remember session ([learning-loop.md](./learning-loop.md) §9): seeded with parent DM transcript + `parentSessionId`; agent follows Learning Habits and may page history via `recall_context(scope=chat_session)`. | Visible to the human in that personal session | Same as chat; high-impact skill/ROLE changes use `request_user_input` |
+| `distillation` | Post-task Learning Loop ([learning-loop.md](./learning-loop.md) §2): on **completed** only; Habits encode (memory/skill); `package_install` with §8.3 impact/HITL. No JSON outcome ritual. | **Not visible**; system session | Memory / file encode + skill create/install (approval for high impact) |
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
@@ -633,7 +633,7 @@ This closes the previous gap where the renderer silently auto-linked IDs but no 
 
 #### Async Work, Callbacks & Timing
 
-Placed in **Tier 1 (Stable)** (`## Async work, callbacks & timing`, after the agent-communication rules). Establishes the event-driven behavioral model that backs the callback/wakeup infrastructure (see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) §3.4/§11.3):
+Placed in **Tier 1 (Stable)** (`## Async work, callbacks & timing`, after the agent-communication rules). Establishes the event-driven behavioral model that backs the callback/wakeup infrastructure (see [mailbox-system.md](./mailbox-system.md) §3.4/§11.3):
 
 - **Await, don't poll**: after starting async work, register for the completion event and stop — do not busy-loop checking status. `background_exec` reports completion automatically; a tight `process poll` loop is discouraged.
 - **`schedule_wakeup` / `cancel_wakeup`**: agents set precise time-based follow-ups (`in_seconds` or ISO `at`, optional `recurring_seconds`) instead of relying on the heartbeat, which is now a coarse safety-net (default `DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h) rather than a frequent poll.
@@ -722,7 +722,7 @@ Session Messages
   saver): on-disk sessions are compacted only at
   `SESSION_STORAGE_COMPACT_TRIGGER = 2000` messages, keeping
   `SESSION_STORAGE_COMPACT_KEEP = 1000`; oversized on-disk tool results are shrunk at
-  `SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`. See [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md).
+  `SESSION_STORAGE_TOOL_SHRINK_CHARS = 100k`. See [memory-system.md](./memory-system.md).
 
 **Design rationale (Hermes progressive disclosure + afford-aware packing)**: keep cold-start
 system+tools lean (~10k target), activate skill bodies on demand, and never fill a 128k/1M
@@ -883,7 +883,7 @@ cause rather than the symptom.
 | RC1 | **The fixed/variable split has no third tier.** Context was modelled as *fixed* (system + tools + slots) vs *variable* (history + volatile tail). Stable-but-large session state — knowledge, notebook, skills catalog, deferred tools, task board — has neither a home nor a delivery contract, so it was dumped into the *per-call* tail. | **Design** | Tail re-sent 66× in one turn; every "make the tail smaller" fix then risked losing the state outright (§2.1.2) |
 | RC2 | **No harness channel.** Providers accept only system/user/assistant/tool, so the engine synthesises `role:'user'` for state, `[Continue …]` and loop warnings. There is no explicit framing that marks a block as *telemetry, not instruction*. | **Design** | Turn accounting corrupted (`findCurrentTurnStart`); negative priming from stacked \"do not repeat\" prompts; state read as the newest user message and re-announced |
 | RC3 | **No context budget owner.** Each feature pushes into the dynamic array with its own cap; nobody owns the total, the priority order, or eviction. | **Design** | Byte-constant noise lines survive forever (`_(66 completed/closed tasks)_`); knowledge truncated by *document order* mid-sentence; `## Notebook` reached 41 % of the tail |
-| RC4 | **Cache-friendliness was a patch, not an invariant — and was unmeasurable.** Registration-order emission was fixed case-by-case; `discover_tools.description` still embedded per-turn counts *directly under a comment claiming cache-safety*; the documented MUST-NOT in `TOOL-SYSTEM.md` was violated by the code. No cache-hit telemetry and a 0.7 heuristic polluting the denominator meant regressions were **invisible**. | **Design (missing guard) + implementation** | Tool prefix silently busted every turn; the same class of bug reappeared across rounds |
+| RC4 | **Cache-friendliness was a patch, not an invariant — and was unmeasurable.** Registration-order emission was fixed case-by-case; `discover_tools.description` still embedded per-turn counts *directly under a comment claiming cache-safety*; the documented MUST-NOT in `tool-system.md` was violated by the code. No cache-hit telemetry and a 0.7 heuristic polluting the denominator meant regressions were **invisible**. | **Design (missing guard) + implementation** | Tool prefix silently busted every turn; the same class of bug reappeared across rounds |
 | RC5 | **The toolset is recomputed per turn, not accumulated per session.** `recentToolNames` is an instance-level LRU(10); `activatedExtraTools` is instance-level and never reset. Both drift within a turn **and leak across sessions**. | **Implementation** | Capability surface changes every turn (cache break); one session inherits tools activated in another |
 | RC6 | **Estimated vs reported usage is a dual rail.** Budget and `[CONTEXT x%]` come from the local `TokenCounter`; server-reported `inputTokens` is used only for the audit log, only calibrates the estimator, and is wired on *one* code path (`agent.ts:4373`). | **Implementation** | The displayed water level is an estimate; the cache-hit denominator was back-filled with `totalTokens*0.7` |
 
@@ -908,7 +908,7 @@ cause rather than the symptom.
 |---|---|---|
 | O1 | **Tool schema drift (RC5).** Session-level monotonic toolset. | **DONE.** `Agent.stickyTools()` keeps `recent`/`activated` in a session-keyed record (`toolSticky`), monotonic within a session (freezes at `STICKY_RECENT_TOOLS_MAX` instead of evicting) and reset on session switch, so the *cross-session leak* is closed as well as the per-turn drift. Remaining (deferred): the call-site inconsistency where the stream/task/risk paths do not pass `extraRecentToolNames`, and `Mask, Don't Remove` decode-time placeholders (not applicable to closed APIs). |
 | O2 | **Reported usage as the single source of truth (RC6).** | **PARTIAL — calibration only.** `calibrateTokenCounter(response.usage.inputTokens)` is now wired on 8 paths, and `extractCacheReadTokens()` already parses DeepSeek's `prompt_cache_hit_tokens` **and** OpenAI/OpenRouter `prompt_tokens_details.cached_tokens`, feeding `cacheHitRateWindow` (reported-only denominator). Still open: using reported tokens to *drive* the budget/water level and marking it `src=reported\|estimated`. Deferred per Owner's call — do DeepSeek-first if pursued. |
-| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size + lifecycle).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. Follow-up ([MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) §2): the cap alone was not enough — entry count/TTL/single-writer were missing, so a real notebook reached 26 entries / 33 KB and an 18-day-old triage decision was re-injected as current fact. Now: single write path (`Agent.writeNotebookEntry`), per-tier TTL, cross-tier entry cap, normalize-on-load, deterministic ordering, and inline truncation instead of whole-entry omission. |
+| O3 | **`## Notebook` size (RC3).** Largest single tail section (mean 9 163 chars, 41 % of tail). | **DONE (size + lifecycle).** Added a TOTAL cap (`NOTEBOOK_PROMPT_MAX_CHARS = 6000`) on top of the per-entry cap, keeping the most recent entries and naming any omitted keys — so the block can no longer dominate the tail. Relevance ranking deliberately NOT applied: the notebook is the agent's own workspace, and dropping a note it wrote itself is a correctness risk, not a token win. Follow-up ([memory-system.md](./memory-system.md) §2): the cap alone was not enough — entry count/TTL/single-writer were missing, so a real notebook reached 26 entries / 33 KB and an 18-day-old triage decision was re-injected as current fact. Now: single write path (`Agent.writeNotebookEntry`), per-tier TTL, cross-tier entry cap, normalize-on-load, deterministic ordering, and inline truncation instead of whole-entry omission. |
 | O4 | **`filterSkillsByRelevance` dead code.** | **DONE.** Deleted. It was never called, and the every-turn `## Available Skills` table is ORG context (scope O) — byte-stable for the whole org — so ranking it per query would convert a shared cached block into a per-call one. Rationale recorded in-code. |
 
 **Evidence provenance.** All measured figures come from
@@ -957,7 +957,7 @@ All tool calls within a single LLM response are executed **in parallel** (`Promi
 
 **Write serialisation under concurrency.** When the agent runs a concurrent worker pool,
 state-mutating tool calls are routed through an agent-level FIFO **write lock**
-(`Agent.withToolWriteLock`, see [CONCURRENT-PROCESSING.md](./CONCURRENT-PROCESSING.md)) so
+(`Agent.withToolWriteLock`, see [concurrent-processing.md](./concurrent-processing.md)) so
 two workers cannot mutate shared state at the same instant. Read-only tools are not
 blocked; the lock is released even when the wrapped call throws. Note this serialises a
 *single tool call*, not an entire multi-step flow — see the known-limitations section of
@@ -1123,7 +1123,7 @@ Called via `handleMessage(prompt, undefined, undefined, { sessionId: 'sys_<agent
 previous turn's context usage crossed a threshold (~75%) and this session has not flushed
 yet, run `memoryFlush` once (deduplicated per session; the flush itself uses an independent
 `sys_` session so it cannot recurse into another flush). See the memory-flush spec in
-[MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) for the authoritative behavior, invariants, and
+[memory-system.md](./memory-system.md) for the authoritative behavior, invariants, and
 tests. Status: implemented — `maybeMemoryFlushPreflight()` is wired into the three main turn paths
 (`handleMessage`, `handleMessageStream`, and task execution in `agent.ts`), deduplicated per session.
 
@@ -1365,9 +1365,9 @@ For Claude Opus 4.x and Sonnet 4.x models, Anthropic's server-side `compact_2026
 
 | Document | Relationship |
 |----------|-------------|
-| [STATE-MACHINES.md](./STATE-MACHINES.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
-| [MEMORY-SYSTEM.md](./MEMORY-SYSTEM.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
-| [COGNITIVE-ARCHITECTURE.md](./COGNITIVE-ARCHITECTURE.md) | Deterministic context assembly (§3); CPP and its depth levels removed |
+| [state-machines.md](./state-machines.md) | Task state transitions trigger different LLM call paths (§5.2 task execution, §5.3 heartbeat review) |
+| [memory-system.md](./memory-system.md) | Notebook + `knowledge.md` layers (`state.md` retired 2026-09-16); `## Your Knowledge` and `## Notebook` in prompts; consolidation (§5.6-5.8) |
+| [cognitive-architecture.md](./cognitive-architecture.md) | Deterministic context assembly (§3); CPP and its depth levels removed |
 | `packages/core/src/agent.ts` | Implementation of all 8 LLM call scenarios and 4 harness variants |
 | `packages/core/src/context-engine.ts` | `buildSystemPrompt()` and `prepareMessages()` implementation; SLOT fixed segment, volatile tail, watermark |
 | `packages/core/src/context-slot.ts` | SLOT segment model: `SlotEntry` / `SlotsStore` / `buildSlotSegment()` — the never-compacted anchors (§3.7) |

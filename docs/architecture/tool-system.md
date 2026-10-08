@@ -6,11 +6,11 @@ How Markus decides **which tools an agent can see**, how tool results are shaped
 returned, how the **tool-execution loop** drives the model until it is done, and how
 **subagents** are spawned with budget guardrails.
 
-Related docs: [AGENT-RUNTIME.md](./AGENT-RUNTIME.md) (SSOT for packs/budgets),
-[PROMPT-ENGINEERING.md](./PROMPT-ENGINEERING.md) (how tool definitions and
-results are packed into context), [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) (the attention
-loop that owns each turn), [STREAMING-AND-REATTACH.md](./STREAMING-AND-REATTACH.md) (how
-tool progress and tool errors reach the client), [CODING-TOOLS.md](../guides/CODING-TOOLS.md)
+Related docs: [agent-runtime.md](./agent-runtime.md) (SSOT for packs/budgets),
+[prompt-engineering.md](./prompt-engineering.md) (how tool definitions and
+results are packed into context), [mailbox-system.md](./mailbox-system.md) (the attention
+loop that owns each turn), [streaming-and-reattach.md](./streaming-and-reattach.md) (how
+tool progress and tool errors reach the client), [coding-tools.md](../guides/coding-tools.md)
 (external coding CLIs, a distinct concern from the general tool loop).
 
 ---
@@ -20,7 +20,7 @@ tool progress and tool errors reach the client), [CODING-TOOLS.md](../guides/COD
 Not every registered tool is sent to the model on every call. Sending the full registry
 would inflate the system/tool prefix (token tax) and dilute the model's attention. The
 [`ToolSelector`](../../packages/core/src/tool-selector.ts) chooses a working set per call
-**within a Scenario Capability Pack** ([AGENT-RUNTIME.md](./AGENT-RUNTIME.md) §2).
+**within a Scenario Capability Pack** ([agent-runtime.md](./agent-runtime.md) §2).
 
 ### 1.0 Spec: Scenario Capability Packs
 
@@ -209,7 +209,7 @@ Shared safety behavior across paths:
   `needsMaxTokensContinuation(response)` (a `max_tokens` cutoff without tool calls needs a
   "continue" nudge). Error classification (`isToolErrorResult`) was already shared, and loop
   termination now reads the typed `end_turn` signal (`endTurnRequested`) instead of a text
-  completion marker — see [MAILBOX-SYSTEM.md](./MAILBOX-SYSTEM.md) "Completion protocol".
+  completion marker — see [mailbox-system.md](./mailbox-system.md) "Completion protocol".
 - **Invariants**: all paths produce identical decisions for the same
   (tool result, finishReason, `end_turn`) inputs; existing loop/casing/`max_tokens` behavior is
   preserved (regression-guarded by the agent-loop tests). The helpers are pure and always
