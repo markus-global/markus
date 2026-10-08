@@ -65,6 +65,7 @@ Stored under the `agent` section of `~/.markus/markus.json` and surfaced in
 |-------|------|---------|---------|
 | `enabled` | boolean | **`true`** | Master switch. `false` forces serial mode (worker count 1). |
 | `maxWorkers` | number | **`3`** | Worker count, clamped to `[1, 10]`. `1` = serial. |
+| `conflictPolicy` | `'auto' \| 'report'` | `'auto'` | Behaviour when a worker meets a locked entity. |
 
 ### Unified concurrency gate (one knob, two limits)
 
@@ -93,7 +94,6 @@ Consequences:
 - **Turning concurrency off really turns it off.** Previously the live-update path only
   applied `enabled: true`, so unchecking the switch left running agents at their old
   worker count until a restart.
-| `conflictPolicy` | `'auto' \| 'report'` | `'auto'` | Behaviour when a worker meets a locked entity. |
 
 **Default-value note.** The runtime default is *enabled with 3 workers*. The type
 declaration (`packages/shared/src/types/agent.ts` → `AgentConcurrentConfig`), the
