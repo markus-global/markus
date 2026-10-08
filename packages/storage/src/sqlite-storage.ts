@@ -499,7 +499,8 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  subject TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
@@ -728,6 +729,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'claimed_by', sql: "ALTER TABLE mailbox_items ADD COLUMN claimed_by TEXT" },
     { table: 'mailbox_items', column: 'lease_until', sql: "ALTER TABLE mailbox_items ADD COLUMN lease_until TEXT" },
     { table: 'mailbox_items', column: 'dedup_key', sql: "ALTER TABLE mailbox_items ADD COLUMN dedup_key TEXT" },
+    { table: 'mailbox_items', column: 'subject', sql: "ALTER TABLE mailbox_items ADD COLUMN subject TEXT" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
@@ -2414,6 +2416,31 @@ export class SqliteChatSessionRepo {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * 【P5】按**内存会话 id** 反查 DB 会话 id（cs_*）。
+   *
+   * 为什么需要：`callback_result`（`background_exec` 完成、a2a in_session 回复）回到发起它的
+   * 那一轮时，只知道**内存会话 id**（`sess_*`）。要把回复写回正确的对话、并把「后台任务完成」
+   * 气泡推给该对话，必须先把内存会话映射回 cs_*。绑定由
+   * `updateSessionMetadata(dbSessionId, { memorySessionId })` 写入（org-manager 的
+   * `persistMemorySessionBinding`）。
+   *
+   * 纯**读**：不新增列、不改 schema、不动存量数据；旧会话没有该元数据时返回 null
+   * （调用方宁可缺失也不落错会话）。
+   */
+  findSessionIdByMemorySessionId(agentId: string, memorySessionId: string): string | null {
+    if (!agentId || !memorySessionId) return null;
+    const row = this.db
+      .prepare(
+        `SELECT id FROM chat_sessions
+          WHERE agent_id = ? AND metadata IS NOT NULL
+            AND json_extract(metadata, '$.memorySessionId') = ?
+          ORDER BY last_message_at DESC LIMIT 1`,
+      )
+      .get(agentId, memorySessionId) as { id: string } | undefined;
+    return row?.id ?? null;
   }
 
   getMessages(sessionId: string, limit = 50, before?: string) {
@@ -4470,6 +4497,8 @@ export interface MailboxItemRow {
   leaseUntil?: string | null;
   /** P0：幂等键（无幂等语义的项为 null）。 */
   dedupKey?: string | null;
+  /** P3 一等主体（JSON 反序列化后的对象；旧行 NULL → undefined）。 */
+  subject?: Record<string, unknown> | null;
 }
 
 /**
@@ -4510,17 +4539,20 @@ export class SqliteMailboxRepo {
     queuedAt: string;
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
+    /** P3 一等主体（JSON）；缺省 / undefined 落库为 NULL，读取方回退到派生逻辑。 */
+    subject?: Record<string, unknown>;
   }): boolean {
     const res = this.db
       .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key, subject)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, toJson(item.payload), toJson(item.metadata ?? {}),
         item.queuedAt, item.dedupKey ?? null,
+        item.subject ? toJson(item.subject) : null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
   }
@@ -4809,6 +4841,7 @@ export class SqliteMailboxRepo {
       claimedBy: (r['claimed_by'] as string | null) ?? null,
       leaseUntil: (r['lease_until'] as string | null) ?? null,
       dedupKey: (r['dedup_key'] as string | null) ?? null,
+      subject: r['subject'] ? (fromJson<Record<string, unknown>>(r['subject'] as string) ?? undefined) : undefined,
     };
   }
 }

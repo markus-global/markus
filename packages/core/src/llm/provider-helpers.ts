@@ -62,6 +62,23 @@ export const FINISH_REASON_MAP: Record<string, LLMResponse['finishReason']> = {
   content_filter: 'content_filter',
 };
 
+/**
+ * 诚实化映射：把上游 finish_reason 归一成内部语义，**未知/缺失一律 → `incomplete`**。
+ *
+ * 为什么不能 `?? 'end_turn'`（旧实现）：一个「没有任何 finish_reason 就断掉」的流
+ * （网络中断、网关截断、SSE 提前关闭）会被静默当成「模型正常说完了」——系统再也
+ * 分不清「真的完成」和「流断了」，于是半截回复被当完整回复展示给用户。
+ * `incomplete` 是明确的「turn 未结束」信号，触发同一会话有界续跑，而非收尾。
+ */
+export function mapUpstreamFinishReason(
+  raw: string | undefined | null,
+): LLMResponse['finishReason'] {
+  if (raw === undefined || raw === null) return 'incomplete';
+  const key = String(raw);
+  if (key === '') return 'incomplete';
+  return FINISH_REASON_MAP[key] ?? 'incomplete';
+}
+
 // ---------------------------------------------------------------------------
 // Reasoning extraction (OpenRouter returns several shapes)
 // ---------------------------------------------------------------------------
@@ -435,7 +452,7 @@ export function parseOpenAICompatResponse(
   }));
 
   const usage = normalizeOpenAIUsage(data.usage as Record<string, number> | undefined);
-  let finishReason = FINISH_REASON_MAP[String(choice.finish_reason ?? 'stop')] ?? 'end_turn';
+  let finishReason = mapUpstreamFinishReason(choice.finish_reason as string | undefined | null);
 
   // Mixed-output hygiene: even when structured tool_calls exist, the body may
   // still carry plaintext `<invoke>` markup (text-emitted tool calls). Always
@@ -510,7 +527,7 @@ export function createSSEAccumulator() {
     content: '',
     reasoningContent: '',
     toolCalls: new Map(),
-    finishReason: 'end_turn',
+    finishReason: 'incomplete',
     promptTokens: 0,
     completionTokens: 0,
     cachedTokens: 0,
@@ -561,7 +578,7 @@ export function createSSEAccumulator() {
           ? String(choice.finish_reason)
           : '';
       if (finishRaw) {
-        state.finishReason = FINISH_REASON_MAP[finishRaw] ?? 'end_turn';
+        state.finishReason = mapUpstreamFinishReason(finishRaw);
         handlers.onFinish?.(state.finishReason);
       }
 

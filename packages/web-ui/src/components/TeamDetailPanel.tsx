@@ -286,7 +286,7 @@ export function TeamDetailPanel({
                 // Same resolver as L1 + the chat header — a stream can outlive
                 // `agent.status === 'working'`, and three local derivations is
                 // exactly how the three panels drifted apart.
-                const statusColor = resolveAgentStatus(a.status, chatStore.isAgentStreaming(a.id)).dotClass;
+                const statusColor = resolveAgentStatus(a.status, chatStore.isAgentStreaming(a.id), (a as { isProcessing?: boolean }).isProcessing).dotClass;
 
                 return (
                   <button

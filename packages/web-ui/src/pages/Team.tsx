@@ -88,7 +88,7 @@ import {
 } from './ChatHelpers.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
 import {
-  NotificationBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
+  NotificationBadge, BackgroundTaskBadge, ChatAgentLink, AvatarPopover, MessageActions, RememberModal,
   AgentMessageBody, segmentsToStreamEntries, friendlyAgentError, isMarkusCreditError, dispatchCreditNotification,
 } from './ChatComponents.tsx';
 export type { MsgSegment };
@@ -2745,6 +2745,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               } : {}),
               ...(!isActivity && meta.taskId ? { taskId: meta.taskId as string } : {}),
               ...(!isActivity && meta.requirementId ? { requirementId: meta.requirementId as string } : {}),
+              // 【P5】无发起方的回合（callback_result）落库后主动推来 —— 带 provenance 标记。
+              ...(meta.origin ? { isBackgroundTask: true, origin: meta.origin as string } : {}),
             }),
       };
 
@@ -3882,7 +3884,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, chatStore.isAgentStreaming(agent.id)).dotClass}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, chatStore.isAgentStreaming(agent.id), (agent as { isProcessing?: boolean }).isProcessing).dotClass}`} />
                         )}
                       </button>
                     );
@@ -4806,6 +4808,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {msg.isNotification && (
                         <NotificationBadge priority={msg.notifyPriority} />
                       )}
+                      {msg.isBackgroundTask && <BackgroundTaskBadge />}
                     </div>
                     {showActions && !previewMode && (
                       <div className={`transition-opacity ${msg.isStopped || msg.isError || msg.emptyReply || isMobile ? 'opacity-100' : 'opacity-0 group-hover/msg:opacity-100'}`}>
@@ -5368,7 +5371,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   // agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部说空闲」。这里统一走
   // resolveAgentStatus，把本地流式标记也算进去——头部与侧栏从此同一个判据。
   const streamingHere = useAgentStreaming(agent.id);
-  const status = resolveAgentStatus(agent.status, streamingHere || !!streamActive);
+  const status = resolveAgentStatus(agent.status, streamingHere || !!streamActive, (agent as { isProcessing?: boolean }).isProcessing);
   const isWorking = status.tone === 'busy';
   const isError = status.tone === 'danger';
   // 未在运行（offline / paused）：不能拿它去展示「当前活动」。

@@ -1694,6 +1694,8 @@ async function startServerCore(
                 metadata: persistableMetadata,
                 queuedAt: item.queuedAt,
                 dedupKey,
+                // P3：一等主体随行落库（旧行 NULL → 读取方回退到派生）。
+                subject: item.subject as unknown as Record<string, unknown> | undefined,
               });
               if (!inserted) {
                 // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
@@ -1723,6 +1725,7 @@ async function startServerCore(
               sourceType: r.sourceType,
               priority: r.priority,
               status: r.status as 'queued',
+              subject: (r as { subject?: unknown }).subject ?? undefined,
               payload: r.payload,
               metadata: r.metadata,
               queuedAt: r.queuedAt,
@@ -1741,6 +1744,7 @@ async function startServerCore(
               sourceType: r.sourceType,
               priority: r.priority,
               status: r.status as 'deferred',
+              subject: (r as { subject?: unknown }).subject ?? undefined,
               payload: r.payload,
               metadata: r.metadata,
               queuedAt: r.queuedAt,

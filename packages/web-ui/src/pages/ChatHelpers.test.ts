@@ -754,3 +754,41 @@ describe('alignStreamedAgentId', () => {
   });
 });
 
+/**
+ * 【P5】后台任务完成（callback_result）的回复以「同形 + provenance 标记」呈现：
+ * 它和普通回复同源同形态，但不是对用户刚问那句话的回答，故必须可辨识 —— 否则用户会误以为
+ * agent 在答他刚才的问题（因果混淆）。标记只认已知来源，未知 origin 不标记。
+ */
+describe('【P5】dbMsgToChat：后台任务回复的 provenance 标记', () => {
+  const base = {
+    id: 'cm_bg',
+    agentId: 'agt_1',
+    role: 'assistant',
+    content: 'background job finished',
+    createdAt: new Date().toISOString(),
+  };
+
+  it("metadata.origin === 'callback_result' → 标记为后台任务气泡（历史/刷新后仍成立）", () => {
+    const chat = dbMsgToChat({
+      ...base,
+      metadata: { origin: 'callback_result' },
+    } as unknown as ChatMessageInfo);
+    expect(chat.isBackgroundTask).toBe(true);
+    expect(chat.origin).toBe('callback_result');
+  });
+
+  it('普通回复（无 origin）→ 不得被误标', () => {
+    const chat = dbMsgToChat({ ...base, metadata: {} } as unknown as ChatMessageInfo);
+    expect(chat.isBackgroundTask).toBeUndefined();
+    expect(chat.origin).toBeUndefined();
+  });
+
+  it('未知 origin → 不标记（只认已知来源，避免把未知来源当成后台任务）', () => {
+    const chat = dbMsgToChat({
+      ...base,
+      metadata: { origin: 'something_else' },
+    } as unknown as ChatMessageInfo);
+    expect(chat.isBackgroundTask).toBeUndefined();
+  });
+});
+
