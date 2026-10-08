@@ -10,6 +10,7 @@ import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
 import { openExternal } from '../hooks/useElectron.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import { UserInputModal } from './UserInputModal.tsx';
+import { timeAgo } from '../lib/timeAgo.ts';
 
 /** A request_user_input carries an explicit multi-question payload. */
 function isUserInputApproval(a: ApprovalInfo): boolean {
@@ -61,16 +62,6 @@ const TYPE_COLOR: Record<string, string> = {
   group_message: 'text-brand-500',
   system: 'text-fg-tertiary',
 };
-
-function timeAgo(iso: string, t: TFunction): string {
-  const diff = Date.now() - new Date(iso).getTime();
-  const mins = Math.floor(diff / 60000);
-  if (mins < 1) return t('common:time.now');
-  if (mins < 60) return t('common:time.minutesAgo', { count: mins });
-  const hrs = Math.floor(mins / 60);
-  if (hrs < 24) return t('common:time.hoursAgo', { count: hrs });
-  return t('common:time.daysAgo', { count: Math.floor(hrs / 24) });
-}
 
 const TEMPLATE_UPDATES_ACK_KEY = 'markus:template-updates-ack';
 

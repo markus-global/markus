@@ -1169,7 +1169,7 @@ Dashboard 重设计；Markdown 本地图片渲染；Midnight/Mono 主题替换�
 ### Refactoring
 
 - **记忆系统 Tulving 三层分类重构** — 基于 Tulving 认知分类重新设计记忆架构（Semantic/Episodic/Procedural），在现有 MemoryStore 上标注分类层级；新增 memory-store.test.ts（32 tests）；清理废弃的 EnhancedMemorySystem + 双重存储代码
-- **文档全面对齐** — MEMORY-SYSTEM.md 全面重写（553→235 行，四层→三层）；ARCHITECTURE.md / MAILBOX-SYSTEM.md / PROMPT-ENGINEERING.md / README 同步更新术语
+- **文档全面对齐** — memory-system.md 全面重写（553→235 行，四层→三层）；architecture.md / mailbox-system.md / prompt-engineering.md / README 同步更新术语
 
 ### Stats
 
@@ -1399,7 +1399,7 @@ Markdown 文件路径可点击预览；MarkdownMessage 拷贝菜单；多模态�
 - 日 token 预算强制（maxTokensPerDay）+ Agent 自动暂停
 - DEFAULT_MAX_TOOL_ITERATIONS 从 Infinity 改为 200，heartbeat 上限 30
 - 委派上下文（notes / acceptanceCriteria / deadline）透传任务创建
-- 新增 COGNITIVE-ARCHITECTURE.md 文档
+- 新增 cognitive-architecture.md 文档
 
 ### Stats
 

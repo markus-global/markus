@@ -1,6 +1,6 @@
 /**
  * Scenario Capability Packs — Context Surface tool/prompt budgets.
- * Spec: docs/AGENT-RUNTIME.md §2–§5
+ * Spec: docs/architecture/agent-runtime.md §2–§5
  */
 import {
   TOOL_DEF_BUDGET_REFLEX,

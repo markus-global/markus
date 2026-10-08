@@ -25,6 +25,7 @@ asarUnpack:
   - dist/splash.html
   - dist/icon.png
   - dist/templates/**
+  - dist/docs/**
   - dist/markus-browser-extension.zip
   - dist/data/**
   - node_modules/node-pty/**/*

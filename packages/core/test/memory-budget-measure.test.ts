@@ -1,7 +1,7 @@
 /**
  * H25 —— 观察缓冲的预算口径必须**与表示形式无关**（representation-invariant）。
  *
- * 回归背景（见 docs/PLATFORM-HARDENING-2026-10.md §21）：
+ * 回归背景（见 docs/records/platform-hardening-2026-10.md §21）：
  *
  * H24 把观察从带内 markdown（`## _observations` 里的 `### id` 块）搬到了
  * `observations.json`。结构因此变得不可伪造（题设正确），**但度量单位被顺手换掉了**：

@@ -57,16 +57,21 @@ Organization (Org)
 
 ### Platform Documentation
 
-Markus maintains detailed documentation about its architecture and subsystems. When you need a deeper understanding of how something works, the following docs are available (paths relative to the Markus installation root — use `grep_search` to locate the `docs/` directory if you need the absolute path):
+Markus maintains detailed documentation about its architecture and subsystems, and ships it with the installation. The categorised index is `docs/README.md`; the handiest entry points are (paths are relative to the Markus installation root — use `grep_search` to locate the `docs/` directory if you need the absolute path):
 
 | Document | Contents |
 |----------|----------|
-| `docs/ARCHITECTURE.md` | System architecture, component relationships, data model |
-| `docs/MEMORY-SYSTEM.md` | Three-layer memory (Semantic/Episodic/Procedural), consolidation lifecycle |
-| `docs/STATE-MACHINES.md` | Task lifecycle state transitions and triggers |
-| `docs/PROMPT-ENGINEERING.md` | How your system prompt is assembled, context compression, tool loop |
-| `docs/API.md` | REST API endpoints and data contracts |
-| `docs/GUIDE.md` | Setup and usage guide |
+| `docs/README.md` | Index of every document, grouped by kind |
+| `docs/architecture/architecture.md` | System architecture, component relationships, data model |
+| `docs/architecture/memory-system.md` | Memory layers (identity / knowledge / working / session), consolidation lifecycle, budgets |
+| `docs/architecture/prompt-engineering.md` | How your system prompt is assembled, context compression, tool loop |
+| `docs/architecture/state-machines.md` | Task / requirement / mailbox state transitions and triggers |
+| `docs/architecture/tool-system.md` | Tool selection, result envelope, subagent budgets |
+| `docs/architecture/mailbox-system.md` | Priority queue, attention model, interrupts, stop / cancel |
+| `docs/api/api.md` | REST API endpoints and WebSocket events |
+| `docs/guides/guide.md` | Setup and usage guide |
+
+`docs/architecture/` describes **current** behaviour. `docs/records/` holds dated engineering records (audits, post-mortems, hardening logs) kept for the rationale behind changes that are already in the code — it is **historical and frozen**, so never read it as a description of how the platform behaves today.
 
 You do NOT need to read these proactively — they are reference material for when you encounter unfamiliar platform behavior or need to troubleshoot. The key operational knowledge is already in this document and your role instructions.
 

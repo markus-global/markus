@@ -2388,7 +2388,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     } catch { /* ignore */ }
   }, [agentId, mailbox, catFilter, statusFilter]);
 
-  // 「运行与注意力」stale processing 手动恢复入口（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 步骤 2c）：
+  // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
   // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
   // 不再只能重启。租约感知，不误杀其它实例/在飞项。
   const recoverStaleMailbox = useCallback(async () => {

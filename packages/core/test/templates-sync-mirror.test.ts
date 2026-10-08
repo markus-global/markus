@@ -77,6 +77,39 @@ describe('§26 syncDir — 模板拷贝必须镜像', () => {
   });
 });
 
+describe('§27 syncDir — 可选 ignore（随包发布的 docs 要排除 README 配图）', () => {
+  it('忽略的顶层条目不会被拷到目标，其余照常', () => {
+    const root = mkTmp();
+    const src = path.join(root, 'src');
+    const dest = path.join(root, 'dest');
+    fs.mkdirSync(path.join(src, 'images'), { recursive: true });
+    fs.mkdirSync(path.join(src, 'architecture'), { recursive: true });
+    fs.writeFileSync(path.join(src, 'images', 'preview.gif'), 'GIF', 'utf8');
+    fs.writeFileSync(path.join(src, 'architecture', 'architecture.md'), 'A', 'utf8');
+    fs.writeFileSync(path.join(src, 'README.md'), 'R', 'utf8');
+
+    syncDir(src, dest, { ignore: ['images'] });
+
+    expect(fs.existsSync(path.join(dest, 'README.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'architecture', 'architecture.md'))).toBe(true);
+    expect(fs.existsSync(path.join(dest, 'images'))).toBe(false);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+
+  it('不传 ignore 时行为与旧版一致（全量镜像）', () => {
+    const root = mkTmp();
+    const src = path.join(root, 'src');
+    const dest = path.join(root, 'dest');
+    fs.mkdirSync(path.join(src, 'images'), { recursive: true });
+    fs.writeFileSync(path.join(src, 'images', 'x.gif'), 'GIF', 'utf8');
+
+    syncDir(src, dest);
+
+    expect(fs.existsSync(path.join(dest, 'images', 'x.gif'))).toBe(true);
+    fs.rmSync(root, { recursive: true, force: true });
+  });
+});
+
 describe('§26 结构闸门 — 只能有一种模板拷贝方式', () => {
   const cliBuild = fs.readFileSync(path.join(repoRoot, 'packages/cli/build.mjs'), 'utf8');
   const desktopBuild = fs.readFileSync(path.join(repoRoot, 'packages/desktop/build.mjs'), 'utf8');

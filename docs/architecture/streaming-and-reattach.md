@@ -1,0 +1,193 @@
+# Streaming & Reattach
+
+> Last updated: 2026-09
+
+How Markus streams an agent turn to the browser over SSE, how a **client refresh or
+navigation reattaches** to an in-flight generation without killing it, and how the agent
+surfaces **structured lifecycle events** (including failures) to the client.
+
+Related docs: [mailbox-system.md](./mailbox-system.md) (the attention loop and interrupt/
+preempt semantics that a stream must honor), [tool-system.md](./tool-system.md) (tool
+progress and tool-result events), [state-machines.md](./state-machines.md) (mailbox-item
+terminal states, including "completed without marker").
+
+---
+
+## 1. Components
+
+| Component | File | Responsibility |
+|-----------|------|----------------|
+| `SSEHandler` | [`org-manager/src/sse-handler.ts`](../../packages/org-manager/src/sse-handler.ts) | Owns one HTTP SSE response; drives `agent.sendMessageStream`; buffers + persists |
+| `SSEBuffer` | `org-manager/src/sse-*` | Batches writes, heartbeats the connection |
+| `ActiveStreamRegistry` / `ActiveStreamSession` | [`org-manager/src/active-stream-registry.ts`](../../packages/org-manager/src/active-stream-registry.ts) | Tracks in-flight generations for reattach; ring buffer + UI snapshot |
+| `cancelToken` | in `SSEHandler` | `{ cancelled, userStopped }` — the single source of truth for stopping the agent |
+
+---
+
+## 2. Soft-Disconnect (refresh does not kill the agent)
+
+When the SSE client disconnects (`SSEBuffer.onClose`) **before** completion:
+
+1. `sseDisconnected = true`; partial output is persisted.
+2. The agent is **not** cancelled — writers detach, the agent keeps running, and events
+   keep accumulating in the `ActiveStreamSession` ring buffer.
+3. A **force-stop grace timer** (`SSE_DISCONNECT_FORCE_STOP_MS`) starts. If the turn is
+   still running when it fires and the user did not explicitly stop, the agent is
+   force-stopped (`cancelToken.cancelled = userStopped = true`, stream cancelled).
+
+Only an explicit user **Stop** or the grace-timer force-stop sets `cancelToken`. This is
+the key difference from naive SSE agents, which abort the model the moment the socket drops.
+
+---
+
+## 3. Reattach
+
+A generation is registered per `(agentId, sessionId)`. On reconnect the client calls the
+reattach endpoint and `ActiveStreamSession.attach(res, afterSeq)` replays state:
+
+1. Emit a `reattach` event (`streamId`, `lastSeq`, `status`, `hasSnapshot`).
+2. If a **UI snapshot** exists and this is a full rebuild (`afterSeq <= 0`), emit a
+   `snapshot` event (authoritative `content` + tool `segments` + `thinking`) — this is the
+   correct prior UI even if the ring dropped early events.
+3. Live-tail subsequent events; on terminal (`done` / `error`) end the response.
+
+Finished streams are retained for `DONE_TTL_MS` (90s) so a late refresh still drains the
+terminal event. Status probes treat `streaming | done(<TTL) | error(<TTL)` as attachable.
+
+### 3.1 Ring buffer & the snapshot invariant
+
+The ring is capped at `RING_CAP = 2500` events; older events are dropped. The UI snapshot
+exists precisely so a reattach does not depend on the (lossy) ring.
+
+- **Invariant**: after a reattach, the client's rendered state (text + tool cards) must be
+  reconstructable from `snapshot` + post-snapshot tail alone — never from ring replay of
+  early events (which may have been truncated).
+- **Client contract**: a reattaching client **must** consume the `snapshot` event when
+  `hasSnapshot` is true and treat it as authoritative, rather than replaying only ring
+  deltas.
+- **Testing** (`packages/org-manager/test/sse-buffer.test.ts` + registry tests): with a
+  ring overflow, reattach still yields complete tool/text UI via snapshot.
+- **Status**: implemented (snapshot); the client-contract assertion is the durable guard.
+
+---
+
+## 4. Structured Lifecycle Events
+
+The stream currently emits: `session_start`, `reattach`, `snapshot`, `text_delta`,
+tool progress events, and terminal `done` / `error`.
+
+### 4.1 Spec: surface incomplete / tool failure (P0)
+
+- **Behavior**: three currently near-silent conditions become **visible** structured
+  events (and activity-log entries), without changing retry semantics:
+  - a turn that produced nothing and exhausted its retries (or a user-interaction turn whose
+    reply was empty) → `incomplete`
+    (see [state-machines.md](./state-machines.md) mailbox-item terminal states),
+  - a tool returning a structured failure (`isToolErrorResult`) → `tool_error`,
+  - a `knowledge.md` write refused for exceeding its limits → surfaced (see
+    [memory-system.md](./memory-system.md) §8.8).
+- **Invariants**:
+  - Each condition is surfaced without being mistaken for success.
+  - No **additional** retries are triggered by making these visible (visibility only).
+- **Design rationale**: Hermes makes tool execution observable via callbacks; a failure or
+  an unfinished turn should never look like success to the user.
+- **Testing** (`packages/core/test/attention.test.ts` "A3:", `packages/core/test/tool-result.test.ts`
+  "B1:", `packages/core/test/memory-store.test.ts` "B1:"): the incomplete event fires exactly
+  once with no extra retry; tool-error and memory-refusal classification are covered.
+- **Status**: implemented, surfaced across layers (visibility only, no new retries):
+  - *incomplete* — `AttentionController.emitIncomplete` emits one `agent:incomplete` event on
+    the agent bus (empty-reply / max-retries terminals); see
+    [mailbox-system.md](./mailbox-system.md) and [state-machines.md](./state-machines.md).
+  - *tool failure* — the SSE handler marks the tool segment `status: 'error'` when
+    `event.success === false` and persists `success:false`, so a failed tool never renders as
+    a green result (`sse-handler.ts`).
+  - *MEMORY.md refusal* — `addLongTermMemory` returns `{ ok:false, reason }` and the memory
+    tools return a structured `{ status:'error', ok:false }` (recognized by
+    `isToolErrorResult`), see [memory-system.md](./memory-system.md).
+  - Remaining (roadmap): a *dedicated* SSE `incomplete` frame forwarded from the agent bus to
+    the client (today the bus event + activity log carry it; the streamed reply is still
+    delivered).
+
+### 4.2 Spec: interruptible streaming (P1)
+
+Streaming chat is human-facing and **non-preemptable by design** (a human is awaiting the
+reply; see the `isPreemptable = scenario !== 'chat'` rule and `agent-loop.test.ts`). B3
+narrows the gap without breaking that principle by distinguishing **revocation** from
+**preemption** at the stream yield point:
+
+- **Behavior**:
+  - **Explicit cancel** (the attention judge decides the new message *revokes* the work —
+    e.g. "stop / cancel that") → **abort the in-flight stream** via the `AbortController`
+    already threaded through `llmRouter.chatStream` and **drop** the item (`[cancelled]`).
+  - **Preempt** (a higher-priority item arrived, but the work is not revoked) → the interrupt
+    signal is **restored** so the higher-priority item runs immediately *after* the current
+    turn, rather than truncating the human's answer.
+  - The backstop-timeout path (A1 `cancelProcessing` → `cancelActiveStream`) also aborts an
+    in-flight stream, so a stuck stream is bounded.
+- **Invariants**:
+  - An explicit cancel aborts the in-flight model call promptly and drops the item.
+  - A preempt never silently truncates a waiting human's reply; it is serviced next.
+  - Cancel/abort reuses the shared token/`AbortController` infrastructure (no new mechanism).
+- **Design rationale**: Hermes favors interruptible API calls; Markus keeps human chat
+  responsive while still cutting work the user has explicitly revoked.
+- **Testing** (`packages/core/test/agent-loop.test.ts`, `attention.test.ts`): the
+  chat-non-preemptable mapping is retained; A1's `cancelProcessing` aborts the active stream.
+- **Status**: implemented (yield-point `cancel` → abort + `[cancelled]`; `preempt` → restore;
+  shared abort via `cancelActiveStream`).
+
+### 4.3 Spec: directed cancel under concurrency (Scheme B)
+
+Under concurrent processing ([concurrent-processing.md](./concurrent-processing.md)) a stop
+request can no longer target "the agent" — several workers may have in-flight streams. The
+cancel API is therefore **directed**:
+
+- `cancelActiveStream(target?)` accepts `target = { itemId?, sessionId? }`.
+- The HTTP/SSE caller has **no** `AsyncLocalStorage` context of its own, so it resolves the
+  owning worker via `AttentionController.findWorkerByItemId()` / `findWorkerBySessionId()`,
+  then runs the abort **inside that worker's workspace** via
+  `sessionWorkspaceStore.run(ws, () => cancelActiveStreamCore())`.
+- Frontend **Stop** and **Retry** always pass a stable `sessionId` target, so stopping a
+  stream in one session tab never aborts another tab's in-flight turn.
+
+- **Status**: implemented (`packages/core/test/attention-directed-cancel.test.ts`,
+  `agent-concurrent-activity.test.ts`). In serial mode `target` is optional and cancel falls
+  back to the instance-level stream token.
+
+---
+
+## 5. Client-Side Streaming Resilience
+
+How the **web frontend** consumes the stream and keeps a long-lived turn alive across
+flaky networks. (Long-lived audit → distilled design contract, 2026-09.)
+
+### 5.1 Consumption model
+
+- The client consumes the SSE stream via **`fetch` + `ReadableStream`** (not `EventSource`) —
+  this is what allows structured lifecycle events and controlled reconnection.
+- The server **must send a heartbeat frame every 15 s**; the client watchdog relies on it.
+
+### 5.2 Watchdog & dead-loop prevention
+
+- Client-side **idle watchdog default 60 s** (>4× the 15 s server heartbeat). If no bytes
+  arrive within the window, the client considers the stream stalled and tears down.
+- Combined with poll fallback so a stalled stream never looks like an infinite spinner.
+
+### 5.3 Reconnect & retry
+
+- **Exponential backoff reconnect** for disconnect + **25 s reconnect heartbeat** +
+  `since`-incremental resume (replay only what was missed).
+- **1.5 s reattach debounce** — bursts of navigation/refresh collapse into one reattach.
+- `pollForReply` backoff: **2 s → 8 s, 5 attempts** before falling back to an explicit
+  stop/retry path. This bounds worst-case waiting without hammering the server.
+
+### 5.4 Design invariants
+
+- A client refresh or a brief network blip **never kills the agent turn** (see §2).
+- Every long-lived request has a **bounded worst case** (watchdog + poll cap + backstop),
+  so no user-facing hang is unbounded.
+- Reattach always recovers state from **snapshot + tail**, never from lossy ring replay (§3.1).
+
+### 5.5 Remaining roadmap items
+
+- Provider single-timer consolidation; fallback-failure alerting; visible stall indicator
+  in the chat UI (when to show "still working" vs "connection lost").

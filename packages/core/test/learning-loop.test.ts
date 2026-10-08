@@ -10,7 +10,7 @@ import {
   shouldSuppressSkillDraft,
 } from '../src/learning-loop.js';
 
-describe('learning loop (LEARNING-LOOP.md)', () => {
+describe('learning loop (learning-loop.md)', () => {
   it('B-hook-skip-trivial: low tool count completed without rejection', () => {
     expect(
       shouldDistillTask({

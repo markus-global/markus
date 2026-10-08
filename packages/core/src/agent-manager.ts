@@ -1388,7 +1388,7 @@ export class AgentManager {
     // situational state" half of an old dual store that never got a write tool, and its
     // job is covered by the notebook's `system` tier. Not creating it keeps new agents
     // from inheriting a store nobody writes to.
-    // See docs/MEMORY-SYSTEM.md §10.2 (option A).
+    // See docs/architecture/memory-system.md §10.2 (option A).
     const sessionsDir = join(agentDataDir, 'sessions');
     const dailyLogsDir = join(agentDataDir, 'daily-logs');
     mkdirSync(sessionsDir, { recursive: true });
@@ -2223,7 +2223,7 @@ export class AgentManager {
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
           ah(id, req)
       );
     }
@@ -3098,7 +3098,7 @@ export class AgentManager {
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
           ah(id, req)
       );
     }
@@ -3317,13 +3317,13 @@ export class AgentManager {
   setApprovalHandler(
     handler: (
       agentId: string,
-      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }
+      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }
     ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;
     for (const [id, agent] of this.agents) {
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
           handler(id, req)
       );
     }

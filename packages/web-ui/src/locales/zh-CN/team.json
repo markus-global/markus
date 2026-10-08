@@ -235,6 +235,15 @@
     },
     "approvalHistory": "历史记录"
   },
+  "toolApproval": {
+    "defaultTitle": "工具执行需要审批",
+    "resolved": "已处理",
+    "lead": "在你批准或拒绝之前，Agent 会一直等待。",
+    "commandLabel": "命令",
+    "commentPlaceholder": "可选备注（例如拒绝的原因）…",
+    "bannerPrompt": "有工具执行等待你审批",
+    "bannerRespond": "去审批"
+  },
   "userInput": {
     "respond": "回复",
     "submit": "提交",
@@ -296,9 +305,13 @@
     "userInputPrompt_one": "有 {{count}} 个问题等待你回复",
     "userInputPrompt_other": "有 {{count}} 个问题等待你回复",
     "userInputRespond": "回复",
+    "toolApprovalPrompt": "有工具执行等待你审批",
+    "toolApprovalReview": "去审批",
     "notifyUserPrompt": "有一条来自智能体的通知待查看",
     "notifyUserView": "查看",
     "notifyUserGotIt": "知道了",
+    "notifyReviewProgress": "第 {{current}} / {{total}} 条",
+    "notifyReviewNext": "下一条 · 还剩 {{count}} 条",
     "viewProfileArrow": "查看资料 →",
     "viewAgentProfileArrow": "查看智能体资料 →",
     "viewMindArrow": "查看 Mind →",
@@ -447,6 +460,7 @@
     "findLoadEarlier": "加载更早的消息",
     "findLoadingEarlier": "正在加载…",
     "findServerResultsTitle": "全部历史",
+    "untitledSession": "未命名会话",
     "findFieldText": "正文",
     "findFieldThinking": "思考",
     "findFieldTool": "工具",

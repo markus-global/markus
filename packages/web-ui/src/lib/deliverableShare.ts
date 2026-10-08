@@ -2,7 +2,7 @@
  * Deliverable Sharing — 产出物分享到 Hub 的客户端封装（web-ui）。
  *
  * 本模块与 @markus/core 的 DeliverableShareService（客户端分享服务模块）保持同一
- * API 契约（见 docs/DELIVERABLE-SHARING-DESIGN.md 第 7.1 节）：
+ * API 契约（见 docs/design/deliverable-sharing.md 第 7.1 节）：
  *  - POST   /api/hub/deliverables/publish   上传并发布（JSON+base64）
  *  - GET    /api/hub/deliverables/status    查询分享状态
  *  - POST   /api/hub/deliverables/revoke    取消分享

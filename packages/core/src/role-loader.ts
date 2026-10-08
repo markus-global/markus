@@ -65,7 +65,7 @@ export class RoleLoader {
     const category = this.inferCategory(roleNameOrPath);
 
     // ROLE.md only — HANDBOOK.md is progressive (file_read), not always-on.
-    // Platform rules live in ContextEngine L0; see docs/AGENT-RUNTIME.md.
+    // Platform rules live in ContextEngine L0; see docs/architecture/agent-runtime.md.
     const systemPrompt = roleContent;
 
     return {

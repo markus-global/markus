@@ -5659,7 +5659,7 @@ export class APIServer {
     // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
     // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
     // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
-    // 对应 docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.3c 残余 → §2.6 步骤 2c。
+    // 对应 docs/records/message-stop-cancel-fix-plan.md §2.3c 残余 → §2.6 步骤 2c。
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
       try {
@@ -7281,7 +7281,7 @@ EXPLANATION_END`;
       const channel = url.searchParams.get('channel') ?? undefined;
       const scope = url.searchParams.get('scope') ?? 'all';
       const limit = Math.min(parseInt(url.searchParams.get('limit') ?? '30', 10), 100);
-      const results: { source: string; id: string; text: string; senderName?: string; channel?: string; sessionId?: string; agentId?: string; createdAt: string }[] = [];
+      const results: { source: string; id: string; text: string; senderName?: string; channel?: string; sessionId?: string; agentId?: string; sessionTitle?: string | null; createdAt: string }[] = [];
 
       if ((scope === 'all' || scope === 'channel') && this.storage?.channelMessageRepo) {
         const channelResults = this.storage.channelMessageRepo.searchMessages(query, channel, limit);
@@ -7305,6 +7305,9 @@ EXPLANATION_END`;
             text: r.content as string,
             sessionId: r.sessionId as string,
             agentId: r.sessionAgentId,
+            // Which conversation the hit belongs to — the result row is otherwise
+            // indistinguishable across session tabs.
+            sessionTitle: (r.sessionTitle as string | null) ?? null,
             createdAt: r.createdAt instanceof Date ? r.createdAt.toISOString() : String(r.createdAt),
           });
         }

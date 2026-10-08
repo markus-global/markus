@@ -1,7 +1,7 @@
 /**
  * H16 —— 会话压缩片段（conversation_fragment）必须与 Agent 自撰观察**结构性分离**。
  *
- * 回归背景（见 docs/PLATFORM-HARDENING-2026-10.md §12）：
+ * 回归背景（见 docs/records/platform-hardening-2026-10.md §12）：
  *
  *   `## _observations` 曾同时承载两类语义完全不同的东西：
  *     • Agent 自撰观察（memory_save）—— 草稿日志，dream 会整理；

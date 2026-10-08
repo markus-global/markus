@@ -64,7 +64,7 @@ export interface ChatStreamVolatileState {
   chatReplyTo: { id: string; sender: string; text: string } | null;
 }
 
-import type { ActiveSessionView } from '../lib/ConversationBufferManager.ts';
+import type { ActiveSessionView, WindowBounds } from '../lib/ConversationBufferManager.ts';
 
 /** Stable handles/refs passed once from Team.tsx. */
 export interface ChatStreamContext {
@@ -73,7 +73,7 @@ export interface ChatStreamContext {
   actBuffers: Map<string, unknown[]>;
   /** READ-ONLY view pointer. It has exactly one writer (`setActiveSession`), because
    *  that method also performs placeholder promotion — see H4 in
-   *  docs/PLATFORM-HARDENING-2026-10.md §3. */
+   *  docs/records/platform-hardening-2026-10.md §3. */
   activeSessionBuffer: ActiveSessionView;
   /** Read the messages rendered for a conversation (projection of the view pointer). */
   readConvMsgs: (k: string) => ChatMsg[] | undefined;
@@ -99,7 +99,6 @@ export interface ChatStreamContext {
   // Team-owned refs shared with non-stream code
   thinkingTimeoutRef: RefObject<ReturnType<typeof setTimeout> | null>;
   sessionSwitchSeqRef: RefObject<number>;
-  oldestMsgId: RefObject<string | null>;
   // Setters (stable)
   setSending: (b: boolean) => void;
   setActivities: (a: ActivityStep[]) => void;
@@ -113,7 +112,7 @@ export interface ChatStreamContext {
   setOpenSessionTabs: (u: (p: ChatSessionInfo[]) => ChatSessionInfo[]) => void;
   setSessions: (s: ChatSessionInfo[] | ((p: ChatSessionInfo[]) => ChatSessionInfo[])) => void;
   setLoadingChat: (b: boolean) => void;
-  setHasMore: (b: boolean) => void;
+  setWindowBounds: (bufferId: string, bounds: WindowBounds) => void;
   setThinkingAgents: (a: Array<{ id: string; name: string; avatarUrl?: string }> | ((p: Array<{ id: string; name: string; avatarUrl?: string }>) => Array<{ id: string; name: string; avatarUrl?: string }>)) => void;
   // Helpers
   makeConvKey: (m: ChatMode, a: string, c: string, d?: string) => string;
@@ -185,10 +184,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     beginStream, endStream, abortStream,
     clearStreamSession, setStreamSession, getStreamSession, setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
-    thinkingTimeoutRef, sessionSwitchSeqRef, oldestMsgId,
+    thinkingTimeoutRef, sessionSwitchSeqRef,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
     setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
-    setOpenSessionTabs, setSessions, setLoadingChat, setHasMore, setThinkingAgents,
+    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds, setThinkingAgents,
     makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
   } = ctx;
   const { t } = ctx;
@@ -213,8 +212,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
         };
       });
-      setHasMore(more);
-      oldestMsgId.current = oldestCursor;
+      // 边界写进**这个会话自己的 buffer 槽**（`bufferId = sessionId`），而不是某个全局值 ——
+      // 于是别的会话晚到的加载不可能改写这个会话的窗口边界（第六轮报障根因）。
+      setWindowBounds(sessionId, { hasMore: more, oldestCursor });
       return count;
     } finally {
       // Only the latest session switch may clear the spinner — an older tab

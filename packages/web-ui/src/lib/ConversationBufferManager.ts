@@ -65,6 +65,17 @@ export interface ActivityWriteResult {
   newActivities?: ActivityStep[];
 }
 
+/**
+ * 一个会话**窗口的边界**：还能往前翻吗（`hasMore`）、从哪儿翻（`oldestCursor`）。
+ *
+ * 它与窗口的**内容**（`buffers[id]`）是同一个事实的两半，所以必须**同一个 key**。
+ */
+export interface WindowBounds {
+  hasMore: boolean;
+  /** 下一页游标 = 该 buffer 已加载的最早一条消息的时间；null = 没有更早的了。 */
+  oldestCursor: string | null;
+}
+
 export function makeConvKey(mode: ChatMode, agent: string, channel: string, dmUserId?: string): string {
   return mode === 'channel' ? `ch:${channel}` :
     mode === 'dm' ? `dm:${dmUserId ?? ''}` :
@@ -93,6 +104,33 @@ export class ConversationBufferManager {
   get activeSessions(): ActiveSessionView { return this.viewReader; }
   readonly actBuffers = new Map<string, ActivityStep[]>();
   readonly sessionTabs = new Map<string, ChatSessionInfo[]>();
+
+  /**
+   * 窗口边界：`bufferId → { hasMore, oldestCursor }`。
+   *
+   * 为什么**必须**和消息存在同一个 key 上：一个会话窗口由「内容」与「边界」两半构成
+   * （内容 = `buffers[id]`，边界 = 还能往前翻吗 / 从哪儿翻）。旧实现把内容放在这里
+   * （per-buffer），却把边界放在 Team.tsx 的**全局** ref 里 —— 于是**任何**会话的加载都会
+   * 覆盖当前视图的边界。用户报障「跨会话搜索，第一次正常，多试几次之后跳错 / 直接显示
+   * 该会话最新消息」正是它：换 Agent 的 effect 会为「上次那个会话」发一次背景 soft-refresh，
+   * 它与导航自己的加载**并发**，谁最后完成谁写边界；导航要跳的那条目标消息还没加载进来，
+   * `loadMore` 的闸门却读到别人的 `hasMore=false` / `oldestCursor=null` → 一次都不翻 →
+   * 判定「目标加载失败」→ 回到底部。
+   *
+   * 铁律：**边界的唯一写者是「加载这个 buffer 的那个请求」**；读侧（翻页闸门）只读这里，
+   * 绝不读 React 派生值（见第五轮的教训）。切视图不需要"重置边界"—— 每个 buffer 自带边界。
+   */
+  private readonly windowBounds = new Map<string, WindowBounds>();
+
+  /** 读「这个 buffer 的窗口边界」。权威、同步、per-buffer。无记录 = 没有更早的历史。 */
+  getWindowBounds(bufferId: string): WindowBounds {
+    return this.windowBounds.get(bufferId) ?? { hasMore: false, oldestCursor: null };
+  }
+
+  /** 写「这个 buffer 的窗口边界」。唯一写者：加载**这个 buffer** 的那个请求。 */
+  setWindowBounds(bufferId: string, bounds: WindowBounds): void {
+    this.windowBounds.set(bufferId, bounds);
+  }
 
   private phase = new Map<string, ConvPhase>();
   /** 仅非会话态（channel/dm）仍用它：那里"会话 id"不存在，计数无歧义。 */
@@ -163,7 +201,12 @@ export class ConversationBufferManager {
   resetConv(key: string, repinTo?: string): void {
     this.phase.set(key, 'idle');
     const cur = this.view.get(key);
-    if (cur) this.buffers.delete(cur);
+    if (cur) {
+      this.buffers.delete(cur);
+      // 事实与内容同生命周期：buffer 没了，它的窗口边界也必须没了，
+      // 否则下一次进入这个 key 会拿到上一段的「还能往前翻」，指向一段不存在的历史。
+      this.windowBounds.delete(cur);
+    }
     this.actBuffers.delete(cur ?? key);
     this.actBuffers.delete(key);
     if (repinTo) this.view.set(key, repinTo);
@@ -511,6 +554,7 @@ export class ConversationBufferManager {
 
   deleteBuffer(id: string): void {
     this.buffers.delete(id);
+    this.windowBounds.delete(id);
   }
 
   // ── Internal ──
@@ -528,6 +572,7 @@ export class ConversationBufferManager {
       if (k === currentId || k === keep) continue;
       this.buffers.delete(k);
       this.actBuffers.delete(k);
+      this.windowBounds.delete(k);
     }
   }
 
@@ -546,6 +591,7 @@ export class ConversationBufferManager {
       }
       this.buffers.delete(oldest);
       this.actBuffers.delete(oldest);
+      this.windowBounds.delete(oldest);
     }
   }
 }

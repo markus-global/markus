@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ChatSearchMatch } from '../lib/chatSearch.ts';
 import type { SearchResult } from '../api.ts';
+import { formatExactTime, timeAgo } from '../lib/timeAgo.ts';
 
 /**
  * Find-in-conversation bar.
@@ -65,7 +66,7 @@ export function ChatHistorySearch({
   onLoadEarlier, onJump, onClose, labelFor,
   serverResults, serverLoading, onServerResultClick,
 }: ChatHistorySearchProps) {
-  const { t } = useTranslation(['team', 'common']);
+  const { t, i18n } = useTranslation(['team', 'common']);
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
 
@@ -198,12 +199,24 @@ export function ChatHistorySearch({
                   onClick={() => onServerResultClick?.(r)}
                   className="w-full text-left px-2.5 py-1.5 rounded-lg transition-colors hover:bg-surface-elevated"
                 >
-                  <div className="flex items-center gap-2 text-[11px] text-fg-tertiary mb-0.5">
+                  <div className="flex items-center gap-1.5 text-[11px] text-fg-tertiary mb-0.5 min-w-0">
                     <span className={`px-1.5 py-0 rounded text-[9px] font-medium shrink-0 ${r.source === 'channel' ? 'bg-blue-500/10 text-blue-500' : 'bg-emerald-500/10 text-emerald-500'}`}>
                       {r.source === 'channel' ? '#' : '1:1'}
                     </span>
-                    {r.senderName && <span>{r.senderName}</span>}
-                    <span>{new Date(r.createdAt).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</span>
+                    {/* 会话标题 —— 结果行否则无法区分它属于哪个会话 tab。 */}
+                    <span className="truncate max-w-[9rem] text-fg-secondary font-medium">
+                      {r.source === 'channel'
+                        ? (r.channel ? `#${r.channel}` : t('page.findServerResultsTitle'))
+                        : (r.sessionTitle || t('page.untitledSession'))}
+                    </span>
+                    {r.senderName && <span className="truncate max-w-[6rem] shrink-0">{r.senderName}</span>}
+                    {/* 相对时间给时效感知；精确时间放 title，悬停可查。 */}
+                    <span
+                      className="shrink-0 ml-auto tabular-nums"
+                      title={formatExactTime(r.createdAt, i18n.language)}
+                    >
+                      {timeAgo(r.createdAt, t)}
+                    </span>
                   </div>
                   <div className="text-xs text-fg-secondary line-clamp-2 break-words">
                     {r.text.length > 200 ? r.text.slice(0, 200) + '…' : r.text}

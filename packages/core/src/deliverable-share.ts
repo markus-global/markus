@@ -1,7 +1,7 @@
 /**
  * Deliverable Sharing Service — 产出物分享到 Hub 的客户端封装。
  *
- * 职责（对应设计文档 docs/DELIVERABLE-SHARING-DESIGN.md 第 7.1 节 API 契约）：
+ * 职责（对应设计文档 docs/design/deliverable-sharing.md 第 7.1 节 API 契约）：
  *  - 构造分享请求并校验 Hub 登录态（强制 Hub 账号，未登录禁用分享）
  *  - 字段补全：visibility / producerAgent 等
  *  - 经本地 org-manager 的 Hub 代理透传（/api/hub/deliverables/*，避免 CORS）

@@ -235,6 +235,15 @@
     },
     "approvalHistory": "History"
   },
+  "toolApproval": {
+    "defaultTitle": "Tool execution needs approval",
+    "resolved": "Resolved",
+    "lead": "The agent is paused until you approve or reject this action.",
+    "commandLabel": "Command",
+    "commentPlaceholder": "Optional note (e.g. why you reject)…",
+    "bannerPrompt": "Tool execution awaiting your approval",
+    "bannerRespond": "Review"
+  },
   "userInput": {
     "respond": "Respond",
     "submit": "Submit",
@@ -296,9 +305,13 @@
     "userInputPrompt_one": "{{count}} question awaiting your response",
     "userInputPrompt_other": "{{count}} questions awaiting your response",
     "userInputRespond": "Respond",
+    "toolApprovalPrompt": "Tool execution awaiting your approval",
+    "toolApprovalReview": "Review",
     "notifyUserPrompt": "Agent notification awaiting your attention",
     "notifyUserView": "View",
     "notifyUserGotIt": "Got it",
+    "notifyReviewProgress": "{{current}} / {{total}}",
+    "notifyReviewNext": "Next · {{count}} left",
     "viewProfileArrow": "View Profile →",
     "viewAgentProfileArrow": "View Agent Profile →",
     "viewMindArrow": "View Mind →",
@@ -447,6 +460,7 @@
     "findLoadEarlier": "Load earlier messages",
     "findLoadingEarlier": "Loading…",
     "findServerResultsTitle": "All history",
+    "untitledSession": "Untitled session",
     "findFieldText": "Message",
     "findFieldThinking": "Thinking",
     "findFieldTool": "Tool",

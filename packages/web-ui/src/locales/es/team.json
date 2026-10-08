@@ -235,6 +235,15 @@
     },
     "badgeLabel": "Notificación"
   },
+  "toolApproval": {
+    "defaultTitle": "La ejecución de la herramienta requiere aprobación",
+    "resolved": "Resuelto",
+    "lead": "El agente queda en pausa hasta que apruebes o rechaces esta acción.",
+    "commandLabel": "Comando",
+    "commentPlaceholder": "Nota opcional (p. ej. por qué lo rechazas)…",
+    "bannerPrompt": "Una ejecución de herramienta espera tu aprobación",
+    "bannerRespond": "Revisar"
+  },
   "userInput": {
     "respond": "Responder",
     "submit": "Submit",
@@ -296,9 +305,13 @@
     "userInputPrompt_one": "{{count}} pregunta esperando su respuesta",
     "userInputPrompt_other": "{{count}} preguntas esperando su respuesta",
     "userInputRespond": "Responder",
+    "toolApprovalPrompt": "Una ejecución de herramienta espera tu aprobación",
+    "toolApprovalReview": "Revisar",
     "notifyUserPrompt": "Notificación del agente esperando su atención",
     "notifyUserView": "Vista",
     "notifyUserGotIt": "Lo tengo",
+    "notifyReviewProgress": "{{current}} / {{total}}",
+    "notifyReviewNext": "Siguiente · {{count}} restantes",
     "viewProfileArrow": "Ver perfil →",
     "viewAgentProfileArrow": "Ver perfil del agente →",
     "viewMindArrow": "Ver la mente →",
@@ -439,6 +452,7 @@
     "findLoadEarlier": "Cargar mensajes anteriores",
     "findLoadingEarlier": "Cargando…",
     "findServerResultsTitle": "Todo el historial",
+    "untitledSession": "Sesión sin título",
     "findFieldText": "Mensaje",
     "findFieldThinking": "Pensando",
     "findFieldTool": "Herramienta",

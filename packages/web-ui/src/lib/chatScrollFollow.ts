@@ -122,6 +122,20 @@ export interface ScrollFollowInput {
   deltaScrollTop: number;
   /** This scroll event was produced by our own follow loop. */
   programmatic: boolean;
+  /**
+   * 有**在途滚动意图**（跳到某条消息 / 向上翻页补偿 / 视图位置记忆）正在驱动视口。
+   *
+   * 为什么必须让这个输入参与判定：意图链的每一趟都是**直接写 `el.scrollTop`**，它产生的
+   * 滚动事件与用户手势在事件层**无法区分**（`programmatic` 只由 follow 循环自己点亮，
+   * 意图链不点）。于是跳转落位过程中任何一次瞬时贴底（内容被裁剪 / `scrollHeight` 收缩使
+   * `maxScrollTop` 变小 / 中间趟恰好落到底部）都会命中那条「到达底部 → 交还视口」的口子，
+   * 把 follow 重新武装起来，下一帧贴底追加把视口拽走 —— 用户看到「闪一下正确的消息，
+   * 然后被拽到别处」。
+   *
+   * 判据：**「谁拥有视口」只能由一个地方判定**。意图机制在途时，它是唯一归属判定点；
+   * 滚动事件处理器不得从它手里把视口要走（用户真要用滚轮抢，走的是手势分支）。
+   */
+  intentPending?: boolean;
 }
 
 export type ScrollFollowDecision =
@@ -165,6 +179,9 @@ export function decideScrollFollow(i: ScrollFollowInput): ScrollFollowDecision {
   // bottom position while a virtualizer remeasure shrinks the list by accident
   // is not a user action.
   if (i.gestureDirection === 'up') return 'hold';
+  // 在途滚动意图（跳转 / 翻页补偿 / 位置记忆）正驱动视口：它产生的滚动事件不是用户行为，
+  // 不得据此把视口交还给贴底。见 ScrollFollowInput.intentPending。
+  if (i.intentPending) return 'hold';
   return i.distance <= AT_BOTTOM_EPSILON ? 'resume' : 'hold';
 }
 

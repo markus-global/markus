@@ -1,7 +1,7 @@
 /**
  * stopSending 的「是否触发后端取消」决策 —— 见 stopCancelDecision.test.ts 头注。
  *
- * 正确语义（docs/MESSAGE-STOP-CANCEL-FIX-PLAN.md §2.6 步骤 2b）：
+ * 正确语义（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2b）：
  * - 只有**既有会话**才发 scoped 取消 `{ sessionId }` —— 服务端 `none` 分支
  *   （无在途流）→ no-op，绝不误杀别的会话流；
  * - 占位（无既定 session）→ `skip`：仅前端 abort + 记 userStopped，

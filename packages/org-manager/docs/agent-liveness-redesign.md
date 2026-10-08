@@ -4,7 +4,7 @@
 > 起因：刘利（agt_4e6ddf338eef9077c6ad8e92）在数小时内产生 600+ 条「定时心跳签到」记录（每 2 分钟一次）。
 > 本质：不是单个 bug，而是「存活/自愈机制」在演进中叠了一堆相互打架的补丁，缺少一个清晰的主线设计。
 > **审计记录状态（2026-09-26）：重构 1–4 已全部完成并入库**。本文件作为审计记录保留；
-> 现行设计已并入 [`docs/ARCHITECTURE.md`](../../../docs/ARCHITECTURE.md)（§3.10 Agent 存活 / 自愈机制）。
+> 现行设计已并入 [`docs/architecture/architecture.md`](../../../docs/architecture/architecture.md)（§3.10 Agent 存活 / 自愈机制）。
 > 旧独立模块（`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`）已于重构 4 删除，
 > 判定原语内联进单一组件 `agent-conservator.ts`。
 
@@ -81,7 +81,7 @@
    - 判定原语内联进单一组件 `agent-conservator.ts`（组件彻底自包含，对外仅暴露 Conservator 系列符号）；`api-server.ts` 中旧日志字符串同步清理；
    - 保留 `test/agent-stall-api.test.ts`（API 展示契约测试：`runtime.stall` 形状经 evaluateConservator 展示路径透出，不依赖旧模块）；
    - 回归覆盖：旧单测场景（stuck-working 心跳风暴/心跳宽限/degraded/dead-dependency/disabled）已被 `agent-conservator.test.ts` 19 用例吸收；
-   - 验证：org-manager 全量测试绿（含 19 conservator + 5 stall-api）+ 全包 `tsc -b` exit 0；本文档并入 `docs/ARCHITECTURE.md` §3.10，本文件保留为审计记录。
+   - 验证：org-manager 全量测试绿（含 19 conservator + 5 stall-api）+ 全包 `tsc -b` exit 0；本文档并入 `docs/architecture/architecture.md` §3.10，本文件保留为审计记录。
 
 ## 六、生效条件
 

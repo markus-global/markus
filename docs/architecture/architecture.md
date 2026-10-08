@@ -1,0 +1,938 @@
+# Markus -- Technical Architecture
+
+> Last updated: 2026-07
+
+This is the **entry point** for Markus technical documentation. Each domain has one
+authoritative document; a mechanism is described in full only in its home document
+and cross-referenced elsewhere. Start here, then follow the map below.
+
+---
+
+## 0. Documentation Map
+
+### 0.1 Document Index
+
+> **The full, categorised index is [`docs/README.md`](../README.md).** The table below lists only this
+> document's home folder (`docs/architecture/`) plus its immediate neighbours; see the index for
+> `guides/`, `api/`, `design/` and `records/`.
+
+| Document | Domain (single responsibility) |
+|----------|-------------------------------|
+| [architecture.md](./architecture.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
+| [architecture-fragility.md](./architecture-fragility.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
+| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [cognitive-architecture.md](./cognitive-architecture.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
+| [memory-system.md](./memory-system.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
+| [prompt-engineering.md](./prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
+| [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
+| [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
+| [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
+| [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
+| [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
+| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
+| [llm-provider-timeouts.md](./llm-provider-timeouts.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
+| [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
+| [frontend/team-chat.md](./frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [../api/api.md](../api/api.md) | REST / WebSocket API reference |
+| [../guides/guide.md](../guides/guide.md) | Setup, deployment, and usage guide |
+| [../guides/coding-tools.md](../guides/coding-tools.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
+| [../guides/remote-access.md](../guides/remote-access.md) | Remote access configuration |
+| [../guides/release-and-distribution.md](../guides/release-and-distribution.md) | Release process and distribution |
+| [../design/deliverable-sharing.md](../design/deliverable-sharing.md) | Sharing deliverables to Markus Hub |
+| [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md) | Liveness / self-healing audit record (heartbeat-storm root cause + completion state of refactors 1–4); the current design lives in §3.10 below |
+
+### 0.2 Relationship Graph
+
+```mermaid
+flowchart TD
+  ARCH[ARCHITECTURE - entry point]
+
+  subgraph cognition [Cognition]
+    COG[COGNITIVE-ARCHITECTURE]
+    MEM[MEMORY-SYSTEM]
+    PROMPT[PROMPT-ENGINEERING]
+  end
+
+  subgraph execution [Execution]
+    MAILBOX[MAILBOX-SYSTEM]
+    FSM[STATE-MACHINES]
+    TOOLS[TOOL-SYSTEM]
+    STREAM[STREAMING-AND-REATTACH]
+  end
+
+  subgraph integration [Integration and Reference]
+    CODING[CODING-TOOLS]
+    API[API]
+    GUIDE[GUIDE]
+  end
+
+  ARCH --> cognition
+  ARCH --> execution
+  ARCH --> integration
+
+  MAILBOX -->|item terminal states| FSM
+  MAILBOX -->|preempt aborts stream| STREAM
+  COG -->|context assembly| PROMPT
+  PROMPT -->|packing triggers flush| MEM
+  PROMPT -->|tool defs and results| TOOLS
+  TOOLS -->|tool errors surfaced as events| STREAM
+  PROMPT -->|deterministic bounded recall| MEM
+```
+
+### 0.3 Cross-Document Conventions
+
+- **Single source of truth**: a mechanism is fully specified only in its home document.
+- **Spec sections**: feature specs follow a fixed template — Behavior / Invariants /
+  Design rationale (with Pi/Hermes comparison where relevant) / Testing (required
+  cases + test files) / Status (planned | implemented).
+- **Doc/code accuracy**: documented behavior must match the code. When they diverge,
+  fix the code or the doc in the same change; never leave a documented-but-unimplemented
+  behavior unmarked.
+
+---
+
+## 1. Overview
+
+Markus is an **AI Digital Workforce Platform** that lets organizations hire, manage, and coordinate multiple AI Agents that work proactively like real employees. The platform provides a full governance framework including project management, task approval, workspace isolation, formal delivery review, knowledge sharing, and periodic reporting.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                        Web UI (React)                            │
+│  Chat · Agents · Tasks · Team · Dashboard · Settings            │
+│  Governance · Projects · Knowledge · Reports                     │
+└──────────────────────────┬──────────────────────────────────────┘
+                           │ HTTP + WebSocket
+┌──────────────────────────▼──────────────────────────────────────┐
+│                    API Server (Node.js)                           │
+│  REST API · WebSocket · Auth (JWT) · Static file serve          │
+└──┬──────────┬──────────┬──────────┬──────────┬─────────────────┘
+   │          │          │          │          │
+┌──▼────┐ ┌──▼─────┐ ┌──▼──────┐ ┌▼───────┐ ┌▼────────────────┐
+│OrgSvc │ │TaskSvc │ │AgentMgr │ │Project │ │Governance Layer │
+│Org    │ │Tasks   │ │Agent    │ │Service │ │Report·Deliver   │
+│Mgmt   │ │+ Approve│ │Lifecycle│ │Reqs    │ │Trust·Archive    │
+└──┬────┘ └──┬─────┘ └──┬──────┘ └┬───────┘ └┬────────────────┘
+   │         │          │         │           │
+┌──▼─────────▼──────────▼─────────▼───────────▼───────────────┐
+│                Agent Runtime (@markus/core)                   │
+│  Agent · Mailbox · AttentionController · ContextEngine        │
+│  Notebook · Memory · PendingCallback                           │
+│  Goal/Loop · LLMRouter · Heartbeat · Tools · MCP · Review     │
+└──────────────────────────┬──────────────────────────────────┘
+                           │
+              ┌────────────▼──────────────┐
+              │      SQLite (node:sqlite)  │
+              │  tasks · projects · reqs   │
+              │  deliverables · reports    │
+              │  users · chat · audit_logs │
+              └───────────────────────────┘
+```
+
+---
+
+## 2. Package Structure
+
+```
+packages/                   # 12 workspace packages (external/ is vendored, not a workspace)
+├── shared/             # Shared types, constants, utils (governance/project/knowledge types)
+├── core/               # Agent runtime (core engine) + ReviewService
+├── storage/            # SQLite persistence + Repository layer
+├── org-manager/        # Org management + REST API + governance (Project/Report/Knowledge/Trust)
+├── comms/              # Communication adapters (Feishu, etc.)
+├── a2a/                # Agent-to-Agent protocol types + DelegationManager (A2ABus retired)
+├── gui/                # GUI automation (VNC + OmniParser)
+├── web-ui/             # Web admin UI (governance/project/knowledge/report pages)
+├── desktop/            # Electron desktop app wrapping the platform
+├── remote/             # Remote-access agent (`RemoteAccessAgent`)
+├── chrome-extension/   # Chrome browser extension (packaged as markus-browser-extension.zip)
+└── cli/                # CLI entry point + service assembly
+```
+
+---
+
+## 3. Core Concepts
+
+### 3.1 Agent (Digital Employee)
+
+Each Agent consists of:
+
+| Component | Description |
+|-----------|-------------|
+| `ROLE.md` | Role definition and system prompt |
+| `HANDBOOK.md` | AGENT HANDBOOK — shared working Know-how for all agents (not injected into ROLE); hard rules live in L0 Collaboration Rules; single source at `templates/roles/HANDBOOK.md`, read on demand via injected absolute path |
+| `SKILLS.md` | Skill list (tool permissions) |
+| `HEARTBEAT.md` | Scheduled proactive tasks (e.g. daily issue checks) |
+| `POLICIES.md` | Behavior rules and boundaries |
+| `NOTEBOOK.md` | Persistent cognitive workspace (situational state, triage output) |
+| `knowledge.md` (+ `NOTEBOOK.md`) | Long-term knowledge + working state. `knowledge.md` is the only write target; `MEMORY.md` / `memories.json` / `state.md` are legacy read-only sources migrated in at load (`state.md` → `state.md.migrated`) |
+| `CONTEXT.md` | Organization context (shared knowledge base) |
+
+The runtime also supports **spawning lightweight LLM subagents** (`spawn_subagent` / `spawn_subagents`) for delegated subtasks. Subagent limits (parallelism, retry policy, preview truncation) are centralized in `packages/shared/src/limits.ts` rather than hardcoded. The parent agent has a **configurable tool-use iteration limit** (`AgentOptions.maxToolIterations`, system settings; default 200, range 1–10000) on chat-style harnesses — task execution and subagent loops remain uncapped by default.
+
+**Agent role types:**
+- `worker` -- Regular digital employee, executes tasks
+- `manager` -- Org leader, handles task routing, team coordination, reporting
+
+**Agent trust levels (Progressive Trust):**
+
+| Level | Condition | Permissions |
+|-------|-----------|-------------|
+| `probation` | New Agent or score < 40 | All tasks require human approval |
+| `standard` | score >= 40, >= 5 deliveries | Routine tasks auto-approved |
+| `trusted` | score >= 60, >= 15 deliveries | Higher autonomy, can review others |
+| `senior` | score >= 80, >= 25 deliveries | Highest autonomy, key reviewer |
+
+### 3.2 Mailbox & Attention (Serialised Per Entity, Concurrent Across Entities)
+
+Each agent routes **every LLM invocation** through a per-agent **Mailbox** (priority queue), and an **AttentionController** decides which item the agent focuses on. By default the agent runs a **pool of concurrent worker loops** (`agent.concurrent`, default `enabled: true, maxWorkers: 3`); each worker is an independent consumer of the mailbox, but the mailbox serialises **per entity** (task / requirement / conversation / user) via an entity-affinity lock, so a single line of work is never processed by two workers at once. With `maxWorkers = 1` the behaviour is the original strictly-serial attention model. See [concurrent-processing.md](./concurrent-processing.md).
+
+Key components:
+- **AgentMailbox** — Priority queue accepting 15 item types including `human_chat`, `a2a_message`, `callback_result`, `heartbeat`, `memory_consolidation`, and task/requirement events (see [mailbox-system.md](./mailbox-system.md))
+- **AttentionController** — Event-driven focus loop; reacts to new mail with interrupt signals. Runs either a single serial loop (`maxWorkers = 1`) or a pool of concurrent worker loops
+- **Concurrent worker pool** — `N` independent consumers of the mailbox; each mounts an isolated `SessionWorkspace` via `AsyncLocalStorage` and writes to a shared `ConcurrentHandoffLog` so workers stay aware of one another ([concurrent-processing.md](./concurrent-processing.md))
+- **Entity-affinity lock** — mailbox-level guarantee that one task/requirement/conversation/user is never processed by two workers at once
+- **Yield Points** — Safe checkpoints in the tool loop where the agent can pause to evaluate interrupts
+- **Decision Engine** — Produces decisions: `continue`, `preempt`, `cancel`, `merge`, `defer`, `drop`. Heuristic rules handle clear cases (e.g., user chat always preempts); an **LLM interrupt judge** handles ambiguous cases with semantic understanding (e.g., "stop publishing" → cancel, "hold off for now" → preempt)
+- **Preempt vs Cancel** — `preempt` pauses current work (item deferred, session preserved for later resumption); `cancel` permanently stops current work (item dropped, will NOT be resumed)
+- **Deferred Item Auto-Resume** — Items deferred by preemption or explicit deferral are automatically resurfaced when the agent is idle (`resurfaceDue()`)
+- **Triage with Read-Only Tools** — When multiple items compete for attention, the triage LLM can invoke a curated set of read-only tools (`task_list`, `task_get`, `requirement_list`, etc.) to gather context before deciding priority
+
+Agents now have tools to actively manage their mailbox queue and cognitive workspace:
+
+- `check_mailbox` (read-only inspection, all scenarios)
+- `defer_mailbox_item` / `drop_mailbox_item` (queue management)
+- `notebook_upsert` / `notebook_clear` / `notebook_read` (cognitive workspace management)
+
+This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
+
+**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions.
+
+External callers use the mailbox API exclusively:
+- `agent.sendMessage()` — Awaitable chat/notification
+- `agent.sendMessageStream()` — Streaming chat (SSE)
+- `agent.sendTaskExecution()` — Task execution via `task_status_update` (fire-and-forget)
+- `agent.sendSessionReply()` — Post-task session reply
+- `agent.enqueueToMailbox()` — Fire-and-forget notification
+
+Internal processes (heartbeat, daily report, memory consolidation) also enqueue to the mailbox, ensuring **no LLM call bypasses the attention controller**. The mailbox timeline (items + decisions) forms the agent's **episodic memory ground truth**.
+
+**Task status notifications** (`task_status_update` with `invokesLLM: false`) are **informational only** — the side-effect system in `updateTaskStatus()` handles all real actions automatically (execution start/cancel, reviewer notification, dependency unblocking). These notifications exist as episodic memory and triage decision context, not as work items requiring agent processing.
+
+See [mailbox-system.md](./mailbox-system.md) for the complete design.
+
+### 3.2.1 Cognitive System
+
+The agent cognitive system is a continuous cycle backed by persistent stores and deterministic context assembly:
+
+```
+Stimulus (Mailbox) → Triage → Deterministic Context Assembly → Main LLM → Action
+                                    ↓
+                   knowledge.md (injected) + NOTEBOOK.md (working state)
+```
+
+| Component | Storage / Location | Role |
+|-----------|-------------------|------|
+| **Notebook** | `NOTEBOOK.md` | Persistent cognitive workspace — situational state, triage decisions, working-memory keys |
+| **Memory** | `knowledge.md` | Unified long-term knowledge (curated sections) + raw `## _observations` buffer |
+| **Goal/Loop** | `GoalConfig` on Requirements | Persistent objectives with heartbeat integration |
+| **PendingCallbackRegistry** | `packages/core/src/pending-callback.ts` | Async operation tracking; completions → mailbox `callback_result` |
+
+**Deterministic context assembly** — the former Cognitive Preparation Pipeline (CPP: the 0–3 pre-call LLM phases appraise / retrieve / reflect, plus `cognitive.ts`, `CognitivePreparation`, `selectCognitiveDepth` and `CognitiveDepth`) has been **removed**. Between triage and the main LLM call the ContextEngine injects a small, bounded, LLM-free situational block (recent activity + working-memory keys) together with its own deterministic relevant-memory retrieval. Deeper cross-domain recall is agent-driven via `memory_search` / `kb_search`. Prompt sections produced today: `## Cognitive Context` (deterministic) and `## Relevant Memories`; `## Retrieved Context` and `## Reflection` are no longer produced.
+
+**Goal/Loop mechanism** — Requirements can carry a `GoalConfig` (`loopEnabled`, `completionCriteria`, `maxIterations`, etc.) turning them into standing objectives. Heartbeat injects active goals; agents manage them via `goal_create`, `goal_update`, and `goal_status` tools.
+
+See [cognitive-architecture.md](./cognitive-architecture.md) for the full design with theoretical foundations.
+
+### 3.3 Organization Structure
+
+```
+Organization (Org)
+ ├── Teams -- Working groups of Agents and humans with shared goals
+ │    ├── Manager -- Approves work, sets direction
+ │    └── Members -- Agents and humans executing tasks
+ ├── Projects -- Scopes with repos and governance rules
+ │    ├── Requirements -- User-authorized work items
+ │    │    └── Tasks -> Subtasks -- Atomic work units
+ │    ├── Knowledge Base -- Shared knowledge (ADRs, conventions, gotchas, etc.)
+ │    └── Governance Policy -- Approval rules, task caps
+ └── Reports -- Periodic reports + plan approval + human feedback
+```
+
+**Relationship model:**
+- A Team can participate in multiple Projects; a Project can be worked on by multiple Teams
+- Each Task belongs to one Project and traces to a Requirement
+- Each Project can link multiple code repositories
+
+### 3.4 Memory and Knowledge System
+
+**Two-file cognitive model** replaces the former volatile working memory + `memories.json` system (`memories.json` / `MEMORY.md` / `state.md` are legacy read-only sources, migrated into `knowledge.md` at load):
+
+| File | Role | Prompt injection |
+|------|------|-----------------|
+| **`NOTEBOOK.md`** | Persistent cognitive workspace — situational state, triage/working-memory outputs | Always loaded as `## Notebook` |
+| **`knowledge.md`** | Curated long-term knowledge + raw `## _observations` buffer | Curated sections as `## Your Knowledge`; observations excluded |
+
+The **dream cycle** (`memory_consolidation`) operates within `knowledge.md` — consolidating observations into curated sections and pruning stale content. Post-task learning uses a separate `distillation` scenario ([learning-loop.md](./learning-loop.md) §0 / §2).
+
+**Memory layers (Tulving's classification):**
+
+| Layer | Storage | Role |
+|-------|---------|------|
+| **Procedural** | `role/ROLE.md` + skills | How the agent operates. Identity, behavioral rules. |
+| **Semantic** | `knowledge.md` curated sections | What the agent knows. Agent-organized knowledge. |
+| **Episodic** | `sessions/*.json` (current) + SQLite `agent_activities` (past) | What happened. Current conversation + searchable activity history. |
+| **Working Memory** | `NOTEBOOK.md` | Persistent, agent-managed keyed entries (`notebook_upsert` / `notebook_clear` / `notebook_read`). |
+
+The agent retrieves past episodes via the `recall_activity` tool (keyword search on summary/keywords). Daily logs (`daily-logs/`) are a write-only audit trail for humans — never read back into prompts.
+
+See [memory-system.md](./memory-system.md) for the complete architecture.
+
+**Project knowledge base (three scopes):**
+
+| Scope | Description | Tools |
+|-------|-------------|-------|
+| `personal` | Agent personal memory | `memory_save` / `memory_search` |
+| `project` | Project-level shared knowledge | `kb_search` / `kb_read` |
+| `org` | Org-level shared knowledge | `kb_search` (scope=org) |
+
+Knowledge categories: `architecture`, `convention`, `api`, `decision`, `gotcha`, `troubleshooting`, `dependency`, `process`, `reference`
+
+### 3.5 Tool System
+
+**Built-in tools (all Agents have by default):**
+
+| Tool | Description |
+|------|-------------|
+| `shell_execute` | Run shell commands (auto-injects Agent identity into git commit) |
+| `file_read` / `file_write` / `file_edit` | File read/write/edit (writes blocked to other agents' directories and to single-writer memory files — `knowledge.md` / `NOTEBOOK.md` / `state.md` must be changed via the memory tools) |
+| `file_list` | List directory contents |
+| `web_fetch` / `web_search` | HTTP requests / web search |
+| `spawn_subagent` / `spawn_subagents` | Spawn lightweight LLM subagents for focused subtasks (parallel support) |
+| `code_search` | Code search (ripgrep) |
+| `git_*` | Git operations |
+| `agent_send_message` | Send message to another Agent (A2A via mailbox) |
+| `notify_user` | Send proactive message to user (appears in chat + notification bell) |
+| `request_user_approval` | Request user decision/approval (blocks until user responds; supports custom options + freeform) |
+| `recall_activity` | Query own execution history (activities + tool call logs) |
+| `task_create` / `task_list` / `task_update` / `task_get` / `task_assign` / `task_note` | Task board ops (constrained by governance policy) |
+| `task_submit_review` | Submit delivery for review |
+| `requirement_propose` / `requirement_list` | Requirement management |
+| `deliverable_create` / `deliverable_search` / `deliverable_list` | Shared deliverables |
+
+**Git commit metadata injection:** When an Agent runs `git commit`, `shell_execute` auto-injects `--author` and `--trailer` with Agent ID, name, Team, Org, Task ID, etc., so all commits are traceable.
+
+### 3.6 Task System
+
+See [Task & Requirement State Machines](./state-machines.md) for the complete FSM specification.
+
+Tasks and requirements share a **unified status vocabulary**: `pending`, `in_progress`, `blocked`, `review`, `completed`, `failed`, `rejected`, `cancelled`, `archived`. Not every status applies to both types, but the same name always means the same thing.
+
+#### Standard Task State Flow
+
+```
+pending ──► in_progress ──► review ──► completed ──► archived
+   │             │    ▲         │
+   │             │    │         └── revision ──► in_progress
+   │             ▼    │
+   │          blocked ┘
+   ▼             │
+rejected       failed ──► (retry) ──► in_progress
+```
+
+- Workers submit via `task_submit_review`. The system notifies the reviewer.
+- `rejected` = proposal denied before work. `cancelled` = stopped after work began.
+
+#### Scheduled (Recurring) Task State Flow
+
+```
+pending → in_progress → review → completed → (scheduled rerun) → in_progress → ...
+```
+
+- After completion, scheduled tasks wait for `nextRunAt` then restart.
+- Scheduled tasks go through the same review pipeline as standard tasks.
+
+#### Requirement State Flow
+
+```
+pending ──► in_progress ──► completed
+   │  ▲
+   ▼  │
+rejected ── resubmit ──┘     any ──► cancelled
+```
+
+- User-created requirements auto-approve to `in_progress`.
+- Agent proposals start as `pending`, need human approval.
+- Rejected requirements can be resubmitted by the agent (with optional updates), returning to `pending`.
+- Completion is automatic when all linked tasks terminate.
+
+#### Unified Status Reference
+
+| Status | Label | Description |
+|--------|-------|-------------|
+| `pending` | Pending | Created, awaiting human approval |
+| `in_progress` | In Progress | Approved, work is active |
+| `blocked` | Blocked | On hold (dependencies, manual pause) |
+| `review` | In Review | Execution done, awaiting reviewer |
+| `completed` | Completed | Successfully finished |
+| `failed` | Failed | Unrecoverable error |
+| `rejected` | Rejected | Proposal not approved |
+| `cancelled` | Cancelled | Deliberately stopped |
+| `archived` | Archived | Historical record |
+
+**Task governance policy:**
+
+| Approval tier | Trigger | Approver |
+|---------------|---------|----------|
+| `auto` | Low-priority agent-created tasks | No approval (starts `in_progress`) |
+| `manager` | Standard agent-created tasks | Team Manager Agent |
+| `human` | High/urgent priority, shared-resource impact | Human (HITL) |
+
+**Human-created tasks** always start as `pending` regardless of approval tier, with no HITL approval request or notification. The human user explicitly starts execution from the UI ("Start Execution" button). Agent trust level dynamically adjusts effective approval tier (e.g. senior Agent's manager-level tasks may auto-approve).
+
+### 3.7 Context Engine (System Prompt Assembly)
+
+Before each conversation, the ContextEngine dynamically builds the system prompt:
+
+1. Role definition (ROLE.md — Identity store)
+2. Shared behavior norms (HANDBOOK.md: workflow, governance, knowledge sharing)
+3. Identity and org awareness (colleague list, manager, human members)
+4. **Current project context** (project name, repos, governance rules)
+5. **Current workspace** (agent workspace path, shared workspace, users/ and team/ directories)
+6. **Agent trust level** (current level and permission description)
+7. **System announcements** (urgent/high-priority announcements)
+8. **Human feedback** (annotations and instructions from report reviews)
+9. **Project knowledge highlights** (high-importance verified knowledge entries)
+10. **Your Knowledge** (knowledge.md curated sections — observations excluded; a health banner is appended once usage reaches ≥70%)
+11. **Notebook** (NOTEBOOK.md — cognitive workspace; agent-managed working state)
+12. Active Goals (when heartbeat or goal-aware context)
+13. Task board (currently assigned Tasks)
+14. Current conversation identity (sender info)
+15. Environment info (OS, toolchain, runtime)
+
+See [prompt-engineering.md](./prompt-engineering.md) for the complete section ordering and [cognitive-architecture.md](./cognitive-architecture.md) for deterministic context assembly (the former cognitive preparation pipeline was retired).
+
+### 3.8 LLM Routing
+
+```
+LLMRouter
+  ├── Primary Provider (OpenAI / Anthropic / DeepSeek)
+  └── Fallback Provider (auto-switch, retry on failure)
+```
+
+- Supports streaming (SSE) and non-streaming modes
+- Timeouts: chat 60s / stream 120s
+- Auto-fallback to backup provider on failure
+- **Exception**: `CU_EXCEEDED` / `MARKUS_RATE_LIMITED` (Markus Cloud credits) must **not** fall back to user BYOK providers — surface top-up/upgrade instead
+
+### 3.9 Billing client (Hub CU)
+
+Desktop does **not** own a separate personal ledger. Plan, quota, and keys come from the user's **Hub organization**. Authoritative Hub docs (sibling repo `markus-hub`):
+
+- Subscription / CU / Waffo: `docs/subscription-billing.md`
+- OpenRouter keys / hard-stop / reconcile: `docs/model-service.md`
+
+Client touchpoints:
+
+| Surface | Role |
+|---------|------|
+| `MarkusProvider` | Member OR key; on 402 / soft stop → `POST /api/user/cu/sync` once, then retry or emit `CU_EXCEEDED` only if Hub remaining is zero |
+| `LLMRouter` | Must not route Markus credit exhaustion to BYOK |
+| OverviewUsage / claim UI | Reads `GET /api/user/plan`; Free claim deep-links to Hub `?claim=1` |
+
+Frozen response-field contract (keep in sync with Hub handlers): [`packages/core/test/hub-billing-contract.test.ts`](../../packages/core/test/hub-billing-contract.test.ts) — mirrors Hub `billing-crossflows` plan + `cu/sync` keys (`remainingCu`, `openrouter.remainingUsd`, `planSource`, buckets, etc.).
+
+### 3.10 Agent Liveness / Self-Healing (Liveness SSOT + single Conservator arbiter)
+
+**Design in one line: one liveness source of truth + one bounded safety net + a convergent state
+machine, everything else deduplicated.**
+
+Background (audit record: [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md)):
+three independent verdict loops — dirty / stale / stall — each did its own thing, and the backstop
+loop had neither a shared arbiter nor a cap, which once produced a heartbeat storm ("once every 2
+minutes": a single agent logged 600+ scheduled heartbeat check-ins over a few hours). Refactors 1–4
+converged the mechanism as follows:
+
+1. **Liveness SSOT**: `agents.last_heartbeat` is written only by core (on every heartbeat completion
+   *and* skip, including the skip path); every observer reads that one field (live-view for
+   real-time, the persisted column for cross-process / diagnostics). The heartbeat timestamp is the
+   only evidence that an agent is alive.
+2. **Tighter heartbeat semantics**: a heartbeat = liveness report + low-frequency inspection (6h by
+   default). The **skip paths** (human-chat defer / idle / deep-sleep) are reduced to a pure
+   timestamp (`recordHeartbeatSkip()`, which never calls the LLM); LLM inspection happens only when
+   state actually changed — fingerprinted by `heartbeatStateFingerprint()` (queue-content signature
+   + activeTaskIds signature). Every heartbeat trigger funnels through `heartbeat:trigger` → the
+   single handler in `agent.ts` → `mailbox.enqueue('heartbeat')` → single-item coalesced processing.
+3. **Single safety-net arbiter (Conservator)**: `packages/org-manager/src/agent-conservator.ts`
+   **collapses the dirty / stale / stall verdicts into one component** (as of refactor 4 the
+   decision primitives are inlined and the component is fully self-contained):
+   - `evaluateConservator` (pure function) fuses the dirty verdict + the stuck verdict
+     (dead-dependency, stale-heartbeat) + the expiry verdict (heartbeat / activity freshness) into a
+     **single action ladder**: `ok → observe → wake → reconcile → human-review`;
+   - `AgentConservator` (periodic arbiter, 30s polling, guarded startup) applies **exponential
+     backoff** (base·2^(n−1), capped at 8h) + a **per-episode attempt cap** + **convergence proof**
+     (an episode is not reset while the agent has not left the processing-like states; human-review
+     notifies once per episode and then stops automatic action);
+   - Fix A merge: three failed trigger-heartbeats in a row escalate to human-review
+     (`CONSERVATOR_MAX_WAKE_ATTEMPTS=3`), which structurally rules out the "once every 2 minutes"
+     periodic solution;
+   - the display path exposes `runtime.stall` / `runtime.dirty` through `evaluateConservator` (shape
+     fully compatible with the old frontend) — read-only derivation, never written back.
+4. **Convergent state machine**: the 27 scattered `setStatus` write sites in core are all collapsed
+   into a single intent-based derivation function `transitionStatus` + application function
+   `applyStatus` (`packages/core/src/agent.ts`) — error is sticky (idle no longer overwrites error),
+   aggregate-state guard (activeTasks > 0 / busy concurrent workers ⇒ idle is rejected), `force` as
+   the explicit escape hatch, `reset` clears errors, `offline` is unconditional; heartbeat
+   inspection / conservator arbitration / Normal transitions all go through it, removing
+   race-induced overwrites.
+5. **Persistence path completed**: the status payload carries every authoritative field (status /
+   lastHeartbeat / activeTaskIds / currentActivity / lastError) and writes them in one callback;
+   `SqliteAgentRepo.updateLastHeartbeat` persists to the DB.
+
+The old standalone modules (`agent-dirty.ts` / `agent-stall.ts` / `agent-dirty-reconciler.ts`) were
+deleted in refactor 4; all verdict logic converged into the Conservator / core state machine.
+Related regression tests: `packages/org-manager/test/agent-conservator.test.ts` (19 cases:
+stuck-working heartbeat storm, heartbeat grace, exponential backoff, attempt-cap convergence,
+degraded / dead-dependency), `packages/org-manager/test/agent-stall-api.test.ts` (API display
+contract), `packages/core/test/heartbeat-liveness.test.ts` (skip = pure timestamp + fingerprint
+inspection), `packages/core/test/agent-status-machine.test.ts` (state-machine convergence).
+
+---
+
+## 4. Governance Framework
+
+### 4.1 Global Controls
+
+| Function | Description |
+|----------|-------------|
+| `stopAllAgents(reason)` | Stop all Agents with reason. Cancels active LLM streams, stops attention loops, requeues in-flight items. |
+| `startAllAgents()` | Start all stopped Agents. Attention loops restart, deferred items resurface. |
+| `emergencyStop()` | Emergency stop: cancel all active streams and stop all Agents |
+| `agent.stop(reason)` | Stop a single agent. Cancels active LLM stream, stops attention, sets status to `offline`. |
+| System announcements | Broadcast to all Agents and UI, injected into Agent system prompt |
+
+#### Stop State Persistence
+
+Agent stopped state is persisted across process restarts. There is a single "not running" status: `offline`. The former `paused` status has been unified into `offline`.
+
+- **Individual agent**: `agent.stop()` sets status to `offline`, which is written to the `agents.status` DB column via the `stateChangeHandler`. On restart, `startRestoredAgentsInBackground` skips agents whose DB status is `offline`, keeping them stopped.
+- **Team-level stop**: `stopTeamAgents(teamId)` stops each member agent individually. Persistence is implicit — each member's `offline` status is stored in DB. On restart, stopped team members remain offline.
+- **Global stop**: `stopAllAgents()` stops every agent individually. On startup, `isGlobalStopped()` dynamically checks whether all agents are offline.
+
+#### Agent Management Tools
+
+Agents can manage other agents' lifecycle through tools with role-based permissions:
+
+- **Manager** (`agentRole: 'manager'`): gets `agent_stop` / `agent_start` tools, scoped to their own team members only.
+- **Secretary** (worker with `secretary` role): gets `team_stop` / `team_start` tools for managing any team.
+
+### 4.2 Workspace Isolation
+
+Each agent has a dedicated workspace (`~/.markus/agents/<agentId>/workspace/`). The hard enforcement is that agents **cannot write to other agents' directories** (prevents cross-agent interference) and **cannot write single-writer memory files** (`knowledge.md` / `NOTEBOOK.md` / `state.md`) via `file_write` / `file_edit` / `apply_patch` / shell — those must go through the memory tools (the write gate rejects direct writes and points at the right tool). All other file access (read and write) is unrestricted, allowing agents to respond to any user request. Prompt-based guidance encourages agents to work within their own workspace and use worktrees for project code.
+
+- The platform enforces: cross-agent write isolation (deny writes to other agents' directories) + single-writer memory files (deny direct writes to `knowledge.md` / `NOTEBOOK.md` / `state.md`)
+- The platform provides via prompt: workspace path, project context, best-practice guidance
+- The agent decides: branching strategy, worktree layout, merge workflow
+- Workflow details like branching conventions and review process are defined by **role templates and team norms**, not by the platform
+
+**Git command governance** (three-tier model):
+
+| Tier | Operations | Behavior |
+|------|-----------|----------|
+| **Allow** | `add`, `commit`, `fetch`, `log`, `diff`, `status`, `branch -a/-l`, `checkout -b`, `switch -c`, `worktree add/list/remove`, `push origin <task-branch>` | Execute immediately |
+| **Approval** | `checkout <existing-branch>`, `switch <existing-branch>`, `push ... main/master`, `merge`, `rebase` | Pause execution, request HITL approval via `HITLService`; agent receives approval or rejection with reason |
+| **Deny** | `push --force/-f` | Always blocked |
+
+The approval tier integrates with the existing HITL approval pipeline (`HITLService.requestApprovalAndWait()`). Human reviewers can approve or reject with a comment; the agent receives the feedback and adjusts. This mechanism is extensible: new dangerous operations can be added via `SecurityPolicy.requireApproval` (config-driven) or new pattern arrays in `shell.ts` (code-driven).
+
+### 4.3 Formal Delivery and Review
+
+```
+Agent completes work
+  -> task_submit_review (summary, branch, test results)
+  -> Quality gates (TypeScript build, ESLint, Vitest)
+  -> Merge conflict pre-check (dry-run merge)
+  -> Task state -> review
+  -> Reviewer accept / request revision
+  -> accept -> merge branch -> completed
+  -> revision -> Agent reworks -> resubmit
+```
+
+### 4.4 Periodic Reports
+
+| Report type | Frequency | Content |
+|-------------|-----------|---------|
+| Daily | Daily | Task done/in-progress/blocked, token usage |
+| Weekly | Weekly | Progress, cost trends, next week plan (may include plan approval) |
+| Monthly | Monthly | Monthly summary, cost analysis, quality metrics |
+
+**Plan approval flow:** Weekly reports' work plans need human approval -> approved plans auto-create tasks -> Agents must not start before plan approval
+
+**Human feedback:** Annotations, comments, and instructions on reports can:
+- Be sent to specific Agents
+- Be broadcast as system announcements
+- Be saved to project knowledge base
+- Auto-create new tasks
+
+### 4.5 Archival and Lifecycle
+
+- Completed tasks auto-archive after configurable days (`autoArchiveAfterDays`)
+- Task logs and audit logs retained for configurable periods
+
+### 4.6 Stall Detection
+
+| Condition | Threshold | Action |
+|-----------|------------|--------|
+| Task `in_progress` too long | > 24h or 2x avg completion time | Warn Agent -> report to Manager |
+| Task `review` unhandled | > 12h | Report to human |
+| Task `pending` not started | > 4h | Remind Agent -> reassign |
+
+### 4.7 Agent Lifecycle & Sourcing
+
+Agents can be sourced from two paths:
+
+| Source | Tool | Flow |
+|--------|------|------|
+| **Local package** | `package_install` | `package_list` → choose agent/team/skill → `package_install` → onboard |
+| **Markus Hub** | `hub_install` | `hub_search` → `hub_install` (download + install in one step) → onboard |
+
+The **Secretary** agent is the sole default agent (builder agents have been removed). The Secretary holds all building skills (`agent-building`, `team-building`, `skill-building`). All agents have package tools (`package_list`, `package_install`) and hub tools (`hub_search`, `hub_install`).
+
+The `BuilderService` (`packages/org-manager/src/builder-service.ts`) encapsulates artifact install/list logic, used by both the HTTP API and agent tools.
+
+---
+
+## 5. Database Schema
+
+```sql
+-- Users
+users (id, org_id, name, email, role, password_hash, created_at, last_login_at)
+
+-- Agent chat (each agent has one main session for activity log + optional conversation sessions)
+chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at)
+chat_messages (id, session_id, agent_id, role, content, metadata, tokens_used, created_at)
+
+-- Channel messages (DM, group chat, team channels)
+channel_messages (id, org_id, channel, sender_id, sender_type, sender_name, text, mentions, reply_to_id, created_at)
+
+-- Group chats (custom groups with managed membership)
+group_chats (id, org_id, name, channel_key, creator_id, creator_name, created_at, updated_at)
+group_chat_members (id, group_chat_id, user_id, user_type, user_name, role, joined_at)
+
+-- Task comments (threaded discussion on tasks)
+task_comments (id, task_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at)
+
+-- Requirement comments (threaded discussion on requirements)
+requirement_comments (id, requirement_id, author_id, author_name, author_type, content, attachments, mentions, activity_id, reply_to_id, created_at)
+
+-- Tasks (extended)
+tasks (id, org_id, title, description, status, priority, assigned_agent_id, subtasks,
+       project_id, requirement_id, due_at, created_at, updated_at)
+
+-- Projects
+projects (id, org_id, name, description, status, repositories,
+          team_ids, governance_policy, review_schedule, created_at, updated_at)
+
+-- Requirements
+requirements (id, org_id, project_id, title, description, priority, status,
+              source, tags, created_at, updated_at)
+
+-- Deliverables
+deliverables (id, org_id, project_id, agent_id, task_id, type, title,
+              summary, reference, tags, status, created_at, updated_at)
+
+-- Agent knowledge (per-agent curated knowledge entries)
+agent_knowledge (id, agent_id, org_id, category, title, content, tags,
+                 source, metadata, importance, access_count, last_accessed_at,
+                 created_at, updated_at)
+
+-- Project knowledge base is file-based, not a table: a knowledge-base document is a
+-- deliverable with source='knowledge', and projects.knowledge_base_paths names the
+-- directories that are synced into it.
+
+-- Reports / report feedback are NOT persisted in SQLite. ReportService keeps them in
+-- in-memory maps for the lifetime of the process.
+
+-- System announcements are NOT persisted in SQLite. AgentManager holds the active
+-- announcements in memory and broadcasts them; per-team announcements live in the team
+-- data directory as ANNOUNCEMENT.md.
+
+-- Audit logs
+audit_logs (id, org_id, agent_id, task_id, project_id, event_type,
+            action, metadata, created_at)
+
+-- User notifications (persistent mailbox for humans)
+user_notifications (id, user_id, type, title, body, priority,
+                    read, action_type, action_target, metadata, created_at)
+
+-- Mailbox items (agent attention queue)
+mailbox_items (id, agent_id, source_type, source_id, priority, summary, payload,
+               status, received_at, processed_at, decision, decision_reason)
+
+-- Agent decisions (attention decision log)
+agent_decisions (id, agent_id, mailbox_item_id, decision, reason, context, decided_at)
+```
+
+---
+
+## 6. Authentication & Multi-User System
+
+- JWT Cookie (`markus_token`, 7-day validity)
+- Initial account: `admin@markus.local` / `markus123` (onboarding wizard prompts user to set real name, email, and password)
+- Roles: `owner` > `admin` > `member` > `guest`
+- Only `owner` / `admin` can manage team members and Agents
+
+### 6.1 User Management
+
+| Operation | Access |
+|-----------|--------|
+| Create / invite user | `owner` / `admin` |
+| Set role | `owner` / `admin` (cannot promote above own role) |
+| Delete user | `owner` / `admin` (cannot delete self or higher roles) |
+| Invite link | Generated per user; expires in 7 days; new user sets password via link |
+
+**Invite flow:** Admin creates user (name, email, role) → system generates invite token → invite link displayed → new user opens link → sets password → joins the platform (`hasJoined` flag set).
+
+### 6.2 Chat Session Isolation
+
+Each human user has their own chat sessions with agents. Chat sessions are scoped by `user_id`:
+- `chat_sessions.user_id` tracks which human owns the session
+- `GET /api/agents/:agentId/sessions` filters by authenticated user
+- Agent "Main Sessions" (activity logs) are shared (visible to all users)
+- Historical sessions with `user_id = NULL` are auto-migrated to the first user on startup
+
+### 6.3 User Context Files
+
+Each human user has a profile file maintained by the Secretary agent:
+
+| File | Path | Purpose |
+|------|------|---------|
+| `USER.md` | `~/.markus/users/{userId}/USER.md` | User preferences, communication style, context notes |
+| `TEAM.md` | `~/.markus/teams/{teamId}/TEAM.md` | Team norms, conventions, shared practices |
+
+These files are injected into agent context when interacting with the corresponding user, allowing agents to personalize their behavior.
+
+### 6.4 Slash Commands
+
+The Web UI chat supports slash commands dispatched via `POST /api/agents/:id/command`:
+
+| Command | Action |
+|---------|--------|
+| `/goal [description]` | Prompt agent to create a standing goal via `goal_create` |
+| `/status` | Request concise status: active goals, tasks, mailbox, recent activity |
+| `/notebook` | Return current notebook entries (read-only snapshot) |
+| `/task [description]` | Prompt agent to create a task via `task_create` |
+
+Commands are rendered via `SlashCommandMenu` in the chat input. `/notebook` returns data directly; others enqueue a `human_chat` message to the agent.
+
+---
+
+## 7. WebSocket Events
+
+Connection: `ws://localhost:8056`
+
+| Event | Trigger |
+|-------|---------|
+| `agent:update` | Agent state change (idle/working/offline/error) |
+| `agent:mailbox` | New item enqueued to an agent's mailbox |
+| `agent:decision` | Agent attention decision (pick/defer/drop/triage) |
+| `agent:attention` | Attention controller state change |
+| `agent:focus` | Agent switches to a new mailbox item |
+| `agent:triage` | Agent triage deliberation result (reasoning, process/defer/drop) |
+| `agent:started` | Agent process started |
+| `agent:stopped` | Agent process stopped |
+| `task:update` | Task state update (including review/accepted/archived) |
+| `task:create` | New task created |
+| `requirement:created` | Requirement proposed |
+| `requirement:approved` / `rejected` / `updated` / `completed` / `cancelled` | Requirement lifecycle |
+| `notification` | User notification — targeted by userId (triggers NotificationBell refresh) |
+| `chat:proactive_message` | Agent activity log or proactive message (main session) |
+| `chat:message` | New channel/DM/group chat message (targeted to members) |
+| `chat:group_created` | Group chat created |
+| `chat:group_updated` | Group chat membership changed |
+| `chat:group_deleted` | Group chat deleted |
+| `chat` | Agent sends message in channel |
+| `system:announcement` | System announcement broadcast |
+| `system:pause-all` | Global pause event |
+| `system:resume-all` | Global resume event |
+| `system:emergency-stop` | Emergency stop event |
+
+**EventBus Architecture**: Each `Agent` has a private `EventBus`; the `AgentManager` has a separate manager-level `EventBus`. Agent events are forwarded to the manager's bus via `forwardAgentEvents()` so that `start.ts` WS broadcast handlers receive them. See [`mailbox-system.md`](./mailbox-system.md) §19 for the full forwarding table.
+
+---
+
+## 8. Channel System
+
+| Channel format | Purpose |
+|----------------|---------|
+| `#general` / `#dev` / `#support` | Team channels, @mention triggers Agent |
+| `group:{teamId}` | Team group chat (all team members) |
+| `group:custom:{id}` | Custom group chat (manually managed members) |
+| `notes:{userId}` | Personal notes (not routed to any Agent) |
+| `dm:{id1}:{id2}` | Direct message between two humans (not routed to any Agent) |
+| `dm:a2a:{sorted_id_1}:{sorted_id_2}` | Agent-to-agent DM channel (deterministic key from sorted agent IDs) |
+
+### 8.1 A2A Communication
+
+Agent-to-agent messaging uses **DM Channels** with deterministic keys (`dm:a2a:{sorted_ids}`), leveraging existing group-chat infrastructure. This provides persistent message history, stable routing, and mailbox integration — eliminating custom A2A session management. `agent_send_message` is fire-and-forget; substantial work should use requirements + tasks.
+
+### 8.2 Multi-User Communication Model
+
+Markus supports multiple human users and agents communicating through various channels. The communication model varies by context:
+
+**Agent communication contexts and output visibility:**
+
+| Context | Agent output visible to | How to reach humans | How to reach agents |
+|---------|----------------------|--------------------|--------------------|
+| **Chat** (human_chat) | Directly visible to the chatting human (real-time stream) | Speak naturally — output is streamed live | `agent_send_message` |
+| **Task Execution** | Visible in task execution logs (Work page) | `notify_user` for critical updates | `agent_send_message` |
+| **Heartbeat** | Not visible to anyone | `notify_user` (only way) | `agent_send_message` |
+| **A2A** | Visible to the peer agent only | `notify_user` | Reply directly / `agent_send_message` for others |
+| **Comment Response** | Not directly visible | `task_comment` / `requirement_comment` (comment thread) | `agent_send_message` |
+| **Review** | Not directly visible | `task_update` + optionally `notify_user` | `agent_send_message` |
+| **Memory Consolidation** | Not visible; purely internal | N/A (no communication) | N/A |
+
+**Human-to-human communication:**
+
+| Channel | Delivery mechanism | Notification |
+|---------|-------------------|--------------|
+| DM (`dm:{id1}:{id2}`) | WebSocket push to recipient + persisted to `channel_messages` | Bell notification (type `direct_message`) with click-to-navigate |
+| Group chat (`group:*`) | WebSocket push to all human members + persisted | Bell notification (type `group_message`) with click-to-navigate |
+| @mention in comments | Persisted in task/requirement comments | Bell notification with click-to-navigate to task/requirement |
+
+**Key tools for agent communication:**
+
+| Tool | Purpose | When to use |
+|------|---------|-------------|
+| `notify_user` | Proactive message to human (chat + bell) | Any non-chat context when human attention needed |
+| `request_user_approval` | Block until human decides | Decisions, approvals, input needed |
+| `agent_send_message` | Direct message to peer agent | Coordination, questions, context sharing |
+| `task_comment` / `requirement_comment` | Post in comment thread | Responding to comments on tasks/requirements |
+
+---
+
+## 9. Heartbeat Tasks
+
+After Agent startup, HeartbeatScheduler triggers periodic tasks at configured intervals:
+
+- Each run executes checks with `[HEARTBEAT CHECK-IN]` prompt under the "Patrol, Don't Build" principle
+- **Active goals check**: injects standing objectives from requirements with `GoalConfig.loopEnabled`
+- **Callback timeout check**: surfaces timed-out `PendingCallbackRegistry` entries
+- **Heartbeat includes task retrospective**: calls task_list to check active tasks and update stale states
+- **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
+- **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
+- Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
+- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks)
+- **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
+
+---
+
+## 10. Agent Awareness Model (Three Layers)
+
+Agents understand the workflow and governance rules through three layers:
+
+| Layer | File | Role |
+|-------|------|------|
+| **HANDBOOK.md (static norms)** | `templates/roles/HANDBOOK.md` | Shared working Know-how for all Agents: workflow map, task governance, workspace discipline, formal delivery, knowledge management, trust mechanism, Git commit norms, reports and feedback. Single source of truth, shipped with the build, upgrades on rebuild/release — not copied per-agent |
+| **ContextEngine (dynamic injection)** | `packages/core/src/context-engine.ts` | Injected per interaction: current project context, workspace info, system announcements, human feedback, trust level, project knowledge highlights |
+| **Tools (mechanical enforcement)** | `packages/core/src/tools/` | Enforcement: `task_create` blocks until approved, `task_submit_review` replaces direct completion, file writes blocked to other agents' directories, git commit auto-injects metadata |
+
+**Design principles:**
+- Things Agents need for **decisions** -> put in Context (project goals, governance rules, requirement context)
+- Things Agents need to **act on** -> implement as Tools (submit review, manage deliverables, contribute knowledge)
+- Things that must be **enforced** -> implement as transparent tool behavior (workspace limits, approval blocking, commit metadata injection)
+
+---
+
+## 11. Observability
+
+`AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../../packages/core/src/agent-metrics.ts))
+aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat
+success, response time) from the audit callback and event bus, and exposes
+`AgentMetricsSnapshot` over the API for the dashboard.
+
+### 11.1 Spec: harness-health metrics (C2)
+
+The existing counters cover cost/throughput but not the harness-discipline signals this
+architecture depends on. This spec adds four metrics so regressions in context and
+completion behavior are visible.
+
+- **Behavior**: the collector additionally tracks:
+  - **compression count** — how often per-call context packing had to compress (over budget),
+  - **empty-turn rate** — share of non-chat turns that produced NO output at all, plus
+    **turn-ended-via-tool rate** — share that closed themselves out via the typed `end_turn`
+    signal (see [mailbox-system.md](./mailbox-system.md) "Completion protocol"),
+  - **prompt cache-hit rate** — from provider usage where reported (see the injection-point
+    audit in [prompt-engineering.md §2.2](./prompt-engineering.md)),
+  - **per-turn cost** — cost attributed per completed turn.
+- **Invariants**: each metric increments on its triggering event and is exposed in the
+  snapshot under `AgentMetricsSnapshot.harness`; adding them does not change agent behavior
+  (measurement only).
+- **Wiring**:
+  - *compression count* — `ContextEngine.prepareMessages` sets `usage.compressed` when it
+    runs token-budget compression; `Agent` calls `recordCompression()` at the chat/stream/
+    task consumers.
+  - *empty-turn / end_turn rates* — the `Agent` attention delegate calls `recordTurn({ isChat,
+    emptyReply, endedTurnViaTool })` after each mailbox turn (chat turns are excluded from the
+    denominator).
+  - *cache-hit rate* — accumulated from the `cacheReadTokens`/`cacheWriteTokens` already
+    present on `llm_request` audit events, over total prompt-side tokens.
+  - *per-turn cost* — `estimatedCost / turnsCompleted` (0 when no USD cost is reported, e.g.
+    CU-billed providers).
+- **Design rationale**: Hermes emphasizes observable execution; these are the metrics that
+  tell you whether packing, marker discipline, and caching are actually holding.
+- **Testing** (`packages/core/test/agent-metrics.test.ts` — the "C2:" cases): firing each
+  triggering event increments the corresponding counter and surfaces in `snapshot.harness`.
+- **Status**: implemented (`HarnessHealthMetrics` on the snapshot; `recordCompression` /
+  `recordTurn` + cache-token accumulation in `AgentMetricsCollector`, wired in `agent.ts`
+  and `context-engine.ts`).
+
+---
+
+## 12. Non-Goals
+
+Markus is deliberately a **product runtime for a digital workforce**, not a minimal coding
+harness. To keep scope disciplined (in the spirit of Pi defining itself by what it refuses),
+the following are explicit non-goals for the core runtime unless a concrete product need
+arises:
+
+- **In-core session tree / branch summaries** — long-collaboration branching is on the
+  roadmap, not core today (Pi's strength; deferred).
+- **Fully autonomous skills self-improvement loop** — agents can use skills/store and dream
+  consolidation, but a default closed loop where the agent authors/edits its own `SKILL.md`
+  is roadmap, not core (weaker than Hermes here by choice, for now).
+- **Maximal always-on tool registry** — Markus keeps a small always-on core + discovery
+  rather than exposing the full registry every call (see [tool-system.md](./tool-system.md)).
+
+---
+
+## 13. Deployment
+
+### Quick start (npm)
+
+```bash
+npm install -g @markus-global/cli
+markus start
+```
+
+Open the dashboard at `http://localhost:8056`.
+
+### Local development (from source)
+
+```bash
+pnpm install && pnpm build
+cp markus.json.example ~/.markus/markus.json   # Add API keys
+node packages/cli/dist/index.js start
+```
+
+Same dashboard URL: `http://localhost:8056`.
+
+### Environment Variables
+
+| Variable | Description |
+|----------|-------------|
+| `OPENAI_API_KEY` | OpenAI API key (primary LLM) |
+| `ANTHROPIC_API_KEY` | Anthropic API key (optional) |
+| `DEEPSEEK_API_KEY` | DeepSeek API key (fallback) |
+| `DATABASE_URL` | SQLite path override (default: `~/.markus/data.db`, format: `sqlite:/path/to/db`) |
+| `JWT_SECRET` | JWT signing key (recommended for production) |
+| `AUTH_ENABLED` | Enable login auth (default true) |

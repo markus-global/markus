@@ -870,7 +870,7 @@ export class ContextEngine {
     //
     // Cost of keeping them in the tail is bounded by KNOWLEDGE_PROMPT_MAX_TOKENS
     // (and they are reference material the model re-reads anyway); the saving is
-    // one full-history re-bill per memory write. See docs/PROMPT-ENGINEERING.md §2.1.1.
+    // one full-history re-bill per memory write. See docs/architecture/prompt-engineering.md §2.1.1.
     //
     // Deliberately NOT moved: trust level, org/team context, workspace paths, team
     // announcements/norms, `## About the Owner`. Those change on org/config events
@@ -925,7 +925,7 @@ export class ContextEngine {
       // already reaches the prompt through the `## Notebook` block (see
       // `Agent.getDynamicContext`), which has a keyed structure, per-tier TTL and a hard
       // entry cap — none of which state.md had.
-      // See docs/MEMORY-SYSTEM.md §10.2 (option A).
+      // See docs/architecture/memory-system.md §10.2 (option A).
     }
 
     if (opts.projectContext) {

@@ -1,5 +1,5 @@
 /**
- * Notebook display helpers (docs/MEMORY-SYSTEM.md §2; AGENT-RUNTIME.md §6).
+ * Notebook display helpers (docs/architecture/memory-system.md §2; agent-runtime.md §6).
  *
  * The panel must never render an unbounded list: a real notebook reached 26
  * entries and made the Agent overview unreadable. These are pure-function tests —

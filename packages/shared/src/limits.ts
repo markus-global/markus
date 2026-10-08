@@ -134,7 +134,7 @@ export const MAILBOX_ITEM_MAX_RETRIES = 2;
  * stripping at three display/persist sites, AND a whole extra LLM continuation call
  * to recover a missing token — and it still mis-judged legitimate turns as
  * "completion marker missing" → the item was requeued and eventually dropped
- * (8 in one day, 2026-10-04). Deleted in docs/PLATFORM-HARDENING-2026-10.md §6.
+ * (8 in one day, 2026-10-04). Deleted in docs/records/platform-hardening-2026-10.md §6.
  *
  * The typed signal replaced it: an agent ends a turn by CALLING the `end_turn` tool
  * (unconditionally injected, budget-protected — see capability-packs.ts
@@ -254,8 +254,8 @@ export const MEMORY_MD_CURATED_HARD_MAX_CHARS = 3 * MEMORY_MD_CURATED_MAX_CHARS;
 /** Usage percent of the **curated (injected)** budget at which the in-prompt
  *  health banner fires (and at which the `memory_status` hint suggests
  *  consolidation). Kept as ONE constant so the banner and the tool hint can
- *  never drift apart — see docs/ARCHITECTURE.md ("Your Knowledge") +
- *  docs/COGNITIVE-ARCHITECTURE.md §3. */
+ *  never drift apart — see docs/architecture/architecture.md ("Your Knowledge") +
+ *  docs/architecture/cognitive-architecture.md §3. */
 export const MEMORY_HEALTH_WARN_PERCENT = 70;
 
 /** Usage percent of the **observation-buffer** budget at which the periodic memory
@@ -611,7 +611,7 @@ export function clampHeartbeatIntervalMs(ms: number): number {
 
 // ─── Notebook Limits (formerly Working Memory) ──────────────────────────────
 // The notebook is a RESIDENT prompt region, so it needs all four of the
-// mechanisms that keep a resident region honest (see docs/MEMORY-SYSTEM.md §2):
+// mechanisms that keep a resident region honest (see docs/architecture/memory-system.md §2):
 //   1. a hard entry cap           → NOTEBOOK_MAX_ENTRIES
 //   2. per-tier time-to-live      → NOTEBOOK_TTL_MS_*
 //   3. per-entry + total caps     → NOTEBOOK_MAX_CHARS_PER_ENTRY / NOTEBOOK_PROMPT_MAX_CHARS
@@ -886,7 +886,7 @@ export const SYSTEM_HUMANS_MAX = 8;
  *  afford hint (prompt limit from "Prompt tokens limit exceeded: X > Y"). */
 export const PROMPT_AFFORD_OUTPUT_RESERVE = 4_096;
 
-// ─── Agent Runtime: Context Economics (see docs/AGENT-RUNTIME.md §3) ─────────
+// ─── Agent Runtime: Context Economics (see docs/architecture/agent-runtime.md §3) ─────────
 
 /** Max tool-definition tokens for reflex pack (heartbeat / dream / flush). */
 export const TOOL_DEF_BUDGET_REFLEX = 3_000;
@@ -916,7 +916,7 @@ export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
  * together with the state.md store. Situational state is a **Working-layer** concern and
  * lives in NOTEBOOK.md (keyed entries with per-tier TTL), so a second short-lived store
  * with its own injection cap and its own TTL had no separate capability to offer.
- * See docs/MEMORY-SYSTEM.md §10.2 (option A).
+ * See docs/architecture/memory-system.md §10.2 (option A).
  */
 
 /** Cold-start acceptance: converse system+toolDefs. */
