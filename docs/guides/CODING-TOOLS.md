@@ -1,6 +1,8 @@
 # Coding Tools Integration
 
 > Last updated: 2026-06
+>
+> **Status — agent tools disabled (2026-08):** `invoke_coding_tool` and `coding_tool_apply` are not currently registered on agents. `registerCodingTools()` in `packages/core/src/agent-manager.ts` returns early (temporary disable), so no `codingTools` setting will surface them. The adapters, handlers, config keys, REST endpoints, and Settings UI documented below remain implemented.
 
 Technical reference for Markus's external coding tool integration — delegating hands-on programming work to Claude Code, Codex, and Cursor Agent while keeping task context, progress, and governance inside Markus.
 
@@ -44,7 +46,7 @@ The Coding Tools integration provides:
 | Autonomous edit → test → fix loops | Configuration, docs, non-code work |
 | Large implementation surface with clear acceptance criteria | Fine-grained control over every change |
 
-Coding tools are **opt-in**. Set `codingTools.enabled: true` in `markus.json` (or via Settings → Coding Tools) before agents receive `invoke_coding_tool` and `coding_tool_apply`.
+Coding tools are **opt-in**. Set `codingTools.enabled: true` in `markus.json` (or via Settings → Coding Tools) before agents receive `invoke_coding_tool` and `coding_tool_apply` — though as of 2026-08 those tools are disabled at the runtime level (see the status note above), so the setting alone will not surface them.
 
 ---
 
@@ -171,7 +173,7 @@ codex exec --full-auto --json --skip-git-repo-check "<prompt>"
 |---|---|
 | Tool name | `cursor-agent` |
 | Binary | `cursor` |
-| Install | [cursor.sh](https://cursor.sh) — enable "Install 'cursor' command in PATH" from the Command Palette |
+| Install | [cursor.com/downloads](https://cursor.com/downloads), then run `cursor agent install-shell-integration` |
 | Auth | Cursor account via `cursor agent login`, or `CURSOR_API_KEY` env var |
 
 Markus invokes:

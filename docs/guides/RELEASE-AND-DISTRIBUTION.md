@@ -30,13 +30,13 @@ The installation method primarily aimed at desktop users.
 | Platform | Signing | Notarization |
 |------|------|------|
 | macOS | Developer ID Application | Apple Notarization |
-| Windows | — (planned) | — |
+| Windows | Certum SimplySign (SHA-256) | — |
 | Linux | — | — |
 
 ### Auto-update
 
 - `electron-updater`, published to GitHub Releases
-- Update check: on app launch
+- Update check: on app launch (after a 10 s delay), then every 4 hours
 
 ### Local Development
 
@@ -104,30 +104,32 @@ push tag v*
   │     │
   │     ├─→ build-server-binary  Linux x64 (.deb + .tar.gz)
   │     │
-  │     └─→ build-desktop        4-platform Electron desktop build
-  │           ├── macOS arm64    (.dmg)
-  │           ├── macOS x64      (.dmg)
-  │           ├── Windows x64    (.exe)
-  │           └── Linux x64      (.AppImage)
+  │     ├─→ build-desktop        3-platform Electron desktop build (macOS + Linux)
+  │     │     ├── macOS arm64    (.dmg)
+  │     │     ├── macOS x64      (.dmg)
+  │     │     └── Linux x64      (.AppImage)
+  │     │
+  │     └─→ build-desktop-windows  Windows x64 (.exe, signed)
   │
   ├─→ github-release            Create GitHub Release
   │
   └─→ upload-to-hub             Upload to R2 (stable releases only)
 ```
 
-**5 CI jobs, 7 artifacts.**
+**6 CI jobs, 7 artifacts.**
 
 ### Required Secrets
 
 | Secret | Purpose |
 |--------|------|
-| `NPM_TOKEN` | npm publish |
 | `GITHUB_TOKEN` | Release creation, Electron update feed |
 | `APPLE_CERTIFICATE_P12` | macOS code signing |
 | `APPLE_CERTIFICATE_PASSWORD` | P12 password |
 | `APPLE_ID` | Apple notarization |
 | `APPLE_ID_PASSWORD` | Apple App-Specific Password |
 | `APPLE_TEAM_ID` | Apple Team ID |
+| `CERTUM_EMAIL` | Windows code signing — SimplySign login email |
+| `CERTUM_OTP` | Windows code signing — SimplySign TOTP seed |
 | `R2_ACCESS_KEY_ID` | Cloudflare R2 |
 | `R2_SECRET_ACCESS_KEY` | Cloudflare R2 |
 | `R2_ACCOUNT_ID` | Cloudflare R2 |
@@ -159,5 +161,5 @@ push tag v*
 
 ## Known Limitations
 
-1. **Windows code signing** — not implemented; users will see a SmartScreen warning
+1. **Windows code signing** — implemented via Certum SimplySign (`build/sign.cjs`); builds without the `CERTUM_*` secrets are left unsigned and trigger a SmartScreen warning
 2. **Linux arm64** — not supported yet

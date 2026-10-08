@@ -29,7 +29,6 @@ All requests require authentication via one of:
 | DELETE | `/api/agents/:id` | Fire agent |
 | POST | `/api/agents/:id/start` | Start agent |
 | POST | `/api/agents/:id/stop` | Stop agent |
-| GET | `/api/agents/:id/profile` | Get agent full profile (memory, tools, etc.) |
 | GET | `/api/agents/:id/mind` | Get agent mind state (attention, focus, mailbox, notebook) |
 | POST | `/api/agents/:id/command` | Dispatch slash command to agent |
 
@@ -105,7 +104,7 @@ interface NotebookEntry {
 | Method | Path | Description |
 |--------|------|-------------|
 | POST | `/api/agents/:id/message` | Send message to agent (SSE streaming) |
-| GET | `/api/sessions` | List conversation sessions |
+| GET | `/api/agents/:id/sessions` | List an agent's conversation sessions |
 | GET | `/api/sessions/:id/messages` | Get session message history |
 | GET | `/api/channels/:channel/messages` | Get channel history |
 | POST | `/api/channels/:channel/messages` | Send channel message (supports SSE streaming) |
@@ -119,7 +118,7 @@ interface NotebookEntry {
 | GET | `/api/tasks` | List tasks (supports `?status=`, `?assignedAgentId=` filters) |
 | POST | `/api/tasks` | Create task |
 | GET | `/api/taskboard` | Get Kanban board data |
-| PATCH | `/api/tasks/:id` | Update task (status, notes, etc.) |
+| PUT | `/api/tasks/:id` | Update task (status, assignedAgentId, or task fields) |
 | POST | `/api/tasks/:id/approve` | Approve a pending task |
 | POST | `/api/tasks/:id/reject` | Reject a pending task |
 | POST | `/api/tasks/:id/cancel` | Cancel a task (body: `{ cascade?: boolean }`) |
@@ -127,7 +126,7 @@ interface NotebookEntry {
 | POST | `/api/tasks/:id/schedule/resume` | Resume a paused scheduled task |
 | POST | `/api/tasks/:id/schedule/run-now` | Trigger an immediate run of a scheduled task |
 | PUT | `/api/tasks/:id/schedule` | Update schedule configuration `{ every?, cron?, maxRuns?, timezone? }` |
-| GET | `/api/tasks/:id/dependent-count` | Count tasks blocked by this task |
+| GET | `/api/tasks/:id/dependents` | Count tasks blocked by this task |
 | POST | `/api/tasks/:id/comments` | Post a comment on a task. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. |
 | POST | `/api/requirements/:id/comments` | Post a comment on a requirement. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. |
 
@@ -139,8 +138,7 @@ interface NotebookEntry {
 |--------|------|-------------|
 | GET | `/api/teams` | List teams |
 | POST | `/api/teams` | Create team |
-| GET | `/api/teams/:id` | Get team details |
-| PUT | `/api/teams/:id` | Update team |
+| PATCH | `/api/teams/:id` | Update team |
 | DELETE | `/api/teams/:id` | Delete team |
 
 ---
@@ -223,14 +221,15 @@ interface NotebookEntry {
 | POST | `/api/users` | Create human user `{ name, email, role }` — returns invite token |
 | PATCH | `/api/users/:id` | Update user (name, role, email) |
 | POST | `/api/users/:id/reset-password` | Admin password reset |
+| POST | `/api/users/:id/reinvite` | Re-issue an invite token — returns `{ inviteToken }` |
 | DELETE | `/api/users/:id` | Delete user |
 
 ### Invite Flow
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/auth/invite/:token` | Validate invite token — returns user info (name, email) |
-| POST | `/api/auth/invite/:token/setup` | Complete registration `{ password, name?, email? }` |
+| GET | `/api/auth/invite-info?token=<token>` | Validate invite token — returns user info (name, email) |
+| POST | `/api/auth/setup` | Complete registration `{ token, password }` |
 
 ---
 
@@ -252,10 +251,9 @@ interface NotebookEntry {
 
 | Method | Path | Description |
 |--------|------|-------------|
-| GET | `/api/notifications` | List notifications for current user (supports `?unreadOnly=true&limit=N&offset=N&type=T`) |
-| GET | `/api/notifications/count` | Get unread notification count |
+| GET | `/api/notifications` | List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) |
 | POST | `/api/notifications/:id/read` | Mark a single notification as read |
-| POST | `/api/notifications/read-all` | Mark all notifications as read |
+| POST | `/api/notifications/mark-all-read` | Mark all notifications as read |
 
 ---
 
