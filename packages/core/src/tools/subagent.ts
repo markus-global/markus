@@ -76,14 +76,17 @@ export interface SubagentLoopResult {
    */
   budgetHit: 'own' | 'aggregate' | 'max_iterations' | null;
   /**
-   * F2 — distinct file paths this child actually changed through a file-writing tool
-   * (`file_write` / `file_edit` / `apply_patch`, ignoring `dry_run`). Lets a parent audit
-   * "what did the truncated child already touch?" without diffing the workspace by hand.
+   * F2 — distinct file paths this child changed through a file-writing tool
+   * (`file_write` / `file_edit` / `apply_patch`, ignoring `dry_run`). A **best-effort hint, not
+   * an audit**: a child can also change files by means that are not counted (shell redirection,
+   * scripts, builds). Read a non-empty list as "it wrote these"; read an empty list as "no
+   * file-tool write was recorded" — never as "nothing changed".
    */
   filesTouched: string[];
   /**
-   * F3 — tool-call accounting. `writes` counts successful file-writing calls, so a child
-   * that stops early with `writes === 0` is legibly "it only ever explored".
+   * F3 — tool-call accounting. `writes` counts successful file-tool write calls — the same
+   * best-effort scope and caveat as {@link filesTouched} (a hint, not proof that nothing else
+   * changed).
    */
   toolCalls: { total: number; writes: number };
 }
@@ -482,16 +485,17 @@ export async function runSubagentLoop(
       : aggregateCeilingReached
         ? 'shared aggregate iteration budget exhausted'
         : `own iteration budget (${iterationBudget}) exhausted`;
-    // F2/F3: state what the child already wrote (or that it wrote nothing). These are the
-    // two facts a parent needs to decide whether the workspace is safe to trust, and they
-    // used to require a manual `git status`.
-    const touched = filesTouched.size > 0
-      ? ` Files already modified (may be half-applied): ${[...filesTouched].join(', ')}.`
-      : ' No files were modified — it spent its whole budget exploring.';
+    // F2/F3 (scoped 2026-10-09): this note is a *reminder to verify*, not an audit. A child can
+    // change the workspace in ways we cannot enumerate (shell redirection, scripts, builds), so we
+    // never assert a negative we cannot prove — we report what we saw and tell the parent to check.
+    const wroteHint = filesTouched.size > 0
+      ? ` Files written via file tools (may be half-applied): ${[...filesTouched].join(', ')}.`
+      : '';
     const note =
       `[INCOMPLETE: subagent stopped early — ${reason} after ${iterations} iteration(s); ` +
-      `${toolCallCount} tool call(s), ${writeCallCount} write(s). ` +
-      `Its result is incomplete; do not treat it as a completed subtask.${touched}]`;
+      `${toolCallCount} tool call(s), ${writeCallCount} write(s).${wroteHint} ` +
+      `Its result is incomplete — verify the workspace before trusting it (a subagent can also ` +
+      `change files by means this notice does not track, e.g. shell).]`;
     cleanResult = cleanResult.trim().length > 0
       ? `${cleanResult.trimEnd()}\n\n${note}`
       : note;
@@ -556,7 +560,8 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
       'Use this to break down complex tasks: deep code analysis, research, file refactoring, test generation, etc. ' +
       'The subagent runs to completion and returns a STRUCTURED result: `status` ' +
       "('completed' | 'budget_exhausted' | 'max_iterations'), `budgetHit`, `filesTouched`, `toolCalls`. " +
-      'A child that stops early is reported as incomplete with the files it had already written — never as an empty success. ' +
+      'A child that stops early is reported as incomplete — never as an empty success — and tells you ' +
+      'to verify the workspace; `filesTouched` is a best-effort hint, not an exhaustive audit. ' +
       'For running multiple subagents in parallel, use spawn_subagents instead.',
     inputSchema: {
       type: 'object',

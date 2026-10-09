@@ -9,8 +9,8 @@
 >
 > **Live-verified 2026-10-09** on a rebuilt desktop bundle (`probe/friction-live-1009`, cherry-pick of
 > the fix commit): the new delegation fields appear in the real `spawn_subagent` envelope, and F1/F3
-> behave exactly as designed (a budget-stopped child returned `budgetHit: 'own'` plus an honest
-> `[INCOMPLETE …]` note). The same live run exposed a false negative in F2 → recorded as **F9** below.
+> behave exactly as designed (a budget-stopped child returned `budgetHit: 'own'` plus an `[INCOMPLETE …]`
+> note that reminds the parent to verify before trusting the child's output).
 
 Written by an agent that runs on Markus and used its own delegation, background-exec and test
 tooling for a multi-hour real task. Every item below is something that cost real time and that a
@@ -26,7 +26,7 @@ This is a *dated record* (see `docs/records/`). It is not a specification.
 | Item | Verdict on `main` before this pass | Resolution |
 |------|------------------------------------|------------|
 | **F1** | **Partly fixed by H6** (`f7cdbd7d`): `iteration_budget` is now an independent per-child budget, and the fan-out pool is a breaker only. Still missing: the breaker was undocumented, and a stopped child reported only a boolean. | Breaker documented in the `spawn_subagents` description; `budgetHit` added. |
-| **F2** | **Partly fixed by H6**: `output` is never empty and carries an `[INCOMPLETE …]` note. Still missing: no structured record of *what* was written. | `filesTouched` added and echoed in the note. **Scope: file-tool writes only — see F9.** |
+| **F2** | **Partly fixed by H6**: `output` is never empty and carries an `[INCOMPLETE …]` note. Still missing: no structured record of *what* was written. | `filesTouched` added and echoed in the note as a best-effort **reminder to verify** — not an exhaustive audit. Counting every write path (shell, scripts, builds) is intentionally out of scope (owner decision, 2026-10-09). |
 | **F3** | **Open.** | `toolCalls { total, writes }` added; a zero-write early stop now says so. |
 | **F4** | **Partly fixed by H6** (`status` / `iterations` / `aggregateCeilingReached`). | Extended with the fields above; the schema now crosses the `spawn_subagent` / `spawn_subagents` boundary. |
 | **T1** | Still true. | Documented in `CONTRIBUTING.md` → *Development Gotchas*. |
@@ -96,10 +96,11 @@ There is no feedback that says "this child spent 90 % of its budget on reads".
 **Suggested change.** Return an iteration breakdown (reads vs writes) in the result, and surface a
 hint when a child exhausts its budget without a single write.
 
-**Resolution (2026-10-08).** Added `toolCalls: { total, writes }` and, on any early stop with zero
-successful writes, the note now says *"No files were modified — it spent its whole budget
-exploring."* We deliberately did not split calls into "reads" vs "writes" (a `shell_execute` can
-write without being a write tool); counting *writes* is the honest, unambiguous half.
+**Resolution (2026-10-08, rescoped 2026-10-09).** Added `toolCalls: { total, writes }`. We
+deliberately did not split calls into "reads" vs "writes" (a `shell_execute` can write without being
+a write tool). We also do **not** claim that an early stop wrote nothing: enumerating every write
+path (shell redirection, scripts, builds) is impossible, so the note is a *reminder to verify*, not
+a negative assertion (owner decision, 2026-10-09 — see the F2 audit row).
 
 ### F4 — Delegation results have no schema
 
@@ -150,10 +151,9 @@ only `docs/api-test/` is ignored.
 
 ---
 
-## 4. New friction found while fixing these (2026-10-08, extended 2026-10-09)
+## 4. New friction found while fixing these (2026-10-08)
 
-Items that surfaced during the audit-and-fix pass and the live run that followed. They are recorded
-here, not fixed in it.
+Four more items surfaced during the audit-and-fix pass. They are recorded here, not fixed in it.
 
 ### F5 — A dated record can silently drift from the code, and its own banner hides it
 
@@ -196,48 +196,3 @@ there). The working form is the root Vitest plus a positional path filter —
 `pnpm test -- packages/core`. **Resolution:** already applied (the table and *Development Gotchas*),
 and recorded here so the pattern is not reintroduced.
 
-### F9 — `filesTouched` is a tool-name allowlist, so it misses every write done through `shell_execute`
-
-**Observed (live, 2026-10-09, on the rebuilt bundle).** Two children, each told to create exactly one
-file, differing only in *how*:
-
-| Child wrote via | `filesTouched` | `toolCalls.writes` | File on disk? |
-|-----------------|----------------|--------------------|---------------|
-| `file_write` | `["/tmp/friction-probe/gamma.txt"]` | `1` | yes |
-| `shell_execute` (`printf … > delta.txt`) | `[]` | `0` | **yes — but invisible** |
-
-**Why it is a problem.** The count comes from `writePaths`, which keys on the *tool name*
-(`file_write` / `file_edit` / `apply_patch`). Any write through a shell redirection, `tee`, `cp`,
-`mv`, a generator script or a build step is therefore out of scope — and the resulting
-`filesTouched: []` + `writes: 0` is **ambiguous**: a parent cannot distinguish "the child wrote
-nothing" from "the child wrote through a path this signal does not measure." That is the *same*
-failure mode F3 exists to remove, reintroduced one layer down. It is also the R2 anti-pattern: one
-invariant ("which files did this child change") enforced at a scattered allowlist of call sites
-instead of at a single boundary. **Worst case:** the `[INCOMPLETE …]` note asserts *"No files were
-modified — it spent its whole budget exploring."* If a budget-stopped child wrote its files through
-the shell, that sentence is **false**, and a parent that trusts it skips the workspace check the note
-is there to trigger. A signal that lies is worse than no signal — this is the item that must not be
-reintroduced.
-
-**Suggested change.** Measure at the write boundary, not at tool call sites: snapshot the child's
-workspace (mtime/size, or `git status` when it is a worktree) before and after the run, and report
-`changed` vs `unknown`. If the cheap tool-level signal is kept, then (a) name its scope honestly
-(`filesWrittenViaFileTool`) and (b) never let the parent-facing note assert a negative the
-instrumentation cannot prove — say "no **file-tool** writes", not "no files were modified".
-
-### F7 — An agent cannot tell which build it is actually running
-
-**Observed (2026-10-09).** After the fix was built and installed, the only way to confirm the running
-app had picked it up was to inspect the installed `app.asar` on disk (`grep` for the new field names)
-and reason about build provenance — there was no in-product signal of the agent's own runtime. The
-trap is three-layered and easy to hit: **restarting is not rebuilding, and rebuilding is not
-rebuilding *from the right branch*.** A restart against the currently checked-out branch silently
-keeps serving the old code, and every check available to the agent (source `grep`, unit tests) can
-pass while the running process still executes stale bytes.
-**Why it is a problem.** An agent that debugs its own platform cannot trust its own observations: it
-may "verify" a fix the running process does not contain, or fail to reproduce a bug already fixed in
-the build. Confirming this item's own fix live required a manual `app.asar` grep — evidence a human
-had to read, not a signal the platform gave.
-**Suggested change.** Print the build's commit sha at startup and compare it with the source `HEAD`;
-when they differ, or when the build is from a branch other than the expected one, surface it
-prominently. An agent should be able to ask "what am I running?" and get an authoritative answer.

@@ -22,10 +22,10 @@ import { toolOk, toolErr } from '../src/tools/result.js';
  * These tests pin the schema that makes it *actionable*:
  *   - F1 — `budgetHit` says WHICH budget stopped the child ('own' | 'aggregate' | 'max_iterations'),
  *          never just a bare "it stopped" boolean;
- *   - F2 — `filesTouched` lists the paths a truncated child had already written (only
- *          successful, non-dry-run writes are recorded);
- *   - F3 — `toolCalls: { total, writes }` distinguishes "explored forever" from "wrote then stopped",
- *          and a zero-write early stop says so in prose;
+ *   - F2 — `filesTouched` is a best-effort hint of the paths a truncated child wrote via file      
+ *          tools (successful, non-dry-run writes only); it never claims the workspace is untouched;
+ *   - F3 — `toolCalls: { total, writes }` distinguishes "explored forever" from "wrote then
+ *          stopped"; an early stop reminds the parent to verify rather than asserting a negative;
  *   - F4 — the same schema crosses the `spawn_subagent` / `spawn_subagents` tool boundary.
  */
 
@@ -119,7 +119,7 @@ describe('F2/F3 — a stopped child reports what it touched and how it spent its
     expect(result.output).toMatch(/INCOMPLETE/);
   });
 
-  it('does NOT count an errored write, nor an apply_patch dry run — and says nothing was written', async () => {
+  it('does NOT count an errored write, nor an apply_patch dry run — and reminds instead of claiming nothing changed', async () => {
     const tools = new Map<string, AgentToolHandler>([
       ['file_write', { ...okTool('file_write'), execute: async () => toolErr('denied: other agent workspace') }],
       ['apply_patch', okTool('apply_patch')],
@@ -136,7 +136,7 @@ describe('F2/F3 — a stopped child reports what it touched and how it spent its
 
     expect(result.filesTouched).toEqual([]);
     expect(result.toolCalls).toEqual({ total: 2, writes: 0 });
-    expect(result.output).toContain('No files were modified');
+    expect(result.output).toContain('verify the workspace');
   });
 
   it('records every file in a real (non-dry-run) apply_patch', async () => {
@@ -167,7 +167,7 @@ describe('F2/F3 — a stopped child reports what it touched and how it spent its
     expect(result.status).toBe('max_iterations');
     expect(result.budgetHit).toBe('max_iterations');
     expect(result.toolCalls.writes).toBe(0);
-    expect(result.output).toContain('No files were modified');
+    expect(result.output).toContain('verify the workspace');
   });
 
   it('the shared fan-out breaker is reported as budgetHit=aggregate, distinct from a child\'s own budget', async () => {
