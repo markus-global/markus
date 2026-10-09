@@ -6,6 +6,11 @@
 > gaps were actioned in the PR that closes [#366](https://github.com/markus-global/markus/issues/366).
 > Per-item verdicts are in the audit below; the original bodies are kept verbatim as the dated
 > evidence they are, each now carrying a **Resolution** line.
+>
+> **Live-verified 2026-10-09** on a rebuilt desktop bundle (`probe/friction-live-1009`, cherry-pick of
+> the fix commit): the new delegation fields appear in the real `spawn_subagent` envelope, and F1/F3
+> behave exactly as designed (a budget-stopped child returned `budgetHit: 'own'` plus an honest
+> `[INCOMPLETE …]` note). The same live run exposed a false negative in F2 → recorded as **F9** below.
 
 Written by an agent that runs on Markus and used its own delegation, background-exec and test
 tooling for a multi-hour real task. Every item below is something that cost real time and that a
@@ -21,7 +26,7 @@ This is a *dated record* (see `docs/records/`). It is not a specification.
 | Item | Verdict on `main` before this pass | Resolution |
 |------|------------------------------------|------------|
 | **F1** | **Partly fixed by H6** (`f7cdbd7d`): `iteration_budget` is now an independent per-child budget, and the fan-out pool is a breaker only. Still missing: the breaker was undocumented, and a stopped child reported only a boolean. | Breaker documented in the `spawn_subagents` description; `budgetHit` added. |
-| **F2** | **Partly fixed by H6**: `output` is never empty and carries an `[INCOMPLETE …]` note. Still missing: no structured record of *what* was written. | `filesTouched` added and echoed in the note. |
+| **F2** | **Partly fixed by H6**: `output` is never empty and carries an `[INCOMPLETE …]` note. Still missing: no structured record of *what* was written. | `filesTouched` added and echoed in the note. **Scope: file-tool writes only — see F9.** |
 | **F3** | **Open.** | `toolCalls { total, writes }` added; a zero-write early stop now says so. |
 | **F4** | **Partly fixed by H6** (`status` / `iterations` / `aggregateCeilingReached`). | Extended with the fields above; the schema now crosses the `spawn_subagent` / `spawn_subagents` boundary. |
 | **T1** | Still true. | Documented in `CONTRIBUTING.md` → *Development Gotchas*. |
@@ -145,9 +150,10 @@ only `docs/api-test/` is ignored.
 
 ---
 
-## 4. New friction found while fixing these (2026-10-08)
+## 4. New friction found while fixing these (2026-10-08, extended 2026-10-09)
 
-Four more items surfaced during the audit-and-fix pass. They are recorded here, not fixed in it.
+Items that surfaced during the audit-and-fix pass and the live run that followed. They are recorded
+here, not fixed in it.
 
 ### F5 — A dated record can silently drift from the code, and its own banner hides it
 
@@ -189,3 +195,32 @@ has a `test` script (`pnpm --filter @markus/core test` just looks for a `test` s
 there). The working form is the root Vitest plus a positional path filter —
 `pnpm test -- packages/core`. **Resolution:** already applied (the table and *Development Gotchas*),
 and recorded here so the pattern is not reintroduced.
+
+### F9 — `filesTouched` is a tool-name allowlist, so it misses every write done through `shell_execute`
+
+**Observed (live, 2026-10-09, on the rebuilt bundle).** Two children, each told to create exactly one
+file, differing only in *how*:
+
+| Child wrote via | `filesTouched` | `toolCalls.writes` | File on disk? |
+|-----------------|----------------|--------------------|---------------|
+| `file_write` | `["/tmp/friction-probe/gamma.txt"]` | `1` | yes |
+| `shell_execute` (`printf … > delta.txt`) | `[]` | `0` | **yes — but invisible** |
+
+**Why it is a problem.** The count comes from `writePaths`, which keys on the *tool name*
+(`file_write` / `file_edit` / `apply_patch`). Any write through a shell redirection, `tee`, `cp`,
+`mv`, a generator script or a build step is therefore out of scope — and the resulting
+`filesTouched: []` + `writes: 0` is **ambiguous**: a parent cannot distinguish "the child wrote
+nothing" from "the child wrote through a path this signal does not measure." That is the *same*
+failure mode F3 exists to remove, reintroduced one layer down. It is also the R2 anti-pattern: one
+invariant ("which files did this child change") enforced at a scattered allowlist of call sites
+instead of at a single boundary. **Worst case:** the `[INCOMPLETE …]` note asserts *"No files were
+modified — it spent its whole budget exploring."* If a budget-stopped child wrote its files through
+the shell, that sentence is **false**, and a parent that trusts it skips the workspace check the note
+is there to trigger. A signal that lies is worse than no signal — this is the item that must not be
+reintroduced.
+
+**Suggested change.** Measure at the write boundary, not at tool call sites: snapshot the child's
+workspace (mtime/size, or `git status` when it is a worktree) before and after the run, and report
+`changed` vs `unknown`. If the cheap tool-level signal is kept, then (a) name its scope honestly
+(`filesWrittenViaFileTool`) and (b) never let the parent-facing note assert a negative the
+instrumentation cannot prove — say "no **file-tool** writes", not "no files were modified".
