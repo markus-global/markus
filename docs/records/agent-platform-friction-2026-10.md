@@ -224,3 +224,20 @@ workspace (mtime/size, or `git status` when it is a worktree) before and after t
 `changed` vs `unknown`. If the cheap tool-level signal is kept, then (a) name its scope honestly
 (`filesWrittenViaFileTool`) and (b) never let the parent-facing note assert a negative the
 instrumentation cannot prove — say "no **file-tool** writes", not "no files were modified".
+
+### F7 — An agent cannot tell which build it is actually running
+
+**Observed (2026-10-09).** After the fix was built and installed, the only way to confirm the running
+app had picked it up was to inspect the installed `app.asar` on disk (`grep` for the new field names)
+and reason about build provenance — there was no in-product signal of the agent's own runtime. The
+trap is three-layered and easy to hit: **restarting is not rebuilding, and rebuilding is not
+rebuilding *from the right branch*.** A restart against the currently checked-out branch silently
+keeps serving the old code, and every check available to the agent (source `grep`, unit tests) can
+pass while the running process still executes stale bytes.
+**Why it is a problem.** An agent that debugs its own platform cannot trust its own observations: it
+may "verify" a fix the running process does not contain, or fail to reproduce a bug already fixed in
+the build. Confirming this item's own fix live required a manual `app.asar` grep — evidence a human
+had to read, not a signal the platform gave.
+**Suggested change.** Print the build's commit sha at startup and compare it with the source `HEAD`;
+when they differ, or when the build is from a branch other than the expected one, surface it
+prominently. An agent should be able to ask "what am I running?" and get an authoritative answer.
