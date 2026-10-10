@@ -1,11 +1,32 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import * as Lark from '@larksuiteoapi/node-sdk';
 import { createLogger, msgId, type Message } from '@markus/shared';
-import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
+import type {
+  CommAdapter,
+  CommAdapterConfig,
+  InboundAction,
+  InboundActionHandler,
+  IncomingMessageHandler,
+  SendOptions,
+} from '../adapter.js';
 import { FeishuClient, type ReceiveIdType } from './client.js';
+import { activeInboundMode, getManifest } from '../platforms/registry.js';
 import { createHmac, randomBytes, createCipheriv, createDecipheriv, scrypt } from 'node:crypto';
 import { promisify } from 'node:util';
 
 const log = createLogger('feishu-adapter');
+
+/**
+ * Wrap markdown in the smallest card Feishu will render as rich text. Feishu's
+ * plain `text` message shows `**bold**` literally; a `div` element with
+ * `tag: 'lark_md'` renders standard markdown, which is exactly what agents emit.
+ */
+function buildMarkdownCard(markdown: string): Record<string, unknown> {
+  return {
+    config: { wide_screen_mode: true },
+    elements: [{ tag: 'div', text: { tag: 'lark_md', content: markdown } }],
+  };
+}
 
 /** Extended send options for Feishu adapter */
 export interface FeishuSendOptions extends SendOptions {
@@ -64,8 +85,13 @@ export class FeishuAdapter implements CommAdapter {
   private config?: FeishuAdapterConfig;
   private handlers: IncomingMessageHandler[] = [];
   private server?: ReturnType<typeof createServer>;
-  private ws?: any;
-  private wsHeartbeatTimer?: ReturnType<typeof setInterval>;
+  /**
+   * The official Feishu long connection (`@larksuiteoapi/node-sdk` `WSClient`).
+   * This — not the webhook server — is the default receiver: a desktop install
+   * has no public URL for Feishu to POST to (design §6.5).
+   */
+  private wsClient?: Lark.WSClient;
+  private actionHandlers: InboundActionHandler[] = [];
   private connected = false;
   private processedEvents = new Set<string>();
 
@@ -79,9 +105,16 @@ export class FeishuAdapter implements CommAdapter {
 
     await this.client.getTenantToken();
 
-    if (this.config.wsMode) {
-      await this.setupWsSubscription();
-    } else {
+    // The **long connection** (official Lark SDK `WSClient`) is the default
+    // receiver: a desktop install has no public URL for Feishu to POST events
+    // to, so the webhook server is opt-in (design §6.5). That default is not
+    // decided here — it is declared in the capability table (`defaultInboundMode:
+    // 'socket'`) and read through the single `activeInboundMode` reader, so the
+    // adapter and the registry cannot disagree about Feishu's transport.
+    const capabilities = getManifest(this.platform)?.capabilities;
+    const useWebhook =
+      activeInboundMode(capabilities, this.config as unknown as Record<string, unknown>) === 'webhook';
+    if (useWebhook) {
       const port = this.config.webhookPort ?? 9000;
       this.server = createServer((req, res) => this.handleWebhook(req, res));
       await new Promise<void>((resolve, reject) => {
@@ -92,14 +125,16 @@ export class FeishuAdapter implements CommAdapter {
           resolve();
         });
       });
+    } else {
+      await this.setupLongConnection();
     }
 
     this.connected = true;
-    log.info(`Feishu adapter connected (mode: ${this.config.wsMode ? 'websocket' : 'webhook'})`);
+    log.info(`Feishu adapter connected (mode: ${useWebhook ? 'webhook' : 'long-connection'})`);
   }
 
   async disconnect(): Promise<void> {
-    this.teardownWsSubscription();
+    this.teardownLongConnection();
     if (this.server) {
       this.server.close();
       this.server = undefined;
@@ -115,6 +150,18 @@ export class FeishuAdapter implements CommAdapter {
 
     if (feishuOpts?.asCard) {
       return this.client.sendInteractiveMessage(channelId, JSON.parse(content), idType);
+    }
+    // Feishu `text` messages do not render markdown at all — the agent's `**bold**`
+    // would arrive literally. A `lark_md` card element *does*, so markdown is sent
+    // as a minimal card; if card delivery fails, fall back to plain text so the
+    // message is never lost over formatting.
+    if (options?.markdown) {
+      try {
+        return await this.client.sendInteractiveMessage(channelId, buildMarkdownCard(content), idType);
+      } catch (error) {
+        log.warn('Feishu rejected the markdown card; falling back to plain text', { error: String(error) });
+        return this.client.sendTextMessage(channelId, content, idType);
+      }
     }
     if (options?.richText) {
       return this.client.sendInteractiveMessage(channelId, JSON.parse(content), idType);
@@ -138,6 +185,14 @@ export class FeishuAdapter implements CommAdapter {
 
     if (msgType === 'interactive') {
       return this.client.replyCard(replyToId, JSON.parse(content));
+    }
+    if (options?.markdown) {
+      try {
+        return await this.client.replyCard(replyToId, buildMarkdownCard(content));
+      } catch (error) {
+        log.warn('Feishu rejected the markdown reply card; falling back to plain text', { error: String(error) });
+        return this.client.replyMessage(replyToId, JSON.stringify({ text: content }));
+      }
     }
     // For rich text (post) and plain text, content format differs
     if (msgType === 'post') {
@@ -174,114 +229,73 @@ export class FeishuAdapter implements CommAdapter {
     this.handlers.push(handler);
   }
 
+  /**
+   * Action port (design §6.5). A card-button tap is a HITL state transition, not
+   * a conversation, so it is handed to the registered action handler rather than
+   * being faked into a {@link Message} for the agent.
+   */
+  onAction(handler: InboundActionHandler): void {
+    this.actionHandlers.push(handler);
+  }
+
   isConnected(): boolean {
     return this.connected;
   }
 
-  // ─── WebSocket Event Subscription ────────────────────────────────────────────
+  // ─── Long connection (official Lark SDK) ─────────────────────────────────────
 
-  private async setupWsSubscription(): Promise<void> {
-    if (!this.client || !this.config) return;
-    const token = await this.client.getTenantToken();
-
-    // Step 1: Get WebSocket URL from Feishu API
-    const res = await fetch(`${this.config.domain ?? 'https://open.feishu.cn'}/open-apis/ws/v1/apps/${this.config.appId}/subscribe`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${token}`,
-        'Content-Type': 'application/json',
+  /**
+   * Establish the official Feishu **long connection** — the single inbound
+   * receiver for Feishu (design §6.5). The retired legacy notifier privately
+   * owned this transport; owning it here means one receiver, one routing path,
+   * no public URL required.
+   *
+   * SDK-shaped payloads are normalised into the same `FeishuEvent` envelope the
+   * webhook path uses, so exactly one `processMessageEvent` / `processCardAction`
+   * runs regardless of transport.
+   */
+  private async setupLongConnection(): Promise<void> {
+    if (!this.config) return;
+    const eventDispatcher = new Lark.EventDispatcher({
+      loggerLevel: Lark.LoggerLevel.info,
+    }).register({
+      'im.message.receive_v1': (data: unknown) => {
+        const inner = (data ?? {}) as { message?: { message_id?: string } };
+        const envelope: FeishuEvent = {
+          header: {
+            event_id: inner.message?.message_id ?? `lc-${Date.now()}`,
+            event_type: 'im.message.receive_v1',
+            create_time: String(Date.now()),
+            token: '',
+          },
+          event: inner as FeishuEvent['event'],
+        };
+        this.processMessageEvent(envelope).catch((err) => {
+          log.error('Failed to process Feishu message event', { error: String(err) });
+        });
       },
-      body: JSON.stringify({}),
+      'card.action.trigger': (data: unknown) => {
+        this.processCardAction((data ?? {}) as Record<string, unknown>).catch((err) => {
+          log.error('Failed to process card action', { error: String(err) });
+        });
+      },
     });
 
-    const data = (await res.json()) as { code: number; data?: { url?: string } };
-    if (data.code !== 0) {
-      throw new Error(`Feishu WS subscribe failed: ${JSON.stringify(data)}`);
-    }
-
-    const wsUrl = data.data?.url;
-    if (!wsUrl) {
-      throw new Error('Feishu WS subscribe returned no URL');
-    }
-
-    // Step 2: Connect WebSocket
-    this.ws = new (globalThis as any).WebSocket(wsUrl);
-
-    this.ws.onopen = () => {
-      log.info('Feishu WebSocket connected');
-    };
-
-    this.ws.onmessage = (event: { data: Buffer }) => {
-      try {
-        const payload = JSON.parse(event.data.toString()) as FeishuEvent;
-        this.handleWsEvent(payload).catch((err) => {
-          log.error('Failed to handle WS event', { error: err.message });
-        });
-      } catch (err) {
-        log.error('Failed to parse WS message', { error: err instanceof Error ? err.message : String(err) });
-      }
-    };
-
-    this.ws.onclose = (event: { code: number; reason: Buffer }) => {
-      log.warn(`Feishu WebSocket closed: code=${event.code}, reason=${event.reason.toString()}`);
-      // Auto-reconnect after 5 seconds
-      setTimeout(() => {
-        if (this.connected) {
-          log.info('Feishu WebSocket reconnecting...');
-          this.setupWsSubscription().catch((err) => {
-            log.error('Feishu WS reconnect failed', { error: err.message });
-          });
-        }
-      }, 5000);
-    };
-
-    this.ws.onerror = () => {
-      log.error('Feishu WebSocket error occurred');
-    };
-
-    // Step 3: Heartbeat at 30s intervals (Feishu WS requirement)
-    this.wsHeartbeatTimer = setInterval(() => {
-      if (this.ws?.readyState === (globalThis as any).WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ type: 'heartbeat' }));
-      }
-    }, 30_000);
+    this.wsClient = new Lark.WSClient({
+      appId: this.config.appId,
+      appSecret: this.config.appSecret,
+      domain: this.config.domain,
+      loggerLevel: Lark.LoggerLevel.info,
+      onError: (err: Error) => log.error('Feishu long connection error', { error: err.message }),
+    });
+    await this.wsClient.start({ eventDispatcher });
+    log.info('Feishu long connection established');
   }
 
-  private teardownWsSubscription(): void {
-    if (this.wsHeartbeatTimer) {
-      clearInterval(this.wsHeartbeatTimer);
-      this.wsHeartbeatTimer = undefined;
-    }
-    if (this.ws) {
-      this.ws.close();
-      this.ws = undefined;
-    }
-  }
-
-  private async handleWsEvent(event: FeishuEvent): Promise<void> {
-    // Handle challenge/pong
-    if (event.type === 'pong') return;
-
-    // Deduplicate events
-    const eventId = event.header?.event_id;
-    if (eventId) {
-      if (this.processedEvents.has(eventId)) return;
-      this.processedEvents.add(eventId);
-      if (this.processedEvents.size > 1000) {
-        const arr = Array.from(this.processedEvents);
-        this.processedEvents = new Set(arr.slice(-500));
-      }
-    }
-
-    // Process message events
-    if (event.header?.event_type === 'im.message.receive_v1') {
-      await this.processMessageEvent(event);
-    }
-
-    // Card action callbacks
-    if ((event as Record<string, unknown>)['action']) {
-      await this.processCardAction(event as Record<string, unknown>);
-    }
+  private teardownLongConnection(): void {
+    // The SDK's WSClient exposes no clean stop(); nulling the ref lets a later
+    // connect() recreate it, and the socket is reclaimed by the SDK/GC.
+    this.wsClient = undefined;
   }
 
   /**
@@ -418,6 +432,11 @@ export class FeishuAdapter implements CommAdapter {
       replyToId: undefined,
       threadId: msgEvent.message_id,
       timestamp: new Date().toISOString(),
+      // Bot identity + social context (design §6.5): the resolver needs both to
+      // pick the bound agent (instance) and the isolated session (kind). A p2p
+      // chat is a `dm`; everything else is a `group` — isolation stays the default.
+      instanceId: this.config?.instanceId ?? this.platform,
+      channelKind: msgEvent.chat_type === 'p2p' ? 'dm' : 'group',
     };
 
     for (const handler of this.handlers) {
@@ -433,34 +452,32 @@ export class FeishuAdapter implements CommAdapter {
     const action = event['action'] as Record<string, unknown> | undefined;
     if (!action) return;
 
-    const value = action['value'] as Record<string, string> | undefined;
+    const value = action['value'] as Record<string, unknown> | undefined;
     if (!value) return;
 
-    const operatorId = ((event['operator'] as Record<string, unknown>)?.['open_id'] as string) ?? 'unknown';
+    const operatorId =
+      ((event['operator'] as Record<string, unknown> | undefined)?.['open_id'] as string | undefined) ??
+      (event['open_id'] as string | undefined) ??
+      'unknown';
 
-    const message: Message = {
-      id: msgId(),
-      platform: 'feishu',
-      direction: 'inbound',
-      channelId: value['agent'] ?? '',
-      senderId: operatorId,
-      senderName: 'User',
-      agentId: value['agent'] ?? '',
-      content: {
-        type: 'action_card',
-        text: `[Card Action] ${value['action'] ?? 'unknown'}`,
-        actionCard: {
-          title: 'Card Action',
-          text: JSON.stringify(value),
-          actions: [],
-        },
-      },
+    const inbound: InboundAction = {
+      platform: this.platform,
+      instanceId: this.config?.instanceId ?? this.platform,
+      payload: event,
+      actorId: operatorId,
       timestamp: new Date().toISOString(),
     };
 
-    for (const handler of this.handlers) {
+    if (this.actionHandlers.length === 0) {
+      log.warn('Card action received but no action handler is registered — dropping', {
+        action: value['action'],
+      });
+      return;
+    }
+
+    for (const handler of this.actionHandlers) {
       try {
-        await handler(message);
+        await handler(inbound);
       } catch (error) {
         log.error('Card action handler failed', { error });
       }

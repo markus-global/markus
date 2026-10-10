@@ -3,6 +3,7 @@ import { createHmac } from 'node:crypto';
 import { createLogger, msgId, type Message } from '@markus/shared';
 import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
 import { WhatsAppClient, type WhatsAppClientConfig } from './client.js';
+import { renderMarkdown } from '../render/markdown.js';
 
 const log = createLogger('whatsapp-adapter');
 
@@ -110,7 +111,8 @@ export class WhatsAppAdapter implements CommAdapter {
     if (!this.config || !this.client) throw new Error('WhatsApp adapter not connected');
 
     try {
-      const messageId = await this.client.sendTextMessage(channelId, content);
+      const text = options?.markdown ? renderMarkdown(content, 'whatsapp') : content;
+      const messageId = await this.client.sendTextMessage(channelId, text);
       log.info(`WhatsApp message sent to ${channelId}: ${messageId}`);
       return messageId;
     } catch (error) {
@@ -119,11 +121,12 @@ export class WhatsAppAdapter implements CommAdapter {
     }
   }
 
-  async sendReply(channelId: string, replyToId: string, content: string): Promise<string> {
+  async sendReply(channelId: string, replyToId: string, content: string, options?: SendOptions): Promise<string> {
     if (!this.config || !this.client) throw new Error('WhatsApp adapter not connected');
     // WhatsApp doesn't have native reply — use context to reference original
     try {
-      const messageId = await this.client.sendTextMessage(channelId, content);
+      const text = options?.markdown ? renderMarkdown(content, 'whatsapp') : content;
+      const messageId = await this.client.sendTextMessage(channelId, text);
       log.info(`WhatsApp reply sent to ${channelId} (in response to ${replyToId})`);
       return messageId;
     } catch (error) {

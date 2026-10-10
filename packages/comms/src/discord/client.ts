@@ -1,4 +1,6 @@
 import { createLogger } from '@markus/shared';
+// Route outbound calls through the platform's proxy-aware fetch (../net/http.ts).
+import { httpFetch, type FetchLike } from '../net/http.js';
 
 const log = createLogger('discord-client');
 
@@ -40,7 +42,7 @@ export interface DiscordGatewayEvent {
 }
 
 export interface DiscordRestTransport {
-  fetch: typeof globalThis.fetch;
+  fetch: FetchLike;
 }
 
 export interface DiscordGatewayTransport {
@@ -109,7 +111,7 @@ export class DiscordClient {
 
   constructor(
     config: DiscordClientConfig,
-    private readonly rest: DiscordRestTransport = { fetch: globalThis.fetch },
+    private readonly rest: DiscordRestTransport = { fetch: httpFetch },
     private readonly gateway: DiscordGatewayTransport = new NativeGateway(),
   ) {
     this.config = config;

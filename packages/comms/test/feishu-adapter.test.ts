@@ -3,6 +3,38 @@ import { createServer, request as httpRequestRaw } from 'node:http';
 import { FeishuAdapter } from '../src/feishu/adapter.js';
 import type { FeishuClient } from '../src/feishu/client.js';
 
+/**
+ * The Feishu adapter receives events over the official Lark SDK **long
+ * connection** (design §6.5). It is mocked so tests can (a) assert the long
+ * connection is the default transport, and (b) drive `im.message.receive_v1` /
+ * `card.action.trigger` payloads exactly as the SDK delivers them — the *inner*
+ * event, with no envelope.
+ */
+const sdkState = vi.hoisted(() => ({
+  dispatcher: undefined as undefined | { handlers: Record<string, (data: unknown) => void> },
+  wsStarts: 0,
+}));
+
+vi.mock('@larksuiteoapi/node-sdk', () => ({
+  WSClient: class {
+    constructor(_opts: unknown) {}
+    async start(): Promise<void> {
+      sdkState.wsStarts += 1;
+    }
+  },
+  EventDispatcher: class {
+    handlers: Record<string, (data: unknown) => void> = {};
+    constructor(_opts?: unknown) {}
+    register(map: Record<string, (data: unknown) => void>) {
+      this.handlers = map;
+      sdkState.dispatcher = this;
+      return this;
+    }
+  },
+  LoggerLevel: { error: 0, warn: 1, info: 2, debug: 3 },
+  Client: class {},
+}));
+
 // Factory to create a mock FeishuClient
 function makeMockClient(): Partial<FeishuClient> {
   return {
@@ -219,6 +251,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: 0,
       });
       expect(fresh.isConnected()).toBe(true);
@@ -279,6 +312,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -312,6 +346,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -354,6 +389,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -391,6 +427,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -417,10 +454,12 @@ describe('FeishuAdapter', () => {
       vi.unstubAllGlobals();
     });
 
-    it('POST card action invokes handler', async () => {
+    it('POST card action goes to the action port, not the message handler', async () => {
       const fresh = new FeishuAdapter();
-      const handler = vi.fn().mockResolvedValue(undefined);
-      fresh.onMessage(handler);
+      const onMessage = vi.fn().mockResolvedValue(undefined);
+      const onAction = vi.fn().mockResolvedValue(undefined);
+      fresh.onMessage(onMessage);
+      fresh.onAction(onAction);
 
       vi.stubGlobal(
         'fetch',
@@ -432,8 +471,10 @@ describe('FeishuAdapter', () => {
 
       await fresh.connect({
         platform: 'feishu',
+        instanceId: 'bi_secretary',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -448,8 +489,13 @@ describe('FeishuAdapter', () => {
 
       await httpRequest(port, 'POST', '/', body);
       await new Promise(r => setTimeout(r, 50));
-      expect(handler).toHaveBeenCalledOnce();
-      expect(handler.mock.calls[0][0].content.type).toBe('action_card');
+      // A card tap is a HITL transition, not a conversation (design §6.5).
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onMessage).not.toHaveBeenCalled();
+      const action = onAction.mock.calls[0][0];
+      expect(action.instanceId).toBe('bi_secretary');
+      expect(action.actorId).toBe('ou_user');
+      expect(action.payload.action.value.action).toBe('approve');
       await fresh.disconnect();
       vi.unstubAllGlobals();
     });
@@ -471,6 +517,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -515,6 +562,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         encryptKey,
         webhookPort: port,
       });
@@ -566,6 +614,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -595,6 +644,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -635,6 +685,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -662,6 +713,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -704,6 +756,7 @@ describe('FeishuAdapter', () => {
         platform: 'feishu',
         appId: 'cli_test',
         appSecret: 'secret',
+        wsMode: false,
         webhookPort: port,
       });
       await new Promise(r => setTimeout(r, 50));
@@ -729,145 +782,127 @@ describe('FeishuAdapter', () => {
     });
   });
 
-  describe('websocket mode', () => {
-    it('connects via WebSocket subscription and handles WS events', async () => {
-      class MockWebSocket {
-        static OPEN = 1;
-        readyState = MockWebSocket.OPEN;
-        onopen?: () => void;
-        onmessage?: (event: { data: Buffer }) => void;
-        onclose?: (event: { code: number; reason: Buffer }) => void;
-        onerror?: () => void;
-        send = vi.fn();
-        close = vi.fn();
-        constructor(_url: string) {
-          setTimeout(() => this.onopen?.(), 0);
-        }
-        emitMessage(data: unknown) {
-          this.onmessage?.({ data: Buffer.from(JSON.stringify(data)) });
-        }
-      }
-
-      vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
-
-      const fetchMock = vi.fn()
-        .mockResolvedValueOnce({
+  describe('long connection (official Lark SDK)', () => {
+    it('is the default receiver — the SDK long connection starts, no webhook server', async () => {
+      sdkState.wsStarts = 0;
+      const fresh = new FeishuAdapter();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
           ok: true,
           json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
-        })
-        .mockResolvedValueOnce({
-          ok: true,
-          json: async () => ({ code: 0, data: { url: 'wss://mock-feishu/ws' } }),
-        });
-      vi.stubGlobal('fetch', fetchMock);
+        }),
+      );
 
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+
+      expect(sdkState.wsStarts).toBe(1);
+      expect((fresh as Record<string, unknown>)['server']).toBeUndefined();
+      expect(fresh.isConnected()).toBe(true);
+
+      await fresh.disconnect();
+      vi.unstubAllGlobals();
+    });
+
+    it('normalises SDK payloads and reports instanceId + channelKind (p2p → dm)', async () => {
       const fresh = new FeishuAdapter();
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        }),
+      );
       const handler = vi.fn().mockResolvedValue(undefined);
       fresh.onMessage(handler);
 
       await fresh.connect({
         platform: 'feishu',
+        instanceId: 'bi_support',
         appId: 'cli_test',
         appSecret: 'secret',
-        wsMode: true,
       });
 
-      const ws = (fresh as Record<string, unknown>)['ws'] as MockWebSocket;
-      ws.emitMessage({
-        header: { event_id: 'evt-ws-1', event_type: 'im.message.receive_v1' },
-        event: {
-          sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
-          message: {
-            message_id: 'om_ws',
-            chat_id: 'oc_chat',
-            chat_type: 'group',
-            message_type: 'text',
-            content: JSON.stringify({ text: 'ws hello' }),
-          },
+      // The SDK hands us the inner event — no envelope.
+      sdkState.dispatcher!.handlers['im.message.receive_v1']({
+        sender: { sender_id: { open_id: 'ou_user' }, sender_type: 'user' },
+        message: {
+          message_id: 'om_lc',
+          chat_id: 'oc_dm',
+          chat_type: 'p2p',
+          message_type: 'text',
+          content: JSON.stringify({ text: 'lc hello' }),
         },
       });
+      await new Promise((r) => setTimeout(r, 20));
 
-      await new Promise(r => setTimeout(r, 30));
       expect(handler).toHaveBeenCalledOnce();
-      expect(handler.mock.calls[0][0].content.text).toBe('ws hello');
+      const msg = handler.mock.calls[0][0];
+      expect(msg.content.text).toBe('lc hello');
+      expect(msg.instanceId).toBe('bi_support');
+      expect(msg.channelKind).toBe('dm');
 
       await fresh.disconnect();
       vi.unstubAllGlobals();
     });
 
-    it('ignores pong WS events', async () => {
-      class MockWebSocket {
-        static OPEN = 1;
-        readyState = MockWebSocket.OPEN;
-        onopen?: () => void;
-        onmessage?: (event: { data: Buffer }) => void;
-        send = vi.fn();
-        close = vi.fn();
-        constructor(_url: string) {
-          setTimeout(() => this.onopen?.(), 0);
-        }
-        emitMessage(data: unknown) {
-          this.onmessage?.({ data: Buffer.from(JSON.stringify(data)) });
-        }
-      }
-
-      vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
+    it('routes card actions to the action port, never to the message handler', async () => {
+      const fresh = new FeishuAdapter();
       vi.stubGlobal(
         'fetch',
-        vi.fn()
-          .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
-          })
-          .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ code: 0, data: { url: 'wss://mock-feishu/ws' } }),
-          }),
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        }),
       );
-
-      const fresh = new FeishuAdapter();
-      const handler = vi.fn().mockResolvedValue(undefined);
-      fresh.onMessage(handler);
+      const onMessage = vi.fn().mockResolvedValue(undefined);
+      const onAction = vi.fn().mockResolvedValue(undefined);
+      fresh.onMessage(onMessage);
+      fresh.onAction(onAction);
 
       await fresh.connect({
         platform: 'feishu',
+        instanceId: 'bi_secretary',
         appId: 'cli_test',
         appSecret: 'secret',
-        wsMode: true,
       });
 
-      const ws = (fresh as Record<string, unknown>)['ws'] as MockWebSocket;
-      ws.emitMessage({ type: 'pong' });
-      await new Promise(r => setTimeout(r, 30));
-      expect(handler).not.toHaveBeenCalled();
+      sdkState.dispatcher!.handlers['card.action.trigger']({
+        action: { value: { approval_id: 'appr_1', action: 'approve' } },
+        operator: { open_id: 'ou_boss' },
+      });
+      await new Promise((r) => setTimeout(r, 20));
+
+      expect(onAction).toHaveBeenCalledOnce();
+      expect(onMessage).not.toHaveBeenCalled();
+      const action = onAction.mock.calls[0][0];
+      expect(action.platform).toBe('feishu');
+      expect(action.instanceId).toBe('bi_secretary');
+      expect(action.actorId).toBe('ou_boss');
+      expect((action.payload as Record<string, any>).action.value.approval_id).toBe('appr_1');
 
       await fresh.disconnect();
       vi.unstubAllGlobals();
     });
 
-    it('throws when WS subscribe API fails', async () => {
+    it('drops a card action when no action handler is registered (no throw)', async () => {
+      const fresh = new FeishuAdapter();
       vi.stubGlobal(
         'fetch',
-        vi.fn()
-          .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
-          })
-          .mockResolvedValueOnce({
-            ok: true,
-            json: async () => ({ code: 10003, msg: 'subscribe failed' }),
-          }),
-      );
-
-      const fresh = new FeishuAdapter();
-      await expect(
-        fresh.connect({
-          platform: 'feishu',
-          appId: 'cli_test',
-          appSecret: 'secret',
-          wsMode: true,
+        vi.fn().mockResolvedValue({
+          ok: true,
+          json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
         }),
-      ).rejects.toThrow(/subscribe failed/);
+      );
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+
+      expect(() =>
+        sdkState.dispatcher!.handlers['card.action.trigger']({
+          action: { value: { approval_id: 'appr_1' } },
+        }),
+      ).not.toThrow();
+
+      await fresh.disconnect();
       vi.unstubAllGlobals();
     });
   });

@@ -1,5 +1,7 @@
 import { createHash, createHmac, timingSafeEqual } from 'node:crypto';
 import { createLogger } from '@markus/shared';
+// Route outbound calls through the platform's proxy-aware fetch (../net/http.ts).
+import { httpFetch } from '../net/http.js';
 
 const log = createLogger('slack-client');
 
@@ -234,7 +236,7 @@ export class SlackClient {
   private async post(endpoint: string, body: Record<string, unknown>): Promise<SlackMessageResponse> {
     const url = `${this.apiUrl}/${endpoint}`;
     
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.botToken}`,

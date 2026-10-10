@@ -24,6 +24,8 @@ import {
   PROVIDERS,
   type LLMProviderConfig,
   type DecisionType,
+  type MarkusConfig,
+  pickOrgSecretary,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -36,6 +38,7 @@ import {
   ExternalAgentGateway,
   type GatewayStore,
   type ExternalAgentRegistration,
+  proxyFetch,
 } from '@markus/core';
 import {
   OrganizationService,
@@ -65,14 +68,257 @@ import {
   WorkflowService,
   WorkflowRunner,
   WorkflowScheduler,
+  loadPlatformBindings,
+  type PlatformStoreDeps,
   type AuditEventType,
+  readStoredPlatformConfig,
+  type StoredPlatformConfig,
+  type PlatformIntegrationStoreDeps,
+  recordInstanceVerification,
+  type InstanceStoreDeps,
 } from '@markus/org-manager';
-import { MessageRouter, FeishuAdapter, WebUIAdapter } from '@markus/comms';
+import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, verifyActionRef, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
+import { setupOutboundDispatch } from './outbound.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
+
+// ─── Manifest-driven platform startup (issue #340) ────────────────────────────
+//
+// `markus start` no longer branches per platform: it walks `PLATFORM_MANIFESTS`
+// (`@markus/comms`), resolves each platform's config and connects whatever is
+// enabled. Adding a platform is a data change in the registry — never an edit
+// here; `test/commands-start-platforms.test.ts` pins that invariant.
+// Design write-up: docs/design/platform-manifest-startup.md.
+
+/** One platform's connection outcome — drives startup logs and the progress text. */
+export interface PlatformStartupResult {
+  id: string;
+  label: string;
+  connected: boolean;
+  error?: string;
+}
+
+export interface ConnectPlatformsOptions {
+  router: MessageRouter;
+  manifests: readonly PlatformManifest[];
+  config: MarkusConfig;
+  /**
+   * Config values computed at runtime, keyed by platform id. Only platforms whose
+   * config cannot be static need an entry; a newly added platform needs none.
+   */
+  runtimeConfig?: Record<string, Record<string, unknown>>;
+  /**
+   * Persisted bot instances for this org (`platform_instances` rows). When a
+   * platform has any, **they** define its connections — one adapter per row, each
+   * on its own credentials; the legacy path below is skipped for that platform.
+   * This is the "iterate instances, not platforms" traversal (G2, design §4.2).
+   */
+  instances?: readonly PersistedBotInstance[];
+  /**
+   * Persisted (Settings-API) config per platform, keyed by platform id — the
+   * **legacy** `integrations` fallback, consulted only for a platform that has no
+   * instance row. When a value is present here the platform was configured
+   * through the UI, and it must win over the read-only `markus.json` bootstrap —
+   * otherwise "saved in Settings" and "running" would drift apart. `enabled` is
+   * the row's toggle; `undefined` means "no stored row", i.e. fall back to
+   * field-based enablement.
+   */
+  storedConfig?: (platformId: string) => StoredPlatformConfig | undefined;
+}
+
+/**
+ * Minimal shape of a persisted bot instance (`platform_instances` row) as startup
+ * needs it. Structural, so a storage row is assignable without a cast.
+ */
+export interface PersistedBotInstance {
+  id: string;
+  platform: string;
+  label: string;
+  /** Raw stored config (credentials); merged with file/env/runtime at resolution. */
+  config?: unknown;
+  enabled?: boolean;
+}
+
+/** Env var for a platform field: (feishu, appId) → FEISHU_APP_ID. */
+function manifestEnvKey(platformId: string, fieldKey: string): string {
+  const snake = fieldKey.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toUpperCase();
+  return `${platformId.toUpperCase()}_${snake}`;
+}
+
+/** Coerce a raw config value to the field's declared type; empty ⇒ undefined. */
+function coerceFieldValue(field: PlatformField, raw: unknown): unknown {
+  if (raw === undefined || raw === null || raw === '') return undefined;
+  switch (field.type) {
+    case 'number': {
+      const n = typeof raw === 'number' ? raw : Number(raw);
+      return Number.isFinite(n) ? n : undefined;
+    }
+    case 'boolean':
+      if (typeof raw === 'boolean') return raw;
+      return ['true', '1', 'yes', 'on'].includes(String(raw).toLowerCase());
+    default:
+      return typeof raw === 'string' ? raw : String(raw);
+  }
+}
+
+/**
+ * Resolve one platform's config from the config file (`integrations[<id>]`) and the
+ * environment, then overlay runtime-computed values. Manifest `field.default` is
+ * intentionally NOT applied — it is the settings *form* default, while the adapter
+ * owns its own runtime defaults (see the design doc §3).
+ */
+function resolveManifestConfig(
+  manifest: PlatformManifest,
+  sections: Record<string, unknown>,
+  runtime: Record<string, unknown> | undefined,
+  stored: Record<string, unknown> | undefined,
+): Record<string, unknown> {
+  const section = sections[manifest.id];
+  const fromFile = section && typeof section === 'object' ? (section as Record<string, unknown>) : {};
+  const fromStore = stored ?? {};
+  const resolved: Record<string, unknown> = {};
+  for (const field of manifest.fields) {
+    const raw = fromStore[field.key] ?? fromFile[field.key] ?? process.env[manifestEnvKey(manifest.id, field.key)];
+    const value = coerceFieldValue(field, raw);
+    if (value !== undefined) resolved[field.key] = value;
+  }
+  return runtime ? { ...resolved, ...runtime } : resolved;
+}
+
+/**
+ * A platform is on when it is default-on, or it was actually configured: every
+ * required field resolved. When a platform declares no required field (all knobs
+ * optional) it stays off until at least one value is provided — never silently on.
+ *
+ * Only fields that are *needed to connect* count. A routing field (`agentId`)
+ * cannot be a connection credential, so it must not gate the transport: a bot
+ * whose credentials are configured has to connect even if nobody has picked its
+ * answering agent yet — otherwise making that field required would silently take
+ * an existing install offline.
+ */
+function isManifestEnabled(manifest: PlatformManifest, resolved: Record<string, unknown>): boolean {
+  if (manifest.defaultEnabled) return true;
+  const required = manifest.fields.filter((f) => f.required && f.type !== 'agent');
+  if (required.length === 0) return Object.keys(resolved).length > 0;
+  return required.every((f) => resolved[f.key] !== undefined);
+}
+
+/**
+ * Display label for a bot: the manifest name, disambiguated by the instance label
+ * when there is one. The implicit legacy bot (`label === 'default'`) keeps the
+ * bare manifest name, so pre-G2 logs and progress text are unchanged.
+ */
+function botLabel(manifest: PlatformManifest, instanceLabel: string): string {
+  return !instanceLabel || instanceLabel === 'default'
+    ? manifest.label
+    : `${manifest.label} (${instanceLabel})`;
+}
+
+/**
+ * Build, register and connect every enabled bot in `manifests`.
+ *
+ * A **platform** is a manifest; a **bot** is one instance of it. This walks the
+ * persisted instances first — one adapter per row, each on its own credentials —
+ * and only falls back to the legacy platform path (the `integrations` row +
+ * `markus.json` + env) for a platform that has no instance row. The legacy
+ * fallback registers a single implicit instance whose id is the platform id,
+ * which is byte-for-byte the pre-instance behaviour (design §4.2, §5.2 step 4).
+ *
+ * One bot failing never blocks the rest (issue #340 degradation rules).
+ */
+export async function connectConfiguredPlatforms(opts: ConnectPlatformsOptions): Promise<PlatformStartupResult[]> {
+  const { router, manifests, config, runtimeConfig, storedConfig, instances } = opts;
+  const sections = (config.integrations ?? {}) as Record<string, unknown>;
+  const results: PlatformStartupResult[] = [];
+
+  // Persisted instances grouped by platform, so each manifest sees only its own.
+  const byPlatform = new Map<string, PersistedBotInstance[]>();
+  for (const instance of instances ?? []) {
+    const list = byPlatform.get(instance.platform);
+    if (list) list.push(instance);
+    else byPlatform.set(instance.platform, [instance]);
+  }
+
+  const connectOne = async (
+    manifest: PlatformManifest,
+    instanceId: string,
+    label: string,
+    resolved: Record<string, unknown>,
+  ): Promise<void> => {
+    try {
+      const adapter = manifest.createAdapter();
+      router.registerAdapter(adapter, instanceId);
+      // connectAll owns the onMessage wiring and swallows connect errors, so the
+      // adapter's own isConnected() is the authoritative outcome.
+      await router.connectAll([{ platform: manifest.id, ...resolved, instanceId }]);
+      results.push({ id: instanceId, label, connected: adapter.isConnected() });
+    } catch (error) {
+      results.push({ id: instanceId, label, connected: false, error: String(error) });
+    }
+  };
+
+  for (const manifest of manifests) {
+    const rows = byPlatform.get(manifest.id) ?? [];
+
+    if (rows.length > 0) {
+      for (const row of rows) {
+        const rowConfig =
+          row.config && typeof row.config === 'object' ? (row.config as Record<string, unknown>) : {};
+        const resolved = resolveManifestConfig(manifest, sections, runtimeConfig?.[manifest.id], rowConfig);
+        // A row switched off, or one whose required fields do not resolve, is
+        // skipped — never connected half-configured.
+        if (row.enabled === false || !isManifestEnabled(manifest, resolved)) continue;
+        await connectOne(manifest, row.id, botLabel(manifest, row.label), resolved);
+      }
+      continue;
+    }
+
+    // Legacy fallback: no instance row ⇒ the implicit single bot, id = platform id.
+    const stored = storedConfig?.(manifest.id);
+    const resolved = resolveManifestConfig(manifest, sections, runtimeConfig?.[manifest.id], stored?.values);
+    if (!isManifestEnabled(manifest, resolved) || stored?.enabled === false) continue;
+    await connectOne(manifest, manifest.id, manifest.label, resolved);
+  }
+
+  return results;
+}
+
+export interface ApplyBindingsOptions {
+  router: MessageRouter;
+  /** Persisted integrations repo. Structural typing keeps this storage-agnostic. */
+  repo?: PlatformStoreDeps['repo'];
+  orgId: string;
+  /** Read-only legacy fallback, forwarded to `loadPlatformBindings`. */
+  bootstrap?: (platform: string) => Record<string, unknown>;
+}
+
+/**
+ * Apply the persisted platform→agent bindings to the router at startup.
+ *
+ * Runs right after {@link connectConfiguredPlatforms} so the router is bound in
+ * the same window the adapters come up — before the first inbound message can be
+ * routed. Returns the number of bindings applied (0 is a valid, quiet outcome:
+ * a fresh install binds nothing and inbound stays a loud no-op until configured).
+ */
+export function applyPersistedPlatformBindings(opts: ApplyBindingsOptions): number {
+  const bindings = loadPlatformBindings({
+    orgId: opts.orgId,
+    repo: opts.repo,
+    bootstrap: opts.bootstrap,
+  });
+  for (const binding of bindings) {
+    opts.router.bindPlatformAgent(binding.agentId, binding.platform);
+  }
+  if (bindings.length > 0) {
+    log.info(`Bound ${bindings.length} platform(s) to agents at startup`, {
+      bindings: bindings.map((b) => `${b.platform}→${b.agentId}`).join(', '),
+    });
+  }
+  return bindings.length;
+}
 
 export function registerStartCommand(program: Command) {
   program
@@ -1954,15 +2200,27 @@ async function startServerCore(
   };
   scheduleDailyReset();
 
-  const messageRouter = new MessageRouter();
-  const webUIAdapter = new WebUIAdapter();
-  messageRouter.registerAdapter(webUIAdapter);
+  // IM traffic must go through the same proxy the rest of the platform uses.
+  // Bare `fetch` inside the platform clients cannot reach a blocked network
+  // (e.g. Telegram from mainland China), which surfaces as "connection failed"
+  // while the LLM path — already proxy-aware — works fine on the same machine.
+  // One install point; no per-adapter wiring to forget.
+  setHttpFetch(proxyFetch);
 
-  messageRouter.setAgentHandler(async (agentId, message) => {
+  const messageRouter = new MessageRouter();
+
+  messageRouter.setAgentHandler(async (target, message) => {
+    const agentId = target.agentId;
     const startTs = Date.now();
     try {
       const agent = agentManager.getAgent(agentId);
-      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId);
+      // Session isolation (design §6.2): the resolved conversation key becomes the
+      // agent's `channelKey`, so each group and each external user gets its own
+      // session. A channel designated `main` maps to the agent's own main session
+      // (no per-channel key).
+      const channelKey =
+        target.conversationKey === MAIN_CONVERSATION_KEY ? undefined : target.conversationKey;
+      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, { channelKey });
       auditService.record({
         orgId: 'default',
         agentId,
@@ -1988,34 +2246,208 @@ async function startServerCore(
     }
   });
 
-  const commPort = apiPort + 2;
-
-  // ── Step 5: Gateway ───────────────────────────────────────────────────────
-  progress?.setActive(5);
-  await messageRouter.connectAll([{ platform: 'webui', port: commPort }]);
-
-  // Check for Feishu config
-  const feishuAppId = config.integrations?.feishu?.appId ?? process.env['FEISHU_APP_ID'];
-  const feishuAppSecret = config.integrations?.feishu?.appSecret ?? process.env['FEISHU_APP_SECRET'];
-  if (feishuAppId && feishuAppSecret) {
-    const feishuAdapter = new FeishuAdapter();
-    messageRouter.registerAdapter(feishuAdapter);
-    try {
-      await messageRouter.connectAll([
-        {
-          platform: 'feishu',
-          appId: feishuAppId,
-          appSecret: feishuAppSecret,
-        },
-      ]);
-      startupLog('OK', '飞书适配器已连接');
-      progress?.complete(5, 'webhook adapters: WebUI + Feishu');
-    } catch (error) {
-      startupLog('WARN', `飞书适配器连接失败，跳过: ${error instanceof Error ? error.message : String(error)}`);
-      progress?.complete(5, 'webhook adapter: WebUI only (Feishu failed)');
+  // ── Platform actions (design §6.5) ────────────────────────────────────────
+  // A card tap is a HITL transition, not a conversation. The action port is the
+  // single inbound side of the approval loop: verify the signed ref the gateway
+  // rendered, then hand the decision to the one HITL service. Without a secret
+  // the ref is a bare approval id (pre-G4 behaviour) — accepted, but warned.
+  messageRouter.setActionHandler(async (action) => {
+    const payload = (action.payload ?? {}) as Record<string, unknown>;
+    const value =
+      ((payload['action'] as Record<string, unknown> | undefined)?.['value'] as
+        | Record<string, unknown>
+        | undefined) ?? (payload['value'] as Record<string, unknown> | undefined) ?? {};
+    const rawRef =
+      typeof value['ref'] === 'string'
+        ? value['ref']
+        : typeof value['token'] === 'string'
+          ? value['token']
+          : undefined;
+    const actionSecret = process.env['MARKUS_ACTION_SECRET'];
+    if (rawRef && !actionSecret) {
+      log.warn('MARKUS_ACTION_SECRET not set — approval action refs are unverified');
     }
-  } else {
-    progress?.complete(5, 'webhook adapter: WebUI only');
+    const verified = rawRef && actionSecret ? verifyActionRef(rawRef, actionSecret) : undefined;
+    const approvalId =
+      verified?.approvalId ??
+      (typeof value['approvalId'] === 'string' ? value['approvalId'] : undefined);
+    const command =
+      verified?.action ?? (typeof value['action'] === 'string' ? value['action'] : undefined);
+    if (!approvalId || !command) {
+      log.warn('Platform action did not resolve to an approval — ignoring', {
+        platform: action.platform,
+        instanceId: action.instanceId,
+      });
+      return;
+    }
+    const approved = command === 'approve' || command === 'approve_task';
+    hitlService.respondToApproval(approvalId, approved, action.actorId || 'platform-action');
+    log.info('Platform action resolved', { approvalId, command, platform: action.platform });
+  });
+
+  // ── Step 5: Gateway (manifest-driven) ─────────────────────────────────────
+  progress?.setActive(5);
+  // Platforms configured through the Settings UI live in the `integrations`
+  // table, not `markus.json`; feeding them in here is what makes a UI-configured
+  // platform actually connect on the next start.
+  const integrationRepo = storage?.integrationRepo;
+  // Persisted bot instances (platform_instances). Each row is one bot — a platform
+  // hosting several bots brings several rows, and startup connects them all
+  // (G2, design §4.2). The legacy integrations path below is the fallback for a
+  // platform that has no instance row yet.
+  const persistedInstances = storage?.platformInstanceRepo?.listByOrg('default') ?? [];
+  const platformResults = await connectConfiguredPlatforms({
+    router: messageRouter,
+    manifests: PLATFORM_MANIFESTS,
+    config,
+    instances: persistedInstances,
+    storedConfig: (platformId) => {
+      const manifest = getManifest(platformId);
+      if (!manifest || !integrationRepo) return undefined;
+      return readStoredPlatformConfig({ orgId: 'default', repo: integrationRepo }, manifest);
+    },
+  });
+  for (const result of platformResults) {
+    if (result.connected) {
+      startupLog('OK', `${result.label} 适配器已连接`);
+    } else {
+      startupLog('WARN', `${result.label} 适配器连接失败，跳过${result.error ? `: ${result.error}` : ''}`);
+    }
+  }
+  // Bind each platform to its configured agent before the first inbound message
+  // can arrive — the same window the adapters just came up in (defect A).
+  applyPersistedPlatformBindings({
+    router: messageRouter,
+    repo: storage?.integrationRepo,
+    orgId: 'default',
+    bootstrap: (platform) => {
+      const section = (config.integrations as Record<string, unknown> | undefined)?.[platform];
+      return section && typeof section === 'object' ? (section as Record<string, unknown>) : {};
+    },
+  });
+
+  // The DB is the single writer for inbound routing (design §2/§6.3); the
+  // in-memory bindings above stay a read-only `markus.json` bootstrap fallback.
+  // Without this lookup an unbound platform would have no global route and the
+  // message would have nowhere to land (defect D6).
+  if (storage?.channelBindingRepo && storage?.platformInstanceRepo) {
+    messageRouter.setBindingLookup(
+      new RepoBindingLookup({
+        bindingRepo: storage.channelBindingRepo,
+        instanceRepo: storage.platformInstanceRepo,
+        orgDefaultAgent: (orgId) => {
+          // Terminal level (design §6.1 level 5): the org Secretary, from the same
+          // shared predicate the migration seeds the `global` binding with.
+          const rows = (storage.agentRepo?.listByOrg?.(orgId) ?? []) as Array<{
+            id: string;
+            name: string;
+            role_name: string;
+            agent_role: string;
+            team_id: string | null;
+          }>;
+          return pickOrgSecretary(
+            rows.map((r) => ({
+              id: r.id,
+              name: r.name,
+              role: r.role_name,
+              agentRole: r.agent_role,
+              teamId: r.team_id ?? undefined,
+            })),
+          )?.id;
+        },
+      }),
+    );
+  }
+
+  // ── Connection verification (Settings → Integrations "Save & test") ───────
+  // The registry owns the *state* of a pending handshake; the router owns *when*
+  // an inbound message is offered to it. The sender is the only thing the
+  // registry cannot derive itself: it needs a live adapter, so it routes through
+  // the same `sendToChannel` every other outbound message uses.
+  const connectionTests = new ConnectionTestRegistry({
+    sender: {
+      async send(instanceId, channelId, text) {
+        const bot = messageRouter.getInstances().find((b) => b.instanceId === instanceId);
+        const platform = bot?.platform ?? instanceId;
+        const messageId = await messageRouter.sendToChannel(platform, channelId, text, instanceId);
+        // `undefined` is the router's "no adapter, or not connected" signal —
+        // surfacing it as a throw is what keeps the outbound leg honest.
+        if (messageId === undefined) {
+          throw new Error(`bot instance "${instanceId}" is not connected`);
+        }
+      },
+    },
+    // Persist the durable half: the badge says "configured and verified" only
+    // when this succeeded at least once. The promise is *returned* so the
+    // registry can finish writing the fact before it publishes `verified` to
+    // anyone who would then re-read the list; failures are swallowed here
+    // (best-effort) and never surface as a failed verification.
+    onVerified: ({ instanceId, at }) => {
+      const instanceRepo = storage?.platformInstanceRepo as InstanceStoreDeps['instances'];
+      if (!instanceRepo) return;
+      return recordInstanceVerification({ orgId: 'default', instances: instanceRepo }, instanceId, at).catch(
+        (error) => {
+          startupLog('WARN', `could not record connection verification for ${instanceId}: ${String(error)}`);
+        },
+      );
+    },
+  });
+  messageRouter.setConnectionTestRegistry(connectionTests);
+
+  // Live connection state + runtime reconfigure come from the gateway (slice G6):
+  // the router's adapters are the single owner of "is this platform connected".
+  apiServer.setPlatformRuntimeHooks({
+    connected: (platform) => messageRouter.isPlatformConnected(platform),
+    sync: (platform, config) => messageRouter.reconnectPlatform(platform, config),
+    connectionTest: {
+      begin: (instanceId, platform, target) => connectionTests.begin(instanceId, platform, target),
+      get: (instanceId) => connectionTests.get(instanceId) ?? null,
+    },
+  });
+
+  const connectedLabels = platformResults.filter((r) => r.connected).map((r) => r.label);
+  const failedLabels = platformResults.filter((r) => !r.connected).map((r) => r.label);
+  const gatewayDetail =
+    connectedLabels.length > 0 ? `webhook adapters: ${connectedLabels.join(' + ')}` : 'webhook adapters: none';
+  progress?.complete(5, failedLabels.length > 0 ? `${gatewayDetail} (${failedLabels.join(', ')} failed)` : gatewayDetail);
+
+  // ── Outbound dispatch: three-level notification routing (G4, design §7) ────
+  // Every approval/notification goes through one dispatcher, resolved
+  // `agent → instance → global(Secretary)` and rendered to whatever the target
+  // platform can show. This is what makes a non-Feishu platform a first-class
+  // notification destination instead of a silent dead end (defect D5).
+  const feishuNotifySection = (config.integrations as Record<string, unknown> | undefined)?.['feishu'] as
+    | Record<string, unknown>
+    | undefined;
+  const legacyNotifyChatId =
+    typeof feishuNotifySection?.['notifyChatId'] === 'string'
+      ? (feishuNotifySection['notifyChatId'] as string)
+      : undefined;
+  const outbound = setupOutboundDispatch({
+    router: messageRouter,
+    bindingRepo: storage?.channelBindingRepo,
+    instanceRepo: storage?.platformInstanceRepo,
+    orgSecretaryId: () => orgService.findOrgSecretary()?.id,
+    legacyNotifyTarget: (orgId) => {
+      if (orgId !== 'default' || !legacyNotifyChatId) return undefined;
+      // Legacy single-bot install: the Feishu bot's implicit instance id is the
+      // platform id (G2), so this keeps pre-G4 installs delivering unchanged.
+      const feishuInstance = persistedInstances.find((i: { platform: string }) => i.platform === 'feishu');
+      return {
+        platform: 'feishu',
+        instanceId: feishuInstance?.id ?? 'feishu',
+        nativeId: legacyNotifyChatId,
+        kind: 'notification',
+      };
+    },
+    notificationSource: hitlService,
+    eventBus: agentManager.getEventBus(),
+    orgId: 'default',
+    digestInfo: false,
+    actionSecret: process.env['MARKUS_ACTION_SECRET'],
+  });
+  if (outbound) {
+    startupLog('OK', '出站通知分发已接线（三级路由：agent → instance → 全局）');
   }
 
   startupBlank();

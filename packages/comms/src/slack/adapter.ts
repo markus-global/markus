@@ -2,6 +2,14 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { createLogger, msgId, type Message } from '@markus/shared';
 import type { CommAdapter, CommAdapterConfig, IncomingMessageHandler, SendOptions } from '../adapter.js';
 import { SlackClient, type SlackClientConfig, type SlackEventEnvelope, type SlackEvent } from './client.js';
+import {
+  SlackSocketMode,
+  type SlackEnvelope,
+  type SlackSocketRestTransport,
+  type SlackSocketTransport,
+} from './socket.js';
+import { activeInboundMode, getManifest, type PlatformCapabilities } from '../platforms/registry.js';
+import { renderMarkdown } from '../render/markdown.js';
 
 const log = createLogger('slack-adapter');
 
@@ -9,7 +17,7 @@ export interface SlackAdapterConfig extends CommAdapterConfig {
   platform: 'slack';
   // Slack Bot Token (starts with xoxb-)
   botToken: string;
-  // Slack App Token (starts with xapp-)
+  // Slack App Token (starts with xapp-) — required for Socket Mode
   appToken?: string;
   // Signing Secret for verifying requests
   signingSecret: string;
@@ -19,8 +27,22 @@ export interface SlackAdapterConfig extends CommAdapterConfig {
   webhookPath?: string;
   // Optional: Custom API endpoint
   apiUrl?: string;
-  // Optional: Socket mode enabled
+  // Socket Mode: dial Slack over a WebSocket instead of exposing a webhook.
+  // Needs no public URL.
   socketMode?: boolean;
+}
+
+/** Injectable wire, so Socket Mode is testable without a Slack app. */
+export interface SlackAdapterDeps {
+  rest?: SlackSocketRestTransport;
+  socket?: SlackSocketTransport;
+  /**
+   * Slack's capability table. Defaults to the manifest's — the adapter reads
+   * *this* to decide socket-vs-webhook and the ACK window, so the platform's
+   * transport policy has exactly one author (the registry), never a second
+   * hard-coded copy here.
+   */
+  capabilities?: PlatformCapabilities;
 }
 
 interface SlackWebhookRequest {
@@ -37,9 +59,12 @@ export class SlackAdapter implements CommAdapter {
   private client?: SlackClient;
   private handlers: IncomingMessageHandler[] = [];
   private server?: ReturnType<typeof createServer>;
+  private socketMode?: SlackSocketMode;
   private connected = false;
   // Deduplicate events within a short window
   private processedEvents = new Set<string>();
+
+  constructor(private readonly deps: SlackAdapterDeps = {}) {}
 
   async connect(config: CommAdapterConfig): Promise<void> {
     this.config = config as SlackAdapterConfig;
@@ -63,23 +88,47 @@ export class SlackAdapter implements CommAdapter {
       throw error;
     }
 
-    // Set up webhook HTTP server
-    if (this.config.webhookPort) {
+    // Inbound is one of two paths, chosen from the capability table — not from
+    // a bare `config.socketMode` read in here. Socket Mode dials Slack (no
+    // public URL); the webhook path binds a local server the platform must be
+    // able to reach.
+    const capabilities = this.deps.capabilities ?? getManifest(this.platform)?.capabilities;
+    const inboundMode = activeInboundMode(capabilities, this.config as unknown as Record<string, unknown>);
+    if (inboundMode === 'socket') {
+      if (typeof this.config.appToken !== 'string' || !this.config.appToken.trim()) {
+        throw new Error('Slack Socket Mode requires an appToken (xapp-)');
+      }
+      const mode = new SlackSocketMode(
+        {
+          appToken: this.config.appToken,
+          apiUrl: this.config.apiUrl,
+          // The ACK window comes from the capability table — one writer.
+          ackDeadlineMs: capabilities?.ackDeadlineMs,
+        },
+        this.deps.rest,
+        this.deps.socket,
+      );
+      await mode.connect((envelope) => this.handleSocketEnvelope(envelope));
+      this.socketMode = mode;
+    } else if (this.config.webhookPort) {
       await this.setupWebhookServer();
-    } else if (this.config.socketMode) {
-      throw new Error('Socket Mode requires a webhookPort to be configured');
     } else {
       log.warn('No webhookPort configured — Slack adapter will only send messages');
     }
 
     this.connected = true;
     log.info('Slack adapter connected', {
-      mode: this.config.socketMode ? 'socket' : 'webhook',
+      mode: inboundMode,
       webhookPort: this.config.webhookPort ?? 'none',
     });
   }
 
   async disconnect(): Promise<void> {
+    if (this.socketMode) {
+      this.socketMode.disconnect();
+      this.socketMode = undefined;
+      log.info('Slack socket stopped');
+    }
     if (this.server) {
       this.server.close();
       this.server = undefined;
@@ -98,7 +147,11 @@ export class SlackAdapter implements CommAdapter {
       if (options?.threadId) {
         slackOptions.thread_ts = options.threadId;
       }
-      const messageId = await this.client.sendTextMessage(channelId, content, slackOptions);
+      // Slack speaks mrkdwn, not markdown: `**bold**` would render with literal
+      // asterisks. `renderMarkdown` maps the dialect (and escapes `<`/`>` so an
+      // agent's prose cannot inject a Slack link or mention).
+      const text = options?.markdown ? renderMarkdown(content, 'mrkdwn') : content;
+      const messageId = await this.client.sendTextMessage(channelId, text, slackOptions);
       log.info(`Slack message sent to channel ${channelId}: ${messageId}`);
       return messageId;
     } catch (error) {
@@ -107,7 +160,7 @@ export class SlackAdapter implements CommAdapter {
     }
   }
 
-  async sendReply(channelId: string, replyToId: string, content: string): Promise<string> {
+  async sendReply(channelId: string, replyToId: string, content: string, options?: SendOptions): Promise<string> {
     if (!this.config || !this.client) throw new Error('Slack adapter not connected');
 
     try {
@@ -115,7 +168,9 @@ export class SlackAdapter implements CommAdapter {
         thread_ts: replyToId,
         reply_broadcast: false,
       };
-      const messageId = await this.client.sendTextMessage(channelId, content, slackOptions);
+      if (options?.markdown) slackOptions.text = renderMarkdown(content, 'mrkdwn');
+      const text = options?.markdown ? (slackOptions.text as string) : content;
+      const messageId = await this.client.sendTextMessage(channelId, text, slackOptions);
       log.info(`Slack reply sent to channel ${channelId} (in thread ${replyToId}): ${messageId}`);
       return messageId;
     } catch (error) {
@@ -235,23 +290,9 @@ export class SlackAdapter implements CommAdapter {
         return;
       }
 
-      // Event deduplication
-      const eventId = (body.event as SlackEvent | undefined)?.ts;
-      if (eventId) {
-        if (this.processedEvents.has(eventId)) {
-          log.debug(`Duplicate Slack event ${eventId}, skipping`);
-          res.writeHead(200);
-          res.end('ok');
-          return;
-        }
-        this.processedEvents.add(eventId);
-        if (this.processedEvents.size > 1000) {
-          const arr = [...this.processedEvents];
-          this.processedEvents = new Set(arr.slice(-500));
-        }
-      }
-
-      // Acknowledge immediately (Slack requires < 3s response)
+      // Acknowledge immediately (Slack requires < 3s response). De-duplication
+      // lives in processEvent so the webhook and Socket Mode paths share exactly
+      // one copy of it.
       res.writeHead(200);
       res.end('ok');
 
@@ -275,9 +316,40 @@ export class SlackAdapter implements CommAdapter {
     log.info('Configure this URL in your Slack App "Event Subscriptions" settings');
   }
 
+  /**
+   * Socket Mode delivers Slack's `events_api` envelopes here. The ACK already
+   * left on the socket (see `SlackSocketMode`), so this is pure projection:
+   * envelope → `Message` → handlers.
+   */
+  private async handleSocketEnvelope(envelope: SlackEnvelope): Promise<void> {
+    const payload = envelope.payload;
+    if (!payload || typeof payload !== 'object') return;
+    const callback = payload as { type?: string; event?: SlackEvent };
+    if (callback.type === 'event_callback' && callback.event) {
+      await this.processEvent(callback.event);
+      return;
+    }
+    // slash_commands / interactive carry platform-unique payloads; they are a
+    // capability, not a message — nothing to project yet (see capabilities.extra).
+    log.debug(`Slack socket envelope '${envelope.type}' carries no channel message`);
+  }
+
   private async processEvent(event: SlackEvent): Promise<void> {
     // Skip bot messages to prevent echo
     if (event.bot_id) return;
+
+    // De-duplicate by event timestamp — the single copy, shared by both inbound
+    // paths (Slack redelivers when an ACK is late).
+    if (event.ts) {
+      if (this.processedEvents.has(event.ts)) {
+        log.debug(`Duplicate Slack event ${event.ts}, skipping`);
+        return;
+      }
+      this.processedEvents.add(event.ts);
+      if (this.processedEvents.size > 1000) {
+        this.processedEvents = new Set([...this.processedEvents].slice(-500));
+      }
+    }
 
     // Handle message events (including thread replies)
     if (event.type === 'message' || event.type === 'app_mention') {
@@ -332,7 +404,8 @@ export class SlackAdapter implements CommAdapter {
     if (!this.client) throw new Error('Slack client not initialized');
 
     const url = `${this.config?.apiUrl ?? 'https://slack.com/api'}/${endpoint}`;
-    const response = await fetch(url, {
+    const doFetch = this.deps.rest?.fetch ?? fetch;
+    const response = await doFetch(url, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${this.config?.botToken}`,

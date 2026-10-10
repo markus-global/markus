@@ -1,4 +1,6 @@
 import { createLogger } from '@markus/shared';
+// Route outbound calls through the platform's proxy-aware fetch (../net/http.ts).
+import { httpFetch } from '../net/http.js';
 
 const log = createLogger('whatsapp-client');
 
@@ -40,7 +42,7 @@ export class WhatsAppClient {
   async sendTextMessage(to: string, text: string): Promise<string> {
     const url = `${this.baseUrl}/${this.config.phoneNumberId}/messages`;
     
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -75,7 +77,7 @@ export class WhatsAppClient {
   async sendTemplateMessage(to: string, templateName: string, languageCode: string = 'en_US'): Promise<string> {
     const url = `${this.baseUrl}/${this.config.phoneNumberId}/messages`;
     
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

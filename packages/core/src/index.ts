@@ -57,7 +57,7 @@ export { MiniMaxProvider } from './llm/minimax.js';
 export { DashScopeProvider } from './llm/dashscope.js';
 export { FireworksProvider } from './llm/fireworks.js';
 export { CodexResponsesProvider } from './llm/openai-codex.js';
-export { getEffectiveProxy, type EffectiveProxy, type ProxySource } from './llm/proxy-fetch.js';
+export { getEffectiveProxy, proxyFetch, type EffectiveProxy, type ProxySource } from './llm/proxy-fetch.js';
 export { GoogleProvider } from './llm/google.js';
 export { OllamaProvider } from './llm/ollama.js';
 export { MarkusProvider, resolveMarkusRoute, clearMarkusModelListCache } from './llm/markus-provider.js';

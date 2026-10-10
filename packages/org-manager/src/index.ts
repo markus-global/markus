@@ -28,6 +28,11 @@ export {
   type ConservatorVerdict,
   type ConservatorAgentView,
 } from './agent-conservator.js';
+export {
+  loadPlatformBindings,
+  type PlatformBinding,
+  type PlatformStoreDeps,
+} from './platform-integrations.js';
 export { ScheduledTaskRunner } from './scheduled-task-runner.js';
 export { initStorage, type StorageBridge } from './storage-bridge.js';
 export { searchRegistries, installSkill, importSkillFromDirectory, exportSkillToFormat, type SkillSearchResult, type SkillInstallRequest, type SkillInstallResult, type SkillImportFromDirOptions, type SkillImportFromDirResult } from './skill-service.js';
@@ -36,3 +41,12 @@ export { LocalFileStorageProvider } from './file-storage-provider.js';
 export { WorkflowService } from './workflow-service.js';
 export { WorkflowRunner, type WorkflowRunRepo } from './workflow-runner.js';
 export { WorkflowScheduler, type WorkflowScheduleRepo } from './workflow-scheduler.js';
+export {
+  readStoredPlatformConfig,
+  type StoredPlatformConfig,
+  type PlatformStoreDeps as PlatformIntegrationStoreDeps,
+} from './platform-integrations.js';
+export {
+  recordInstanceVerification,
+  type InstanceStoreDeps,
+} from './instance-integrations.js';
