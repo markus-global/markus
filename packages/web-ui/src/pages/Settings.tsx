@@ -15,11 +15,12 @@ import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
-import { FeishuIntegrationSection } from '../components/FeishuIntegrationSection.tsx';
+import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
 import { FilterableSelect } from '../components/FilterableSelect.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { Switch } from '../components/Switch.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
@@ -1194,22 +1195,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <div className="text-sm font-medium">{t('appearance.launchAtLogin')}</div>
                   <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.launchAtLoginDesc')}</div>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  aria-checked={launchAtLogin}
+                <Switch
+                  checked={launchAtLogin}
+                  onChange={() => void toggleLaunchAtLogin()}
+                  label={t('appearance.launchAtLogin')}
+                  size="lg"
                   disabled={launchAtLoginBusy}
-                  onClick={() => void toggleLaunchAtLogin()}
-                  className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors disabled:opacity-50 ${
-                    launchAtLogin ? 'bg-brand-600' : 'bg-surface-elevated border border-border-default'
-                  }`}
-                >
-                  <span
-                    className={`inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform ${
-                      launchAtLogin ? 'translate-x-6' : 'translate-x-1'
-                    }`}
-                  />
-                </button>
+                />
               </div>
             )}
           </div>
@@ -2778,9 +2770,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'integrations' && <>
           <section>
             <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{t('nav.integrations')}</h3>
-            <div className="space-y-3">
-              <FeishuIntegrationSection />
-            </div>
+            <InstancesSection />
           </section>
         </>}
 
@@ -3743,17 +3733,13 @@ function RemoteAccessSection() {
           <div className="space-y-4">
             <div className="flex items-center justify-between">
               <div className="flex items-center gap-3">
-                <button
-                  onClick={handleToggle}
+                <Switch
+                  checked={status?.enabled === true}
+                  onChange={() => void handleToggle()}
+                  label={t('settings:remoteAccess.enabled')}
+                  size="lg"
                   disabled={toggling || loading}
-                  className={`relative w-12 h-6 rounded-full transition-colors duration-200 ${
-                    status?.enabled ? 'bg-brand-600' : 'bg-gray-300 dark:bg-gray-600'
-                  } ${(toggling || loading) ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
-                >
-                  <span className={`block w-5 h-5 bg-white rounded-full shadow transform transition-transform duration-200 ${
-                    status?.enabled ? 'translate-x-6' : 'translate-x-0.5'
-                  }`} />
-                </button>
+                />
                 <span className="text-sm font-medium">
                   {isConnecting
                     ? t('settings:remoteAccess.connecting')

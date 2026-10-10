@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { isChatCapableModel } from '../lib/modelCapabilities';
+import { Switch } from './Switch';
 
 export interface ChatModelSelection {
   provider: string;
@@ -265,34 +266,24 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
             />
             <label className="flex items-center justify-between gap-2 px-0.5 text-xs text-fg-secondary cursor-pointer select-none">
               <span>{t('chatModel.applyGlobal', { defaultValue: 'Apply to global' })}</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={scope === 'global'}
-                disabled={!agentId}
-                onClick={() => setScope('global')}
-                className={`relative w-9 h-5 rounded-full transition-colors ${scope === 'global' ? 'bg-brand-600' : 'bg-fg-tertiary/30 disabled:opacity-40'}`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${scope === 'global' ? 'translate-x-4' : ''}`}
-                />
-              </button>
-            </label>
-            <label className="flex items-center justify-between gap-2 px-0.5 text-xs text-fg-secondary cursor-pointer select-none">
-              <span>{t('chatModel.applyAgent', { defaultValue: 'Apply to current agent' })}</span>
-              <button
-                type="button"
-                role="switch"
-                aria-checked={scope === 'agent'}
-                disabled={!agentId}
-                onClick={() => setScope('agent')}
-                className={`relative w-9 h-5 rounded-full transition-colors ${scope === 'agent' ? 'bg-brand-600' : 'bg-fg-tertiary/30 disabled:opacity-40'}`}
-              >
-                <span
-                  className={`absolute top-0.5 left-0.5 w-4 h-4 rounded-full bg-white transition-transform ${scope === 'agent' ? 'translate-x-4' : ''}`}
-                />
-              </button>
-            </label>
+              <Switch
+              checked={scope === 'global'}
+              onChange={() => setScope('global')}
+              label={t('chatModel.applyGlobal', { defaultValue: 'Apply to global' })}
+              size="sm"
+              disabled={!agentId}
+            />
+          </label>
+          <label className="flex items-center justify-between gap-2 px-0.5 text-xs text-fg-secondary cursor-pointer select-none">
+            <span>{t('chatModel.applyAgent', { defaultValue: 'Apply to current agent' })}</span>
+            <Switch
+              checked={scope === 'agent'}
+              onChange={() => setScope('agent')}
+              label={t('chatModel.applyAgent', { defaultValue: 'Apply to current agent' })}
+              size="sm"
+              disabled={!agentId}
+            />
+          </label>
             {!agentId && (
               <div className="px-0.5 text-[10px] text-fg-tertiary">
                 {t('chatModel.noAgent', { defaultValue: 'Select an agent to apply per-agent' })}

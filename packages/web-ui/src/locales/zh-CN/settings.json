@@ -786,6 +786,202 @@
     "yourRole": "你的角色",
     "changeRole": "更改角色"
   },
+  "integrations": {
+    "agentSelect": {
+      "none": "未绑定",
+      "search": "搜索 Agent…",
+      "empty": "没有匹配的 Agent"
+    },
+    "subtitle": "连接外部消息平台。每个平台由其清单（manifest）描述，配置表单会自动出现。",
+    "loadFailed": "加载集成失败",
+    "save": "保存",
+    "test": "测试连接",
+    "disconnect": "断开连接",
+    "enable": "启用集成",
+    "enableHint": "关闭后平台仍保留配置，但不收发消息。",
+    "docs": "配置文档",
+    "saved": "已保存",
+    "saveAndTest": "保存并测试",
+    "connectionTest": {
+      "title": "双向连接验证",
+      "subtitle": "真实发送一条消息并等待你的回复——同时验证收发两个方向。",
+      "outbound": "出站（机器人 → IM）",
+      "outboundPending": "尚未发送",
+      "inbound": "入站（IM → 机器人）",
+      "inboundPending": "等待你的回复",
+      "legOk": "已验证",
+      "legFailed": "失败",
+      "idle": "尚未验证。点「验证连接」会向机器人真实发送一条消息，确认往返是否通畅。",
+      "lastVerified": "已于 {{when}} 验证通过。",
+      "start": "验证连接",
+      "retry": "重新验证",
+      "awaitingReply": "已向 {{target}} 发送测试消息。请在 {{platform}} 里回复它即可完成（内容包含 {{code}} 更佳）。",
+      "awaitingInbound": "请先在 {{platform}} 里给这个机器人发一条任意消息——我们会回复它，以确认双向都能通。",
+      "verified": "双向正常——Markus 已经可以向该机器人发送和接收消息。",
+      "expired": "超时未收到回复。请确认机器人已加入该会话，然后重试。"
+    },
+    "savingAndTesting": "保存中…",
+    "savedNotVerified": "已保存，但连接测试失败：{{reason}}",
+    "savedNotVerifiedNetwork": "已保存，但无法连接到该平台的服务器（网络不可达）。若处于受限网络、或该平台在你所在地区被屏蔽，请在「设置 → 网络代理」中配置代理后重试。",
+    "disconnectConfirmTitle": "断开这个机器人？",
+    "disconnectConfirmMessage": "将删除已保存的凭证，并停止收发消息。此操作无法撤销。",
+    "disconnected": "已断开",
+    "missingRequired": "必填项：{{fields}}",
+    "secretStored": "已保存密钥。留空表示不修改。",
+    "secretStoredPlaceholder": "••••••••（已保存，留空表示不修改）",
+    "loadGroups": "加载群组",
+    "configuredTip": "飞书已配置。在上方设置默认群聊即可接收通知。",
+    "status": {
+      "connected": "已连接",
+      "disconnected": "未连接",
+      "verified": "已连接",
+      "unverified": "未验证",
+      "off": "已关闭",
+      "unconfigured": "未配置"
+    },
+    "capability": {
+      "inbound": "可接收",
+      "outbound": "可发送"
+    },
+    "credentials": "凭证",
+    "options": "可选设置",
+    "hide": "隐藏",
+    "show": "显示",
+    "guide": {
+      "heading": "接入步骤",
+      "openConsole": "打开开发者后台",
+      "fallback": "请按下方说明，从对应平台的开发者后台获取凭证并填入。"
+    },
+    "platforms": {
+      "agentSelect": {
+        "none": "不绑定",
+        "search": "搜索 Agent…",
+        "empty": "没有匹配的 Agent"
+      },
+      "webui": {
+        "label": "网页界面",
+        "description": "内置的聊天通道，开箱即用，无需配置。",
+        "fields": {
+          "port": {
+            "label": "端口",
+            "help": "内置网页通道监听的本地 HTTP 端口。"
+          }
+        }
+      },
+      "feishu": {
+        "label": "飞书 / Lark",
+        "description": "接入飞书，接收消息并转发通知与审批请求。",
+        "guide": {
+          "step1": {
+            "title": "创建企业自建应用",
+            "desc": "扫描下方二维码可一键创建，也可前往飞书开放平台手动创建应用。"
+          },
+          "step2": { "title": "启用机器人", "desc": "应用 → 应用功能 → 机器人，开启机器人能力。" },
+          "step3": { "title": "开通权限", "desc": "应用 → 权限管理，开通 im:message 与 im:message.receive_v1。" },
+          "step4": { "title": "订阅事件", "desc": "应用 → 事件与回调，选择「长连接」方式，订阅 im.message.receive_v1。" },
+          "step5": { "title": "填写凭证", "desc": "应用 → 凭证与基础信息，复制 App ID 与 App Secret 填入下方，再点「测试连接」。" }
+        },
+        "fields": {
+          "appId": { "label": "App ID", "placeholder": "cli_xxxxxxxxxxxxxxxx" },
+          "appSecret": { "label": "App Secret" },
+          "domain": { "label": "API 域名", "help": "Lark（国际版）需覆盖，例如 https://open.larksuite.com。" },
+          "wsMode": { "label": "WebSocket 模式", "help": "通过 WebSocket 订阅接收事件，替代 webhook 服务。" },
+          "webhookPort": { "label": "Webhook 端口", "help": "关闭 WebSocket 模式时，webhook 服务监听的端口。" },
+          "encryptKey": { "label": "Encrypt Key", "help": "用于解密加密 webhook 载荷的 AES 密钥。" },
+          "verificationToken": { "label": "Verification Token", "help": "事件订阅的校验 Token。" },
+          "notifyChatId": { "label": "默认群聊", "help": "接收通知的群聊。留空则使用私信。" },
+          "notifyOpenId": { "label": "默认用户", "help": "用于私信（「发到我的飞书」）的用户 open_id。" },
+          "notifyOnApproval": { "label": "审批请求通知", "help": "将审批请求转发到上方群聊 / 用户。" },
+          "notifyOnNotification": { "label": "事件通知", "help": "将 Agent 与任务事件转发到上方群聊 / 用户。" },
+          "notifyPriority": {
+            "label": "通知优先级",
+            "help": "仅转发所选优先级及以上的事件。",
+            "options": { "normal": "普通", "low": "低", "medium": "中", "high": "高", "urgent": "紧急" }
+          },
+          "agentId": { "label": "绑定 Agent", "help": "应答该平台入站消息的 Agent。留空则需按通道显式绑定。", "placeholder": "agt_…" }
+        }
+      },
+      "telegram": {
+        "label": "Telegram",
+        "description": "接入 Telegram 机器人，收发消息。",
+        "guide": {
+          "step1": { "title": "打开 @BotFather", "desc": "在 Telegram 中与 @BotFather 对话，发送 /newbot。" },
+          "step2": { "title": "创建机器人", "desc": "按提示填写，BotFather 会返回一个机器人 Token。" },
+          "step3": { "title": "粘贴 Token", "desc": "将 Token 填入下方，并点「测试连接」。" },
+          "step4": { "title": "接收消息", "desc": "开启「长轮询」即可，无需公网地址。" }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "placeholder": "123456:ABC-DEF…", "help": "来自 @BotFather 的 Token。适配器连接时用 getMe 校验。" },
+          "agentId": { "label": "绑定 Agent", "help": "应答入站消息的 Agent。留空则需按通道显式绑定。", "placeholder": "agt_…" },
+          "apiUrl": { "label": "API 地址", "help": "自建 Bot API 服务时的覆盖地址。" },
+          "pollingEnabled": { "label": "长轮询", "help": "用轮询接收更新，替代 webhook（无需公网地址）。" },
+          "webhookPort": { "label": "Webhook 端口", "help": "webhook 服务监听的本地端口。留空则不启用入站 webhook。" },
+          "webhookSecret": { "label": "Webhook 密钥", "help": "作为 webhook 密钥 Token 发送给 Telegram，并在每次更新时校验。" },
+          "webhookPath": { "label": "Webhook 路径" }
+        }
+      },
+      "slack": {
+        "label": "Slack",
+        "description": "接入 Slack 应用，收发消息。",
+        "guide": {
+          "step1": { "title": "创建 Slack 应用", "desc": "打开 api.slack.com/apps → Create New App → 「From scratch」。" },
+          "step2": { "title": "添加机器人权限", "desc": "OAuth & Permissions → Bot Token Scopes：添加 chat:write（接收消息还需 im:history、channels:history），然后 Install to Workspace。" },
+          "step3": { "title": "开启 Socket Mode", "desc": "Settings → Socket Mode：开启，并生成带 connections:write 权限的 App 级令牌（xapp-…）。" },
+          "step4": { "title": "订阅事件", "desc": "Event Subscriptions → Subscribe to bot events：添加 message.im 与 message.channels。使用 Socket Mode 时无需公网地址。" },
+          "step5": { "title": "填写凭证", "desc": "填入 Bot Token（xoxb-…）与 App Token（xapp-…），开启 Socket Mode，再点「保存并测试」。" }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "placeholder": "xoxb-…", "help": "适配器连接时用 auth.test 校验。" },
+          "agentId": { "label": "绑定 Agent", "help": "应答入站消息的 Agent。留空则需按通道显式绑定。", "placeholder": "agt_…" },
+          "signingSecret": { "label": "Signing Secret", "help": "校验入站 webhook 请求。webhook 入站方式必需。" },
+          "appToken": { "label": "App Token", "placeholder": "xapp-…", "help": "Socket Mode 所需的 App 级令牌（xapp-…），需 connections:write 权限；无需公网地址。" },
+          "socketMode": { "label": "Socket Mode" },
+          "webhookPort": { "label": "Webhook 端口", "help": "webhook 服务监听的本地端口。留空则不启用入站 webhook。" },
+          "webhookPath": { "label": "Webhook 路径" },
+          "apiUrl": { "label": "API 地址" }
+        }
+      },
+      "whatsapp": {
+        "label": "WhatsApp",
+        "description": "通过 Meta Cloud API 接入 WhatsApp。",
+        "guide": {
+          "step1": { "title": "创建 Meta 应用", "desc": "打开 developers.facebook.com/apps → 创建应用（Business），添加 WhatsApp 产品。完成 Get Started 会自动生成一个免费测试号。" },
+          "step2": { "title": "获取 Phone Number ID", "desc": "WhatsApp → API Setup：复制 Phone number ID（注意不是手机号本身）。" },
+          "step3": { "title": "创建访问令牌", "desc": "API Setup 的临时令牌约 24 小时过期，仅够测试；正式使用请在 Business Settings 创建永久系统用户令牌。" },
+          "step4": { "title": "配置 Webhook（必需）", "desc": "WhatsApp 不支持轮询：把 Meta 的回调地址设为可公网访问的 HTTPS 端点、填写校验 Token 并订阅 messages 字段。要给真实用户发消息还需完成 Meta 商业验证。" }
+        },
+        "fields": {
+          "phoneNumberId": { "label": "Phone Number ID", "help": "用作发送方的 Meta Cloud API 手机号 ID。" },
+          "accessToken": { "label": "访问令牌", "help": "调用 Cloud API 的令牌。测试可用 API Setup 的临时令牌（约 24 小时过期）；正式使用请用永久系统用户令牌。" },
+          "agentId": { "label": "绑定 Agent", "help": "应答入站消息的 Agent。留空则需按通道显式绑定。", "placeholder": "agt_…" },
+          "businessAccountId": { "label": "Business Account ID" },
+          "apiVersion": { "label": "API 版本", "help": "拼接在基础 URL 后的 Graph API 版本段。" },
+          "baseUrl": { "label": "基础 URL" },
+          "webhookPort": { "label": "Webhook 端口", "help": "webhook 服务监听的本地端口。留空则不启用入站 webhook。" },
+          "webhookPath": { "label": "Webhook 路径" },
+          "webhookVerifyToken": { "label": "Webhook 校验 Token", "help": "Meta 的 GET webhook 校验握手时会回显该值。" },
+          "appSecret": { "label": "App Secret", "help": "校验入站 webhook 的 X-Hub-Signature-256 头。" }
+        }
+      },
+      "discord": {
+        "label": "Discord",
+        "description": "接入 Discord 机器人，收发消息。",
+        "guide": {
+          "step1": { "title": "创建应用", "desc": "打开 discord.com/developers/applications，新建一个应用。" },
+          "step2": { "title": "添加机器人", "desc": "Bot → Add Bot，然后复制机器人 Token。" },
+          "step3": { "title": "开启特权 Intent", "desc": "Bot → Privileged Gateway Intents：开启 MESSAGE CONTENT，机器人才能读取消息。" },
+          "step4": { "title": "邀请机器人", "desc": "OAuth2 → URL Generator：勾选 bot 权限，生成链接并邀请到你的服务器。" },
+          "step5": { "title": "粘贴 Token", "desc": "将机器人 Token 填入下方，并点「测试连接」。" }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "help": "来自 Discord 开发者后台的机器人 Token。" },
+          "agentId": { "label": "绑定 Agent", "help": "应答入站消息的 Agent。留空则需按通道显式绑定。", "placeholder": "agt_…" },
+          "apiUrl": { "label": "API 地址", "placeholder": "https://discord.com/api/v10" },
+          "gatewayUrl": { "label": "Gateway 地址", "placeholder": "wss://gateway.discord.gg" }
+        }
+      }
+    }
+  },
   "feishu": {
     "description": "配置飞书集成，用于接收通知和审批请求",
     "connectionSettings": "连接设置",
@@ -921,5 +1117,42 @@
     "modelGuidanceCursor": "Cursor CLI 支持的模型。选择「auto」可让 Cursor 自动选择最佳模型。",
     "modelGuidanceClaude": "显示标准模型列表。可手动输入自定义模型名称。",
     "modelGuidanceCodex": "显示标准模型列表。可手动输入自定义模型名称。"
+  },
+  "instances": {
+    "subtitle": "每个机器人都是一个实例：独立的凭证、独立的 Agent、独立的会话。一个平台可以挂载多个机器人。",
+    "botCount": "{{count}} 个机器人",
+    "botCount_other": "{{count}} 个机器人",
+    "noBots": "暂无机器人。",
+    "boundAgent": "绑定的 Agent",
+    "newBot": "新机器人",
+    "toggleLabel": "开启或关闭该机器人",
+    "credentials": "凭证",
+    "moreSettings": "更多配置",
+    "moreSettingsHint": "路由、通知接收方与高级选项",
+    "advancedHint": "绝大多数情况下默认值就是对的——除非你确定需要，否则不用动。",
+    "autosave": {
+      "saving": "保存中…",
+      "saved": "已保存"
+    },
+    "addBot": {
+      "label": "新建机器人",
+      "create": "创建",
+      "name": "机器人名称",
+      "namePlaceholder": "例如：销售",
+      "labelRequired": "请为机器人取个名字。"
+    },
+    "routing": {
+      "title": "路由",
+      "hint": "为每个会话选择应答的 Agent，并指定该机器人的通知接收方。",
+      "notifyTarget": "通知接收方",
+      "notifyTargetHint": "有关该机器人的审批与通知都会发送到这里。留空则使用组织秘书。",
+      "chats": "会话绑定",
+      "unsupported": "该平台不支持枚举会话。",
+      "chatAgent": "该会话的 Agent",
+      "searchChats": "搜索会话…",
+      "autoSaved": "修改会自动保存。",
+      "save": "保存路由",
+      "agentRequired": "每个选中的会话都需要指定一个 Agent（还有 {{count}} 个未指定）。"
+    }
   }
 }

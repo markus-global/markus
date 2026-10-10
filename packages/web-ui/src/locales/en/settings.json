@@ -786,6 +786,204 @@
     "yourRole": "Your Role",
     "changeRole": "Change Role"
   },
+  "integrations": {
+    "agentSelect": {
+      "none": "Not bound",
+      "search": "Search agents…",
+      "empty": "No matching agent"
+    },
+    "subtitle": "Connect external messaging platforms. Each platform is described by its manifest, so its form appears automatically.",
+    "loadFailed": "Failed to load integrations",
+    "save": "Save",
+    "test": "Test connection",
+    "disconnect": "Disconnect",
+    "enable": "Enable integration",
+    "enableHint": "When off, the platform stays configured but does not send or receive.",
+    "docs": "Setup docs",
+    "saved": "Saved",
+    "saveAndTest": "Save & test",
+    "status": {
+      "verified": "Connected",
+      "unverified": "Not verified",
+      "off": "Off",
+      "unconfigured": "Not configured"
+    },
+    "connectionTest": {
+      "title": "Connection verification",
+      "subtitle": "Sends a real message and waits for your reply — proves both directions.",
+      "outbound": "Outbound (bot → IM)",
+      "outboundPending": "Not sent yet",
+      "inbound": "Inbound (IM → bot)",
+      "inboundPending": "Waiting for your reply",
+      "legOk": "Verified",
+      "legFailed": "Failed",
+      "idle": "Not verified yet. Verify to send a real message to the bot and confirm the round trip.",
+      "lastVerified": "Verified {{when}}.",
+      "start": "Verify connection",
+      "retry": "Verify again",
+      "awaitingReply": "A test message was sent to {{target}}. Reply to it in {{platform}} to finish — include {{code}} if you can.",
+      "awaitingInbound": "Send any message to this bot in {{platform}} — we will answer it to confirm both directions.",
+      "verified": "Both directions work — Markus can send to and receive from this bot.",
+      "expired": "No reply arrived in time. Check the bot is in the conversation, then try again."
+    },
+    "savingAndTesting": "Saving…",
+    "savedNotVerified": "Saved, but the connection test failed: {{reason}}",
+    "savedNotVerifiedNetwork": "Saved, but the platform's server could not be reached (no network route). If you are behind a firewall or in a region where this platform is blocked, configure a proxy under Settings → Network Proxy and try again.",
+    "disconnectConfirmTitle": "Disconnect this bot?",
+    "disconnectConfirmMessage": "Its stored credentials are removed and it stops sending and receiving messages. This cannot be undone.",
+    "disconnected": "Disconnected",
+    "missingRequired": "Required: {{fields}}",
+    "secretStored": "A value is already stored. Leave blank to keep it.",
+    "secretStoredPlaceholder": "•••••••• (stored — leave blank to keep)",
+    "loadGroups": "Load groups",
+    "configuredTip": "Feishu is configured. Set a default chat above to receive notifications.",
+    "status": {
+      "connected": "Connected",
+      "disconnected": "Not connected"
+    },
+    "capability": {
+      "inbound": "Receives",
+      "outbound": "Sends"
+    },
+    "credentials": "Credentials",
+    "options": "Options",
+    "hide": "Hide",
+    "show": "Show",
+    "guide": {
+      "heading": "Setup guide",
+      "openConsole": "Open developer console",
+      "fallback": "Fill in the credentials from the platform's developer console below."
+    },
+    "platforms": {
+      "agentSelect": {
+        "none": "Not bound",
+        "search": "Search agents…",
+        "empty": "No matching agent"
+      },
+      "webui": {
+        "label": "Web UI",
+        "description": "The built-in chat channel. No setup needed — it is available out of the box.",
+        "fields": {
+          "port": {
+            "label": "Port",
+            "help": "Local HTTP port the built-in Web UI channel listens on."
+          }
+        }
+      },
+      "feishu": {
+        "label": "Feishu / Lark",
+        "description": "Connect Feishu to receive messages and forward notifications and approvals.",
+        "guide": {
+          "step1": {
+            "title": "Create a self-built app",
+            "desc": "Scan the QR code below for one-click setup, or create an app manually on the Feishu Open Platform."
+          },
+          "step2": { "title": "Enable the bot", "desc": "App → Features → Bot: turn on bot capability." },
+          "step3": { "title": "Add permissions", "desc": "App → Permissions: enable im:message and im:message.receive_v1." },
+          "step4": { "title": "Subscribe to events", "desc": "App → Events & Callbacks: use long connection mode and subscribe to im.message.receive_v1." },
+          "step5": { "title": "Copy credentials", "desc": "App → Credentials: copy the App ID and App Secret, then paste them below and Test the connection." }
+        },
+        "fields": {
+          "appId": { "label": "App ID", "placeholder": "cli_xxxxxxxxxxxxxxxx" },
+          "appSecret": { "label": "App Secret" },
+          "domain": { "label": "API Domain", "help": "Override for Lark (international) — e.g. https://open.larksuite.com." },
+          "wsMode": { "label": "WebSocket mode", "help": "Receive events over a WebSocket subscription instead of a webhook server." },
+          "webhookPort": { "label": "Webhook port", "help": "Port for the webhook server when WebSocket mode is off." },
+          "encryptKey": { "label": "Encrypt Key", "help": "AES key for decrypting encrypted webhook payloads." },
+          "verificationToken": { "label": "Verification Token", "help": "Event-subscription verification token." },
+          "notifyChatId": { "label": "Default chat", "help": "Group chat that receives notifications. Leave blank to use direct messages." },
+          "notifyOpenId": { "label": "Default user", "help": "User open_id for direct (\"send to my Feishu\") messages." },
+          "notifyOnApproval": { "label": "Notify on approvals", "help": "Forward approval requests to the chat / user above." },
+          "notifyOnNotification": { "label": "Notify on events", "help": "Forward agent and task events to the chat / user above." },
+          "notifyPriority": {
+            "label": "Notify priority",
+            "help": "Only forward events at these priorities.",
+            "options": { "normal": "Normal", "low": "Low", "medium": "Medium", "high": "High", "urgent": "Urgent" }
+          },
+          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages from this platform. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" }
+        }
+      },
+      "telegram": {
+        "label": "Telegram",
+        "description": "Connect a Telegram bot to send and receive messages.",
+        "guide": {
+          "step1": { "title": "Open @BotFather", "desc": "In Telegram, start a chat with @BotFather and send /newbot." },
+          "step2": { "title": "Create the bot", "desc": "Follow the prompts; BotFather returns a bot token." },
+          "step3": { "title": "Paste the token", "desc": "Paste the token below and Test the connection." },
+          "step4": { "title": "Receive messages", "desc": "Turn on Long polling — no public URL needed." }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "placeholder": "123456:ABC-DEF…", "help": "Token from @BotFather. Verified with getMe when the adapter connects." },
+          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
+          "apiUrl": { "label": "API URL", "help": "Override for a self-hosted Bot API server." },
+          "pollingEnabled": { "label": "Long polling", "help": "Receive updates by polling instead of a webhook (no public URL needed)." },
+          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
+          "webhookSecret": { "label": "Webhook secret", "help": "Sent to Telegram as the webhook secret token and checked on each update." },
+          "webhookPath": { "label": "Webhook path" }
+        }
+      },
+      "slack": {
+        "label": "Slack",
+        "description": "Connect a Slack app to send and receive messages.",
+        "guide": {
+          "step1": { "title": "Create a Slack app", "desc": "Open api.slack.com/apps → Create New App → \"From scratch\"." },
+          "step2": { "title": "Add bot scopes", "desc": "OAuth & Permissions → Bot Token Scopes: add chat:write (plus im:history and channels:history to read), then Install to Workspace." },
+          "step3": { "title": "Enable Socket Mode", "desc": "Settings → Socket Mode: turn it on, then generate an app-level token (xapp-…) with the connections:write scope." },
+          "step4": { "title": "Subscribe to events", "desc": "Event Subscriptions → Subscribe to bot events: add message.im and message.channels. With Socket Mode no public URL is needed." },
+          "step5": { "title": "Fill in the credentials", "desc": "Paste the Bot Token (xoxb-…) and App Token (xapp-…), turn Socket Mode on, then Save and test." }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "placeholder": "xoxb-…", "help": "Verified with auth.test when the adapter connects." },
+          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
+          "signingSecret": { "label": "Signing Secret", "help": "Verifies inbound webhook requests. Required for the webhook inbound path." },
+          "appToken": { "label": "App Token", "placeholder": "xapp-…", "help": "App-level token (xapp-…) for Socket Mode. Needs the connections:write scope; no public URL required." },
+          "socketMode": { "label": "Socket Mode" },
+          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
+          "webhookPath": { "label": "Webhook path" },
+          "apiUrl": { "label": "API URL" }
+        }
+      },
+      "whatsapp": {
+        "label": "WhatsApp",
+        "description": "Connect WhatsApp through the Meta Cloud API.",
+        "guide": {
+          "step1": { "title": "Create a Meta app", "desc": "Open developers.facebook.com/apps → Create App → Business, then add the WhatsApp product. Completing Get Started auto-creates a free test number." },
+          "step2": { "title": "Copy the phone number ID", "desc": "WhatsApp → API Setup: copy the Phone number ID (not the phone number itself)." },
+          "step3": { "title": "Create an access token", "desc": "The API Setup token expires in ~24h — fine for testing. For production, create a permanent System User token in Business Settings." },
+          "step4": { "title": "Configure the webhook (required)", "desc": "WhatsApp has no polling: point Meta's callback URL at a publicly reachable HTTPS endpoint, set the verify token, and subscribe to the messages field. Meta Business verification is required to message real users." }
+        },
+        "fields": {
+          "phoneNumberId": { "label": "Phone Number ID", "help": "Meta Cloud API phone number id used as the sender." },
+          "accessToken": { "label": "Access Token", "help": "Cloud API access token. The API Setup temporary token (~24h) is fine for testing; use a permanent system-user token in production." },
+          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
+          "businessAccountId": { "label": "Business Account ID" },
+          "apiVersion": { "label": "API version", "help": "Graph API version segment appended to the base URL." },
+          "baseUrl": { "label": "Base URL" },
+          "webhookPort": { "label": "Webhook port", "help": "Local port for the webhook server. Leave blank to disable inbound webhooks." },
+          "webhookPath": { "label": "Webhook path" },
+          "webhookVerifyToken": { "label": "Webhook verify token", "help": "Echoed back during Meta's GET webhook verification handshake." },
+          "appSecret": { "label": "App Secret", "help": "Verifies the X-Hub-Signature-256 header on inbound webhooks." }
+        }
+      },
+      "discord": {
+        "label": "Discord",
+        "description": "Connect a Discord bot to send and receive messages.",
+        "guide": {
+          "step1": { "title": "Create an application", "desc": "Open discord.com/developers/applications and create a new application." },
+          "step2": { "title": "Add a bot", "desc": "Bot → Add Bot, then copy the bot token." },
+          "step3": { "title": "Enable intents", "desc": "Bot → Privileged Gateway Intents: enable MESSAGE CONTENT so the bot can read messages." },
+          "step4": { "title": "Invite the bot", "desc": "OAuth2 → URL Generator: pick the bot scope and invite it to your server." },
+          "step5": { "title": "Paste the token", "desc": "Paste the bot token below and Test the connection." }
+        },
+        "fields": {
+          "botToken": { "label": "Bot Token", "help": "Bot token from the Discord developer portal." },
+          "agentId": { "label": "Bound agent", "help": "Agent that answers inbound messages. Leave blank to require an explicit per-channel binding.", "placeholder": "agt_…" },
+          "apiUrl": { "label": "API URL", "placeholder": "https://discord.com/api/v10" },
+          "gatewayUrl": { "label": "Gateway URL", "placeholder": "wss://gateway.discord.gg" }
+        }
+      }
+    }
+  },
   "feishu": {
     "description": "Configure Feishu integration for notifications and approvals",
     "connectionSettings": "Connection Settings",
@@ -921,5 +1119,43 @@
     "modelGuidanceCursor": "Models available in the Cursor CLI. Select 'auto' to let Cursor choose the best model automatically.",
     "modelGuidanceClaude": "Standard models shown. Custom models can be typed manually.",
     "modelGuidanceCodex": "Standard models shown. Custom models can be typed manually."
+  },
+  "instances": {
+    "subtitle": "Each bot is an instance: its own credentials, its own agent, its own chats. A platform can host several.",
+    "botCount": "{{count}} bots",
+    "botCount_one": "{{count}} bot",
+    "botCount_other": "{{count}} bots",
+    "noBots": "No bots yet.",
+    "boundAgent": "Bound agent",
+    "newBot": "New bot",
+    "toggleLabel": "Turn this bot on or off",
+    "credentials": "Credentials",
+    "moreSettings": "More settings",
+    "moreSettingsHint": "Routing, notification target and advanced options",
+    "advancedHint": "These default to the right value for almost every setup — leave them alone unless you know you need them.",
+    "autosave": {
+      "saving": "Saving…",
+      "saved": "Saved"
+    },
+    "addBot": {
+      "label": "Add bot",
+      "create": "Create",
+      "name": "Bot name",
+      "namePlaceholder": "e.g. Sales",
+      "labelRequired": "Give the bot a name."
+    },
+    "routing": {
+      "title": "Routing",
+      "hint": "Choose which agent answers in each chat, and where this bot sends notifications.",
+      "notifyTarget": "Notification target",
+      "notifyTargetHint": "Approvals and notifications about this bot are delivered here. Leave empty to use the org secretary.",
+      "chats": "Chat bindings",
+      "unsupported": "This platform does not let us list its chats.",
+      "chatAgent": "Agent for this chat",
+      "searchChats": "Search chats…",
+      "autoSaved": "Changes are saved automatically.",
+      "save": "Save routing",
+      "agentRequired": "Pick an agent for every selected chat ({{count}} still unassigned)."
+    }
   }
 }
