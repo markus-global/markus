@@ -124,8 +124,7 @@ describe('openSqlite — 旧库升级（P0 迁移完整性）', () => {
 });
 
 describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗）', () => {
-  it('user_version=2 时重开数据库不重复执行 purge（脏数据原样保留）', () => {
-    // 1) 手工构造一个已升级到 v2 的库，并放入泄漏标签脏数据
+  it('user_version=2 时重开数据库不重复执行 purge（脏数据原样保留）', () => {    // 1) 手工构造一个已升级到 v2 的库，并放入泄漏标签脏数据
     const legacy = new DatabaseSync(dbPath);
     legacy.exec('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT, role TEXT, content TEXT, created_at TEXT)');
     legacy
@@ -138,12 +137,12 @@ describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗�
     const db = openSqlite(dbPath);
     const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v2_1') as { content: string };
     expect(row.content).toContain('invoke');
-    // 且版本不再回退
+    // 且版本推进到最新（v3 = messaging gateway data model）
     const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(ver.user_version).toBe(2);
+    expect(ver.user_version).toBe(3);
   });
 
-  it('user_version 低于 2 时执行一次 purge 并升级到 2', () => {
+  it('user_version 低于 2 时执行一次 purge 并升级到最新', () => {
     // 1) 旧库（v1，心跳迁移已跑过）+ 泄漏标签脏数据
     const legacy = new DatabaseSync(dbPath);
     legacy.exec('CREATE TABLE chat_messages (id TEXT PRIMARY KEY, session_id TEXT, agent_id TEXT, role TEXT, content TEXT, created_at TEXT)');
@@ -158,6 +157,6 @@ describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗�
     const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v1_1') as { content: string };
     expect(row.content).not.toContain('invoke');
     const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(ver.user_version).toBe(2);
+    expect(ver.user_version).toBe(3);
   });
 });

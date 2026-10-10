@@ -338,6 +338,71 @@ export interface IntegrationRepo {
   delete(id: string): Promise<void>;
 }
 
+// ─── Messaging gateway: bot instances + channel bindings ─────────────────────
+
+/**
+ * One configured external-platform bot instance (`platform_instances`).
+ *
+ * A platform may host many instances — each `(orgId, platform, label)` is
+ * independent and maps to its own agent via {@link ChannelBindingRow}. `config`
+ * is the opaque platform credential blob and is the byte-exact successor of the
+ * legacy `integrations.config` (the migration copies it verbatim).
+ */
+export interface PlatformInstanceRow {
+  id: string;
+  orgId: string;
+  platform: string;
+  label: string;
+  config: Record<string, unknown>;
+  capabilities: Record<string, unknown> | null;
+  enabled: boolean;
+  lastVerifiedAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Binding resolution scope. `global` = the org-wide notification default;
+ * `instance` = a whole bot instance; `channel` = one native conversation
+ * (group / DM) inside an instance.
+ */
+export type ChannelBindingScope = 'global' | 'instance' | 'channel';
+
+/** A scope → agent route (`channel_bindings`). */
+export interface ChannelBindingRow {
+  id: string;
+  orgId: string;
+  scope: ChannelBindingScope;
+  /** Set for `instance` / `channel` scopes; `null` for `global`. */
+  instanceId: string | null;
+  /** Native conversation id; set for `channel` scope only. */
+  nativeId: string | null;
+  /** Channel kind hint (e.g. `group` / `p2p`); optional. */
+  kind: string | null;
+  agentId: string;
+  createdAt: string;
+}
+
+/** Contract for bot-instance persistence. */
+export interface PlatformInstanceRepo {
+  create(data: Record<string, unknown>): Promise<PlatformInstanceRow>;
+  findById(id: string): PlatformInstanceRow | undefined;
+  listByOrg(orgId: string): PlatformInstanceRow[];
+  listByPlatform(orgId: string, platform: string): PlatformInstanceRow[];
+  update(id: string, data: Record<string, unknown>): Promise<void>;
+  delete(id: string): Promise<void>;
+}
+
+/** Contract for channel-binding persistence. */
+export interface ChannelBindingRepo {
+  create(data: Record<string, unknown>): Promise<ChannelBindingRow>;
+  findById(id: string): ChannelBindingRow | undefined;
+  listByOrg(orgId: string): ChannelBindingRow[];
+  listByScope(orgId: string, scope: ChannelBindingScope): ChannelBindingRow[];
+  delete(id: string): Promise<void>;
+}
+
 // ─── Repo interfaces (structural contracts for dependency injection) ──────────
 
 /** Contract for task persistence used by org-manager consumers */
