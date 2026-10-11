@@ -1,6 +1,6 @@
 /**
  * Conversation identity for the messaging gateway
- * (docs/design/messaging-gateway.md §6.2).
+ * (docs/architecture/messaging-gateway.md §6.2).
  *
  * Why this is its own pure module: "which conversation is this message in?"
  * used to be answered in several places (the Feishu live path called

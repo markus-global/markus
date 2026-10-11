@@ -27,7 +27,7 @@
  * or the mask is treated as "leave unchanged", so a form that round-trips the
  * masked value cannot overwrite the real secret.
  *
- * See `packages/org-manager/docs/settings-integrations-api.md`.
+ * See `docs/architecture/messaging-gateway.md` §9.2.
  */
 
 import {

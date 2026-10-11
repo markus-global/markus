@@ -1,6 +1,6 @@
 /**
  * The messaging gateway's single inbound resolution point
- * (docs/design/messaging-gateway.md §6.1, slice G3).
+ * (docs/architecture/messaging-gateway.md §6.1).
  *
  * Before this, "who should answer an inbound message?" was answered in more than
  * one place — the router held a startup snapshot, the Feishu live path re-read

@@ -662,7 +662,7 @@ CREATE TABLE IF NOT EXISTS integrations (
 );
 CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id, platform);
 
--- ─── Messaging gateway (see docs/design/messaging-gateway.md §5) ─────────────
+-- ─── Messaging gateway (see docs/architecture/messaging-gateway.md §5) ────────
 -- A platform hosts MANY bot instances (the root fix for "one platform = one bot");
 -- channel_bindings then routes global / instance / native-channel traffic to an
 -- agent. Both tables are additive: the legacy integrations table is retained
@@ -850,7 +850,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
   //   v2 = purge leaked tool markup (存量清洗，仅一次；避免每次启动都对
   //        数百万行大表做 LIKE 全表扫描，曾导致启动耗时 20s+)
   //   v3 = messaging gateway data model (G1): copy legacy `integrations` rows
-  //        into platform_instances / channel_bindings (docs/design/messaging-gateway.md §5)
+  //        into platform_instances / channel_bindings (docs/architecture/messaging-gateway.md §5)
   const SCHEMA_MIGRATION_VERSION = 2;
   const GATEWAY_MIGRATION_VERSION = 3;
   const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
@@ -5734,7 +5734,7 @@ function findSecretaryAgentId(db: DatabaseSync, orgId: string): string | undefin
 
 /**
  * One-shot, incremental, idempotent migration of legacy `integrations` rows into
- * `platform_instances` + `channel_bindings` (see docs/design/messaging-gateway.md
+ * `platform_instances` + `channel_bindings` (see docs/architecture/messaging-gateway.md
  * §5.2/§5.3).
  *
  * Contract — every step is safe to re-run and never overwrites user edits:

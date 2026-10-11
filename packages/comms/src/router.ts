@@ -95,7 +95,7 @@ export class MessageRouter {
    * second `registerAdapter` of a platform silently replaced the first. The
    * default instance id is the adapter's platform, so a single-bot platform
    * behaves exactly as before; a second instance of the same platform gets its
-   * own slot (docs/design/messaging-gateway.md §4.2).
+   * own slot (docs/architecture/messaging-gateway.md §4.2).
    */
   private bots = new Map<string, RegisteredBot>();
   /** Explicit per-channel bindings: `${platform}:${channelId}` → agentId. */

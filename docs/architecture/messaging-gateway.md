@@ -1,9 +1,8 @@
 # Messaging Gateway
 
-**Status:** design proposal (owner review pending)
-**Supersedes / extends:** `platform-channel-binding-and-credentials.md` (S6),
-`platform-manifest-startup.md` (S2), `packages/comms/docs/platform-manifest.md`.
-**Related:** issue #340.
+**Status:** implemented.
+**Related:** `packages/comms/docs/platform-manifest.md` (type contract + "how to add a
+platform"), issue #340.
 
 ---
 
@@ -139,11 +138,11 @@ platform "feishu"
   channels; one instance fans out to many agents by channel. Binding an *instance*
   to an agent is just shorthand for "all its channels default to this agent".
 
-### 4.2 `BotInstance` — the registry concept (slice G2)
+### 4.2 `BotInstance` — the registry concept
 
-G1 gave the model a table; G2 puts the concept **into the running system**, so
-"one platform may host many bots" is true of the **connections**, not just of the
-rows.
+The tables express the model; the registry puts the concept **into the running
+system**, so "one platform may host many bots" is true of the **connections**, not
+just of the rows.
 
 **The type** (`packages/comms/src/platforms/instance.ts`):
 
@@ -167,8 +166,8 @@ credentials. Adding a platform = one manifest; adding a bot = one instance row.
 **Identity.** A bot connection is keyed by `instanceId`, never by platform.
 `MessageRouter.registerAdapter(adapter, instanceId?)` defaults `instanceId` to
 `adapter.platform`, which is byte-for-byte the "one implicit bot per platform"
-behaviour of every build before G2; a real instance row registers under its own
-`id` (`bi_…`). Two rows of the same platform therefore occupy two distinct slots
+behaviour of every build before bot instances existed; a real instance row registers
+under its own `id` (`bi_…`). Two rows of the same platform therefore occupy two distinct slots
 and connect on two distinct credential sets — keying adapters by instance instead
 of by platform is what makes "2 Telegram bots at once" *structurally* possible
 rather than a silent overwrite.
@@ -181,17 +180,74 @@ step 4:
    (`enabled = false`) or whose required fields do not resolve is skipped;
 2. a platform with **no** instance row falls back to the legacy path (the
    `integrations` row + `markus.json` + env) and registers a single implicit
-   instance whose id **is** the platform id — the pre-G2 behaviour, so a migrated
+   instance whose id **is** the platform id — the legacy behaviour, so a migrated
    install and an unmigrated one connect identically.
 
 `PlatformStartupResult.id` is therefore the instance id: the platform id for the
 implicit legacy bot, the `platform_instances.id` for a real row. Callers that need
 the platform read `label` (the manifest name, disambiguated by the instance label)
-— outbound routing is G4's concern.
+— outbound routing is a separate concern (§7).
 
-**In scope for G2: connection only.** Which agent answers an inbound message
-(instance / channel scope, nearest-wins) and which session it lands in are G3.
-The router's inbound resolution stays platform-based here on purpose.
+**Instances own connection.** Which agent answers an inbound message (instance /
+channel scope, nearest-wins) and which session it lands in are §6's responsibility —
+this layer only decides *which credentials connect*.
+
+### 4.3 Startup: consuming the registry
+
+`markus start` walks `PLATFORM_MANIFESTS` × the persisted instances of each
+platform, and for every enabled bot does **factory → register → connect**
+(`connectConfiguredPlatforms()` in `packages/cli/src/commands/start.ts`). The
+hand-written `if (feishuAppId && feishuAppSecret)` block is gone and `start.ts` no
+longer imports `FeishuAdapter` at all.
+
+The invariant this buys:
+
+> **Adding a platform must not require editing `start.ts`.**
+
+`packages/cli/test/commands-start-platforms.test.ts` pins it end to end: it
+registers an extra manifest the source code has never heard of and asserts that its
+adapter connected.
+
+**Config resolution is a merge, and the merge is load-bearing.** Per platform id,
+fields resolve first-hit-wins from three sources:
+
+| Source | Example | Notes |
+|---|---|---|
+| Stored row | `integrations.feishu.appId` | Keyed by `manifest.id`; written only by `savePlatform` (§5.4). |
+| Config file | `markus.json` → `integrations.<id>` | Read-only bootstrap default (§5.4). |
+| Environment | `FEISHU_APP_ID` | Derived generically as `<PLATFORM_ID>_<SNAKE_CASE_FIELD_KEY>` — the same variables the old hand-written block read, but for *every* field of *every* platform, with no per-platform table. |
+
+Precedence is **row > file > env**, and it is not a convenience: on a real install
+the Feishu row holds only `{connectionMode, notifyOnApproval, …}` while
+`appId`/`appSecret` still live in `markus.json`, so an instance row is a *partial*
+config. Any later code that treats a row as self-sufficient (an "is this instance
+usable?" check, for instance) must re-apply this merge.
+
+**Enablement is decided from configuration only**, never from reachability:
+`defaultEnabled: true` platforms are always attempted; otherwise every field marked
+`required` must have resolved to a non-empty value. A platform that declares no
+required field stays off until something is supplied — it is never silently switched
+on. Values are coerced by the declared field type; empty strings count as "not
+configured"; `select` fields are stored comma-joined.
+
+**Two things are deliberately *not* taken from the manifest at runtime:**
+
+- `field.default` — the type contract defines it as "the value the form starts from
+  when nothing is stored yet", i.e. a *form* concern. Runtime defaults belong to the
+  adapter (`FeishuClient` falls back to `https://open.feishu.cn`). Keeping the roles
+  separate means a form default can never silently change connect-time behaviour —
+  precisely the trap §6.5 describes, where `wsMode` defaulting to `false` silently
+  selected webhook mode on a desktop install that has no public URL.
+- Anything beyond the declared type coercion — adapters own their own parsing.
+
+**Failure semantics.** One platform failing to connect never blocks startup: it is
+caught, logged at `WARN` and skipped, and the others still connect. Enablement came
+from configuration, so a *misconfigured* platform is still attempted — and now
+reported as failed. That last part is a fix, not a restatement: the old code printed
+`OK` even when Feishu had failed, because `MessageRouter.connectAll()` swallows
+connect errors internally and the surrounding `try/catch` therefore never fired. The
+outcome now comes from the adapter's authoritative `isConnected()`, and the progress
+text is generated from the adapters that actually connected.
 
 ## 5. Data model & migration
 
@@ -259,11 +315,7 @@ single writer.
 an actual pre-upgrade DB (a user with Feishu configured), asserting the instance row,
 credential blob and binding all survive and the old read path is unaffected.
 
-### 5.3 Implementation contract (slice G1)
-
-> G1 of §10 adds the two tables and the one-shot migration only. **Zero behaviour
-> change:** no router, notification or UI code is touched; the legacy
-> `integrations` read/write path is left exactly as it was.
+### 5.3 Implementation contract
 
 **Schema (created on every open, additive).** Both tables are created with
 `CREATE TABLE IF NOT EXISTS` inside the existing `SCHEMA_SQL`, so they appear on
@@ -305,14 +357,33 @@ duplicate or corrupt rows.
 
 **Dual-read window.** Readers prefer the new tables and fall back to the legacy
 `integrations` row when a platform has no `platform_instances` row yet; writers
-target the new tables only. G1 ships the storage-level primitive for this
-(`resolveInstanceConfig`) but does **not** rewire any consumer — that is G2/G3.
+target the new tables only. The storage layer ships the primitive for this
+(`resolveInstanceConfig`), and the consumers resolve through it (§4.3, §6.1).
 
 **Single source of truth for "who is the Secretary".** The predicate and the
 preference order that the notification default depends on now live in
 `@markus/shared` (`isSecretaryLikeAgent` / `pickOrgSecretary`); `OrgService` calls
 the same functions. The migration uses them too, so "which agent is the Secretary"
 has exactly one implementation.
+
+### 5.4 Credentials: one writer, one reader, never echoed
+
+Credentials had **two writers** — the Feishu QR `register` extension wrote
+`markus.json`, while runtime preferences went to the SQLite `integrations` row — and
+the notifier bootstrap read `markus.json` directly with a hard-coded
+`orgId: 'default'`. The row is now both the writer and the reader:
+
+- **One writer.** `savePlatform` writes the row; the QR `register` extension merges
+  `appId`/`appSecret` into it instead of calling `saveConfig(...)`. `markus.json` is
+  demoted to a **read-only bootstrap default** — never written.
+- **One reader.** Every consumer resolves through `resolvePlatformConfig(orgId, id)`
+  (row → bootstrap) and takes the org id from storage rather than a literal.
+- **No `GET` returns a secret.** The invariant is asserted across the whole surface
+  (`/api/settings/integrations*`), not just the generic endpoint: for every GET the
+  response body must not contain a configured secret's plaintext. The test uses a
+  **canary** secret value, so re-introducing a leak fails loudly.
+- **Masked values do not clear data.** A client that re-submits the masked
+  placeholder leaves the stored secret untouched.
 
 ## 6. Routing & session isolation
 
@@ -369,11 +440,11 @@ The old Feishu live path (`handleFeishuUserMessage`) and its
 `getOrCreateMainSession` call are **deleted** — one inbound path, one session
 decision (fixes D3, D4).
 
-### 6.3 Implementation contract (slice G3)
+### 6.3 Implementation contract
 
-> G3 turns §6.1/§6.2 from prose into one executable decision point. It does **not**
-> delete the legacy Feishu path (that is G6); it makes the router path a single
-> resolver + real session isolation, so nothing else has to decide routing again.
+> §6.1/§6.2 are one executable decision point rather than prose. It does **not**
+delete the legacy Feishu path (§6.5); it makes the router path a single resolver
+plus real session isolation, so nothing else has to decide routing again.
 
 **One resolution point.** `resolveInboundTarget(envelope, lookup)` is a pure
 function returning `{ instanceId, agentId, conversationKey, matchedScope, kind }`
@@ -393,7 +464,7 @@ scope, but a `platform`-scope row (`instance_id` and `native_id` both `NULL`)
 cannot express *which* platform it applies to, and nothing in the product writes
 one (the UI binds instances / channels / the global target — never a platform).
 Rather than add a column no writer fills, level 4 is **realised as the platform's
-default instance binding** — precisely the row G1's migration produced out of the
+default instance binding** — precisely the row the migration produces out of the
 legacy platform-level `agentId` (`label='default'`). So "the whole platform
 defaults to agent X" is expressed the way the migration already expresses it, and
 the scope stays a single source of truth (no dual storage, no in-band platform
@@ -441,10 +512,10 @@ callbacks 3 s; Slack Socket Mode 3 s). The gateway normalises this: the inbound
 transport mints an `AckHandle` for the event, **acks it before the agent turn
 starts**, and hands the `Message` to the handler without awaiting it. The real
 reply is delivered out-of-band (today through the adapter, by the
-`OutboundDispatcher` once G6 lands). The platform's read loop therefore never
+`OutboundDispatcher`). The platform's read loop therefore never
 blocks on an agent turn.
 
-Implemented in G7 (`packages/comms/src/gateway/ack.ts`):
+Implemented in `packages/comms/src/gateway/ack.ts`:
 
 ```ts
 interface AckHandle { ack(): void; readonly acked: boolean; }
@@ -457,9 +528,9 @@ otherwise send the ACK twice, which several platforms treat as an error. The
 Slack Socket Mode transport proves the invariant end-to-end (exactly one
 `{envelope_id}` per envelope, even when the handler is slow).
 
-### 6.5 Retiring the legacy Feishu path (slice G6)
+### 6.5 Retiring the legacy Feishu path
 
-**The defect (D4).** Two independent Feishu inbound receivers ran in the same
+**The defect.** Two independent Feishu inbound receivers ran in the same
 process: the comms `FeishuAdapter` (the gateway path) and `FeishuNotifier` — an
 org-manager class that opened its **own** long connection with the official
 `@larksuiteoapi/node-sdk` `WSClient` and re-implemented routing, session choice,
@@ -512,6 +583,47 @@ and now-dead `startWSClient`/`stopWSClient` on `FeishuApiClient`.
 the gateway: the request/reply path returns text. That is a *platform capability*
 (card streaming), not routing, and belongs with a future capability slice — it is
 recorded as a known limitation rather than silently dropped.
+
+### 6.6 The channel → agent binding is one source
+
+**The defect.** `MessageRouter.bindAgentToChannel()` had **zero callers**
+repo-wide, so `agentChannelMap` was permanently empty and "multi-platform binding"
+did not exist. It was worse than merely unused: there were **two independent Feishu
+inbound paths**, and the live one consulted no binding at all.
+
+| Path | Entry | Target | State before this work |
+|---|---|---|---|
+| A. gateway | `FeishuAdapter` → router | `agentChannelMap` lookup → empty → **dropped at `log.debug`** | dead unless a webhook was configured |
+| B. legacy notifier | its own Lark `WSClient` → api-server | **hard-coded org Secretary** | live for QR-registered apps |
+
+The consequence shaped the fix: populating the map alone would have had **no
+observable effect** on the live path, and adding a lookup to the live path required
+knowing that the live path was B. The root cause was never the empty map — it was
+that **the channel→agent decision had no single source**.
+
+**Resolution order, first hit wins**, now read by every inbound path:
+
+1. `message.agentId` — set by the adapter (Web UI sets it explicitly; unchanged).
+2. an explicit **channel** binding (`bindAgentToChannel`).
+3. the **instance** binding.
+4. the **platform** binding (`bindPlatformAgent`) — defined as *the platform's
+   `label='default'` instance binding*. `channel_bindings` has no `platform` column,
+   so no writer could create such a row; this avoids inventing a row shape nothing
+   can write. A true per-platform row needs the column **and** a writer first.
+5. the org **Secretary** — so an unbound inbound is never dropped.
+
+**Unbound inbound is loud.** `routeIncomingMessage` logs at `warn` with the
+platform, the channel and an actionable hint (which config field or method to set)
+instead of the previous `debug` "…skipping message".
+
+**Binding semantics later work must not silently change:**
+
+- A `channel`-scope binding with `kind = 'main'` designates the agent's home
+  conversation; `kind = 'notification'` makes inbound on that channel ignored.
+- The binding is **authoritative over the adapter's `channelKind`**.
+- One binding source, two writers, applied at startup by
+  `applyPersistedPlatformBindings` — and no platform name appears anywhere in the
+  loader.
 
 ## 7. Outbound & notifications
 
@@ -575,21 +687,21 @@ mechanism that satisfies the requirement — "everything goes through the Secret
 channel by default, but I can point a specific agent elsewhere" — **without** ever
 regressing into "the agent wasn't bound, so the notification vanished".
 
-> **Why level 1 accepts a non-marker binding.** The G1 migration seeds routing
+> **Why level 1 accepts a non-marker binding.** The migration seeds routing
 > bindings with `kind = NULL` — at migration time there is no way to know *which*
 > conversation should receive notifications, so no row can honestly claim the
 > marker. Requiring `kind = 'notification'` would therefore leave levels 1 and 3
 > dead on **every migrated install**, i.e. notifications *would* be isolated — the
-> exact defect this slice removes. Preference order instead makes an explicit
-> choice (G5 UI) supreme while guaranteeing a terminus. Verified on live data:
-> `verify-g4-real-data.mjs` asserts the Secretary's real binding resolves level 3.
+> exact defect this design removes. Preference order instead makes an explicit
+> choice made in Settings supreme while guaranteeing a terminus. Verified on live data:
+> the real-data probe asserts the Secretary's real binding resolves level 3.
 
 Every forwarded message carries `origin{agentId, taskId}` so that one busy
 Secretary channel stays readable while aggregating the whole org.
 
 Optional (later): per-severity targets (`action_required` → an urgent channel).
 
-### 7.4 Implementation contract (slice G4)
+### 7.4 Implementation contract
 
 The pieces, and the one job each has. Everything below is pure or a port, so the
 whole outbound chain is unit-testable without a platform, a database or a timer.
@@ -619,7 +731,8 @@ by "the agent was not bound". If even level 3 is missing the dispatcher logs lou
 and reports `delivered: false` — it never pretends success. **Honest gap:** a live
 install whose Secretary has no addressable binding *and* no legacy `notifyChatId`
 has no level-3 terminus; the dispatcher reports it as undeliverable rather than
-swallowing the notification, and the G5 notification-target UI is what configures it.
+swallowing the notification, and the Settings notification-target field is what
+configures it.
 
 **Action refs are signed.** With `actionSecret` set, an approval notification's
 action refs are opaque signed tokens (`signActionRef`/`verifyActionRef`, base64url
@@ -663,7 +776,7 @@ capabilities: {
 }
 ```
 
-### 8.1 As implemented (slice G7)
+### 8.1 As implemented
 
 The proposal above **re-types** `inbound` / `outbound` (boolean → union / array).
 That is a wire-shape change: the Settings UI (`PlatformCard`) reads
@@ -683,7 +796,7 @@ interface PlatformCapabilities {
   threads: boolean;
   cards?: boolean;
 
-  // G7 — the transport facts, read by core; no consumer branches on a platform id.
+  // The transport facts, read by core; no consumer branches on a platform id.
   inboundModes?: InboundMode[];   // how inbound can arrive; undefined ⇒ unknown
   defaultInboundMode?: InboundMode; // the mode used when config expresses no choice
   requiresPublicUrl?: boolean;    // true iff every declared mode needs a public URL
@@ -697,8 +810,8 @@ Three rules keep this a *table* and not a branch:
 1. **`inboundModes` is the single declaration of transport.** Nothing outside a
    manifest may write `if (platform === 'slack')` to decide socket-vs-webhook.
    `activeInboundMode(capabilities, config)` is the one pure function that reads the
-   config + the table and names the live mode. **It is consumed at runtime** (G8
-   wiring): the Feishu and Slack adapters call it in `connect()` instead of reading
+   config + the table and names the live mode. **It is consumed at runtime**: the
+   Feishu and Slack adapters call it in `connect()` instead of reading
    `config.wsMode` / `config.socketMode` directly, and the platform's default
    transport is declared in the table (`defaultInboundMode`), not in the adapter.
    Precedence: explicit `socketMode/wsMode: true` → socket; explicit
@@ -744,10 +857,10 @@ The Integrations page becomes an **instance list** rather than a platform list:
 - Unknown platforms still render with zero UI code (manifest-driven) — the existing
   regression guard stays green.
 
-### 9.1 Implementation contract (slice G5)
+### 9.1 Implementation contract
 
-> G5 turns §9 into the actual page. The page was a **platform list** only because a
-> platform could physically hold one bot; now it is an **instance list**. The
+> §9 is the actual page. It was once a **platform list**, because a platform could
+> physically hold one bot; it is now an **instance list**. The
 > interesting decisions are about *not* growing a second form implementation.
 
 **One form, N instances.** Nothing about a platform config changed — same manifest
@@ -796,43 +909,97 @@ agent (the common case). Ticking a chat on a bot with **no** default agent holds
 save and names the problem rather than silently writing a binding with no agent or
 quietly dropping the chat the user just ticked.
 
-## 10. Rollout (independent, revertible slices)
+### 9.2 The Settings surface (API + UI contract)
 
-| # | Slice | Depends on | Acceptance |
-|---|---|---|---|
-| G1 | Schema + migration (`platform_instances`, `channel_bindings`) | — | old rows migrate; Secretary global default; zero behaviour change |
-| G2 | `BotInstance` in the registry; startup iterates instances | G1 | 2 Telegram bots connect simultaneously |
-| G3 | Single `resolveInboundTarget` + session isolation | G1 | 2 groups → 2 sessions; unbound → Secretary, never dropped |
-| G4 | `OutboundDispatcher` + renderers; HITL reaches every platform | G2 | an approval is delivered to Telegram & Slack |
-| G5 | UI: instance list, add-bot, group binding, notify target | G2,G3 | add a 2nd bot from the UI, bind a group |
-| G6 | Delete the legacy Feishu inbound path + notifier | G3,G4 | one inbound path; regression clean |
-| G7 | Capability fill-in (Slack socket mode, Discord gateway) | G4 | both connect without a public URL |
-| G8 | Closure: full regression, real-data acceptance, docs, handoff | G5,G6,G7 | every acceptance bullet evidenced or honestly deferred; one revertible PR |
+The endpoints are platform-parameterised, so one implementation serves every
+platform, Feishu included:
 
-**Discipline:** document → failing test first → refactor → verify on real data.
-Each slice is its own commit and reverts cleanly. No PR until the owner has tested.
+| Method | Path | Notes |
+|---|---|---|
+| `GET` | `/api/settings/integrations` | Every platform as a manifest-shaped object. |
+| `GET` | `/api/settings/integrations/:platform` | One platform, not wrapped; non-secret values are also flattened onto the top level so callers written against the legacy Feishu-only shape keep working. |
+| `PUT` | `/api/settings/integrations/:platform` | Validate against the manifest's `required` fields, then write the row. |
+| `POST` | `/api/settings/integrations/:platform/test` | Probes the **stored** credentials; an empty body is valid. |
 
-**Status.** G1–G7 are delivered on their own branches; **G8 is the closure slice**
-(merge of G5+G6+G7, full regression, the A/B/C seam wires below, and the owner
-handoff `docs/handoff/g8-closure.md`). G8 closes the cross-slice seams the
-per-slice reviews flagged: (A) `notifyAgentId` is now read by `instanceTarget`;
-(B) the capability table has a runtime consumer and `ackDeadlineMs` has one writer;
-(C) the G7 handoff's Discord-probe claim is corrected.
+The Feishu-specific extensions (`/register`, `/register/status`, `/chats`,
+`/test-message`, notification rules) are kept verbatim for backward compatibility;
+new platforms use the generic surface only.
 
-## 11. Open decisions (owner)
+**Response shape.** `{ id, label, docsUrl, capabilities, fields[], enabled,
+connected, hasConfig, values{…}, secrets{ key: { hasValue } } }` — `values` carries
+the non-secret fields, `secrets` carries presence only.
 
-1. **Session mapping.** Proposal: a channel *designated* `main` maps to the bound
-   agent's main session; every other **group** and every other **DM** isolates into
-   its own session. (Distinct social contexts must not share context.)
-2. **Notification routing.** Proposal: three levels — agent → instance → global,
-   first hit wins, global defaults to the Secretary channel. Guarantees nothing is
-   orphaned even when only a few agents are bound externally.
-3. **Binding granularity.** Proposal: the binding unit is a **channel**
-   (instance × group/DM), not an instance. One agent serves many channels; one bot
-   serves many groups, each answerable by a different agent.
-4. **Delete the legacy Feishu path in one step (G6) or keep it as a fallback for one
-   release?** **Resolved (G6): delete it outright — no feature flag.** A flag would
-   keep both receivers live as a *guard*, which is exactly the dual-writer shape
-   (D4) this slice removes; §6.5 shows why the notifier could not simply be dropped
-   and what had to move first. The adapter's long connection is now the single
-   receiver, so there is nothing left for a fallback to fall back *to*.
+**Secret semantics.** `secret: true` fields are never returned in plaintext: on read
+the key carries a mask plus `hasValue`; on write, `''` or the mask means *leave
+unchanged*, so a form that round-trips the mask cannot overwrite the real secret.
+The invariant is asserted across **every** `GET` under
+`/api/settings/integrations*` with a canary secret value.
+
+**UI.** One card per bot instance, and every field is rendered from
+`manifest.fields` (text / number / boolean / select / secret), so adding a platform
+adds no UI code. Platform-specific extras (Feishu's notification preferences and QR
+flow, for instance) live in an **extras slot** the manifest names, and each field has
+exactly one writer — the part of the card that owns it — so two save paths cannot
+fight over the same value.
+
+## 10. Module map
+
+Where each responsibility lives. The code is the truth; this is the index.
+
+| Path | Responsibility |
+|---|---|
+| `packages/comms/src/platforms/registry.ts` | `PLATFORM_MANIFESTS` — the platform data: fields, capabilities, `createAdapter()`. Type contract and "how to add a platform": `packages/comms/docs/platform-manifest.md`. |
+| `packages/comms/src/platforms/instance.ts` | `BotInstance` — one configured bot of a platform. |
+| `packages/comms/src/gateway/inbound.ts` | `resolveInboundTarget()` — the single inbound resolution point (§6.1), plus `MatchedScope`. |
+| `packages/comms/src/gateway/conversation-key.ts` | `conversationKey()` / `MAIN_CONVERSATION_KEY` / `isInboundIgnored()` — session isolation (§6.2). |
+| `packages/comms/src/gateway/ack.ts` | `createAck()` and the deadline-driven `createDeadlineAck()` (§6.4). |
+| `packages/comms/src/gateway/outbound.ts` | `OutboundMessage` + signed action refs (`signActionRef` / `verifyActionRef`). |
+| `packages/comms/src/gateway/render.ts`, `src/render/markdown.ts` | Capability-driven rendering; per-platform markdown dialects. |
+| `packages/comms/src/gateway/dispatcher.ts` | `OutboundDispatcher` + the `OutboundSink` / `NotificationSource` ports (§7.2). |
+| `packages/comms/src/gateway/notify-route.ts` | `resolveNotifyTarget()` — the three-level walk (§7.3). |
+| `packages/comms/src/gateway/notify-lookup.ts`, `repo-binding-lookup.ts` | The lookup ports over `channel_bindings` / instance rows, and the bindings loader. |
+| `packages/comms/src/gateway/router-sink.ts` | `RouterOutboundSink` — the sink port backed by the adapter router. |
+| `packages/comms/src/gateway/connection-test.ts` | The Settings "test connection" probe. |
+| `packages/comms/src/net/http.ts` | `httpFetch` + failure classification, injectable for tests. |
+| `packages/comms/src/slack/socket.ts` | Slack Socket Mode transport (no public URL needed). |
+| `packages/storage/src/*` | `platform_instances` / `channel_bindings` repositories and their migration (§5). |
+| `packages/org-manager/src/api-server.ts` | The Settings API and `resolvePlatformConfig()` (§5.4, §9.2). |
+| `packages/cli/src/commands/start.ts` | Assembly: walk manifests × instances, register, connect (§4.3). |
+| `packages/web-ui/src/components/integrations/*` | The instance cards, rendered from `manifest.fields` (§9). |
+
+## 11. Known limitations & residual risk
+
+What this work does **not** claim.
+
+**Cannot be verified on this machine** (no credentials, no public URL):
+
+- Real-service connectivity for Slack (`xapp-…`), Telegram and Discord. The Slack
+evidence is a real-WebSocket loopback with a local server playing Slack; Discord
+gateway sessions and Telegram long polling against live services are unproven.
+- Every webhook path (Slack / WhatsApp / Discord) needs a public URL, which a
+desktop install does not have.
+- `connected` has a real source only for Feishu.
+
+**Deliberately not delivered:**
+
+- Feishu approval buttons render as text (`[label] ref`) because the Feishu manifest
+declares `cards: false`. The action port, signature verification and
+`respondToApproval` wiring exist and are tested; making the buttons clickable is a
+manifest/capability change.
+- Slack `slash_commands` / `interactive` envelopes are ACKed and logged, not
+projected into agent turns.
+- The legacy notifier's **rich agent-response card streaming** has no equivalent in
+the gateway — the request/reply path returns text (§6.5).
+- `getOrCreateMainSession` / `MAIN_CONVERSATION_KEY` and the DB main session (`cs_*`)
+remain two facts.
+
+**Production should set `MARKUS_ACTION_SECRET`.** Unset, approval action refs are
+bare ids (the previous behaviour) and the dispatcher logs a warning. Independently, an
+install whose Secretary has no addressable binding has no level-3 terminus: the
+dispatcher reports it as undeliverable rather than swallowing it (§7.4), and the
+Settings notification-target field is what configures it.
+
+**Operational trap found, not fixed here (pre-existing):** `initSqliteStorage`
+swallows *all* errors and returns `null`, so a repository-wiring programming error
+degrades silently to memory-only mode instead of failing loudly.
+

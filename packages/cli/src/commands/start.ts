@@ -91,7 +91,7 @@ const log = createLogger('cli');
 // (`@markus/comms`), resolves each platform's config and connects whatever is
 // enabled. Adding a platform is a data change in the registry — never an edit
 // here; `test/commands-start-platforms.test.ts` pins that invariant.
-// Design write-up: docs/design/platform-manifest-startup.md.
+// Design write-up: docs/architecture/messaging-gateway.md §4.3.
 
 /** One platform's connection outcome — drives startup logs and the progress text. */
 export interface PlatformStartupResult {

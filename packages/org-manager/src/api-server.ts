@@ -10130,7 +10130,7 @@ EXPLANATION_END`;
     // the manifest, so a new platform needs no new branch here. Feishu's
     // platform-specific capabilities (register / chats / notifications / …)
     // keep their own handlers below.
-    // See packages/org-manager/docs/settings-integrations-api.md.
+    // See docs/architecture/messaging-gateway.md §9.2.
 
     /**
      * The org's **default** answering agent — the Secretary — resolved through

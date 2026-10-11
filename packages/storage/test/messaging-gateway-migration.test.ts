@@ -1,7 +1,7 @@
 /**
  * G1 — messaging-gateway data model migration.
  *
- * Locks the migration contract from `docs/design/messaging-gateway.md` §5.2/§5.3:
+ * Locks the migration contract from `docs/architecture/messaging-gateway.md` §5.2/§5.3:
  * an existing `integrations` row (the `(org, platform)`-keyed legacy table) is
  * copied into the new `platform_instances` / `channel_bindings` tables such that
  * an upgrade is **incremental, idempotent, non-destructive, fail-safe** and

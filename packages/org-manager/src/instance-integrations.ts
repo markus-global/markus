@@ -40,7 +40,7 @@
  * the field. `missingRequiredFields` / `mergeSubmission` are imported rather
  * than re-derived — two copies of a security rule drift, one does not.
  *
- * See `packages/org-manager/docs/settings-integrations-api.md`.
+ * See `docs/architecture/messaging-gateway.md` §9.2.
  */
 
 import { createHash } from 'node:crypto';

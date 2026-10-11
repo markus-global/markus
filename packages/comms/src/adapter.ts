@@ -8,7 +8,7 @@ export interface CommAdapterConfig {
    * Defaults to `platform`, i.e. the single implicit bot every platform had
    * before instances existed. A platform hosting several bots passes the
    * `platform_instances.id` here so each adapter connects on its own credentials
-   * (docs/design/messaging-gateway.md §4.2).
+   * (docs/architecture/messaging-gateway.md §4.2).
    */
   instanceId?: string;
   [key: string]: unknown;
@@ -22,7 +22,7 @@ export interface IncomingMessageHandler {
  * A platform **action** — a non-conversational inbound signal (e.g. a Feishu
  * interactive-card button tap). It is deliberately *not* a {@link Message}: an
  * approval tap is a HITL state transition, not an agent turn, so feeding it to
- * the conversation handler would be wrong (docs/design/messaging-gateway.md §6.5).
+ * the conversation handler would be wrong (docs/architecture/messaging-gateway.md §6.5).
  *
  * The gateway routes it to a single injected action handler; the wiring layer
  * resolves it (verify the signed ref, then `respondToApproval`).

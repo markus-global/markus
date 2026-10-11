@@ -41,7 +41,7 @@ export type {
 export type { BotInstance } from './platforms/instance.js';
 
 // Messaging gateway — outbound dispatch + three-level notification routing
-// (design docs/design/messaging-gateway.md §7, slice G4).
+// (docs/architecture/messaging-gateway.md §7).
 export {
   signActionRef,
   verifyActionRef,
@@ -83,7 +83,7 @@ export { createAck, createDeadlineAck } from './gateway/ack.js';
 export type { AckHandle } from './gateway/ack.js';
 
 // Messaging gateway: the single inbound resolution point + conversation identity
-// (docs/design/messaging-gateway.md §6, slice G3).
+// (docs/architecture/messaging-gateway.md §6).
 export {
   resolveInboundTarget,
   inboundEnvelopeOf,

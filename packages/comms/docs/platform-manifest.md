@@ -31,20 +31,19 @@ Rather than patching each layer in place, we introduce one source of truth. A
 new platform becomes a **single additive entry** in the registry; every
 manifest-driven layer above it picks the platform up with no new branch.
 
-### Increment scope
+### What consumes this registry
 
-`S1` added this file and the registry as **pure data**: it registered only the
-platform that was live at the time (`feishu`) and `createAdapter()` returned the
-**existing** adapters, so importing it changed no runtime behaviour. The later increments then migrated each layer above the
-adapter to consume the registry:
+The registry is **pure data**: `createAdapter()` returns the existing adapter
+classes, so importing it changes no runtime behaviour. Every layer above the
+adapter iterates it rather than branching on a platform name:
 
-| Increment | What it moved onto the manifest |
+| Consumer | How it uses the manifest |
 | --- | --- |
-| `S2` | CLI startup: connect every enabled platform by iterating the registry (no per-platform `if`). |
-| `S3` | Settings API: `GET/PUT /api/settings/integrations/:platform`, parameterised by manifest. |
-| `S4` | Settings UI: one card per platform, rendered entirely from `manifest.fields`. |
-| `S5` | Revived platforms: Telegram / Slack / WhatsApp / Discord declared here — the adapters that were dead code in issue #340 are now reachable. |
-| `S6` | Fixed the two structural defects the issue found on top (dead route bindings; credential double-write with plaintext secret round-tripping). |
+| CLI startup | Connects every enabled bot by walking the registry — no per-platform `if` (`docs/architecture/messaging-gateway.md` §4.3). |
+| Settings API | `GET/PUT /api/settings/integrations/:platform`, parameterised by manifest (same doc, §9.2). |
+| Settings UI | One card per platform, rendered entirely from `manifest.fields` (same doc, §9.2). |
+
+Adding a platform is a single additive entry here; nothing above this file changes.
 
 ## Type contract
 
@@ -128,10 +127,11 @@ Walkthrough for the field flags, using the real Telegram manifest:
   `botToken` qualifies: `TelegramClient.getMe()` cannot run without it. Do **not**
   mark a field required just because it is common; an over-required field makes
   the platform un-enableable for a valid configuration.
-- `secret: true` — anything that must never be echoed back. The Settings API
-  drops these on read and shows a `hasValue` placeholder instead (S3 invariant).
-- `default` — the *form starting value* only. It is not applied at startup (S2
-  contract); the adapter owns its own runtime defaults.
+- `secret: true` — anything that must never be echoed back. The Settings API drops
+  these on read and shows a `hasValue` placeholder instead; the no-plaintext
+  invariant is asserted across every integrations `GET`.
+- `default` — the *form starting value* only. It is **not** applied at startup
+  (architecture doc §4.3); the adapter owns its own runtime defaults.
 - `help` — one actionable line; this is what the user reads in the Settings card.
 
 ```ts
@@ -308,16 +308,17 @@ Real gaps, recorded so the manifest is not mistaken for a claim of full support:
   socket in `packages/comms/test/slack-socket.test.ts`, and a loopback probe
   (`packages/cli/scripts/verify-g7-real-data.mjs`) drives the **real** WebSocket
   protocol against a local server. Real Slack/Discord credentials are **not**
-  verified here and are flagged as such in the handoff.
+  verified anywhere yet — see the architecture doc §11 for the full list.
 - **Webhook inbound needs a public URL; socket/gateway/polling do not.**
   `capabilities.requiresPublicUrl` (and `inboundModes`) declare this per platform:
   Slack / Feishu (`socket`), Telegram (`polling`), Discord (`gateway`) are `false`;
   WhatsApp (`webhook`) is `true`. The webhook-only paths still cannot be exercised
   end-to-end on a laptop — registration, connect and routing invariants are pinned
   with mocked `fetch` in `packages/cli/test/commands-start-new-platforms.test.ts`.
-- **`connected` in the Settings status is real only for Feishu**
-  (`ApiServer.platformConnected` → `FeishuNotifier.connected`); every other
-  platform reports `false` until a later slice wires live status.
+- **`connected` comes from the live adapter.** `ApiServer.platformConnected` reads
+  a hook the wiring layer supplies (`platformConnectionState`), so the status is
+  whatever the adapter can actually report — real for Feishu's long connection
+  today, and honestly `false` for platforms whose runtime state nothing reports.
 - **One binding per platform (v1).** `agentId` binds a whole platform to one
   agent. The router already supports an explicit per-channel binding
   (`bindAgentToChannel` / `bindPlatformAgent`), but there is no per-channel UI.
@@ -338,11 +339,8 @@ each one up in place. This manifest design is the alternative the owner chose:
 rather than five per-platform patches, make the platform set data-driven so the
 class of bug ("a platform exists but no layer knows about it") cannot recur.
 
-### Consolidation
+### One definition of the agent-binding field
 
-S1–S6 were developed as parallel slices on separate branches. This document, the
-registry and the start path are the **union** of those slices (consolidation
-merge on branch `task/tsk_2aab2e8fef102acdb64e1b0e`). The one place two slices
-independently introduced the same concept — a shared `agentId` binding field —
-was unified to a single exported `AGENT_BINDING_FIELD`; a second definition of
-the same fact is exactly the class of bug this programme exists to remove.
+Every inbound-capable platform declares its agent binding through the single
+exported `AGENT_BINDING_FIELD` rather than re-declaring the field per manifest.
+Two definitions of one fact is the class of bug this design exists to remove.
