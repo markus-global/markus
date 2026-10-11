@@ -51,6 +51,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [llm-provider-timeouts.md](./architecture/llm-provider-timeouts.md) | Per-provider timeout/retry governance matrix, known risk inventory |
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
 | [frontend/team-chat.md](./architecture/frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [messaging-gateway.md](./architecture/messaging-gateway.md) | Comms layer: platform manifests, bot instances, inbound routing, outbound & notifications, capability model |
 
 ## api/
 

@@ -92,6 +92,19 @@ function createMockIntegrationRepo() {
   };
 }
 
+/**
+ * A minimal org-secretary row. `agentId` is a required manifest field, so the
+ * store defaults it from the org secretary — the API resolves this per org
+ * instead of hard-coding an id, and the server supplies it from `agentRepo`.
+ */
+const SECRETARY_ROW = {
+  id: 'agt_secretary',
+  orgId: 'default',
+  roleId: 'secretary',
+  name: 'Secretary',
+  teamId: null,
+};
+
 /** Create a mock StorageBridge with integrationRepo */
 function createMockStorage(repo?: ReturnType<typeof createMockIntegrationRepo>): StorageBridge {
   const integrationRepo = repo ?? createMockIntegrationRepo();
@@ -99,6 +112,7 @@ function createMockStorage(repo?: ReturnType<typeof createMockIntegrationRepo>):
     orgRepo: {},
     taskRepo: {},
     integrationRepo,
+    agentRepo: { listAll: () => [SECRETARY_ROW] },
   } as unknown as StorageBridge;
 }
 
@@ -222,7 +236,9 @@ describe('Integration Config API (Feishu)', () => {
         expect(res.status).toBe(200);
         const body = await res.json() as Record<string, unknown>;
         expect(body['appId']).toBe('cli_a1111');
-        expect(body['appSecret']).toBe('xxx');
+        // Secret is never echoed in plaintext — masked + presence flag only.
+        expect(body['appSecret']).toBe('••••');
+        expect((body['secrets'] as Record<string, { hasValue: boolean }>)['appSecret']).toEqual({ hasValue: true });
         expect(body['enabled']).toBe(true);
         expect(body['notifyChatId']).toBe('oc_123');
       });
@@ -234,7 +250,7 @@ describe('Integration Config API (Feishu)', () => {
         });
         expect(res.status).toBe(200);
         const body = await res.json() as Record<string, unknown>;
-        expect(body['appId']).toBe('');
+        expect(body['appId']).toBeUndefined();
         expect(body['enabled']).toBe(false);
       });
     });
@@ -251,25 +267,36 @@ describe('Integration Config API (Feishu)', () => {
         expect(body['error']).toContain('required');
       });
 
-      it('creates a new config when none exists', async () => {
+      it('creates a new config when none exists (single writer: SQLite)', async () => {
         const res = await fetch(`http://localhost:${port}/api/settings/integrations/feishu`, {
           method: 'POST',
           headers: baseHeaders,
           body: JSON.stringify({ appId: 'cli_a2222', appSecret: 'secret123' }),
         });
         expect(res.status).toBe(200);
-        // Runtime prefs stored in SQLite (no credentials)
+        // Credentials and prefs are stored in one place: the integrations row.
         const rows = integrationRepo.listByPlatform('default', 'feishu');
         expect(rows).toHaveLength(1);
-        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBeUndefined();
-        // Credentials stored in markus.json
+        const stored = rows[0]['config'] as Record<string, unknown>;
+        expect(stored['appId']).toBe('cli_a2222');
+        expect(stored['appSecret']).toBe('secret123');
+        // markus.json is no longer a writer.
         const { readFileSync } = await import('fs');
         const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
-        expect(saved.integrations.feishu.appId).toBe('cli_a2222');
-        expect(saved.integrations.feishu.appSecret).toBe('secret123');
+        expect(saved.integrations?.feishu).toBeUndefined();
       });
 
-      it('updates existing config when already present', async () => {
+      it('never echoes a configured secret in the POST response', async () => {
+        const res = await fetch(`http://localhost:${port}/api/settings/integrations/feishu`, {
+          method: 'POST',
+          headers: baseHeaders,
+          body: JSON.stringify({ appId: 'cli_a2222', appSecret: 'secret123' }),
+        });
+        expect(res.status).toBe(200);
+        expect(await res.text()).not.toContain('secret123');
+      });
+
+      it('updates an existing config in place, preserving legacy keys', async () => {
         writeFileSync(configPath, JSON.stringify({ integrations: { feishu: { appId: 'old_id', appSecret: 'old_secret' } } }));
         await integrationRepo.create({
           id: 'feishu_default',
@@ -283,18 +310,16 @@ describe('Integration Config API (Feishu)', () => {
         const res = await fetch(`http://localhost:${port}/api/settings/integrations/feishu`, {
           method: 'POST',
           headers: baseHeaders,
-          body: JSON.stringify({ appId: 'new_id', appSecret: 'new_secret', displayName: '飞书新版' }),
+          body: JSON.stringify({ appId: 'new_id', appSecret: 'new_secret' }),
         });
         expect(res.status).toBe(200);
-        // SQLite should not have credentials
         const rows = integrationRepo.listByPlatform('default', 'feishu');
-        expect(rows).toHaveLength(1);
-        expect((rows[0]['config'] as Record<string, unknown>)['appId']).toBeUndefined();
-        // markus.json should have updated credentials
-        const { readFileSync } = await import('fs');
-        const saved = JSON.parse(readFileSync(configPath, 'utf-8'));
-        expect(saved.integrations.feishu.appId).toBe('new_id');
-        expect(saved.integrations.feishu.appSecret).toBe('new_secret');
+        expect(rows).toHaveLength(1); // updated in place, not appended
+        const stored = rows[0]['config'] as Record<string, unknown>;
+        expect(stored['appId']).toBe('new_id');
+        expect(stored['appSecret']).toBe('new_secret');
+        // Non-manifest legacy keys are preserved, not silently dropped.
+        expect(stored['connectionMode']).toBe('long_connection');
       });
     });
 

@@ -122,6 +122,9 @@ importers:
 
   packages/comms:
     dependencies:
+      '@larksuiteoapi/node-sdk':
+        specifier: ^1.36.0
+        version: 1.66.1
       '@markus/shared':
         specifier: workspace:*
         version: link:../shared
@@ -236,6 +239,9 @@ importers:
       '@larksuiteoapi/node-sdk':
         specifier: ^1.36.0
         version: 1.66.1
+      '@markus/comms':
+        specifier: workspace:*
+        version: link:../comms
       '@markus/core':
         specifier: workspace:*
         version: link:../core

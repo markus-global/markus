@@ -1,6 +1,19 @@
 const BASE = '/api';
 
 import { createStreamWatchdog } from './lib/streamResilience.ts';
+import type {
+  PlatformListResponse,
+  PlatformStatus,
+  TestConnectionResponse,
+} from './lib/platformIntegrations.ts';
+import type {
+  ConnectionTestResponse,
+  ConnectionTestSnapshot,
+  InstanceChannelBinding,
+  InstanceChannelsResponse,
+  InstanceListResponse,
+  InstanceStatus,
+} from './lib/instanceIntegrations.ts';
 
 export interface SubagentProgressEvent {
   eventType: 'started' | 'tool_start' | 'tool_end' | 'thinking' | 'iteration' | 'completed' | 'error';
@@ -1945,30 +1958,84 @@ export const api = {
     getRemote: () => request<RemoteStatus>('/settings/remote'),
     enableRemote: () => request<{ ok: boolean; status: RemoteStatus }>('/settings/remote/enable', { method: 'POST' }),
     disableRemote: () => request<{ ok: boolean }>('/settings/remote/disable', { method: 'POST' }),
-    getFeishuIntegration: () => request<{
-      appId?: string; appSecret?: string;
-      enabled: boolean; connected: boolean;
-      notifyChatId?: string;
-      notifyOnApproval: boolean; notifyOnNotification: boolean; notifyPriority: string[];
-    }>('/settings/integrations/feishu'),
-    saveFeishuIntegration: (config: {
-      appId: string; appSecret: string; enabled?: boolean;
-      notifyChatId?: string;
-      notifyOnApproval?: boolean; notifyOnNotification?: boolean; notifyPriority?: string[];
-    }) => request<{
-      appId?: string; connected: boolean; enabled: boolean;
-    }>('/settings/integrations/feishu', { method: 'POST', body: JSON.stringify(config) }),
-    testFeishuConnection: (creds: { appId: string; appSecret: string }) =>
-      request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test', { method: 'POST', body: JSON.stringify(creds) }),
+    // Feishu *extensions* that have no generic equivalent (issue #340). The
+    // generic credential read/write lives on the manifest endpoints below;
+    // these three are the extras the generic form cannot express.
     sendFeishuTestMessage: (data: { chatId: string }) =>
       request<{ success: boolean; message?: string }>('/settings/integrations/feishu/test-message', { method: 'POST', body: JSON.stringify(data) }),
-    deleteFeishuIntegration: () => request<{ ok: boolean }>('/settings/integrations/feishu', { method: 'DELETE' }),
     listFeishuChats: () =>
       request<{ chats: Array<{ chatId: string; name: string; description?: string; avatar?: string }>; error?: string }>('/settings/integrations/feishu/chats'),
     registerFeishuApp: () =>
       request<{ success: boolean; appId?: string; connected?: boolean; userInfo?: { open_id?: string; tenant_brand?: string }; error?: string; message?: string }>('/settings/integrations/feishu/register', { method: 'POST' }),
     getFeishuRegisterStatus: () =>
       request<{ active: boolean; url?: string; expireIn?: number; status?: string; elapsed?: number }>('/settings/integrations/feishu/register/status'),
+    // ── Generic, platform-manifest driven integrations (issue #340) ──────────
+    // These serve every registered platform; the per-platform detail comes back
+    // as `fields`/`secrets` on each status. Feishu's own extensions stay above.
+    listIntegrations: () => request<PlatformListResponse>('/settings/integrations'),
+    getIntegration: (platform: string) =>
+      request<PlatformStatus>(`/settings/integrations/${encodeURIComponent(platform)}`),
+    saveIntegration: (platform: string, body: Record<string, unknown>) =>
+      request<PlatformStatus & { success?: boolean }>(
+        `/settings/integrations/${encodeURIComponent(platform)}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    deleteIntegration: (platform: string) =>
+      request<{ success?: boolean; ok?: boolean }>(
+        `/settings/integrations/${encodeURIComponent(platform)}`,
+        { method: 'DELETE' },
+      ),
+    testIntegration: (platform: string, body?: Record<string, unknown>) =>
+      request<TestConnectionResponse>(
+        `/settings/integrations/${encodeURIComponent(platform)}/test`,
+        { method: 'POST', body: JSON.stringify(body ?? {}) },
+      ),
+    // ── Bot instances (slice G5): one platform, many bots ───────────────────
+    // Same manifest-driven shape as above, but addressed by *instance* id, so
+    // two bots of one platform no longer share a single row of settings.
+    listInstances: () => request<InstanceListResponse>('/settings/integrations/instances'),
+    createInstance: (platform: string, label: string) =>
+      request<{ instance: InstanceStatus }>('/settings/integrations/instances', {
+        method: 'POST',
+        body: JSON.stringify({ platform, label }),
+      }),
+    saveInstance: (id: string, body: Record<string, unknown>) =>
+      request<{ instance: InstanceStatus }>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}`,
+        { method: 'POST', body: JSON.stringify(body) },
+      ),
+    deleteInstance: (id: string) =>
+      request<{ success?: boolean; ok?: boolean }>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}`,
+        { method: 'DELETE' },
+      ),
+    testInstance: (id: string, body?: Record<string, unknown>) =>
+      request<TestConnectionResponse>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}/test`,
+        { method: 'POST', body: JSON.stringify(body ?? {}) },
+      ),
+    // Two-leg connection verification (outbound prompt → inbound reply). A
+    // different question from `testInstance` above ("are the credentials
+    // valid?"), so a different endpoint: this one proves the bot can actually
+    // post into the conversation and that replies come back.
+    startConnectionTest: (id: string, body?: { channelId?: string; channelName?: string }) =>
+      request<{ test: ConnectionTestSnapshot }>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}/connection-test`,
+        { method: 'POST', body: JSON.stringify(body ?? {}) },
+      ),
+    getConnectionTest: (id: string) =>
+      request<ConnectionTestResponse>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}/connection-test`,
+      ),
+    listInstanceChannels: (id: string) =>
+      request<InstanceChannelsResponse>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}/channels`,
+      ),
+    saveInstanceChannels: (id: string, channels: InstanceChannelBinding[]) =>
+      request<{ instance: InstanceStatus }>(
+        `/settings/integrations/instances/${encodeURIComponent(id)}/channels`,
+        { method: 'PUT', body: JSON.stringify({ channels }) },
+      ),
     getCodingTools: () => request<CodingToolsSettingsResponse>('/settings/coding-tools'),
     updateCodingTools: (data: { enabled?: boolean; tools?: Partial<Record<CodingToolName, CodingToolConfigDTO>> }) =>
       request<CodingToolsSettingsResponse>('/settings/coding-tools', { method: 'POST', body: JSON.stringify(data) }),

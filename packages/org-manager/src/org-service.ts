@@ -15,6 +15,7 @@ import {
   type RoleTemplate,
   type HumanUser,
   type HumanRole,
+  isSecretaryLikeAgent, pickOrgSecretary,
 } from '@markus/shared';
 import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS, getAgentSkillWarnings } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
@@ -684,22 +685,14 @@ export class OrganizationService {
    * Note: customized ROLE.md titles may be "Secretary 角色定义", not bare "Secretary".
    */
   findOrgSecretary(): { id: string; name: string; role: string; agentRole: string; teamId?: string } | undefined {
-    const secretaries = this.agentManager.listAgents().filter(a => OrganizationService.isSecretaryLike(a));
-    if (secretaries.length === 0) return undefined;
-    return secretaries.find(a => !a.teamId)
-      ?? secretaries.find(a => a.name === 'Secretary' || a.name === '秘书')
-      ?? secretaries[0];
+    // Delegates to the shared single source (`@markus/shared`) so the storage
+    // migration and this runtime resolve "who is the Secretary" identically.
+    return pickOrgSecretary(this.agentManager.listAgents());
   }
 
   /** True for agents whose role/name identifies them as a Secretary-class agent. */
   static isSecretaryLike(a: { name?: string; role?: string; agentRole?: string }): boolean {
-    const role = (a.role ?? '').toLowerCase().trim();
-    const name = (a.name ?? '').trim();
-    if (a.agentRole === 'secretary') return true;
-    if (name === 'Secretary' || name === '秘书') return true;
-    // "secretary", "Secretary 角色定义", etc.
-    if (role === 'secretary' || role.startsWith('secretary')) return true;
-    return false;
+    return isSecretaryLikeAgent(a);
   }
 
   /** Check whether an agent is the protected org-level Secretary (cannot be deleted). */

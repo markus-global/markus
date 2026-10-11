@@ -13,6 +13,7 @@
   "dependencies": {
     "@larksuiteoapi/node-sdk": "^1.36.0",
     "@markus/core": "workspace:*",
+    "@markus/comms": "workspace:*",
     "@markus/shared": "workspace:*",
     "@markus/storage": "workspace:*",
     "cron-parser": "^5.5.0",

@@ -5,11 +5,11 @@
  * All data is stored in a single SQLite file (default: ~/.markus/data.db).
  */
 import { DatabaseSync, type SQLInputValue } from 'node:sqlite';
-import { randomUUID } from 'node:crypto';
+import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
 
@@ -662,6 +662,44 @@ CREATE TABLE IF NOT EXISTS integrations (
 );
 CREATE INDEX IF NOT EXISTS idx_integrations_org ON integrations(org_id, platform);
 
+-- ─── Messaging gateway (see docs/architecture/messaging-gateway.md §5) ────────
+-- A platform hosts MANY bot instances (the root fix for "one platform = one bot");
+-- channel_bindings then routes global / instance / native-channel traffic to an
+-- agent. Both tables are additive: the legacy integrations table is retained
+-- read-only and never altered by this slice.
+CREATE TABLE IF NOT EXISTS platform_instances (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  platform TEXT NOT NULL,
+  label TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  capabilities TEXT,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  last_verified_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(org_id, platform, label)
+);
+CREATE INDEX IF NOT EXISTS idx_platform_instances_org ON platform_instances(org_id, platform);
+
+-- NB: SQLite treats NULLs as DISTINCT in a UNIQUE index, so the unique key below
+-- does NOT de-duplicate global / platform scopes (instance_id + native_id NULL).
+-- One-row-per-scope is enforced by the migration's explicit WHERE NOT EXISTS
+-- guards, never by this index.
+CREATE TABLE IF NOT EXISTS channel_bindings (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL,
+  scope TEXT NOT NULL,
+  instance_id TEXT,
+  native_id TEXT,
+  kind TEXT,
+  agent_id TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(org_id, scope, instance_id, native_id)
+);
+CREATE INDEX IF NOT EXISTS idx_channel_bindings_org ON channel_bindings(org_id, scope);
+
 CREATE TABLE IF NOT EXISTS pending_callbacks (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -811,7 +849,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
   //   v1 = heartbeat interval migration
   //   v2 = purge leaked tool markup (存量清洗，仅一次；避免每次启动都对
   //        数百万行大表做 LIKE 全表扫描，曾导致启动耗时 20s+)
+  //   v3 = messaging gateway data model (G1): copy legacy `integrations` rows
+  //        into platform_instances / channel_bindings (docs/architecture/messaging-gateway.md §5)
   const SCHEMA_MIGRATION_VERSION = 2;
+  const GATEWAY_MIGRATION_VERSION = 3;
   const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
   const userVersion = (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
 
@@ -837,6 +878,25 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
   if (userVersion < SCHEMA_MIGRATION_VERSION) {
     _db.exec(`PRAGMA user_version = ${SCHEMA_MIGRATION_VERSION}`);
+  }
+
+  // v3 — messaging gateway data model (G1). Fail-safe by construction: a throw
+  // is logged and swallowed so the app still starts and the legacy read path
+  // keeps serving; `user_version` is only advanced on success, so a fixed build
+  // retries on the next start. Every step is independently idempotent.
+  if (userVersion < GATEWAY_MIGRATION_VERSION) {
+    try {
+      const stats = migrateMessagingGateway(_db);
+      _db.exec(`PRAGMA user_version = ${GATEWAY_MIGRATION_VERSION}`);
+      if (stats.instancesCreated > 0 || stats.bindingsCreated > 0) {
+        log.info('Messaging gateway migration complete', { ...stats });
+      }
+    } catch (err) {
+      log.error(
+        'Messaging gateway migration failed — legacy read path still serves; will retry next start',
+        { error: String(err) },
+      );
+    }
   }
 
   log.info('SQLite database opened', { path: dbPath });
@@ -5170,7 +5230,7 @@ export class SqliteApprovalRepo {
 
 // ─── Group Chat Repo ──────────────────────────────────────────────────────────
 
-import type { GroupChat, GroupChatMember, IntegrationRow } from './types.ts';
+import type { GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteGroupChatRepo {
   constructor(private db: DatabaseSync) {}
@@ -5371,7 +5431,7 @@ export class SqliteStatusTransitionRepo {
 
 // ─── Integration ─────────────────────────────────────────────────────────────
 
-export type { IntegrationRow } from './types.ts';
+export type { IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteIntegrationRepo {
   constructor(private db: DatabaseSync) {}
@@ -5453,6 +5513,341 @@ export class SqliteIntegrationRepo {
       updatedAt: r['updated_at'] as string,
     };
   }
+}
+
+// ─── Messaging gateway: bot instances + channel bindings ─────────────────────
+
+export class SqlitePlatformInstanceRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async create(data: Record<string, unknown>): Promise<PlatformInstanceRow> {
+    const id = (data['id'] as string) ?? generateId('bi');
+    const now = new Date().toISOString();
+    const capabilities = data['capabilities'];
+    this.db
+      .prepare(
+        `INSERT INTO platform_instances (id, org_id, platform, label, config, capabilities, enabled, last_verified_at, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        data['orgId'] as string,
+        data['platform'] as string,
+        (data['label'] as string) ?? 'default',
+        toJson(data['config'] ?? {}),
+        capabilities === undefined || capabilities === null ? null : toJson(capabilities),
+        data['enabled'] === false ? 0 : 1,
+        (data['lastVerifiedAt'] as string) ?? null,
+        (data['lastError'] as string) ?? null,
+        now,
+        now,
+      );
+    return this.findById(id)!;
+  }
+
+  findById(id: string): PlatformInstanceRow | undefined {
+    const row = this.db.prepare('SELECT * FROM platform_instances WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  findByLabel(orgId: string, platform: string, label: string): PlatformInstanceRow | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM platform_instances WHERE org_id = ? AND platform = ? AND label = ?')
+      .get(orgId, platform, label) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  listByOrg(orgId: string): PlatformInstanceRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM platform_instances WHERE org_id = ? ORDER BY platform, label')
+      .all(orgId) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRow(r));
+  }
+
+  listByPlatform(orgId: string, platform: string): PlatformInstanceRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM platform_instances WHERE org_id = ? AND platform = ? ORDER BY label')
+      .all(orgId, platform) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRow(r));
+  }
+
+  async update(id: string, data: Record<string, unknown>): Promise<void> {
+    const sets: string[] = [];
+    const params: SQLInputValue[] = [];
+    if (data['label'] !== undefined) { sets.push('label = ?'); params.push(data['label'] as string); }
+    if (data['config'] !== undefined) { sets.push('config = ?'); params.push(toJson(data['config'])); }
+    if (data['capabilities'] !== undefined) {
+      sets.push('capabilities = ?');
+      params.push(data['capabilities'] === null ? null : toJson(data['capabilities']));
+    }
+    if (data['enabled'] !== undefined) { sets.push('enabled = ?'); params.push(data['enabled'] ? 1 : 0); }
+    if (data['lastVerifiedAt'] !== undefined) { sets.push('last_verified_at = ?'); params.push((data['lastVerifiedAt'] as string) ?? null); }
+    if (data['lastError'] !== undefined) { sets.push('last_error = ?'); params.push((data['lastError'] as string) ?? null); }
+    if (data['platform'] !== undefined) { sets.push('platform = ?'); params.push(data['platform'] as string); }
+    if (sets.length === 0) return;
+    sets.push('updated_at = ?');
+    params.push(new Date().toISOString());
+    params.push(id);
+    this.db.prepare(`UPDATE platform_instances SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  async delete(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM platform_instances WHERE id = ?').run(id);
+  }
+
+  private mapRow(r: Record<string, unknown>): PlatformInstanceRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      platform: r['platform'] as string,
+      label: r['label'] as string,
+      config: fromJson<Record<string, unknown>>(r['config'] as string),
+      capabilities: r['capabilities'] ? fromJson<Record<string, unknown>>(r['capabilities'] as string) : null,
+      enabled: !!(r['enabled'] as number),
+      lastVerifiedAt: r['last_verified_at'] as string | null,
+      lastError: r['last_error'] as string | null,
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
+    };
+  }
+}
+
+export class SqliteChannelBindingRepo {
+  constructor(private db: DatabaseSync) {}
+
+  async create(data: Record<string, unknown>): Promise<ChannelBindingRow> {
+    const id = (data['id'] as string) ?? generateId('cb');
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(
+        id,
+        data['orgId'] as string,
+        data['scope'] as string,
+        (data['instanceId'] as string) ?? null,
+        (data['nativeId'] as string) ?? null,
+        (data['kind'] as string) ?? null,
+        data['agentId'] as string,
+        now,
+      );
+    return this.findById(id)!;
+  }
+
+  findById(id: string): ChannelBindingRow | undefined {
+    const row = this.db.prepare('SELECT * FROM channel_bindings WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  listByOrg(orgId: string): ChannelBindingRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM channel_bindings WHERE org_id = ? ORDER BY scope, instance_id, native_id')
+      .all(orgId) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRow(r));
+  }
+
+  listByScope(orgId: string, scope: ChannelBindingScope): ChannelBindingRow[] {
+    const rows = this.db
+      .prepare('SELECT * FROM channel_bindings WHERE org_id = ? AND scope = ?')
+      .all(orgId, scope) as Record<string, unknown>[];
+    return rows.map((r) => this.mapRow(r));
+  }
+
+  async delete(id: string): Promise<void> {
+    this.db.prepare('DELETE FROM channel_bindings WHERE id = ?').run(id);
+  }
+
+  private mapRow(r: Record<string, unknown>): ChannelBindingRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      scope: r['scope'] as ChannelBindingScope,
+      instanceId: (r['instance_id'] as string | null) ?? null,
+      nativeId: (r['native_id'] as string | null) ?? null,
+      kind: (r['kind'] as string | null) ?? null,
+      agentId: r['agent_id'] as string,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── Messaging gateway migration (legacy integrations → instances + bindings) ─
+
+/** Outcome counters for {@link migrateMessagingGateway} (observability + tests). */
+export interface MessagingGatewayMigrationStats {
+  instancesCreated: number;
+  instanceBindingsCreated: number;
+  globalBindingsCreated: number;
+  /** instance + global bindings created in this call. */
+  bindingsCreated: number;
+}
+
+/**
+ * Deterministic, collision-resistant id for a migrated gateway row.
+ *
+ * The first part is human-readable (`platform` for instances, `scope` for
+ * bindings); the hash over the full tuple (NUL-separated, so concatenation is
+ * unambiguous) keeps distinct tuples from ever producing the same id — a plain
+ * `a_b_c` join could collide with `a` + `b_c` and silently drop a row.
+ */
+function stableGatewayId(prefix: string, firstPart: string, ...rest: string[]): string {
+  const hash = createHash('sha1').update([firstPart, ...rest].join('\u0000')).digest('hex').slice(0, 12);
+  return `${prefix}_${firstPart}_${hash}`;
+}
+
+/**
+ * Read the legacy `config.agentId` binding out of a raw config blob.
+ * Must match `AGENT_BINDING_FIELD.name` in `@markus/comms` (the manifest field
+ * that names the target agent). Returns `undefined` for absent / blank / broken
+ * JSON — a malformed blob must never abort the migration.
+ */
+function readLegacyAgentId(config: string): string | undefined {
+  try {
+    const parsed = JSON.parse(config) as Record<string, unknown>;
+    const raw = parsed?.['agentId'];
+    return typeof raw === 'string' && raw.trim().length > 0 ? raw.trim() : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Resolve the org Secretary straight from the `agents` table (shared predicate). */
+function findSecretaryAgentId(db: DatabaseSync, orgId: string): string | undefined {
+  const rows = db
+    .prepare(
+      `SELECT id, name, role_name, agent_role, team_id FROM agents
+       WHERE org_id = ? AND (deleted_at IS NULL OR deleted_at = '')`,
+    )
+    .all(orgId) as Array<{ id: string; name: string; role_name: string; agent_role: string; team_id: string | null }>;
+  return pickOrgSecretary(
+    rows.map((r) => ({
+      id: r.id,
+      name: r.name,
+      role: r.role_name,
+      agentRole: r.agent_role,
+      teamId: r.team_id ?? undefined,
+    })),
+  )?.id;
+}
+
+/**
+ * One-shot, incremental, idempotent migration of legacy `integrations` rows into
+ * `platform_instances` + `channel_bindings` (see docs/architecture/messaging-gateway.md
+ * §5.2/§5.3).
+ *
+ * Contract — every step is safe to re-run and never overwrites user edits:
+ *   1. each `integrations` row → `platform_instances` (`label='default'`), the
+ *      `config` column copied **byte-for-byte from the raw string** (never
+ *      `JSON.parse`d + re-`stringify`d), guarded by `INSERT OR IGNORE` on
+ *      `UNIQUE(org_id, platform, label)`;
+ *   2. a non-empty `config.agentId` → one `instance`-scope binding;
+ *   3. an org left with **no** binding → `global → Secretary` (shared predicate).
+ *
+ * The legacy table is only read here — it is never modified or deleted.
+ */
+export function migrateMessagingGateway(db: DatabaseSync): MessagingGatewayMigrationStats {
+  const rows = db
+    .prepare('SELECT id, org_id, platform, enabled, config FROM integrations')
+    .all() as Array<{ id: string; org_id: string; platform: string; enabled: number; config: string }>;
+
+  let instancesCreated = 0;
+  let instanceBindingsCreated = 0;
+  let globalBindingsCreated = 0;
+  const orgs = new Set<string>();
+
+  for (const row of rows) {
+    orgs.add(row.org_id);
+    const label = 'default';
+    const instanceId = stableGatewayId('bi', row.platform, row.org_id, label);
+
+    // 1) instance row — config copied verbatim (raw string, never re-encoded).
+    const ins = db
+      .prepare(
+        `INSERT OR IGNORE INTO platform_instances (id, org_id, platform, label, config, enabled)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      )
+      .run(instanceId, row.org_id, row.platform, label, row.config, row.enabled ? 1 : 0);
+    if (Number(ins.changes) > 0) instancesCreated += 1;
+
+    // 2) legacy agentId → instance-scope binding (explicit guard: the unique
+    //    index cannot de-duplicate NULL instance_id/native_id rows).
+    const agentId = readLegacyAgentId(row.config);
+    if (agentId) {
+      const bind = db
+        .prepare(
+          `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id)
+           SELECT ?, ?, 'instance', ?, NULL, NULL, ?
+           WHERE NOT EXISTS (
+             SELECT 1 FROM channel_bindings WHERE org_id = ? AND scope = 'instance' AND instance_id = ?
+           )`,
+        )
+        .run(stableGatewayId('cb', 'instance', row.org_id, instanceId), row.org_id, instanceId, agentId, row.org_id, instanceId);
+      if (Number(bind.changes) > 0) instanceBindingsCreated += 1;
+    }
+  }
+
+  // 3) never leave a migrated org without a route: seed global → Secretary.
+  for (const orgId of orgs) {
+    const existing = db.prepare('SELECT 1 FROM channel_bindings WHERE org_id = ? LIMIT 1').get(orgId);
+    if (existing) continue;
+    const secretaryId = findSecretaryAgentId(db, orgId);
+    if (!secretaryId) continue;
+    const bind = db
+      .prepare(
+        `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id)
+         SELECT ?, ?, 'global', NULL, NULL, NULL, ?
+         WHERE NOT EXISTS (
+           SELECT 1 FROM channel_bindings WHERE org_id = ? AND scope = 'global'
+         )`,
+      )
+      .run(stableGatewayId('cb', 'global', orgId), orgId, secretaryId, orgId);
+    if (Number(bind.changes) > 0) globalBindingsCreated += 1;
+  }
+
+  return {
+    instancesCreated,
+    instanceBindingsCreated,
+    globalBindingsCreated,
+    bindingsCreated: instanceBindingsCreated + globalBindingsCreated,
+  };
+}
+
+/** Where {@link resolveInstanceConfig} sourced its answer from. */
+export interface ResolvedInstanceConfig {
+  source: 'instance' | 'legacy';
+  config: Record<string, unknown>;
+  enabled: boolean;
+}
+
+/**
+ * Dual-read primitive: prefer the new `platform_instances` table, fall back to
+ * the legacy `integrations` row when a platform has no instance yet.
+ *
+ * This codifies the §5.2 "dual-read window" contract for the slices that rewire
+ * the read path (G2/G3). G1 exports it but wires it into **nothing** — behaviour
+ * is therefore unchanged for every existing consumer.
+ */
+export function resolveInstanceConfig(
+  db: DatabaseSync,
+  orgId: string,
+  platform: string,
+  label = 'default',
+): ResolvedInstanceConfig | undefined {
+  const inst = db
+    .prepare('SELECT config, enabled FROM platform_instances WHERE org_id = ? AND platform = ? AND label = ?')
+    .get(orgId, platform, label) as { config: string; enabled: number } | undefined;
+  if (inst) {
+    return { source: 'instance', config: fromJson<Record<string, unknown>>(inst.config), enabled: !!inst.enabled };
+  }
+  const legacy = db
+    .prepare('SELECT config, enabled FROM integrations WHERE org_id = ? AND platform = ? LIMIT 1')
+    .get(orgId, platform) as { config: string; enabled: number } | undefined;
+  if (legacy) {
+    return { source: 'legacy', config: fromJson<Record<string, unknown>>(legacy.config), enabled: !!legacy.enabled };
+  }
+  return undefined;
 }
 
 // ─── Read Cursors (unread tracking) ──────────────────────────────────────────

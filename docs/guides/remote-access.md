@@ -236,7 +236,7 @@ Before exposing Markus to the internet, ensure:
 - [ ] **Use HTTPS** — Cloudflare Tunnel and Tailscale provide this automatically; for FRP, add nginx + Let's Encrypt
 - [ ] **Enable authentication layer** — Cloudflare Access (free), Tailscale ACLs, or nginx basic auth in front
 - [ ] **Review CORS** — current default allows all origins (`*`); for production, restrict to your domain
-- [ ] **Firewall** — do not expose ports 8056/8058 directly to `0.0.0.0`; always use a tunnel or reverse proxy
+- [ ] **Firewall** — do not expose port 8056 directly to `0.0.0.0`; always use a tunnel or reverse proxy
 
 ### Recommended Architecture
 
@@ -253,7 +253,6 @@ Internet
 ┌─────────────────────────┐
 │  Markus API (:8056)     │  ← HTTP + WebSocket
 │  Markus Web UI (:8057)  │  ← Vite dev / static files
-│  Comm Adapter (:8058)   │  ← Internal only
 └─────────────────────────┘
 ```
 

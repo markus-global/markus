@@ -30,6 +30,16 @@
   --color-fg-tertiary: oklch(0.55 0.006 270);
   --color-fg-muted: oklch(0.42 0.005 270);
 
+  /* Switch (on/off) states. These are tokens, not per-component Tailwind
+     colours, because a raw `dark:` utility does NOT follow the app's theme
+     class (Tailwind v4's `dark:` means `prefers-color-scheme`, while this app
+     themes via a class) — so an ad-hoc `bg-brand-600`/`bg-gray-600` pair made
+     the ON and OFF states near-identical greys. A token is resolved from the
+     active theme, so one definition is correct in every theme. */
+  --color-switch-on: oklch(0.62 0.17 255);
+  --color-switch-off: oklch(0.34 0.008 270);
+  --color-switch-knob: oklch(0.99 0 0);
+
   --font-sans: 'SF Pro Display', 'SF Pro Text', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
@@ -54,6 +64,9 @@ html.light {
   --color-brand-400: oklch(0.45 0.22 270);
   --color-brand-500: oklch(0.48 0.22 270);
   --color-brand-600: oklch(0.42 0.22 270);
+  --color-switch-on: oklch(0.55 0.20 265);
+  --color-switch-off: oklch(0.85 0.004 270);
+  --color-switch-knob: oklch(1 0 0);
 }
 
 @media (prefers-color-scheme: light) {
@@ -74,6 +87,9 @@ html.light {
     --color-brand-400: oklch(0.45 0.22 270);
     --color-brand-500: oklch(0.48 0.22 270);
     --color-brand-600: oklch(0.42 0.22 270);
+    --color-switch-on: oklch(0.55 0.20 265);
+    --color-switch-off: oklch(0.85 0.004 270);
+    --color-switch-knob: oklch(1 0 0);
   }
 }
 
@@ -101,6 +117,9 @@ html.cyberpunk {
   --color-fg-secondary: oklch(0.75 0.02 330);
   --color-fg-tertiary: oklch(0.56 0.03 330);
   --color-fg-muted: oklch(0.40 0.02 330);
+  --color-switch-on: oklch(0.62 0.28 330);
+  --color-switch-off: oklch(0.28 0.03 320);
+  --color-switch-knob: oklch(0.98 0 0);
 }
 
 html.mono {
@@ -127,6 +146,11 @@ html.mono {
   --color-fg-secondary: oklch(1 0 0);
   --color-fg-tertiary: oklch(1 0 0);
   --color-fg-muted: oklch(1 0 0);
+  /* Mono is a pure black/white theme: the ON track is white, so the knob must
+     be black to stay visible (the opposite of every other theme). */
+  --color-switch-on: oklch(1 0 0);
+  --color-switch-off: oklch(0.35 0 0);
+  --color-switch-knob: oklch(0 0 0);
 }
 html.mono .btn-primary,
 html.mono .bg-brand-600,

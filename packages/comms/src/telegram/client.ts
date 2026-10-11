@@ -1,4 +1,6 @@
 import { createLogger } from '@markus/shared';
+// Route outbound calls through the platform's proxy-aware fetch (../net/http.ts).
+import { httpFetch } from '../net/http.js';
 
 const log = createLogger('telegram-client');
 
@@ -28,6 +30,19 @@ export interface TelegramMessage {
   date: number;
 }
 
+/**
+ * One Telegram `Update`. Lives here rather than in the adapter because it is the
+ * transport's wire shape: `getUpdates` returns it and the adapter only consumes
+ * it. Keeping one definition is what stops the two from drifting.
+ */
+export interface TelegramUpdate {
+  update_id: number;
+  message?: TelegramMessage;
+  edited_message?: TelegramMessage;
+  channel_post?: TelegramMessage;
+  edited_channel_post?: TelegramMessage;
+}
+
 export interface SendMessageParams extends Record<string, unknown> {
   chat_id: number | string;
   text: string;
@@ -48,7 +63,7 @@ export class TelegramClient {
   async sendMessage(params: SendMessageParams): Promise<TelegramMessage> {
     const url = `${this.baseUrl}/bot${this.config.botToken}/sendMessage`;
     
-    const response = await fetch(url, {
+    const response = await httpFetch(url, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -76,7 +91,7 @@ export class TelegramClient {
   async getMe(): Promise<any> {
     const url = `${this.baseUrl}/bot${this.config.botToken}/getMe`;
     
-    const response = await fetch(url);
+    const response = await httpFetch(url);
     
     if (!response.ok) {
       const error = await response.text();
@@ -94,6 +109,55 @@ export class TelegramClient {
     return result.result;
   }
 
+  /**
+   * Long-poll `getUpdates`.
+   *
+   * Telegram's Bot API has exactly two inbound transports — webhook and
+   * long polling — and they are mutually exclusive: `getUpdates` returns
+   * HTTP 409 `Conflict` while a webhook is registered. A desktop install has no
+   * public HTTPS URL for Telegram to POST to, so polling is the only inbound
+   * path that can work out of the box; the adapter clears any stale webhook
+   * before it starts polling (see `TelegramAdapter.startPolling`).
+   *
+   * `timeout` is the *server-side* long-poll window: the request is held open
+   * until an update arrives or the window elapses, which is what makes this a
+   * push-like stream instead of a busy loop. It is deliberately a couple of
+   * seconds shorter than the client-side abort so a normal empty result is not
+   * mistaken for a timeout.
+   *
+   * `signal` aborts the in-flight request on `disconnect()`.
+   */
+  async getUpdates(
+    offset?: number,
+    timeout = 30,
+    signal?: AbortSignal,
+  ): Promise<TelegramUpdate[]> {
+    const url = `${this.baseUrl}/bot${this.config.botToken}/getUpdates`;
+    const payload: Record<string, unknown> = {
+      timeout,
+      allowed_updates: ['message', 'edited_message', 'channel_post', 'edited_channel_post'],
+    };
+    if (offset !== undefined) payload['offset'] = offset;
+
+    const response = await httpFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      ...(signal ? { signal } : {}),
+    });
+
+    if (!response.ok) {
+      const error = await response.text();
+      throw new Error(`Telegram API error: ${response.status} - ${error}`);
+    }
+
+    const result = (await response.json()) as { ok?: boolean; result?: TelegramUpdate[]; description?: string };
+    if (!result.ok) {
+      throw new Error(`Telegram API error: ${result.description ?? 'unknown'}`);
+    }
+    return result.result ?? [];
+  }
+
   async setWebhook(url: string, secretToken?: string): Promise<boolean> {
     const apiUrl = `${this.baseUrl}/bot${this.config.botToken}/setWebhook`;
     
@@ -102,7 +166,7 @@ export class TelegramClient {
       body.secret_token = secretToken;
     }
 
-    const response = await fetch(apiUrl, {
+    const response = await httpFetch(apiUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -130,7 +194,7 @@ export class TelegramClient {
   async deleteWebhook(): Promise<boolean> {
     const url = `${this.baseUrl}/bot${this.config.botToken}/deleteWebhook`;
     
-    const response = await fetch(url);
+    const response = await httpFetch(url);
     
     if (!response.ok) {
       const error = await response.text();

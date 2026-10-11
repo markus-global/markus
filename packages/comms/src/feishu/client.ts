@@ -1,6 +1,8 @@
 import { readFile } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { createLogger } from '@markus/shared';
+// Route outbound calls through the platform's proxy-aware fetch (../net/http.ts).
+import { httpFetch } from '../net/http.js';
 
 const log = createLogger('feishu-client');
 
@@ -56,7 +58,7 @@ export class FeishuClient {
       return this.tenantToken;
     }
 
-    const res = await fetch(`${this.domain}/open-apis/auth/v3/tenant_access_token/internal`, {
+    const res = await httpFetch(`${this.domain}/open-apis/auth/v3/tenant_access_token/internal`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -92,7 +94,7 @@ export class FeishuClient {
     form.append('image_type', imageType);
     form.append('image', new Blob([new Uint8Array(bytes)]), basename(filePath));
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/images`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/images`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}` },
       body: form,
@@ -133,7 +135,7 @@ export class FeishuClient {
       content,
     };
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}/reply`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/messages/${messageId}/reply`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -157,7 +159,7 @@ export class FeishuClient {
   async updateMessage(messageId: string, content: string, msgType: SendMsgType = 'text'): Promise<void> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
       method: 'PATCH',
       headers: {
         'Content-Type': 'application/json',
@@ -184,7 +186,7 @@ export class FeishuClient {
   async deleteMessage(messageId: string): Promise<void> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/messages/${messageId}`, {
       method: 'DELETE',
       headers: {
         Authorization: `Bearer ${token}`,
@@ -202,7 +204,7 @@ export class FeishuClient {
   async getMessageList(chatId: string, pageSize = 20): Promise<unknown[]> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(
+    const res = await httpFetch(
       `${this.domain}/open-apis/im/v1/messages?container_id_type=chat&container_id=${chatId}&page_size=${pageSize}`,
       {
         headers: { Authorization: `Bearer ${token}` },
@@ -216,7 +218,7 @@ export class FeishuClient {
   async getChatList(): Promise<unknown[]> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/chats?page_size=50`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/chats?page_size=50`, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -230,7 +232,7 @@ export class FeishuClient {
       ? `${this.domain}/open-apis/sheets/v3/spreadsheets/${docToken}/sheets/query`
       : `${this.domain}/open-apis/docx/v1/documents/${docToken}/raw_content`;
 
-    const res = await fetch(endpoint, {
+    const res = await httpFetch(endpoint, {
       headers: { Authorization: `Bearer ${token}` },
     });
     const data = (await res.json()) as { code: number; msg: string; data?: { content?: string } };
@@ -241,7 +243,7 @@ export class FeishuClient {
   async createApproval(approvalCode: string, formContent: string, targetUserId: string): Promise<string> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/approval/v4/instances`, {
+    const res = await httpFetch(`${this.domain}/open-apis/approval/v4/instances`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -262,7 +264,7 @@ export class FeishuClient {
   async getApprovalStatus(instanceCode: string): Promise<Record<string, unknown>> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/approval/v4/instances/${instanceCode}`, {
+    const res = await httpFetch(`${this.domain}/open-apis/approval/v4/instances/${instanceCode}`, {
       headers: { Authorization: `Bearer ${token}` },
     });
 
@@ -274,7 +276,7 @@ export class FeishuClient {
   async searchDocs(query: string, count = 10): Promise<Array<{ title: string; url: string; docToken: string }>> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/suite/docs-api/search/object`, {
+    const res = await httpFetch(`${this.domain}/open-apis/suite/docs-api/search/object`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -294,7 +296,7 @@ export class FeishuClient {
   private async sendMessage(receiveId: string, msgType: string, content: string, receiveIdType: ReceiveIdType = 'chat_id'): Promise<string> {
     const token = await this.getTenantToken();
 
-    const res = await fetch(`${this.domain}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
+    const res = await httpFetch(`${this.domain}/open-apis/im/v1/messages?receive_id_type=${receiveIdType}`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',

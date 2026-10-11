@@ -300,7 +300,10 @@ export class HITLService {
       priority: 'high',
       actionType: 'navigate',
       actionTarget: JSON.stringify({ path: `/approvals/${id}` }),
-      metadata: { approvalId: id },
+      // `agentId` travels with the notification so the outbound gateway can route
+      // it to the producing agent's own channel before falling back to the global
+      // default (G4, design §7.3).
+      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options },
     });
 
     return approval;

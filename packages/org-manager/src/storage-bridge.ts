@@ -44,6 +44,9 @@ export interface StorageBridge {
   workflowScheduleRepo?: any;
   pendingCallbackRepo?: any;
   integrationRepo?: any;
+  /** Messaging gateway: bot instances + channel bindings (G1 tables). */
+  platformInstanceRepo?: any;
+  channelBindingRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -98,6 +101,8 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
       workflowScheduleRepo: new storage.SqliteWorkflowScheduleRepo(db),
       integrationRepo: new storage.SqliteIntegrationRepo(db),
+      platformInstanceRepo: new storage.SqlitePlatformInstanceRepo(db),
+      channelBindingRepo: new storage.SqliteChannelBindingRepo(db),
       pendingCallbackRepo: new storage.SqlitePendingCallbackRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });

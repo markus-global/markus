@@ -130,7 +130,17 @@ vi.mock('@larksuiteoapi/node-sdk', () => {
 
 vi.mock('../src/feishu-api-client.js', () => ({
   FeishuApiClient: class MockFeishuApiClient {
+    // Full surface the notifier may reach once credentials resolve. Kept
+    // intentionally inert: this file tests HTTP routing, not Feishu I/O.
     sendCardToUser = vi.fn(async () => {});
+    sendTextToUser = vi.fn(async () => {});
+    sendCard = vi.fn(async () => 'mock-card-id');
+    sendText = vi.fn(async () => 'mock-msg-id');
+    updateCard = vi.fn(async () => {});
+    addReaction = vi.fn(async () => 'mock-reaction-id');
+    deleteReaction = vi.fn(async () => {});
+    startWSClient = vi.fn(async () => {});
+    stopWSClient = vi.fn();
   },
 }));
 
@@ -590,7 +600,8 @@ describe('APIServer extended route coverage', () => {
   });
 
   describe('Feishu integration routes', () => {
-    it('POST /api/settings/integrations/feishu/test', async () => {
+    it('POST /api/settings/integrations/feishu/test probes with stored credentials', async () => {
+      mockFetch.mockReset();
       mockFetch.mockResolvedValueOnce({
         status: 200,
         ok: true,
@@ -598,6 +609,7 @@ describe('APIServer extended route coverage', () => {
         headers: { get: () => null },
       });
       const res = await request(ctx.server, 'POST', '/api/settings/integrations/feishu/test');
+      // An empty body falls back to the stored credentials, so a probe does happen.
       expect([200, 400]).toContain(res.status);
     });
 
@@ -1186,6 +1198,17 @@ describe('APIServer extended route coverage', () => {
       const res = await request(ctx.server, 'POST', '/api/settings/integrations/feishu/register');
       expect(res.status).toBe(200);
       expect(res.json).toMatchObject({ success: expect.any(Boolean) });
+
+      // Single writer (issue #340, defect B): the QR flow must persist credentials
+      // to the integration row, never back into markus.json.
+      const { saveConfig } = await import('@markus/shared');
+      const wroteFeishuCreds = vi.mocked(saveConfig).mock.calls.some((call) => {
+        const patch = call[0] as
+          | { integrations?: { feishu?: { appId?: string; appSecret?: string } } }
+          | undefined;
+        return Boolean(patch?.integrations?.feishu?.appId);
+      });
+      expect(wroteFeishuCreds).toBe(false);
     });
 
     it('POST /api/channels/agent/:id/messages routes to agent', async () => {
@@ -1346,48 +1369,6 @@ describe('APIServer extended route coverage', () => {
   });
 
   describe('Deep coverage batch', () => {
-    it('handleFeishuUserMessage routes to secretary agent', async () => {
-      const secretary = ctx.agentManager.getAgent('secretary');
-      vi.mocked(secretary.sendMessageStream).mockResolvedValueOnce('Secretary reply');
-      const broadcastSpy = vi.spyOn(
-        ctx.server['ws'] as {
-          broadcastProactiveMessage: (...args: unknown[]) => void;
-        },
-        'broadcastProactiveMessage',
-      ).mockImplementation(() => {});
-      await ctx.server['handleFeishuUserMessage']({
-        chatId: 'chat-feishu-1',
-        senderId: 'ou_sender',
-        senderName: 'Feishu User',
-        messageType: 'text',
-        content: JSON.stringify({ text: 'Need help' }),
-      });
-      expect(secretary.sendMessageStream).toHaveBeenCalled();
-      const roles = broadcastSpy.mock.calls.map(call =>
-        (call[5] as { role?: string } | undefined)?.role,
-      );
-      // User turn is pushed live before the assistant reply finishes.
-      expect(roles).toContain('user');
-      expect(roles).toContain('assistant');
-      const userCall = broadcastSpy.mock.calls.find(
-        call => (call[5] as { role?: string } | undefined)?.role === 'user',
-      );
-      expect(userCall?.[4]).toBe('Need help');
-      const assistantCall = broadcastSpy.mock.calls.find(
-        call => (call[5] as { role?: string } | undefined)?.role === 'assistant',
-      );
-      expect((assistantCall?.[5] as { userText?: string }).userText).toBe('Need help');
-    });
-
-    it('handleFeishuUserMessage handles non-text message type', async () => {
-      await ctx.server['handleFeishuUserMessage']({
-        chatId: 'chat-feishu-2',
-        senderId: 'ou_sender',
-        messageType: 'image',
-        content: 'img_key_abc',
-      });
-    });
-
     it('resolveAgentRoleDir resolves template role directory', async () => {
       const fs = await import('node:fs');
       vi.mocked(fs.existsSync).mockImplementation((p: string) => {
@@ -1728,6 +1709,9 @@ describe('APIServer extended route coverage', () => {
     });
 
     it('POST /api/hub/publish follows redirect response', async () => {
+      // Own the mock state: `mockResolvedValueOnce` is a global queue and this
+      // test must not depend on responses left over by earlier tests.
+      mockFetch.mockReset();
       mockFetch
         .mockResolvedValueOnce({
           status: 302, ok: false,
@@ -1747,6 +1731,9 @@ describe('APIServer extended route coverage', () => {
     });
 
     it('GET /api/hub/items proxies to hub API', async () => {
+      // Own the mock state: `mockResolvedValueOnce` is a global queue and this
+      // test must not depend on responses left over by earlier tests.
+      mockFetch.mockReset();
       mockFetch.mockResolvedValueOnce({
         status: 200, ok: true,
         json: async () => ({ items: [{ id: 'hub-1', name: 'Item' }] }),
@@ -1794,18 +1781,6 @@ describe('APIServer extended route coverage', () => {
       const res = await request(ctx.server, 'POST', '/api/settings/integrations/feishu/register');
       expect(res.status).toBe(200);
       expect(res.json.error).toBe('expired');
-    });
-
-    it('handleFeishuUserMessage warns when no secretary agent exists', async () => {
-      vi.mocked(ctx.agentManager.listAgents).mockReturnValueOnce([
-        { id: AGENT_A, name: 'Agent A', agentRole: 'worker', role: 'Developer', status: 'idle', skills: [] },
-      ] as never);
-      await ctx.server['handleFeishuUserMessage']({
-        chatId: 'chat-no-sec',
-        senderId: 'ou_x',
-        messageType: 'text',
-        content: JSON.stringify({ text: 'hello' }),
-      });
     });
 
     it('DELETE /api/system/storage/orphans purges orphan teams', async () => {

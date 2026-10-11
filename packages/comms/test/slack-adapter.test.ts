@@ -80,6 +80,18 @@ describe('SlackAdapter', () => {
     expect(client.sendTextMessage).toHaveBeenCalledWith('C123', 'Hello', { thread_ts: '1111.2222' });
   });
 
+  it('sendMessage renders markdown as Slack mrkdwn when markdown is enabled', async () => {
+    await adapter.sendMessage('C123', '**bold** and [x](https://y.z)', { markdown: true });
+    const client = (adapter as Record<string, unknown>)['client'] as ReturnType<typeof makeMockSlackClient>;
+    expect(client.sendTextMessage).toHaveBeenCalledWith('C123', '*bold* and <https://y.z|x>', {});
+  });
+
+  it('sendMessage sends verbatim without the markdown flag', async () => {
+    await adapter.sendMessage('C123', '**bold**');
+    const client = (adapter as Record<string, unknown>)['client'] as ReturnType<typeof makeMockSlackClient>;
+    expect(client.sendTextMessage).toHaveBeenCalledWith('C123', '**bold**', {});
+  });
+
   it('sendReply sets thread_ts', async () => {
     const id = await adapter.sendReply('C123', '1111.2222', 'Reply');
     expect(id).toBe('1234.5678');
@@ -179,12 +191,13 @@ describe('SlackAdapter', () => {
     vi.unstubAllGlobals();
   });
 
-  it('connect throws when socket mode lacks webhookPort', async () => {
+  it('connect requires an appToken for Socket Mode (no webhookPort needed)', async () => {
     const fresh = new SlackAdapter();
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue({ json: async () => ({ ok: true }) }),
     );
+    // Socket Mode no longer needs a webhookPort — it needs the app-level token.
     await expect(
       fresh.connect({
         platform: 'slack',
@@ -192,7 +205,7 @@ describe('SlackAdapter', () => {
         signingSecret: 'secret',
         socketMode: true,
       }),
-    ).rejects.toThrow('Socket Mode requires a webhookPort');
+    ).rejects.toThrow('Slack Socket Mode requires an appToken');
     vi.unstubAllGlobals();
   });
 

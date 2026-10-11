@@ -1,39 +1,31 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { initStorage } from '../src/storage-bridge.js';
 
-vi.mock('@markus/storage', () => ({
-  openSqlite: vi.fn(() => ({})),
-  SqliteOrgRepo: vi.fn(),
-  SqliteTaskRepo: vi.fn(),
-  SqliteTaskLogRepo: vi.fn(),
-  SqliteAgentRepo: vi.fn(),
-  SqliteTeamRepo: vi.fn(),
-  SqliteMessageRepo: vi.fn(),
-  SqliteChatSessionRepo: vi.fn(),
-  SqliteChannelMessageRepo: vi.fn(),
-  SqliteUserRepo: vi.fn(),
-  SqliteTaskCommentRepo: vi.fn(),
-  SqliteRequirementCommentRepo: vi.fn(),
-  SqliteRequirementRepo: vi.fn(),
-  SqliteProjectRepo: vi.fn(),
-  SqliteExternalAgentRepo: vi.fn(),
-  SqliteDeliverableRepo: vi.fn(),
-  SqliteActivityRepo: vi.fn(),
-  SqliteExecutionStreamRepo: vi.fn(),
-  SqliteMailboxRepo: vi.fn(),
-  SqliteDecisionRepo: vi.fn(),
-  SqliteNotificationRepo: vi.fn(),
-  SqliteApprovalRepo: vi.fn(),
-  SqliteGroupChatRepo: vi.fn(),
-  SqliteAuditRepo: vi.fn(),
-  SqliteStatusTransitionRepo: vi.fn(),
-  SqliteReadCursorRepo: vi.fn(),
-  SqliteWorkflowRunRepo: vi.fn(),
-  SqliteWorkflowScheduleRepo: vi.fn(),
-  SqliteIntegrationRepo: vi.fn(),
-  SqlitePendingCallbackRepo: vi.fn(),
-  runInTransaction: vi.fn((db: unknown, fn: () => unknown) => fn()),
-}));
+// The bridge wires up every repository the storage package exports. Enumerating
+// that list here made the fixture a liar: adding a repo to the bridge broke three
+// unrelated tests with a confusing "expected null not to be null" (the missing
+// constructor threw, and initSqliteStorage swallows wiring errors). Instead, mock
+// the two functions the tests assert on and hand every `*Repo` name a no-op.
+vi.mock('@markus/storage', () => {
+  const mod: Record<string | symbol, unknown> = {
+    openSqlite: vi.fn(() => ({})),
+    runInTransaction: vi.fn((_db: unknown, fn: () => unknown) => fn()),
+  };
+  return new Proxy(mod, {
+    get(target, prop) {
+      if (prop in target) return target[prop];
+      if (typeof prop === 'string' && prop.endsWith('Repo')) {
+        const ctor = vi.fn();
+        target[prop] = ctor;
+        return ctor;
+      }
+      return undefined;
+    },
+    has(target, prop) {
+      return prop in target || (typeof prop === 'string' && prop.endsWith('Repo'));
+    },
+  });
+});
 
 describe('initStorage', () => {
   beforeEach(() => {

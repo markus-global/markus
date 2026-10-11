@@ -91,6 +91,19 @@ export interface MarkusConfig {
     extensionBridgePort?: number;
   };
   integrations?: {
+    /**
+     * Platform config blocks. `feishu` / `search` / `embedding` are the
+     * long-standing built-ins; every other key is a **platform block** whose
+     * shape is declared by that platform's manifest in
+     * `packages/comms/src/platforms/registry.ts` (`PLATFORM_MANIFESTS`) and
+     * consumed by the manifest-driven startup traversal + Settings API. Keeping
+     * the field list out of this type is deliberate: the manifest is the single
+     * source of truth, so `integrations.telegram.botToken` here would be a
+     * second, drift-prone copy. Hand-editing a platform block in `markus.json`
+     * works because unknown keys survive `loadConfig`; it is only a read-only
+     * bootstrap once the Settings API has written the value to the database.
+     */
+    [platform: string]: unknown;
     feishu?: {
       appId?: string;
       appSecret?: string;

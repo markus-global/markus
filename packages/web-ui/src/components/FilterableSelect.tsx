@@ -288,6 +288,18 @@ export function FilterableSelect({
           // anything but an option blurs the field and the blur handler closes
           // the list, so dragging the scrollbar would dismiss the menu.
           onMouseDown={e => e.preventDefault()}
+          // The menu is portalled to `document.body`, i.e. OUTSIDE the card. A
+          // document-level capture-phase pointerdown handler (LayoutContext)
+          // blurs the focused text field whenever the pointer lands on something
+          // that is not itself a field — and it runs BEFORE this menu's
+          // `preventDefault()` can. That blurred the input, the blur handler
+          // closed the list, and the click never reached the option: the list
+          // was mouse-dead while the keyboard kept working (keydown never leaves
+          // the input). `data-keep-edit-focus` is the handler's own escape hatch
+          // (see LayoutContext.onPointerDown); declaring the menu as part of the
+          // editing surface is what keeps a click on an option a *click inside
+          // the field* rather than a click outside it.
+          data-keep-edit-focus
           className="z-50 overflow-y-auto bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1"
         >
           {rows.map((row, i) => (

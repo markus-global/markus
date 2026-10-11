@@ -4,7 +4,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, getProviderBootstrapModel, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, kebab, saveConfig, loadConfig, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, getProviderBootstrapModel, pickOrgSecretary, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -49,11 +49,36 @@ import {
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
+import { getManifest } from '@markus/comms';
+import {
+  deletePlatform,
+  flattenStatus,
+  getPlatformStatus,
+  knownPlatformIds,
+  listPlatformStatuses,
+  missingRequiredFields,
+  readPlatformValues,
+  readPlatformValuesForSave,
+  savePlatform,
+  type PlatformStoreDeps,
+} from './platform-integrations.js';
+import {
+  InstanceValidationError,
+  createInstance,
+  defaultTestTarget,
+  deleteInstance,
+  getInstanceStatus,
+  listInstanceStatuses,
+  readInstanceConfig,
+  saveInstance,
+  setInstanceChannels,
+  type InstanceChannelBinding,
+  type InstanceStoreDeps,
+} from './instance-integrations.js';
 import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
-import { FeishuNotifier, buildAgentResponseCard, type AgentCardPhase, type FeishuNotifierConfig } from './feishu-notifier.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -230,7 +255,6 @@ export class APIServer {
   public ws: WSBroadcaster;
   public skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
-  private feishuNotifier?: FeishuNotifier;
   public billingService?: BillingService;
   public auditService?: AuditService;
   public licenseService?: LicenseService;
@@ -1380,20 +1404,89 @@ export class APIServer {
       };
       this.ws.sendToUser(n.targetUserId, event);
     });
-    this.tryInitFeishuNotifier();
   }
 
-  /** Update the Feishu notifier config at runtime (called when integration settings are saved). */
-  updateFeishuConfig(config: FeishuNotifierConfig): void {
-    if (!this.feishuNotifier) {
-      return;
+  /**
+   * Legacy `markus.json` config for a platform, used **only** as a read-only
+   * bootstrap default — consulted when the database holds no value, so existing
+   * installs keep working with nothing to re-enter.
+   */
+  private platformBootstrap(platform: string): Record<string, unknown> {
+    if (platform !== 'feishu') return {};
+    try {
+      return (loadConfig(this.markusConfigPath).integrations?.feishu ?? {}) as Record<string, unknown>;
+    } catch {
+      return {};
     }
-    this.feishuNotifier.updateConfig(config);
+  }
+
+  /** Messaging-gateway hooks (slice G6): live connection state + runtime reconfigure. */
+  private platformConnectionState?: (platform: string) => boolean;
+  private platformRuntimeSync?: (platform: string, config: Record<string, unknown>) => void | Promise<void>;
+  /**
+   * Connection verification hooks (two-leg handshake). Supplied by the gateway
+   * because only it holds live adapters; absent ⇒ the endpoint reports 501
+   * rather than pretending a test ran.
+   */
+  private connectionTestHooks?: {
+    begin: (
+      instanceId: string,
+      platform: string,
+      target?: { channelId: string; name?: string | null } | null,
+    ) => Promise<unknown>;
+    get: (instanceId: string) => unknown;
+  };
+
+  /**
+   * Inject the messaging gateway's live hooks. `connected` answers "is this
+   * platform's bot currently connected" from the router's adapters (the single
+   * owner of connection state); `sync` reconnects a platform after its settings
+   * are saved. Without them the API server reports disconnected and skips
+   * reconfiguration — never a silent half-state.
+   */
+  setPlatformRuntimeHooks(hooks: {
+    connected: (platform: string) => boolean;
+    sync: (platform: string, config: Record<string, unknown>) => void | Promise<void>;
+    connectionTest?: {
+      begin: (
+        instanceId: string,
+        platform: string,
+        target?: { channelId: string; name?: string | null } | null,
+      ) => Promise<unknown>;
+      get: (instanceId: string) => unknown;
+    };
+  }): void {
+    this.platformConnectionState = hooks.connected;
+    this.platformRuntimeSync = hooks.sync;
+    this.connectionTestHooks = hooks.connectionTest;
+  }
+
+  /** Live connection state for a platform, supplied by the messaging gateway. */
+  private platformConnected(platform: string): boolean {
+    return this.platformConnectionState?.(platform) ?? false;
+  }
+
+  /**
+   * Effective config for a platform: database first, `markus.json` bootstrap
+   * fallback. The single answer to "what are this platform's credentials right
+   * now" — every Feishu runtime path resolves through here instead of reading
+   * markus.json directly.
+   */
+  resolvePlatformConfig(orgId: string, platform: string): Record<string, unknown> {
+    const manifest = getManifest(platform);
+    if (!manifest) return {};
+    return readPlatformValues(
+      {
+        orgId,
+        repo: this.storage?.integrationRepo as PlatformStoreDeps['repo'],
+        bootstrap: (p) => this.platformBootstrap(p),
+      },
+      manifest,
+    );
   }
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
-    this.tryInitFeishuNotifier();
     if (storage?.pendingCallbackRepo) {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
@@ -2457,106 +2550,14 @@ export class APIServer {
         // to Settings → Model Routing hits the cache (no empty-then-filled UI).
         void this.warmRoutingCandidates();
       });
-      this.tryInitFeishuNotifier();
       this.tryInitConservator();
     });
   }
 
   stop(): void {
     this.server?.close();
-    this.feishuNotifier?.stop();
   }
 
-  /** Initialize FeishuNotifier once all dependencies are available. */
-  private async tryInitFeishuNotifier(): Promise<void> {
-    if (this.feishuNotifier) return;
-    if (!this.hitlService) return;
-    if (!this.storage) return;
-    try {
-      const agentManager = this.orgService.getAgentManager();
-      const eventBus = agentManager.getEventBus();
-
-      // Bridge critical EventBus events to WS broadcasts (for desktop notifications)
-      const lifecycleEvents = [
-        'task:completed',
-      ];
-      for (const evt of lifecycleEvents) {
-        eventBus.on(evt, (...args: unknown[]) => {
-          const payload = args[0] as Record<string, unknown> | undefined;
-          this.ws.broadcast({ type: evt, payload: payload ?? {}, timestamp: new Date().toISOString() });
-        });
-      }
-      // Bridge HITL notifications to WS broadcast for desktop
-      this.hitlService.onNotification(n => {
-        if (n.type === 'approval_request') {
-          this.ws.broadcast({
-            type: 'approval:requested',
-            payload: { title: n.title, body: n.body, priority: n.priority, approvalId: n.metadata?.approvalId },
-            timestamp: new Date().toISOString(),
-          });
-        }
-      });
-
-      // Credentials from markus.json (single source of truth)
-      const { loadConfig: loadCfg } = await import('@markus/shared');
-      const markusCfg = loadCfg(this.markusConfigPath);
-      const appId = markusCfg.integrations?.feishu?.appId;
-      const appSecret = markusCfg.integrations?.feishu?.appSecret;
-
-      // Runtime prefs from SQLite
-      const rows = this.storage.integrationRepo.listByPlatform('default', 'feishu') as Array<Record<string, unknown>>;
-      const row = rows[0];
-      const cfgConfig = row?.['config'] as Record<string, unknown> | undefined;
-      const forwardRules = row?.['forwardRules'] as Array<Record<string, unknown>> | undefined;
-
-      let initialConfig: FeishuNotifierConfig | undefined;
-      if (appId && appSecret) {
-        initialConfig = {
-          appId,
-          appSecret,
-          domain: cfgConfig?.domain as string | undefined,
-          locale: (cfgConfig?.locale as 'zh' | 'en' | undefined) ?? 'zh',
-          notifyChatId: cfgConfig?.notifyChatId as string | undefined,
-          notifyOpenId: cfgConfig?.notifyOpenId as string | undefined,
-          notifyOnApproval: (cfgConfig?.notifyOnApproval ?? true) as boolean,
-          notifyOnNotification: (cfgConfig?.notifyOnNotification ?? false) as boolean,
-          notifyPriority: (cfgConfig?.notifyPriority ?? ['high', 'urgent']) as string[],
-          forwardRules: (forwardRules ?? []) as unknown as FeishuNotifierConfig['forwardRules'],
-        };
-      }
-
-      this.feishuNotifier = new FeishuNotifier({
-        eventBus,
-        hitlService: this.hitlService,
-        orgId: 'default',
-        agentManager: {
-          getAgentName: (id: string) => {
-            try { return agentManager.getAgent(id)?.config?.name ?? id; } catch { return id; }
-          },
-        },
-        config: initialConfig,
-      });
-      this.feishuNotifier.start();
-      log.info('FeishuNotifier initialized');
-
-      // Route Feishu user messages to the Secretary agent
-      eventBus.on('feishu:message_received', (...args: unknown[]) => {
-        const payload = args[0] as Record<string, unknown>;
-        this.handleFeishuUserMessage(payload).catch((err) => {
-          log.error('Failed to handle Feishu user message', { error: String(err) });
-        });
-      });
-    } catch (err) {
-      log.warn('Failed to initialize FeishuNotifier', { error: String(err) });
-    }
-  }
-
-  /**
-   * Handle an incoming Feishu user message by routing it to the Secretary agent.
-   * Uses streaming (sendMessageStream) for real-time card updates showing
-   * thinking → tool calls → final response progressively.
-   * Uses the Secretary's main session for context continuity (same as Web UI DM).
-   */
   /**
    * 启动存活安全网统一仲裁器（Conservator，守卫启动）。依赖（storage/taskService/orgService）
    * 就绪时才启动；否则静默跳过。安全默认：recover 只触发一次恢复心跳 / reconcile-idle
@@ -2643,379 +2644,6 @@ export class APIServer {
       log.info('Agent Conservator started');
     } catch (err) {
       log.warn('Failed to init Conservator', { error: String(err) });
-    }
-  }
-
-  private async handleFeishuUserMessage(payload: Record<string, unknown>): Promise<void> {
-    const chatId = payload['chatId'] as string | undefined;
-    const senderId = payload['senderId'] as string | undefined;
-    const messageId = payload['messageId'] as string | undefined;
-    const rawContent = payload['content'] as string | undefined;
-    const messageType = payload['messageType'] as string | undefined;
-    if (!chatId || !rawContent) return;
-
-    // Extract text from Feishu message content JSON (e.g. {"text":"hello"})
-    let text: string | undefined;
-    if (messageType === 'text') {
-      try {
-        const parsed = JSON.parse(rawContent);
-        text = parsed.text;
-      } catch { text = rawContent; }
-    } else {
-      text = `[${messageType ?? 'unknown'}] ${rawContent}`;
-    }
-    if (!text) return;
-
-    const startTime = Date.now();
-
-    // Add "processing" reaction to the user's message
-    let processingReactionId: string | undefined;
-    if (messageId && this.feishuNotifier) {
-      processingReactionId = await this.feishuNotifier.addReaction(messageId, 'OnIt');
-    }
-
-    const agentManager = this.orgService.getAgentManager();
-
-    // Always route to the org-level Secretary (not team「协调秘书」etc.)
-    const secretaryInfo = this.orgService.findOrgSecretary();
-    if (!secretaryInfo) {
-      log.warn('No Secretary agent found to handle Feishu message');
-      if (messageId && processingReactionId && this.feishuNotifier) {
-        await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
-      }
-      await this.feishuNotifier?.sendTextToChat(chatId, '暂无可用的秘书 Agent 处理此消息');
-      return;
-    }
-
-    const agentName = secretaryInfo.name ?? 'Secretary';
-
-    // Send a "thinking" status card to give immediate visual feedback
-    let statusCardId: string | undefined;
-    if (this.feishuNotifier) {
-      const thinkingCard = buildAgentResponseCard({ agentName, phase: 'thinking' });
-      statusCardId = await this.feishuNotifier.sendCardToChat(chatId, thinkingCard);
-    }
-
-    const secretary = agentManager.getAgent(secretaryInfo.id);
-    const senderName = payload['senderName'] as string ?? senderId ?? 'feishu_user';
-
-    // Track active conversation so approvals are routed to this chat
-    this.feishuNotifier?.setActiveConversationChat(chatId);
-
-    // Streaming state for real-time card updates
-    const toolCalls: Array<{ name: string; status: 'running' | 'done' | 'error'; durationMs?: number }> = [];
-    let lastCardUpdatePhase: AgentCardPhase = 'thinking';
-    let cardUpdatePending = false;
-    let cardUpdateTimer: ReturnType<typeof setTimeout> | null = null;
-    let streamingText = '';
-    // Bumped when the stream finishes so a late mid-stream updateCard cannot
-    // overwrite the final done/error card (Feishu would stay on "thinking").
-    let cardEpoch = 0;
-    // Serialize Feishu card patches — overlapping updateCard awaits otherwise race
-    // and a stale mid-stream body can replace the final done card.
-    let cardWriteChain: Promise<void> = Promise.resolve();
-    const enqueueCardWrite = (
-      epochAtSchedule: number,
-      build: () => Record<string, unknown>,
-      opts?: { rethrow?: boolean },
-    ) => {
-      const write = cardWriteChain.then(async () => {
-        if (!statusCardId || !this.feishuNotifier || epochAtSchedule !== cardEpoch) return;
-        await this.feishuNotifier.updateCard(statusCardId, build());
-      });
-      // Keep the queue alive even when a write fails; callers that need fallback
-      // pass rethrow and await `write` directly.
-      cardWriteChain = write.catch((e) => {
-        log.warn('Failed to update Feishu card', { error: String(e) });
-      });
-      return opts?.rethrow ? write : cardWriteChain;
-    };
-
-    // Throttled card update — avoid excessive API calls (max once per 2s)
-    const CARD_UPDATE_INTERVAL_MS = 2000;
-    const scheduleCardUpdate = () => {
-      if (!statusCardId || !this.feishuNotifier || cardUpdatePending) return;
-      cardUpdatePending = true;
-      const epochAtSchedule = cardEpoch;
-      cardUpdateTimer = setTimeout(() => {
-        cardUpdatePending = false;
-        cardUpdateTimer = null;
-        void enqueueCardWrite(epochAtSchedule, () => buildAgentResponseCard({
-          agentName,
-          phase: lastCardUpdatePhase,
-          toolCalls: toolCalls.length > 0 ? [...toolCalls] : undefined,
-          content: streamingText || undefined,
-        }));
-      }, CARD_UPDATE_INTERVAL_MS);
-    };
-
-    // Stream event handler — updates card state in real-time
-    const handleStreamEvent = (event: { type: string; tool?: string; phase?: string; success?: boolean; durationMs?: number; agentEvent?: string; text?: string }) => {
-      if (event.type === 'agent_tool') {
-        if (event.phase === 'start' && event.tool) {
-          toolCalls.push({ name: event.tool, status: 'running' });
-          lastCardUpdatePhase = 'tool_calling';
-          scheduleCardUpdate();
-        } else if (event.phase === 'end' && event.tool) {
-          const tc = toolCalls.find(t => t.name === event.tool && t.status === 'running');
-          if (tc) {
-            tc.status = event.success === false ? 'error' : 'done';
-            tc.durationMs = event.durationMs;
-          }
-          scheduleCardUpdate();
-        }
-      } else if (event.type === 'text_delta' && event.text) {
-        streamingText += event.text;
-        lastCardUpdatePhase = 'tool_calling';
-        scheduleCardUpdate();
-      }
-    };
-
-    try {
-      // Route Feishu into the owner's Secretary main session (same as Team Chat),
-      // so history restore / persistence / live WS updates stay in one place.
-      const ownerUserId = await this.ensureAdminUser('default');
-      let mainSessionId: string | undefined;
-      let sessionRestoreData: {
-        dbSessionId: string;
-        messages: Array<{ role: string; content: string }>;
-        preferredMemorySessionId?: string | null;
-      } | null = null;
-      if (this.storage) {
-        try {
-          const mainSession = this.storage.chatSessionRepo.getOrCreateMainSession(
-            secretaryInfo.id,
-            ownerUserId,
-          );
-          const sessionId = mainSession.id;
-          mainSessionId = sessionId;
-          const histResult = await this.storage.chatSessionRepo.getMessages(sessionId, SESSION_RESTORE_MAX_MESSAGES);
-          sessionRestoreData = {
-            dbSessionId: sessionId,
-            messages: histResult.messages.map((m: { role: string; content: string }) => ({
-              role: m.role,
-              content: m.content,
-            })),
-            preferredMemorySessionId: this.readMemorySessionBinding(sessionId),
-          };
-        } catch (err) {
-          log.warn('Failed to prepare Feishu main-session restore', { error: String(err) });
-          sessionRestoreData = null;
-        }
-      }
-
-      // Feishu 入站：会话上下文**一律**交给处理该 item 的 worker 应用（与主路一致）。
-      // 这里以前在 HTTP 线程 eager restore —— 那只写 root 工作区，worker 看不到；
-      // 并发下还会写下陈旧/空绑定（下面 persistMemorySessionBinding 已改为按 DB id 定向查询）。
-
-      // Persist the inbound Feishu user turn onto the main session before streaming
-      // (restore snapshot above intentionally excludes this message).
-      let feishuUserMessageId: string | undefined;
-      if (mainSessionId) {
-        const persisted = await this.persistUserMessage(
-          secretaryInfo.id,
-          text,
-          ownerUserId,
-          undefined,
-          mainSessionId,
-          undefined,
-          {
-            source: 'feishu',
-            feishuChatId: chatId,
-            feishuSenderId: senderId,
-            feishuSenderName: senderName,
-          },
-        );
-        if (persisted) {
-          // 绑定由处理该消息的 worker 写；这里只按 DB id 定向回写持久化映射。
-          this.persistMemorySessionBinding(
-            persisted.sessionId,
-            secretary.getMemorySessionIdForDbSession(persisted.sessionId),
-          );
-          mainSessionId = persisted.sessionId;
-          feishuUserMessageId = persisted.messageId;
-          // Push the user turn to Team Chat immediately (do not wait for the reply).
-          this.ws.broadcastProactiveMessage(
-            secretaryInfo.id,
-            agentName,
-            persisted.sessionId,
-            persisted.messageId,
-            text,
-            {
-              isMainSession: true,
-              source: 'feishu',
-              sessionId: persisted.sessionId,
-              role: 'user',
-            },
-            ownerUserId,
-          );
-        }
-      }
-
-      const deferredRestore = sessionRestoreData;
-      const feishuSenderLabel = senderName.startsWith('Feishu') ? senderName : `Feishu:${senderName}`;
-      const reply = await secretary.sendMessageStream(
-        text,
-        handleStreamEvent,
-        ownerUserId,
-        { name: feishuSenderLabel, role: 'user' },
-        undefined,
-        undefined,
-        undefined,
-        undefined,
-        {
-          ...(deferredRestore !== undefined ? { sessionRestore: deferredRestore } : {}),
-          // 本轮 DB 会话 id：让 worker 能按 cs_* 解析并写 DB→内存绑定。
-          ...(mainSessionId ? { dbSessionId: mainSessionId } : {}),
-        },
-      );
-
-      // Invalidate in-flight mid-stream card patches before writing the final card.
-      if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
-      cardUpdatePending = false;
-      cardEpoch += 1;
-
-      const elapsedMs = Date.now() - startTime;
-
-      // Handle merged messages — user sent while agent was already processing
-      if (reply === '[merged]' || reply === '[Stream cancelled]') {
-        log.info('Feishu message was merged into active processing', { chatId });
-        if (messageId && this.feishuNotifier) {
-          if (processingReactionId) {
-            await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
-          }
-          await this.feishuNotifier.addReaction(messageId, 'OnIt');
-        }
-        if (statusCardId && this.feishuNotifier) {
-          const mergedCard = buildAgentResponseCard({
-            agentName,
-            phase: 'done',
-            content: '已收到，已合并到当前正在处理的对话中。',
-            elapsedMs,
-          });
-          await this.feishuNotifier.updateCard(statusCardId, mergedCard).catch(() => {});
-        }
-        return;
-      }
-
-      // Strip thinking/reasoning blocks — only show the clean response to user.
-      // Fall back to streamed text when the resolved reply strips empty (think-only /
-      // tool-only turns) — otherwise Feishu stays stuck on the thinking card while
-      // Markus Team Chat already shows a completed turn.
-      const { clean: cleanReply } = extractThinkBlocks(reply ?? '');
-      const { clean: cleanStreamed } = extractThinkBlocks(streamingText);
-      let displayContent = stripInternalBlocks(cleanReply).trim()
-        || stripInternalBlocks(cleanStreamed).trim();
-      if (!displayContent && toolCalls.length > 0) {
-        displayContent = '已处理完成。';
-      }
-      if (!displayContent) {
-        displayContent = '已收到，暂无文字回复。';
-        log.warn('Feishu reply had no displayable text; finalizing thinking card with fallback', {
-          chatId, replyLen: (reply ?? '').length, streamedLen: streamingText.length,
-        });
-      }
-
-      // Remove "processing" reaction and add "done" reaction
-      if (messageId && this.feishuNotifier) {
-        if (processingReactionId) {
-          await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
-        }
-        await this.feishuNotifier.addReaction(messageId, 'DONE');
-      }
-
-      // Always finalize the thinking card — never leave Feishu on "正在分析您的消息..."
-      const toolCallEntries = toolCalls.length > 0 ? toolCalls : undefined;
-
-      if (statusCardId && this.feishuNotifier) {
-        try {
-          await enqueueCardWrite(cardEpoch, () => buildAgentResponseCard({
-            agentName,
-            phase: 'done',
-            content: displayContent,
-            toolCalls: toolCallEntries,
-            elapsedMs,
-          }), { rethrow: true });
-        } catch (cardErr) {
-          log.warn('Failed to update Feishu card, falling back to text', { error: String(cardErr) });
-          await this.feishuNotifier.sendTextToChat(chatId, displayContent);
-        }
-      } else if (this.feishuNotifier) {
-        await this.feishuNotifier.sendTextToChat(chatId, displayContent);
-      }
-
-      // Persist assistant reply on the same main session + notify Team Chat UI.
-      if (mainSessionId) {
-        await this.persistAssistantMessage(
-          mainSessionId,
-          secretaryInfo.id,
-          reply ?? '',
-          secretary.getState().tokensUsedToday,
-          { source: 'feishu', feishuChatId: chatId, feishuSenderId: senderId },
-        );
-        this.ws.broadcastProactiveMessage(
-          secretaryInfo.id,
-          agentName,
-          mainSessionId,
-          generateId('cm'),
-          displayContent,
-          {
-            isMainSession: true,
-            source: 'feishu',
-            sessionId: mainSessionId,
-            role: 'assistant',
-            // Fallback so UI can still insert the user bubble if the earlier
-            // user-turn WS event was missed (tab closed / reconnect race).
-            userText: text,
-            ...(feishuUserMessageId ? { userMessageId: feishuUserMessageId } : {}),
-          },
-          ownerUserId,
-        );
-      } else {
-        void this.persistChatTurn(
-          secretaryInfo.id,
-          text,
-          reply ?? '',
-          ownerUserId,
-          secretary.getState().tokensUsedToday,
-        );
-      }
-    } catch (err) {
-      // Invalidate in-flight mid-stream card patches before writing the error card.
-      if (cardUpdateTimer) { clearTimeout(cardUpdateTimer); cardUpdateTimer = null; }
-      cardUpdatePending = false;
-      cardEpoch += 1;
-
-      log.error('Secretary agent failed to respond to Feishu message', { error: String(err) });
-      const elapsedMs = Date.now() - startTime;
-
-      // Remove "processing" reaction and add "error" reaction
-      if (messageId && this.feishuNotifier) {
-        if (processingReactionId) {
-          await this.feishuNotifier.deleteReaction(messageId, processingReactionId);
-        }
-        await this.feishuNotifier.addReaction(messageId, 'Frown');
-      }
-
-      // Update the status card with error state
-      const errMsg = String(err).slice(0, 200);
-      if (statusCardId && this.feishuNotifier) {
-        try {
-          await enqueueCardWrite(cardEpoch, () => buildAgentResponseCard({
-            agentName,
-            phase: 'error',
-            errorMessage: errMsg,
-            toolCalls: toolCalls.length > 0 ? toolCalls : undefined,
-            elapsedMs,
-          }), { rethrow: true });
-        } catch {
-          await this.feishuNotifier.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
-        }
-      } else {
-        await this.feishuNotifier?.sendTextToChat(chatId, `处理消息时出错: ${errMsg}`);
-      }
-    } finally {
-      this.feishuNotifier?.setActiveConversationChat(null);
     }
   }
 
@@ -10495,189 +10123,636 @@ EXPLANATION_END`;
       return rows[0];
     };
 
-    if (path === '/api/settings/integrations/feishu' && req.method === 'GET') {
+    // ── Settings — Integrations (platform-manifest driven) ───────────────
+    //
+    // One set of handlers serves every platform in PLATFORM_MANIFESTS: the
+    // per-platform detail (fields, required, secret, testConnection) lives in
+    // the manifest, so a new platform needs no new branch here. Feishu's
+    // platform-specific capabilities (register / chats / notifications / …)
+    // keep their own handlers below.
+    // See docs/architecture/messaging-gateway.md §9.2.
+
+    /**
+     * The org's **default** answering agent — the Secretary — resolved through
+     * `@markus/shared`'s canonical predicate (`pickOrgSecretary`, the same one
+     * `OrgService` and the gateway migration use), never through a hard-coded id:
+     * the id is assigned per org at bootstrap.
+     *
+     * An agent row's `roleName` is the role template name the shared predicate
+     * matches on, so team assistants (e.g. 「协调秘书」) are not mistaken for the
+     * org Secretary.
+     */
+    const defaultAgentIdFor = (orgId: string): string | null => {
+      const rows = (this.storage?.agentRepo?.listAll?.() ?? []) as Array<{
+        id: string;
+        orgId?: string;
+        name?: string;
+        roleName?: string;
+        agentRole?: string;
+        teamId?: string | null;
+      }>;
+      return (
+        pickOrgSecretary(
+          rows
+            .filter((a) => a.orgId === orgId)
+            .map((a) => ({
+              id: a.id,
+              name: a.name,
+              role: a.roleName,
+              agentRole: a.agentRole,
+              teamId: a.teamId ?? undefined,
+            })),
+        )?.id ?? null
+      );
+    };
+
+    /** Store dependencies for one org — DB first, markus.json as bootstrap. */
+    const platformStore = (orgId: string): PlatformStoreDeps => ({
+      orgId,
+      repo: this.storage?.integrationRepo as PlatformStoreDeps['repo'],
+      bootstrap: (platform) => this.platformBootstrap(platform),
+      defaultAgentId: () => defaultAgentIdFor(orgId),
+      connected: (platform) => this.platformConnected(platform),
+    });
+
+    /** Push a saved config into the live gateway — reconnects that platform's bots. */
+    const syncPlatformRuntime = (platform: string, config: Record<string, unknown>): void => {
+      void this.platformRuntimeSync?.(platform, config);
+    };
+
+    /** 404 body for a `:platform` with no manifest — actionable, not silent. */
+    const unknownPlatform = (platform: string): Record<string, unknown> => ({
+      error: `Unknown platform: "${platform}"`,
+      hint:
+        `Known platforms: ${knownPlatformIds().join(', ')}. ` +
+        'Register a platform by adding a manifest to PLATFORM_MANIFESTS (packages/comms/src/platforms/registry.ts).',
+    });
+
+    // ── Settings — Integrations: bot instances ─────────────────────────────
+    //
+    // A platform is a manifest; a bot is one **instance** of it. These handlers
+    // are the per-instance projection of the same manifest (the logic lives in
+    // `instance-integrations.ts`), which is what lets one platform host several
+    // bots — each with its own credentials, its own answering agent and its own
+    // channel routes.
+    //
+    // Routing note: the `:platform` handlers below match exactly ONE path
+    // segment, so `/instances` would be read as a platform id and 404 as
+    // "unknown platform". This block therefore sits *above* `integrationMatch`
+    // and owns the whole `/instances…` prefix before that match is even built.
+
+    /** Store deps for one org — DB repos first, markus.json as read-only bootstrap. */
+    const instanceStore = (orgId: string): InstanceStoreDeps => ({
+      orgId,
+      instances: this.storage?.platformInstanceRepo as InstanceStoreDeps['instances'],
+      bindings: this.storage?.channelBindingRepo as InstanceStoreDeps['bindings'],
+      bootstrap: (platform) => this.platformBootstrap(platform),
+      defaultAgentId: () => defaultAgentIdFor(orgId),
+      // Keyed by instance id, but the only liveness probe that exists is the
+      // in-process Feishu notifier, which answers per *platform* — so the
+      // instance's platform is resolved first. Two bots of one platform then
+      // share the answer, which is honest: without a per-instance connection
+      // registry we cannot tell them apart, and inventing one here would race
+      // the gateway that actually owns connections.
+      connected: (instanceId) => {
+        const row = this.storage?.platformInstanceRepo?.findById?.(instanceId);
+        return row?.platform ? this.platformConnected(row.platform as string) : false;
+      },
+    });
+
+    /** Both G1 repos are prerequisites; without them the whole block is 501. */
+    const instancesAvailable = (): boolean =>
+      !!this.storage?.platformInstanceRepo && !!this.storage?.channelBindingRepo;
+
+    const instancesMatch = /^\/api\/settings\/integrations\/instances$/.exec(path);
+    const instanceMatch = /^\/api\/settings\/integrations\/instances\/([^/]+)$/.exec(path);
+    const instanceTestMatch =
+      /^\/api\/settings\/integrations\/instances\/([^/]+)\/test$/.exec(path);
+    const instanceChannelsMatch =
+      /^\/api\/settings\/integrations\/instances\/([^/]+)\/channels$/.exec(path);
+    const instanceConnectionTestMatch =
+      /^\/api\/settings\/integrations\/instances\/([^/]+)\/connection-test$/.exec(path);
+
+    // GET /api/settings/integrations/instances — every bot of this org
+    if (instancesMatch && req.method === 'GET') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
       try {
-        // Credentials from markus.json (single source of truth)
-        const { loadConfig: loadCfg } = await import('@markus/shared');
-        const markusCfg = loadCfg(this.markusConfigPath);
-        const appId = markusCfg.integrations?.feishu?.appId ?? '';
-        const appSecret = markusCfg.integrations?.feishu?.appSecret ?? '';
-
-        // Runtime prefs from SQLite
-        const row = findFeishuConfig(auth.orgId);
-        const cfg = (row?.['config'] as Record<string, unknown>) ?? {};
-        const connected = !!(this.feishuNotifier?.connected);
-        const mcpConfig = markusCfg.integrations?.feishu?.mcp;
-        this.json(res, 200, {
-          appId,
-          appSecret,
-          enabled: !!(row?.['enabled']),
-          connected,
-          notifyChatId: cfg['notifyChatId'] ?? '',
-          notifyOnApproval: cfg['notifyOnApproval'] ?? true,
-          notifyOnNotification: cfg['notifyOnNotification'] ?? false,
-          notifyPriority: cfg['notifyPriority'] ?? ['high', 'urgent'],
-          mcp: {
-            enabled: mcpConfig?.enabled ?? false,
-            presets: mcpConfig?.presets ?? [],
-          },
-        });
+        this.json(res, 200, { instances: listInstanceStatuses(instanceStore(auth.orgId)) });
       } catch (e) {
-        log.error('Failed to read feishu integration config', { error: String(e) });
-        this.json(res, 500, { error: 'Failed to read integration config' });
+        log.error('Failed to list bot instances', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to list bot instances' });
       }
       return;
     }
 
-    if (path === '/api/settings/integrations/feishu' && req.method === 'POST') {
+    // POST /api/settings/integrations/instances — create one bot
+    if (instancesMatch && req.method === 'POST') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
-      const body = await this.readBody(req);
-      const appId = body['appId'] as string;
-      const appSecret = body['appSecret'] as string;
-      if (!appId || !appSecret) {
-        this.json(res, 400, { error: 'appId and appSecret are required' });
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
         return;
       }
-      const now = new Date().toISOString();
-      const enabled = body['enabled'] !== false;
-      const payload: Record<string, unknown> = {
-        id: 'feishu_default',
-        orgId: auth.orgId,
-        platform: 'feishu',
-        displayName: body['displayName'] ?? '飞书',
-        enabled,
-        config: {
-          domain: body['domain'] ?? undefined,
-          connectionMode: 'long_connection',
-          notifyChatId: body['notifyChatId'] ?? undefined,
-          notifyOnApproval: body['notifyOnApproval'] ?? true,
-          notifyOnNotification: body['notifyOnNotification'] ?? false,
-          notifyPriority: body['notifyPriority'] ?? ['high', 'urgent'],
-        },
-        forwardRules: [],
-        lastVerifiedAt: null,
-        lastError: null,
-      };
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const platform = typeof body['platform'] === 'string' ? body['platform'].trim() : '';
+      const label = typeof body['label'] === 'string' ? body['label'].trim() : '';
+      if (!platform || !label) {
+        this.json(res, 400, { error: 'platform and label are required' });
+        return;
+      }
+      const manifest = getManifest(platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(platform));
+        return;
+      }
       try {
-        const repo = this.storage?.integrationRepo;
-        if (!repo) {
-          this.json(res, 503, { error: 'Storage not available' });
-          return;
-        }
-        const existing = findFeishuConfig(auth.orgId);
-        if (existing) {
-          await repo.update(existing['id'] as string, payload);
-        } else {
-          await repo.create(payload);
-        }
-        // Credentials + MCP config go to markus.json (single source of truth)
-        const feishuCfgToSave: Record<string, unknown> = { appId, appSecret };
-        if (body['mcp'] && typeof body['mcp'] === 'object') {
-          const mcpBody = body['mcp'] as Record<string, unknown>;
-          feishuCfgToSave['mcp'] = {
-            enabled: mcpBody['enabled'] ?? false,
-            presets: Array.isArray(mcpBody['presets']) ? mcpBody['presets'] : undefined,
-          };
-        }
-        saveConfig({ integrations: { feishu: feishuCfgToSave } }, this.markusConfigPath);
-        log.info('Feishu integration config saved', { orgId: auth.orgId });
+        const instance = await createInstance(instanceStore(auth.orgId), { platform, label });
         this.auditService?.record({
           orgId: auth.orgId,
           type: 'settings_changed',
-          action: 'integration_feishu',
-          detail: 'Feishu integration config saved',
+          action: `instance_create_${platform}`,
+          detail: `${manifest.label} bot instance "${label}" created`,
           userId: auth.userId,
           success: true,
         });
-        // Update the FeishuNotifier runtime config
-        this.updateFeishuConfig({
-          appId,
-          appSecret: appSecret,
-          domain: body['domain'] as string | undefined,
-          locale: (body['locale'] as 'zh' | 'en' | undefined) ?? undefined,
-          notifyChatId: body['notifyChatId'] as string | undefined,
-          notifyOnApproval: (body['notifyOnApproval'] ?? true) as boolean,
-          notifyOnNotification: (body['notifyOnNotification'] ?? false) as boolean,
-          notifyPriority: (body['notifyPriority'] ?? ['high', 'urgent']) as string[],
-          forwardRules: [],
-        });
-        const connected = !!(this.feishuNotifier?.connected);
-        this.json(res, 200, { appId, connected, enabled });
+        this.json(res, 201, { instance });
       } catch (e) {
-        log.error('Failed to save feishu integration config', { error: String(e) });
-        this.json(res, 500, { error: 'Failed to save integration config' });
+        const message = e instanceof Error ? e.message : String(e);
+        // Duplicate `(org, platform, label)` arrives as a thrown Error: the
+        // unique key is a race-prone check, so the message is the contract.
+        if (/already exists/.test(message)) {
+          this.json(res, 409, { error: message });
+          return;
+        }
+        log.error('Failed to create bot instance', { platform, error: message });
+        this.json(res, 500, { error: 'Failed to create bot instance' });
       }
       return;
     }
 
-    if (path === '/api/settings/integrations/feishu' && req.method === 'DELETE') {
+    // GET /api/settings/integrations/instances/:id — one bot
+    if (instanceMatch && req.method === 'GET') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceMatch[1]);
+      const instance = getInstanceStatus(instanceStore(auth.orgId), id);
+      if (!instance) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      this.json(res, 200, instance);
+      return;
+    }
+
+    // POST /api/settings/integrations/instances/:id — save config + toggle
+    if (instanceMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceMatch[1]);
+      const deps = instanceStore(auth.orgId);
+      const existing = getInstanceStatus(deps, id);
+      if (!existing) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      const manifest = getManifest(existing.platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(existing.platform));
+        return;
+      }
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
       try {
-        const row = findFeishuConfig(auth.orgId);
-        if (row) {
-          await this.storage?.integrationRepo?.delete(row['id'] as string);
-        }
-        // Clear credentials from markus.json
-        saveConfig({ integrations: { feishu: {} } }, this.markusConfigPath);
-        log.info('Feishu integration config deleted', { orgId: auth.orgId });
+        const instance = await saveInstance(
+          deps,
+          id,
+          body,
+          typeof body['enabled'] === 'boolean' ? body['enabled'] : undefined,
+        );
         this.auditService?.record({
           orgId: auth.orgId,
           type: 'settings_changed',
-          action: 'integration_feishu_delete',
-          detail: 'Feishu integration config deleted',
+          action: `instance_save_${instance.platform}`,
+          detail: `${manifest.label} bot instance "${instance.label}" saved`,
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { instance });
+      } catch (e) {
+        // Required-field failures carry the names so the client can mark the
+        // inputs — identical body shape to the platform endpoint.
+        if (e instanceof InstanceValidationError) {
+          this.json(res, 400, { error: e.message, missing: e.missing });
+          return;
+        }
+        log.error('Failed to save bot instance', { id, error: String(e) });
+        this.json(res, 500, { error: 'Failed to save bot instance' });
+      }
+      return;
+    }
+
+    // DELETE /api/settings/integrations/instances/:id — remove one bot
+    if (instanceMatch && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceMatch[1]);
+      try {
+        const removed = await deleteInstance(instanceStore(auth.orgId), id);
+        if (!removed) {
+          this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+          return;
+        }
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: 'instance_delete',
+          detail: `Bot instance "${id}" deleted`,
           userId: auth.userId,
           success: true,
         });
         this.json(res, 200, { success: true });
       } catch (e) {
-        log.error('Failed to delete feishu integration config', { error: String(e) });
+        log.error('Failed to delete bot instance', { id, error: String(e) });
+        this.json(res, 500, { error: 'Failed to delete bot instance' });
+      }
+      return;
+    }
+
+    // POST /api/settings/integrations/instances/:id/test — probe via the manifest
+    //
+    // The instance counterpart of the platform probe below. It has to be its own
+    // route rather than a call into the platform one: two bots of one platform
+    // hold *different* credentials, so the probe must read **this instance's**
+    // resolved config, not the platform's.
+    if (instanceTestMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceTestMatch[1]);
+      const deps = instanceStore(auth.orgId);
+      const existing = getInstanceStatus(deps, id);
+      if (!existing) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      const manifest = getManifest(existing.platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(existing.platform));
+        return;
+      }
+      if (!manifest.testConnection) {
+        this.json(res, 200, { ok: false, success: false, error: 'test not supported', message: 'test not supported' });
+        return;
+      }
+      const submitted = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      // Submitted credentials win over stored ones so the UI can test before saving.
+      const probe = { ...(readInstanceConfig(deps, id) ?? {}), ...submitted };
+      try {
+        const result = await manifest.testConnection(probe);
+        this.json(res, 200, {
+          ...result,
+          success: result.ok,
+          message: result.ok ? 'Credentials verified successfully' : (result.error ?? 'Authentication failed'),
+        });
+      } catch (e) {
+        log.error('Bot instance credential test failed', { id, platform: existing.platform, error: String(e) });
+        this.json(res, 200, { ok: false, success: false, message: `Connection failed: ${String(e)}` });
+      }
+      return;
+    }
+
+    // POST /api/settings/integrations/instances/:id/connection-test — start a
+    // two-leg verification: an outbound prompt is posted into the target
+    // conversation, the user replies in IM, and the gateway consumes that reply.
+    //
+    // Deliberately a different endpoint from `/:id/test` above. That one answers
+    // "are these credentials valid?" (a probe of the client); this one answers
+    // "can this bot actually post, and can I talk back?" A token with a valid
+    // identity but no message-send scope passes the probe and fails the handshake
+    // — which is precisely the failure users hit, so the two must not be merged.
+    if (instanceConnectionTestMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      if (!this.connectionTestHooks) {
+        this.json(res, 501, {
+          error: 'Connection testing is not available: the messaging gateway is not running',
+        });
+        return;
+      }
+      const id = decodeURIComponent(instanceConnectionTestMatch[1]);
+      const deps = instanceStore(auth.orgId);
+      const instance = getInstanceStatus(deps, id);
+      if (!instance) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const requested = typeof body['channelId'] === 'string' ? body['channelId'].trim() : '';
+      // An explicit channel wins; otherwise the instance's own routes are used so
+      // the common case needs no picker. `null` is a valid target meaning "no
+      // target known yet" — the gateway then starts in the inbound-first shape
+      // rather than failing.
+      const target = requested
+        ? {
+            channelId: requested,
+            name: typeof body['channelName'] === 'string' ? body['channelName'] : null,
+          }
+        : defaultTestTarget(instance);
+      try {
+        const test = await this.connectionTestHooks.begin(instance.id, instance.platform, target);
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: `instance_connection_test_${instance.platform}`,
+          detail: `connection test started for bot instance "${id}"`,
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { test });
+      } catch (e) {
+        log.error('Failed to start bot instance connection test', { id, error: String(e) });
+        this.json(res, 500, { error: 'Failed to start connection test' });
+      }
+      return;
+    }
+
+    // GET /api/settings/integrations/instances/:id/connection-test — the active
+    // run, for the Settings UI to poll. The reply arrives out-of-band from the
+    // IM client, so there is nothing for a single request to await; polling is
+    // the honest shape, and `null` (no run) is a normal answer, not an error.
+    if (instanceConnectionTestMatch && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!this.connectionTestHooks) {
+        this.json(res, 200, { test: null });
+        return;
+      }
+      const id = decodeURIComponent(instanceConnectionTestMatch[1]);
+      this.json(res, 200, { test: this.connectionTestHooks.get(id) ?? null });
+      return;
+    }
+
+    // GET /api/settings/integrations/instances/:id/channels — pickable chats
+    //
+    // Three distinct outcomes, deliberately NOT collapsed into one: the manifest
+    // cannot enumerate (`supported: false`), it enumerated nothing (`channels:
+    // []`), or the call failed (`error`). A failure must never 500 the settings
+    // page — the form is still useful without the picker.
+    if (instanceChannelsMatch && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceChannelsMatch[1]);
+      const deps = instanceStore(auth.orgId);
+      const instance = getInstanceStatus(deps, id);
+      if (!instance) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      const manifest = getManifest(instance.platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(instance.platform));
+        return;
+      }
+      if (!manifest.listChannels) {
+        this.json(res, 200, { supported: false, channels: [] });
+        return;
+      }
+      try {
+        // Resolved (unmasked) config: the probe needs real credentials, and the
+        // status DTO deliberately never carries them.
+        const config = readInstanceConfig(deps, id) ?? {};
+        const channels = await manifest.listChannels(config);
+        this.json(res, 200, { supported: true, channels });
+      } catch (e) {
+        log.warn('Failed to list platform channels', {
+          instanceId: id,
+          platform: instance.platform,
+          error: String(e),
+        });
+        this.json(res, 200, { supported: true, channels: [], error: String(e) });
+      }
+      return;
+    }
+
+    // PUT /api/settings/integrations/instances/:id/channels — replace the routes
+    if (instanceChannelsMatch && req.method === 'PUT') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      if (!instancesAvailable()) {
+        this.json(res, 501, { error: 'Bot instances are not available: storage is not configured' });
+        return;
+      }
+      const id = decodeURIComponent(instanceChannelsMatch[1]);
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const raw = body['channels'];
+      if (!Array.isArray(raw)) {
+        this.json(res, 400, { error: 'channels must be an array' });
+        return;
+      }
+      // Validate the whole body before writing anything: a malformed entry must
+      // not leave the instance with half of its previous routes deleted.
+      const channels: InstanceChannelBinding[] = [];
+      for (const entry of raw) {
+        const row = entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : {};
+        const nativeId = typeof row['nativeId'] === 'string' ? row['nativeId'].trim() : '';
+        const agentId = typeof row['agentId'] === 'string' ? row['agentId'].trim() : '';
+        const kind = typeof row['kind'] === 'string' && row['kind'].trim() ? row['kind'].trim() : null;
+        if (!nativeId || !agentId) {
+          this.json(res, 400, { error: 'Each channel needs a non-empty nativeId and agentId' });
+          return;
+        }
+        channels.push({ nativeId, kind, agentId });
+      }
+      const deps = instanceStore(auth.orgId);
+      if (!getInstanceStatus(deps, id)) {
+        this.json(res, 404, { error: `Bot instance not found: "${id}"` });
+        return;
+      }
+      try {
+        const instance = await setInstanceChannels(deps, id, channels);
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: `instance_channels_${instance.platform}`,
+          detail: `${channels.length} channel binding(s) saved for bot instance "${id}"`,
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { instance });
+      } catch (e) {
+        log.error('Failed to save bot instance channels', { id, error: String(e) });
+        this.json(res, 500, { error: 'Failed to save bot instance channels' });
+      }
+      return;
+    }
+
+    const integrationMatch = /^\/api\/settings\/integrations\/([^/]+)$/.exec(path);
+    const integrationTestMatch = /^\/api\/settings\/integrations\/([^/]+)\/test$/.exec(path);
+
+    // GET /api/settings/integrations — every platform + status (no secrets)
+    if (path === '/api/settings/integrations' && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      try {
+        this.json(res, 200, { platforms: listPlatformStatuses(platformStore(auth.orgId)) });
+      } catch (e) {
+        log.error('Failed to list integrations', { error: String(e) });
+        this.json(res, 500, { error: 'Failed to list integrations' });
+      }
+      return;
+    }
+
+    // POST /api/settings/integrations/:platform/test — probe via the manifest
+    if (integrationTestMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const platform = decodeURIComponent(integrationTestMatch[1]);
+      const manifest = getManifest(platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(platform));
+        return;
+      }
+      if (!manifest.testConnection) {
+        this.json(res, 200, { ok: false, error: 'test not supported' });
+        return;
+      }
+      const submitted = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const deps = platformStore(auth.orgId);
+      // Submitted credentials win over stored ones so the UI can test before saving.
+      const probe = { ...readPlatformValues(deps, manifest), ...submitted };
+      try {
+        const result = await manifest.testConnection(probe);
+        this.json(res, 200, {
+          ...result,
+          success: result.ok,
+          message: result.ok ? 'Credentials verified successfully' : (result.error ?? 'Authentication failed'),
+        });
+      } catch (e) {
+        log.error('Integration credential test failed', { platform, error: String(e) });
+        this.json(res, 200, { ok: false, success: false, message: `Connection failed: ${String(e)}` });
+      }
+      return;
+    }
+
+    // GET /api/settings/integrations/:platform — masked config + status
+    if (integrationMatch && req.method === 'GET') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const platform = decodeURIComponent(integrationMatch[1]);
+      const status = getPlatformStatus(platformStore(auth.orgId), platform);
+      if (!status) {
+        this.json(res, 404, unknownPlatform(platform));
+        return;
+      }
+      this.json(res, 200, flattenStatus(status));
+      return;
+    }
+
+    // POST /api/settings/integrations/:platform — save credentials + preferences
+    if (integrationMatch && req.method === 'POST') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const platform = decodeURIComponent(integrationMatch[1]);
+      const manifest = getManifest(platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(platform));
+        return;
+      }
+      const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+      const deps = platformStore(auth.orgId);
+      const missing = missingRequiredFields(manifest, body, readPlatformValuesForSave(deps, manifest));
+      if (missing.length > 0) {
+        this.json(res, 400, { error: `Missing required field(s): ${missing.join(', ')}`, missing });
+        return;
+      }
+      try {
+        const { status, config } = await savePlatform(
+          deps,
+          manifest,
+          body,
+          typeof body['enabled'] === 'boolean' ? body['enabled'] : undefined,
+        );
+        syncPlatformRuntime(platform, config);
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: `integration_${platform}`,
+          detail: `${manifest.label} integration config saved`,
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { success: true, ...flattenStatus(status) });
+      } catch (e) {
+        log.error('Failed to save integration config', { platform, error: String(e) });
+        this.json(res, 500, { error: 'Failed to save integration config' });
+      }
+      return;
+    }
+
+    // DELETE /api/settings/integrations/:platform — disconnect + clear
+    if (integrationMatch && req.method === 'DELETE') {
+      const auth = await this.requireAuth(req, res);
+      if (!auth) return;
+      const platform = decodeURIComponent(integrationMatch[1]);
+      const manifest = getManifest(platform);
+      if (!manifest) {
+        this.json(res, 404, unknownPlatform(platform));
+        return;
+      }
+      try {
+        await deletePlatform(platformStore(auth.orgId), platform);
+        this.auditService?.record({
+          orgId: auth.orgId,
+          type: 'settings_changed',
+          action: `integration_${platform}_delete`,
+          detail: `${manifest.label} integration config deleted`,
+          userId: auth.userId,
+          success: true,
+        });
+        this.json(res, 200, { success: true });
+      } catch (e) {
+        log.error('Failed to delete integration config', { platform, error: String(e) });
         this.json(res, 500, { error: 'Failed to delete integration config' });
       }
       return;
     }
 
-    if (path === '/api/settings/integrations/feishu/test' && req.method === 'POST') {
-      const auth = await this.requireAuth(req, res);
-      if (!auth) return;
-      const body = await this.readBody(req);
-      const appId = (body['appId'] as string) ?? '';
-      const appSecret = (body['appSecret'] as string) ?? '';
-      if (!appId || !appSecret) {
-        this.json(res, 400, { error: 'appId and appSecret are required' });
-        return;
-      }
-      try {
-        const resp = await fetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ app_id: appId, app_secret: appSecret }),
-        });
-        const data = await resp.json() as Record<string, unknown>;
-        if (resp.ok && data['tenant_access_token']) {
-          this.json(res, 200, { success: true, message: 'Credentials verified successfully' });
-        } else {
-          this.json(res, 200, { success: false, message: String(data['msg'] ?? 'Authentication failed') });
-        }
-      } catch (e) {
-        log.error('Feishu test connection failed', { error: String(e) });
-        this.json(res, 200, { success: false, message: `Connection failed: ${String(e)}` });
-      }
-      return;
-    }
 
     if (path === '/api/settings/integrations/feishu/chats' && req.method === 'GET') {
       const auth = await this.requireAuth(req, res);
       if (!auth) return;
       try {
-        // Credentials from markus.json (single source of truth)
-        const { loadConfig: loadCfg } = await import('@markus/shared');
-        const markusCfg = loadCfg(this.markusConfigPath);
-        const appId = markusCfg.integrations?.feishu?.appId;
-        const appSecret = markusCfg.integrations?.feishu?.appSecret;
+        // Resolved through the platform store (DB first, markus.json bootstrap)
+        const resolved = this.resolvePlatformConfig(auth.orgId, 'feishu');
+        const appId = resolved['appId'] as string | undefined;
+        const appSecret = resolved['appSecret'] as string | undefined;
         if (!appId || !appSecret) {
           this.json(res, 400, { error: 'Feishu integration not configured' });
           return;
@@ -10703,11 +10778,10 @@ EXPLANATION_END`;
         return;
       }
       try {
-        // Credentials from markus.json (single source of truth)
-        const { loadConfig: loadCfg } = await import('@markus/shared');
-        const markusCfg = loadCfg(this.markusConfigPath);
-        const appId = markusCfg.integrations?.feishu?.appId;
-        const appSecret = markusCfg.integrations?.feishu?.appSecret;
+        // Resolved through the platform store (DB first, markus.json bootstrap)
+        const resolved = this.resolvePlatformConfig(auth.orgId, 'feishu');
+        const appId = resolved['appId'] as string | undefined;
+        const appSecret = resolved['appSecret'] as string | undefined;
         if (!appId || !appSecret) {
           this.json(res, 400, { error: 'Feishu integration not configured' });
           return;
@@ -10772,13 +10846,23 @@ EXPLANATION_END`;
         const appSecret = result.client_secret;
         const locale = result.user_info?.tenant_brand === 'lark' ? 'en' : 'zh';
         const registeredOpenId = result.user_info?.open_id;
+        const repo = this.storage?.integrationRepo;
+        const existing = findFeishuConfig(auth.orgId);
+        const existingConfig = (existing?.['config'] as Record<string, unknown> | undefined) ?? {};
+
+        // Credentials are written into the SAME row/config as every other
+        // platform value — one writer. `markus.json` is a read-only bootstrap
+        // default now, never a write target (docs/design/…-credentials.md).
         const payload: Record<string, unknown> = {
-          id: 'feishu_default',
+          id: existing?.['id'] ?? 'feishu_default',
           orgId: auth.orgId,
           platform: 'feishu',
           displayName: locale === 'en' ? 'Lark' : '飞书',
           enabled: true,
           config: {
+            ...existingConfig,
+            appId,
+            appSecret,
             locale,
             notifyOpenId: registeredOpenId,
             connectionMode: 'long_connection',
@@ -10786,13 +10870,11 @@ EXPLANATION_END`;
             notifyOnNotification: true,
             notifyPriority: ['normal', 'high', 'urgent'],
           },
-          forwardRules: [],
+          forwardRules: existing?.['forwardRules'] ?? [],
           lastVerifiedAt: new Date().toISOString(),
           lastError: null,
         };
-        const repo = this.storage?.integrationRepo;
         if (repo) {
-          const existing = findFeishuConfig(auth.orgId);
           if (existing) {
             await repo.update(existing['id'] as string, payload);
           } else {
@@ -10800,20 +10882,8 @@ EXPLANATION_END`;
           }
         }
 
-        // Credentials go to markus.json (single source of truth)
-        saveConfig({ integrations: { feishu: { appId, appSecret } } }, this.markusConfigPath);
-
-        // Start the long connection
-        this.updateFeishuConfig({
-          appId,
-          appSecret,
-          locale: locale as 'zh' | 'en',
-          notifyOpenId: registeredOpenId,
-          notifyOnApproval: true,
-          notifyOnNotification: true,
-          notifyPriority: ['normal', 'high', 'urgent'],
-          forwardRules: [],
-        });
+        // Reconnect the platform's bots through the gateway with the fresh config.
+        void this.platformRuntimeSync?.('feishu', { appId, appSecret, locale: locale as 'zh' | 'en' });
 
         log.info('Feishu app registered via QR scan', { orgId: auth.orgId, appId });
 
@@ -10893,7 +10963,7 @@ EXPLANATION_END`;
         this.json(res, 200, {
           success: true,
           appId,
-          connected: !!(this.feishuNotifier?.connected),
+          connected: this.platformConnected('feishu'),
           userInfo: result.user_info,
         });
       } catch (e: unknown) {
@@ -10965,22 +11035,6 @@ EXPLANATION_END`;
             lastVerifiedAt: row['lastVerifiedAt'] ?? null,
             lastError: row['lastError'] ?? null,
           });
-          // Update the FeishuNotifier runtime config with new rules
-          if (this.feishuNotifier) {
-            const { loadConfig: loadCfg } = await import('@markus/shared');
-            const markusCfg = loadCfg(this.markusConfigPath);
-            const cfgAppId = markusCfg.integrations?.feishu?.appId;
-            const cfgAppSecret = markusCfg.integrations?.feishu?.appSecret;
-            if (cfgAppId && cfgAppSecret) {
-              const cfgConfig = row['config'] as Record<string, unknown> | undefined;
-              this.feishuNotifier.updateConfig({
-                appId: cfgAppId,
-                appSecret: cfgAppSecret,
-                domain: cfgConfig?.domain as string | undefined,
-                forwardRules: rules as unknown as FeishuNotifierConfig['forwardRules'],
-              });
-            }
-          }
           log.info('Feishu notification rules updated', { orgId: auth.orgId, ruleCount: rules.length });
           this.auditService?.record({
             orgId: auth.orgId,
@@ -13234,9 +13288,22 @@ EXPLANATION_END`;
       exact('/api/settings/oauth/setup-token', 'POST'),
 
       // ── Integrations ────────────────────────────────────────────────────
-      exact('/api/settings/integrations/feishu', 'GET', 'POST', 'DELETE'),
-      exact('/api/settings/integrations/feishu/test', 'POST'),
+      exact('/api/settings/integrations', 'GET'),
+      regex(/^\/api\/settings\/integrations\/[^/]+$/, 'GET', 'POST', 'DELETE'),
+      regex(/^\/api\/settings\/integrations\/[^/]+\/test$/, 'POST'),
+      // Bot instances. The generic single-segment regex above only describes the
+      // `:platform` routes, so these longer paths need their own entries —
+      // otherwise a wrong method falls through to 404 instead of 405.
+      exact('/api/settings/integrations/instances', 'GET', 'POST'),
+      regex(/^\/api\/settings\/integrations\/instances\/[^/]+$/, 'GET', 'POST', 'DELETE'),
+      regex(/^\/api\/settings\/integrations\/instances\/[^/]+\/test$/, 'POST'),
+      regex(/^\/api\/settings\/integrations\/instances\/[^/]+\/connection-test$/, 'GET', 'POST'),
+      regex(/^\/api\/settings\/integrations\/instances\/[^/]+\/channels$/, 'GET', 'PUT'),
       exact('/api/settings/integrations/feishu/notifications', 'GET', 'PUT'),
+      exact('/api/settings/integrations/feishu/chats', 'GET'),
+      exact('/api/settings/integrations/feishu/test-message', 'POST'),
+      exact('/api/settings/integrations/feishu/register', 'POST'),
+      exact('/api/settings/integrations/feishu/register/status', 'GET'),
 
       // ── Approvals ────────────────────────────────────────────────────────
       exact('/api/approvals', 'GET', 'POST'),

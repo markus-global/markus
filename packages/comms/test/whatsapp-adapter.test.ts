@@ -86,6 +86,11 @@ describe('WhatsAppAdapter', () => {
     );
   });
 
+  it('sendMessage renders markdown in WhatsApp syntax when markdown is enabled', async () => {
+    await adapter.sendMessage('15551234567', '**bold** and *italic*', { markdown: true });
+    expect(mockClient.sendTextMessage).toHaveBeenCalledWith('15551234567', '*bold* and _italic_');
+  });
+
   it('sendReply delegates to sendTextMessage', async () => {
     await adapter.sendReply('15551234567', 'wamid.original', 'Reply');
     expect(mockClient.sendTextMessage).toHaveBeenCalledWith('15551234567', 'Reply');

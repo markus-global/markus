@@ -8,6 +8,14 @@ export type MessagePlatform =
   | 'webui'
   | 'internal';
 
+/**
+ * Conversation kind inside a bot instance (messaging gateway, design §6.2).
+ * `main` is a *designation* (the channel is the agent's home), not a native
+ * platform type; adapters report `dm` / `group` / `notification` and the gateway
+ * may promote a channel to `main` from its binding.
+ */
+export type MessageChannelKind = 'main' | 'dm' | 'group' | 'notification';
+
 export interface Message {
   id: string;
   platform: MessagePlatform;
@@ -20,6 +28,14 @@ export interface Message {
   replyToId?: string;
   threadId?: string;
   timestamp: string;
+  /**
+   * Bot instance that received this message (design §4). Optional: a platform
+   * with a single bot, and every pre-gateway adapter, leave it unset — the
+   * gateway then resolves at the platform/global levels.
+   */
+  instanceId?: string;
+  /** Adapter-declared conversation kind; the gateway defaults to `group`. */
+  channelKind?: MessageChannelKind;
 }
 
 export interface MessageContent {
