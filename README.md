@@ -1,31 +1,28 @@
 <p align="center">
-  <img src="logo.png" width="160" alt="Markus Logo" />
+  <img src="logo.png" width="150" alt="Markus" />
 </p>
 
 <h1 align="center">Markus</h1>
 
 <p align="center">
-  <strong>An open-source AI team that ships while you sleep.</strong><br />
-  You give it a goal in plain language. It hires the team, splits the work, runs<br />
-  everyone in parallel, reviews every delivery, and keeps going while you rest.<br />
-  <em>And yes — it built itself.</em>
+  <strong>An open-source AI workforce you run yourself.</strong><br />
+  Give it a goal in plain language. Markus builds the team, splits the work, runs the<br />
+  specialists in parallel, and reviews every delivery before it reaches you.<br />
+  <em>It keeps working on its own clock — on your machine, with your keys.</em>
 </p>
 
 <p align="center">
   <a href="https://github.com/markus-global/markus/actions/workflows/ci.yml">
-    <img src="https://img.shields.io/github/actions/workflow/status/markus-global/markus/ci.yml?branch=main&label=CI" alt="CI Status" />
+    <img src="https://img.shields.io/github/actions/workflow/status/markus-global/markus/ci.yml?branch=main&label=CI" alt="CI status" />
   </a>
   <a href="https://github.com/markus-global/markus/releases">
-    <img src="https://img.shields.io/github/v/release/markus-global/markus?include_prereleases&label=Version" alt="Version" />
+    <img src="https://img.shields.io/github/v/release/markus-global/markus?include_prereleases&label=version" alt="Latest version" />
   </a>
   <a href="https://github.com/markus-global/markus/stargazers">
-    <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub Stars" />
+    <img src="https://img.shields.io/github/stars/markus-global/markus?style=flat" alt="GitHub stars" />
   </a>
   <a href="https://github.com/markus-global/markus/blob/main/LICENSE">
-    <img src="https://img.shields.io/badge/License-Apache%202.0-blue.svg" alt="License" />
-  </a>
-  <a href="https://github.com/markus-global/markus/issues">
-    <img src="https://img.shields.io/github/issues/markus-global/markus" alt="Issues" />
+    <img src="https://img.shields.io/badge/license-Apache--2.0-blue" alt="License: Apache-2.0" />
   </a>
 </p>
 
@@ -34,157 +31,151 @@
 </p>
 
 <p align="center">
-  <img src="docs/images/dashboard-preview.gif" alt="Markus in action — AI agents planning, executing, reviewing, and delivering in one dashboard" width="840" />
+  <img src="docs/images/dashboard-preview.gif" width="840" alt="The Markus dashboard: agents planning, working, reviewing and delivering" />
 </p>
 
 ---
 
-> **🪞 Dogfooded into existence.** The Markus project is built *on* Markus: issues, tasks, code,
-> reviews, releases — our own agent team runs the entire loop on itself, start to finish.
-> If it can ship itself, it can ship whatever you're building.
+**Markus is a self-hosted AI workforce.** Not one chat window that forgets yesterday — an
+organization: roles with real skills, a task board, memory that persists, peer review before
+anything is called done, and a human (you) in charge.
+
+*For people who want an AI team, not a chatbot.*
 
 ---
 
-## TL;DR
+## Watch it work
 
-- **Not a wrapper** — agents talk to LLM APIs directly and use real tools: shell, files, git, web search, code analysis, GUI & browser automation, any MCP server.
-- **Ships 24/7** — a heartbeat keeps the team moving, reviewing, and escalating. You sleep; they ship.
-- **Memory that compounds** — three-layer persistent memory, auto-consolidated between sessions. The team gets measurably smarter the longer it runs.
-- **Your data, your machine** — fully self-hosted. SQLite by default (PostgreSQL supported), zero mandatory cloud, zero lock-in.
+```
+You     I need a competitive analysis and a go-to-market plan.
+
+Markus  ▸ requirement created
+        ▸ team assembled — 3 roles, 3 tasks, 2 dependencies
+
+            Research Lead       competitor scan     reviewer: Senior Researcher
+            Senior Researcher   market sizing       reviewer: Research Lead
+            Content Director    go-to-market plan   blocked by the two above
+
+        08:41  two tasks start in parallel, each in its own workspace
+        09:12  competitor scan delivered → peer review → one revision requested
+        09:26  revision delivered → approved
+        09:30  go-to-market plan unblocked, starts automatically
+        09:58  three deliverables on the board, you get one notification
+```
+
+Nothing is marked done because an agent said so. Every delivery is reviewed by a peer, and the
+whole loop is on the record. Then the crew picks up the next task on its own — including at 3am.
 
 ---
 
-## Intern → Company
+## One copilot is an intern. You need a company.
 
-A single copilot is a smart intern: great at one task, forgets everything overnight, and calls its own work "done." One employee doesn't make a company.
+A copilot is brilliant at one task, remembers nothing tomorrow, and grades its own homework. The
+work that actually matters — a quarter of research, a product launch, a codebase that grows — is
+not one task.
 
-| | Single copilot | Markus team |
-|---|---|---|
-| **Scale** | One task at a time | Parallel work across specialist roles |
-| **Memory** | Evaporates when the session ends | Persistent, auto-consolidated |
-| **Initiative** | Waits for your prompt | Heartbeat patrols tasks 24/7 |
-| **Quality** | "Done" is self-reported | Peers review and gate every delivery |
-| **Visibility** | N tabs, N windows | One dashboard, one audit trail |
+|                      | A single copilot            | Markus                                          |
+| -------------------- | --------------------------- | ----------------------------------------------- |
+| **Scale**            | One task at a time          | Specialists running in parallel                 |
+| **Memory**           | Gone when the session ends  | Persists, consolidates, and compounds            |
+| **Initiative**       | Waits for your prompt       | Patrols its own task board, around the clock     |
+| **Quality**          | "Done" is self-reported     | A peer reviews and gates every delivery          |
+| **Visibility**       | N tabs, N windows           | One board, one audit trail                       |
+| **Where it runs**    | Someone else's cloud        | Your machine, your keys, your data               |
 
 ---
 
-## 🚀 Start in ~10 minutes
+## 🚀 Quickstart
+
+**Desktop app** — macOS, Windows, Linux:
+[**Download the latest release**](https://github.com/markus-global/markus/releases/latest).
+
+**Linux / macOS, one line** (brings its own runtime if Node.js is missing):
 
 ```bash
-# Desktop app (macOS / Windows / Linux)
-#   → https://github.com/markus-global/markus/releases/latest
+curl -fsSL https://markus.global/install.sh | bash && markus start
+```
 
-npm install -g @markus-global/cli   # Node.js 22+, or the Linux one-liner without Node
+**Any platform, with Node.js 22+:**
+
+```bash
+npm install -g @markus-global/cli
 markus start
 ```
 
-Open [http://localhost:8056](http://localhost:8056) — the onboarding wizard creates your account (initial login: `admin@markus.local` / `markus123`). Then tell your Secretary:
+Open **http://localhost:8056**, finish the onboarding wizard, then give your Secretary something
+real to do:
 
-> *"I need a research team: scan our competitors, write a competitive analysis, and draft a go-to-market strategy."*
+> *"We're launching in Europe next quarter. Research the market, size it, and draft a launch plan."*
 
-Markus assembles the team, breaks the goal into tasks, and starts executing — specialists in parallel, every delivery reviewed.
+Markus turns that into a requirement, hires the roles it needs, puts the tasks on the board, and
+starts working. You watch, steer, and approve.
 
-**That's it.** SQLite + bundled web UI, zero external dependencies. From source: `git clone` → `pnpm install && pnpm build && pnpm dev`.
+No database to install, no cloud account, no API gateway: SQLite and a web UI are bundled. The
+only thing you need is a model — a hosted API key, or a local model through Ollama.
 
----
-
-## What's inside
-
-- 🧠 **Three-layer memory** — procedural, semantic, episodic. Knowledge accumulates across sessions and consolidates on its own.
-- ⏰ **Heartbeat-driven initiative** — open tasks, async completions, and blockers keep moving even with no one watching.
-- 🔀 **True concurrency** — multiple sessions run in parallel on isolated per-session workspaces. No cross-talk, even inside one chat.
-- 🧬 **ContextOS context engine** — pinned structural anchors, a stable context budget, and compression that never drops decisions. Long, busy sessions stay fast and grounded.
-- 🛡️ **Trust & gates** — progressive trust levels, a formal submit → review → merge lifecycle, full audit trail, emergency pause.
-- 🔌 **Skill ecosystem** — import skills from skills.sh / Claude Code, SkillHub, OpenClaw, AgentScope, and MCP servers — and export your best ones back.
-- 🤖 **Any LLM** — Anthropic, OpenAI, Google, DeepSeek, MiniMax, Ollama, OpenRouter, and more — with unified model discovery and automatic failover.
-- 🔒 **Bring your own keys** — credentials live in your deployment, never in a third-party cloud.
-
-> Full skill details: [Skill Ecosystem](docs/guides/skill-ecosystem.md)
+<sub>Working from source instead? See [CONTRIBUTING.md](CONTRIBUTING.md).</sub>
 
 ---
 
-## Architecture
+## What people put it to work on
 
-```
-┌─────────────────────────────────────────────────────────┐
-│              Web UI (React) · Desktop (Electron)        │
-│      Dashboard · Chat · Projects · Builder · Hub        │
-└──────────────────────┬──────────────────────────────────┘
-                       │ REST + WebSocket
-┌──────────────────────┴──────────────────────────────────┐
-│                  Org Manager (API Server)               │
-│     Auth · Tasks · Governance · Projects · Reports      │
-└──────────────────────┬──────────────────────────────────┘
-                       │
-┌──────────────────────┴──────────────────────────────────┐
-│                  Agent Runtime (Core)                   │
-│  Agent · LLM Router · ContextOS · Tools · Skills ·      │
-│  Memory · A2A · Concurrency · Decision · Heartbeat      │
-└──────────┬────────────────────────────┬─────────────────┘
-           │                            │
-┌──────────┴──────────┐    ┌────────────┴─────────────────┐
-│  Storage (SQLite /  │    │  Comms (Slack, Feishu,       │
-│   PostgreSQL)       │    │   WhatsApp, Telegram)        │
-└─────────────────────┘    └──────────────────────────────┘
-```
-
-TypeScript monorepo with modular packages:
-
-| Package | Role |
-|---------|------|
-| **core** | Agent runtime — LLM routing, ContextOS, tools, skills, memory, concurrency, heartbeat, workspace isolation |
-| **org-manager** | REST API, WebSocket, governance, task lifecycle |
-| **web-ui** | React + Vite + Tailwind dashboard |
-| **desktop** | Electron desktop app (macOS / Windows / Linux) |
-| **cli** | `@markus-global/cli` — one-command install and launch |
-| **storage** | SQLite persistence (zero external dependencies) |
-| **gui** | GUI automation — VNC, screenshots, input control, visual analysis |
-| **comms** | Slack / Feishu / WhatsApp / Telegram bridges |
-| **a2a** | Agent-to-Agent communication protocol |
-| **remote** | Remote access — tunnels and zero-config networking |
-| **chrome-extension** | Browser automation via the Markus extension |
-| **shared** | Shared types, constants, utilities |
+- **Research and analysis** — competitor scans, market sizing, due diligence. Memos that cite where they got their numbers, reviewed by a second agent before they reach you.
+- **Content operations** — one brief becomes an article, a thread, a newsletter and a short-video script, drafted in parallel and reviewed for consistency.
+- **Software** — this repository is built this way (see below).
+- **Standing watch** — daily scans, price and risk monitoring, inbox triage. The kind of work that is mostly "check, then report" runs unattended and wakes you only when something actually changed.
 
 ---
 
-## Documentation
+## Why Markus
 
-| Guide | Description |
-|-------|-------------|
-Start at the **[documentation index](docs/README.md)**.
+- **🔒 Self-hosted, bring your own keys.** Credentials live in your deployment, never in someone else's cloud. SQLite by default, PostgreSQL when you need it.
+- **🧠 Memory that compounds.** Agents keep what they learn — the facts, the decisions, and how they got there — and consolidate it between sessions. Month two is better than month one.
+- **⏰ A night shift that actually works.** A heartbeat keeps the board moving on its own: async completions, blocked dependencies, escalations. You sleep; the work does not stop.
+- **🛡️ Review is not optional.** Every delivery goes submit → review → approve or revise, with a full audit trail. Failed attempts and blockers are recorded too, because that is where the lessons are.
+- **🔌 Skills and MCP, in both directions.** Import from skills.sh, SkillHub, OpenClaw, AgentScope or any MCP server — and export your best skills back to the community.
+- **🤖 Any model, no lock-in.** Anthropic, OpenAI, Google, DeepSeek, MiniMax, Fireworks, OpenRouter, or a fully local model via Ollama — with unified model discovery and automatic failover.
 
-| [Architecture](docs/architecture/architecture.md) | System design, agent runtime, memory, governance |
-| [Agent Runtime](docs/architecture/agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
-| [Tool System](docs/architecture/tool-system.md) | Built-in tools, MCP integration, tool contracts |
-| [Memory System](docs/architecture/memory-system.md) | Three-layer memory architecture (Tulving) |
-| [Cognitive Architecture](docs/architecture/cognitive-architecture.md) | Deterministic context assembly (CPP retired) |
-| [Mailbox System](docs/architecture/mailbox-system.md) | Agent attention model, priority queue, triage |
-| [Prompt Engineering](docs/architecture/prompt-engineering.md) | System prompt assembly, tool loop, compression |
-| [State Machines](docs/architecture/state-machines.md) | Task & requirement FSM specification |
-| [Concurrent Processing](docs/architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
-| [Streaming & Reattach](docs/architecture/streaming-and-reattach.md) | Streaming events, reconnection, tool-loop integrity |
-| [Team Chat (frontend)](docs/architecture/frontend/team-chat.md) | Team Chat page state model and interaction contracts |
-| [Learning Loop](docs/architecture/learning-loop.md) | Agent self-improvement and memory consolidation |
-| [API Reference](docs/api/api.md) | REST API endpoints and WebSocket events |
-| [User Guide](docs/guides/guide.md) | Setup, configuration, Web UI walkthrough |
-| [Development Guide](docs/guides/development.md) | Local setup, dev scripts, debugging |
-| [Coding Tools](docs/guides/coding-tools.md) | Claude Code / Codex / Cursor integration |
-| [Skill Ecosystem](docs/guides/skill-ecosystem.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
-| [Remote Access](docs/guides/remote-access.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok setup |
-| [Release & Distribution](docs/guides/release-and-distribution.md) | Build, packaging, publishing pipeline |
-| [Engineering Records](docs/records/) | Dated audits, post-mortems, hardening logs |
-| [Blog](https://markus.global/blog) | Articles and tutorials on Markus and AI agents |
+---
+
+## It builds itself
+
+Markus is developed on Markus. The issues, requirements, task assignments, peer reviews and
+release notes in this repository run through a Markus organization — the same product you
+download. Bugs its own agents find get fixed by its own agents, reviewed by a peer, and merged by
+a human.
+
+It is the most honest benchmark we have: if it could not ship itself, you should not trust it to
+ship your work.
+
+---
+
+## Under the hood
+
+A TypeScript monorepo: the agent runtime and context engine, a REST + WebSocket API, a React
+dashboard, an Electron desktop app, SQLite storage, comms bridges (Slack, Feishu, WhatsApp,
+Telegram, Discord), GUI and browser automation, and an agent-to-agent protocol.
+
+The internals are documented properly — start at the **[documentation index](docs/README.md)**:
+
+| | |
+| --- | --- |
+| [Architecture](docs/architecture/architecture.md) | How the pieces fit, and why |
+| [Agent runtime](docs/architecture/agent-runtime.md) · [Memory](docs/architecture/memory-system.md) · [Tools](docs/architecture/tool-system.md) | The three subsystems people ask about most |
+| [API reference](docs/api/api.md) · [User guide](docs/guides/guide.md) | Build against it, or just use it |
+| [Engineering records](docs/records/) | Dated audits and post-mortems, published unfiltered |
 
 ---
 
 ## 💬 Community
 
 - **GitHub Discussions** — questions, show & tell, case studies: <https://github.com/markus-global/markus/discussions>
-- **Blog** — tutorials and product updates: <https://markus.global/blog>
-- **Discord** — real-time chat with users and contributors (English/global) — *coming soon*
-- **微信群** — 中文用户交流群，获取帮助、内测与贡献支持（建设中）
+- **Blog** — tutorials and product notes: <https://markus.global/blog>
+- **Discord** — real-time help with users and contributors — *coming soon*
+- **微信群** — 中文用户交流群，内测与贡献支持（建设中）
 
-Join details and the contributor escalation path are in [docs/guides/community.md](docs/guides/community.md). All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md).
+All channels follow our [Code of Conduct](CODE_OF_CONDUCT.md). Community details are in
+[docs/guides/community.md](docs/guides/community.md).
 
 ---
 
@@ -192,17 +183,20 @@ Join details and the contributor escalation path are in [docs/guides/community.m
 
 ```bash
 pnpm install && pnpm build
-pnpm dev          # API + Web UI in dev mode
-pnpm test         # Run tests
-pnpm typecheck    # TypeScript check
+pnpm dev          # API + web UI in dev mode
+pnpm test         # unit + integration tests
+pnpm typecheck    # TypeScript, all packages
 pnpm lint         # ESLint
 ```
 
-- [Good first issues](https://github.com/markus-global/markus/labels/good%20first%20issue) — beginner-friendly tasks
-- [Help wanted](https://github.com/markus-global/markus/labels/help%20wanted) — features the community needs
-- [Bug reports](https://github.com/markus-global/markus/issues) — help us fix issues
+- [Good first issues](https://github.com/markus-global/markus/labels/good%20first%20issue) — small, well-scoped, mentored
+- [Help wanted](https://github.com/markus-global/markus/labels/help%20wanted) — things the community needs
+- [Bug reports](https://github.com/markus-global/markus/issues) — with a repro, ideally
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+
+Markus is **pre-1.0 (0.11.x)** and moving quickly, so minor releases can contain breaking changes.
+That is precisely why feedback, issues and pull requests are most valuable right now.
 
 ---
 
@@ -210,10 +204,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines.
 
 Markus is dual-licensed:
 
-- **Open Source**: [Apache-2.0](LICENSE) — free to use, modify, distribute, and self-host for any purpose, including commercial use
-- **Commercial**: [Available](LICENSE-COMMERCIAL.md) — for teams needing enterprise support, indemnification, OEM embedding, or custom terms
+- **Open source** — [Apache-2.0](LICENSE). Use it, modify it, self-host it, ship it commercially.
+- **Commercial** — [available](LICENSE-COMMERCIAL.md) for teams that need support, indemnification, OEM embedding or custom terms.
 
-Skills shared through the marketplace may use their own licenses (typically MIT).
+Skills shared through the Hub keep their own licenses (usually MIT).
 
 ---
 
@@ -225,5 +219,5 @@ Skills shared through the marketplace may use their own licenses (typically MIT)
 </p>
 
 <p align="center">
-  <sub>Markus — Where AI Agents Work as a Team</sub>
+  <sub>Markus — where AI agents work as a team</sub>
 </p>
