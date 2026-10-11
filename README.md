@@ -6,9 +6,7 @@
 
 <p align="center">
   <strong>An open-source AI workforce you run yourself.</strong><br />
-  Give it a goal in plain language. Markus builds the team, splits the work, runs the<br />
-  specialists in parallel, and reviews every delivery before it reaches you.<br />
-  <em>It keeps working on its own clock — on your machine, with your keys.</em>
+  Give it a goal in plain language — it builds the team, splits the work, and reports back.
 </p>
 
 <p align="center">
@@ -36,10 +34,6 @@
 
 ---
 
-**Markus is a self-hosted AI workforce.** Not one chat window that forgets yesterday — an
-organization: roles with real skills, a task board, memory that persists, peer review before
-anything is called done, and a human (you) in charge.
-
 *For people who want an AI team, not a chatbot.*
 
 ---
@@ -63,9 +57,6 @@ Markus  ▸ requirement created
         09:58  three deliverables on the board, you get one notification
 ```
 
-Nothing is marked done because an agent said so. Every delivery is reviewed by a peer, and the
-whole loop is on the record. Then the crew picks up the next task on its own — including at 3am.
-
 ---
 
 ## One copilot is an intern. You need a company.
@@ -82,6 +73,10 @@ not one task.
 | **Quality**          | "Done" is self-reported     | A peer reviews and gates every delivery          |
 | **Visibility**       | N tabs, N windows           | One board, one audit trail                       |
 | **Where it runs**    | Someone else's cloud        | Your machine, your keys, your data               |
+
+**Models and skills:** any provider — Anthropic, OpenAI, Google, DeepSeek, MiniMax, Fireworks,
+OpenRouter, or a local one via Ollama — and skills in both directions: import from skills.sh,
+SkillHub, OpenClaw, AgentScope or any MCP server, export your own back.
 
 ---
 
@@ -104,8 +99,7 @@ Then open the app and give your Secretary something real to do:
 
 > *"We're launching in Europe next quarter. Research the market, size it, and draft a launch plan."*
 
-Markus turns that into a requirement, hires the roles it needs, puts the tasks on the board, and
-starts working. You watch, steer, and approve.
+You watch, steer, and approve.
 
 <details>
 <summary><strong>Prefer a server, a VPS, or a machine with no desktop?</strong></summary>
@@ -123,8 +117,7 @@ npm install -g @markus-global/cli && markus start
 Either path needs a modern browser to open the UI.
 </details>
 
-No database to install, no cloud account, no API gateway: SQLite and the UI ship with the app.
-The only thing you need to bring is a model — a hosted API key, or a local model through Ollama.
+No database to install, no cloud account to create: SQLite and the UI ship with the app.
 
 <sub>Working from source instead? See [CONTRIBUTING.md](CONTRIBUTING.md).</sub>
 
@@ -132,21 +125,10 @@ The only thing you need to bring is a model — a hosted API key, or a local mod
 
 ## What people put it to work on
 
-- **Research and analysis** — competitor scans, market sizing, due diligence. Memos that cite where they got their numbers, reviewed by a second agent before they reach you.
-- **Content operations** — one brief becomes an article, a thread, a newsletter and a short-video script, drafted in parallel and reviewed for consistency.
+- **Research and analysis** — competitor scans, market sizing, due diligence, with sources cited.
+- **Content operations** — one brief becomes an article, a thread, a newsletter and a short-video script.
 - **Software** — this repository is built this way (see below).
 - **Standing watch** — daily scans, price and risk monitoring, inbox triage. The kind of work that is mostly "check, then report" runs unattended and wakes you only when something actually changed.
-
----
-
-## Why Markus
-
-- **🔒 Self-hosted, bring your own keys.** Credentials live in your deployment, never in someone else's cloud. SQLite by default, PostgreSQL when you need it.
-- **🧠 Memory that compounds.** Agents keep what they learn — the facts, the decisions, and how they got there — and consolidate it between sessions. Month two is better than month one.
-- **⏰ A night shift that actually works.** A heartbeat keeps the board moving on its own: async completions, blocked dependencies, escalations. You sleep; the work does not stop.
-- **🛡️ Review is not optional.** Every delivery goes submit → review → approve or revise, with a full audit trail. Failed attempts and blockers are recorded too, because that is where the lessons are.
-- **🔌 Skills and MCP, in both directions.** Import from skills.sh, SkillHub, OpenClaw, AgentScope or any MCP server — and export your best skills back to the community.
-- **🤖 Any model, no lock-in.** Anthropic, OpenAI, Google, DeepSeek, MiniMax, Fireworks, OpenRouter, or a fully local model via Ollama — with unified model discovery and automatic failover.
 
 ---
 
@@ -154,8 +136,7 @@ The only thing you need to bring is a model — a hosted API key, or a local mod
 
 Markus is developed on Markus. The issues, requirements, task assignments, peer reviews and
 release notes in this repository run through a Markus organization — the same product you
-download. Bugs its own agents find get fixed by its own agents, reviewed by a peer, and merged by
-a human.
+download. Bugs its own agents find get fixed by its own agents and merged by a human.
 
 It is the most honest benchmark we have: if it could not ship itself, you should not trust it to
 ship your work.
