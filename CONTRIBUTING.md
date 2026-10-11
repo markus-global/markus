@@ -16,6 +16,7 @@ Every contribution matters: bug reports, documentation, tests, examples, new ada
 - [Development Setup](#development-setup)
 - [Project Structure](#project-structure)
 - [Development Commands](#development-commands)
+- [Development Gotchas](#development-gotchas)
 - [Code Standards](#code-standards)
 - [Pull Request Process](#pull-request-process)
 - [Code Review Expectations](#code-review-expectations)
@@ -149,8 +150,8 @@ scripts/     # Build, release, and utility scripts
 | `pnpm dev:watch` | Build in watch mode + run API and Web UI together |
 | `pnpm dev:desktop` | Run the Electron desktop app in dev mode (API + Vite + Electron) |
 | `pnpm test` | Run all tests (Vitest) |
-| `pnpm test --filter @markus/<pkg>` | Run tests for one package, e.g. `pnpm test --filter @markus/core` |
-| `pnpm test -- <pattern>` | Run tests matching a file pattern |
+| `pnpm test -- packages/core` | Run only the tests under one package (Vitest path/name filter). Packages have **no** per-package `test` script, so `pnpm test --filter @markus/core` fails — filter by path/pattern instead. |
+| `pnpm test:node` / `pnpm test:web-ui` | Run only the backend Vitest project (`node`) or the frontend one (`web-ui`) |
 | `pnpm typecheck` | TypeScript type checking across monorepo + Web UI |
 | `pnpm lint` | ESLint across `packages/*/src/` |
 | `pnpm quality` | `typecheck` + full test suite in one go |
@@ -160,6 +161,38 @@ scripts/     # Build, release, and utility scripts
 **Hot reload:** `pnpm dev` runs the API in watch mode; edits to `packages/*/src/**` are rebuilt automatically. The Web UI hot-reloads via Vite. Change API types? Restart the API process (`Ctrl+C`, then `pnpm dev:api`) to pick up new schema.
 
 See [docs/guides/development.md](docs/guides/development.md) for details on each command, debugging tips, and troubleshooting.
+
+---
+
+## Development Gotchas
+
+Sharp edges in the tooling around Markus. None of these is a bug in Markus itself — they are
+documented here rather than "fixed" with a wrapper that would only move the surprise.
+
+- **`npx vitest run` inside a package lies.** Run from `packages/web-ui` without a project, it
+  reports ~42 failures (`document is not defined`) because the DOM environment is not enabled —
+  artefacts, not regressions, but convincing enough to send you chasing a phantom. Use a repo entry
+  point instead: `pnpm test` (all), `pnpm test:node`, `pnpm test:web-ui`, or
+  `vitest run --project <node|web-ui> <file>`.
+- **`pnpm pack` is shadowed by pnpm's own `pack`.** Running it inside `packages/desktop` does not
+  run the package's `pack` script; it silently builds a ~140 MB tarball of the whole workspace. Use
+  `pnpm --filter @markus/desktop run pack`.
+- **`pnpm --filter <dir>` does not match by directory.** The CLI package lives at `packages/cli`
+  but is named `@markus-global/cli`; filtering by the path matches nothing, and the error
+  ("No projects matched the filters") never suggests the package name. Filter by *name*.
+- **Gitignored build copies shadow their sources.** `packages/cli/templates/`, `packages/cli/docs/`
+  and `packages/desktop/dist*` hold copies of files that live in the repo root (`templates/`,
+  `docs/`, `packages/web-ui/dist`). A repo-wide `grep` can match the stale copy first. The mirror is
+  *build output* (single implementation: `scripts/sync-dir.mjs`); the source is the root copy —
+  never edit the copy.
+- **Packages have no per-package `test` script.** `pnpm --filter @markus/core test` narrows to the
+  package and then looks for a `test` script that isn't there. Run the root Vitest and narrow with a
+  positional path/name filter instead: `pnpm test -- packages/core`.
+- **Working in a `git worktree`?** A worktree does **not** inherit `node_modules`, and symlinking
+  the primary checkout's is actively wrong: pnpm's workspace symlinks resolve back to the *primary*
+  checkout, so your tests would run against the wrong sources. Run
+  `pnpm install --prefer-offline --frozen-lockfile` **inside** the worktree (fast — pnpm hardlinks
+  from its global store).
 
 ---
 

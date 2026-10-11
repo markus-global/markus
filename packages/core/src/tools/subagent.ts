@@ -66,6 +66,29 @@ export interface SubagentLoopResult {
   iterations: number;
   /** True when the child was stopped by the shared fan-out ceiling (`aggregateBudget`). */
   aggregateCeilingReached: boolean;
+  /**
+   * F1 — WHICH budget stopped this child, so a parent can tell "this child ran out of its
+   * own rope" from "a sibling drained the shared fan-out breaker":
+   *   'own'            → its own `iterationBudget`
+   *   'aggregate'      → the shared `aggregateBudget` circuit breaker
+   *   'max_iterations' → the legacy hard cap (`maxIterations` / `ctx.maxToolIterations`)
+   *   null             → it completed normally
+   */
+  budgetHit: 'own' | 'aggregate' | 'max_iterations' | null;
+  /**
+   * F2 — distinct file paths this child changed through a file-writing tool
+   * (`file_write` / `file_edit` / `apply_patch`, ignoring `dry_run`). A **best-effort hint, not
+   * an audit**: a child can also change files by means that are not counted (shell redirection,
+   * scripts, builds). Read a non-empty list as "it wrote these"; read an empty list as "no
+   * file-tool write was recorded" — never as "nothing changed".
+   */
+  filesTouched: string[];
+  /**
+   * F3 — tool-call accounting. `writes` counts successful file-tool write calls — the same
+   * best-effort scope and caveat as {@link filesTouched} (a hint, not proof that nothing else
+   * changed).
+   */
+  toolCalls: { total: number; writes: number };
 }
 
 export interface SubagentLoopOptions {
@@ -118,6 +141,27 @@ function buildToolMap(
   }
   return toolMap;
 }
+
+function stringPaths(v: unknown): string[] {
+  return typeof v === 'string' && v.length > 0 ? [v] : [];
+}
+
+/**
+ * F2 — the tools that mutate files, and how to read the path(s) they touched out of their
+ * arguments. Schema-copied from `tools/file.ts` (`file_write` / `file_edit`) and
+ * `tools/patch.ts` (`apply_patch`). An `apply_patch` with `dry_run: true` writes nothing and
+ * is therefore ignored.
+ */
+const FILE_WRITE_TOOLS: Record<string, (args: Record<string, unknown>) => string[]> = {
+  file_write: (args) => stringPaths(args['path'] ?? args['file'] ?? args['file_path'] ?? args['filePath']),
+  file_edit: (args) => stringPaths(args['path'] ?? args['file'] ?? args['file_path'] ?? args['filePath']),
+  apply_patch: (args) => {
+    if (args['dry_run'] === true) return [];
+    const patches = args['patches'];
+    if (!Array.isArray(patches)) return [];
+    return patches.flatMap((p) => stringPaths((p as Record<string, unknown> | null)?.['file']));
+  },
+};
 
 /**
  * Strip `<think>...</think>` blocks leaked by reasoning models (DeepSeek, Qwen, etc.).
@@ -220,6 +264,12 @@ export async function runSubagentLoop(
   const onProgress = opts?.onProgress;
   let status: SubagentStopStatus = 'completed';
   let aggregateCeilingReached = false;
+  /** F1: which budget stopped this child. */
+  let budgetHit: SubagentLoopResult['budgetHit'] = null;
+  /** F2/F3: what the child actually touched, and how much of its work was writes. */
+  const filesTouched = new Set<string>();
+  let toolCallCount = 0;
+  let writeCallCount = 0;
 
   const subagentId = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
   const logEntries: SubagentLogEntry[] = [];
@@ -287,6 +337,7 @@ export async function runSubagentLoop(
       if (aggregateBudget.remaining <= 0) {
         aggregateCeilingReached = true;
         status = 'budget_exhausted';
+        budgetHit = 'aggregate';
         log.warn('Subagent stopped: aggregate budget ceiling reached', {
           parentAgent: ctx.agentId, subagentId, iterations,
         });
@@ -300,6 +351,7 @@ export async function runSubagentLoop(
     // only this child and is reported as `budget_exhausted`, never as a silent success.
     if (iterationBudget !== undefined && iterations >= iterationBudget) {
       status = 'budget_exhausted';
+      budgetHit = 'own';
       log.warn('Subagent stopped: own iteration budget exhausted', {
         parentAgent: ctx.agentId, subagentId, iterations, iterationBudget,
       });
@@ -310,6 +362,7 @@ export async function runSubagentLoop(
     // Hard iteration cap (legacy `maxIterations` / ctx.maxToolIterations).
     if (iterations >= maxIterations) {
       status = 'max_iterations';
+      budgetHit = 'max_iterations';
       log.warn('Subagent hit max iterations', { parentAgent: ctx.agentId, subagentId, iterations, maxIterations });
       onProgress?.({ type: 'error', content: `Subagent hit max iterations (${maxIterations})` });
       break;
@@ -374,6 +427,18 @@ export async function runSubagentLoop(
         }
         const toolDuration = Date.now() - toolStart;
 
+        // F2/F3: count every tool call; record the paths a *successful* file-writing call
+        // actually changed. An error result touches nothing, so it is not counted.
+        toolCallCount++;
+        const writePaths = FILE_WRITE_TOOLS[tc.name];
+        if (writePaths && !isErrorResult(result)) {
+          const paths = writePaths((tc.arguments ?? {}) as Record<string, unknown>);
+          if (paths.length > 0) {
+            writeCallCount++;
+            for (const p of paths) filesTouched.add(p);
+          }
+        }
+
         onProgress?.({
           type: 'tool_end',
           content: tc.name,
@@ -420,9 +485,17 @@ export async function runSubagentLoop(
       : aggregateCeilingReached
         ? 'shared aggregate iteration budget exhausted'
         : `own iteration budget (${iterationBudget}) exhausted`;
+    // F2/F3 (scoped 2026-10-09): this note is a *reminder to verify*, not an audit. A child can
+    // change the workspace in ways we cannot enumerate (shell redirection, scripts, builds), so we
+    // never assert a negative we cannot prove — we report what we saw and tell the parent to check.
+    const wroteHint = filesTouched.size > 0
+      ? ` Files written via file tools (may be half-applied): ${[...filesTouched].join(', ')}.`
+      : '';
     const note =
-      `[INCOMPLETE: subagent stopped early — ${reason} after ${iterations} iteration(s). ` +
-      `Its result is incomplete; do not treat it as a completed subtask.]`;
+      `[INCOMPLETE: subagent stopped early — ${reason} after ${iterations} iteration(s); ` +
+      `${toolCallCount} tool call(s), ${writeCallCount} write(s).${wroteHint} ` +
+      `Its result is incomplete — verify the workspace before trusting it (a subagent can also ` +
+      `change files by means this notice does not track, e.g. shell).]`;
     cleanResult = cleanResult.trim().length > 0
       ? `${cleanResult.trimEnd()}\n\n${note}`
       : note;
@@ -448,6 +521,10 @@ export async function runSubagentLoop(
     status,
     iterations,
     aggregateCeilingReached,
+    budgetHit,
+    toolCalls: toolCallCount,
+    writes: writeCallCount,
+    filesTouched: [...filesTouched],
     resultLength: cleanResult.length,
     logPath,
   });
@@ -457,7 +534,7 @@ export async function runSubagentLoop(
     content: status === 'completed'
       ? `Subagent completed in ${iterations} iterations`
       : `Subagent stopped early (${status}) after ${iterations} iterations`,
-    metadata: { subagentId, status, iterations, aggregateCeilingReached, logPath, resultLength: cleanResult.length },
+    metadata: { subagentId, status, iterations, aggregateCeilingReached, budgetHit, filesTouched: [...filesTouched], logPath, resultLength: cleanResult.length },
   });
 
   return {
@@ -465,6 +542,9 @@ export async function runSubagentLoop(
     output: cleanResult,
     iterations,
     aggregateCeilingReached,
+    budgetHit,
+    filesTouched: [...filesTouched],
+    toolCalls: { total: toolCallCount, writes: writeCallCount },
   };
 }
 
@@ -478,7 +558,10 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
       'Spawn a lightweight subagent with a clean, independent context to handle a focused subtask. ' +
       'The subagent inherits your tools but gets its own message history — it will not pollute your conversation. ' +
       'Use this to break down complex tasks: deep code analysis, research, file refactoring, test generation, etc. ' +
-      'The subagent runs to completion and returns its final result to you. ' +
+      'The subagent runs to completion and returns a STRUCTURED result: `status` ' +
+      "('completed' | 'budget_exhausted' | 'max_iterations'), `budgetHit`, `filesTouched`, `toolCalls`. " +
+      'A child that stops early is reported as incomplete — never as an empty success — and tells you ' +
+      'to verify the workspace; `filesTouched` is a best-effort hint, not an exhaustive audit. ' +
       'For running multiple subagents in parallel, use spawn_subagents instead.',
     inputSchema: {
       type: 'object',
@@ -498,7 +581,7 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
         },
         max_iterations: {
           type: 'number',
-          description: 'Max tool iterations. Lower this for quick tasks.',
+          description: 'Hard cap on tool iterations for THIS child (per child — never shared with siblings). Prefer iteration_budget when you want a clean budget_exhausted status.',
         },
         iteration_budget: {
           type: 'number',
@@ -521,12 +604,17 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
           iterationBudget: args['iteration_budget'] as number | undefined,
           onProgress: ctx.getProgressCallback?.(),
         });
-        // H6: surface the child's real terminal status verbatim; `result` is never empty.
+        // H6 + F1–F3: surface the child's real terminal status and an auditable schema
+        // (status / which budget / what files / how much of the work was writes) verbatim.
+        // `result` is never empty.
         return JSON.stringify({
           status: loop.status,
           result: loop.output,
           iterations: loop.iterations,
           aggregateCeilingReached: loop.aggregateCeilingReached,
+          budgetHit: loop.budgetHit,
+          filesTouched: loop.filesTouched,
+          toolCalls: loop.toolCalls,
         });
       } catch (err) {
         log.error('Subagent execution failed', { error: String(err) });
@@ -556,6 +644,11 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
       'Use this when you have multiple independent subtasks that can be worked on simultaneously: ' +
       'analyzing different files, researching different topics, implementing separate modules, etc. ' +
       'Each subagent gets its own clean message history and inherits your tools. ' +
+      'BUDGETS: each child may set its own `iteration_budget`, and that budget is private to the child — ' +
+      'one child can never drain a sibling. Separately, the whole fan-out shares an aggregate ceiling of ' +
+      `${SUBAGENT_MAX_AGGREGATE_ITERATIONS} iterations; it is a CIRCUIT BREAKER, not a schedule, so a large ` +
+      'fan-out can trip it even when every child sets its own budget. A child stopped early reports why via ' +
+      "`budgetHit` ('own' | 'aggregate' | 'max_iterations') and `filesTouched`. " +
       'IMPORTANT: Only use for truly independent tasks — subagents cannot communicate with each other.',
     inputSchema: {
       type: 'object',
@@ -670,6 +763,9 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         result: string;
         iterations?: number;
         aggregateCeilingReached?: boolean;
+        budgetHit?: 'own' | 'aggregate' | 'max_iterations' | null;
+        filesTouched?: string[];
+        toolCalls?: { total: number; writes: number };
         error?: string;
       }> = results.map((r, i) => {
         if (r.status === 'fulfilled') {
@@ -685,6 +781,9 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
             result,
             iterations: loop.iterations,
             aggregateCeilingReached: loop.aggregateCeilingReached,
+            budgetHit: loop.budgetHit,
+            filesTouched: loop.filesTouched,
+            toolCalls: loop.toolCalls,
           };
         }
         const reason = String(r.reason);
