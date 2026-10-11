@@ -87,32 +87,44 @@ not one task.
 
 ## 🚀 Quickstart
 
-**Desktop app** — macOS, Windows, Linux:
-[**Download the latest release**](https://github.com/markus-global/markus/releases/latest).
+**The desktop app is the recommended way in.** It brings its own runtime *and* its own browser,
+so there is no Node.js to install, no terminal, and nothing to open afterwards.
 
-**Linux / macOS, one line** (brings its own runtime if Node.js is missing):
+| Platform | Installer |
+| --- | --- |
+| **macOS** — Apple Silicon or Intel | `Markus-….dmg` |
+| **Windows** — x64 | `Markus-Setup-….exe` |
+| **Linux** — x64 | `Markus-….AppImage` (also `.deb`, `.tar.gz`) |
 
-```bash
-curl -fsSL https://markus.global/install.sh | bash && markus start
-```
+Download from **[markus.global](https://www.markus.global)** or
+**[GitHub Releases](https://github.com/markus-global/markus/releases/latest)** — the same files
+either way.
 
-**Any platform, with Node.js 22+:**
-
-```bash
-npm install -g @markus-global/cli
-markus start
-```
-
-Open **http://localhost:8056**, finish the onboarding wizard, then give your Secretary something
-real to do:
+Then open the app and give your Secretary something real to do:
 
 > *"We're launching in Europe next quarter. Research the market, size it, and draft a launch plan."*
 
 Markus turns that into a requirement, hires the roles it needs, puts the tasks on the board, and
 starts working. You watch, steer, and approve.
 
-No database to install, no cloud account, no API gateway: SQLite and a web UI are bundled. The
-only thing you need is a model — a hosted API key, or a local model through Ollama.
+<details>
+<summary><strong>Prefer a server, a VPS, or a machine with no desktop?</strong></summary>
+
+The CLI runs the same thing and serves the UI in your browser at <http://localhost:8056>.
+
+```bash
+# Linux / macOS — installs a runtime too if Node.js is missing
+curl -fsSL https://markus.global/install.sh | bash && markus start
+
+# Anywhere with Node.js 22+
+npm install -g @markus-global/cli && markus start
+```
+
+Either path needs a modern browser to open the UI.
+</details>
+
+No database to install, no cloud account, no API gateway: SQLite and the UI ship with the app.
+The only thing you need to bring is a model — a hosted API key, or a local model through Ollama.
 
 <sub>Working from source instead? See [CONTRIBUTING.md](CONTRIBUTING.md).</sub>
 

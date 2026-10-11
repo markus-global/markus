@@ -85,30 +85,40 @@ copilot 很擅长单个任务：它记不住明天，还给自己打分。但真
 
 ## 🚀 快速开始
 
-**桌面应用** —— macOS / Windows / Linux：
-[**下载最新版本**](https://github.com/markus-global/markus/releases/latest)。
+**推荐直接用桌面应用。** 它自带运行时，也自带浏览器——不用装 Node.js、不用碰命令行，装完也不用再打开别的东西。
 
-**Linux / macOS 一行安装**（没装 Node.js 也行，脚本自带运行时）：
+| 平台 | 安装包 |
+| --- | --- |
+| **macOS** —— Apple Silicon 或 Intel | `Markus-….dmg` |
+| **Windows** —— x64 | `Markus-Setup-….exe` |
+| **Linux** —— x64 | `Markus-….AppImage`（另有 `.deb`、`.tar.gz`） |
 
-```bash
-curl -fsSL https://markus.global/install.sh | bash && markus start
-```
+从 **[官网](https://www.markus.global)** 或 **[GitHub Releases](https://github.com/markus-global/markus/releases/latest)** 下载，两边是同一批文件。
 
-**任意平台，Node.js 22+：**
-
-```bash
-npm install -g @markus-global/cli
-markus start
-```
-
-打开 **http://localhost:8056**，走完引导向导，然后给你的秘书一个真活儿：
+打开应用，然后给你的秘书一个真活儿：
 
 > *「我们下季度要进欧洲市场。把市场调研清楚、算出规模，再起草一份上市方案。」*
 
 Markus 会把它变成一条需求，招募需要的角色，把任务排上看板，然后开始干活。你在旁边看着、
 随时调整、点头放行。
 
-不用装数据库、不用注册云账号、不用配网关：SQLite 和 Web UI 都是自带的。唯一需要你准备的
+<details>
+<summary><strong>更想跑在服务器 / VPS / 没有桌面的机器上？</strong></summary>
+
+用 CLI，跑的是同一个东西，界面在你自己的浏览器里：<http://localhost:8056>。
+
+```bash
+# Linux / macOS —— 没装 Node.js 也会自动带上运行时
+curl -fsSL https://markus.global/install.sh | bash && markus start
+
+# 任何有 Node.js 22+ 的地方
+npm install -g @markus-global/cli && markus start
+```
+
+这两条路都需要你自己有一个现代浏览器来打开界面。
+</details>
+
+不用装数据库、不用注册云账号、不用配网关：SQLite 和界面都随应用一起装好。唯一需要你准备的
 是一个模型——托管 API 的密钥，或者通过 Ollama 跑本地模型。
 
 <sub>想从源码跑？见 [CONTRIBUTING.md](CONTRIBUTING.md)。</sub>
