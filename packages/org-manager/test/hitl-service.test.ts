@@ -119,7 +119,8 @@ describe('HITLService', () => {
       });
       const pending = service.listApprovals('pending');
       const result = service.respondToApproval(pending[0]!.id, true, 'user-1', 'LGTM');
-      expect(result?.status).toBe('approved');
+      expect(result?.approval.status).toBe('approved');
+      expect(result?.decision.intent).toBe('approve');
       await expect(waitPromise).resolves.toEqual(expect.objectContaining({
         approved: true,
         respondedBy: 'user-1',
@@ -148,7 +149,7 @@ describe('HITLService', () => {
         { questionId: 'q2', text: 'Because.' },
       ];
       const result = service.respondToApproval(created.id, true, 'user-1', undefined, undefined, answers);
-      expect(result?.answers).toEqual(answers);
+      expect(result?.approval.answers).toEqual(answers);
       expect(approvalRepo.upsert).toHaveBeenCalledWith(expect.objectContaining({ answers }));
       await expect(waitPromise).resolves.toEqual(expect.objectContaining({ approved: true, answers }));
     });

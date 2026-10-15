@@ -231,7 +231,9 @@
       "taskReview": "La tarea \"{{title}}\" fue enviada para tu revisión."
     },
     "optionLabels": {
-      "requestChanges": "Solicitar cambios"
+      "approve": "Aprobar",
+      "requestChanges": "Solicitar cambios",
+      "reject": "Rechazar"
     },
     "badgeLabel": "Notificación"
   },

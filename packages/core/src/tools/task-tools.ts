@@ -59,6 +59,13 @@ export interface AgentTaskContext {
     taskId: string,
     status: string
   ) => Promise<{ id: string; title: string; status: string }>;
+  /**
+   * Re-open a task's **creation gate** approval after a 打回 (changes requested).
+   * Only valid while the task is still `pending` and has no active approval —
+   * a 打回 performs zero state transition, so without this the task would be an
+   * orphan with no way back into review.
+   */
+  requestTaskApproval?: (taskId: string) => Promise<{ taskId: string; approvalId: string }>;
   /** Get details of a specific task */
   getTask: (
     taskId: string
@@ -750,6 +757,36 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         }
       },
     },
+
+    ...(ctx.requestTaskApproval
+      ? [
+          {
+            name: 'task_request_approval',
+            description:
+              'Re-initiate the creation-approval gate for a task you own after it was sent back (changes requested / 打回). A send-back performs no state transition: the task stays `pending`, the reviewer\'s feedback lands as a task comment, and this tool is the third step that re-opens the gate after you have revised the title/description with task_update. Fails with an actionable error when the task is not `pending` or already has an active approval.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The pending task whose creation approval should be re-initiated' },
+              },
+              required: ['task_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = await ctx.requestTaskApproval!(args['task_id'] as string);
+                return JSON.stringify({
+                  status: 'success',
+                  message: 'Creation approval re-initiated — the reviewer has been asked to decide again.',
+                  taskId: result.taskId,
+                  approvalId: result.approvalId,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
 
     ...(ctx.addTaskNote
       ? [

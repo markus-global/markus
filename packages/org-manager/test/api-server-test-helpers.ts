@@ -459,12 +459,16 @@ export function createTestServer(): TestContext {
     requestApproval: vi.fn(() => ({ id: 'appr-1', status: 'pending', title: 'Test' })),
     getApproval: vi.fn((id: string) => id === 'appr-pending' ? {
       id: 'appr-pending', status: 'pending', title: 'Approve task', agentId: AGENT_A,
-      details: { taskId: 'task-x' },
+      details: { taskId: 'task-x', subType: 'task' },
     } : null),
     respondToApproval: vi.fn((id: string, approved: boolean) => ({
-      id, status: approved ? 'approved' : 'rejected', title: 'Approve task', agentId: AGENT_A,
-      details: { taskId: 'task-x' },
+      approval: {
+        id, status: approved ? 'approved' : 'rejected', title: 'Approve task', agentId: AGENT_A,
+        details: { taskId: 'task-x', subType: 'task' },
+      },
+      decision: { intent: approved ? 'approve' : 'reject' },
     })),
+    claimApply: vi.fn(() => true),
     listNotifications: vi.fn(() => [{ id: 'notif-1', read: false }]),
     countNotifications: vi.fn(() => ({ total: 1, unread: 1 })),
     markNotificationRead: vi.fn(() => true),

@@ -223,7 +223,9 @@
       "taskReview": "Task \"{{title}}\" has been submitted for your review."
     },
     "optionLabels": {
-      "requestChanges": "Request Changes"
+      "approve": "Approve",
+      "requestChanges": "Request changes",
+      "reject": "Reject"
     },
     "badgeLabel": "Notification",
     "approvalType": {

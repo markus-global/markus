@@ -553,7 +553,9 @@ CREATE TABLE IF NOT EXISTS approvals (
   approver_user_ids TEXT,
   target_user_id TEXT,
   questions TEXT,
-  answers TEXT
+  answers TEXT,
+  applied_at TEXT,
+  applied_intent TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -794,6 +796,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirements', column: 'goal_config', sql: 'ALTER TABLE requirements ADD COLUMN goal_config TEXT' },
     { table: 'approvals', column: 'questions', sql: 'ALTER TABLE approvals ADD COLUMN questions TEXT' },
     { table: 'approvals', column: 'answers', sql: 'ALTER TABLE approvals ADD COLUMN answers TEXT' },
+    { table: 'approvals', column: 'applied_at', sql: 'ALTER TABLE approvals ADD COLUMN applied_at TEXT' },
+    { table: 'approvals', column: 'applied_intent', sql: 'ALTER TABLE approvals ADD COLUMN applied_intent TEXT' },
     { table: 'users', column: 'preferences', sql: 'ALTER TABLE users ADD COLUMN preferences TEXT' },
     { table: 'pending_callbacks', column: 'delivery_mode', sql: "ALTER TABLE pending_callbacks ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'in_session'" },
     { table: 'pending_callbacks', column: 'note', sql: 'ALTER TABLE pending_callbacks ADD COLUMN note TEXT' },
@@ -5130,6 +5134,8 @@ export interface ApprovalRow {
   answers?: UserInputAnswer[];
   approverUserIds?: string[];
   targetUserId?: string;
+  appliedAt?: string;
+  appliedIntent?: string;
 }
 
 export class SqliteApprovalRepo {
@@ -5137,15 +5143,17 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers, applied_at, applied_intent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
          responded_by = excluded.responded_by,
          response_comment = excluded.response_comment,
          selected_option = excluded.selected_option,
-         answers = excluded.answers`
+         answers = excluded.answers,
+         applied_at = excluded.applied_at,
+         applied_intent = excluded.applied_intent`
     ).run(
       a.id,
       a.agentId,
@@ -5167,6 +5175,8 @@ export class SqliteApprovalRepo {
       a.targetUserId ?? null,
       a.questions?.length ? JSON.stringify(a.questions) : null,
       a.answers?.length ? JSON.stringify(a.answers) : null,
+      a.appliedAt ?? null,
+      a.appliedIntent ?? null,
     );
   }
 
@@ -5209,6 +5219,8 @@ export class SqliteApprovalRepo {
       answers: fromJson<UserInputAnswer[]>(r['answers'] as string) ?? undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
       targetUserId: (r['target_user_id'] as string) ?? undefined,
+      appliedAt: (r['applied_at'] as string) ?? undefined,
+      appliedIntent: (r['applied_intent'] as string) ?? undefined,
     };
   }
 

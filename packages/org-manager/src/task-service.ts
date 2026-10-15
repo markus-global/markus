@@ -54,7 +54,13 @@ import {
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
-import type { HITLService } from './hitl-service.js';
+import type { HITLService, ApprovalIntent } from './hitl-service.js';
+import type {
+  ApprovalApplier,
+  ApprovalApplyInput,
+  ApprovalGateSubType,
+  ApprovalTargetPort,
+} from './approval-apply.js';
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
@@ -256,12 +262,14 @@ export class TaskServiceError extends Error {
   }
 }
 
-export class TaskService {
+export class TaskService implements ApprovalTargetPort {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
+  /** The platform-wide single execution point for approval outcomes. */
+  private approvalApplier?: ApprovalApplier;
   private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
   private hitlService?: HITLService;
   /**
@@ -424,6 +432,148 @@ export class TaskService {
 
   setHITLService(hitl: HITLService): void {
     this.hitlService = hitl;
+  }
+
+  /**
+   * Wire the single execution point. Required for approval outcomes to have any
+   * effect: the gate callbacks below only *route* a decision, they never move a
+   * task themselves.
+   */
+  setApprovalApplier(applier: ApprovalApplier): void {
+    this.approvalApplier = applier;
+  }
+
+  // ─── Approval gate port (see approval-apply.ts) ────────────────────────────
+  // TaskService owns exactly two gates:
+  //   `task`        — 建卡闸, task sits in `pending`
+  //   `task_review` — 验收闸, task sits in `review`
+  readonly approvalGateSubTypes: readonly ApprovalGateSubType[] = ['task', 'task_review'];
+
+  /** Window guard — read-only. A directly-invoked admin endpoint may already have moved the task. */
+  canApplyApproval(subType: string, targetId: string): boolean {
+    const task = this.tasks.get(targetId);
+    if (!task) return false;
+    if (subType === 'task') return task.status === 'pending';
+    if (subType === 'task_review') return task.status === 'review';
+    return false;
+  }
+
+  async applyApprovalDecision(input: {
+    subType: string;
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    if (input.subType === 'task') return this.applyCreationGateDecision(input);
+    if (input.subType === 'task_review') return this.applyReviewGateDecision(input);
+    log.warn('TaskService received an approval for a gate it does not own', { subType: input.subType });
+  }
+
+  /**
+   * 建卡闸. Approve/reject keep their exact previous meaning; 打回 performs **zero
+   * state transition** — the task stays `pending`, no `approvedVia`, no
+   * `Approved` note — and instead lands the reviewer's comment on the task and
+   * tells the assignee to revise. The approval entity records the decision
+   * (`changes_requested`), so re-initiating it is a separate, explicit act.
+   */
+  private async applyCreationGateDecision(input: {
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    const task = this.tasks.get(input.targetId);
+    if (!task || task.status !== 'pending') return;
+
+    if (input.intent === 'approve') {
+      this.approveTask(task.id, input.actorId);
+      return;
+    }
+    if (input.intent === 'reject') {
+      this.rejectTask(task.id, input.actorId);
+      return;
+    }
+    // request_changes | needs_adjustment → 打回
+    if (!this.taskCommentRepo) {
+      throw new TaskServiceError(
+        'TASK_COMMENT_REPO_MISSING',
+        'Cannot record a changes-requested decision without a task comment repo',
+        { taskId: task.id },
+      );
+    }
+    const authorName = input.actorName ?? input.actorId ?? 'reviewer';
+    const reason = input.comment?.trim();
+    const content = [
+      `**Changes requested by ${authorName}**`,
+      '',
+      reason ? reason : '_No reason was given._',
+      '',
+      `Task stays **pending** — revise the task and re-initiate the approval when ready.`,
+    ].join('\n');
+    await this.postTaskComment(
+      task.id,
+      input.actorId ?? 'reviewer',
+      authorName,
+      content,
+      task.assignedAgentId ? [task.assignedAgentId] : undefined,
+      undefined,
+      { authorType: 'human' },
+    );
+  }
+
+  /**
+   * 验收闸. Semantics lifted verbatim from the previous inline promise callback:
+   * approve → settle as approved + `completed`; anything else → settle as revision
+   * + back to `in_progress` (this gate has no terminal rejection, so `reject`
+   * means Request Changes here).
+   */
+  private applyReviewGateDecision(input: {
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    comment?: string;
+  }): void {
+    const current = this.tasks.get(input.targetId);
+    if (!current || current.status !== 'review') return;
+    const reviewerId = input.actorId ?? current.reviewerId;
+
+    if (input.intent === 'approve') {
+      this.markReviewSettled(current, 'approved', reviewerId);
+      this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
+      return;
+    }
+
+    const comment = input.comment ? ` — ${input.comment}` : '';
+    current.notes = current.notes ?? [];
+    current.notes.push(`[Review by human] Revision requested${comment}`);
+    this.markReviewSettled(current, 'revision', reviewerId);
+    this.updateTaskStatus(current.id, 'in_progress', reviewerId, false, false, 'human', `Revision requested${comment}`);
+  }
+
+  /**
+   * Hand a resolved decision to the single execution point.
+   * Never silent: an unwired applier is a composition-root bug and is reported.
+   */
+  private routeApprovalDecision(input: ApprovalApplyInput): void {
+    if (!this.approvalApplier) {
+      log.error('Approval applier not wired — decision was NOT applied', {
+        approvalId: input.approvalId,
+        subType: input.subType,
+        targetId: input.targetId,
+        intent: input.intent,
+      });
+      return;
+    }
+    void this.approvalApplier
+      .apply(input)
+      .catch(err => log.error('Approval applier threw unexpectedly', {
+        approvalId: input.approvalId,
+        targetId: input.targetId,
+        error: String(err),
+      }));
   }
 
   setProjectService(ps: ProjectService): void {
@@ -2567,35 +2717,123 @@ export class TaskService {
       });
     }
 
-    // Request HITL approval (only for agent-created tasks that need approval)
+    // Request HITL approval (only for agent-created tasks that need approval).
+    // The initiation lives in exactly one place so `createTask` and
+    // `requestTaskApproval` can never drift (see `openCreationGateApproval`).
     if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
-      const creatorId = request.createdBy ?? 'system';
-      const creatorName = this.resolveActorName(creatorId, 'agent') ?? creatorId;
-      this.hitlService.requestApprovalAndWait({
-        agentId: creatorId,
-        agentName: creatorName,
-        type: 'custom',
-        title: task.title,
-        description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
-        details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
-      }).then(result => {
-        const current = this.tasks.get(task.id);
-        if (!current || current.status !== 'pending') return;
-        if (result.approved) {
-          this.approveTask(task.id, result.respondedBy);
-        } else {
-          this.rejectTask(task.id, result.respondedBy);
-        }
-      }).catch(err => {
-        log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
-        const current = this.tasks.get(task.id);
-        if (current?.status === 'pending') {
-          this.rejectTask(task.id, 'system');
-        }
-      });
+      this.openCreationGateApproval(task);
     }
 
     return task;
+  }
+
+  /**
+   * The **single implementation** of "open the 建卡闸 approval for a pending task
+   * and route the resulting decision".
+   *
+   * Called from exactly two places — `createTask` (first submission) and
+   * {@link requestTaskApproval} (re-submission after a 打回). Duplicating this
+   * closure is what would let a second copy of the approval-发起逻辑 drift out of
+   * sync with the single execution point, so there is only one.
+   *
+   * The decision is only *routed* (`routeApprovalDecision`); nothing here moves
+   * the task, so a 打回 cannot land a terminal state.
+   */
+  private openCreationGateApproval(task: Task): void {
+    if (!this.hitlService) return;
+    const creatorId = task.createdBy ?? 'system';
+    const creatorName = this.resolveActorName(creatorId, 'agent') ?? creatorId;
+    this.hitlService.requestApprovalAndWait({
+      agentId: creatorId,
+      agentName: creatorName,
+      type: 'custom',
+      title: task.title,
+      description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
+      details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
+    }).then(result => {
+      const current = this.tasks.get(task.id);
+      if (!current || current.status !== 'pending') return;
+      // Route only — never transition inline: 打回 must not land a terminal state.
+      this.routeApprovalDecision({
+        approvalId: result.approvalId,
+        subType: 'task',
+        targetId: task.id,
+        intent: result.intent,
+        actorId: result.respondedBy,
+        actorName: this.resolveActorName(result.respondedBy, 'human') ?? result.respondedBy,
+        comment: result.comment,
+      });
+    }).catch(err => {
+      log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
+      const current = this.tasks.get(task.id);
+      if (current?.status !== 'pending') return;
+      // Intent-aware: only a missing/undeliverable decision may fall back to
+      // rejection. If this request already produced a recorded decision (e.g. a
+      // 打回 whose apply path failed), rejecting here would silently turn it into
+      // a terminal rejection.
+      const alreadyRecorded = this.hitlService
+        ?.listApprovals()
+        .some(a => (a.details as Record<string, unknown> | undefined)?.['taskId'] === task.id && a.status !== 'pending');
+      if (alreadyRecorded) {
+        log.warn('Approval decision already recorded — skipping auto-reject', { taskId: task.id });
+        return;
+      }
+      this.rejectTask(task.id, 'system');
+    });
+  }
+
+  /**
+   * Re-initiate the 建卡闸 approval for a task whose previous approval came back
+   * as **打回 (changes requested)** — the third segment of the 打回 loop:
+   *
+   *   ① 打回 does zero state transition (task stays `pending`)
+   *   ② the reviewer's comment lands on the task
+   *   ③ the assignee revises the title/description and calls this to re-open the gate
+   *
+   * Without ③ the task becomes an **orphan**: its approval is no longer `pending`,
+   * so it never shows up in `listApprovals('pending')`, yet nothing put it into a
+   * terminal state — the only exit left would be the admin approve endpoint, which
+   * bypasses the gate entirely.
+   *
+   * Idempotent by construction: refuses (with an actionable error, never a silent
+   * no-op) when the task is not `pending`, when its creator is not a live agent, or
+   * when an approval for it is already active.
+   */
+  requestTaskApproval(taskId: string, actorId?: string): { taskId: string; approvalId: string } {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new TaskServiceError('TASK_NOT_FOUND', `Task not found: ${taskId}`, { taskId });
+    if (task.status !== 'pending') {
+      throw new TaskServiceError(
+        'TASK_NOT_PENDING',
+        `Task ${taskId} is in '${task.status}' — only a pending task's creation approval can be (re-)initiated.`,
+        { taskId, status: task.status },
+      );
+    }
+    if (!this.hitlService) {
+      throw new TaskServiceError('HITL_UNAVAILABLE', 'Approval service is unavailable', { taskId });
+    }
+    if (task.createdBy && this.agentManager && !this.agentManager.hasAgent(task.createdBy)) {
+      throw new TaskServiceError(
+        'TASK_CREATOR_NOT_AGENT',
+        `Task ${taskId} was not created by a live agent — there is no creation gate to re-open.`,
+        { taskId, createdBy: task.createdBy },
+      );
+    }
+    const hasTaskDetails = (a: { details?: unknown }) =>
+      (a.details as Record<string, unknown> | undefined)?.['taskId'] === taskId;
+    const active = this.hitlService.listApprovals('pending').find(hasTaskDetails);
+    if (active) {
+      throw new TaskServiceError(
+        'APPROVAL_ALREADY_ACTIVE',
+        `Task ${taskId} already has an active approval (${active.id}) — answer that one instead of re-initiating.`,
+        { taskId, approvalId: active.id },
+      );
+    }
+    const previousIds = new Set(this.hitlService.listApprovals().filter(hasTaskDetails).map(a => a.id));
+    this.openCreationGateApproval(task);
+    const created = this.hitlService.listApprovals().find(a => hasTaskDetails(a) && !previousIds.has(a.id));
+    log.info('Creation-gate approval re-initiated', { taskId, approvalId: created?.id, actorId });
+    return { taskId, approvalId: created?.id ?? '' };
   }
 
   /** Approve a pending task and transition it to normal flow.
@@ -3030,16 +3268,19 @@ export class TaskService {
       const current = this.tasks.get(task.id);
       if (!current || current.status !== 'review') return;
 
-      if (result.approved) {
-        this.markReviewSettled(current, 'approved', task.reviewerId);
-        this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
-      } else {
-        const comment = result.comment ? ` — ${result.comment}` : '';
-        task.notes = task.notes ?? [];
-        task.notes.push(`[Review by human] Revision requested${comment}`);
-        this.markReviewSettled(current, 'revision', task.reviewerId);
-        this.updateTaskStatus(task.id, 'in_progress', task.reviewerId, false, false, 'human', `Revision requested${comment}`);
-      }
+      // Both verdicts route through the single execution point; the review gate's
+      // own semantics (settlement + note + status) live in the gate port and are
+      // unchanged, including "the promise was lost" — the API fallback reaches
+      // the same port method.
+      this.routeApprovalDecision({
+        approvalId: result.approvalId,
+        subType: 'task_review',
+        targetId: task.id,
+        intent: result.intent,
+        actorId: task.reviewerId ?? result.respondedBy,
+        actorName: this.resolveActorName(task.reviewerId ?? result.respondedBy, 'human') ?? task.reviewerId,
+        comment: result.comment,
+      });
     }).catch(err => {
       log.warn('Human reviewer approval failed', { taskId: task.id, error: String(err) });
     });

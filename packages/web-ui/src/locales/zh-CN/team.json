@@ -223,7 +223,9 @@
       "taskReview": "任务「{{title}}」已提交审核。"
     },
     "optionLabels": {
-      "requestChanges": "请求修改"
+      "approve": "通过",
+      "requestChanges": "打回（要求修改）",
+      "reject": "拒绝"
     },
     "badgeLabel": "通知",
     "approvalType": {
