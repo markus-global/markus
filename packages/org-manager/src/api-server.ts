@@ -5709,6 +5709,32 @@ export class APIServer {
       return;
     }
 
+    // Drop ONE mailbox item, with an explicit reason. Distinct from
+    // cancel-processing (打断 = stop the running turn and requeue its item) and
+    // from recover-stale (bulk cleanup of stuck rows): here the operator says
+    // "this particular item should not be handled", and why. The reason is
+    // logged and broadcast as `mailbox:dropped`, so a dropped message is
+    // traceable instead of just never arriving.
+    if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const itemId = parts[5]!;
+      const body = await this.readBody(req).catch(() => undefined);
+      const reason = body && typeof body === 'object'
+        ? String((body as { reason?: unknown }).reason ?? '').trim() || 'operator'
+        : 'operator';
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const dropped = agent.getMailbox().drop(itemId, `operator: ${reason}`);
+        this.json(res, 200, { status: 'dropped', itemId, dropped: Boolean(dropped) });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
     // Agent attention decisions — decision timeline
     if (path.match(/^\/api\/agents\/[^/]+\/decisions$/) && req.method === 'GET') {
       const agentId = path.split('/')[3]!;
@@ -13739,6 +13765,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/decisions$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/metrics$/, 'GET'),

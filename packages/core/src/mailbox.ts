@@ -646,7 +646,14 @@ export class AgentMailbox {
     // ⚠️ 必须同时判 `sourceType === 'heartbeat'`：漏了它就会在「队列里恰有一条心跳」时
     // 把**任何**类型的飞来件都当成重复心跳折叠掉（含 human_chat 用户消息）—— 这会静默
     // 吞消息，是本改动最危险的写法。测试 `心跳与其它类型共存时互不干扰` 专门守这条。
-    if (!reuseItemId && sourceType === 'heartbeat') {
+    if (
+      !reuseItemId
+      && sourceType === 'heartbeat'
+      // 【不得折叠带动作的心跳】折叠保留既有那条、丢弃本次这条；若本次携带
+      // actionRequired / directMention，折叠就等于静默丢掉一个待办动作 → 只折叠纯巡检心跳。
+      && payload.extra?.actionRequired !== true
+      && payload.extra?.directMention !== true
+    ) {
       const queuedHb = this.queue.find(
         i => i.sourceType === 'heartbeat' && i.status === 'queued',
       );
@@ -1166,11 +1173,16 @@ export class AgentMailbox {
    * If the item is not in the in-memory queue (ghost / already dequeued), still
    * mark it dropped in persistence so agent tools can clear orphans idempotently.
    */
-  drop(itemId: string): MailboxItem | undefined {
+  drop(itemId: string, reason?: string): MailboxItem | undefined {
+    const why = reason ?? 'unspecified';
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx === -1) {
       this.persistence?.updateStatus(itemId, 'dropped');
       this.releaseClaim(itemId);
+      // Dropping an id that is no longer in the in-memory queue still flips a
+      // persisted row — report it rather than letting it vanish silently.
+      log.info('Mailbox item dropped (not in queue)', { agentId: this.agentId, itemId, reason: why });
+      this.eventBus.emit('mailbox:dropped', { agentId: this.agentId, itemId, sourceType: undefined, reason: why });
       return undefined;
     }
 
@@ -1178,6 +1190,14 @@ export class AgentMailbox {
     item.status = 'dropped';
     this.persistence?.updateStatus(item.id, 'dropped');
     this.releaseClaim(item.id);
+    // A drop is a *decision*, not an accident: make who/why/what observable so a
+    // disappearing message can be traced back instead of just not arriving.
+    log.info('Mailbox item dropped', {
+      agentId: this.agentId, itemId: item.id, type: item.sourceType, reason: why,
+    });
+    this.eventBus.emit('mailbox:dropped', {
+      agentId: this.agentId, itemId: item.id, sourceType: item.sourceType, reason: why,
+    });
     return item;
   }
 
@@ -1499,7 +1519,14 @@ export class AgentMailbox {
       if (item.status !== 'queued') continue;
       // Only drop informational types, never human messages / A2A / execution triggers
       if (!staleTypes.has(item.sourceType)) continue;
-      if (isStrictStateItem(item)) continue;
+      // …and even within the stale types, anything the agent still owes must survive
+      // age expiry — otherwise a real message vanishes with no trace.
+      if (this.isNeverPurgeable(item)) {
+        log.info('Stale purge skipped a non-informational item', {
+          agentId: this.agentId, itemId: item.id, type: item.sourceType,
+        });
+        continue;
+      }
 
       const age = now - new Date(item.queuedAt).getTime();
       if (age > TRIAGE_STALE_INFO_TTL_MS) {
@@ -1510,16 +1537,34 @@ export class AgentMailbox {
     for (const idx of toRemove) {
       const [item] = this.queue.splice(idx, 1);
       item.status = 'dropped';
+      // The persisted row is retained (status flipped, never deleted), so this is an
+      // *archive* rather than a destructive drop — but it must still be reportable.
       this.persistence?.updateStatus(item.id, 'dropped');
     }
 
     if (toRemove.length > 0) {
-      log.info('Purged stale informational items', {
+      log.info('Stale purge archived informational items', {
         agentId: this.agentId,
         count: toRemove.length,
+        types: [...staleTypes].join(','),
       });
     }
     return toRemove.length;
+  }
+
+  /**
+   * The purge's remit is **purely informational** items. Anything that carries a
+   * user-visible reply, or an action the agent still owes, must never be reclaimed
+   * by age — that is exactly how a real message goes missing (silent drop).
+   */
+  private isNeverPurgeable(item: MailboxItem): boolean {
+    if (isStrictStateItem(item)) return true;
+    // callback_result carries a reply the user can see in the Team Chat bubble.
+    if (item.sourceType === 'callback_result') return true;
+    const extra = item.payload?.extra;
+    if (extra?.actionRequired) return true;
+    if (extra?.directMention) return true;
+    return false;
   }
 
   get depth(): number {
