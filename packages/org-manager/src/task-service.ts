@@ -1789,7 +1789,7 @@ export class TaskService {
           '',
           '**ACTION REQUIRED — Call `task_submit_review` NOW with:**',
           '- `summary`: A concise description of what you accomplished',
-          '- `deliverables`: List of files/artifacts you produced or modified',
+          '- `deliverables`: The human-facing deliverables (reports/docs/products/data — usually 1–3). Do NOT list each code/config file separately; put code file paths inside one markdown deliverable doc instead',
           '',
           'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
           '',
@@ -4066,7 +4066,7 @@ export class TaskService {
   private governancePolicy: TaskGovernancePolicy = {
     enabled: true,
     defaultTier: 'human',
-    maxPendingTasksPerAgent: 10,
+    maxPendingTasksPerAgent: 20,
     maxTotalActiveTasks: 0,
     requireApprovalForPriority: ['critical', 'high'],
     requireRequirement: true,
@@ -4142,16 +4142,26 @@ export class TaskService {
       }
     }
 
-    if (request.assignedAgentId && policy.maxPendingTasksPerAgent > 0) {
+    // Per-agent task cap. Two-level precedence, no extra fallback layer:
+    //   1) the value configured in 智能体设置 → 任务上限
+    //      (`AgentManager.maxPendingTasksPerAgent`, persisted to markus.json
+    //      `agent.maxPendingTasksPerAgent` via POST /api/settings/agent)
+    //   2) else the governance-policy default (now 20).
+    // Single source of truth: the configured cap is only ever WRITTEN through
+    // POST /api/settings/agent; this method only READS it, so there is exactly
+    // one writer and one reader for the same value.
+    const effectiveAgentCap =
+      this.agentManager?.maxPendingTasksPerAgent ?? policy.maxPendingTasksPerAgent;
+    if (request.assignedAgentId && effectiveAgentCap > 0) {
       const agentTasks = [...this.tasks.values()].filter(
         t =>
           t.assignedAgentId === request.assignedAgentId &&
           !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
       );
-      if (agentTasks.length >= policy.maxPendingTasksPerAgent) {
+      if (agentTasks.length >= effectiveAgentCap) {
         return {
           allowed: false,
-          reason: `Agent task cap reached (${policy.maxPendingTasksPerAgent})`,
+          reason: `Agent task cap reached (${effectiveAgentCap})`,
         };
       }
     }

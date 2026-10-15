@@ -248,6 +248,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   // Agent settings
   const [agentMaxIter, setAgentMaxIter] = useState(200);
+  const [agentMaxPending, setAgentMaxPending] = useState(20);
   const [agentSaving, setAgentSaving] = useState(false);
   const [agentMsg, setAgentMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   // Concurrent Processing settings
@@ -331,6 +332,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.settings.getAgent()
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
+        if (d && typeof d.maxPendingTasksPerAgent === 'number') setAgentMaxPending(d.maxPendingTasksPerAgent);
         if (d?.concurrent) {
           setConcEnabled(d.concurrent.enabled ?? true);
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
@@ -2160,6 +2162,37 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     try {
                       const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
                       setAgentMaxIter(d.maxToolIterations);
+                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
+                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                    setAgentSaving(false);
+                  }}
+                  className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                >
+                  {agentSaving ? t('common:saving') : t('common:save')}
+                </button>
+              </div>
+            </div>
+            {/* Per-agent 任务上限（每个 agent 各自独立计数） */}
+            <div className="flex items-center justify-between">
+              <div>
+                <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxPendingTasksPerAgent')}</div>
+                <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxPendingTasksPerAgentDesc')}</div>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="number"
+                  min={1}
+                  value={agentMaxPending}
+                  onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
+                  className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                />
+                <button
+                  disabled={agentSaving}
+                  onClick={async () => {
+                    setAgentSaving(true); setAgentMsg(null);
+                    try {
+                      const d = await api.settings.updateAgent({ maxPendingTasksPerAgent: agentMaxPending });
+                      setAgentMaxPending(d.maxPendingTasksPerAgent);
                       setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
                     } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);

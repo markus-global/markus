@@ -199,6 +199,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Think carefully about the execution order — a task that needs output from another task MUST list that task ID in its `blocked_by` array.',
         'Tasks without dependencies will execute in parallel; tasks with `blocked_by` will wait for their prerequisites to complete first.',
         'Use subtask_create to break a task into smaller steps within a single task.',
+        'SPLITTING: cut cards by independently-reviewable seam (single execution point / entry / consumer / verification), NEVER by file or by layer — splitting by file makes the cards collide on the same edits. Prefer the smallest number of cards that each have one clear "done" statement in one screen.',
+        'DO NOT open a new card merely to change a specification — update the existing card\'s title/description instead. Regression and acceptance are the reviewer\'s job, not a separate card. A card whose description must say "this version supersedes all previous versions" means the split was wrong.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -980,7 +982,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               'Submit your completed work for review. You MUST call this when your task execution is done — the round is NOT complete without it.',
               'Prefer calling from a task session: task_id is auto-filled from the execution context (ALS).',
               'Outside a task session you MUST pass task_id explicitly (the system does not guess from the board).',
-              'Provide a summary and list all deliverables (files or directories) you produced.',
+              'Provide a summary plus the deliverables a human actually cares about — the final reports/documents/products/datasets you produced (usually one or a few, NOT one entry per file). Do NOT register every code/config/intermediate file you touched as its own deliverable; instead list the relevant code file paths inside the body of one markdown deliverable document.',
             ].join(' '),
             inputSchema: {
               type: 'object',
@@ -995,14 +997,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 },
                 deliverables: {
                   type: 'array',
-                  description: 'All artifacts produced. Each item needs a type, reference, and summary.',
+                  description: 'Human-facing deliverables only — the final reports, documents, products, or datasets a person would open and read (typically 1–3). Do NOT register each code/config/intermediate file separately; reference code changes by file path inside one markdown deliverable document instead. Each item needs a type, reference, and summary.',
                   items: {
                     type: 'object',
                     properties: {
                       type: {
                         type: 'string',
                         enum: ['file', 'directory'],
-                        description: 'file = any file-based content (source, config, docs, reports, etc.), directory = folder of files',
+                        description: 'file = a human-facing file (report, doc, spreadsheet, dataset, product artifact); directory = a folder of such deliverables. Use the deliverable document itself, NOT each source/config file you touched.',
                       },
                       reference: {
                         type: 'string',
@@ -1059,7 +1061,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   status: 'success',
                   taskId: result.id,
                   taskStatus: result.status,
-                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No deliverables recorded — consider adding them next time.'}`,
+                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No human-facing deliverables recorded — if you produced a report/doc/product, add it next time (code paths go inside that doc, not as separate entries).'}`,
                 });
               } catch (error) {
                 const msg = String(error);
@@ -1082,7 +1084,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'requirement_propose',
             description: [
               'Propose a new requirement (需求) for user review.',
-              'Use this when you identify work that should be done but no approved requirement exists.',
+              'Use this ONLY when the work genuinely needs the requirement→task lifecycle: it must continue asynchronously (the human will step away), involve another agent, need a formal review/audit trail, or span ≥2 modules / a data migration / a cross-team boundary.',
+              'BEFORE proposing, ask whether it deserves a requirement at all. If one person can finish it in half a day, with no migration and no cross-team work, and no formal audit trail is needed, do NOT propose a requirement — just do the work in the conversation. Every requirement adds an approval round-trip and a notification storm; spend it only where it buys something.',
               'The proposal will be reviewed by a human user who decides whether to approve or reject it.',
               'Do NOT create tasks directly — propose a requirement first and wait for approval.',
             ].join(' '),

@@ -380,6 +380,8 @@
     "title": "Agente Ejecución",
     "maxToolIterations": "Max Tool Iterations",
     "maxToolIterationsDesc": "Cap de seguridad en los bucles de llamada de herramienta por agente giro (0 = ilimitado, se aplica a todos los agentes y subagents)",
+    "maxPendingTasksPerAgent": "Límite de tareas por agente",
+    "maxPendingTasksPerAgentDesc": "Número máximo de tareas no terminales por agente (predeterminado 20). Se rechazan tareas nuevas al alcanzar el límite; se cuenta de forma independiente por agente.",
     "saved": "Guardado",
     "failedToSave": "No se pudo guardar"
   },

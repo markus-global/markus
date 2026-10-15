@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, mkdirSync, existsSync, unlinkSync, openSync, closeSync } from 'node:fs';
 import { resolve } from 'node:path';
 import type { CapabilityRoutingConfig } from '../types/model-catalog.js';
+import type { AgentConcurrentConfig } from '../types/agent.js';
 import { markusConfigPath } from './config-paths.js';
 
 /**
@@ -89,6 +90,22 @@ export interface MarkusConfig {
   agent?: {
     /** Safety cap on tool iterations per agent turn (default: 200) */
     maxToolIterations?: number;
+    /**
+     * 并发处理配置（智能体设置 → 并发处理），持久化到 markus.json。
+     *
+     * 单一事实源：由 `POST /api/settings/agent` 写入，启动时由 `createServices`
+     * 读回并灌入 `AgentManager.concurrentConfig`（热应用到所有 agent）。
+     * 这里声明字段类型，避免读回时 from `as any` 的隐式契约漂移。
+     */
+    concurrent?: AgentConcurrentConfig;
+    /**
+     * 每个 agent 的任务上限（智能体设置 → 任务上限），持久化到 markus.json。
+     *
+     * 单一事实源：由 `POST /api/settings/agent` 写入，启动时由 `createServices`
+     * 读回并灌入 `AgentManager.maxPendingTasksPerAgent`。该上限对每个 agent
+     * 各自独立计数；未配置时 `TaskService.checkTaskLimits` 回退到治理策略默认值。
+     */
+    maxPendingTasksPerAgent?: number;
   };
   browser?: {
     /** Backend that drives agent browser automation: 'embedded' = built-in Electron WebContentsView (default), 'system-chrome' = Chrome extension bridge. */

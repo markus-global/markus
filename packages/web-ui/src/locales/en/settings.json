@@ -380,6 +380,8 @@
     "title": "Agent Execution",
     "maxToolIterations": "Max Tool Iterations",
     "maxToolIterationsDesc": "Safety cap on tool call loops per agent turn (0 = unlimited, applies to all agents and subagents)",
+    "maxPendingTasksPerAgent": "Task cap per agent",
+    "maxPendingTasksPerAgentDesc": "Maximum number of non-terminal tasks each agent can own (default 20). New tasks are rejected once the cap is reached; counted independently per agent.",
     "saved": "Saved",
     "failedToSave": "Failed to save"
   },
