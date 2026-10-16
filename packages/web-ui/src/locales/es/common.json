@@ -81,6 +81,7 @@
   "loadingEllipsis": "Cargando…",
   "status": {
     "pending": "Pendiente",
+    "changes_requested": "Cambios solicitados",
     "approved": "Aprobado",
     "inProgress": "En curso",
     "completed": "Completado",

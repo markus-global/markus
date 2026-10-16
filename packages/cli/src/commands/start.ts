@@ -1214,8 +1214,8 @@ async function startServerCore(
   // also lands as a requirement comment — through the existing comment channel
   // (owned by TaskService), never through a new field or table.
   requirementService.setRequirementCommentPoster(
-    (requirementId, authorId, authorName, content, mentions) =>
-      taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions),
+    (requirementId, authorId, authorName, content, mentions, opts) =>
+      taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions, undefined, opts),
   );
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);

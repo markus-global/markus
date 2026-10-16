@@ -440,8 +440,8 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     requirements.setAgentManager(agentManager as never);
     requirements.setHITLService(hitlService);
     const comments: Array<Record<string, unknown>> = [];
-    requirements.setRequirementCommentPoster(async (requirementId, authorId, authorName, content, mentions) => {
-      const stored = { id: `rc-${comments.length + 1}`, requirementId, authorId, authorName, content, mentions };
+    requirements.setRequirementCommentPoster(async (requirementId, authorId, authorName, content, mentions, opts) => {
+      const stored = { id: `rc-${comments.length + 1}`, requirementId, authorId, authorName, content, mentions, opts };
       comments.push(stored);
       return { id: String(stored.id) };
     });
@@ -489,6 +489,26 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     const mailboxBody = String(enqueueToMailbox.mock.calls[0]![1]['content']);
     expect(mailboxBody).toContain('NEEDS CHANGES');
     expect(mailboxBody).not.toContain('REJECTED');
+  });
+
+  it('打回评论里的审批者用【显示名】而非原始 id（人类审批者不得裸出 user_…）', async () => {
+    const { requirements, hitlService, comments } = createRequirementHarness();
+    requirements.setUserNameLookup((id) => (id === 'user_1' ? 'Jason Carter' : null));
+    const req = propose(requirements);
+    const approval = hitlService.listApprovals('pending')
+      .find(a => (a.details as Record<string, unknown> | undefined)?.['requirementId'] === req.id)!;
+
+    hitlService.respondToApproval(approval.id, false, 'user_1', '目标写清楚点', 'request_changes');
+    await flush();
+
+    expect(comments).toHaveLength(1);
+    expect(comments[0]!['authorId']).toBe('user_1');
+    // 显示名经过 user 查找解析（此前 resolveAgentName 只认 agent ⇒ 裸出 raw id）
+    expect(comments[0]!['authorName']).toBe('Jason Carter');
+    expect(String(comments[0]!['content'])).toContain('Changes requested by Jason Carter');
+    expect(String(comments[0]!['content'])).not.toContain('user_1');
+    // 人类评论打 authorType='human'（此前硬编码落 'agent'）
+    expect(comments[0]!['opts']).toEqual({ authorType: 'human' });
   });
 
   it('打回后需求未终结：仍可被直接批准（证明不是 rejected）', async () => {

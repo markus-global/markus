@@ -214,6 +214,7 @@
       "taskFailed": "Tarea fallida: {{title}}",
       "requirementApproved": "Requisito aprobado: {{title}}",
       "requirementRejected": "Requisito rechazado: {{title}}",
+      "requirementChangesRequested": "Cambios solicitados en el requisito: {{title}}",
       "mentionedYou": "{{authorName}} te mencionó",
       "groupMessage": "{{senderName}} en {{groupName}}"
     },
@@ -222,6 +223,7 @@
       "taskStatusChanged": "La tarea \"{{title}}\" cambió de estado a {{status}}",
       "requirementApprovedBody": "El requisito \"{{title}}\" fue aprobado y ahora está en curso.",
       "requirementRejectedBody": "El requisito \"{{title}}\" fue rechazado.{{reason}}",
+      "requirementChangesRequestedBody": "El requisito \"{{title}}\" necesita cambios antes de la aprobación; sigue pendiente.{{reason}}",
       "mentionPreview": "{{itemTitle}}: {{preview}}"
     },
     "approvalDesc": {

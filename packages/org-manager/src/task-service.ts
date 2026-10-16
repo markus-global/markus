@@ -504,7 +504,11 @@ export class TaskService implements ApprovalTargetPort {
         { taskId: task.id },
       );
     }
-    const authorName = input.actorName ?? input.actorId ?? 'reviewer';
+    // Resolve the actor's DISPLAY name — never leak a raw id into the comment.
+    // A human reviewer's id (user_…) is not a name; resolve it through the wired
+    // user lookup before falling back.
+    const authorName =
+      input.actorName ?? this.resolveActorName(input.actorId, 'human') ?? input.actorId ?? 'reviewer';
     const reason = input.comment?.trim();
     const content = [
       `**Changes requested by ${authorName}**`,
