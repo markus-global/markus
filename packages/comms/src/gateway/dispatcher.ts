@@ -16,6 +16,7 @@ import {
   isApprovalDirection,
   approvalDirectionLabel,
   approvalDirectionStyle,
+  approvalCommentNote,
 } from '@markus/shared';
 import {
   severityOfNotification,
@@ -497,6 +498,9 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
               id,
               label: direction ? approvalDirectionLabel(direction, locale) : declared,
               ...(style ? { style } : {}),
+              // A choice that needs a written reason says so; the renderer withholds
+              // it on a channel that cannot collect free text.
+              ...(opt['requiresComment'] === true ? { requiresComment: true } : {}),
               ref: refFor(id),
             };
           })
@@ -504,6 +508,11 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
             { id: 'approve', label: approvalDirectionLabel('approve', locale), style: 'primary' as const, ref: refFor('approve') },
             { id: 'reject', label: approvalDirectionLabel('reject', locale), style: 'danger' as const, ref: refFor('reject') },
           ];
+    // A reason-required choice is somewhere in here — carry the sentence that
+    // replaces it on a channel which cannot collect the reason.
+    if (msg.actions.some((a) => a.requiresComment)) {
+      msg.commentRequiredNote = approvalCommentNote(locale);
+    }
   }
   return msg;
 }

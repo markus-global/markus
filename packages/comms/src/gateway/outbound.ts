@@ -35,6 +35,12 @@ export interface OutboundAction {
   id: string;
   label: string;
   style?: 'primary' | 'default' | 'danger';
+  /**
+   * This choice cannot be recorded without a written reason. A channel that cannot
+   * collect free text must not offer it — the renderer withholds it and says where
+   * to act instead.
+   */
+  requiresComment?: boolean;
   /** Signed reference (see {@link signActionRef}) resolved back on the inbound side. */
   ref: string;
 }
@@ -88,6 +94,13 @@ export interface OutboundMessage {
    */
   priority?: OutboundPriority;
   actions?: OutboundAction[];
+  /**
+   * What to say when an action had to be withheld because the destination cannot
+   * collect the free text that action requires. Set by the dispatcher (which owns
+   * the locale), applied by the renderer (which owns the destination's
+   * capabilities) — neither has to know the other's half.
+   */
+  commentRequiredNote?: string;
   attachments?: OutboundAttachment[];
   replyRef?: OutboundReplyRef;
   origin?: OutboundOrigin;

@@ -54,3 +54,20 @@ export function approvalDirectionLabel(direction: ApprovalDirection, locale?: st
 export function approvalDirectionStyle(direction: ApprovalDirection): 'primary' | 'default' | 'danger' {
   return DIRECTION_STYLES[direction];
 }
+
+/**
+ * What a channel says when it has to withhold a choice that needs a written
+ * reason. "Request changes" is not a state, it is a *comment plus resubmit* loop:
+ * a 打回 with no reason sends the work back with nothing to act on, which is worse
+ * than no button at all. A channel that cannot collect free text therefore
+ * declines the job and points at the one that can.
+ */
+const COMMENT_REQUIRED_NOTES: Record<string, string> = {
+  en: 'To request changes, open Markus — the reason has to be written there.',
+  zh: '「要求修改」请在 Markus 中操作 —— 修改意见需要在那里填写。',
+  es: 'Para solicitar cambios, ábrelo en Markus: el motivo debe escribirse allí.',
+};
+
+export function approvalCommentNote(locale?: string): string {
+  return COMMENT_REQUIRED_NOTES[normalizeLanguage(locale)] ?? COMMENT_REQUIRED_NOTES['en']!;
+}

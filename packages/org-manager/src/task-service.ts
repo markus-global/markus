@@ -3330,7 +3330,10 @@ export class TaskService implements ApprovalTargetPort {
         // it by id alone would render the destructive word "Reject" over a button
         // that actually asks for a revision.
         { id: 'approve', label: 'Approve', direction: 'approve' },
-        { id: 'reject', label: 'Request Changes', direction: 'request_changes' },
+        // 打回 is a *comment plus resubmit* loop, not a state: without the reason
+        // the assignee gets the work back with nothing to act on. Any surface that
+        // cannot capture free text must therefore not offer it.
+        { id: 'reject', label: 'Request Changes', direction: 'request_changes', requiresComment: true },
       ],
       allowFreeform: true,
     }).then(result => {

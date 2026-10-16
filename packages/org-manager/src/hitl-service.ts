@@ -147,7 +147,7 @@ export interface ApprovalRequest {
   respondedBy?: string;
   responseComment?: string;
   expiresAt?: string;
-  options?: Array<{ id: string; label: string; description?: string }>;
+  options?: ApprovalOption[];
   allowFreeform?: boolean;
   selectedOption?: string;
   /**
@@ -232,6 +232,12 @@ export interface ApprovalOption {
   label: string;
   description?: string;
   direction?: ApprovalDirection;
+  /**
+   * This choice cannot be recorded without a written reason. A surface that
+   * cannot collect free text must not offer it (see
+   * `OutboundAction.requiresComment`).
+   */
+  requiresComment?: boolean;
 }
 
 export interface ApprovalRepo {

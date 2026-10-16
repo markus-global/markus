@@ -17,6 +17,11 @@ export interface RenderCapabilities {
   buttons?: boolean;
   /** Markdown (or the platform's formatting dialect). */
   markdown?: boolean;
+  /**
+   * Can collect free text back from the user (card input, form, modal). Absent ⇒
+   * no, and an action that requires a written reason is then withheld.
+   */
+  approvalComment?: boolean;
 }
 
 /** The representation the renderer chose. */
@@ -59,16 +64,19 @@ export function originLine(origin: OutboundOrigin | undefined): string | undefin
  * therefore renders as plain text.
  */
 export function renderCapabilitiesOf(
-  caps: { cards?: boolean } | undefined,
+  caps: { cards?: boolean; approvalComment?: boolean } | undefined,
 ): RenderCapabilities {
   if (!caps) return {};
-  return caps.cards ? { cards: true, markdown: true } : { cards: false, markdown: true };
+  return {
+    ...(caps.cards ? { cards: true, markdown: true } : { cards: false, markdown: true }),
+    ...(caps.approvalComment ? { approvalComment: true } : {}),
+  };
 }
 
-function plainText(msg: OutboundMessage, actions: OutboundAction[], origin?: string): string {
+function plainText(msg: OutboundMessage, body: string, actions: OutboundAction[], origin?: string): string {
   const parts: string[] = [];
   if (origin) parts.push(origin, '');
-  parts.push(msg.title, '', msg.body);
+  parts.push(msg.title, '', body);
   if (actions.length > 0) {
     parts.push('');
     for (const a of actions) {
@@ -85,7 +93,17 @@ function plainText(msg: OutboundMessage, actions: OutboundAction[], origin?: str
  * `card → markdown → text`; the plain-text projection is identical in all three.
  */
 export function renderOutbound(msg: OutboundMessage, caps: RenderCapabilities = {}): RenderedOutbound {
-  const actions = msg.actions ?? [];
+  const declared = msg.actions ?? [];
+  // An action that *requires* free text the channel cannot collect is not offered
+  // at all. A tapped request-changes whose reason was never captured sends the work
+  // back with nothing to act on — worse than no button — so the channel declines
+  // the job and the message says where to do it instead. The wording comes from the
+  // dispatcher (which knows the locale); the decision is made here, where the
+  // destination's capabilities are known.
+  const withheld = caps.approvalComment ? [] : declared.filter((a) => a.requiresComment);
+  const actions = withheld.length > 0 ? declared.filter((a) => !a.requiresComment) : declared;
+  const note = withheld.length > 0 ? msg.commentRequiredNote?.trim() : undefined;
+  const body = note ? `${msg.body}\n\n${note}` : msg.body;
   const interactive = Boolean(caps.cards || caps.buttons);
   const format: OutboundFormat = interactive ? 'card' : caps.markdown ? 'markdown' : 'text';
 
@@ -95,8 +113,8 @@ export function renderOutbound(msg: OutboundMessage, caps: RenderCapabilities = 
     title: msg.title,
     // Body stays clean: a card renders the origin from `origin` (its own slot),
     // and the text projection below carries the line. One fact, placed once.
-    body: msg.body,
-    text: plainText(msg, actions, originLine(msg.origin)),
+    body,
+    text: plainText(msg, body, actions, originLine(msg.origin)),
     actions,
     ...(msg.origin ? { origin: msg.origin } : {}),
   };

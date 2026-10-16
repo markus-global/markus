@@ -2572,6 +2572,21 @@ async function startServerCore(
       });
       return;
     }
+    // This surface cannot carry free text — `respondToApproval` is called below with
+    // no comment. So a choice that *requires* a written reason must not be accepted
+    // here: recording a request-changes whose reason was never captured sends the
+    // task back with nothing to act on. Cards no longer offer such a choice (the
+    // renderer withholds it and points at Markus); this refuses the taps a card sent
+    // *before* that change can still deliver — fail closed, never a silent mis-apply.
+    const tapped = hitlService.getApproval(approvalId)?.options?.find((o) => o.id === command);
+    if (tapped?.requiresComment) {
+      log.warn('Refused a platform approval action that needs an unwritable comment', {
+        approvalId,
+        command,
+        platform: action.platform,
+      });
+      return;
+    }
     // Mirror UserInputModal: a named option is affirmative unless it is a reject;
     // the tapped option id is recorded as `selectedOption` (was silently dropped).
     const approved = command !== 'reject' && command !== 'request_changes';
