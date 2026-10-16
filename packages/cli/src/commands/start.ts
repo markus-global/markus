@@ -1305,7 +1305,22 @@ async function startServerCore(
         priority: item.type === 'review_stale' ? 'high' : 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
         actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: { taskId: item.taskId, agentId: item.agentId, staleType: item.type },
+        metadata: {
+          taskId: item.taskId,
+          agentId: item.agentId,
+          staleType: item.type,
+          // The title and body as structure: the detector knows *what* to say,
+          // this is the only place that knows the sentence's key.
+          i18n: {
+            titleKey:
+              item.type === 'review_stale'
+                ? 'notifications.titles.staleReview'
+                : item.type === 'stuck_task'
+                  ? 'notifications.titles.stuckTask'
+                  : 'notifications.titles.unstartedTask',
+            ...(item.i18n ?? {}),
+          },
+        },
       });
     }
   });
@@ -1777,7 +1792,13 @@ async function startServerCore(
           priority: 'high',
           actionType: 'open_chat',
           actionTarget: JSON.stringify({ agentId, sessionId: mainSession.id }),
-          metadata: { agentId, sessionId: mainSession.id },
+          metadata: {
+            agentId,
+            sessionId: mainSession.id,
+            // The `reason` is the agent's own words — content, passed through
+            // verbatim. Only the platform's own line is ours to translate.
+            i18n: { titleKey: 'notifications.titles.agentNeedsHelp' },
+          },
         });
         auditService.record({
           orgId: 'default', agentId, type: 'error', action: 'escalation', detail: reason, success: false,

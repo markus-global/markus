@@ -1,4 +1,10 @@
-import { createLogger, type UserInputQuestion, type UserInputAnswer, type ApprovalDirection } from '@markus/shared';
+import {
+  createLogger,
+  type UserInputQuestion,
+  type UserInputAnswer,
+  type ApprovalDirection,
+  type NotificationI18n,
+} from '@markus/shared';
 import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
@@ -505,6 +511,13 @@ export class HITLService {
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
+    /**
+     * The approval sentence as *structure* (which sentence, with which params) so
+     * every renderer writes it in the reader's own language. Without it a gate can
+     * only ship an English literal, and that literal is what a chat app shows on
+     * the card.
+     */
+    i18n?: NotificationI18n;
   }): ApprovalRequest {
     const id = genId('apr');
     const now = new Date().toISOString();
@@ -540,7 +553,7 @@ export class HITLService {
       // `agentId` travels with the notification so the outbound gateway can route
       // it to the producing agent's own channel before falling back to the global
       // default (G4, design §7.3).
-      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options },
+      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options, i18n: opts.i18n },
     });
 
     return approval;
@@ -559,6 +572,8 @@ export class HITLService {
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
+    /** @see requestApproval — the sentence as structure, so it can be translated. */
+    i18n?: NotificationI18n;
   }): Promise<ApprovalDecision> {
     const approval = this.requestApproval(opts);
     return new Promise<ApprovalDecision>((resolve) => {

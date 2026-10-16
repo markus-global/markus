@@ -2813,6 +2813,12 @@ export class TaskService implements ApprovalTargetPort {
       type: 'custom',
       title: task.title,
       description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
+      // The sentence as structure, so the chat app renders it in the reader's
+      // language instead of showing the English literal above.
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskCreate',
+        bodyParams: { agentName: creatorName, title: task.title, priority: task.priority },
+      },
       details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
     }).then(result => {
       const current = this.tasks.get(task.id);
@@ -3321,6 +3327,18 @@ export class TaskService implements ApprovalTargetPort {
       type: 'custom',
       title: task.title,
       description,
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskReview',
+        // The first line is the platform's sentence; everything from the first line
+        // break on is the task's own content (its description, its deliverables) —
+        // content, never translated, just carried through the template.
+        bodyParams: {
+          title: task.title,
+          tail: description.slice(
+            description.indexOf('\n') === -1 ? description.length : description.indexOf('\n'),
+          ),
+        },
+      },
       details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
       options: [

@@ -247,6 +247,12 @@ export class RequirementService implements ApprovalTargetPort {
       type: 'custom',
       title: req.title,
       description,
+      i18n: {
+        bodyKey: subType === 'requirement'
+          ? 'notifications.approvalDesc.requirementProposed'
+          : 'notifications.approvalDesc.requirementResubmitted',
+        bodyParams: { agentName: creatorName, title: req.title, priority: req.priority },
+      },
       details: { requirementId: req.id, priority: req.priority, subType },
       targetUserId: 'all',
     }).then(result => {

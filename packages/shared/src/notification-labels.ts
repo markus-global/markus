@@ -139,7 +139,130 @@ const VOCABULARY: Record<string, Record<string, string>> = {
     zh: '{{itemTitle}}：{{preview}}',
     es: '{{itemTitle}}: {{preview}}',
   },
+
+  // ── Approval requests ──────────────────────────────────────────────────────
+  // The sentence a chat app shows on the approval card. These were authored as
+  // English literals at the gates that open an approval, so the in-app card read
+  // Chinese (the UI rebuilds the sentence from `details.subType`) while the very
+  // same approval read English in Feishu.
+  //
+  // `{{tail}}` carries **content that must never be translated** — the review
+  // gate appends the task description and its deliverables after the sentence.
+  'notifications.approvalDesc.requirementProposed': {
+    en: 'Agent "{{agentName}}" proposed requirement "{{title}}" (priority: {{priority}}).',
+    zh: '智能体「{{agentName}}」提出了需求「{{title}}」（优先级：{{priority}}）。',
+    es: 'El agente "{{agentName}}" propuso el requisito "{{title}}" (prioridad: {{priority}}).',
+  },
+  'notifications.approvalDesc.requirementResubmitted': {
+    en: 'Agent "{{agentName}}" resubmitted requirement "{{title}}" (priority: {{priority}}).',
+    zh: '智能体「{{agentName}}」重新提交了需求「{{title}}」（优先级：{{priority}}）。',
+    es: 'El agente "{{agentName}}" reenvió el requisito "{{title}}" (prioridad: {{priority}}).',
+  },
+  'notifications.approvalDesc.taskCreate': {
+    en: 'Agent "{{agentName}}" wants to create task "{{title}}" (priority: {{priority}}).',
+    zh: '智能体「{{agentName}}」想创建任务「{{title}}」（优先级：{{priority}}）。',
+    es: 'El agente "{{agentName}}" quiere crear la tarea "{{title}}" (prioridad: {{priority}}).',
+  },
+  'notifications.approvalDesc.taskReview': {
+    en: 'Task "{{title}}" has been submitted for your review.{{tail}}',
+    zh: '任务「{{title}}」已提交审核。{{tail}}',
+    es: 'La tarea "{{title}}" fue enviada para tu revisión.{{tail}}',
+  },
+
+  // ── Stale-task detector ────────────────────────────────────────────────────
+  'notifications.titles.staleReview': {
+    en: 'Stale review',
+    zh: '审核停滞',
+    es: 'Revisión estancada',
+  },
+  'notifications.titles.stuckTask': {
+    en: 'Stuck task',
+    zh: '任务卡住',
+    es: 'Tarea atascada',
+  },
+  'notifications.titles.unstartedTask': {
+    en: 'Unstarted task',
+    zh: '任务未启动',
+    es: 'Tarea sin iniciar',
+  },
+  'notifications.bodies.staleTaskInProgress': {
+    en: 'Task "{{title}}" has been in_progress for {{hours}}h',
+    zh: '任务「{{title}}」已进行 {{hours}} 小时',
+    es: 'La tarea "{{title}}" lleva {{hours}} h en curso',
+  },
+  'notifications.bodies.staleTaskInReview': {
+    en: 'Task "{{title}}" has been in review for {{hours}}h with no action',
+    zh: '任务「{{title}}」已待审核 {{hours}} 小时且无动作',
+    es: 'La tarea "{{title}}" lleva {{hours}} h en revisión sin acción',
+  },
+  'notifications.bodies.staleTaskUnstarted': {
+    en: 'Task "{{title}}" awaiting approval for {{hours}}h',
+    zh: '任务「{{title}}」已等待审批 {{hours}} 小时',
+    es: 'La tarea "{{title}}" lleva {{hours}} h esperando aprobación',
+  },
+
+  // ── Escalation and the activity feed ───────────────────────────────────────
+  'notifications.titles.agentNeedsHelp': {
+    en: 'Agent needs help',
+    zh: '智能体需要帮助',
+    es: 'El agente necesita ayuda',
+  },
+  'notifications.titles.taskComment': {
+    en: 'Comment on task {{title}}',
+    zh: '任务「{{title}}」有新评论',
+    es: 'Comentario en la tarea {{title}}',
+  },
+
+  // ── Enum parameters ────────────────────────────────────────────────────────
+  // A value *inside* a sentence can be an enum the reader also needs translated
+  // (`（优先级：normal）`). Kept in the same table so the renderer that owns the
+  // language can resolve it; see `priorityLabel`.
+  'common.priority.low': { en: 'Low', zh: '低', es: 'Baja' },
+  'common.priority.normal': { en: 'Normal', zh: '普通', es: 'Normal' },
+  'common.priority.high': { en: 'High', zh: '高', es: 'Alta' },
+  'common.priority.urgent': { en: 'Urgent', zh: '紧急', es: 'Urgente' },
+
+  // Status words, same reason: `状态已变为 completed` is still English inside a
+  // Chinese sentence. Kept verbatim from the UI's `common.status` table.
+  'common.status.pending': { en: 'Pending', zh: '待处理', es: 'Pendiente' },
+  'common.status.approved': { en: 'Approved', zh: '已批准', es: 'Aprobado' },
+  'common.status.inProgress': { en: 'In Progress', zh: '进行中', es: 'En curso' },
+  'common.status.completed': { en: 'Completed', zh: '已完成', es: 'Completado' },
+  'common.status.failed': { en: 'Failed', zh: '失败', es: 'Fallido' },
+  'common.status.blocked': { en: 'Blocked', zh: '已阻塞', es: 'Bloqueado' },
+  'common.status.review': { en: 'Review', zh: '待审核', es: 'Revisión' },
+  'common.status.rejected': { en: 'Rejected', zh: '已拒绝', es: 'Rechazado' },
+  'common.status.cancelled': { en: 'Cancelled', zh: '已取消', es: 'Cancelado' },
+  'common.status.active': { en: 'Active', zh: '活跃', es: 'Activo' },
+  'common.status.idle': { en: 'Idle', zh: '空闲', es: 'Inactivo' },
+  'common.status.working': { en: 'Working', zh: '工作中', es: 'Trabajo' },
+  'common.status.offline': { en: 'Offline', zh: '离线', es: 'Sin conexión' },
+  'common.status.paused': { en: 'Paused', zh: '已暂停', es: 'En pausa' },
+  'common.status.error': { en: 'Error', zh: '错误', es: 'Error' },
+  'common.status.online': { en: 'Online', zh: '在线', es: 'En línea' },
+  'common.status.verified': { en: 'Verified', zh: '已验证', es: 'Verificado' },
+  'common.status.outdated': { en: 'Outdated', zh: '已过期', es: 'Desactualizado' },
+  'common.status.expired': { en: 'Expired', zh: '已过期', es: 'Gastos' },
 };
+
+/** The task priority words, for a param embedded in a sentence. */
+export function priorityLabel(value: string | undefined, locale?: string): string | undefined {
+  return value ? notificationLabel(`common.priority.${value}`, locale) : undefined;
+}
+
+/**
+ * The status word, for a param embedded in a sentence.
+ *
+ * Tries the value as written, then its camelCase form: task statuses are
+ * `in_progress` while the string table is keyed `inProgress`, and a plain lookup
+ * silently misses — leaving `状态已变为 in_progress` in a Chinese sentence.
+ */
+export function statusLabel(value: string | undefined, locale?: string): string | undefined {
+  if (!value) return undefined;
+  const camel = value.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+  return notificationLabel(`common.status.${value}`, locale)
+    ?? (camel !== value ? notificationLabel(`common.status.${camel}`, locale) : undefined);
+}
 
 /** Every key this module can write. Exposed so a test can prove coverage. */
 export function notificationVocabularyKeys(): string[] {
@@ -181,16 +304,17 @@ export function notificationLabel(
  * to drop into the `team` namespace (`{ titles, bodies }`). The UI therefore reads
  * the *same* module the outbound path does — one writer, no locale file to drift.
  */
-export function notificationResources(locale?: string): { titles: Record<string, string>; bodies: Record<string, string> } {
+export function notificationResources(locale?: string): Record<string, Record<string, string>> {
   const lang = normalizeLanguage(locale);
-  const titles: Record<string, string> = {};
-  const bodies: Record<string, string> = {};
+  const out: Record<string, Record<string, string>> = {};
   for (const [key, entry] of Object.entries(VOCABULARY)) {
+    if (!key.startsWith('notifications.')) continue;
+    const rest = key.slice('notifications.'.length);
+    const dot = rest.indexOf('.');
+    if (dot === -1) continue;
     const text = entry[lang] ?? entry['en'];
     if (text === undefined) continue;
-    const short = key.replace(/^notifications\.(titles|bodies)\./, '');
-    if (key.startsWith('notifications.titles.')) titles[short] = text;
-    else bodies[short] = text;
+    ((out[rest.slice(0, dot)] ??= {})[rest.slice(dot + 1)] = text);
   }
-  return { titles, bodies };
+  return out;
 }

@@ -15,26 +15,29 @@
  * by key and by language, here. Drift fails CI naming the key, the language and
  * both strings — it cannot reach main unnoticed.
  *
+ * Three tables are covered:
+ *   · `notifications.*`        → `<locale>/team.json`
+ *   · `common.priority|status` → `<locale>/common.json` (enum words that appear
+ *     *inside* a sentence: `（优先级：normal）`, `状态已变为 in_progress`)
+ *
  * Mirrors `locale-manifest-coverage.test.ts`, which guards the other set of strings
  * that arrive from the backend.
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { notificationVocabularyKeys, notificationResources } from '@markus/shared';
+import { notificationVocabularyKeys, notificationResources, notificationLabel } from '@markus/shared';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const localesDir = join(here, '..', '..', 'web-ui', 'src', 'locales');
 
 const LOCALES = ['en', 'zh-CN', 'es'] as const;
 
-interface TeamFile {
-  notifications?: { titles?: Record<string, string>; bodies?: Record<string, string> };
-}
+type Table = Record<string, Record<string, string>>;
 
-const teamFor = (locale: string): TeamFile =>
-  JSON.parse(readFileSync(join(localesDir, locale, 'team.json'), 'utf8')) as TeamFile;
+const readJson = (locale: string, file: string): Table =>
+  JSON.parse(readFileSync(join(localesDir, locale, file), 'utf8')) as Table;
 
 /** `notifications.titles.taskCompleted` → `[titles, taskCompleted]`. */
 function split(key: string): [string, string] {
@@ -42,22 +45,26 @@ function split(key: string): [string, string] {
   return [parts[1]!, parts[2]!];
 }
 
-describe('notification vocabulary — the backend and the UI cannot drift', () => {
-  const keys = notificationVocabularyKeys();
+const allKeys = notificationVocabularyKeys();
+const notificationKeys = allKeys.filter((k) => k.startsWith('notifications.'));
+const enumKeys = allKeys.filter((k) => k.startsWith('common.'));
 
+describe('notification vocabulary — the backend and the UI cannot drift', () => {
   it('finds the vocabulary (guards against a vacuous pass)', () => {
-    expect(keys.length).toBeGreaterThan(10);
+    expect(notificationKeys.length).toBeGreaterThan(10);
+    expect(enumKeys.length).toBeGreaterThan(0);
   });
 
   for (const locale of LOCALES) {
     it(`every sentence matches the shipped locale file in ${locale}`, () => {
-      const team = teamFor(locale);
+      const team = readJson(locale, 'team.json');
+      const resources = notificationResources(locale);
       const mismatched: string[] = [];
 
-      for (const key of keys) {
+      for (const key of notificationKeys) {
         const [section, short] = split(key);
-        const shared = (notificationResources(locale) as Record<string, Record<string, string>>)[section]?.[short];
-        const bundled = team.notifications?.[section as 'titles' | 'bodies']?.[short];
+        const shared = resources[section]?.[short];
+        const bundled = team['notifications']?.[section]?.[short];
         if (bundled === undefined) {
           mismatched.push(`${key}  → missing from ${locale}/team.json (backend: "${shared ?? ''}")`);
         } else if (bundled !== shared) {
@@ -68,18 +75,59 @@ describe('notification vocabulary — the backend and the UI cannot drift', () =
       expect(mismatched).toEqual([]);
     });
 
-    it(`the locale file adds no notification sentence the backend cannot render in ${locale}`, () => {
-      // An extra key means a producer emits something the dispatcher cannot
-      // translate — the UI would show Chinese and the chat app English.
-      const team = teamFor(locale);
-      const shared = notificationResources(locale) as Record<string, Record<string, string>>;
-      const orphaned: string[] = [];
-      for (const section of ['titles', 'bodies'] as const) {
-        for (const short of Object.keys(team.notifications?.[section] ?? {})) {
-          if (shared[section]?.[short] === undefined) orphaned.push(`notifications.${section}.${short}`);
+    it(`every enum word matches the shipped locale file in ${locale}`, () => {
+      const common = readJson(locale, 'common.json');
+      const mismatched: string[] = [];
+
+      for (const key of enumKeys) {
+        const [, section, short] = key.split('.');
+        const shared = notificationLabel(key, locale);
+        const bundled = common[section!]?.[short!];
+        if (bundled === undefined) {
+          mismatched.push(`${key}  → missing from ${locale}/common.json (backend: "${shared ?? ''}")`);
+        } else if (bundled !== shared) {
+          mismatched.push(`${key}  → backend: "${shared ?? ''}"  ≠  UI: "${bundled}"`);
         }
       }
-      expect(orphaned).toEqual([]);
+
+      expect(mismatched).toEqual([]);
     });
+
   }
+});
+
+/**
+ * The other direction: a **producer** that emits a key the vocabulary does not hold.
+ * The UI would render its own Chinese string and the chat app the raw English
+ * fallback — silently, because an unknown key is passed through by design (never
+ * invent a sentence). Nothing at runtime can tell "not translated yet" from
+ * "deliberately raw", so the only way to see it is to scan the producers: the key
+ * is a string literal in their source.
+ */
+describe('every notification key a producer emits exists in the vocabulary', () => {
+  it('has no untranslatable producer key', () => {
+    const roots = [
+      join(here, '..', '..', 'org-manager', 'src'),
+      join(here, '..', '..', 'cli', 'src'),
+    ];
+    const referenced = new Set<string>();
+    const walk = (dir: string): void => {
+      for (const entry of readdirSync(dir)) {
+        const full = join(dir, entry);
+        if (statSync(full).isDirectory()) walk(full);
+        else if (full.endsWith('.ts')) {
+          const src = readFileSync(full, 'utf8');
+          for (const m of src.matchAll(/'notifications\.(?:titles|bodies|approvalDesc)\.[A-Za-z0-9_]+'/g)) {
+            referenced.add(m[0].slice(1, -1));
+          }
+        }
+      }
+    };
+    for (const root of roots) walk(root);
+
+    const known = new Set(notificationVocabularyKeys());
+    expect([...referenced].filter((k) => !known.has(k)).sort()).toEqual([]);
+    // Guard against the vacuous pass: a broken scan finds nothing and "passes".
+    expect(referenced.size).toBeGreaterThan(10);
+  });
 });

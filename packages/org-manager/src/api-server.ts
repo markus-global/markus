@@ -7444,7 +7444,17 @@ EXPLANATION_END`;
               body: typeof c.body === 'string' ? c.body.slice(0, 300) : String(c.body ?? ''),
               timestamp: c.createdAt,
               source: 'task_comment',
-              metadata: { taskId: c.taskId, authorId: c.authorId, authorName: c.authorName },
+              metadata: {
+                taskId: c.taskId,
+                authorId: c.authorId,
+                authorName: c.authorName,
+                // Title as structure. `c.body` is the author's words — content,
+                // carried verbatim.
+                i18n: {
+                  titleKey: 'notifications.titles.taskComment',
+                  titleParams: { title: this.taskService.getTask(c.taskId)?.title ?? c.taskId },
+                },
+              },
             });
           }
         } catch { /* listRecent may not exist yet */ }

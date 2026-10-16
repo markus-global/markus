@@ -51,7 +51,9 @@ describe('outbound notification localization', () => {
 
   it('localizes the body from the same metadata', () => {
     const zh = notificationToOutbound(taskCompleted(), undefined, 'zh-CN');
-    expect(zh.body).toBe('任务「Ship the gateway」状态已变为 completed');
+    // The status is a param *inside* the sentence, and it is an enum the reader
+    // needs too: `状态已变为 completed` is still English in a Chinese sentence.
+    expect(zh.body).toBe('任务「Ship the gateway」状态已变为 已完成');
   });
 
   it('falls back to English when no locale is known', () => {
@@ -106,5 +108,100 @@ describe('outbound notification localization', () => {
       'zh-CN',
     );
     expect(out.title).toContain('{{title}}');
+  });
+});
+
+/**
+ * The approval card is the one notification a human must *act* on, and its sentence
+ * was the last English literal on the path: the gates that open an approval wrote
+ * `Agent "X" wants to create task "Y" (priority: normal).` and that exact string is
+ * what a Feishu card showed, while the in-app card read Chinese because the UI
+ * rebuilt the sentence from `details.subType`.
+ */
+describe('approval requests speak the recipient’s language', () => {
+  const approval = (subType: string, bodyParams: Record<string, unknown>, bodyKey: string) => ({
+    id: 'apr_1',
+    type: 'approval_request',
+    title: 'Ship the gateway',
+    body: 'Agent "CTO" wants to create task "Ship the gateway" (priority: normal).',
+    priority: 'high',
+    metadata: { approvalId: 'apr_1', i18n: { bodyKey, bodyParams } },
+  });
+
+  it('renders the creation sentence in Chinese', () => {
+    const out = notificationToOutbound(
+      approval(
+        'task',
+        { agentName: 'CTO', title: 'Ship the gateway', priority: 'normal' },
+        'notifications.approvalDesc.taskCreate',
+      ),
+      undefined,
+      'zh-CN',
+    );
+    expect(out.body).toBe('智能体「CTO」想创建任务「Ship the gateway」（优先级：普通）。');
+  });
+
+  it('translates the priority word inside the sentence, not just the sentence', () => {
+    const out = notificationToOutbound(
+      approval(
+        'task',
+        { agentName: 'CTO', title: 'Ship the gateway', priority: 'urgent' },
+        'notifications.approvalDesc.taskCreate',
+      ),
+      undefined,
+      'zh-CN',
+    );
+    expect(out.body).toContain('（优先级：紧急）');
+    expect(out.body).not.toContain('urgent');
+  });
+
+  it('carries the review tail verbatim — content is never translated', () => {
+    const tail = '\n\nThe task description, written by the agent.\nDeliverables:\n- dlv_1';
+    const out = notificationToOutbound(
+      approval(
+        'task_review',
+        { title: 'Ship the gateway', tail },
+        'notifications.approvalDesc.taskReview',
+      ),
+      undefined,
+      'zh-CN',
+    );
+    expect(out.body).toBe(`任务「Ship the gateway」已提交审核。${tail}`);
+  });
+
+  it('translates a status value written in snake_case', () => {
+    // Task statuses are `in_progress`; the string table is keyed `inProgress`. A
+    // plain lookup misses and leaves "状态已变为 in_progress" half-translated.
+    const out = notificationToOutbound(
+      {
+        id: 'n5',
+        type: 'task_status_update',
+        title: 'Task "X" status changed to in_progress',
+        body: 'Task "X" status changed to in_progress',
+        metadata: {
+          i18n: {
+            bodyKey: 'notifications.bodies.taskStatusChanged',
+            bodyParams: { title: 'X', status: 'in_progress' },
+          },
+        },
+      },
+      undefined,
+      'zh-CN',
+    );
+    expect(out.body).toBe('任务「X」状态已变为 进行中');
+  });
+
+  it('leaves user content alone while translating the sentence', () => {
+    // The task title is content: a Chinese UI must not translate an English title.
+    const out = notificationToOutbound(
+      approval(
+        'task_review',
+        { title: 'Refactor the dispatcher', tail: '' },
+        'notifications.approvalDesc.taskReview',
+      ),
+      undefined,
+      'zh-CN',
+    );
+    expect(out.body).toContain('Refactor the dispatcher');
   });
 });

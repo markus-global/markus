@@ -18,6 +18,8 @@ import {
   approvalDirectionStyle,
   approvalCommentNote,
   notificationLabel,
+  priorityLabel,
+  statusLabel,
   readNotificationI18n,
 } from '@markus/shared';
 import {
@@ -460,6 +462,30 @@ export class OutboundDispatcher {
  * **signed** token — the internal approval id never leaves in the clear. Without
  * a secret the raw id is used (legacy behaviour, flagged as a configuration gap).
  */
+/**
+ * Resolve the params that are themselves enum keys the reader needs translated
+ * (`状态已变为 in_progress`, `（优先级：normal）`). The producer cannot do this — it
+ * does not know the reader — and the renderer owns the language, so it happens
+ * here. Content params (a task title, a preview, the review tail) pass through
+ * untouched.
+ */
+function resolveEnumParams(
+  params: Record<string, unknown> | undefined,
+  locale?: string,
+): Record<string, unknown> | undefined {
+  if (!params) return undefined;
+  const out: Record<string, unknown> = { ...params };
+  if (typeof out['priority'] === 'string') {
+    out['priority'] = priorityLabel(out['priority'] as string, locale) ?? out['priority'];
+  }
+  for (const key of ['status', 'statusKey'] as const) {
+    if (typeof out[key] === 'string') {
+      out[key] = statusLabel(out[key] as string, locale) ?? out[key];
+    }
+  }
+  return out;
+}
+
 export function notificationToOutbound(n: NotificationLike, actionSecret?: string, locale?: string): OutboundMessage {
   const metadata = (n.metadata ?? {}) as Record<string, unknown>;
   const origin: OutboundOrigin = {};
@@ -472,8 +498,8 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   // "Task completed: …" in Feishu and "任务已完成：…" in the product, from one fact.
   // Unknown/legacy keys fall through to the raw text: never invent a sentence.
   const i18n = readNotificationI18n(metadata);
-  const title = notificationLabel(i18n?.titleKey, locale, i18n?.titleParams) ?? n.title;
-  const body = notificationLabel(i18n?.bodyKey, locale, i18n?.bodyParams) ?? n.body;
+  const title = notificationLabel(i18n?.titleKey, locale, resolveEnumParams(i18n?.titleParams, locale)) ?? n.title;
+  const body = notificationLabel(i18n?.bodyKey, locale, resolveEnumParams(i18n?.bodyParams, locale)) ?? n.body;
 
   const msg: OutboundMessage = {
     title,
