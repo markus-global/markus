@@ -200,6 +200,29 @@ export class WSBroadcaster {
     }
   }
 
+  /**
+   * 会话级「在不在输出」的权威广播 —— 客户端存活性判据的**唯一**来源。
+   *
+   * 服务端 ActiveStreamRegistry 每次状态变化广播一次（回合开始 / 结束 / 取消）。
+   * 客户端因此不必再用本地派生量（视图级 sending、400ms 最短展示闩、显示缓冲里的
+   * isStreaming）去**近似**这个事实 —— 那正是「同一事实多个来源」的病灶。
+   *
+   * 刻意**不**并入 COALESCE_EVENT_TYPES：合并键是 `${type}:${agentId}`，会把同一
+   * agent 下**另一个会话**的事件吞掉；而每回合只有 2 条，无需合并。
+   */
+  broadcastSessionStreamState(
+    agentId: string,
+    sessionId: string,
+    streaming: boolean,
+    status: string,
+  ): void {
+    this.broadcast({
+      type: 'session:stream_state',
+      payload: { agentId, sessionId, streaming, status },
+      timestamp: new Date().toISOString(),
+    });
+  }
+
   broadcastUnreadUpdate(conversationKey: string, messageId: string): void {
     this.broadcast({
       type: 'chat:unread_update',

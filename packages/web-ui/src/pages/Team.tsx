@@ -55,6 +55,16 @@ import {
   type ScrollAnchor,
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
+import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
+import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
+import {
+  ensureSessionStreamStateFeed,
+  reconcileOpenSessions,
+  sessionStreamState,
+  useAgentSessionStreaming,
+  useSessionStreamRevision,
+  useSessionStreaming,
+} from '../lib/sessionStreamState.ts';
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
@@ -87,7 +97,7 @@ import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
-import { chatStore, useAgentStreaming, useChatStore } from './useChatStore.ts';
+// (chatStore 的客户端 agent-busy 近似已整体删除 —— 见 lib/sessionStreamState.ts)
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -95,7 +105,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
-  stopRunningTools, hasStreamingTail,
+  stopRunningTools,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -696,17 +706,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Badge must follow local SSE/sending state — agent.status can return to idle
-  // while the UI is still flushing thinking/text deltas. The tail scan is the
-  // authoritative reattach-window signal (sending already ended, bubble still
-  // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
-  const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
-
-  // Subscribe to the streaming-agent set so the L2 agent rows (and anything else
-  // reading chatStore during render) re-render the moment a stream opens/closes.
-  // Without this, `chatStore.isAgentStreaming()` is read once per render and its
-  // dot can disagree with L1 / the header until an unrelated state change lands.
-  useChatStore(() => chatStore.getStreamingVersion());
+  // 「这个 agent / 这个会话此刻在不在输出」的唯一权威 = lib/sessionStreamState.ts
+  // （服务端 WS 推送 + 分钟级批量轮询喂入）。组件顶部 `useSessionStreamRevision()` 负责
+  // 重渲染。
+  //
+  // 这里曾有的 chatStore agent-busy 近似（客户端自维护的“谁在流”集合）已整体删除：
+  // 它是个**副本**，寿命与权威不同步，正是「顶部假亮工作中」「侧栏与顶部不一致」的来源。
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -1052,6 +1057,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     [chatMode, selectedAgent, activeChannel, activeDmUserId],
   );
 
+  // ── 本视图是否有权威在途流（“还在输出吗”的唯一判据）────────────────────────
+  // 只认**确切 session id**：placeholder 是一个 id，不是通配符（否则一条「新会话」
+  // 的流会把该 agent 的每个 tab 都点亮）。消息载荷上持久化的 `isStreaming` 是
+  // 中途快照的副本，不能单独点亮边框（见 lib/streamLiveness.ts）。
+  // 本视图「是否在输出」的**唯一权威**：服务端推送（WS `session:stream_state`）+ 分钟级
+  // 批量轮询兜底喂入的 sessionStreamState。此前这里是**传输附着登记簿**
+  // （`getStreamSession`）——对后台/未附着的会话天然为空，见 lib/sessionStreamState.ts。
+  useSessionStreamRevision(); // 订阅：任何会话存活性变化都重渲染本组件
+  const liveStreamForView = sessionStreamState.isStreaming(activeSessionId);
+
   // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
   // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
   // 的派生副本（sending / streamingVisual / chatStore 所有权集合 / buffer phase）全都
@@ -1073,6 +1088,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   );
   const activeScrollKeyRef = useRef(activeScrollKey);
   activeScrollKeyRef.current = activeScrollKey;
+
+  // ── 输入框草稿：按视图（agent / session tab）各存一份 ──────────────────────
+  // 键与滚动记忆同源（`convKey::sessionId`），见 lib/chatDraftMemory.ts。
+  // `inputKey` = 当前 `input` 里那段文字**属于哪个视图**；它和 `activeScrollKey`
+  // 一旦分叉，就说明用户切了视图，需要「把旧视图的草稿留下、把新视图的取回来」。
+  const [inputKey, setInputKey] = useState(activeScrollKey);
+  // 单写者：store 始终镜像「当前视图 + 当前文本」这一对事实。
+  useEffect(() => {
+    chatDraftMemory.save(inputKey, input);
+  }, [input, inputKey]);
+  // 在 **render 期间**调整 state（React 官方认可的 derive-from-props 模式）：
+  // 放到 effect 里就会先画出一帧「上一个 tab 的文本出现在新 tab 里」。
+  if (inputKey !== activeScrollKey) {
+    if (input !== chatDraftMemory.peek(inputKey)) {
+      // 这一拍里 `input` 是被**外部写者**改的（导航预填 markus_nav_prefillMessage /
+      // markus_nav_chatChips 等，它们和视图切换在同一个 commit 里生效）。那是给
+      // **目标视图**准备的内容 —— 不能当作出走视图的草稿丢掉。
+      chatDraftMemory.save(activeScrollKey, input);
+    } else {
+      // 常规切换：留下旧视图的草稿，取回目标视图的（没有就是空）。
+      chatDraftMemory.save(inputKey, input);
+      setInput(chatDraftMemory.get(activeScrollKey));
+    }
+    setInputKey(activeScrollKey);
+  }
+
   /**
    * Set while a view switch is waiting to be re-positioned. Held until the
    * restore is honoured (or a user gesture / another switch supersedes it), so a
@@ -1107,6 +1148,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
      */
     prevSettled: boolean | null;
   } | null>(null);
+
+  /**
+   * 刚插入一页更早的历史（`loadMore`）时挂起的一次**布局补偿**。
+   *
+   * 为什么它不是「滚动意图」：向上翻页把历史插到当前内容**上方**，视口要做的只是
+   * 「跟着平移**恰好**新增的那段高度」—— 这是有闭式解的布局补偿，不是导航。
+   * 表达成意图（「跳到某一行」）就必须先猜那一行在哪（目标行在视口外、量不到 →
+   * 用虚拟表的**估算**偏移一次性硬跳），于是出现单帧几万像素的突变 + 重试链收敛。
+   *
+   * 现在记的只有「翻页前的滚动内容高度」，插入后在**绘制前**补上差值即可（见
+   * 下方 message 布局 effect 的 prepend 分支）。`key` 保证它只服务所属的那个视图。
+   */
+  const pendingPrependRef = useRef<{ key: string; scrollHeight: number } | null>(null);
 
   /**
    * 「跳到某条消息」的导航意图（搜索命中 / 通知深链）。目标可能在不同 Agent / session
@@ -1365,6 +1419,46 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [previewMode, previewData]);
 
+  // 存活性权威的供给：① WS 推送（主口径，延迟 ~0）② 分钟级批量轮询（兜底对账）。
+  useEffect(() => {
+    ensureSessionStreamStateFeed();
+  }, []);
+
+  useEffect(() => {
+    if (previewMode || !isActive) return;
+    // 兜底对账：WS 断连 / 服务重启 / 事件丢失时靠它收敛。只对**打开的 session tab**
+    // 跑，一次批量请求覆盖全部（抬绝 per-tab 轮询 —— 本仓库被「轮询打满 CPU」坑过）；
+    // 页面隐藏即暂停，恢复可见时先立刻对账一次再继续。
+    const reconcile = () => {
+      const agentId = currentConvKeyRef.current;
+      const ids = openSessionTabs.map((t) => t.id).filter((id) => id !== NEW_CHAT_PLACEHOLDER_ID);
+      if (agentId && ids.length > 0) void reconcileOpenSessions(agentId, ids);
+    };
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(reconcile, 60_000);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else {
+        reconcile();
+        start();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (!document.hidden) start();
+    reconcile();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [previewMode, isActive, openSessionTabs]);
+
   useEffect(() => {
     if (previewMode) return;
     if (!isActive) return;
@@ -1384,7 +1478,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // Authoritative stop: an offline agent can never be streaming. Force-clear
         // any stale frontend streaming refcount so the sidebar cannot stay pinned
         // to "working" after a missed endStream (abort / stop / disconnect path).
-        if (status === 'offline') chatStore.clearAgentStreaming(p.agentId as string);
+        // agent 离线不再需要本地清 busy 标记：回合真正结束时服务端注册表会广播 false。
         setAgents(prev => prev.map(a => {
           if (a.id !== p.agentId) return a;
           const next = { ...a };
@@ -1864,20 +1958,33 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // inside a message we return false so the virtualizer skips its scroll
   // compensation and the clicked row stays anchored (top-fixed) — otherwise, for
   // a row near the viewport top, the default `item.start < scrollOffset` rule
-  // shifts the whole list up and the clicked header scrolls off-screen. Outside a
-  // user toggle we replicate the library default so normal scrolling through
-  // not-yet-measured items above the viewport stays stable.
+  // shifts the whole list up and the clicked header scrolls off-screen.
+  //
+  // ── 为什么「用户接管期间」不能整体关掉补偿（上滑加载历史错位的根因）──────────
+  //
+  // 旧实现是 `if (userTakeoverRef.current || gestureActive()) return false;`，
+  // 本意：别让**流式气泡**（视口最下方那一行）变高时把视口从用户手里拽回去。
+  // 但“向上翻页加载历史”恰恰是「用户接管 + 视口**上方**插入了一批尚未测量的行」：
+  // 这些行一旦被测量，它们下方所有行的 `start` 都会变大 → 内容在用户脚下整体下移。
+  // 虚拟表对这一支的补偿（virtual-core `resizeItem` → `scrollAdjustments += delta`，
+  // 见 @tanstack/virtual-core#resizeItem）正是防这件事的**唯一**正确机制 —— 它在
+  // 同一帧里同时移动 `scrollTop` 与虚拟表自己的 range，不产生「估算位置」的中间态。
+  // 把它整体关掉之后，就只剩“按估算值一次性硬跳几万像素、再靠重试链收敛”那条路，
+  // 于是用户看到位置突变、原来在读的那一行被推到视口外。
+  //
+  // 收敛为：**只对「视口内/下方」的行保留抑制**（那才是当初要防的力：气泡在底部），
+  // 视口**上方**的行永远按库的默认规则补偿。把已滚过去的内容钉住，不会把视口拽向
+  // 任何目标，因此既不与手势冲突，也不改变「跳到某条消息」的落位 —— 后者由滚动意图
+  // 独占驱动（下面这一支显式让位）。
   chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (isVirtualScrollAdjustSuppressed()) return false;
-    // While the user owns the viewport (taken over, or mid-gesture), do NOT let
-    // the virtualizer compensate scroll when a streaming bubble's height changes
-    // mid-flight. That compensation is a second, independent force pulling the
-    // viewport back toward the growing bubble and fighting the user's gesture.
-    // Keyed on the *takeover* flag (sticky) rather than a per-event intent flag
-    // (which any programmatic path could clear) so the suppression cannot lapse
-    // for a frame in the middle of a drag.
-    if (userTakeoverRef.current || gestureActive()) return false;
-    return item.start < (instance.scrollOffset ?? 0);
+    // 显式跳转（搜索结果 / ⌘F / 通知深链）由滚动意图独占驱动视口：不叠加第二种补偿，
+    // 保持它原有的落位行为不变。
+    if (pendingRestoreRef.current?.priority === 'jump') return false;
+    // 视口**上方**的行变高 → 永远补偿（这是「上滑加载历史」保持视口不动的唯一机制）。
+    if (item.start < (instance.scrollOffset ?? 0)) return true;
+    // 视口内/下方的行变高（视口里的流式气泡）→ 用户接管或手势期间不补偿，避免抢视口。
+    return false;
   };
 
   // NOTE: Do NOT call chatVirtualizer.measure() on message changes.
@@ -2424,13 +2531,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Snap to bottom after message DOM updates, but only if user hasn't scrolled up.
   // Do NOT depend on `activities` — activity ticks during streaming would force
   // repeated scrollToBottom and fight the user / expand-anchor.
-  // When items are prepended (loadMore), anchor scroll to the previously top-visible item.
   useLayoutEffect(() => {
+    // ⓪ 刚插入了一页更早的历史：把视口按「上方新增的高度」平移，并在**绘制前**让
+    //    虚拟表重读偏移量。这是「向上翻页=布局补偿」的**唯一**执行点（不再走滚动意图）。
+    //
+    //    为什么必须在这里（layout effect）而不是 rAF/定时器里：layout effect 在 DOM
+    //    提交后、**浏览器绘制前**同步跑；写 scrollTop + 派发一次原生 scroll 事件
+    //    （virtual-core 的 observeElementOffset 会同步更新它自己的 scrollOffset 并
+    //    notify → React 在本次 commit 内把渲染范围一起推到新位置），于是渲染范围与
+    //    scrollTop 同帧前进 —— 既没有「先跳到估算位置再收敛」的突变，也不会出现
+    //    「scrollTop 已远走、渲染范围还在原地」导致视口落空的一帧。
+    //    （放在 rAF 里跑就会晚一拍：那一帧的错误位置会被真的画出来。）
+    const pp = pendingPrependRef.current;
+    if (pp) {
+      pendingPrependRef.current = null;
+      // 有未满足的 `jump` 意图时，视口由它独占驱动 —— 布局补偿让位（跳转自己的翻页
+      // 不能被这次平移拽走）。其余情况（用户上滑加载历史）都由这里补。
+      if (!pendingRestoreRef.current && pp.key === activeScrollKeyRef.current) {
+        const el = chatScrollRef.current;
+        const delta = el ? el.scrollHeight - pp.scrollHeight : 0;
+        if (el && delta > 0) {
+          el.scrollTop += delta;
+          el.dispatchEvent(new Event('scroll'));
+        }
+      }
+    }
     // Fresh content (a prepended page, a streamed chunk, a loaded transcript) means
     // every row was re-measured — re-assert the pending intent against the new
-    // layout. There is deliberately no second branch here: a prepend IS an anchor
-    // too (see loadMore), so this single intent is the only thing that may move the
-    // viewport. The old `scrollToIndex(newCount)` branch was a second scroll writer
+    // layout. The old `scrollToIndex(newCount)` branch was a second scroll writer
     // that ignored intents entirely and armed virtual-core's own reconcile loop.
     if (pendingRestoreRef.current) {
       kickScrollRestore();
@@ -2687,21 +2815,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         if (currentConvKeyRef.current !== convKey || activeScrollKeyRef.current !== viewKeyAtRequest) {
           return 0;
         }
-        // 「向上翻页必须保持视口不动」是一个**布局补偿**，不是导航：把它表达成
-        // 「翻页前视口顶部那一行」的 anchor，交给**唯一**的滚动意图机制。
-        // 锚点必须在改动前采集（此刻 DOM 还是旧内容）。
+        // 「向上翻页必须保持视口不动」是一个**布局补偿**，不是导航：视口只需按
+        // 「插入到上方的这段高度」平移。于是这里记的只是**翻页前的滚动内容高度**，
+        // 插入后由 message 布局 effect 在**绘制前**补上差值（pendingPrependRef）。
+        // 必须在改动前采集（此刻 DOM 还是旧内容）。
         //
-        // 刻意不再用 `chatVirtualizer.scrollToIndex(newMsgs.length, {align:'start'})`：
-        //   ① 它会点亮 virtual-core 内部一个 ≤5s、**不可取消**的 rAF reconcile 循环
-        //      （scrollState/reconcileScroll）：该下标的偏移量每变一次就重新推视口，
-        //      而惰性测量的行高恰好在「跳转落位」的那几百毫秒里持续变化 → 跳转被拽走；
-        //   ② 它拿「本次新增条数」当**渲染列表的下标**用，而渲染的是缓冲区的一个
-        //      投影（剔除活动日志行/已确认通知）→ 下标整体偏移；
-        //   ③ 它不受意图机制管辖，跳转正在落位时照样滚。
+        // 刻意【不】走滚动意图（原来是把「视口顶部那一行」当 anchor 交给意图机制）：
+        //   ① 目标行在视口**外**，量不到 → 只能退回虚拟表的**估算**偏移，一次性硬跳
+        //      几万像素，再靠重试链收敛 → 用户看到位置突变、并出现「视口落空」的一帧；
+        //   ② 意图在 rAF/定时器里跑（绘制之后），第一帧的错误位置会被真的画出来。
+        // 同理刻意不用 `chatVirtualizer.scrollToIndex/scrollToOffset`：它们会点亮
+        // virtual-core 内部一个 ≤5s、**不可取消**的 rAF reconcile 循环
+        // （scrollState/reconcileScroll），之后任何行高变化都会重新推视口。
         const scrollEl = chatScrollRef.current;
-        const prependAnchor = scrollEl
-          ? captureChatScrollAnchor(readRenderedRowOffsets(scrollEl), scrollEl)
-          : null;
+        const prependScrollHeight = scrollEl ? scrollEl.scrollHeight : null;
         // Write the AUTHORITATIVE buffer FIRST (synchronously), then the display.
         // Order matters: the pagination gate/cursor and any reader of this buffer
         // must see the page the moment this function reports it added, while a
@@ -2716,10 +2843,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // 边界与内容**同时**前进（同一个 key、同一个写者）：这一页已经进了缓冲，
         // 游标才允许前移。反之（上面被丢弃的那一页）一律不动边界。
         writeWindowBounds(bufId, { hasMore: more, oldestCursor: oldestOf });
-        if (prependAnchor) {
-          // `prepend` 优先级：它压过切视图的 `restore`，但**让位**给未满足的
-          // `jump`（跳转自己的翻页不能被翻页锚点拽走）。
-          scheduleScrollRestoreToAnchor(activeScrollKeyRef.current, prependAnchor, 'prepend');
+        if (prependScrollHeight !== null) {
+          // 布局补偿的唯一执行点：message 布局 effect 的 prepend 分支（绘制前）。
+          // 若此刻有未满足的 `jump` 意图在驱动视口，那一支会让位给意图（见下）。
+          pendingPrependRef.current = { key: activeScrollKeyRef.current, scrollHeight: prependScrollHeight };
         }
         setMessages(combined);
         return newMsgs.length;
@@ -2804,8 +2931,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // 同 switchSession：在途与否只由会话自身的登记决定。
     const isSendingNow = chatMode !== 'direct'
       ? isSendingFor(newKey)
-      : !!streamingSessions && !!targetSession &&
-        (streamingSessions.has(targetSession) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
+      : sessionHasLiveStream(streamingSessions, targetSession);
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -3460,7 +3586,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
     const streamingSessions = getStreamSession(key);
-    const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
+    const streamForThis = sessionHasLiveStream(streamingSessions, s.id);
     // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
     // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
     // 于是正在输出的 tab 会瞬间显示为“已结束”。
@@ -3496,7 +3622,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } finally {
       if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
     }
-    if (selectedAgent && !isStreaming) {
+    // 总是让传输层去权威对账：目标会话可能仍有活回合（我们只是在别处把 SSE 拆了）。
+    // `tryReattachActiveStream` 自带冷却节流，并由 `decideOnStreamEnd` 决定「续接还是
+    // 结案」——回合真的结束了它会走 `finalizeIfDetached` 收尾。以前这里用 `!isStreaming`
+    // 拦住，于是「标记还在、但没有传输」的会话切回来只会显示一个永不更新的气泡。
+    if (selectedAgent) {
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
   };
@@ -4002,7 +4132,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const currentUserName = authUser?.name ?? t('page.fallbackYou');
   const lastMsg = visibleMessages[visibleMessages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
-  const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
+  const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent' && (liveStreamForView || !!previewData);
   const channelTeamMemberIds = useMemo(() => {
     if (chatMode !== 'channel') return null;
     if (activeChannel.startsWith('group:custom:')) {
@@ -4521,7 +4651,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, chatStore.isAgentStreaming(agent.id)).dotClass}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, sessionStreamState.isAgentStreaming(agent.id)).dotClass}`} />
                         )}
                       </button>
                     );
@@ -4621,7 +4751,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
                 <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
                 {chatMode === 'direct' && currentAgent && (
-                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
+                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                 )}
               </div>
               {/* Mobile Row 2: tabs + actions */}
@@ -4821,7 +4951,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </span>
                       )}
                       {chatMode === 'direct' && currentAgent && (
-                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
+                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
@@ -4950,25 +5080,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
           {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (() => {
-            // Which of THIS agent's sessions currently have an in-flight stream.
-            // Read live from the buffer manager during render;
-            // useConversationBuffers bumps its own state on every membership
-            // change, so a BACKGROUND tab's dot appears/disappears without
-            // needing the user to switch to it first.
-            const liveStreamSessions = getStreamSession(currentConvKeyRef.current);
-            const isStreamingTab = (s: ChatSessionInfo) =>
-              (liveStreamSessions?.has(s.id) ?? false)
-              // Pre-`session_start` window: a brand-new chat streams before the
-              // server assigns a real session id, so the active tab is the only
-              // one that can be generating.
-              || (sending && s.id === activeSessionId)
-              // Authoritative tail signal: even when the stream-session
-              // bookkeeping or the global `sending` flag momentarily lags
-              // (reattach window, session_start pre-window, streamingVisual
-              // min-display timer), a session whose latest bubble is STILL
-              // marked isStreaming must keep its pulsing dot — otherwise the
-              // dot disappears while the agent is visibly still typing.
-              || (s.id === activeSessionId && hasStreamingTail(messages));
+            // 只认**服务端权威**（WS `session:stream_state` 推送 + 分钟级批量轮询兜底，
+            // 见 lib/sessionStreamState.ts）。组件顶部已订阅 `useSessionStreamRevision()`，
+            // 任何会话的存活性变化都会重渲染，后台 tab 的圆点无需先切过去。
+            //
+            // 这里曾 OR 三项本地副本：① 传输附着登记簿 `getStreamSession()`（实测它登记
+            // 的其实是「本客户端有没有为这个会话挂着 SSE」，对后台会话天然为空）；
+            // ② 视图级 `sending`；③ 当前 tab 显示缓冲的 `hasStreamingTail`。三者寿命各不
+            // 相同，正是「圆点消失但仍在输出」的来源。权威换成服务端事实后，三项全删。
+            const isStreamingTab = (s: ChatSessionInfo) => sessionStreamState.isStreaming(s.id);
             return (
             <div ref={sessionTabBarRef} className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => {
@@ -5314,7 +5434,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
               const isLastMsg = vIdx === visibleMessages.length - 1;
               const isPending = isLastPending && isLastMsg;
-              const isStreamingMsg = (isPending && sending) || !!msg.isStreaming;
+              const isStreamingMsg = shouldPaintStreamingBubble({
+                msgIsStreaming: !!msg.isStreaming,
+                liveStreamForView,
+              });
               const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
               const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
 
@@ -6027,12 +6150,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: {
   agent: AgentInfo;
   tasks: TaskInfo[];
   onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void;
-  /** Chat SSE / local sending can outlive agent.status flipping back to idle. */
-  streamActive?: boolean;
 }) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
@@ -6044,11 +6165,12 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   //
   // 第二个坑：`agent.status` 与「此刻是否正在流式回复」是两个时钟。服务端只在它
   // 自己认识的长期任务上才把进程状态翻到 working，聊天回复期间往往一直是 idle；
-  // 客户端却立刻知道流已经打开（chatStore）。所以只按 agent.status 推导时，同一个
-  // agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部说空闲」。这里统一走
-  // resolveAgentStatus，把本地流式标记也算进去——头部与侧栏从此同一个判据。
-  const streamingHere = useAgentStreaming(agent.id);
-  const status = resolveAgentStatus(agent.status, streamingHere || !!streamActive);
+  // 而「此刻是不是在流式回复」由**服务端权威**提供（lib/sessionStreamState.ts）。只按
+  // agent.status 推导时，同一个 agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部
+  // 说空闲」；统一走 resolveAgentStatus 后，头部与侧栏是同一个判据。
+  // 与侧栏同一个权威：服务端推送/轮询喂入的 sessionStreamState（不再是本地近似）。
+  const streamingHere = useAgentSessionStreaming(agent.id);
+  const status = resolveAgentStatus(agent.status, streamingHere);
   const isWorking = status.tone === 'busy';
   const isError = status.tone === 'danger';
   // 未在运行（offline / paused）：不能拿它去展示「当前活动」。

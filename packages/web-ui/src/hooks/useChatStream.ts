@@ -754,10 +754,19 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // Aborted by stop / newer reattach / navigation — always clear local stream UI.
       const wasActive = abortCtrl ? [...reattachCtrlsRef.current.values()].includes(abortCtrl) : false;
       dropReattachCtl(abortCtrl);
+      // `endStream` 只是为了与上面的 `beginStream` 配平 refcount —— 它描述的是**传输**
+      // 的生命周期，不是**回合**的。谁拆了这次 attach（用户 stop、更新的 attach 接管、
+      // 导航离开）都不构成「回合结束」的证据：SSE 断开后服务端仍会继续生成
+      // （`SSE_DISCONNECT_FORCE_STOP_MS = 45min`）。
       endStream(convKey);
-      // Same as above: whatever ended this reattach (abort / error) means the
-      // stream session is no longer active — release it.
-      clearStreamSession(convKey, sessionId);
+      // 因此这里**只有用户显式 stop** 才能释放会话的回合标记；其余情形必须保留，否则
+      // 「切走 tab → 导航拆掉 SSE → 标记被清」会让 session tab 上的「输出中」圆点消失，
+      // 而该会话其实仍在输出（实测：切走约 300ms 后圆点消失，切回即复现、内容仍在流）。
+      // 真实终态由下一次 `finalizeIfDetached` / `decideOnStreamEnd` 的权威对账释放。
+      const turnEndedByUser = userStoppedSessionsRef.current.has(sessionId);
+      if (turnEndedByUser) {
+        clearStreamSession(convKey, sessionId);
+      }
       if (currentConvKeyRef.current === convKey) {
         setSending(false);
         // The bubble this reattach was feeding is still marked streaming (the
@@ -765,7 +774,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         // reattach ends the local stream — finalize the bubble instead of
         // leaving a perpetual "thinking…" ghost. Only act when THIS was the
         // active reattach: a newer one may still be streaming the same bubble.
-        if (wasActive) {
+        // 只在本回合确实结束（用户 stop）时收束气泡。导航拆掉传输而回合仍在跑时，
+        // 气泡必须保持 `isStreaming` —— 否则「圆点说在输出、气泡却已定型」又不一致。
+        if (wasActive && turnEndedByUser) {
           updateConvMsgs(convKey, prev => finalizeLastStreamingBubble(prev), sessionId);
         }
       }
@@ -1633,9 +1644,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // the AGENT (several session tabs of one agent share it). A turn that ends
       // without a resolved session id — the new-chat tab, or a message the server
       // MERGED into the agent's in-flight processing (no session_start for it) —
-      // would then wipe a SIBLING tab's live mark. chatStore drops to idle, the
-      // buffer manager still reports the conversation as streaming, and the two
-      // answers disagree: the sibling tab's bubble is a "ghost" by chatStore and
+      // would then wipe a SIBLING tab's live mark. The local stream membership drops
+      // to idle while the buffer manager still reports the conversation as
+      // streaming, and the two answers disagree: the sibling tab's bubble is a
       // gets swept (border + 输出中 die) while the backend keeps generating. The
       // unresolved turn can only ever own the placeholder mark, so release that.
       clearStreamSession(sendKey, streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID);

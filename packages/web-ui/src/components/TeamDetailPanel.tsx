@@ -9,7 +9,7 @@ import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import { resolveAgentStatus } from '../lib/agentOverview.ts';
-import { chatStore, useChatStore } from '../pages/useChatStore.ts';
+import { sessionStreamState, useSessionStreamRevision } from '../lib/sessionStreamState.ts';
 
 type ChatMode = 'channel' | 'direct' | 'dm';
 
@@ -58,6 +58,10 @@ export function TeamDetailPanel({
   const layout = useLayout();
   const isPageActive = usePageActive(PAGE.TEAM);
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
+  // 订阅存活性权威（服务端推送/轮询喂入）：本面板按需读取多个 agent，
+  // 靠这一行保证任何变化都重渲染。下方即用 sessionStreamState.isAgentStreaming()
+  // 直接读（与侧栏、顶部徽章同一个来源）。
+  useSessionStreamRevision();
 
   const teamAgents = useMemo(
     () => agents.filter(a => a.teamId === team.id),
@@ -286,7 +290,7 @@ export function TeamDetailPanel({
                 // Same resolver as L1 + the chat header — a stream can outlive
                 // `agent.status === 'working'`, and three local derivations is
                 // exactly how the three panels drifted apart.
-                const statusColor = resolveAgentStatus(a.status, chatStore.isAgentStreaming(a.id)).dotClass;
+                const statusColor = resolveAgentStatus(a.status, sessionStreamState.isAgentStreaming(a.id)).dotClass;
 
                 return (
                   <button

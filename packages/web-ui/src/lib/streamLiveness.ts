@@ -103,3 +103,59 @@ export function normalizeServerStreamStatus(raw: string | undefined | null): Ser
       return null;
   }
 }
+
+/**
+ * 本视图（某个 agent 会话 key + **确切** session id）此刻是否有活流。
+ *
+ * ## 为什么必须在这里、而且必须"只认确切 id"
+ *
+ * 客户端把所有在途流记在一个按 **convKey** 索引的 membership 集合里，元素是
+ * session id。切换 session tab 时要回答"目标 tab 是不是正在输出"，只能问
+ * 「这个集合里有没有**这个** id」。
+ *
+ * 曾经写成 `集合.has(s.id) || 集合.has(NEW_CHAT_PLACEHOLDER_ID)` —— 后半个子句把
+ * `NEW_CHAT_PLACEHOLDER_ID` 当作"任意会话"的通配符。但它只是一个**普通 id**：
+ * 一条从「新会话」发出的流会让该 agent 的**每一个** tab 都被判成在途流，于是
+ * 切 tab 时那条 tab 的最后一条消息被画上"输出中"动态边框，几百毫秒后又被权威
+ * 状态纠正而消失（用户看到的是无端闪烁）。placeholder 不是一个选择器。
+ *
+ * placeholder 视图自己依然匹配：`has(sid)` 在 `sid === placeholder` 时照样成立。
+ */
+export function sessionHasLiveStream(
+  sessions: ReadonlySet<string> | undefined,
+  sessionId: string | null | undefined,
+): boolean {
+  return !!sessions && !!sessionId && sessions.has(sessionId);
+}
+
+export interface StreamingBubbleInput {
+  /** 消息载荷上携带的 `isStreaming`。注意它**可能**是服务端持久化的中途快照。 */
+  msgIsStreaming: boolean;
+  /** 权威：`sessionHasLiveStream(活流集合, 本视图的 session id)`。 */
+  liveStreamForView: boolean;
+}
+
+/**
+ * 这条 agent 气泡该不该画"输出中"动态边框。
+ *
+ * ## 为什么不能只看载荷上的 `isStreaming`
+ *
+ * 服务端在 SSE 断开时**不停止生成**（`SSE_DISCONNECT_FORCE_STOP_MS = 45min`），
+ * 而断开瞬间会把"中途快照"连同 `metadata.isStreaming = true` 一起**持久化**。
+ * 之后任何一次 DB 回填 / 会话缓存恢复都会把这条副本带回来：它已经**不是**在途流了，
+ * 但载荷上还写着"在跑"。若显示层直接采信它，切到该会话就会看到
+ * 「一个只有边框、没有内容的空气泡」——网络越慢，权威数据越晚到，盯得越久。
+ *
+ * 所以判据是**两票制**：载荷说"在跑"**且**权威活流状态确认"这个视图真在跑"。
+ *
+ * 不用「本地 `sending` 为真」当例外：`sending` 本身也是权威状态的**本地副本**，
+ * 切会话的那一拍会短暂残留上一个视图的值 —— 拿它当所有权证据，正好会在切 tab 的
+ * 那一帧把新 tab 的最后一条消息画上边框（实测到的那个 150ms 瞬态）。发信时
+ * `setStreamSession` 已先于气泡创建登记，所以这个例外本就多余。
+ *
+ * 本函数是纯函数，`isStreaming` 本身**不被改写**（它只能由服务端终态或用户显式
+ * stop 改写，见本模块头部不变量）——这里只决定"这一次渲染画不画边框"。
+ */
+export function shouldPaintStreamingBubble(input: StreamingBubbleInput): boolean {
+  return input.msgIsStreaming && input.liveStreamForView;
+}
