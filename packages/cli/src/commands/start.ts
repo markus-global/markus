@@ -30,6 +30,7 @@ import {
   pickOrgSecretary,
   setEnvValue,
   resolveActionSecret,
+  resolveHostLocale,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -2814,6 +2815,16 @@ async function startServerCore(
       try {
         const teamId = agentManager.getAgent(id)?.config?.teamId;
         return teamId ? orgService.getTeam(teamId)?.name : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    // …and the language an approval's buttons are written in. The recipient's
+    // own locale wins; the host locale is the fallback. Read lazily so a later
+    // preference change is picked up without a restart.
+    locale: () => {
+      try {
+        return orgService.resolveHumanIdentity(ownerUserId)?.locale ?? resolveHostLocale();
       } catch {
         return undefined;
       }

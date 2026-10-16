@@ -1,4 +1,4 @@
-import { createLogger, type UserInputQuestion, type UserInputAnswer } from '@markus/shared';
+import { createLogger, type UserInputQuestion, type UserInputAnswer, type ApprovalDirection } from '@markus/shared';
 import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
@@ -151,8 +151,7 @@ export interface ApprovalRequest {
   allowFreeform?: boolean;
   selectedOption?: string;
   /**
-   * Idempotency marker for "this decision has been applied to its target".
-   * Persisted on the approval entity (the only single writer) so the flag — and
+   * Idempotency marker for "this decision has been applied to its target".   * Persisted on the approval entity (the only single writer) so the flag — and
    * therefore the guard — survives a restart.
    */
   appliedAt?: string;
@@ -220,6 +219,21 @@ export interface NotificationRepo {
   reconcileResolvedApprovalNotifications?(): number;
 }
 
+/**
+ * One choice offered on an approval.
+ *
+ * `direction` is the **structure** — what the choice *means* — and is what a
+ * renderer localizes into the recipient's language. `label` is the author's own
+ * wording and stays the fallback, so an LLM-authored option (or a legacy caller)
+ * is passed through verbatim rather than reinterpreted.
+ */
+export interface ApprovalOption {
+  id: string;
+  label: string;
+  description?: string;
+  direction?: ApprovalDirection;
+}
+
 export interface ApprovalRepo {
   upsert(a: {
     id: string;
@@ -235,7 +249,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -259,7 +273,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -283,7 +297,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -481,7 +495,7 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
@@ -535,7 +549,7 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];

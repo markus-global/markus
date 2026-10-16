@@ -742,7 +742,10 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
    * get their own wording (previously `reject` and `request_changes` shared one).
    */
   const approvalOptionLabel = (opt: { id: string; label: string }): string => {
-    const dir = resolveApprovalDirection(opt.id);
+    // Prefer the gate's declared direction. The review gate's second option is
+    // literally id `reject` while meaning request-changes, so resolving by id
+    // alone labels it "Reject" — the opposite of what the button does.
+    const dir = opt.direction ?? resolveApprovalDirection(opt.id);
     if (dir === 'approve') return t('team:notifications.optionLabels.approve', { defaultValue: opt.label });
     if (dir === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
     if (dir === 'reject') return t('team:notifications.optionLabels.reject', { defaultValue: opt.label });

@@ -73,6 +73,12 @@ export interface OutboundWiringOptions {
    * `agentName`: a missing team never blocks a delivery.
    */
   agentTeamName?: (agentId: string) => string | undefined;
+  /**
+   * Resolve the language outbound approval buttons are written in — the
+   * recipient's locale. Optional; absent means English defaults, so the wiring
+   * stays usable in a context that knows nothing about users.
+   */
+  locale?: () => string | undefined;
 }
 
 export interface OutboundWiring {
@@ -123,6 +129,7 @@ export function setupOutboundDispatch(opts: OutboundWiringOptions): OutboundWiri
     actionSecret: opts.actionSecret,
     agentName: opts.agentName,
     agentTeamName: opts.agentTeamName,
+    locale: opts.locale,
   });
 
   const detachers: Array<() => void> = [];

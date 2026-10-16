@@ -3324,8 +3324,13 @@ export class TaskService implements ApprovalTargetPort {
       details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
       options: [
-        { id: 'approve', label: 'Approve' },
-        { id: 'reject', label: 'Request Changes' },
+        // `direction` is the meaning; the label is only a fallback. The review
+        // gate's second choice carries the legacy id `reject` but *means*
+        // request-changes (the FSM has no `review → rejected` edge), so resolving
+        // it by id alone would render the destructive word "Reject" over a button
+        // that actually asks for a revision.
+        { id: 'approve', label: 'Approve', direction: 'approve' },
+        { id: 'reject', label: 'Request Changes', direction: 'request_changes' },
       ],
       allowFreeform: true,
     }).then(result => {
