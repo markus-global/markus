@@ -294,6 +294,8 @@ export interface TaskServiceBridge {
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
   submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string, completionSummary?: string): Promise<{ id: string; status: string }>;
   requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
+  /** Re-open a pending task's creation-gate approval after a 打回 (see TaskService.requestTaskApproval). */
+  requestTaskApproval?(taskId: string, actorId?: string): { taskId: string; approvalId: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
@@ -1843,6 +1845,9 @@ export class AgentManager {
         requestRevision: async (taskId, reason) => {
           return ts.requestRevision(taskId, reason, id);
         },
+        requestTaskApproval: ts.requestTaskApproval
+          ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)
+          : undefined,
         getTask: async taskId => {
           return ts.getTask(taskId) ?? null;
         },
@@ -2765,6 +2770,9 @@ export class AgentManager {
           }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
+        requestTaskApproval: ts.requestTaskApproval
+          ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)
+          : undefined,
         getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId, id),
         addTaskNote: async (taskId, note, author) => {

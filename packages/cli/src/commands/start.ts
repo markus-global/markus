@@ -49,6 +49,7 @@ import {
   TaskService,
   APIServer,
   HITLService,
+  ApprovalApplier,
   type NotificationPriority,
   BillingService,
   LicenseService,
@@ -1198,6 +1199,24 @@ async function startServerCore(
 
   requirementService.setAgentManager(agentManager);
   requirementService.setHITLService(hitlService);
+
+  // ── Approval outcomes: one execution point ──────────────────────────────────
+  // Both the `requestApprovalAndWait` callbacks (task/requirement gates) and the
+  // HTTP fallback in APIServer route through this applier; its synchronous claim
+  // on the approval entity makes the outcome exactly-once across the two.
+  const approvalApplier = new ApprovalApplier(hitlService);
+  approvalApplier.registerPort(taskService);
+  approvalApplier.registerPort(requirementService);
+  taskService.setApprovalApplier(approvalApplier);
+  requirementService.setApprovalApplier(approvalApplier);
+  apiServer.setApprovalApplier(approvalApplier);
+  // A requirement 打回 must stay observable on its own entity, so the decision
+  // also lands as a requirement comment — through the existing comment channel
+  // (owned by TaskService), never through a new field or table.
+  requirementService.setRequirementCommentPoster(
+    (requirementId, authorId, authorName, content, mentions) =>
+      taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions),
+  );
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
@@ -2567,7 +2586,7 @@ async function startServerCore(
     // rewrite (not awaiting it inside this handler) makes it the last write the
     // client applies. Best-effort: failures are logged, never fatal, never roll
     // the decision back.
-    const approval = resolved ?? hitlService.getApproval(approvalId);
+    const approval = resolved?.approval ?? hitlService.getApproval(approvalId);
     const messageId = action.messageId;
     if (approval && messageId) {
       void scheduleCardRewrite(async () => {

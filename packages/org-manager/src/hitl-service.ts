@@ -3,7 +3,119 @@ import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
 
-export type ApprovalStatus = 'pending' | 'approved' | 'rejected' | 'expired' | 'cancelled';
+export type ApprovalStatus =
+  | 'pending'
+  | 'approved'
+  /** 打回 — the decision is "changes requested", *not* a terminal rejection. */
+  | 'changes_requested'
+  | 'rejected'
+  | 'expired'
+  | 'cancelled';
+
+/**
+ * The single decision vocabulary every gate consumes. Derived from the response
+ * payload (boolean / option id) — never stored as memory-only state, so a process
+ * restart cannot lose it.
+ */
+export type ApprovalIntent = 'approve' | 'request_changes' | 'reject' | 'needs_adjustment';
+
+/**
+ * Layer 1 of the two-layer normalization: the **global** intent closure. A token
+ * that (after normalization) resolves here is a decision in its own right and
+ * never falls back to the boolean.
+ */
+const GLOBAL_INTENT_TOKENS: Readonly<Record<string, ApprovalIntent>> = {
+  approve: 'approve',
+  approved: 'approve',
+  request_changes: 'request_changes',
+  requestchanges: 'request_changes',
+  changes_requested: 'request_changes',
+  revision: 'request_changes',
+  needs_adjustment: 'needs_adjustment',
+  needsadjustment: 'needs_adjustment',
+  reject: 'reject',
+  rejected: 'reject',
+};
+
+/**
+ * Per-gate option-id aliases (still layer 1 — these are *known* tokens whose
+ * meaning is gate-scoped). The review gate is the only gate that ships `options`,
+ * and its option id is literally `reject` while its label is "Request Changes":
+ * in the `task_review` domain that token means 打回 and must never be a terminal
+ * rejection (the task FSM has no `review → rejected` edge).
+ */
+const GATE_OPTION_ALIASES: Readonly<Record<string, Readonly<Record<string, ApprovalIntent>>>> = {
+  task_review: { reject: 'request_changes' },
+};
+
+function normalizeIntentToken(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+/** Map a resolved intent onto the approval entity's own state machine. */
+export function intentToApprovalStatus(intent: ApprovalIntent): ApprovalStatus {
+  if (intent === 'approve') return 'approved';
+  if (intent === 'reject') return 'rejected';
+  return 'changes_requested';
+}
+
+export interface ResolvedApprovalIntent {
+  intent: ApprovalIntent;
+  /**
+   * Set **only** when the token was outside the global closure (layer 2): the
+   * decision then falls back to the boolean and the raw token is recorded for
+   * diagnosis. Deliberately not "not among this gate's `options`" — a gate with
+   * no `options` still carries closure tokens.
+   */
+  unknownOption?: string;
+}
+
+/**
+ * The **only** intent parser in the platform.
+ *
+ * Layer 1: `selectedOption` (after normalization) against the global intent
+ * closure plus the gate's option-id aliases. Layer 2: values outside that closure
+ * fall back to the legacy boolean, keeping old callers byte-for-byte compatible.
+ */
+export function resolveApprovalIntent(input: {
+  subType?: string;
+  selectedOption?: string;
+  approved: boolean;
+}): ResolvedApprovalIntent {
+  const raw = input.selectedOption?.trim();
+  if (raw) {
+    const token = normalizeIntentToken(raw);
+    const gateAlias = input.subType ? GATE_OPTION_ALIASES[input.subType]?.[token] : undefined;
+    if (gateAlias) return { intent: gateAlias };
+    const intent = GLOBAL_INTENT_TOKENS[token];
+    if (intent) return { intent };
+    return { intent: input.approved ? 'approve' : 'reject', unknownOption: raw };
+  }
+  // Legacy payloads carry a boolean only — behaviour stays exactly as before.
+  return { intent: input.approved ? 'approve' : 'reject' };
+}
+
+/**
+ * The value a resolved approval hands to its gate. Extends the legacy boolean
+ * payload additively (`intent` / `approvalId` / `unknownOption`), so existing
+ * consumers keep working field-for-field.
+ */
+export interface ApprovalResponse {
+  approval: ApprovalRequest;
+  /** The single resolved decision — consumers route on this, never on the boolean. */
+  decision: ResolvedApprovalIntent;
+}
+
+export interface ApprovalDecision {
+  approved: boolean;
+  intent: ApprovalIntent;
+  approvalId: string;
+  comment?: string;
+  selectedOption?: string;
+  answers?: UserInputAnswer[];
+  respondedBy?: string;
+  unknownOption?: string;
+}
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
 export type NotificationType =
@@ -38,6 +150,14 @@ export interface ApprovalRequest {
   options?: Array<{ id: string; label: string; description?: string }>;
   allowFreeform?: boolean;
   selectedOption?: string;
+  /**
+   * Idempotency marker for "this decision has been applied to its target".
+   * Persisted on the approval entity (the only single writer) so the flag — and
+   * therefore the guard — survives a restart.
+   */
+  appliedAt?: string;
+  /** The intent that was applied, kept for audit/diagnosis (see {@link claimApply}). */
+  appliedIntent?: ApprovalIntent;
   /** One or more structured questions (request_user_input). When present, the UI renders a multi-question form. */
   questions?: UserInputQuestion[];
   /** Aggregated answers to `questions`, filled on response. */
@@ -122,6 +242,8 @@ export interface ApprovalRepo {
     answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
+    appliedAt?: string;
+    appliedIntent?: string;
   }): void;
   list(status?: string): Array<{
     id: string;
@@ -144,6 +266,8 @@ export interface ApprovalRepo {
     answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
+    appliedAt?: string;
+    appliedIntent?: string;
   }>;
   get(id: string): {
     id: string;
@@ -166,6 +290,8 @@ export interface ApprovalRepo {
     answers?: UserInputAnswer[];
     approverUserIds?: string[];
     targetUserId?: string;
+    appliedAt?: string;
+    appliedIntent?: string;
   } | undefined;
 }
 
@@ -180,7 +306,7 @@ export class HITLService {
   private approvals = new Map<string, ApprovalRequest>();
   private pendingResolvers = new Map<
     string,
-    (result: { approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }) => void
+    (result: ApprovalDecision) => void
   >();
   private notificationHandlers: NotificationHandler[] = [];
   /**
@@ -251,6 +377,8 @@ export class HITLService {
             options: row.options,
             allowFreeform: row.allowFreeform,
             selectedOption: row.selectedOption,
+            appliedAt: row.appliedAt,
+            appliedIntent: row.appliedIntent as ApprovalIntent | undefined,
             questions: row.questions,
             answers: row.answers,
             approverUserIds: row.approverUserIds,
@@ -391,9 +519,9 @@ export class HITLService {
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
-  }): Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }> {
+  }): Promise<ApprovalDecision> {
     const approval = this.requestApproval(opts);
-    return new Promise<{ approved: boolean; comment?: string; selectedOption?: string; answers?: UserInputAnswer[]; respondedBy?: string }>((resolve) => {
+    return new Promise<ApprovalDecision>((resolve) => {
       this.pendingResolvers.set(approval.id, resolve);
       if (opts.expiresInMs) {
         setTimeout(() => {
@@ -408,25 +536,37 @@ export class HITLService {
               this.markApprovalNotificationsRead(a.id);
               this.emitApprovalChanged(a);
             }
-            resolve({ approved: false, comment: 'Approval timed out' });
+            resolve({ approved: false, intent: 'reject', approvalId: approval.id, comment: 'Approval timed out' });
           }
         }, opts.expiresInMs);
       }
     });
   }
 
-  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]): ApprovalRequest | undefined {
+  respondToApproval(id: string, approved: boolean, respondedBy: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]): ApprovalResponse | undefined {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
 
-    approval.status = approved ? 'approved' : 'rejected';
+    // Single parse point: the intent is resolved exactly once, here, from the
+    // approval's own subType + the response payload. Every gate downstream reads
+    // `intent` — none of them re-derives it from the boolean.
+    const subType = approval.details['subType'] as string | undefined;
+    const decision = resolveApprovalIntent({ subType, selectedOption, approved });
+
+    approval.status = intentToApprovalStatus(decision.intent);
     approval.respondedAt = new Date().toISOString();
     approval.respondedBy = respondedBy;
     if (comment) approval.responseComment = comment;
     if (selectedOption) approval.selectedOption = selectedOption;
     if (answers && answers.length > 0) approval.answers = answers;
+    if (decision.unknownOption) approval.details['unknownOption'] = decision.unknownOption;
     this.persistApproval(approval);
-    log.info(`Approval ${id} ${approval.status} by ${respondedBy}`, { comment, selectedOption, answerCount: answers?.length ?? 0 });
+    log.info(`Approval ${id} ${approval.status} (intent=${decision.intent}) by ${respondedBy}`, {
+      comment,
+      selectedOption,
+      unknownOption: decision.unknownOption,
+      answerCount: answers?.length ?? 0,
+    });
 
     this.markApprovalNotificationsRead(id);
     this.emitApprovalChanged(approval);
@@ -434,9 +574,43 @@ export class HITLService {
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve({ approved, comment, selectedOption, answers, respondedBy });
+      resolve({
+        approved: decision.intent === 'approve',
+        intent: decision.intent,
+        approvalId: approval.id,
+        comment,
+        selectedOption,
+        answers,
+        respondedBy,
+        ...(decision.unknownOption ? { unknownOption: decision.unknownOption } : {}),
+      });
     }
-    return approval;
+    return { approval, decision };
+  }
+
+  /**
+   * Synchronous, check-and-set claim for "apply this approval decision to its
+   * target". Both consumers (the promise chain and the API fallback) call this
+   * before doing anything observable; only the winner may act.
+   *
+   * Deliberately keyed on the **approval entity** (persisted `appliedAt`):
+   *   · target state is unusable — two of the three gates intentionally perform
+   *     zero state transition, so a state-based guard would never fire;
+   *   · `approval.status` is unusable — {@link respondToApproval} flips it first,
+   *     which would make the *first* apply look like a duplicate.
+   *
+   * Synchronous by contract: no `await` between read and write, so the guard and
+   * the microtask that follows a resolved promise can never interleave.
+   */
+  claimApply(id: string, intent: ApprovalIntent): boolean {
+    const approval = this.approvals.get(id);
+    if (!approval) return false;
+    if (approval.appliedAt) return false;
+    approval.appliedAt = new Date().toISOString();
+    approval.appliedIntent = intent;
+    this.persistApproval(approval);
+    log.info('Approval decision claimed for apply', { id, intent });
+    return true;
   }
 
   cancelApproval(id: string, cancelledBy: string, comment?: string): ApprovalRequest | undefined {
@@ -456,7 +630,12 @@ export class HITLService {
     const resolve = this.pendingResolvers.get(id);
     if (resolve) {
       this.pendingResolvers.delete(id);
-      resolve({ approved: false, comment: comment ?? 'Approval cancelled' });
+      resolve({
+        approved: false,
+        intent: 'reject',
+        approvalId: approval.id,
+        comment: comment ?? 'Approval cancelled',
+      });
     }
     return approval;
   }
@@ -492,6 +671,8 @@ export class HITLService {
         options: approval.options,
         allowFreeform: approval.allowFreeform,
         selectedOption: approval.selectedOption,
+        appliedAt: approval.appliedAt,
+        appliedIntent: approval.appliedIntent,
         questions: approval.questions,
         answers: approval.answers,
         approverUserIds: approval.approverUserIds,

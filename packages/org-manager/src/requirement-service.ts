@@ -8,7 +8,13 @@ import {
 } from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
-import type { HITLService } from './hitl-service.js';
+import type { HITLService, ApprovalIntent } from './hitl-service.js';
+import type {
+  ApprovalApplier,
+  ApprovalApplyInput,
+  ApprovalGateSubType,
+  ApprovalTargetPort,
+} from './approval-apply.js';
 
 const log = createLogger('requirement-service');
 
@@ -23,7 +29,20 @@ export interface CreateRequirementRequest {
   tags?: string[];
 }
 
-export class RequirementService {
+/**
+ * The platform's **existing** requirement-comment channel (owned by
+ * `TaskService`). Injected as a narrow function so this service never imports the
+ * task layer, and so the side effect can be asserted on directly.
+ */
+export type RequirementCommentPoster = (
+  requirementId: string,
+  authorId: string,
+  authorName: string,
+  content: string,
+  mentions?: string[],
+) => Promise<{ id: string }>;
+
+export class RequirementService implements ApprovalTargetPort {
   private requirements = new Map<string, Requirement>();
   private requirementRepo?: any;
   private statusTransitionRepo?: { record(data: { entityType: 'task' | 'requirement'; entityId: string; fromStatus: string; toStatus: string; changedById?: string | null; changedByType: 'human' | 'agent' | 'system'; changedByName?: string | null; reason?: string | null }): void; getByEntity(entityType: 'task' | 'requirement', entityId: string, limit?: number): unknown[] };
@@ -31,6 +50,10 @@ export class RequirementService {
   private ws?: WSBroadcaster;
   private agentManager?: AgentManager;
   private hitlService?: HITLService;
+  /** The platform-wide single execution point for approval outcomes. */
+  private approvalApplier?: ApprovalApplier;
+  /** Existing requirement-comment channel — see {@link RequirementCommentPoster}. */
+  private requirementCommentPoster?: RequirementCommentPoster;
 
   private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
     'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
@@ -125,6 +148,151 @@ export class RequirementService {
   }
 
   /**
+   * Wire the existing requirement-comment channel. A 打回 is only observable
+   * through it (plus the creator notification), so a missing wiring is an error
+   * rather than a silent no-op.
+   */
+  setRequirementCommentPoster(poster: RequirementCommentPoster): void {
+    this.requirementCommentPoster = poster;
+  }
+
+  /** Wire the single execution point (see approval-apply.ts). */
+  setApprovalApplier(applier: ApprovalApplier): void {
+    this.approvalApplier = applier;
+  }
+
+  // ─── Approval gate port (see approval-apply.ts) ────────────────────────────
+  // RequirementService owns both requirement gates (initial proposal and
+  // resubmission); in both the target sits in `pending`.
+  readonly approvalGateSubTypes: readonly ApprovalGateSubType[] = ['requirement', 'requirement_resubmit'];
+
+  canApplyApproval(subType: string, targetId: string): boolean {
+    if (subType !== 'requirement' && subType !== 'requirement_resubmit') return false;
+    const req = this.requirements.get(targetId);
+    return !!req && req.status === 'pending';
+  }
+
+  async applyApprovalDecision(input: {
+    subType: string;
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    if (input.subType !== 'requirement' && input.subType !== 'requirement_resubmit') return;
+    const req = this.requirements.get(input.targetId);
+    if (!req || req.status !== 'pending') return;
+    const actor = input.actorId ?? 'hitl';
+
+    if (input.intent === 'approve') {
+      this.approveRequirement(req.id, actor);
+      return;
+    }
+    if (input.intent === 'reject') {
+      this.rejectRequirement(req.id, actor, input.comment || 'Rejected via approval');
+      return;
+    }
+    // request_changes | needs_adjustment → 打回
+    await this.markChangesRequested(req, actor, input.comment);
+  }
+
+  /** Route a resolved decision to the single execution point. Never silent. */
+  private routeApprovalDecision(input: ApprovalApplyInput): void {
+    if (!this.approvalApplier) {
+      log.error('Approval applier not wired — requirement decision was NOT applied', {
+        approvalId: input.approvalId,
+        subType: input.subType,
+        targetId: input.targetId,
+        intent: input.intent,
+      });
+      return;
+    }
+    void this.approvalApplier
+      .apply(input)
+      .catch(err => log.error('Approval applier threw unexpectedly', {
+        approvalId: input.approvalId,
+        targetId: input.targetId,
+        error: String(err),
+      }));
+  }
+
+  /**
+   * The **single implementation** of "open a requirement approval gate and route
+   * its decision". Used by `createRequirement` (subType `requirement`),
+   * `resubmitRequirement` (subType `requirement_resubmit`) and
+   * {@link requestRequirementApproval} (re-opening after a 打回). One copy, so a
+   * 打回 can never drift into a terminal `rejected` in one gate but not another.
+   */
+  private openRequirementApprovalGate(
+    req: Requirement,
+    subType: 'requirement' | 'requirement_resubmit',
+    description: string,
+  ): void {
+    if (!this.hitlService) return;
+    const creatorName = this.resolveAgentName(req.createdBy);
+    this.hitlService.requestApprovalAndWait({
+      agentId: req.createdBy,
+      agentName: creatorName,
+      type: 'custom',
+      title: req.title,
+      description,
+      details: { requirementId: req.id, priority: req.priority, subType },
+      targetUserId: 'all',
+    }).then(result => {
+      const current = this.requirements.get(req.id);
+      if (!current || current.status !== 'pending') return;
+      // Route only — never transition inline: the decision is f(subType, selectedOption),
+      // and 打回 must not land a terminal `rejected`.
+      this.routeApprovalDecision({
+        approvalId: result.approvalId,
+        subType,
+        targetId: req.id,
+        intent: result.intent,
+        actorId: result.respondedBy ?? 'hitl',
+        actorName: creatorName,
+        comment: result.comment,
+      });
+    }).catch(err => {
+      log.error('HITL approval flow error for requirement', { requirementId: req.id, error: String(err) });
+    });
+  }
+
+  /**
+   * Re-open a requirement's approval gate after a 打回 (changes requested) — the
+   * requirement-side counterpart of `TaskService.requestTaskApproval`.
+   *
+   * A 打回 keeps the requirement `pending` (zero transition), so without this the
+   * proposal would have no live approval and no way back into review. Only valid
+   * while the requirement is still `pending` and has no active approval; anything
+   * else is an actionable error, not a silent no-op.
+   */
+  requestRequirementApproval(reqId: string, actorId?: string): { requirementId: string; approvalId: string } {
+    const req = this.requirements.get(reqId);
+    if (!req) throw new Error(`Requirement ${reqId} not found`);
+    if (req.status !== 'pending') {
+      throw new Error(`Requirement ${reqId} is in status '${req.status}' — only a pending proposal can re-open its approval.`);
+    }
+    if (!this.hitlService) throw new Error('Approval service is unavailable');
+    const hasReqDetails = (a: { details?: unknown }) =>
+      (a.details as Record<string, unknown> | undefined)?.['requirementId'] === reqId;
+    const active = this.hitlService.listApprovals('pending').find(hasReqDetails);
+    if (active) {
+      throw new Error(`Requirement ${reqId} already has an active approval (${active.id}) — answer that one instead of re-initiating.`);
+    }
+    const previousIds = new Set(this.hitlService.listApprovals().filter(hasReqDetails).map(a => a.id));
+    const creatorName = this.resolveAgentName(req.createdBy);
+    this.openRequirementApprovalGate(
+      req,
+      'requirement',
+      `Agent "${creatorName}" re-initiated approval for requirement "${req.title}" (priority: ${req.priority}).`,
+    );
+    const created = this.hitlService.listApprovals().find(a => hasReqDetails(a) && !previousIds.has(a.id));
+    log.info('Requirement approval re-initiated', { requirementId: reqId, approvalId: created?.id, actorId });
+    return { requirementId: reqId, approvalId: created?.id ?? '' };
+  }
+
+  /**
    * Create a requirement from a user — auto-approved.
    */
   createRequirement(request: CreateRequirementRequest): Requirement {
@@ -191,29 +359,11 @@ export class RequirementService {
     this.broadcast('requirement:created', req);
     if (this.hitlService && req.source === 'agent') {
       const creatorName = this.resolveAgentName(req.createdBy);
-      this.hitlService.requestApprovalAndWait({
-        agentId: req.createdBy,
-        agentName: creatorName,
-        type: 'custom',
-        title: req.title,
-        description: `Agent "${creatorName}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
-        details: { requirementId: req.id, priority: req.priority, subType: 'requirement' },
-        targetUserId: 'all',
-      }).then(result => {
-        const current = this.requirements.get(req.id);
-        if (!current || current.status !== 'pending') return;
-        if (result.approved) {
-          this.approveRequirement(req.id, result.respondedBy ?? 'hitl');
-        } else {
-          this.rejectRequirement(
-            req.id,
-            result.respondedBy ?? 'hitl',
-            result.comment || 'Rejected via approval',
-          );
-        }
-      }).catch(err => {
-        log.error('HITL approval flow error for requirement', { requirementId: req.id, error: String(err) });
-      });
+      this.openRequirementApprovalGate(
+        req,
+        'requirement',
+        `Agent "${creatorName}" proposed requirement "${req.title}" (priority: ${req.priority}).`,
+      );
     }
     log.info('Requirement created', {
       id: req.id,
@@ -329,6 +479,57 @@ export class RequirementService {
   }
 
   /**
+   * 需求闸打回 — "changes requested" without terminating.
+   *
+   * The requirement stays `pending`: it was never approved, and rejecting it would
+   * claim a terminal decision nobody made. The decision is carried by the two
+   * observable side effects the contract freezes — ① a requirement comment holding
+   * the reviewer's own words, and ② a creator notification with the new
+   * `changes_requested` decision value. Deliberately **no new field**: the identity
+   * of "a reviewer asked for changes" lives in those two signals, not in a status
+   * marker.
+   */
+  async markChangesRequested(req: Requirement, actorId: string, feedback?: string): Promise<Requirement> {
+    const now = new Date().toISOString();
+    req.updatedAt = now;
+
+    if (!this.requirementCommentPoster) {
+      throw new Error(
+        `Requirement comment channel is not wired — the changes-requested decision on ${req.id} would be invisible`,
+      );
+    }
+
+    const authorName = this.resolveAgentName(actorId) ?? actorId;
+    const reason = feedback?.trim();
+    const content = [
+      `**Changes requested by ${authorName}**`,
+      '',
+      reason ?? '_No reason was given._',
+      '',
+      'Requirement stays **pending** — address the feedback (`requirement_update`), then ask for approval again.',
+    ].join('\n');
+
+    try {
+      await this.requirementCommentPoster(
+        req.id,
+        actorId,
+        authorName,
+        content,
+        req.createdBy ? [req.createdBy] : undefined,
+      );
+    } catch (e) {
+      log.error('Failed to record the requirement changes-requested comment', { id: req.id, error: String(e) });
+      throw e;
+    }
+
+    this.broadcast('requirement:changes_requested', req);
+    log.info('Requirement changes requested (stays pending)', { id: req.id, actorId });
+    this.notifyCreatorOnDecision(req, 'changes_requested', actorId, feedback);
+
+    return req;
+  }
+
+  /**
    * Resubmit a rejected requirement for review, optionally updating its fields.
    * Transitions rejected → pending so the human can re-evaluate.
    */
@@ -373,29 +574,11 @@ export class RequirementService {
 
     if (this.hitlService && req.source === 'agent') {
       const creatorName = this.resolveAgentName(req.createdBy);
-      this.hitlService.requestApprovalAndWait({
-        agentId: req.createdBy,
-        agentName: creatorName,
-        type: 'custom',
-        title: req.title,
-        description: `Agent "${creatorName}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
-        details: { requirementId: req.id, priority: req.priority, subType: 'requirement_resubmit' },
-        targetUserId: 'all',
-      }).then(result => {
-        const current = this.requirements.get(req.id);
-        if (!current || current.status !== 'pending') return;
-        if (result.approved) {
-          this.approveRequirement(req.id, result.respondedBy ?? 'hitl');
-        } else {
-          this.rejectRequirement(
-            req.id,
-            result.respondedBy ?? 'hitl',
-            result.comment || 'Rejected via approval',
-          );
-        }
-      }).catch(err => {
-        log.error('HITL approval flow error for resubmitted requirement', { requirementId: req.id, error: String(err) });
-      });
+      this.openRequirementApprovalGate(
+        req,
+        'requirement_resubmit',
+        `Agent "${creatorName}" resubmitted requirement "${req.title}" (priority: ${req.priority}).`,
+      );
     }
 
     return req;
@@ -710,7 +893,7 @@ export class RequirementService {
    */
   private notifyCreatorOnDecision(
     req: Requirement,
-    decision: 'approved' | 'rejected',
+    decision: 'approved' | 'rejected' | 'changes_requested',
     decidedBy: string,
     reason?: string,
   ): void {
@@ -732,6 +915,17 @@ export class RequirementService {
         if (req.projectId) parts.push(`**Project:** ${req.projectId}`);
         parts.push('');
         parts.push(`Please use \`task_create\` to create tasks for this requirement, setting requirement_id to "${req.id}".`);
+      } else if (decision === 'changes_requested') {
+        parts.push(`[REQUIREMENT NEEDS CHANGES] Your proposed requirement "${req.title}" (ID: ${req.id}) needs changes before it can be approved.`);
+        parts.push('');
+        parts.push('It has **not** been rejected and is still awaiting approval.');
+        parts.push('');
+        if (reason) parts.push(`**Feedback:** ${reason}`);
+        parts.push('');
+        parts.push(`**Title:** ${req.title}`);
+        parts.push(`**Description:** ${req.description}`);
+        parts.push('');
+        parts.push('Please address the feedback (`requirement_update`), then ask for approval again.');
       } else {
         parts.push(`[REQUIREMENT REJECTED] Your proposed requirement "${req.title}" (ID: ${req.id}) has been rejected.`);
         parts.push('');
@@ -747,7 +941,7 @@ export class RequirementService {
 
       const agent = this.agentManager.getAgent(creatorId);
       agent.enqueueToMailbox('requirement_update', {
-        summary: `Requirement "${req.title}" ${decision}`,
+        summary: `Requirement "${req.title}" ${decision === 'changes_requested' ? 'needs changes' : decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
         extra: { actionRequired: true },
@@ -765,10 +959,14 @@ export class RequirementService {
     if (this.hitlService) {
       const title = decision === 'approved'
         ? `Requirement approved: ${req.title}`
-        : `Requirement rejected: ${req.title}`;
+        : decision === 'rejected'
+          ? `Requirement rejected: ${req.title}`
+          : `Requirement changes requested: ${req.title}`;
       const body = decision === 'approved'
         ? `Requirement "${req.title}" has been approved and is now in progress.`
-        : `Requirement "${req.title}" has been rejected.${reason ? ` Reason: ${reason}` : ''}`;
+        : decision === 'rejected'
+          ? `Requirement "${req.title}" has been rejected.${reason ? ` Reason: ${reason}` : ''}`
+          : `Requirement "${req.title}" needs changes before approval — it is still pending.${reason ? ` Feedback: ${reason}` : ''}`;
 
       this.hitlService.notify({
         targetUserId: 'all',
@@ -781,16 +979,24 @@ export class RequirementService {
           requirementId: req.id,
           decision,
           createdBy: creatorId,
-          i18n: {
-            titleKey: decision === 'approved'
-              ? 'notifications.titles.requirementApproved'
-              : 'notifications.titles.requirementRejected',
-            titleParams: { title: req.title },
-            bodyKey: decision === 'approved'
-              ? 'notifications.bodies.requirementApprovedBody'
-              : 'notifications.bodies.requirementRejectedBody',
-            bodyParams: { title: req.title, reason: reason ?? '' },
-          },
+          // No string-table entry exists for the third state yet (the frontend
+          // card carries its own strings), so the block is omitted rather than
+          // falling through to the *rejected* keys — which would tell the reader
+          // the requirement had been rejected.
+          ...(decision === 'changes_requested'
+            ? {}
+            : {
+                i18n: {
+                  titleKey: decision === 'approved'
+                    ? 'notifications.titles.requirementApproved'
+                    : 'notifications.titles.requirementRejected',
+                  titleParams: { title: req.title },
+                  bodyKey: decision === 'approved'
+                    ? 'notifications.bodies.requirementApprovedBody'
+                    : 'notifications.bodies.requirementRejectedBody',
+                  bodyParams: { title: req.title, reason: reason ?? '' },
+                },
+              }),
         },
       });
     }

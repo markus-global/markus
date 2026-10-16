@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, hubApi, invalidateApiCache, wsClient, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
+import { api, hubApi, invalidateApiCache, wsClient, resolveApprovalDirection, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
@@ -714,6 +714,19 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   };
 
   /**
+   * Tri-state option label. The direction is resolved from the option token via
+   * the shared closure mirror so `approve` / `request_changes` / `reject` each
+   * get their own wording (previously `reject` and `request_changes` shared one).
+   */
+  const approvalOptionLabel = (opt: { id: string; label: string }): string => {
+    const dir = resolveApprovalDirection(opt.id);
+    if (dir === 'approve') return t('team:notifications.optionLabels.approve', { defaultValue: opt.label });
+    if (dir === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
+    if (dir === 'reject') return t('team:notifications.optionLabels.reject', { defaultValue: opt.label });
+    return opt.label;
+  };
+
+  /**
    * 审批描述本地化：结构化审批（需求提出/重新提交/任务创建）的描述是后端生成的模板句，
    * 根据 subType + 参数重建为当前语言；task_review 仅替换首行模板，保留活动详情/交付物等用户内容；
    * 其余（自定义审批）保留原文。
@@ -911,18 +924,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         const txt = (freeformTexts[a.id] ?? '').trim();
 
                         if (hasOptions) {
-                          const optionLabel = (opt: { id: string; label: string }): string => {
-                      if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
-                      if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
-                      return opt.label;
-                    };
+                          const optionLabel = approvalOptionLabel;
                     return (
                             <div className="space-y-1.5">
                               {a.options!.map((opt, idx) => (
                                 <button
                                   key={opt.id}
                                   disabled={responding === a.id}
-                                  onClick={() => handleApprovalResponse(a.id, opt.id !== 'reject', txt || undefined, opt.id)}
+                                  onClick={() => handleApprovalResponse(a.id, resolveApprovalDirection(opt.id) === 'approve', txt || undefined, opt.id)}
                                   className={`w-full px-3 py-2 text-left text-[11px] font-medium rounded-md disabled:opacity-50 transition-colors flex items-center gap-2 ${
                                     opt.id === 'reject' || opt.id === 'request_changes'
                                       ? 'border border-border-default text-fg-secondary hover:bg-surface-overlay'
@@ -995,7 +1004,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                     value={freeformTexts[a.id] ?? ''}
                                     onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
                                     onKeyDown={e => {
-                                      if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment');
+                                      if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'request_changes');
                                       if (e.key === 'Escape') setAdjustingId(null);
                                     }}
                                     className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
@@ -1003,7 +1012,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                   <div className="flex gap-2">
                                     <button
                                       disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
-                                      onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment')}
+                                      onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'request_changes')}
                                       className="px-2.5 py-1.5 text-[11px] font-medium bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 transition-colors"
                                     >{t('team:notifications.confirmAdjustment')}</button>
                                     <button
@@ -1254,18 +1263,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           const txt = (freeformTexts[a.id] ?? '').trim();
 
                           if (hasOptions) {
-                            const optionLabel = (opt: { id: string; label: string }): string => {
-                              if (opt.id === 'approve') return t('common:approve', { defaultValue: opt.label });
-                              if (opt.id === 'reject' || opt.id === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
-                              return opt.label;
-                            };
+                            const optionLabel = approvalOptionLabel;
                             return (
                               <div className="space-y-1.5">
                                 {a.options!.map((opt, idx) => (
                                   <button
                                     key={opt.id}
                                     disabled={responding === a.id}
-                                    onClick={() => handleApprovalResponse(a.id, opt.id !== 'reject', txt || undefined, opt.id)}
+                                    onClick={() => handleApprovalResponse(a.id, resolveApprovalDirection(opt.id) === 'approve', txt || undefined, opt.id)}
                                     className={`w-full px-3 py-2 text-left text-[11px] font-medium rounded-md disabled:opacity-50 transition-colors flex items-center gap-2 ${
                                       opt.id === 'reject' || opt.id === 'request_changes'
                                         ? 'border border-border-default text-fg-secondary hover:bg-surface-overlay'
@@ -1338,7 +1343,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                       value={freeformTexts[a.id] ?? ''}
                                       onChange={e => setFreeformTexts(prev => ({ ...prev, [a.id]: e.target.value }))}
                                       onKeyDown={e => {
-                                        if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment');
+                                        if (e.key === 'Enter' && (freeformTexts[a.id] ?? '').trim()) handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'request_changes');
                                         if (e.key === 'Escape') setAdjustingId(null);
                                       }}
                                       className="w-full px-2.5 py-1.5 text-[11px] bg-surface-overlay border border-border-default rounded-md text-fg-primary placeholder:text-fg-tertiary focus:outline-none focus:ring-1 focus:ring-amber-500/50"
@@ -1346,7 +1351,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                                     <div className="flex gap-2">
                                       <button
                                         disabled={responding === a.id || !(freeformTexts[a.id] ?? '').trim()}
-                                        onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'needs_adjustment')}
+                                        onClick={() => handleApprovalResponse(a.id, false, (freeformTexts[a.id] ?? '').trim(), 'request_changes')}
                                         className="px-2.5 py-1.5 text-[11px] font-medium bg-amber-600 text-white rounded-md hover:bg-amber-700 disabled:opacity-50 transition-colors"
                                       >{t('team:notifications.confirmAdjustment')}</button>
                                       <button

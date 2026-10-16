@@ -79,6 +79,7 @@ import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
+import { ApprovalApplier, type ApprovalTargetPort } from './approval-apply.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -316,6 +317,8 @@ export class APIServer {
   public ws: WSBroadcaster;
   public skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
+  /** The platform-wide single execution point for approval outcomes. */
+  private approvalApplier?: ApprovalApplier;
   public billingService?: BillingService;
   public auditService?: AuditService;
   public licenseService?: LicenseService;
@@ -1500,6 +1503,40 @@ export class APIServer {
 
   setAuditService(service: AuditService): void {
     this.auditService = service;
+  }
+
+  /**
+   * Inject the platform-wide single execution point. Optional: when the
+   * composition root does not provide one, {@link ensureApprovalApplier} builds it
+   * from the services this server already holds, so HTTP responses stay wired.
+   */
+  setApprovalApplier(applier: ApprovalApplier): void {
+    this.approvalApplier = applier;
+    this.ensureApprovalApplier();
+  }
+
+  /**
+   * The applier is the only thing allowed to turn an approval decision into a
+   * target transition in the HTTP layer. Built lazily and idempotently so that
+   * whichever order services are attached in, exactly one instance routes here —
+   * and the services get their promise-path callbacks wired at the same time.
+   */
+  private ensureApprovalApplier(): ApprovalApplier | undefined {
+    if (!this.hitlService || !this.taskService) return this.approvalApplier;
+    const applier = this.approvalApplier ?? new ApprovalApplier(this.hitlService);
+    this.approvalApplier = applier;
+
+    const candidates: Array<{ gate: boolean; port?: ApprovalTargetPort }> = [
+      { gate: typeof (this.taskService as unknown as ApprovalTargetPort)?.canApplyApproval === 'function', port: this.taskService as unknown as ApprovalTargetPort },
+      { gate: typeof (this.requirementService as unknown as ApprovalTargetPort)?.canApplyApproval === 'function', port: this.requirementService as unknown as ApprovalTargetPort },
+    ];
+    for (const { gate, port } of candidates) {
+      if (!gate || !port) continue;
+      applier.registerPort(port);
+      const host = port as unknown as { setApprovalApplier?: (a: ApprovalApplier) => void };
+      host.setApprovalApplier?.(applier);
+    }
+    return applier;
   }
 
   setHITLService(service: HITLService): void {
@@ -7121,37 +7158,47 @@ EXPLANATION_END`;
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
       const answers = body['answers'] as UserInputAnswer[] | undefined;
-      const result = this.hitlService.respondToApproval(
+      const response = this.hitlService.respondToApproval(
         approvalId, approved, respondedBy, comment, selectedOption, answers,
       );
-      if (!result) {
+      if (!response) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
         return;
       }
+      const result = response.approval;
+      const intent = response.decision.intent;
 
-      // Directly transition task/requirement as fallback.
-      // The in-memory promise callback from requestApprovalAndWait is lost on
-      // server restart, so we must also drive the state change from here.
+      // Single execution point (see approval-apply.ts).
+      //
+      // The in-memory promise callback from `requestApprovalAndWait` is lost on
+      // server restart, so this fallback must still be able to drive the target —
+      // but it must NOT become a second writer: both paths go through the same
+      // applier, whose synchronous claim on the approval entity makes the outcome
+      // exactly-once (the loser reports `already-applied` / `out-of-window`).
       const details = result.details as Record<string, unknown> | undefined;
+      const subType = details?.['subType'] as string | undefined;
       const taskId = details?.['taskId'] as string | undefined;
       const requirementId = details?.['requirementId'] as string | undefined;
-      if (taskId) {
-        try {
-          if (approved) {
-            this.taskService.approveTask(taskId, respondedBy);
-          } else {
-            this.taskService.rejectTask(taskId, respondedBy);
-          }
-        } catch { /* already transitioned by in-memory promise callback */ }
-      }
-      if (requirementId && this.requirementService) {
-        try {
-          if (approved) {
-            this.requirementService.approveRequirement(requirementId, respondedBy);
-          } else {
-            this.requirementService.rejectRequirement(requirementId, respondedBy, comment || 'Rejected via approval');
-          }
-        } catch { /* already transitioned by in-memory promise callback */ }
+      const targetId = subType === 'task' || subType === 'task_review'
+        ? taskId
+        : subType === 'requirement' || subType === 'requirement_resubmit'
+          ? requirementId
+          : undefined;
+      const applier = this.ensureApprovalApplier();
+      const outcome = applier
+        ? await applier.apply({
+            approvalId,
+            subType: subType ?? '',
+            targetId: targetId ?? '',
+            intent,
+            actorId: respondedBy,
+            comment,
+          })
+        : undefined;
+      if (!applier) {
+        log.error('Approval applier unavailable — decision was NOT applied to its target', {
+          approvalId, subType, taskId, requirementId, intent,
+        });
       }
 
       this.auditService?.record({
@@ -7159,13 +7206,19 @@ EXPLANATION_END`;
         userId: respondedBy,
         agentId: result.agentId,
         type: 'approval_response',
-        action: approved ? 'approve' : 'reject',
+        action: intent,
         detail: result.title,
-        success: approved,
-        metadata: { approvalId, taskId, requirementId, comment, selectedOption },
+        success: intent === 'approve',
+        metadata: {
+          approvalId, taskId, requirementId, comment, selectedOption, intent,
+          applyReason: outcome?.reason ?? 'unrouted',
+        },
       });
 
-      this.json(res, 200, { approval: result });
+      this.json(res, 200, {
+        approval: result,
+        decision: { intent, applied: outcome?.applied ?? false, reason: outcome?.reason ?? 'unrouted' },
+      });
       return;
     }
 
@@ -13022,6 +13075,26 @@ EXPLANATION_END`;
       return;
     }
 
+    // 需求闸「重新发起审批」入口 — the requirement-side counterpart of the task entry
+    // below: a 打回 keeps the requirement `pending` with no live approval, so this
+    // is how a proposal gets back into review after revisions.
+    if (path.match(/^\/api\/requirements\/[^/]+\/request-approval$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      try {
+        const result = this.requirementService.requestRequirementApproval(reqId, authUser.userId);
+        this.json(res, 200, result);
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/requirements\/[^/]+\/cancel$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -13267,6 +13340,21 @@ EXPLANATION_END`;
       try {
         const task = this.taskService.archiveTask(taskId);
         this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // 建卡闸「重新发起审批」入口 — the third segment of the 打回 loop. A 打回 keeps
+    // the task `pending` with zero state transition and no live approval; the
+    // assignee revises the title / description and calls this to re-open the gate.
+    if (path.match(/^\/api\/tasks\/[^/]+\/request-approval$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      const authUser = await this.getAuthUser(req);
+      try {
+        const result = this.taskService.requestTaskApproval(taskId, authUser?.userId);
+        this.json(res, 200, result);
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
@@ -13729,6 +13817,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/revision$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/accept$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/archive$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/request-approval$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/schedule$/, 'PUT'),
       regex(/^\/api\/tasks\/[^/]+\/schedule\/pause$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/schedule\/resume$/, 'POST'),
@@ -13760,6 +13849,7 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+\/approve$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/request-approval$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),
 

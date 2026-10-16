@@ -465,6 +465,39 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The tri-state decision vocabulary understood by the platform gates. Mirrors
+ * the server's `ApprovalIntent` (minus the boolean-fallback case).
+ */
+export type ApprovalOptionDirection = 'approve' | 'request_changes' | 'reject';
+
+const APPROVAL_APPROVE_TOKENS = new Set(['approve', 'approved']);
+const APPROVAL_REJECT_TOKENS = new Set(['reject', 'rejected']);
+const APPROVAL_REQUEST_CHANGES_TOKENS = new Set([
+  'request_changes', 'requestchanges', 'changes_requested', 'revision', 'needs_adjustment', 'needsadjustment',
+]);
+
+/** Normalise a raw option token the way the server's `resolveApprovalIntent` does. */
+function normalizeApprovalToken(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+/**
+ * Client mirror of the server's global intent closure: maps a `selectedOption`
+ * token to the direction it resolves to, or `null` when the token is outside the
+ * closure (the server then falls back to the legacy `approved` boolean). The UI
+ * uses this to label options correctly and to keep `approved` aligned with the
+ * token — in particular so `request_changes` is never treated as an approval.
+ */
+export function resolveApprovalDirection(raw?: string): ApprovalOptionDirection | null {
+  if (!raw) return null;
+  const token = normalizeApprovalToken(raw);
+  if (APPROVAL_APPROVE_TOKENS.has(token)) return 'approve';
+  if (APPROVAL_REQUEST_CHANGES_TOKENS.has(token)) return 'request_changes';
+  if (APPROVAL_REJECT_TOKENS.has(token)) return 'reject';
+  return null;
+}
+
 const _dedupCache = new Map<string, { promise: Promise<unknown>; ts: number }>();
 const DEDUP_TTL_MS = 3000;
 
@@ -1697,6 +1730,8 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     approve: (id: string, runNow?: boolean) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST', body: JSON.stringify({ runNow: runNow ?? undefined }) }),
     reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
+    /** 建卡闸「重新发起审批」入口 — re-open the creation gate after a 打回. */
+    requestApproval: (id: string) => request<{ taskId: string; approvalId: string }>(`/tasks/${id}/request-approval`, { method: 'POST' }),
     cancel: (id: string, cascade = false) => request<{ task: TaskInfo }>(`/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify({ cascade }) }),
     getDependentCount: (id: string) => request<{ count: number }>(`/tasks/${id}/dependents`),
     board: (filters?: { projectId?: string }) => {
@@ -1792,6 +1827,8 @@ export const api = {
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
     reject: (id: string, reason: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    /** 需求闸「重新发起审批」入口 — re-open the approval gate after a 打回. */
+    requestApproval: (id: string) => request<{ requirementId: string; approvalId: string }>(`/requirements/${id}/request-approval`, { method: 'POST' }),
     cancel: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}/cancel`, { method: 'POST' }),
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),

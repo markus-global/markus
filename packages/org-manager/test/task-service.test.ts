@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskService, computeNextRunFromConfig } from '../src/task-service.js';
+import { ApprovalApplier } from '../src/approval-apply.js';
 import type { OrganizationService } from '../src/org-service.js';
 
 const AGENT_A = 'agent-a';
@@ -1651,13 +1652,20 @@ describe('TaskService', () => {
 
     it('auto-approves worker task when HITL returns approved', async () => {
       const hitlService = {
-        requestApprovalAndWait: vi.fn().mockResolvedValue({ approved: true, respondedBy: 'user-1' }),
+        requestApprovalAndWait: vi.fn().mockResolvedValue({
+          approvalId: 'appr-1', approved: true, intent: 'approve', respondedBy: 'user-1',
+        }),
         notify: vi.fn(),
         listApprovals: vi.fn(() => []),
         respondToApproval: vi.fn(),
         cancelApprovalsByDetail: vi.fn(() => 0),
+        claimApply: vi.fn(() => true),
       };
       ts.setHITLService(hitlService as never);
+      // 审批结果的唯一执行点：闸门回调只路由，不再自己动状态（对齐 composition root）
+      const applier = new ApprovalApplier(hitlService as never);
+      applier.registerPort(ts);
+      ts.setApprovalApplier(applier);
       ts.setGovernancePolicy({
         enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
         requireApprovalForPriority: [], requireRequirement: false, rules: [],
