@@ -33,6 +33,26 @@ function recordingSink(capsOf: (t: NotifyTarget) => Record<string, boolean>): Ou
   };
 }
 
+interface CardDelivery {
+  target: NotifyTarget;
+  format: string;
+  body: string;
+  origin?: { agentName?: string; teamName?: string };
+}
+
+/** A sink whose target can render cards, recording the structured body + origin. */
+function recordingCardSink(): OutboundSink & { deliveries: CardDelivery[] } {
+  const deliveries: CardDelivery[] = [];
+  return {
+    deliveries,
+    capabilities: () => ({ cards: true, markdown: true }),
+    send: async (t, rendered) => {
+      deliveries.push({ target: t, format: rendered.format, body: rendered.body, origin: rendered.origin });
+      return `native_${deliveries.length}`;
+    },
+  };
+}
+
 /**
  * A lookup with nothing reachable — the walk falls to whatever each test declares.
  * Each slot is one candidate, in the priority order the production lookup emits.
@@ -69,7 +89,7 @@ const APPROVAL: OutboundMessage = {
 };
 
 describe('OutboundDispatcher — agent attribution', () => {
-  it('prefixes the delivered body with the originating agent’s name', async () => {
+  it('labels the delivered message with the originating agent’s name', async () => {
     const sink = recordingSink(() => ({ markdown: true }));
     const lookup = lookupOf({ global: SECRETARY });
     const dispatcher = new OutboundDispatcher({
@@ -79,8 +99,50 @@ describe('OutboundDispatcher — agent attribution', () => {
     });
 
     await dispatcher.dispatch(APPROVAL);
-    expect(sink.deliveries[0].text).toContain('**来自**：运营助手');
+    expect(sink.deliveries[0].text).toContain('来自：运营助手');
     expect(sink.deliveries[0].text).toContain('部署请求');
+  });
+
+  it('carries the team name in the attribution when the agent belongs to one', async () => {
+    const sink = recordingSink(() => ({ markdown: true }));
+    const lookup = lookupOf({ global: SECRETARY });
+    const dispatcher = new OutboundDispatcher({
+      lookup,
+      sink,
+      agentName: () => '运营助手',
+      agentTeamName: () => '平台开发组',
+    });
+
+    await dispatcher.dispatch(APPROVAL);
+    expect(sink.deliveries[0].text).toContain('来自：运营助手');
+    expect(sink.deliveries[0].text).toContain('团队：平台开发组');
+  });
+
+  it('shows the agent without a team suffix when the agent has no team', async () => {
+    const sink = recordingSink(() => ({ markdown: true }));
+    const lookup = lookupOf({ global: SECRETARY });
+    const dispatcher = new OutboundDispatcher({
+      lookup,
+      sink,
+      agentName: () => '运营助手',
+      agentTeamName: () => undefined,
+    });
+
+    await dispatcher.dispatch(APPROVAL);
+    expect(sink.deliveries[0].text).toContain('来自：运营助手');
+    expect(sink.deliveries[0].text).not.toContain('团队');
+  });
+
+  it('emits a plain-text attribution line — no markdown emphasis leaks into text platforms', async () => {
+    const sink = recordingSink(() => ({}));
+    const lookup = lookupOf({ global: SECRETARY });
+    const dispatcher = new OutboundDispatcher({ lookup, sink, agentName: () => '运营助手' });
+
+    await dispatcher.dispatch(APPROVAL);
+    // A plain-text platform renders the line verbatim: the `**` of the old
+    // in-band markdown prefix would have shown up literally here.
+    expect(sink.deliveries[0].text).not.toContain('**');
+    expect(sink.deliveries[0].text.split('\n')[0]).toBe('来自：运营助手');
   });
 
   it('delivers unattributed when the name is unknown — attribution never blocks', async () => {
@@ -93,13 +155,24 @@ describe('OutboundDispatcher — agent attribution', () => {
     expect(sink.deliveries[0].text).not.toContain('来自');
   });
 
-  it('does not double-prefix a message that already carries its attribution', async () => {
-    const sink = recordingSink(() => ({ markdown: true }));
+  it('surfaces the origin as structure so a card can place it, not only inline in text', async () => {
+    const cardSink = recordingCardSink();
     const lookup = lookupOf({ global: SECRETARY });
-    const dispatcher = new OutboundDispatcher({ lookup, sink, agentName: () => '运营助手' });
+    const dispatcher = new OutboundDispatcher({
+      lookup,
+      sink: cardSink,
+      agentName: () => '运营助手',
+      agentTeamName: () => '平台开发组',
+    });
 
-    await dispatcher.dispatch({ ...APPROVAL, body: '**来自**：运营助手\n\n部署请求' });
-    expect(sink.deliveries[0].text.match(/来自/g)).toHaveLength(1);
+    await dispatcher.dispatch(APPROVAL);
+    // Card body stays clean (no duplicated attribution inside the body)…
+    expect(cardSink.deliveries[0].body).toBe('部署请求');
+    // …while the origin travels as a field for the card's own dialect to render.
+    expect(cardSink.deliveries[0].origin).toMatchObject({
+      agentName: '运营助手',
+      teamName: '平台开发组',
+    });
   });
 });
 

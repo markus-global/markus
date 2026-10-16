@@ -42,6 +42,30 @@ describe('buildNotificationCard', () => {
     expect(actionEl.actions).toHaveLength(1);
     expect(actionEl.actions[0].value.ref).toBe('signed.ref.1');
   });
+
+  it('shows the origin (agent + team) as a footnote, not inside the body', () => {
+    const card = buildNotificationCard({
+      title: '审批',
+      body: '部署请求',
+      origin: { agentName: '运营助手', teamName: '平台开发组' },
+    });
+    const note = (card.elements as any[]).find((e) => e.tag === 'note');
+    expect(note.elements[0].content).toBe('来自 运营助手 · 团队 平台开发组');
+    // The body is untouched — the origin has exactly one home in the card.
+    const bodyEl = (card.elements as any[]).find((e) => e.tag === 'div');
+    expect(bodyEl.text.content).toBe('部署请求');
+  });
+
+  it('omits the team from the origin note when the agent has no team', () => {
+    const card = buildNotificationCard({ title: 't', body: 'b', origin: { agentName: '运营助手' } });
+    const note = (card.elements as any[]).find((e) => e.tag === 'note');
+    expect(note.elements[0].content).toBe('来自 运营助手');
+  });
+
+  it('adds no origin note when no agent is known', () => {
+    const card = buildNotificationCard({ title: 't', body: 'b' });
+    expect((card.elements as any[]).find((e) => e.tag === 'note')).toBeUndefined();
+  });
 });
 
 describe('buildStatusCard', () => {

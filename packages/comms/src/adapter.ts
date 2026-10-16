@@ -146,6 +146,13 @@ export interface SendCard {
   body: string;
   /** Action buttons; each carries a signed `ref` so a tap completes an approval. */
   actions?: SendCardAction[];
+  /**
+   * Who sent the message (agent name, and its team when it has one). Structure
+   * rather than body text, so a card-capable adapter can show it in its own
+   * extension slot — a footnote on Feishu, a context block on Slack — while a
+   * text-only path already carries it inline via the plain-text projection.
+   */
+  origin?: { agentName?: string; teamName?: string };
 }
 
 export interface SendOptions {

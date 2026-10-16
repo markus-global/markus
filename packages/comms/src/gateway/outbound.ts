@@ -51,11 +51,17 @@ export interface OutboundOrigin {
   taskId?: string;
   /**
    * The origin agent's display name, when known. Envelope, not payload: the
-   * dispatcher resolves it from {@link agentId} and the renderer prefixes it to
-   * the message, so a notification landing in a shared group says *which agent*
-   * it came from instead of arriving anonymously.
+   * dispatcher resolves it from {@link agentId} and the renderer surfaces it, so a
+   * notification landing in a shared group says *which agent* it came from
+   * instead of arriving anonymously.
    */
   agentName?: string;
+  /**
+   * The name of the team the origin agent belongs to, when it belongs to one.
+   * Kept separate from {@link agentName} so a renderer can place it in its own
+   * extension slot (a card's footnote) rather than cramming it into the body.
+   */
+  teamName?: string;
 }
 
 /**

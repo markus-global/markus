@@ -7,7 +7,7 @@
  * gets the full title, body and — crucially — every action label *and* its signed
  * ref, so a button-less platform shows the same content instead of dropping it.
  */
-import type { OutboundAction, OutboundMessage } from './outbound.js';
+import type { OutboundAction, OutboundMessage, OutboundOrigin } from './outbound.js';
 
 /** What a platform/instance can render. Absent flags mean "assume nothing". */
 export interface RenderCapabilities {
@@ -31,6 +31,25 @@ export interface RenderedOutbound {
   /** Plain-text projection — **always** present, whatever the format. */
   text: string;
   actions: OutboundAction[];
+  /**
+   * The message's origin, when it has one. Carried as **structure** so a card can
+   * place the sender in its own extension slot; the plain-text projection already
+   * includes {@link originLine} for platforms that can only show text.
+   */
+  origin?: OutboundOrigin;
+}
+
+/**
+ * The one rendering of "who sent this" as a line of text. Deliberately free of
+ * markdown: it is prepended to the plain-text projection, which a button-less /
+ * text-only platform shows verbatim — the old in-band `**来自**：…` prefix leaked
+ * its `**` straight into those platforms' output.
+ */
+export function originLine(origin: OutboundOrigin | undefined): string | undefined {
+  const name = origin?.agentName?.trim();
+  if (!name) return undefined;
+  const team = origin?.teamName?.trim();
+  return team ? `来自：${name}（团队：${team}）` : `来自：${name}`;
 }
 
 /**
@@ -46,8 +65,10 @@ export function renderCapabilitiesOf(
   return caps.cards ? { cards: true, markdown: true } : { cards: false, markdown: true };
 }
 
-function plainText(msg: OutboundMessage, actions: OutboundAction[]): string {
-  const parts = [msg.title, '', msg.body];
+function plainText(msg: OutboundMessage, actions: OutboundAction[], origin?: string): string {
+  const parts: string[] = [];
+  if (origin) parts.push(origin, '');
+  parts.push(msg.title, '', msg.body);
   if (actions.length > 0) {
     parts.push('');
     for (const a of actions) {
@@ -72,8 +93,11 @@ export function renderOutbound(msg: OutboundMessage, caps: RenderCapabilities = 
     format,
     interactive,
     title: msg.title,
+    // Body stays clean: a card renders the origin from `origin` (its own slot),
+    // and the text projection below carries the line. One fact, placed once.
     body: msg.body,
-    text: plainText(msg, actions),
+    text: plainText(msg, actions, originLine(msg.origin)),
     actions,
+    ...(msg.origin ? { origin: msg.origin } : {}),
   };
 }

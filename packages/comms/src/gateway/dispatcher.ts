@@ -138,6 +138,12 @@ export interface OutboundDispatcherOptions {
    * for a name.
    */
   agentName?: (agentId: string) => string | undefined;
+  /**
+   * Resolve the team the origin agent belongs to, so a notification can say
+   * which team it came from. Independent of {@link agentName}: a missing team
+   * never withholds the delivery nor the agent line.
+   */
+  agentTeamName?: (agentId: string) => string | undefined;
 }
 
 /** EventBus task events the dispatcher forwards by default, with their severity. */
@@ -156,6 +162,7 @@ export class OutboundDispatcher {
   private readonly digestTitle: (count: number) => string;
   private readonly actionSecret?: string;
   private readonly agentName?: (agentId: string) => string | undefined;
+  private readonly agentTeamName?: (agentId: string) => string | undefined;
   /**
    * `info` messages waiting for a digest, each paired with the destination it
    * already passed eligibility for. Pairing is load-bearing: re-resolving at
@@ -173,6 +180,7 @@ export class OutboundDispatcher {
     this.digestTitle = opts.digestTitle ?? ((n) => `📬 通知汇总（${n} 条）`);
     this.actionSecret = opts.actionSecret;
     this.agentName = opts.agentName;
+    this.agentTeamName = opts.agentTeamName;
   }
 
   /**
@@ -356,23 +364,26 @@ export class OutboundDispatcher {
   }
 
   /**
-   * Prefix the message with who sent it, when the origin agent's name is known.
+   * Stamp the message with who sent it — as **structure**, not as text.
    *
    * This is envelope, not payload: `origin.agentId` already travels for routing,
-   * and this surfaces the human-readable name so a notification landing in a
-   * shared group says *which agent* it came from instead of arriving anonymously.
-   * Applied at the single delivery point, so the card, markdown and plain-text
-   * renderings all carry it. Idempotent (never prefixed twice) and skipped
-   * entirely when the name is unknown — a message is never held back for it.
+   * and here the human-readable agent name (and its team, when it has one) are
+   * resolved onto `origin`. The renderer decides how to show it — an inline line
+   * for text platforms, its own slot for a card — so the two never disagree and
+   * nothing is written into the body that a later stage would have to parse back
+   * out. Idempotent (an already-stamped origin is left as-is) and skipped entirely
+   * when the name is unknown — a message is never held back for it.
    */
   private attribute(msg: OutboundMessage): OutboundMessage {
     const agentId = msg.origin?.agentId;
     if (!agentId) return msg;
-    const name = this.agentName?.(agentId);
+    const name = msg.origin?.agentName ?? this.agentName?.(agentId);
     if (!name) return msg;
-    const marker = `**来自**：${name}`;
-    if (msg.body.startsWith(marker)) return msg;
-    return { ...msg, origin: { ...msg.origin, agentName: name }, body: `${marker}\n\n${msg.body}` };
+    const teamName = msg.origin?.teamName ?? this.agentTeamName?.(agentId);
+    return {
+      ...msg,
+      origin: { ...msg.origin, agentId, agentName: name, ...(teamName ? { teamName } : {}) },
+    };
   }
 
   private async deliver(

@@ -128,10 +128,29 @@ and always carries the action labels **and their refs** — a platform without b
 shows the same content as text, it never drops it.
 
 Notification bodies are Markdown; the adapter renders them as the platform's rich
-form (Feishu `lark_md`). At the **single delivery point** the dispatcher prefixes the
-body with the producing agent's name (`**来自**：{agent}`) so a busy shared channel
-stays readable. The attribution is idempotent and best-effort: if the name cannot be
-resolved the message is still delivered, unchanged.
+form (Feishu `lark_md`). **Attribution is envelope, not payload** (§5.1): at the
+single delivery point the dispatcher stamps the message's `origin` with the
+producing agent's name and, when it has one, its **team** — and each renderer
+places that fact once, in its own way.
+
+### 5.1 Origin attribution — structure, not a body prefix
+
+Who sent a message is *structure* (`origin.agentName` / `origin.teamName`), never a
+line spliced into the body for a later stage to parse back out:
+
+- **Text / markdown platforms** get a plain-text line from the one renderer,
+  `originLine()` — `来自：{agent}（团队：{team}）`, or `来自：{agent}` with no team. It
+  is deliberately markdown-free: the old in-band `**来自**：…` prefix leaked its `**`
+  straight into text-only platforms, and left no room for the team.
+- **Card platforms** keep `body` clean and receive `origin` as a field, which each
+  adapter renders in its own extension slot — a Feishu `note` footnote, a Slack
+  `context` block. Names are escaped per dialect (Slack mrkdwn) so an agent name
+  cannot inject a mention or link.
+
+The line is idempotent and best-effort: if the agent name cannot be resolved the
+message is delivered anyway, unchanged; a missing team never withholds the agent
+line nor the delivery. `RouterOutboundSink` forwards `origin` into the card
+options; resolution happens once, in the dispatcher, from `agentId`.
 
 ## 6. One enforcement point for preferences
 
@@ -229,6 +248,9 @@ moves bytes.*
   bot could deliver.
 - Destination, send fidelity, preference enforcement and attribution all read the
   **same** instance config (the DB) — one fact, one source.
+- Attribution is **structure** (`origin.{agentName,teamName}`), placed exactly once per
+  rendering: an inline, markdown-free line for text platforms, a native extension slot
+  for card platforms — never both, never a body prefix a later stage must parse.
 - A notification platform with buttons renders a tappable card; capability
   degradation is total and never loses content.
 - **Exactly one** IM message per logical notification, independent of user count.

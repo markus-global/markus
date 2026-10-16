@@ -2799,6 +2799,16 @@ async function startServerCore(
         return undefined;
       }
     },
+    // …and the team it belongs to, so the notification also says which team it
+    // came from. Same rule: a missing team never holds back the delivery.
+    agentTeamName: (id) => {
+      try {
+        const teamId = agentManager.getAgent(id)?.config?.teamId;
+        return teamId ? orgService.getTeam(teamId)?.name : undefined;
+      } catch {
+        return undefined;
+      }
+    },
   });
   if (outbound) {
     startupLog('OK', '出站通知分发已接线（三级路由：agent → instance → 全局）');
