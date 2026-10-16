@@ -17,6 +17,8 @@ import {
   approvalDirectionLabel,
   approvalDirectionStyle,
   approvalCommentNote,
+  notificationLabel,
+  readNotificationI18n,
 } from '@markus/shared';
 import {
   severityOfNotification,
@@ -464,9 +466,18 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   if (typeof metadata['agentId'] === 'string') origin.agentId = metadata['agentId'] as string;
   if (typeof metadata['taskId'] === 'string') origin.taskId = metadata['taskId'] as string;
 
+  // The producer ships *structure* (which sentence, with which parameters) and this
+  // renderer owns the *words* — including the language. Until 2026-10-16 it copied
+  // the producer's baked-in English `title`/`body`, so the same notification read
+  // "Task completed: …" in Feishu and "任务已完成：…" in the product, from one fact.
+  // Unknown/legacy keys fall through to the raw text: never invent a sentence.
+  const i18n = readNotificationI18n(metadata);
+  const title = notificationLabel(i18n?.titleKey, locale, i18n?.titleParams) ?? n.title;
+  const body = notificationLabel(i18n?.bodyKey, locale, i18n?.bodyParams) ?? n.body;
+
   const msg: OutboundMessage = {
-    title: n.title,
-    body: n.body,
+    title,
+    body,
     severity: severityOfNotification({ type: n.type, priority: n.priority }),
     priority: normalizePriority(n.priority),
     origin: Object.keys(origin).length > 0 ? origin : undefined,
