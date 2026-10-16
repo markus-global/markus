@@ -1,4 +1,10 @@
-import { createLogger, type UserInputQuestion, type UserInputAnswer } from '@markus/shared';
+import {
+  createLogger,
+  type UserInputQuestion,
+  type UserInputAnswer,
+  type ApprovalDirection,
+  type NotificationI18n,
+} from '@markus/shared';
 import type { OrganizationService } from './org-service.js';
 
 const log = createLogger('hitl');
@@ -147,12 +153,11 @@ export interface ApprovalRequest {
   respondedBy?: string;
   responseComment?: string;
   expiresAt?: string;
-  options?: Array<{ id: string; label: string; description?: string }>;
+  options?: ApprovalOption[];
   allowFreeform?: boolean;
   selectedOption?: string;
   /**
-   * Idempotency marker for "this decision has been applied to its target".
-   * Persisted on the approval entity (the only single writer) so the flag — and
+   * Idempotency marker for "this decision has been applied to its target".   * Persisted on the approval entity (the only single writer) so the flag — and
    * therefore the guard — survives a restart.
    */
   appliedAt?: string;
@@ -220,6 +225,27 @@ export interface NotificationRepo {
   reconcileResolvedApprovalNotifications?(): number;
 }
 
+/**
+ * One choice offered on an approval.
+ *
+ * `direction` is the **structure** — what the choice *means* — and is what a
+ * renderer localizes into the recipient's language. `label` is the author's own
+ * wording and stays the fallback, so an LLM-authored option (or a legacy caller)
+ * is passed through verbatim rather than reinterpreted.
+ */
+export interface ApprovalOption {
+  id: string;
+  label: string;
+  description?: string;
+  direction?: ApprovalDirection;
+  /**
+   * This choice cannot be recorded without a written reason. A surface that
+   * cannot collect free text must not offer it (see
+   * `OutboundAction.requiresComment`).
+   */
+  requiresComment?: boolean;
+}
+
 export interface ApprovalRepo {
   upsert(a: {
     id: string;
@@ -235,7 +261,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -259,7 +285,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -283,7 +309,7 @@ export interface ApprovalRepo {
     respondedBy?: string;
     responseComment?: string;
     expiresAt?: string;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     selectedOption?: string;
     questions?: UserInputQuestion[];
@@ -481,10 +507,17 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
+    /**
+     * The approval sentence as *structure* (which sentence, with which params) so
+     * every renderer writes it in the reader's own language. Without it a gate can
+     * only ship an English literal, and that literal is what a chat app shows on
+     * the card.
+     */
+    i18n?: NotificationI18n;
   }): ApprovalRequest {
     const id = genId('apr');
     const now = new Date().toISOString();
@@ -520,7 +553,7 @@ export class HITLService {
       // `agentId` travels with the notification so the outbound gateway can route
       // it to the producing agent's own channel before falling back to the global
       // default (G4, design §7.3).
-      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options },
+      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options, i18n: opts.i18n },
     });
 
     return approval;
@@ -535,10 +568,12 @@ export class HITLService {
     details?: Record<string, unknown>;
     targetUserId?: string;
     expiresInMs?: number;
-    options?: Array<{ id: string; label: string; description?: string }>;
+    options?: ApprovalOption[];
     allowFreeform?: boolean;
     questions?: UserInputQuestion[];
     approverUserIds?: string[];
+    /** @see requestApproval — the sentence as structure, so it can be translated. */
+    i18n?: NotificationI18n;
   }): Promise<ApprovalDecision> {
     const approval = this.requestApproval(opts);
     return new Promise<ApprovalDecision>((resolve) => {

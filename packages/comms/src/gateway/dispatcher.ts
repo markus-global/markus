@@ -11,7 +11,17 @@
  * testable without a platform, a database or a timer. Production wires the ports
  * to `channel_bindings` and the adapter router.
  */
-import { createLogger } from '@markus/shared';
+import {
+  createLogger,
+  isApprovalDirection,
+  approvalDirectionLabel,
+  approvalDirectionStyle,
+  approvalCommentNote,
+  notificationLabel,
+  priorityLabel,
+  statusLabel,
+  readNotificationI18n,
+} from '@markus/shared';
 import {
   severityOfNotification,
   signActionRef,
@@ -144,6 +154,12 @@ export interface OutboundDispatcherOptions {
    * never withholds the delivery nor the agent line.
    */
   agentTeamName?: (agentId: string) => string | undefined;
+  /**
+   * Resolve the language an approval's buttons should be written in — the
+   * **recipient's** locale. Absent ⇒ English, so the dispatcher stays usable
+   * without a composition root that knows about users.
+   */
+  locale?: () => string | undefined;
 }
 
 /** EventBus task events the dispatcher forwards by default, with their severity. */
@@ -163,6 +179,7 @@ export class OutboundDispatcher {
   private readonly actionSecret?: string;
   private readonly agentName?: (agentId: string) => string | undefined;
   private readonly agentTeamName?: (agentId: string) => string | undefined;
+  private readonly locale?: () => string | undefined;
   /**
    * `info` messages waiting for a digest, each paired with the destination it
    * already passed eligibility for. Pairing is load-bearing: re-resolving at
@@ -181,6 +198,7 @@ export class OutboundDispatcher {
     this.actionSecret = opts.actionSecret;
     this.agentName = opts.agentName;
     this.agentTeamName = opts.agentTeamName;
+    this.locale = opts.locale;
   }
 
   /**
@@ -337,7 +355,7 @@ export class OutboundDispatcher {
    */
   attachNotifications(source: NotificationSource): () => void {
     return source.onChannelNotification((n) => {
-      void this.dispatch(notificationToOutbound(n, this.actionSecret)).catch((err) => {
+      void this.dispatch(notificationToOutbound(n, this.actionSecret, this.locale?.())).catch((err) => {
         log.error('Failed to dispatch notification', { error: String(err) });
       });
     });
@@ -444,15 +462,48 @@ export class OutboundDispatcher {
  * **signed** token — the internal approval id never leaves in the clear. Without
  * a secret the raw id is used (legacy behaviour, flagged as a configuration gap).
  */
-export function notificationToOutbound(n: NotificationLike, actionSecret?: string): OutboundMessage {
+/**
+ * Resolve the params that are themselves enum keys the reader needs translated
+ * (`状态已变为 in_progress`, `（优先级：normal）`). The producer cannot do this — it
+ * does not know the reader — and the renderer owns the language, so it happens
+ * here. Content params (a task title, a preview, the review tail) pass through
+ * untouched.
+ */
+function resolveEnumParams(
+  params: Record<string, unknown> | undefined,
+  locale?: string,
+): Record<string, unknown> | undefined {
+  if (!params) return undefined;
+  const out: Record<string, unknown> = { ...params };
+  if (typeof out['priority'] === 'string') {
+    out['priority'] = priorityLabel(out['priority'] as string, locale) ?? out['priority'];
+  }
+  for (const key of ['status', 'statusKey'] as const) {
+    if (typeof out[key] === 'string') {
+      out[key] = statusLabel(out[key] as string, locale) ?? out[key];
+    }
+  }
+  return out;
+}
+
+export function notificationToOutbound(n: NotificationLike, actionSecret?: string, locale?: string): OutboundMessage {
   const metadata = (n.metadata ?? {}) as Record<string, unknown>;
   const origin: OutboundOrigin = {};
   if (typeof metadata['agentId'] === 'string') origin.agentId = metadata['agentId'] as string;
   if (typeof metadata['taskId'] === 'string') origin.taskId = metadata['taskId'] as string;
 
+  // The producer ships *structure* (which sentence, with which parameters) and this
+  // renderer owns the *words* — including the language. Until 2026-10-16 it copied
+  // the producer's baked-in English `title`/`body`, so the same notification read
+  // "Task completed: …" in Feishu and "任务已完成：…" in the product, from one fact.
+  // Unknown/legacy keys fall through to the raw text: never invent a sentence.
+  const i18n = readNotificationI18n(metadata);
+  const title = notificationLabel(i18n?.titleKey, locale, resolveEnumParams(i18n?.titleParams, locale)) ?? n.title;
+  const body = notificationLabel(i18n?.bodyKey, locale, resolveEnumParams(i18n?.bodyParams, locale)) ?? n.body;
+
   const msg: OutboundMessage = {
-    title: n.title,
-    body: n.body,
+    title,
+    body,
     severity: severityOfNotification({ type: n.type, priority: n.priority }),
     priority: normalizePriority(n.priority),
     origin: Object.keys(origin).length > 0 ? origin : undefined,
@@ -471,16 +522,34 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
         ? options.map((o) => {
             const opt = (o && typeof o === 'object' ? o : {}) as Record<string, unknown>;
             const id = typeof opt['id'] === 'string' ? (opt['id'] as string) : 'option';
+            // A **direction** means the gate declared what the choice *means*;
+            // the renderer then owns the wording — and the language. Without one
+            // the author's label is used verbatim, so an LLM-authored option is
+            // never reinterpreted (its ids are arbitrary).
+            const direction = isApprovalDirection(opt['direction']) ? opt['direction'] : undefined;
+            const declared = typeof opt['label'] === 'string' ? (opt['label'] as string) : id;
+            const style = typeof opt['style'] === 'string'
+              ? (opt['style'] as 'primary' | 'default' | 'danger')
+              : direction ? approvalDirectionStyle(direction) : undefined;
             return {
               id,
-              label: typeof opt['label'] === 'string' ? (opt['label'] as string) : id,
+              label: direction ? approvalDirectionLabel(direction, locale) : declared,
+              ...(style ? { style } : {}),
+              // A choice that needs a written reason says so; the renderer withholds
+              // it on a channel that cannot collect free text.
+              ...(opt['requiresComment'] === true ? { requiresComment: true } : {}),
               ref: refFor(id),
             };
           })
         : [
-            { id: 'approve', label: '批准', style: 'primary' as const, ref: refFor('approve') },
-            { id: 'reject', label: '驳回', style: 'danger' as const, ref: refFor('reject') },
+            { id: 'approve', label: approvalDirectionLabel('approve', locale), style: 'primary' as const, ref: refFor('approve') },
+            { id: 'reject', label: approvalDirectionLabel('reject', locale), style: 'danger' as const, ref: refFor('reject') },
           ];
+    // A reason-required choice is somewhere in here — carry the sentence that
+    // replaces it on a channel which cannot collect the reason.
+    if (msg.actions.some((a) => a.requiresComment)) {
+      msg.commentRequiredNote = approvalCommentNote(locale);
+    }
   }
   return msg;
 }

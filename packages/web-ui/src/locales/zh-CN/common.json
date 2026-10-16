@@ -376,6 +376,7 @@
       "completed": "已完成",
       "failed": "失败",
       "rejected": "已拒绝",
+      "revision": "已打回，待修改",
       "cancelled": "已取消",
       "archived": "已归档",
       "loading": "加载中…",

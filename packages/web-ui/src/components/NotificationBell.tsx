@@ -126,6 +126,11 @@ function notifI18n(n: NotificationInfo): NotifI18nMeta | undefined {
   return meta.i18n as NotifI18nMeta;
 }
 
+/** 任务状态用 snake_case（in_progress），词表用 camelCase（inProgress）——两种键都试。 */
+function camelizeEnum(value: string): string {
+  return value.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
+}
+
 export function notifTitle(n: NotificationInfo, t: TFunction): string {
   const i18n = notifI18n(n);
   if (!i18n?.titleKey) return n.title;
@@ -138,10 +143,19 @@ export function notifBody(n: NotificationInfo, t: TFunction): string {
   if (!i18n?.bodyKey) return n.body;
   const params: Record<string, string> = {};
   for (const [k, v] of Object.entries(i18n.bodyParams ?? {})) {
-    // status 类参数用 common:status.* 本地化，其余（标题等用户内容）原样保留
-    params[k] = k === 'status' || k === 'statusKey'
-      ? t(`common:status.${v}`, { defaultValue: v })
-      : v;
+    // 枚举类参数（状态、优先级）用 common:* 本地化；其余（标题等用户内容）原样保留。
+    // 任务状态是 snake_case（in_progress）、词表是 camelCase（inProgress）——两种都试，
+    // 否则查不到会静默回落，留下「状态已变为 in_progress」这种半英半中的句子。
+    if (k === 'priority') {
+      params[k] = t(`common:priority.${v}`, { defaultValue: v });
+    } else if (k === 'status' || k === 'statusKey') {
+      const camel = camelizeEnum(v);
+      params[k] = t(`common:status.${v}`, {
+        defaultValue: camel === v ? v : t(`common:status.${camel}`, { defaultValue: v }),
+      });
+    } else {
+      params[k] = v;
+    }
   }
   return t(`team:${i18n.bodyKey}`, { ...params, defaultValue: n.body });
 }
@@ -741,8 +755,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
    * the shared closure mirror so `approve` / `request_changes` / `reject` each
    * get their own wording (previously `reject` and `request_changes` shared one).
    */
-  const approvalOptionLabel = (opt: { id: string; label: string }): string => {
-    const dir = resolveApprovalDirection(opt.id);
+  const approvalOptionLabel = (
+    opt: NonNullable<ApprovalInfo['options']>[number],
+  ): string => {
+    // Prefer the gate's declared direction. The review gate's second option is
+    // literally id `reject` while meaning request-changes, so resolving by id
+    // alone labels it "Reject" — the opposite of what the button does.
+    const dir = opt.direction ?? resolveApprovalDirection(opt.id);
     if (dir === 'approve') return t('team:notifications.optionLabels.approve', { defaultValue: opt.label });
     if (dir === 'request_changes') return t('team:notifications.optionLabels.requestChanges', { defaultValue: opt.label });
     if (dir === 'reject') return t('team:notifications.optionLabels.reject', { defaultValue: opt.label });
@@ -769,10 +788,15 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       return t('team:notifications.approvalDesc.taskCreate', { agentName: a.agentName, title: a.title, priority, defaultValue: a.description });
     }
     if (sub === 'task_review') {
-      const first = `Task "${a.title}" has been submitted for your review.`;
-      if (a.description.startsWith(first)) {
-        return t('team:notifications.approvalDesc.taskReview', { title: a.title }) + a.description.slice(first.length);
-      }
+      // 首行是平台句子；其后的全部是任务自身内容（描述、交付物）——原样携带，绝不翻译。
+      // 分支依据是 details.subType（结构），不再靠比对描述文本（载荷）判断。
+      const nl = a.description.indexOf('\n');
+      const tail = nl === -1 ? '' : a.description.slice(nl);
+      return t('team:notifications.approvalDesc.taskReview', {
+        title: a.title,
+        tail,
+        defaultValue: a.description,
+      });
     }
     return a.description;
   };

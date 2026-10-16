@@ -209,6 +209,12 @@
       "requirementChangesRequested": "需求已打回：{{title}}",
       "mentionedYou": "{{authorName}} 提到了你",
       "groupMessage": "{{senderName}} 在 {{groupName}} 中"
+,
+      "staleReview": "审核停滞",
+      "stuckTask": "任务卡住",
+      "unstartedTask": "任务未启动",
+      "agentNeedsHelp": "智能体需要帮助",
+      "taskComment": "任务「{{title}}」有新评论"
     },
     "bodies": {
       "agentCreatedTask": "智能体创建了任务「{{title}}」",
@@ -217,12 +223,16 @@
       "requirementRejectedBody": "需求「{{title}}」已被拒绝。{{reason}}",
       "requirementChangesRequestedBody": "需求「{{title}}」需修改后再审批 —— 仍处于待审批状态。{{reason}}",
       "mentionPreview": "{{itemTitle}}：{{preview}}"
+,
+      "staleTaskInProgress": "任务「{{title}}」已进行 {{hours}} 小时",
+      "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作",
+      "staleTaskUnstarted": "任务「{{title}}」已等待审批 {{hours}} 小时"
     },
     "approvalDesc": {
       "requirementProposed": "智能体「{{agentName}}」提出了需求「{{title}}」（优先级：{{priority}}）。",
       "requirementResubmitted": "智能体「{{agentName}}」重新提交了需求「{{title}}」（优先级：{{priority}}）。",
       "taskCreate": "智能体「{{agentName}}」想创建任务「{{title}}」（优先级：{{priority}}）。",
-      "taskReview": "任务「{{title}}」已提交审核。"
+      "taskReview": "任务「{{title}}」已提交审核。{{tail}}"
     },
     "optionLabels": {
       "approve": "通过",

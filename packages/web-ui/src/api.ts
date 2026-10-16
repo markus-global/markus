@@ -221,7 +221,7 @@ export interface ApprovalInfo {
   respondedAt?: string;
   respondedBy?: string;
   responseComment?: string;
-  options?: Array<{ id: string; label: string; description?: string }>;
+  options?: Array<{ id: string; label: string; description?: string; direction?: 'approve' | 'request_changes' | 'reject' }>;
   allowFreeform?: boolean;
   selectedOption?: string;
   questions?: UserInputQuestion[];

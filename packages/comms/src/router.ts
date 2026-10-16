@@ -330,7 +330,14 @@ export class MessageRouter {
   /**
    * Resolve a platform actor id to a display name, best-effort. Returns `null`
    * when the platform/instance is unknown or its adapter cannot look names up —
-   * the caller keeps the raw id, which is always correct (just less friendly).
+   * the caller then renders a live platform reference, which needs no lookup.
+   *
+   * **No guessing when the platform hosts several bots.** An actor id is scoped to
+   * the app that issued it: a Feishu `open_id` is *per app*, and the contact API
+   * answers `99992361 open_id cross app` when asked by a different one (observed on
+   * a live two-bot org). So `botForPlatform`'s "use the first" is fine for routing
+   * (the message is already in hand) but wrong here — it would ask the wrong app and
+   * silently degrade to no name. With one bot there is nothing to disambiguate.
    */
   async resolveActorName(
     platform: string,
@@ -338,10 +345,16 @@ export class MessageRouter {
     actorId: string,
   ): Promise<string | null> {
     if (!actorId) return null;
-    const bot = instanceId ? this.bots.get(instanceId) : this.botForPlatform(platform);
+    const bot = instanceId ? this.bots.get(instanceId) : this.soleBotForPlatform(platform);
     const resolve = bot?.adapter.resolveActorName;
     if (!bot || !resolve) return null;
     return resolve.call(bot.adapter, actorId);
+  }
+
+  /** The platform's only bot — `undefined` when it has none *or several*. */
+  private soleBotForPlatform(platform: string): RegisteredBot | undefined {
+    const matches = [...this.bots.values()].filter((bot) => bot.platform === platform);
+    return matches.length === 1 ? matches[0] : undefined;
   }
 
   async connectAll(configs: CommAdapterConfig[]): Promise<void> {

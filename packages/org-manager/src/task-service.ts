@@ -2813,6 +2813,12 @@ export class TaskService implements ApprovalTargetPort {
       type: 'custom',
       title: task.title,
       description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
+      // The sentence as structure, so the chat app renders it in the reader's
+      // language instead of showing the English literal above.
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskCreate',
+        bodyParams: { agentName: creatorName, title: task.title, priority: task.priority },
+      },
       details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
     }).then(result => {
       const current = this.tasks.get(task.id);
@@ -3321,11 +3327,31 @@ export class TaskService implements ApprovalTargetPort {
       type: 'custom',
       title: task.title,
       description,
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskReview',
+        // The first line is the platform's sentence; everything from the first line
+        // break on is the task's own content (its description, its deliverables) —
+        // content, never translated, just carried through the template.
+        bodyParams: {
+          title: task.title,
+          tail: description.slice(
+            description.indexOf('\n') === -1 ? description.length : description.indexOf('\n'),
+          ),
+        },
+      },
       details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
       options: [
-        { id: 'approve', label: 'Approve' },
-        { id: 'reject', label: 'Request Changes' },
+        // `direction` is the meaning; the label is only a fallback. The review
+        // gate's second choice carries the legacy id `reject` but *means*
+        // request-changes (the FSM has no `review → rejected` edge), so resolving
+        // it by id alone would render the destructive word "Reject" over a button
+        // that actually asks for a revision.
+        { id: 'approve', label: 'Approve', direction: 'approve' },
+        // 打回 is a *comment plus resubmit* loop, not a state: without the reason
+        // the assignee gets the work back with nothing to act on. Any surface that
+        // cannot capture free text must therefore not offer it.
+        { id: 'reject', label: 'Request Changes', direction: 'request_changes', requiresComment: true },
       ],
       allowFreeform: true,
     }).then(result => {

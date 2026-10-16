@@ -221,8 +221,17 @@ const APPROVAL_PRIORITY_COLORS: Record<string, string> = {
   low: 'text-fg-tertiary',
 };
 
-type TaskCardState = 'loading' | 'pending' | 'approving' | 'rejecting' | 'in_progress' | 'completed' | 'review' | 'blocked' | 'failed' | 'cancelled' | 'archived';
+type TaskCardState = 'loading' | 'pending' | 'approving' | 'rejecting' | 'in_progress' | 'completed' | 'review' | 'blocked' | 'failed' | 'rejected' | 'revision' | 'cancelled' | 'archived';
 
+/**
+ * Every status the task FSM can actually be in.
+ *
+ * `rejected` and `revision` were missing here, so a rejected task fell through to
+ * the `?? 'pending'` fallback: the card kept its **pending** look and its
+ * approve/reject buttons, and the owner saw a rejected task presenting itself as
+ * still awaiting approval. `RequirementApprovalCard` already mapped `rejected`, so
+ * this was an asymmetry between two sibling cards, not a design choice.
+ */
 const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
   pending: 'pending',
   in_progress: 'in_progress',
@@ -230,6 +239,8 @@ const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
   review: 'review',
   blocked: 'blocked',
   failed: 'failed',
+  rejected: 'rejected',
+  revision: 'revision',
   cancelled: 'cancelled',
   archived: 'archived',
 };
@@ -243,6 +254,8 @@ const TASK_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borde
   review:      { icon: '👀', labelKey: 'execution.card.inReview',       borderClass: 'border-purple-500/40',      bgClass: 'bg-purple-500/5',         badgeClass: 'bg-purple-500/15 text-purple-500', textClass: 'text-purple-500' },
   blocked:     { icon: '🚫', labelKey: 'execution.card.blocked',        borderClass: 'border-orange-500/40',      bgClass: 'bg-orange-500/5',         badgeClass: 'bg-orange-500/15 text-orange-500', textClass: 'text-orange-500' },
   failed:      { icon: '❌', labelKey: 'execution.card.failed',         borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
+  revision:    { icon: '✏️', labelKey: 'execution.card.revision',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: 'text-amber-600' },
   cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
   archived:    { icon: '📦', labelKey: 'execution.card.archived',       borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
   loading:     { icon: '⏳', labelKey: 'execution.card.loading',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
@@ -294,7 +307,10 @@ export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
     setCardState('rejecting');
     try {
       await api.tasks.reject(info.taskId);
-      setCardState('cancelled');
+      // The task lands in `rejected` — **not** `cancelled`. The card was showing
+      // the cancelled look for a rejection, which is a different fact (a task the
+      // owner cancelled vs. one a reviewer rejected).
+      setCardState('rejected');
       markNotifRead();
     } catch {
       setCardState('pending');

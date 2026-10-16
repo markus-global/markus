@@ -1,4 +1,4 @@
-import { createLogger } from '@markus/shared';
+import { createLogger, type NotificationI18n } from '@markus/shared';
 import type { TaskService } from './task-service.js';
 
 const log = createLogger('stale-detector');
@@ -16,6 +16,12 @@ export interface StaleItem {
   ageMs: number;
   agentId?: string;
   message: string;
+  /**
+   * The sentence as structure — the key and its params. The detector knows what to
+   * say; only the consumer knows which language the reader wants, so the sentence
+   * travels as data rather than as the English literal above.
+   */
+  i18n?: NotificationI18n;
 }
 
 const DEFAULT_CONFIG: StaleConfig = {
@@ -95,6 +101,10 @@ export class StaleDetector {
           ageMs: age,
           agentId: task.assignedAgentId,
           message: `Task "${task.title}" has been in_progress for ${Math.round(age / 3600000)}h`,
+          i18n: {
+            bodyKey: 'notifications.bodies.staleTaskInProgress',
+            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
+          },
         });
       }
 
@@ -103,6 +113,10 @@ export class StaleDetector {
           ageMs: age,
           agentId: task.reviewerId ?? task.assignedAgentId,
           message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
+          i18n: {
+            bodyKey: 'notifications.bodies.staleTaskInReview',
+            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
+          },
         });
       }
 
@@ -111,6 +125,10 @@ export class StaleDetector {
           ageMs: age,
           agentId: task.assignedAgentId,
           message: `Task "${task.title}" awaiting approval for ${Math.round(age / 3600000)}h`,
+          i18n: {
+            bodyKey: 'notifications.bodies.staleTaskUnstarted',
+            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
+          },
         });
       }
     }

@@ -131,6 +131,13 @@ export interface PlatformCapabilities {
   threads: boolean;
   /** Supports interactive cards / rich interactive payloads. */
   cards?: boolean;
+  /**
+   * Can collect free text *back* from the user (a card input, a form, a modal).
+   * Absent ⇒ no. This is what decides whether an approval choice that requires a
+   * written reason (打回) may be offered on that platform at all — a button whose
+   * reason can never be captured is worse than no button.
+   */
+  approvalComment?: boolean;
 
   /** Inbound transports this platform supports. Absent ⇒ unknown (assume webhook). */
   inboundModes?: InboundMode[];

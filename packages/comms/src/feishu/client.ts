@@ -6,6 +6,23 @@ import { httpFetch } from '../net/http.js';
 
 const log = createLogger('feishu-client');
 
+/**
+ * Said once per process, because it is a **configuration** fact, not a per-call
+ * event: the app cannot read contact names. Repeating it on every tap would train
+ * the reader to ignore it (and the fix is a one-time console change, not a retry).
+ */
+let warnedNameFieldUnreadable = false;
+function warnNameFieldUnreadable(): void {
+  if (warnedNameFieldUnreadable) return;
+  warnedNameFieldUnreadable = true;
+  log.warn(
+    'Feishu returned contacts without a `name` field — this app cannot read display ' +
+      'names. Grant the `contact:user.base:readonly` scope, and make sure the user is ' +
+      'inside the app\'s contact visibility range. Cards fall back to a live @-mention, ' +
+      'which needs no scope, so no operator id is ever shown.',
+  );
+}
+
 export interface FeishuConfig {
   appId: string;
   appSecret: string;
@@ -257,9 +274,16 @@ export class FeishuClient {
       log.warn(`Feishu user-name lookup unavailable: ${data.msg ?? data.code}`);
       return names;
     }
+    let idWithoutName = false;
     for (const item of data.data?.items ?? []) {
       if (item.open_id && item.name) names.set(item.open_id, item.name);
+      else if (item.open_id) idWithoutName = true;
     }
+    // `code:0` with no `name` is the trap this whole path fell into: Feishu reports
+    // **success** and simply omits the field. Observed on a live app as
+    // `{ mobile_visible: true, open_id, union_id }` — no `name` at all. It is not
+    // an error to the caller, so it has to be said out loud here, with the fix.
+    if (idWithoutName) warnNameFieldUnreadable();
     return names;
   }
 

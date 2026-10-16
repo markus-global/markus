@@ -106,7 +106,7 @@
     "online": "En línea",
     "verified": "Verificado",
     "outdated": "Desactualizado",
-    "expired": "Gastos"
+    "expired": "Expirado"
   },
   "priority": {
     "urgent": "Urgente",
@@ -345,6 +345,7 @@
       "completed": "Completado",
       "failed": "Fallido",
       "rejected": "Rechazado",
+      "revision": "Cambios solicitados",
       "cancelled": "Cancelado",
       "archived": "Archivado",
       "loading": "Cargando…",

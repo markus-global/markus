@@ -81,6 +81,40 @@ function originNote(origin?: { agentName?: string; teamName?: string }): string 
   return team ? `来自 ${name} · 团队 ${team}` : `来自 ${name}`;
 }
 
+/** Platform ids are opaque payload — never let one inject card markup. */
+const SAFE_ACTOR_ID = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Feishu renders `<…>` in `lark_md` as markup, so text carrying it is not text. */
+const MARKUP_CHARS = /[<>]/;
+
+/**
+ * How the resolved card names **who acted**. A bare `open_id` is a string no human
+ * can read, and until 2026-10-16 that is exactly what the card showed — the name
+ * lookup silently degrades (the contact API answers `code:0` but *omits* `name`
+ * unless the app holds `contact:user.base:readonly` and the user is inside its
+ * contact visibility range), and the old fallback printed the id.
+ *
+ * So the ladder ends somewhere legible either way:
+ *   1. the resolved display name — reads the same, and does **not** ping anyone;
+ *   2. a live person reference `<at id=…>` — Feishu resolves the display name and
+ *      makes it tappable **without any contact scope** (verified against the card
+ *      markdown reference: `@指定人会显示为用户名`).
+ *
+ * Both rungs are **checked, because both are attacker-controlled**: a display name
+ * can be set to `<at id=all></at>` by any tenant member, and the id arrives from the
+ * platform event. A value carrying markup never reaches the card — the mention is
+ * used instead, and if there is no id to mention there is simply no actor line.
+ * Printing the raw string as a "safe fallback" was tested and does inject: text
+ * interpolated into a `lark_md` element is still markup.
+ */
+function actorFact(name?: string, id?: string): string | undefined {
+  const resolved = name?.trim();
+  if (resolved && !MARKUP_CHARS.test(resolved)) return resolved;
+  const raw = id?.trim();
+  if (!raw || !SAFE_ACTOR_ID.test(raw)) return undefined;
+  return `<at id=${raw}></at>`;
+}
+
 /** Header words + colour per terminal status. */
 const RESOLVED_APPROVAL_HEADER: Record<
   'approved' | 'rejected' | 'cancelled' | 'expired',
@@ -125,7 +159,7 @@ export function buildResolvedApprovalCard(opts: {
     facts.push(`选项：\`${opts.selectedOption}\``);
   }
   // Prefer the resolved display name; fall back to the raw id (always correct).
-  const actor = opts.actorName || opts.actorId;
+  const actor = actorFact(opts.actorName, opts.actorId);
   if (actor) facts.push(`操作人：${actor}`);
   if (opts.at) facts.push(`时间：${formatResolvedAt(opts.at)}`);
 

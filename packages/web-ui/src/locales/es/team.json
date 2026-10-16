@@ -217,6 +217,12 @@
       "requirementChangesRequested": "Cambios solicitados en el requisito: {{title}}",
       "mentionedYou": "{{authorName}} te mencionó",
       "groupMessage": "{{senderName}} en {{groupName}}"
+,
+      "staleReview": "Revisión estancada",
+      "stuckTask": "Tarea atascada",
+      "unstartedTask": "Tarea sin iniciar",
+      "agentNeedsHelp": "El agente necesita ayuda",
+      "taskComment": "Comentario en la tarea {{title}}"
     },
     "bodies": {
       "agentCreatedTask": "El agente creó la tarea \"{{title}}\"",
@@ -225,12 +231,16 @@
       "requirementRejectedBody": "El requisito \"{{title}}\" fue rechazado.{{reason}}",
       "requirementChangesRequestedBody": "El requisito \"{{title}}\" necesita cambios antes de la aprobación; sigue pendiente.{{reason}}",
       "mentionPreview": "{{itemTitle}}: {{preview}}"
+,
+      "staleTaskInProgress": "La tarea \"{{title}}\" lleva {{hours}} h en curso",
+      "staleTaskInReview": "La tarea \"{{title}}\" lleva {{hours}} h en revisión sin acción",
+      "staleTaskUnstarted": "La tarea \"{{title}}\" lleva {{hours}} h esperando aprobación"
     },
     "approvalDesc": {
       "requirementProposed": "El agente \"{{agentName}}\" propuso el requisito \"{{title}}\" (prioridad: {{priority}}).",
       "requirementResubmitted": "El agente \"{{agentName}}\" reenvió el requisito \"{{title}}\" (prioridad: {{priority}}).",
       "taskCreate": "El agente \"{{agentName}}\" quiere crear la tarea \"{{title}}\" (prioridad: {{priority}}).",
-      "taskReview": "La tarea \"{{title}}\" fue enviada para tu revisión."
+      "taskReview": "La tarea \"{{title}}\" fue enviada para tu revisión.{{tail}}"
     },
     "optionLabels": {
       "approve": "Aprobar",

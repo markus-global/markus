@@ -30,6 +30,7 @@ import {
   pickOrgSecretary,
   setEnvValue,
   resolveActionSecret,
+  resolveHostLocale,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -1304,7 +1305,22 @@ async function startServerCore(
         priority: item.type === 'review_stale' ? 'high' : 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
         actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: { taskId: item.taskId, agentId: item.agentId, staleType: item.type },
+        metadata: {
+          taskId: item.taskId,
+          agentId: item.agentId,
+          staleType: item.type,
+          // The title and body as structure: the detector knows *what* to say,
+          // this is the only place that knows the sentence's key.
+          i18n: {
+            titleKey:
+              item.type === 'review_stale'
+                ? 'notifications.titles.staleReview'
+                : item.type === 'stuck_task'
+                  ? 'notifications.titles.stuckTask'
+                  : 'notifications.titles.unstartedTask',
+            ...(item.i18n ?? {}),
+          },
+        },
       });
     }
   });
@@ -1776,7 +1792,13 @@ async function startServerCore(
           priority: 'high',
           actionType: 'open_chat',
           actionTarget: JSON.stringify({ agentId, sessionId: mainSession.id }),
-          metadata: { agentId, sessionId: mainSession.id },
+          metadata: {
+            agentId,
+            sessionId: mainSession.id,
+            // The `reason` is the agent's own words — content, passed through
+            // verbatim. Only the platform's own line is ours to translate.
+            i18n: { titleKey: 'notifications.titles.agentNeedsHelp' },
+          },
         });
         auditService.record({
           orgId: 'default', agentId, type: 'error', action: 'escalation', detail: reason, success: false,
@@ -2571,6 +2593,21 @@ async function startServerCore(
       });
       return;
     }
+    // This surface cannot carry free text — `respondToApproval` is called below with
+    // no comment. So a choice that *requires* a written reason must not be accepted
+    // here: recording a request-changes whose reason was never captured sends the
+    // task back with nothing to act on. Cards no longer offer such a choice (the
+    // renderer withholds it and points at Markus); this refuses the taps a card sent
+    // *before* that change can still deliver — fail closed, never a silent mis-apply.
+    const tapped = hitlService.getApproval(approvalId)?.options?.find((o) => o.id === command);
+    if (tapped?.requiresComment) {
+      log.warn('Refused a platform approval action that needs an unwritable comment', {
+        approvalId,
+        command,
+        platform: action.platform,
+      });
+      return;
+    }
     // Mirror UserInputModal: a named option is affirmative unless it is a reject;
     // the tapped option id is recorded as `selectedOption` (was silently dropped).
     const approved = command !== 'reject' && command !== 'request_changes';
@@ -2814,6 +2851,16 @@ async function startServerCore(
       try {
         const teamId = agentManager.getAgent(id)?.config?.teamId;
         return teamId ? orgService.getTeam(teamId)?.name : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    // …and the language an approval's buttons are written in. The recipient's
+    // own locale wins; the host locale is the fallback. Read lazily so a later
+    // preference change is picked up without a restart.
+    locale: () => {
+      try {
+        return orgService.resolveHumanIdentity(ownerUserId)?.locale ?? resolveHostLocale();
       } catch {
         return undefined;
       }
