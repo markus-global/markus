@@ -2726,7 +2726,23 @@ export class TaskService implements ApprovalTargetPort {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.creatorRole !== 'human') {
+    // ── One creation fact ⇒ one announcement ────────────────────────────────
+    // An agent-created task that lands in `pending` is announced by the creation
+    // gate's `approval_request` (`openCreationGateApproval`), which already
+    // carries the title, the creator and the priority. Emitting the generic
+    // `task_created` bell on top of it announces the same fact twice, so the two
+    // are made **complementary**: the decision is derived once here and drives
+    // BOTH emissions, so a future edit to one branch cannot silently bring the
+    // duplicate back (the two predicates used to be written out separately).
+    const opensCreationGateApproval =
+      !!this.hitlService && request.creatorRole !== 'human' && task.status === 'pending';
+
+    if (
+      this.hitlService &&
+      request.createdBy &&
+      request.creatorRole !== 'human' &&
+      !opensCreationGateApproval
+    ) {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',
@@ -2765,8 +2781,10 @@ export class TaskService implements ApprovalTargetPort {
 
     // Request HITL approval (only for agent-created tasks that need approval).
     // The initiation lives in exactly one place so `createTask` and
-    // `requestTaskApproval` can never drift (see `openCreationGateApproval`).
-    if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
+    // `requestTaskApproval` can never drift (see `openCreationGateApproval`),
+    // and it is gated by the same derived flag as the `task_created` bell above
+    // so the two announcements stay complementary.
+    if (opensCreationGateApproval) {
       this.openCreationGateApproval(task);
     }
 

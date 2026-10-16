@@ -662,3 +662,49 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     expect(enqueueToMailbox.mock.calls.map(c => c[0])).toEqual(['requirement_update']);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N. 新建任务 · 一条「创建」事实 ⇒ 恰一条通知
+//
+// 缺陷：agent 创建、落在 pending 的任务，`createTask` 连打两枪 —— 通用的
+// `task_created` 铃 + 建卡闸的 `approval_request`（后者已覆盖前者全部信息）。
+// 修法不是「先发再拦」，而是把两个发射口收成**互补**：派生一次的决策同时驱动
+// 两者，任何单边改动都无法再让重复回来。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('新建任务通知 · 建卡闸与 task_created 互补，不重复', () => {
+  const typesOf = (spy: { mock: { calls: unknown[][] } }): string[] =>
+    spy.mock.calls.map(c => (c[0] as { type: string }).type);
+
+  it('agent 创建且走建卡闸（pending）⇒ 恰一条 approval_request，无 task_created', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(createDefaults({ creatorRole: 'worker', createdBy: AGENT_B }) as never);
+    expect(task.status).toBe('pending');
+    await flush();
+
+    const types = typesOf(notifySpy);
+    expect(types.filter(t => t === 'task_created')).toHaveLength(0);
+    expect(types.filter(t => t === 'approval_request')).toHaveLength(1);
+  });
+
+  it('agent 创建但无建卡闸（auto-tier，直接 in_progress）⇒ 恰一条 task_created', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(
+      createDefaults({ creatorRole: 'worker', createdBy: AGENT_B, approvedVia: 'workflow' }) as never,
+    );
+    expect(task.status).toBe('in_progress');
+    await flush();
+
+    const types = typesOf(notifySpy);
+    expect(types.filter(t => t === 'task_created')).toHaveLength(1);
+    expect(types.filter(t => t === 'approval_request')).toHaveLength(0);
+  });
+
+  it('人类创建 ⇒ 两条都不发（创建通知与建卡闸都只针对 agent 建卡）', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+    expect(task.status).toBe('pending');
+    await flush();
+
+    expect(typesOf(notifySpy)).toHaveLength(0);
+  });
+});
