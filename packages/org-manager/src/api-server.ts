@@ -1030,6 +1030,16 @@ export class APIServer {
     public port: number = 8056
   ) {
     this.ws = new WSBroadcaster();
+    // 权威 → 广播：activeStreams 是「这个会话在不在输出」的唯一来源，它的每次变化
+    // 推给所有已连接客户端。客户端不再各自近似这个事实。
+    this.activeStreams.setStateChangeListener((change) => {
+      this.ws.broadcastSessionStreamState(
+        change.agentId,
+        change.sessionId,
+        change.streaming,
+        change.status,
+      );
+    });
     this.teamTemplateRegistry = createDefaultTeamTemplates();
     this.templateRegistry = createDefaultTemplateRegistry();
     // Propagate template registry to AgentManager so createAgentFromTemplate works
@@ -3927,6 +3937,31 @@ export class APIServer {
       const agentId = parts[3]!;
       const sessionId = parts[5]!;
       this.json(res, 200, this.activeStreams.status(agentId, sessionId));
+      return;
+    }
+
+    // 批量流存活性 —— 客户端对其打开的 session tab 做对账轮询时用（一次请求覆盖
+    // 全部 tab，而不是每 tab 一次）。
+    // `streaming` 刻意取 `status === 'streaming'`，**不是** `status().active`
+    // （后者在 DONE_TTL_MS 内仍为 true，好让晚到的刷新还能接上终态事件）——
+    // 照 active 广播会让「输出中」在回合结束后滞留 90 秒。
+    if (path === '/api/sessions/stream/status' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = (await this.readBody(req).catch(() => ({}))) as Record<string, unknown>;
+      const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+      const sessionIds = Array.isArray(body.sessionIds)
+        ? body.sessionIds.filter((s): s is string => typeof s === 'string')
+        : [];
+      if (!agentId || sessionIds.length === 0) {
+        this.json(res, 400, { error: 'agentId (string) and sessionIds (string[]) are required' });
+        return;
+      }
+      const streaming: Record<string, boolean> = {};
+      for (const sid of sessionIds) {
+        streaming[sid] = this.activeStreams.getByAgentSession(agentId, sid)?.status === 'streaming';
+      }
+      this.json(res, 200, { agentId, streaming });
       return;
     }
 

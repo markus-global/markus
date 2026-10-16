@@ -53,6 +53,11 @@ export class ActiveStreamSession {
   private donePayload?: StreamEventPayload;
   private ttlTimer: ReturnType<typeof setTimeout> | null = null;
   private onDispose?: () => void;
+  /**
+   * 状态**变化**时通知（由 registry 在 register 时注入）。这是「这个会话在不在
+   * 输出」这一事实的**唯一变化通知点** —— 权威变了就在同一点广播，UI 不再各自近似。
+   */
+  onStatusChange?: (status: ActiveStreamSession['status']) => void;
   private uiSnapshot: StreamUiSnapshot | null = null;
 
   constructor(opts: {
@@ -61,12 +66,14 @@ export class ActiveStreamSession {
     sessionId: string;
     messageId: string;
     onDispose?: () => void;
+    onStatusChange?: (status: ActiveStreamSession['status']) => void;
   }) {
     this.streamId = opts.streamId;
     this.agentId = opts.agentId;
     this.sessionId = opts.sessionId;
     this.messageId = opts.messageId;
     this.onDispose = opts.onDispose;
+    this.onStatusChange = opts.onStatusChange;
   }
 
   get lastSeq(): number {
@@ -109,6 +116,9 @@ export class ActiveStreamSession {
     this.status = payload.type === 'error' ? 'error' : 'done';
     this.donePayload = payload;
     this.push(payload);
+    // 通知放在 push 之后：订阅者先收到终态事件、再收到「不再输出」，
+    // 避免 UI 先熄灯、然后才闪出终态内容。
+    this.onStatusChange?.(this.status);
     this.scheduleDispose();
   }
 
@@ -121,6 +131,7 @@ export class ActiveStreamSession {
       sessionId: this.sessionId,
     };
     this.push(this.donePayload);
+    this.onStatusChange?.(this.status);
     this.scheduleDispose();
   }
 
@@ -257,9 +268,29 @@ export class ActiveStreamSession {
   }
 }
 
+/** 权威状态变化事件（注册表 → 外部，唯一形状）。 */
+export interface StreamStateChange {
+  agentId: string;
+  sessionId: string;
+  /** 权威：该会话此刻确实在生成（等价于 `status === 'streaming'`）。 */
+  streaming: boolean;
+  status: ActiveStreamSession['status'];
+}
+
 export class ActiveStreamRegistry {
   private bySession = new Map<string, ActiveStreamSession>();
   private byStreamId = new Map<string, ActiveStreamSession>();
+
+  /**
+   * 权威状态变化的**唯一**外部通知点（api-server 接上 WS 广播）。
+   * 放在注册表而不是各个调用点：注册表**就是**权威，它的所有变化都必须在同一
+   * 点发出 —— 散在调用点必然漏（TTL 释放、软终止、同会话回合替换等路径）。
+   */
+  private onStateChange?: (change: StreamStateChange) => void;
+
+  setStateChangeListener(cb: (change: StreamStateChange) => void): void {
+    this.onStateChange = cb;
+  }
 
   private key(agentId: string, sessionId: string): string {
     return `${agentId}:${sessionId}`;
@@ -280,6 +311,8 @@ export class ActiveStreamRegistry {
     const session = new ActiveStreamSession({
       ...opts,
       onDispose: () => this.unregister(session),
+      // 注入给会话，使 complete / cancel 也走同一个通知点（而不是各自记得调用）。
+      onStatusChange: (status) => this.emitStateChange(session.agentId, session.sessionId, status),
     });
     this.bySession.set(this.key(opts.agentId, opts.sessionId), session);
     this.byStreamId.set(opts.streamId, session);
@@ -288,6 +321,8 @@ export class ActiveStreamRegistry {
       agentId: opts.agentId,
       sessionId: opts.sessionId,
     });
+    // 回合开始的权威信号。
+    this.emitStateChange(opts.agentId, opts.sessionId, session.status);
     return session;
   }
 
@@ -297,6 +332,22 @@ export class ActiveStreamRegistry {
     if (this.byStreamId.get(session.streamId) === session) {
       this.byStreamId.delete(session.streamId);
     }
+    // 刻意**不**在此补发 streaming:false：权威早已在 complete/cancel 时发过一次；
+    // 而 unregister 也会在「同一会话被新回合替换」时发生，那一拍紧接着就是
+    // streaming:true —— 在此补发只会制造一次无意义的 false→true 闪烁。
+  }
+
+  /**
+   * `streaming` 只认 `status === 'streaming'`，**不能**用 `status()` 的 `active`
+   * —— 后者把 done/error 在 DONE_TTL_MS(90s) 内也算 active（为了让晚到的刷新
+   * 还能接上终态事件）；照它广播会让「输出中」在回合结束后滞留 90 秒。
+   */
+  private emitStateChange(
+    agentId: string,
+    sessionId: string,
+    status: ActiveStreamSession['status'],
+  ): void {
+    this.onStateChange?.({ agentId, sessionId, streaming: status === 'streaming', status });
   }
 
   getByAgentSession(agentId: string, sessionId: string): ActiveStreamSession | undefined {
