@@ -115,6 +115,8 @@ export async function request(
   };
   const req = new MockIncomingMessage(method, path, reqHeaders, bodyStr);
   const res = new MockServerResponse();
+  // Mirror Node's ServerResponse.req, which handlers read for content negotiation.
+  (res as unknown as { req: unknown }).req = req;
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
   await waitForResponse(res);
@@ -142,6 +144,7 @@ export async function requestRaw(
   };
   const req = new MockIncomingMessage(method, path, reqHeaders, '');
   const res = new MockServerResponse();
+  (res as unknown as { req: unknown }).req = req;
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req.emit('data', bodyBuf);
   req.emit('end');

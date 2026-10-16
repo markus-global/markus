@@ -423,8 +423,9 @@ describe('TaskService', () => {
     });
 
     it('returns tasks grouped on board', () => {
-      const board = ts.getTaskBoard(ORG);
+      const { board, counts } = ts.getTaskBoard(ORG);
       expect(board.pending.length + board.in_progress.length).toBeGreaterThan(0);
+      expect(counts.in_progress).toBe(board.in_progress.length);
     });
 
     it('returns tasks by agent', () => {
