@@ -192,6 +192,29 @@ body {
   overflow: hidden;
 }
 
+/*
+ * Mobile document-root scrolling.
+ *
+ * Mobile browsers (Chrome Android / iOS Safari) only auto-hide their own top
+ * toolbar when the DOCUMENT ROOT scrolls — an inner scroll container never
+ * triggers it. The `mobile-doc-scroll` class is toggled on <html> by App.tsx
+ * for mobile viewports (<= 767px) on every page EXCEPT Team (whose chat uses
+ * a virtualized inner scroller). On desktop the class is never applied, so
+ * this block is inert there and the layout is byte-for-byte unchanged.
+ */
+@media (max-width: 767px) {
+  html.mobile-doc-scroll,
+  html.mobile-doc-scroll body,
+  html.mobile-doc-scroll #root {
+    height: auto;
+    min-height: 100dvh;
+  }
+  html.mobile-doc-scroll body {
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+}
+
 .prose :is(p, li, td, th, dd, dt, figcaption, caption, blockquote) {
   color: var(--color-fg-secondary);
 }
