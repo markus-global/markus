@@ -219,7 +219,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     // avoids pulling the (unbounded) terminal task lists just to show numbers.
     api.tasks.boardSummary().then(d => { setBoard(d.board); setBoardCounts(d.counts); }).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
-    const reqsP = api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
+    // Lean list: Home only needs requirement counts by status (no descriptions).
+    const reqsP = api.requirements.list({ lean: true }).then(d => setAllRequirements(d.requirements)).catch(() => {});
     const projsP = api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
     api.deliverables.search({ limit: 18 }).then(d => {
       setDeliverableTotal(d.total);

@@ -1011,7 +1011,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       try {
         const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
           api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
-          api.requirements.list().catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
+          api.requirements.list({ lean: true }).catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
           api.tasks.list({ pageSize: 100 }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
           api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
           api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),

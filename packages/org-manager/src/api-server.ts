@@ -13004,18 +13004,33 @@ EXPLANATION_END`;
       const status = url.searchParams.get('status') ?? undefined;
       const source = url.searchParams.get('source') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
+      // `lean=1` drops the (large) description so list consumers that only need
+      // titles/counts don't ship the whole corpus. `limit`/`offset` bound the page.
+      const lean = url.searchParams.get('lean') === '1';
+      const limitParam = url.searchParams.get('limit');
+      const offsetParam = url.searchParams.get('offset');
+      const limit = limitParam ? Math.max(parseInt(limitParam, 10) || 0, 0) : 0;
+      const offset = offsetParam ? Math.max(parseInt(offsetParam, 10) || 0, 0) : 0;
       if (!this.requirementService) {
         this.json(res, 200, { requirements: [] });
         return;
       }
-      this.json(res, 200, {
-        requirements: this.requirementService.listRequirements({
-          orgId,
-          status: status as any,
-          source: source as any,
-          projectId,
-        }),
+      let requirements = this.requirementService.listRequirements({
+        orgId,
+        status: status as any,
+        source: source as any,
+        projectId,
       });
+      const total = requirements.length;
+      if (offset > 0) requirements = requirements.slice(offset);
+      if (limit > 0) requirements = requirements.slice(0, limit);
+      if (lean) {
+        requirements = requirements.map(r => {
+          const { description: _description, ...rest } = r;
+          return rest as typeof r;
+        });
+      }
+      this.json(res, 200, { requirements, total });
       return;
     }
 

@@ -1829,12 +1829,16 @@ export const api = {
       request<{ ok: boolean; path: string }>('/files/write', { method: 'POST', body: JSON.stringify({ path: filePath, content }) }),
   },
   requirements: {
-    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {
+    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; limit?: number; offset?: number; lean?: boolean }) => {
       const params = new URLSearchParams();
       if (filters?.orgId) params.set('orgId', filters.orgId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.source) params.set('source', filters.source);
       if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.limit) params.set('limit', String(filters.limit));
+      if (filters?.offset) params.set('offset', String(filters.offset));
+      // lean: omit `description` (large) — use for lists that only need titles/counts.
+      if (filters?.lean) params.set('lean', '1');
       const qs = params.toString();
       return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`);
     },
