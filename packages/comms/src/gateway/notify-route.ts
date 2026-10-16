@@ -1,31 +1,36 @@
 /**
  * Notification-destination routing (design: docs/architecture/notification-delivery.md §3).
  *
- * "Where does a notification go?" is answered in exactly one place, by an
- * ordered walk that ends **loudly** — a resolved, sendable address, or an
- * explicit *undelivered* result. It never returns a silent `null` that a caller
- * can mistake for "nothing to do" (that is exactly how 40 approvals were dropped
- * on 2026-10-11/12 — see the design's §1).
+ * "Where does a notification go?" is answered in exactly one place: a *walk* over
+ * every destination this origin could reach, most specific first, ending at the
+ * first one that is actually **sendable** — or at an explicit, loud *nothing*.
  *
- *   1. `agent`    — the producing agent's own conversation binding (if any);
- *   2. `instance` — a destination the instance *declares* in its config, read
- *                   through the `notifyTarget` field annotation. This is the
- *                   reliable terminus: it depends on no binding at all, so a bot
- *                   the user configured in Settings is reachable even when no
- *                   agent has ever been DM'd;
- *   3. `instance` — the instance's `notifyAgentId` → that agent's conversation
- *                   (best-effort, needs the target agent to have a binding);
- *   4. `global`   — the org Secretary's conversation, else any global-scope
- *                   binding that carries a native id, else the legacy
- *                   per-platform notify channel;
- *   5. no terminus → an `undelivered` result the caller must surface, never a
- *      per-platform silent drop.
+ * ── What changed, and why (2026-10-16) ───────────────────────────────────────
  *
- * The old failure (R1) was the promise "level 3 always exists": level 3 required
- * a real `channel_bindings` row for the Secretary, which a migrated install does
- * not have. Terminating the walk at a *declarable, binding-independent* address
- * (step 2) makes reachability a property of the structure, not a promise someone
- * has to remember.
+ * The walk used to be per-level: ask "the agent's own sink?", else "a declared
+ * destination?", else …, and it stopped at the first level that returned
+ * *anything*. Whether that anything could actually be **sent through** was a
+ * separate question asked afterwards, by the dispatcher, as a **terminator**: if
+ * the chosen bot had notifications switched off, the message was dropped — and
+ * never re-tried against the next destination.
+ *
+ * That is exactly how an org with three bots lost every notification: two of
+ * them (the Secretary's and one other) were fine, but the walk happened to stop
+ * on a bot whose notification master switch was off, and the drop was logged as
+ * `notify-disabled` — an *intentional* outcome, so nothing looked wrong.
+ *
+ * The two questions — *where could this go?* and *may it go there?* — are now
+ * separated by construction:
+ *
+ *   • the lookup **enumerates candidates** ({@link NotifyTargetLookup.candidates}),
+ *     most specific first;
+ *   • *one* decision point ({@link NotifyEligibility}, supplied by the dispatcher)
+ *     decides whether a candidate may carry the message;
+ *   • the walk returns the **first eligible** candidate, so an ineligible one can
+ *     no longer be a dead end;
+ *   • when candidates existed but all were ineligible the result is an explicit
+ *     `suppressed` — distinct from `undelivered` ("nowhere configured"), so a
+ *     mis-route can never again masquerade as an intentional switch-off.
  */
 import type { OutboundOrigin } from './outbound.js';
 import type { SendReceiveIdType } from '../adapter.js';
@@ -79,74 +84,106 @@ export interface NotifyTarget {
   kind?: string;
 }
 
+/** One possible destination, plus the walk level that produced it. */
+export interface NotifyCandidate {
+  target: NotifyTarget;
+  scope: NotifyScope;
+}
+
 /**
- * The binding source the resolver reads. Production backs this with
- * `channel_bindings` + `platform_instances`; tests back it with a fake.
+ * The binding source the resolver reads. One method: **every** destination this
+ * origin could reach, most specific first.
+ *
+ * It used to expose one method per level (`agentTarget`, `instanceDeclaredTarget`,
+ * …), which is what made an unreachable candidate a dead end — the walk stopped at
+ * the first level that returned anything, and the *eligibility* of that thing was
+ * somebody else's problem. Enumerating instead of short-circuiting is what lets
+ * "the first candidate happens to be switched off" fall through to the next one.
+ *
+ * Production backs this with `channel_bindings` + `platform_instances`; tests back
+ * it with a fake.
  */
 export interface NotifyTargetLookup {
-  /** Step 1 — the producing agent's own addressable conversation. */
-  agentTarget(orgId: string, agentId: string): NotifyTarget | undefined;
-  /**
-   * Step 2 — a destination the instance *declares* in its config (via the
-   * `notifyTarget` annotation). Binding-independent: the reliable terminus.
-   * `agentId` narrows to the instances the agent works in; when omitted the
-   * org's declared instances are considered.
-   */
-  instanceDeclaredTarget(orgId: string, agentId?: string): NotifyTarget | undefined;
-  /** Step 3 — the instance's `notifyAgentId` → that agent's conversation (best-effort). */
-  instanceAgentTarget(orgId: string, agentId: string): NotifyTarget | undefined;
-  /** Step 4 — org-level defaults (Secretary / global binding / legacy channel). */
-  globalTarget(orgId: string): NotifyTarget | undefined;
+  candidates(orgId: string, origin: OutboundOrigin): NotifyCandidate[];
 }
 
 /** A resolved destination plus the walk level that produced it. */
 export interface ResolvedNotifyTarget {
   target: NotifyTarget;
   matchedScope: NotifyScope;
+  /**
+   * Candidates that existed after the chosen one — other destinations that were
+   * available but not needed, each still tagged with its level. Surfaced so an
+   * operator with two configured bots can *see* which one won (and that there was
+   * a choice at all) instead of inferring it from a list order. Absent when the
+   * chosen candidate was the last one.
+   */
+  alternatives?: NotifyCandidate[];
+}
+
+/** A candidate the eligibility predicate rejected, with the reason it gave. */
+export interface NotifySkipped {
+  target: NotifyTarget;
+  reason: string;
 }
 
 /** Why the walk produced no terminus. Distinguishable from a send failure. */
 export type NotifyUndeliveredReason = 'no-notify-target';
 
 /**
- * The resolver's **total** result. Either a resolved destination or an explicit
- * `undelivered` state — never `undefined`/`null`, so "no destination" cannot be
- * silently conflated with "nothing to do".
+ * The resolver's **total** result. Never `undefined`/`null`, so "no destination"
+ * cannot be silently conflated with "nothing to do", and — the point of
+ * {@link NotifySkipped} — "deliberately switched off" cannot be conflated with
+ * "mis-routed to the wrong bot".
  */
 export type NotifyResolution =
   | ({ status: 'resolved' } & ResolvedNotifyTarget)
+  | { status: 'suppressed'; reason: string; skipped: NotifySkipped[] }
   | { status: 'undelivered'; reason: NotifyUndeliveredReason };
 
 /**
- * Walk `agent → instance(declared) → instance(agent) → global`, first hit wins.
- * When no level yields a target the result is `{ status: 'undelivered' }`, which
- * the caller must treat as a loud, visible state — not as "nothing happened".
+ * May this candidate carry the message? `undefined` ⇒ yes, otherwise the reason
+ * it may not. Supplied by the dispatcher, which owns *why* (notification
+ * preferences for this message) — the resolver stays a pure walk and never needs
+ * to know what a preference is.
+ */
+export type NotifyEligibility = (target: NotifyTarget) => string | undefined;
+
+/**
+ * Walk every candidate, most specific first, and return the **first eligible**
+ * one. Ineligible candidates are skipped, not fatal: the walk continues to the
+ * next destination (that is the fix for the 2026-10-16 mis-route, where one
+ * switched-off bot swallowed every notification).
+ *
+ * When candidates existed but none was eligible the result is `suppressed` and
+ * carries *every* skipped candidate with its reason — so the caller can say which
+ * bots were considered and why each was passed over, rather than reporting a
+ * single reason that reads like an intentional switch-off.
  */
 export function resolveNotifyTarget(
   orgId: string,
   origin: OutboundOrigin,
   lookup: NotifyTargetLookup,
+  isEligible?: NotifyEligibility,
 ): NotifyResolution {
-  if (origin.agentId) {
-    const agent = lookup.agentTarget(orgId, origin.agentId);
-    if (agent) return { status: 'resolved', target: agent, matchedScope: 'agent' };
+  const candidates = lookup.candidates(orgId, origin);
+  if (candidates.length === 0) return { status: 'undelivered', reason: 'no-notify-target' };
 
-    // The reliable terminus: a destination the instance declares in its config,
-    // reachable without any binding (fixes R1).
-    const declared = lookup.instanceDeclaredTarget(orgId, origin.agentId);
-    if (declared) return { status: 'resolved', target: declared, matchedScope: 'instance' };
-
-    const viaAgent = lookup.instanceAgentTarget(orgId, origin.agentId);
-    if (viaAgent) return { status: 'resolved', target: viaAgent, matchedScope: 'instance' };
-  } else {
-    // A message with no producing agent can still land on a declared destination
-    // (an explicit org-wide address beats the generic global default).
-    const declared = lookup.instanceDeclaredTarget(orgId);
-    if (declared) return { status: 'resolved', target: declared, matchedScope: 'instance' };
+  const skipped: NotifySkipped[] = [];
+  for (let i = 0; i < candidates.length; i += 1) {
+    const { target, scope } = candidates[i];
+    const reason = isEligible?.(target);
+    if (!reason) {
+      const rest = candidates.slice(i + 1);
+      return {
+        status: 'resolved',
+        target,
+        matchedScope: scope,
+        ...(rest.length > 0 ? { alternatives: rest } : {}),
+      };
+    }
+    skipped.push({ target, reason });
   }
 
-  const global = lookup.globalTarget(orgId);
-  if (global) return { status: 'resolved', target: global, matchedScope: 'global' };
-
-  return { status: 'undelivered', reason: 'no-notify-target' };
+  return { status: 'suppressed', reason: skipped[0].reason, skipped };
 }

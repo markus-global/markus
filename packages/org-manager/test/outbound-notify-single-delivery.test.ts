@@ -24,14 +24,8 @@ import type { OutboundSink } from '../../comms/src/gateway/dispatcher.js';
 
 const SECRETARY: NotifyTarget = { platform: 'feishu', instanceId: 'bi_secretary', nativeId: 'oc_owner' };
 
-function lookupOf(overrides: Partial<NotifyTargetLookup> = {}): NotifyTargetLookup {
-  return {
-    agentTarget: () => undefined,
-    instanceDeclaredTarget: () => undefined,
-    instanceAgentTarget: () => undefined,
-    globalTarget: () => SECRETARY,
-    ...overrides,
-  };
+function lookupOf(): NotifyTargetLookup {
+  return { candidates: () => [{ target: SECRETARY, scope: 'global' }] };
 }
 
 function recordingSink(): OutboundSink & { deliveries: Array<{ target: NotifyTarget; text: string }> } {

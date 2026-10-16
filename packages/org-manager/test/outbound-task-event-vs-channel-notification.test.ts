@@ -34,12 +34,7 @@ import type { OutboundSink } from '../../comms/src/gateway/dispatcher.js';
 const TARGET: NotifyTarget = { platform: 'feishu', instanceId: 'bi_1', nativeId: 'oc_group' };
 
 function lookupOf(): NotifyTargetLookup {
-  return {
-    agentTarget: () => undefined,
-    instanceDeclaredTarget: () => undefined,
-    instanceAgentTarget: () => undefined,
-    globalTarget: () => TARGET,
-  };
+  return { candidates: () => [{ target: TARGET, scope: 'global' }] };
 }
 
 type Delivery = { title: string; body: string; severity: string };
