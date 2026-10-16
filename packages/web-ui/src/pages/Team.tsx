@@ -698,11 +698,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Badge must follow local SSE/sending state — agent.status can return to idle
-  // while the UI is still flushing thinking/text deltas. The tail scan is the
-  // authoritative reattach-window signal (sending already ended, bubble still
-  // isStreaming) — extracted to hasStreamingTail in ChatHelpers.
-  const chatStreamActive = sending || streamingVisual || hasStreamingTail(messages);
+  // 「这个 agent 此刻在不在回话」**只有一个来源**：chatStore 的 agent busy 标记
+  // （useConversationBuffers 按 hasLiveStream(key) || phase==='streaming' 维护）。
+  // 这里曾再叠一层 `sending || streamingVisual || hasStreamingTail(messages)` 喂给顶部
+  // 状态徽章 —— 三个都是**本地副本**（sending 是视图级、streamingVisual 还有 400ms
+  // 最短展示闩、tail 依赖已被合并过的显示缓冲），切 tab 时它们会瞬间为真，于是顶部
+  // 状态先亮「工作中」再被权威纠正回「空闲」。徽章现在直接读同一个标记。
 
   // Subscribe to the streaming-agent set so the L2 agent rows (and anything else
   // reading chatStore during render) re-render the moment a stream opens/closes.
@@ -3576,7 +3577,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     } finally {
       if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
     }
-    if (selectedAgent && !isStreaming) {
+    // 总是让传输层去权威对账：目标会话可能仍有活回合（我们只是在别处把 SSE 拆了）。
+    // `tryReattachActiveStream` 自带冷却节流，并由 `decideOnStreamEnd` 决定「续接还是
+    // 结案」——回合真的结束了它会走 `finalizeIfDetached` 收尾。以前这里用 `!isStreaming`
+    // 拦住，于是「标记还在、但没有传输」的会话切回来只会显示一个永不更新的气泡。
+    if (selectedAgent) {
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
   };
@@ -4701,7 +4706,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </button>
                 <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
                 {chatMode === 'direct' && currentAgent && (
-                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
+                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                 )}
               </div>
               {/* Mobile Row 2: tabs + actions */}
@@ -4901,7 +4906,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </span>
                       )}
                       {chatMode === 'direct' && currentAgent && (
-                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} streamActive={chatStreamActive} />
+                        <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
@@ -5037,17 +5042,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             // needing the user to switch to it first.
             const liveStreamSessions = getStreamSession(currentConvKeyRef.current);
             const isStreamingTab = (s: ChatSessionInfo) =>
+              // 权威：本会话在这台客户端的「在途流登记簿」里。
               (liveStreamSessions?.has(s.id) ?? false)
-              // Pre-`session_start` window: a brand-new chat streams before the
-              // server assigns a real session id, so the active tab is the only
-              // one that can be generating.
+              // 下面两项是**已知的信息源不一致**，暂时保留（2026-10-16）：
+              // 实测发现 getStreamSession() 登记的其实是「本客户端有没有为这个会话
+              // 挂着 SSE」——一个**传输层**登记簿，却被当成「回合是否还活着」的权威。
+              // 它的条目的生命周期由 attach/detach 驱动（进会话 reattach 时补登记、
+              // 离开时释），所以后台会话可能拿不到任何一项 → 圆点缺失。
+              // 直接删掉这两项会把「圆点闪烁」变成「圆点永久消失」（实测：点 tab 后
+              // 圆点消失且 3s 不回，而回合仍在跑）。必须先给客户端一个真正的权威
+              // （服务端 session 级流状态：推送或对打开的 tab 做有限轮询），再删。
               || (sending && s.id === activeSessionId)
-              // Authoritative tail signal: even when the stream-session
-              // bookkeeping or the global `sending` flag momentarily lags
-              // (reattach window, session_start pre-window, streamingVisual
-              // min-display timer), a session whose latest bubble is STILL
-              // marked isStreaming must keep its pulsing dot — otherwise the
-              // dot disappears while the agent is visibly still typing.
               || (s.id === activeSessionId && hasStreamingTail(messages));
             return (
             <div ref={sessionTabBarRef} className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
@@ -6110,12 +6115,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   );
 }
 
-function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
+function AgentStatusBadge({ agent, tasks, onViewProfile }: {
   agent: AgentInfo;
   tasks: TaskInfo[];
   onViewProfile?: (agentId: string, opts?: { tab?: 'overview' }) => void;
-  /** Chat SSE / local sending can outlive agent.status flipping back to idle. */
-  streamActive?: boolean;
 }) {
   const { t } = useTranslation(['team', 'common']);
   const [open, setOpen] = useState(false);
@@ -6131,7 +6134,7 @@ function AgentStatusBadge({ agent, tasks, onViewProfile, streamActive }: {
   // agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部说空闲」。这里统一走
   // resolveAgentStatus，把本地流式标记也算进去——头部与侧栏从此同一个判据。
   const streamingHere = useAgentStreaming(agent.id);
-  const status = resolveAgentStatus(agent.status, streamingHere || !!streamActive);
+  const status = resolveAgentStatus(agent.status, streamingHere);
   const isWorking = status.tone === 'busy';
   const isError = status.tone === 'danger';
   // 未在运行（offline / paused）：不能拿它去展示「当前活动」。
