@@ -136,8 +136,11 @@ export interface MailboxPersistence {
    */
   save(item: MailboxItem, dedupKey?: string): void | boolean;
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
-  /** Mark all items stuck in 'processing' as 'dropped' (stale after restart). */
-  markStaleProcessingAsDropped?(agentId: string): number;
+  /** Mark all items stuck in 'processing' as 'dropped' (stale after restart).
+   *  When `currentOwnerId` is supplied, rows claimed by a DIFFERENT instance are also
+   *  treated as stale (a dead instance's claim must not be "respected" merely because its
+   *  lease has not expired yet). */
+  markStaleProcessingAsDropped?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -318,7 +321,9 @@ export class AgentMailbox {
    * Returns { dropped, restored }.
    */
   recoverStaleItems(): { dropped: number; restored: number; expired: number; merged: number } {
-    const dropped = this.persistence?.markStaleProcessingAsDropped?.(this.agentId) ?? 0;
+    // Pass our ownerId: on startup any pre-existing 'processing' row belongs to a dead
+    // prior process, so a foreign claim is stale even if its lease still looks valid.
+    const dropped = this.persistence?.markStaleProcessingAsDropped?.(this.agentId, undefined, this.ownerId) ?? 0;
 
     let restored = 0;
     let expired = 0;
@@ -366,11 +371,13 @@ export class AgentMailbox {
    * 卡住/被打断/超时的工作**不属于完成**，且 completed 会让 resolveReinjectDecision
    * 判定为 settled（抑制同键补偿重投），等于把未完成工作静默吞掉。
    * 改标 'dropped'：异常可见（UI 红色）+ 允许后续补偿重投（dropped → reuse）。
-   * storage 的 markStaleProcessingAsDropped 本身租约感知（仅碰「无认领/租约空/
-   * 租约过期」的行，不误杀其它实例在飞项），strict-state 项会回队重试。
+   * 除「无认领/租约空/租约过期」外，还传入本实例 ownerId：**认领者非本实例**的行也判
+   * 陈旧（跨实例死认领 —— 被杀实例的 in-flight 行租约未到期也不会永远卡 processing）。
+   * 单进程下每个 agent 只有一个 AgentMailbox（只有 `Agent` 构造器会 new），故不存在会
+   * 被误杀的「其它存活实例」。strict-state 项会回队重试。
    */
   cleanStaleProcessing(): number {
-    return this.persistence?.markStaleProcessingAsDropped?.(this.agentId) ?? 0;
+    return this.persistence?.markStaleProcessingAsDropped?.(this.agentId, undefined, this.ownerId) ?? 0;
   }
 
   /**

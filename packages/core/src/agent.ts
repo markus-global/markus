@@ -51,7 +51,7 @@ import {
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
-import { shouldRunDreamCycle } from './memory/dream-trigger.js';
+import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -9521,7 +9521,7 @@ export class Agent {
 
   private async consolidateMemory(): Promise<void> {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const now = new Date();
 
       // Session compaction is handled by MemoryStore.checkAndCompact (safety-net
       // only at very high message counts). Per-call packing uses the model window.
@@ -9535,9 +9535,18 @@ export class Agent {
       // made the dream structurally dead for buffers of a few LARGE entries (≈31 real
       // entries already sit at 99% of the 30 000-char budget, so `>= 50` never fired).
       const health = this.memory.getMemoryHealth();
-      const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
-      if (shouldRunDreamCycle({ observationPercent: health.observationPercent, entryCount: entries.length })
-          && this.lastDreamDate !== dreamKey) {
+      const dreamKey = dreamWindowKey(entries.length, now);
+      // Dedup on the SAME window key, but consult BOTH the volatile in-memory key AND the
+      // durable `lastConsolidatedAt` (memory-meta.json). The durable one is the restart fix:
+      // without it a process restart re-armed the guard and the same agent could dream twice
+      // the same day (observed 2026-10-15: two runs 2.5 min apart across a restart).
+      if (shouldRunDreamCycle({
+            observationPercent: health.observationPercent,
+            entryCount: entries.length,
+            now,
+            lastConsolidatedAt: this.memory.getLastConsolidatedAt?.() ?? null,
+            lastInMemoryWindowKey: this.lastDreamDate,
+          })) {
         this.lastDreamDate = dreamKey;
         await Agent.acquireDreamSlot();
         try {
