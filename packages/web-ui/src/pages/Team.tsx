@@ -56,6 +56,7 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
+import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
@@ -1052,6 +1053,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     () => makeConvKey(chatMode, selectedAgent, activeChannel, activeDmUserId),
     [chatMode, selectedAgent, activeChannel, activeDmUserId],
   );
+
+  // ── 本视图是否有权威在途流（“还在输出吗”的唯一判据）────────────────────────
+  // 只认**确切 session id**：placeholder 是一个 id，不是通配符（否则一条「新会话」
+  // 的流会把该 agent 的每个 tab 都点亮）。消息载荷上持久化的 `isStreaming` 是
+  // 中途快照的副本，不能单独点亮边框（见 lib/streamLiveness.ts）。
+  const liveStreamSessions = getStreamSession(activeConvKey);
+  const liveStreamForView = sessionHasLiveStream(liveStreamSessions, activeSessionId);
 
   // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
   // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
@@ -2877,8 +2885,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // 同 switchSession：在途与否只由会话自身的登记决定。
     const isSendingNow = chatMode !== 'direct'
       ? isSendingFor(newKey)
-      : !!streamingSessions && !!targetSession &&
-        (streamingSessions.has(targetSession) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
+      : sessionHasLiveStream(streamingSessions, targetSession);
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -3533,7 +3540,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // - If stream belongs to THIS session → show spinner
     // - If stream belongs to a DIFFERENT session → suppress spinner
     const streamingSessions = getStreamSession(key);
-    const streamForThis = !!streamingSessions && (streamingSessions.has(s.id) || streamingSessions.has(NEW_CHAT_PLACEHOLDER_ID));
+    const streamForThis = sessionHasLiveStream(streamingSessions, s.id);
     // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
     // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
     // 于是正在输出的 tab 会瞬间显示为“已结束”。
@@ -4075,7 +4082,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const currentUserName = authUser?.name ?? t('page.fallbackYou');
   const lastMsg = visibleMessages[visibleMessages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
-  const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent';
+  const isLastVisualStreaming = streamingVisual && liveStreamForView && lastMsg?.sender === 'agent';
   const channelTeamMemberIds = useMemo(() => {
     if (chatMode !== 'channel') return null;
     if (activeChannel.startsWith('group:custom:')) {
@@ -5387,7 +5394,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const showDateSep = Boolean(curDate && prevDate && curDate !== prevDate);
               const isLastMsg = vIdx === visibleMessages.length - 1;
               const isPending = isLastPending && isLastMsg;
-              const isStreamingMsg = (isPending && sending) || !!msg.isStreaming;
+              const isStreamingMsg = shouldPaintStreamingBubble({
+                msgIsStreaming: !!msg.isStreaming,
+                liveStreamForView,
+              });
               const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
               const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
 
