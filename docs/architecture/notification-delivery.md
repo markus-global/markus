@@ -254,6 +254,12 @@ moves bytes.*
 - A notification platform with buttons renders a tappable card; capability
   degradation is total and never loses content.
 - **Exactly one** IM message per logical notification, independent of user count.
+- A notification **names its subject**. An event that carries no human-readable
+  title/summary is an internal signal, not a notification, and is not sent — the
+  dispatcher never falls back to the raw event name as a title (2026-10-16: an
+  agent-execution `task:completed`, payload `{ taskId, agentId }`, was pushed to
+  Feishu as the literal string `"task:completed"`). The user-facing task facts
+  belong to the status machine → HITL, which always carries the title.
 - A tap always produces visible evidence; the card rewrite is post-ack, optional and
   best-effort.
 - Any terminal approval transition invalidates all derived UI, from any trigger.

@@ -351,6 +351,12 @@ export class OutboundDispatcher {
     const unsubs = events.map((event) =>
       bus.on(event, (payload) => {
         const msg = taskEventToOutbound(event, payload, TASK_EVENT_MAP[event] ?? 'info');
+        // A content-free lifecycle event is not a notification — skip it rather
+        // than push a subject-less message to every chat app.
+        if (!msg) {
+          log.debug('Skipped a task event that names nothing — not a notification', { event });
+          return;
+        }
         void this.dispatch(msg).catch((err) => {
           log.error('Failed to dispatch task event', { event, error: String(err) });
         });
@@ -479,20 +485,40 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   return msg;
 }
 
-/** Build an outbound message from an EventBus task event payload. */
+/**
+ * Build an outbound message from an EventBus task event payload, or `undefined`
+ * when the event carries **nothing a human could read**.
+ *
+ * This is the boundary that stops an *internal signal* from being mistaken for a
+ * *notification* (2026-10-16). The agent execution lifecycle emits
+ * `task:completed` / `task:failed` with only `{ taskId, agentId }` — a fact about
+ * the runtime, not a sentence. Synthesising a message from it produced a
+ * literally context-free `"task:completed"` pushed to Feishu (the dispatcher fell
+ * back to the raw event name as the title) and an "✓ Task" OS notification.
+ *
+ * The user-facing fact ("task ready for review", "task completed: <title>") is
+ * already owned by the status machine → HITL notification, which carries a title
+ * and a task id. A task event is therefore only forwarded when it can name the
+ * thing it is about; otherwise the dispatcher stays silent — a message with no
+ * subject is not a message.
+ */
 export function taskEventToOutbound(
   event: string,
   payload: unknown,
   severity: OutboundMessage['severity'],
-): OutboundMessage {
+): OutboundMessage | undefined {
   const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
-  const title = typeof p['title'] === 'string' ? (p['title'] as string) : event;
-  const body =
-    typeof p['summary'] === 'string'
+  const named = typeof p['title'] === 'string' && (p['title'] as string).trim().length > 0;
+  const summary =
+    typeof p['summary'] === 'string' && (p['summary'] as string).trim().length > 0
       ? (p['summary'] as string)
-      : typeof p['body'] === 'string'
+      : typeof p['body'] === 'string' && (p['body'] as string).trim().length > 0
         ? (p['body'] as string)
-        : title;
+        : undefined;
+  // Neither a name nor a body ⇒ an internal lifecycle signal, not a notification.
+  if (!named && !summary) return undefined;
+  const title = named ? (p['title'] as string) : event;
+  const body = summary ?? title;
   const origin: OutboundOrigin = {};
   if (typeof p['agentId'] === 'string') origin.agentId = p['agentId'] as string;
   if (typeof p['taskId'] === 'string') origin.taskId = p['taskId'] as string;

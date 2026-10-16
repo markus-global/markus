@@ -2450,17 +2450,16 @@ async function startServerCore(
     ws.broadcast({ type: 'agent:stopped', payload: event, timestamp: new Date().toISOString() });
   });
 
-  // Wire task completion/failure events to WS broadcast
-  eventBus.on('task:completed', (event: unknown) => {
-    const { taskId, agentId } = event as { taskId: string; agentId: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'completed', { agentId });
-  });
-  eventBus.on('task:failed', (event: unknown) => {
-    const { taskId, agentId, error } = event as { taskId: string; agentId: string; error?: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'failed', { agentId, error });
-  });
+  // NOTE (2026-10-16): `task:completed` / `task:failed` are **agent execution
+  // lifecycle** events — "the runtime finished running". They used to be
+  // re-broadcast here as `task:update`, which was wrong twice over: the payload
+  // carries no title (the UI/OS notification degraded to a bare "Task") and the
+  // status was a lie (a finished execution moves the task to `review`, not
+  // `completed`). The **status machine** (`task-service.broadcastStatusChange`)
+  // is the single writer of a task's user-facing status and already emits
+  // `task:update` with the real status *and* the title on every transition, so
+  // these bridges were pure counterfeit. Removed rather than enriched: one fact,
+  // one writer.
 
   // Wire system-wide events to WS broadcast
   eventBus.on('system:pause-all', (event: unknown) => {

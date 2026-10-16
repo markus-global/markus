@@ -107,26 +107,42 @@ describe('F2 — a task status transition never double-fires (HITL × EventBus)'
     expect(sink.deliveries.every((d) => d.body.startsWith('Transition '))).toBe(true);
   });
 
-  it('agent-execution finish is a SEPARATE logical notification (not a duplicate)', async () => {
+  it('agent-execution finish names nothing ⇒ it is NOT forwarded as a notification', async () => {
     const hitl = serviceWithHumans(['u1', 'u2', 'u3']);
     const sink = recordingSink();
     const dispatcher = new OutboundDispatcher({ lookup: lookupOf(), sink });
     const agentBus = wireProductionLike(dispatcher, hitl);
 
     // (a) the agent’s execution lifecycle emits task:completed on its private bus
-    //     (agent.ts `_executeTaskInternal`, forwarded agent→manager).
+    //     (agent.ts `_executeTaskInternal`, forwarded agent→manager). Its payload
+    //     is `{ taskId, agentId }` — a runtime fact with no human-readable subject.
     agentBus.emit('task:completed', { taskId: 'tsk_x', agentId: 'agt_x' });
-    // (b) the status machine then moves the task to review → HITL notification.
+    agentBus.emit('task:failed', { taskId: 'tsk_x', agentId: 'agt_x', error: 'boom' });
+    // (b) the status machine then moves the task to review → the ONE real
+    //     user-facing notification.
     hitl.notify({ targetUserId: 'all', type: 'task_review', title: 'Task ready for review: X', body: '…', priority: 'normal' });
 
-    await vi.waitFor(() => expect(sink.deliveries.length).toBe(2));
-    // Two DISTINCT logical notifications ⇒ two messages. The EventBus payload has
-    // no title, so its message degrades to the raw event name — a shape mismatch,
-    // not a duplicate of the HITL message.
-    const bodies = sink.deliveries.map((d) => d.body);
-    expect(sink.deliveries).toHaveLength(2);
-    expect(bodies.some((b) => b.startsWith('task:completed'))).toBe(true);
-    expect(bodies.some((b) => b.startsWith('Task ready for review: X'))).toBe(true);
+    await vi.waitFor(() => expect(sink.deliveries.length).toBeGreaterThan(0));
+    // Exactly one message: the HITL one. The lifecycle events produced NOTHING —
+    // before 2026-10-16 they degraded to a literally context-free "task:completed"
+    // (the raw event name used as the title) and were pushed to the chat app.
+    expect(sink.deliveries).toHaveLength(1);
+    expect(sink.deliveries[0]!.body).toContain('Task ready for review: X');
+    expect(sink.deliveries.some((d) => d.body.startsWith('task:'))).toBe(false);
+  });
+
+  it('a task event that DOES name itself is still forwarded (the guard is not a mute)', async () => {
+    // The guard only drops content-free events. A task event carrying a title —
+    // e.g. a future/external producer — must still reach the channel.
+    const hitl = serviceWithHumans(['u1']);
+    const sink = recordingSink();
+    const dispatcher = new OutboundDispatcher({ lookup: lookupOf(), sink });
+    const agentBus = wireProductionLike(dispatcher, hitl);
+
+    agentBus.emit('task:completed', { taskId: 'tsk_x', agentId: 'agt_x', title: 'Ship the widget' });
+
+    await vi.waitFor(() => expect(sink.deliveries.length).toBe(1));
+    expect(sink.deliveries[0]!.body).toContain('Ship the widget');
   });
 });
 
