@@ -12,19 +12,14 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { ConversationBufferManager, type ConvPhase, makeConvKey } from '../lib/ConversationBufferManager.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
-import { chatStore } from '../pages/useChatStore.ts';
+// (chatStore 已删除：agent 存活性统一由 lib/sessionStreamState.ts 的服务端权威决定)
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
 export { makeConvKey } from '../lib/ConversationBufferManager.ts';
 export const NEW_CHAT_PLACEHOLDER_ID = ConversationBufferManager.NEW_CHAT_ID;
 
-/**
- * Direct conversation keys are the agent id itself (see makeConvKey): `ch:*`
- * (team/channel) and `dm:*` (human DM) never map to one agent. Pure function —
- * hoisted to module scope so it can be used inside stable useCallbacks.
- */
-const isAgentKey = (key: string): boolean =>
-  !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
+// isAgentKey 已删除：它唯一的用途是决定「要不要写 chatStore 的 agent-busy 标记」，
+// 而 chatStore 已整体退役（存活性权威见 lib/sessionStreamState.ts）。
 
 export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const mgr = useRef(new ConversationBufferManager());
@@ -58,34 +53,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const getStreamSession = useCallback((k: string) => mgr.current.getStreamSessions(k), []);
   const setStreamSession = useCallback((k: string, s: string) => {
     const changed = mgr.current.addStreamSession(k, s);
-    // markAgentStreaming is internally idempotent (only emits on real change).
-    if (isAgentKey(k)) chatStore.markAgentStreaming(k, true);
     if (changed) bumpStreamMembership();
   }, [bumpStreamMembership]);
-  /**
-   * The single source of truth for "this agent is busy" handed to chatStore.
-   *
-   * `hasLiveStream` (the ownership set) is the primary answer, but it can be
-   * EMPTY during the pre-registration window — `beginStream` flips the phase
-   * before `session_start` lands the mark — and the phase then still reads
-   * 'streaming'. Reporting idle in that window is what let the sidebar say 空闲
-   * while a bubble was visibly still typing, so the phase gets a vote too.
-   * Callers that genuinely end a turn pair this with `endStream`, which lands
-   * `ready` and therefore clears the mark.
-   */
-  const agentBusy = useCallback((k: string) =>
-    mgr.current.hasLiveStream(k) || mgr.current.getPhase(k) === 'streaming', []);
-
   const clearStreamSession = useCallback((k: string, s?: string) => {
     const changed = mgr.current.removeStreamSession(k, s);
-    // Derive the sidebar signal from what is STILL live, not from the fact that
-    // ONE stream ended. Several tabs of the same agent can stream at once, so
-    // releasing tab A must not mark the agent idle while tab B is still running
-    // — that would let Team's ghost-reconciliation sweep tab B's live bubble and
-    // drop its "outputting" border mid-turn.
-    if (isAgentKey(k)) chatStore.markAgentStreaming(k, agentBusy(k));
     if (changed) bumpStreamMembership();
-  }, [agentBusy, bumpStreamMembership]);
+  }, [bumpStreamMembership]);
   const setActiveSession = useCallback((k: string, s: string) => mgr.current.setActiveSession(k, s), []);
   const clearActiveSession = useCallback((k: string) => mgr.current.clearActiveSession(k), []);
 
@@ -122,29 +95,15 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
   const beginStream = useCallback((key: string) => {
     mgr.current.beginStream(key);
-    // Direct conversation keys are the agent id itself (see makeConvKey):
-    // `ch:*` (team/channel) and `dm:*` (human DM) never map to one agent.
-    if (isAgentKey(key)) chatStore.markAgentStreaming(key, true);
   }, []);
   const endStream = useCallback((key: string) => {
     mgr.current.endStream(key);
-    // Collapsing the turn-level phase is what retires the pre-registration
-    // window: `clearStreamSession` runs BEFORE this call in the terminal path
-    // and, with the ownership set still holding a sibling (or the phase still
-    // 'streaming'), it can legitimately leave the agent marked busy. Landing
-    // 'ready' here is therefore the point where a mark that nothing backs must
-    // fall — but ONLY when no stream remains live, else a sibling tab's badge
-    // would go 空闲 mid-turn (the mirrored failure of the bug this guards).
-    if (isAgentKey(key)) chatStore.markAgentStreaming(key, mgr.current.hasLiveStream(key));
   }, []);
   // Single teardown entry for abort-like paths (stop / retry / interrupt /
   // channel abort / unmount). Replaces the copy-pasted cleanup sequences in
   // Team.tsx; see ConversationBufferManager.abortStream for the pure logic.
   const abortStream = useCallback((key: string, sessionId?: string | null) => {
     const affected = mgr.current.abortStream(key, sessionId);
-    // Same derivation as clearStreamSession: aborting one tab's stream must not
-    // clear the agent's busy mark while a sibling tab is still streaming.
-    if (affected && isAgentKey(key)) chatStore.markAgentStreaming(key, agentBusy(key));
     if (affected) bumpStreamMembership();
     if (mgr.current.currentConvKey === key) {
       setSending(false);

@@ -70,8 +70,12 @@ function handleEvent(event: WSEvent): void {
   switch (event.type) {
     case 'task:update': {
       const status = payload?.status as string;
-      const title = (payload?.title as string) ?? 'Task';
+      const title = payload?.title as string | undefined;
       const taskId = payload?.taskId as string | undefined;
+      // A task notification must name the task. Task-service always sends the
+      // title; a title-less `task:update` is an internal signal that must not be
+      // dressed up as an OS notification ("✓ Task" with no context).
+      if (!title) break;
       if (status === 'completed') {
         showOSNotification('Task Completed', `✓ ${title}`, {
           openNotifications: true,
@@ -91,15 +95,10 @@ function handleEvent(event: WSEvent): void {
       break;
     }
 
-    case 'task:completed': {
-      const title = (payload?.title as string) ?? (payload?.taskId as string) ?? 'Task';
-      const taskId = (payload?.taskId as string) ?? undefined;
-      showOSNotification('✅ Task Completed', title, {
-        openNotifications: true,
-        page: 'work', params: taskId ? { openTask: taskId } : undefined,
-      });
-      break;
-    }
+    // NOTE: `case 'task:completed'` used to live here, but the WS server never
+    // emits that event type (`broadcastTaskUpdate` emits `task:update`) — it was
+    // unreachable. Task status reaches the OS through the `task:update` case
+    // above, which now requires a title.
 
     case 'approval:requested': {
       const taskId = payload?.taskId as string | undefined;

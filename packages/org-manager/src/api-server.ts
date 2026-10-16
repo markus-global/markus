@@ -79,6 +79,8 @@ import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
+import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
+import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -316,6 +318,8 @@ export class APIServer {
   public ws: WSBroadcaster;
   public skillRegistry?: SkillRegistry;
   private hitlService?: HITLService;
+  /** The platform-wide single execution point for approval outcomes. */
+  private approvalApplier?: ApprovalApplier;
   public billingService?: BillingService;
   public auditService?: AuditService;
   public licenseService?: LicenseService;
@@ -1026,6 +1030,16 @@ export class APIServer {
     public port: number = 8056
   ) {
     this.ws = new WSBroadcaster();
+    // 权威 → 广播：activeStreams 是「这个会话在不在输出」的唯一来源，它的每次变化
+    // 推给所有已连接客户端。客户端不再各自近似这个事实。
+    this.activeStreams.setStateChangeListener((change) => {
+      this.ws.broadcastSessionStreamState(
+        change.agentId,
+        change.sessionId,
+        change.streaming,
+        change.status,
+      );
+    });
     this.teamTemplateRegistry = createDefaultTeamTemplates();
     this.templateRegistry = createDefaultTemplateRegistry();
     // Propagate template registry to AgentManager so createAgentFromTemplate works
@@ -1500,6 +1514,40 @@ export class APIServer {
 
   setAuditService(service: AuditService): void {
     this.auditService = service;
+  }
+
+  /**
+   * Inject the platform-wide single execution point. Optional: when the
+   * composition root does not provide one, {@link ensureApprovalApplier} builds it
+   * from the services this server already holds, so HTTP responses stay wired.
+   */
+  setApprovalApplier(applier: ApprovalApplier): void {
+    this.approvalApplier = applier;
+    this.ensureApprovalApplier();
+  }
+
+  /**
+   * The applier is the only thing allowed to turn an approval decision into a
+   * target transition in the HTTP layer. Built lazily and idempotently so that
+   * whichever order services are attached in, exactly one instance routes here —
+   * and the services get their promise-path callbacks wired at the same time.
+   */
+  private ensureApprovalApplier(): ApprovalApplier | undefined {
+    if (!this.hitlService || !this.taskService) return this.approvalApplier;
+    const applier = this.approvalApplier ?? new ApprovalApplier(this.hitlService);
+    this.approvalApplier = applier;
+
+    const candidates: Array<{ gate: boolean; port?: ApprovalTargetPort }> = [
+      { gate: typeof (this.taskService as unknown as ApprovalTargetPort)?.canApplyApproval === 'function', port: this.taskService as unknown as ApprovalTargetPort },
+      { gate: typeof (this.requirementService as unknown as ApprovalTargetPort)?.canApplyApproval === 'function', port: this.requirementService as unknown as ApprovalTargetPort },
+    ];
+    for (const { gate, port } of candidates) {
+      if (!gate || !port) continue;
+      applier.registerPort(port);
+      const host = port as unknown as { setApprovalApplier?: (a: ApprovalApplier) => void };
+      host.setApprovalApplier?.(applier);
+    }
+    return applier;
   }
 
   setHITLService(service: HITLService): void {
@@ -2111,7 +2159,7 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      const title = !session.title ? userMessage.slice(0, 60) : undefined;
+      const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
         session.id,
@@ -2121,7 +2169,7 @@ export class APIServer {
         tokensUsed,
         metadata
       );
-      await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+      if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
     }
@@ -2784,6 +2832,7 @@ export class APIServer {
     sessionId?: string | null,
     replyTo?: { id: string; sender: string; text: string } | null,
     extraMeta?: Record<string, unknown>,
+    titleSource?: string,
   ): Promise<{ sessionId: string; messageId: string } | null> {
     if (!this.storage) return null;
     try {
@@ -2794,7 +2843,7 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      const title = !session!.title ? userMessage.slice(0, 60) : undefined;
+      const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       if (images?.length) meta.images = images;
       if (replyTo) {
@@ -3891,6 +3940,32 @@ export class APIServer {
       return;
     }
 
+    // 批量流存活性 —— 客户端对其打开的 session tab 做对账轮询时用（一次请求覆盖
+    // 全部 tab，而不是每 tab 一次）。
+    // `streaming` 刻意取 `status === 'streaming'`，**不是** `status().active`
+    // （后者在 DONE_TTL_MS 内仍为 true，好让晚到的刷新还能接上终态事件）——
+    // 照 active 广播会让「输出中」在回合结束后滞留 90 秒。
+    if (path === '/api/sessions/stream/status' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = (await this.readBody(req).catch(() => ({}))) as Record<string, unknown>;
+      const agentId = typeof body.agentId === 'string' ? body.agentId : '';
+      const sessionIds = Array.isArray(body.sessionIds)
+        ? body.sessionIds.filter((s): s is string => typeof s === 'string')
+        : [];
+      if (!agentId || sessionIds.length === 0) {
+        this.json(res, 400, { error: 'agentId (string) and sessionIds (string[]) are required' });
+        return;
+      }
+      const streaming: Record<string, boolean> = {};
+      for (const sid of sessionIds) {
+        streaming[sid] = this.activeStreams.getByAgentSession(agentId, sid)?.status === 'streaming';
+      }
+      // `at` = 服务端时钟：客户端据此排序（晚到的旧结果不得覆盖更新的权威状态）。
+      this.json(res, 200, { agentId, streaming, at: Date.now() });
+      return;
+    }
+
     // Reattach to an in-flight chat stream (SSE). Soft disconnect does not cancel.
     if (path.match(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/) && req.method === 'GET') {
       const authUser = await this.requireAuth(req, res);
@@ -4754,6 +4829,9 @@ export class APIServer {
         // conversation it was in.
 
         const userText = body['text'] as string;
+        // The user's own typed words (without injected context chips), used to
+        // derive a clean session title. Absent for retries / non-UI clients.
+        const titleSource = typeof body['titleSource'] === 'string' ? body['titleSource'] : undefined;
         // Persist user-attached files (any type incl. pasted images) to local
         // disk under ~/.markus so the agent gets a real path anchor.
         const persistedAttachments = persistChatImages(images, fileNames, agentId!);
@@ -4767,7 +4845,7 @@ export class APIServer {
 
         if (inject) {
           if (this.storage && sessionId) {
-            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo);
+            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, undefined, titleSource);
           }
           agent.injectFollowUp(agentText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
@@ -4779,7 +4857,7 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
-          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, undefined, titleSource);
           // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
           // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
           // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在
@@ -5666,6 +5744,32 @@ export class APIServer {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const dropped = agent.getMailbox().cleanStaleProcessing();
         this.json(res, 200, { dropped });
+      } catch {
+        this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // Drop ONE mailbox item, with an explicit reason. Distinct from
+    // cancel-processing (打断 = stop the running turn and requeue its item) and
+    // from recover-stale (bulk cleanup of stuck rows): here the operator says
+    // "this particular item should not be handled", and why. The reason is
+    // logged and broadcast as `mailbox:dropped`, so a dropped message is
+    // traceable instead of just never arriving.
+    if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const agentId = parts[3]!;
+      const itemId = parts[5]!;
+      const body = await this.readBody(req).catch(() => undefined);
+      const reason = body && typeof body === 'object'
+        ? String((body as { reason?: unknown }).reason ?? '').trim() || 'operator'
+        : 'operator';
+      try {
+        const agent = this.orgService.getAgentManager().getAgent(agentId);
+        const dropped = agent.getMailbox().drop(itemId, `operator: ${reason}`);
+        this.json(res, 200, { status: 'dropped', itemId, dropped: Boolean(dropped) });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -7121,37 +7225,42 @@ EXPLANATION_END`;
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
       const answers = body['answers'] as UserInputAnswer[] | undefined;
-      const result = this.hitlService.respondToApproval(
+      const response = this.hitlService.respondToApproval(
         approvalId, approved, respondedBy, comment, selectedOption, answers,
       );
-      if (!result) {
+      if (!response) {
         this.json(res, 404, { error: 'Approval not found or not pending' });
         return;
       }
+      const result = response.approval;
+      const intent = response.decision.intent;
 
-      // Directly transition task/requirement as fallback.
-      // The in-memory promise callback from requestApprovalAndWait is lost on
-      // server restart, so we must also drive the state change from here.
+      // Single execution point (see approval-apply.ts).
+      //
+      // The in-memory promise callback from `requestApprovalAndWait` is lost on
+      // server restart, so this fallback must still be able to drive the target —
+      // but it must NOT become a second writer: both paths go through the same
+      // applier, whose synchronous claim on the approval entity makes the outcome
+      // exactly-once (the loser reports `already-applied` / `out-of-window`).
       const details = result.details as Record<string, unknown> | undefined;
+      const { subType, targetId } = targetOfApproval(details);
       const taskId = details?.['taskId'] as string | undefined;
       const requirementId = details?.['requirementId'] as string | undefined;
-      if (taskId) {
-        try {
-          if (approved) {
-            this.taskService.approveTask(taskId, respondedBy);
-          } else {
-            this.taskService.rejectTask(taskId, respondedBy);
-          }
-        } catch { /* already transitioned by in-memory promise callback */ }
-      }
-      if (requirementId && this.requirementService) {
-        try {
-          if (approved) {
-            this.requirementService.approveRequirement(requirementId, respondedBy);
-          } else {
-            this.requirementService.rejectRequirement(requirementId, respondedBy, comment || 'Rejected via approval');
-          }
-        } catch { /* already transitioned by in-memory promise callback */ }
+      const applier = this.ensureApprovalApplier();
+      const outcome = applier
+        ? await applier.apply({
+            approvalId,
+            subType: subType ?? '',
+            targetId: targetId ?? '',
+            intent,
+            actorId: respondedBy,
+            comment,
+          })
+        : undefined;
+      if (!applier) {
+        log.error('Approval applier unavailable — decision was NOT applied to its target', {
+          approvalId, subType, taskId, requirementId, intent,
+        });
       }
 
       this.auditService?.record({
@@ -7159,13 +7268,19 @@ EXPLANATION_END`;
         userId: respondedBy,
         agentId: result.agentId,
         type: 'approval_response',
-        action: approved ? 'approve' : 'reject',
+        action: intent,
         detail: result.title,
-        success: approved,
-        metadata: { approvalId, taskId, requirementId, comment, selectedOption },
+        success: intent === 'approve',
+        metadata: {
+          approvalId, taskId, requirementId, comment, selectedOption, intent,
+          applyReason: outcome?.reason ?? 'unrouted',
+        },
       });
 
-      this.json(res, 200, { approval: result });
+      this.json(res, 200, {
+        approval: result,
+        decision: { intent, applied: outcome?.applied ?? false, reason: outcome?.reason ?? 'unrouted' },
+      });
       return;
     }
 
@@ -7365,7 +7480,17 @@ EXPLANATION_END`;
               body: typeof c.body === 'string' ? c.body.slice(0, 300) : String(c.body ?? ''),
               timestamp: c.createdAt,
               source: 'task_comment',
-              metadata: { taskId: c.taskId, authorId: c.authorId, authorName: c.authorName },
+              metadata: {
+                taskId: c.taskId,
+                authorId: c.authorId,
+                authorName: c.authorName,
+                // Title as structure. `c.body` is the author's words — content,
+                // carried verbatim.
+                i18n: {
+                  titleKey: 'notifications.titles.taskComment',
+                  titleParams: { title: this.taskService.getTask(c.taskId)?.title ?? c.taskId },
+                },
+              },
             });
           }
         } catch { /* listRecent may not exist yet */ }
@@ -8744,6 +8869,10 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        // 任务上限：优先回显配置值；未配置时回显治理策略默认值，与
+        // TaskService.checkTaskLimits 的实际生效口径保持一致。
+        maxPendingTasksPerAgent:
+          am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
       });
       return;
     }
@@ -8768,12 +8897,19 @@ EXPLANATION_END`;
         };
         changed = true;
       }
+      // 每个 agent 的任务上限（智能体设置 → 任务上限）。与 maxToolIterations /
+      // concurrent 同一条配置链路：写入 AgentManager 单一事实源并落库 markus.json。
+      if (typeof body['maxPendingTasksPerAgent'] === 'number') {
+        am.maxPendingTasksPerAgent = body['maxPendingTasksPerAgent'] as number;
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
               concurrent: am.concurrentConfig,
+              maxPendingTasksPerAgent: am.maxPendingTasksPerAgent,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -8795,6 +8931,8 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        maxPendingTasksPerAgent:
+          am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
       });
       return;
     }
@@ -13009,6 +13147,26 @@ EXPLANATION_END`;
       return;
     }
 
+    // 需求闸「重新发起审批」入口 — the requirement-side counterpart of the task entry
+    // below: a 打回 keeps the requirement `pending` with no live approval, so this
+    // is how a proposal gets back into review after revisions.
+    if (path.match(/^\/api\/requirements\/[^/]+\/request-approval$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const reqId = path.split('/')[3]!;
+      if (!this.requirementService) {
+        this.json(res, 503, { error: 'Requirement service not available' });
+        return;
+      }
+      try {
+        const result = this.requirementService.requestRequirementApproval(reqId, authUser.userId);
+        this.json(res, 200, result);
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/requirements\/[^/]+\/cancel$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -13254,6 +13412,21 @@ EXPLANATION_END`;
       try {
         const task = this.taskService.archiveTask(taskId);
         this.json(res, 200, { task });
+      } catch (err) {
+        this.json(res, 400, { error: String(err) });
+      }
+      return;
+    }
+
+    // 建卡闸「重新发起审批」入口 — the third segment of the 打回 loop. A 打回 keeps
+    // the task `pending` with zero state transition and no live approval; the
+    // assignee revises the title / description and calls this to re-open the gate.
+    if (path.match(/^\/api\/tasks\/[^/]+\/request-approval$/) && req.method === 'POST') {
+      const taskId = path.split('/')[3]!;
+      const authUser = await this.getAuthUser(req);
+      try {
+        const result = this.taskService.requestTaskApproval(taskId, authUser?.userId);
+        this.json(res, 200, result);
       } catch (err) {
         this.json(res, 400, { error: String(err) });
       }
@@ -13638,6 +13811,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
+      regex(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/decisions$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/metrics$/, 'GET'),
@@ -13716,6 +13890,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/revision$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/accept$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/archive$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/request-approval$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/schedule$/, 'PUT'),
       regex(/^\/api\/tasks\/[^/]+\/schedule\/pause$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/schedule\/resume$/, 'POST'),
@@ -13747,6 +13922,7 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+\/approve$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/request-approval$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),
 

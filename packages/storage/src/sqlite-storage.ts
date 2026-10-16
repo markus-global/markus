@@ -553,7 +553,9 @@ CREATE TABLE IF NOT EXISTS approvals (
   approver_user_ids TEXT,
   target_user_id TEXT,
   questions TEXT,
-  answers TEXT
+  answers TEXT,
+  applied_at TEXT,
+  applied_intent TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status, requested_at DESC);
 
@@ -794,6 +796,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'requirements', column: 'goal_config', sql: 'ALTER TABLE requirements ADD COLUMN goal_config TEXT' },
     { table: 'approvals', column: 'questions', sql: 'ALTER TABLE approvals ADD COLUMN questions TEXT' },
     { table: 'approvals', column: 'answers', sql: 'ALTER TABLE approvals ADD COLUMN answers TEXT' },
+    { table: 'approvals', column: 'applied_at', sql: 'ALTER TABLE approvals ADD COLUMN applied_at TEXT' },
+    { table: 'approvals', column: 'applied_intent', sql: 'ALTER TABLE approvals ADD COLUMN applied_intent TEXT' },
     { table: 'users', column: 'preferences', sql: 'ALTER TABLE users ADD COLUMN preferences TEXT' },
     { table: 'pending_callbacks', column: 'delivery_mode', sql: "ALTER TABLE pending_callbacks ADD COLUMN delivery_mode TEXT NOT NULL DEFAULT 'in_session'" },
     { table: 'pending_callbacks', column: 'note', sql: 'ALTER TABLE pending_callbacks ADD COLUMN note TEXT' },
@@ -851,8 +855,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
   //        数百万行大表做 LIKE 全表扫描，曾导致启动耗时 20s+)
   //   v3 = messaging gateway data model (G1): copy legacy `integrations` rows
   //        into platform_instances / channel_bindings (docs/architecture/messaging-gateway.md §5)
+  //   v4 = chat session titles: drop the fabricated 'Main' sentinel that
+  //        `getOrCreateMainSession` used to write (a data-derived value compared
+  //        literally by the UI). Safe to clear: a genuine user title can never be
+  //        produced by the platform, and `is_main` is the real identity flag.
   const SCHEMA_MIGRATION_VERSION = 2;
   const GATEWAY_MIGRATION_VERSION = 3;
+  const TITLE_SENTINEL_MIGRATION_VERSION = 4;
   const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
   const userVersion = (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
 
@@ -899,10 +908,32 @@ export function openSqlite(dbPath: string): DatabaseSync {
     }
   }
 
+  // v4 — clear the fabricated 'Main' session-title sentinel (see version note
+  // above). Idempotent: only rows whose title is exactly 'Main' are touched, so
+  // re-running is a no-op and real titles are never disturbed.
+  //
+  // Re-read the version instead of reusing the captured `userVersion`: the
+  // gateway step above may have FAILED and deliberately left the version
+  // unadvanced so it retries next start. Never leapfrog a failed step — only run
+  // this cleanup once every earlier step has actually committed.
+  const versionBeforeTitleCleanup =
+    (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
+  if (
+    versionBeforeTitleCleanup >= GATEWAY_MIGRATION_VERSION &&
+    versionBeforeTitleCleanup < TITLE_SENTINEL_MIGRATION_VERSION
+  ) {
+    const result = _db
+      .prepare("UPDATE chat_sessions SET title = NULL WHERE title = 'Main'")
+      .run();
+    if (result.changes > 0) {
+      log.info(`Chat session title migration: cleared ${result.changes} fabricated 'Main' title(s)`);
+    }
+    _db.exec(`PRAGMA user_version = ${TITLE_SENTINEL_MIGRATION_VERSION}`);
+  }
+
   log.info('SQLite database opened', { path: dbPath });
   return _db;
 }
-
 export function closeSqlite(): void {
   if (_db) {
     _db.close();
@@ -2291,19 +2322,21 @@ export class SqliteChatSessionRepo {
       : this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1').get(agentId);
     if (oldest) {
       const row = oldest as Record<string, unknown>;
-      const title = (row['title'] as string) || 'Main';
-      this.db.prepare('UPDATE chat_sessions SET is_main = 1, title = ? WHERE id = ?')
-        .run(title, row['id'] as string);
+      // Promoting a session to "main" must NOT invent a title: `is_main` already
+      // carries that identity, and the old code wrote the literal 'Main' here —
+      // a data-derived sentinel that then leaked into UI string comparisons
+      // (`titled !== 'Main'`). Leave the title exactly as it was.
+      this.db.prepare('UPDATE chat_sessions SET is_main = 1 WHERE id = ?')
+        .run(row['id'] as string);
       row['is_main'] = 1;
-      row['title'] = title;
       return this._mapSession(row);
     }
     const id = generateId('cs');
     const ts = now();
     this.db
       .prepare('INSERT INTO chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at) VALUES (?,?,?,?,1,?,?)')
-      .run(id, agentId, userId ?? null, 'Main', ts, ts);
-    return { id, agentId, userId: userId ?? null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
+      .run(id, agentId, userId ?? null, null, ts, ts);
+    return { id, agentId, userId: userId ?? null, title: null, isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
   }
 
   getSessionsByAgent(agentId: string, limit = 50, userId?: string) {
@@ -4748,21 +4781,32 @@ export class SqliteMailboxRepo {
    * 写成等价 SQL：该谓词含 payload 分支，用 SQL 复制会与 shared 实现双源分叉，
    * 破坏「判定逻辑单一实现」。
    *
+   * `currentOwnerId`（可选）—— 「跨实例死认领即陈旧」（2026-10-15 重启僵尸修复）：
+   * 被杀 worker 的 in-flight 行租约仍未到期时，上面「尊重租约」的判据会放过它，让它
+   * 永远停在 processing（UI 幽灵）且租约到期后被回队再跑。调用方（启动清理/看门狗）
+   * 传入自身 ownerId 后，**认领者非本实例**的行一律计为陈旧 —— 非 strict-state → drop，
+   * strict-state → 回队。不传时保持既有「不误杀他人有效租约」语义。
+   *
    * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
-  markStaleProcessingAsDropped(agentId: string, nowIso?: string): number {
+  markStaleProcessingAsDropped(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
+
+    // 陈旧判据（SELECT 与 UPDATE 共用同一实现，不复制）：无认领 / 无租约 / 租约过期，
+    // 或（仅当调用方给出 ownerId 时）认领者非本实例。
+    const staleWhere =
+      `agent_id = ? AND status = 'processing'
+        AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?`
+      + (currentOwnerId ? ' OR (claimed_by IS NOT NULL AND claimed_by <> ?)' : '')
+      + ')';
+    const params: string[] = currentOwnerId ? [agentId, now, currentOwnerId] : [agentId, now];
 
     // (d) 第一步：候选中属 strict-state 的行**回队**。回队后其 status 变为 'queued'，
     // 下方原 SQL 自然不再命中 ⇒ 非 strict-state 的处置路径保持逐字不变。
     try {
       const candidates = this.db
-        .prepare(
-          `SELECT id, source_type, payload FROM mailbox_items
-            WHERE agent_id = ? AND status = 'processing'
-              AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
-        )
-        .all(agentId, now) as Array<{ id: string; source_type: string; payload: string | null }>;
+        .prepare(`SELECT id, source_type, payload FROM mailbox_items WHERE ${staleWhere}`)
+        .all(...params) as Array<{ id: string; source_type: string; payload: string | null }>;
       for (const row of candidates) {
         const item = {
           sourceType: row.source_type as MailboxItemType,
@@ -4778,14 +4822,10 @@ export class SqliteMailboxRepo {
       });
     }
 
-    // 原 SQL 逐字保留：非 strict-state 行（及未被回队的行）继续 drop。
+    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续 drop。
     const result = this.db
-      .prepare(
-        `UPDATE mailbox_items SET status = 'dropped'
-          WHERE agent_id = ? AND status = 'processing'
-            AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
-      )
-      .run(agentId, now);
+      .prepare(`UPDATE mailbox_items SET status = 'dropped' WHERE ${staleWhere}`)
+      .run(...params);
     return (result as { changes?: number }).changes ?? 0;
   }
 
@@ -5130,6 +5170,8 @@ export interface ApprovalRow {
   answers?: UserInputAnswer[];
   approverUserIds?: string[];
   targetUserId?: string;
+  appliedAt?: string;
+  appliedIntent?: string;
 }
 
 export class SqliteApprovalRepo {
@@ -5137,15 +5179,17 @@ export class SqliteApprovalRepo {
 
   upsert(a: ApprovalRow): void {
     this.db.prepare(
-      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO approvals (id, agent_id, agent_name, type, title, description, details, status, requested_at, responded_at, responded_by, response_comment, expires_at, options, allow_freeform, selected_option, approver_user_ids, target_user_id, questions, answers, applied_at, applied_intent)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          status = excluded.status,
          responded_at = excluded.responded_at,
          responded_by = excluded.responded_by,
          response_comment = excluded.response_comment,
          selected_option = excluded.selected_option,
-         answers = excluded.answers`
+         answers = excluded.answers,
+         applied_at = excluded.applied_at,
+         applied_intent = excluded.applied_intent`
     ).run(
       a.id,
       a.agentId,
@@ -5167,6 +5211,8 @@ export class SqliteApprovalRepo {
       a.targetUserId ?? null,
       a.questions?.length ? JSON.stringify(a.questions) : null,
       a.answers?.length ? JSON.stringify(a.answers) : null,
+      a.appliedAt ?? null,
+      a.appliedIntent ?? null,
     );
   }
 
@@ -5209,6 +5255,8 @@ export class SqliteApprovalRepo {
       answers: fromJson<UserInputAnswer[]>(r['answers'] as string) ?? undefined,
       approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
       targetUserId: (r['target_user_id'] as string) ?? undefined,
+      appliedAt: (r['applied_at'] as string) ?? undefined,
+      appliedIntent: (r['applied_intent'] as string) ?? undefined,
     };
   }
 

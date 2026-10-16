@@ -80,6 +80,14 @@
   "approving": "正在批准…",
   "rejecting": "正在拒绝…",
   "loadingEllipsis": "加载中…",
+  "approvalStatus": {
+    "pending": "待处理",
+    "approved": "已批准",
+    "changes_requested": "已打回",
+    "rejected": "已拒绝",
+    "cancelled": "已取消",
+    "expired": "已过期"
+  },
   "status": {
     "pending": "待处理",
     "approved": "已批准",
@@ -368,6 +376,7 @@
       "completed": "已完成",
       "failed": "失败",
       "rejected": "已拒绝",
+      "revision": "已打回，待修改",
       "cancelled": "已取消",
       "archived": "已归档",
       "loading": "加载中…",

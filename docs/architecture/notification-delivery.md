@@ -29,19 +29,63 @@ silent drop.
 
 ## 2. The resolution walk
 
+The walk **enumerates candidates, most specific first, and returns the first one
+that may actually be sent through**:
+
 1. **agent** — the producing agent's own conversation binding (if any).
 2. **instance** — the **declared notification destination** on the instance,
    read from `platform_instances.config` via the generic annotation (§3). This is
    the reliable terminus: it does not depend on any binding existing.
-3. **instance fallback** — the instance's `notifyAgentId` → that agent's
+3. **instance** — an explicit `kind = 'notification'` binding sink on one of those
+   instances.
+4. **instance fallback** — the instance's `notifyAgentId` → that agent's
    conversation (best-effort).
-4. **global** — the Secretary's conversation, else any global-scope binding with a
+5. **global** — the Secretary's conversation, else any global-scope binding with a
    native id.
-5. **no terminus** — produce a visible **undelivered** state (surfaced in Settings
+6. **no candidates at all** → a visible **undelivered** state (surfaced in Settings
    and in one log line), once per message, not once per platform.
+7. **candidates existed, every one ineligible** → an explicit **suppressed** state
+   carrying *each* skipped candidate and why it was passed over — distinct from
+   `undelivered`, so "deliberately switched off" can never again stand in for
+   "mis-routed".
 
 Level 2 is what makes delivery predictable on a fresh install: a destination set in
 Settings is honoured even when no chat has ever bound to an agent.
+
+### 2.1 Where-could-it-go and may-it-go-there are separate questions
+
+`lookup.candidates()` answers only the first (it is a pure enumeration, ordered by
+the rules below). Whether a candidate is **eligible** is a single predicate supplied
+by the dispatcher — the notification preferences for *this* message (§6). The walk
+applies it as a **filter**, moving on to the next candidate rather than stopping.
+
+Collapsing the two into "pick one, then check it" is what silently dropped every
+notification for an org on 2026-10-16: the walk landed on a bot whose notification
+master switch was off and the drop was logged as `notify-disabled`, which reads like
+an intentional setting. An ineligible candidate is now just skipped.
+
+### 2.2 Candidate ordering is stated, never inherited from `ORDER BY label`
+
+`platform_instances` is stored ordered by `(platform, label)`. Letting that *be* the
+routing priority is how a bot labelled `CTO` silently outranked one labelled
+`default`. The order is now declared in the lookup:
+
+1. the instances the producing agent already works in (its own bindings);
+2. the instance named by the org's declared global sink (`scope = 'global'`);
+3. the Secretary's instances;
+4. the rest, by creation time then id — a deterministic *tie-break*, never a
+   semantic preference.
+
+When more than one instance-scoped destination is available and one of them wins,
+the dispatcher logs which bot was chosen and what else was on offer — so "why did
+this land in *that* chat?" has an answer that is not "list order".
+
+### 2.3 A switched-off bot is not a candidate at all
+
+`platform_instances.enabled` is the bot's master switch (the toggle beside its
+connection status). A disabled instance is not connected (`start.ts` skips it), so
+it cannot deliver; it is excluded during enumeration — structurally, not via a
+policy the resolver has to know about.
 
 ## 3. Generic destination declaration (`notifyTarget`)
 
@@ -84,20 +128,39 @@ and always carries the action labels **and their refs** — a platform without b
 shows the same content as text, it never drops it.
 
 Notification bodies are Markdown; the adapter renders them as the platform's rich
-form (Feishu `lark_md`). At the **single delivery point** the dispatcher prefixes the
-body with the producing agent's name (`**来自**：{agent}`) so a busy shared channel
-stays readable. The attribution is idempotent and best-effort: if the name cannot be
-resolved the message is still delivered, unchanged.
+form (Feishu `lark_md`). **Attribution is envelope, not payload** (§5.1): at the
+single delivery point the dispatcher stamps the message's `origin` with the
+producing agent's name and, when it has one, its **team** — and each renderer
+places that fact once, in its own way.
+
+### 5.1 Origin attribution — structure, not a body prefix
+
+Who sent a message is *structure* (`origin.agentName` / `origin.teamName`), never a
+line spliced into the body for a later stage to parse back out:
+
+- **Text / markdown platforms** get a plain-text line from the one renderer,
+  `originLine()` — `来自：{agent}（团队：{team}）`, or `来自：{agent}` with no team. It
+  is deliberately markdown-free: the old in-band `**来自**：…` prefix leaked its `**`
+  straight into text-only platforms, and left no room for the team.
+- **Card platforms** keep `body` clean and receive `origin` as a field, which each
+  adapter renders in its own extension slot — a Feishu `note` footnote, a Slack
+  `context` block. Names are escaped per dialect (Slack mrkdwn) so an agent name
+  cannot inject a mention or link.
+
+The line is idempotent and best-effort: if the agent name cannot be resolved the
+message is delivered anyway, unchanged; a missing team never withholds the agent
+line nor the delivery. `RouterOutboundSink` forwards `origin` into the card
+options; resolution happens once, in the dispatcher, from `agentId`.
 
 ## 6. One enforcement point for preferences
 
 `notifyOnApproval` / `notifyOnNotification` / `notifyPriority` and the **master
-switch** `notifyEnabled` are enforced in exactly one place — the dispatcher, before
-delivery — reading the **same** instance config as the destination
-(`RepoNotifyPreferenceSource`, `suppressionReasonFor`). A preference is not a
-decorative field: toggling it changes what is sent. Turning the master switch off
-suppresses everything for that bot at the same single point, not by greying out a
-button.
+switch** `notifyEnabled` are enforced in exactly one place — the dispatcher's
+**eligibility predicate**, applied *inside* the walk (see §2.1) — reading the **same**
+instance config as the destination (`RepoNotifyPreferenceSource`,
+`suppressionReasonFor`). A preference is not a decorative field: toggling it changes
+what is sent. Turning the master switch off removes exactly that bot from
+consideration, at the same single point, not by greying out a button.
 
 ## 7. Single source of truth — the DB, never `markus.json`
 
@@ -176,13 +239,27 @@ moves bytes.*
 
 ## 10. Invariants
 
-- A destination is a sendable address; if none exists the result is a **visible
-  undelivered** state, never a silent drop.
+- A destination is a sendable address; if none is **eligible** the result is a
+  **visible** state — `undelivered` when nothing was configured, `suppressed` (with
+  every skipped candidate and its reason) when candidates existed and all were
+  switched off. Never a silent drop.
+- An ineligible candidate is a **filter**, never a dead end: the walk continues to
+  the next destination. One switched-off bot cannot swallow a notification another
+  bot could deliver.
 - Destination, send fidelity, preference enforcement and attribution all read the
   **same** instance config (the DB) — one fact, one source.
+- Attribution is **structure** (`origin.{agentName,teamName}`), placed exactly once per
+  rendering: an inline, markdown-free line for text platforms, a native extension slot
+  for card platforms — never both, never a body prefix a later stage must parse.
 - A notification platform with buttons renders a tappable card; capability
   degradation is total and never loses content.
 - **Exactly one** IM message per logical notification, independent of user count.
+- A notification **names its subject**. An event that carries no human-readable
+  title/summary is an internal signal, not a notification, and is not sent — the
+  dispatcher never falls back to the raw event name as a title (2026-10-16: an
+  agent-execution `task:completed`, payload `{ taskId, agentId }`, was pushed to
+  Feishu as the literal string `"task:completed"`). The user-facing task facts
+  belong to the status machine → HITL, which always carries the title.
 - A tap always produces visible evidence; the card rewrite is post-ack, optional and
   best-effort.
 - Any terminal approval transition invalidates all derived UI, from any trigger.

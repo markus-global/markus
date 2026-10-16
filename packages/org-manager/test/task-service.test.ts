@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { TaskService, computeNextRunFromConfig } from '../src/task-service.js';
+import { ApprovalApplier } from '../src/approval-apply.js';
 import type { OrganizationService } from '../src/org-service.js';
 
 const AGENT_A = 'agent-a';
@@ -211,6 +212,48 @@ describe('TaskService', () => {
       ts.createTask(createDefaults({ title: 'First' }) as never);
       expect(() => ts.createTask(createDefaults({ title: 'Second' }) as never))
         .toThrow(/Agent task cap/);
+    });
+
+    it('per-agent 覆盖：AgentManager 配置的任务上限覆盖治理策略默认值', () => {
+      // 治理默认值放宽到 100，但「设置页 → 任务上限」配了 2 → 应以 2 为准。
+      ts.setGovernancePolicy({
+        enabled: true,
+        defaultTier: 'auto',
+        maxPendingTasksPerAgent: 100,
+        maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [],
+        requireRequirement: false,
+        rules: [],
+      });
+      (agentManager as unknown as { maxPendingTasksPerAgent?: number }).maxPendingTasksPerAgent = 2;
+      ts.createTask(createDefaults({ title: 'First' }) as never);
+      ts.createTask(createDefaults({ title: 'Second' }) as never);
+      expect(() => ts.createTask(createDefaults({ title: 'Third' }) as never))
+        .toThrow(/Agent task cap reached \(2\)/);
+    });
+
+    it('缺省回退：未配置任务上限时回退治理策略默认值（20）', () => {
+      ts.setGovernancePolicy({
+        enabled: true,
+        defaultTier: 'auto',
+        maxPendingTasksPerAgent: 20,
+        maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [],
+        requireRequirement: false,
+        rules: [],
+      });
+      // mock agentManager 无 maxPendingTasksPerAgent 属性 → undefined → 回退 20。
+      expect((agentManager as unknown as { maxPendingTasksPerAgent?: number }).maxPendingTasksPerAgent)
+        .toBeUndefined();
+      for (let i = 0; i < 20; i++) {
+        ts.createTask(createDefaults({ title: `T${i}` }) as never);
+      }
+      expect(() => ts.createTask(createDefaults({ title: 'overflow' }) as never))
+        .toThrow(/Agent task cap reached \(20\)/);
+    });
+
+    it('治理策略默认任务上限 = 20（10→20 变更）', () => {
+      expect(new TaskService().getGovernancePolicy().maxPendingTasksPerAgent).toBe(20);
     });
 
     it('requires requirementId when policy mandates it', () => {
@@ -1101,6 +1144,52 @@ describe('TaskService', () => {
       const agentB = agentManager.getAgent(AGENT_B);
       expect(agentB.enqueueToMailbox).toHaveBeenCalled();
     });
+
+    it('决策记录型评论（打回）不再给创建者发评论通知 —— 决策通道已告知同一事实', async () => {
+      // 一次打回：决策通道发 requirement_update；同一次动作落下的「记录型评论」若
+      // 再触发评论扇出，同一事实就有两个写者 —— 这正是被修的重复通知。
+      ts.setRequirementCommentRepo({
+        add: vi.fn().mockResolvedValue({
+          id: 'rc-3', requirementId: 'req-1', authorId: 'user-1', authorName: 'Jason Carter',
+          authorType: 'human', content: 'Changes requested', createdAt: new Date(),
+        }),
+        getByRequirement: vi.fn(() => []),
+      } as never);
+      ts.setRequirementService({
+        getRequirement: vi.fn(() => ({ id: 'req-1', title: 'Req', status: 'pending', createdBy: AGENT_B })),
+      } as never);
+      const agentB = agentManager.getAgent(AGENT_B);
+      agentB.enqueueToMailbox.mockClear();
+
+      await ts.postRequirementComment('req-1', 'user-1', 'Jason Carter', 'Changes requested', undefined, undefined, {
+        authorType: 'human', commentKind: 'decision_record',
+      });
+
+      const types = agentB.enqueueToMailbox.mock.calls.map(c => c[0]);
+      expect(types).not.toContain('requirement_comment');
+      expect(types).not.toContain('mention');
+      expect(types).toHaveLength(0);
+    });
+
+    it('普通讨论评论仍通知创建者（回归护栏：抑制只针对决策记录）', async () => {
+      ts.setRequirementCommentRepo({
+        add: vi.fn().mockResolvedValue({
+          id: 'rc-4', requirementId: 'req-1', authorId: 'user-1', authorName: 'Jason Carter',
+          authorType: 'human', content: 'A question', createdAt: new Date(),
+        }),
+        getByRequirement: vi.fn(() => []),
+      } as never);
+      ts.setRequirementService({
+        getRequirement: vi.fn(() => ({ id: 'req-1', title: 'Req', status: 'pending', createdBy: AGENT_B })),
+      } as never);
+      const agentB = agentManager.getAgent(AGENT_B);
+      agentB.enqueueToMailbox.mockClear();
+
+      await ts.postRequirementComment('req-1', 'user-1', 'Jason Carter', 'A question');
+
+      const types = agentB.enqueueToMailbox.mock.calls.map(c => c[0]);
+      expect(types).toContain('requirement_comment');
+    });
   });
 
   describe('scheduling and recurrence', () => {
@@ -1609,13 +1698,20 @@ describe('TaskService', () => {
 
     it('auto-approves worker task when HITL returns approved', async () => {
       const hitlService = {
-        requestApprovalAndWait: vi.fn().mockResolvedValue({ approved: true, respondedBy: 'user-1' }),
+        requestApprovalAndWait: vi.fn().mockResolvedValue({
+          approvalId: 'appr-1', approved: true, intent: 'approve', respondedBy: 'user-1',
+        }),
         notify: vi.fn(),
         listApprovals: vi.fn(() => []),
         respondToApproval: vi.fn(),
         cancelApprovalsByDetail: vi.fn(() => 0),
+        claimApply: vi.fn(() => true),
       };
       ts.setHITLService(hitlService as never);
+      // 审批结果的唯一执行点：闸门回调只路由，不再自己动状态（对齐 composition root）
+      const applier = new ApprovalApplier(hitlService as never);
+      applier.registerPort(ts);
+      ts.setApprovalApplier(applier);
       ts.setGovernancePolicy({
         enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
         requireApprovalForPriority: [], requireRequirement: false, rules: [],

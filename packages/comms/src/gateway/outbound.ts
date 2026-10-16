@@ -35,6 +35,12 @@ export interface OutboundAction {
   id: string;
   label: string;
   style?: 'primary' | 'default' | 'danger';
+  /**
+   * This choice cannot be recorded without a written reason. A channel that cannot
+   * collect free text must not offer it — the renderer withholds it and says where
+   * to act instead.
+   */
+  requiresComment?: boolean;
   /** Signed reference (see {@link signActionRef}) resolved back on the inbound side. */
   ref: string;
 }
@@ -51,11 +57,17 @@ export interface OutboundOrigin {
   taskId?: string;
   /**
    * The origin agent's display name, when known. Envelope, not payload: the
-   * dispatcher resolves it from {@link agentId} and the renderer prefixes it to
-   * the message, so a notification landing in a shared group says *which agent*
-   * it came from instead of arriving anonymously.
+   * dispatcher resolves it from {@link agentId} and the renderer surfaces it, so a
+   * notification landing in a shared group says *which agent* it came from
+   * instead of arriving anonymously.
    */
   agentName?: string;
+  /**
+   * The name of the team the origin agent belongs to, when it belongs to one.
+   * Kept separate from {@link agentName} so a renderer can place it in its own
+   * extension slot (a card's footnote) rather than cramming it into the body.
+   */
+  teamName?: string;
 }
 
 /**
@@ -82,6 +94,13 @@ export interface OutboundMessage {
    */
   priority?: OutboundPriority;
   actions?: OutboundAction[];
+  /**
+   * What to say when an action had to be withheld because the destination cannot
+   * collect the free text that action requires. Set by the dispatcher (which owns
+   * the locale), applied by the renderer (which owns the destination's
+   * capabilities) — neither has to know the other's half.
+   */
+  commentRequiredNote?: string;
   attachments?: OutboundAttachment[];
   replyRef?: OutboundReplyRef;
   origin?: OutboundOrigin;

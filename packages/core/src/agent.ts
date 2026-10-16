@@ -51,7 +51,7 @@ import {
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
-import { shouldRunDreamCycle } from './memory/dream-trigger.js';
+import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -6243,7 +6243,7 @@ export class Agent {
       '',
       'When calling `task_submit_review`, provide:',
       '- `summary`: A clear description of what was accomplished, key decisions, and results',
-      '- `deliverables`: List ALL artifacts produced — each with `type` (file/directory), `reference` (file or directory path), and `summary`',
+      '- `deliverables`: The human-facing deliverables only — the final reports/documents/products/datasets a person would open and read (usually 1–3), each with `type` (file/directory), `reference` (path), and `summary`. Do NOT list each code/config/intermediate file separately; put code file paths inside the body of one markdown deliverable document instead.',
       '- `known_issues` (optional): Any limitations or follow-up items',
       '',
       'The system auto-fills task_id, reviewer, and branch — you do NOT need to specify these.',
@@ -6560,7 +6560,7 @@ export class Agent {
             content: [
               `[SYSTEM REMINDER — Task ${taskId}]`,
               'You have completed multiple tool call rounds. Remember:',
-              '- When ALL your work is done, you MUST call `task_submit_review` with summary and deliverables.',
+              '- When ALL your work is done, you MUST call `task_submit_review` with summary and human-facing deliverables.',
               '- If you are stuck or blocked, update the task status to `blocked` with an explanation.',
               '- Do NOT just stop — the task is NOT complete until you call `task_submit_review`.',
               '- Use `task_note` to record progress before submitting.',
@@ -6652,7 +6652,7 @@ export class Agent {
             '',
             'Call `task_submit_review` NOW with:',
             '- `summary`: What you accomplished',
-            '- `deliverables`: List of files/directories you produced',
+            '- `deliverables`: The human-facing deliverables (reports/docs/products/data — usually 1–3). Do NOT list each code/config file separately; put code file paths inside one markdown deliverable doc instead',
             '',
             'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
             'Do NOT just stop — take action NOW.',
@@ -9521,7 +9521,7 @@ export class Agent {
 
   private async consolidateMemory(): Promise<void> {
     try {
-      const today = new Date().toISOString().slice(0, 10);
+      const now = new Date();
 
       // Session compaction is handled by MemoryStore.checkAndCompact (safety-net
       // only at very high message counts). Per-call packing uses the model window.
@@ -9535,9 +9535,18 @@ export class Agent {
       // made the dream structurally dead for buffers of a few LARGE entries (≈31 real
       // entries already sit at 99% of the 30 000-char budget, so `>= 50` never fired).
       const health = this.memory.getMemoryHealth();
-      const dreamKey = entries.length > 500 ? `${today}_${Math.floor(Date.now() / (6 * 3600_000))}` : today;
-      if (shouldRunDreamCycle({ observationPercent: health.observationPercent, entryCount: entries.length })
-          && this.lastDreamDate !== dreamKey) {
+      const dreamKey = dreamWindowKey(entries.length, now);
+      // Dedup on the SAME window key, but consult BOTH the volatile in-memory key AND the
+      // durable `lastConsolidatedAt` (memory-meta.json). The durable one is the restart fix:
+      // without it a process restart re-armed the guard and the same agent could dream twice
+      // the same day (observed 2026-10-15: two runs 2.5 min apart across a restart).
+      if (shouldRunDreamCycle({
+            observationPercent: health.observationPercent,
+            entryCount: entries.length,
+            now,
+            lastConsolidatedAt: this.memory.getLastConsolidatedAt?.() ?? null,
+            lastInMemoryWindowKey: this.lastDreamDate,
+          })) {
         this.lastDreamDate = dreamKey;
         await Agent.acquireDreamSlot();
         try {

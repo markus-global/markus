@@ -11,6 +11,7 @@ import {
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
+import { sessionStreamState, useSessionStreamRevision } from '../lib/sessionStreamState.ts';
 import {
   NewTeamModal, AddHumanModal, AddExistingModal,
   OpenClawImportModal,
@@ -19,7 +20,7 @@ import { Avatar } from './Avatar.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { teamChannelKey } from '../lib/mobileTeamNav.ts';
-import { useChatStore, chatStore } from '../pages/useChatStore.ts';
+// (useChatStore 已删除：存活性权威见 ../lib/sessionStreamState.ts)
 import { resolveAgentStatus } from '../lib/agentOverview.ts';
 import { stripThinkingBlocks } from '../pages/ChatHelpers.ts';
 
@@ -230,8 +231,10 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   const isAdmin = authUser?.role === 'owner' || authUser?.role === 'admin';
   const externalMarkusIds = useMemo(() => new Set(externalAgents.map(ea => ea.markusAgentId).filter(Boolean) as string[]), [externalAgents]);
 
-  const _streamVersion = useChatStore(() => chatStore.getStreamingVersion()); // subscribe — re-render on stream lifecycle changes
-  const streamingAgents = chatStore.getStreamingAgents();
+  // 存活性权威（服务端推送/轮询喂入）：订阅 revision（任何变化都重渲染），集合读自同一
+  // store —— 与侧栏点、顶部徽章同源。此前读的 chatStore（客户端近似）已整体删除。
+  useSessionStreamRevision();
+  const streamingAgents = sessionStreamState.streamingAgentIds();
 
   // Ungrouped members (from teams API)
   const [ungrouped, setUngrouped] = useState<TeamMemberInfo[]>([]);

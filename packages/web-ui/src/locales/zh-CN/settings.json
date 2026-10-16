@@ -380,6 +380,8 @@
     "title": "智能体执行",
     "maxToolIterations": "最大工具迭代次数",
     "maxToolIterationsDesc": "单次智能体回合中工具调用循环的安全上限（0 表示无限制，适用于所有智能体与子智能体）",
+    "maxPendingTasksPerAgent": "任务上限（每个智能体）",
+    "maxPendingTasksPerAgentDesc": "每个智能体名下未终结任务数的上限，默认 20。达到上限后新建任务会被拒绝；该值对每个智能体各自独立计数。",
     "saved": "已保存",
     "failedToSave": "保存失败"
   },

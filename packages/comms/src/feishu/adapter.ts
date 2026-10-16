@@ -287,8 +287,10 @@ export class FeishuAdapter implements CommAdapter {
 
   /**
    * Resolve an operator `open_id` to a display name, best-effort. Never throws:
-   * a lookup failure or missing scope degrades to `null` (the caller keeps the
-   * raw id). Cached, including negative results.
+   * a lookup failure or missing scope degrades to `null` (the caller then renders a
+   * live @-mention instead of an unreadable id). **Only hits are cached** — a miss is
+   * usually a missing contact scope, and caching it meant granting that scope
+   * changed nothing until the process restarted.
    */
   async resolveActorName(actorId: string): Promise<string | null> {
     if (!actorId) return null;
@@ -297,7 +299,7 @@ export class FeishuAdapter implements CommAdapter {
     try {
       const names = await this.client.getUserNames([actorId]);
       const name = names.get(actorId) ?? null;
-      this.actorNameCache.set(actorId, name);
+      if (name) this.actorNameCache.set(actorId, name);
       return name;
     } catch (err) {
       log.warn('Failed to resolve actor name', { actorId, error: String(err) });

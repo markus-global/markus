@@ -59,6 +59,13 @@ export interface AgentTaskContext {
     taskId: string,
     status: string
   ) => Promise<{ id: string; title: string; status: string }>;
+  /**
+   * Re-open a task's **creation gate** approval after a 打回 (changes requested).
+   * Only valid while the task is still `pending` and has no active approval —
+   * a 打回 performs zero state transition, so without this the task would be an
+   * orphan with no way back into review.
+   */
+  requestTaskApproval?: (taskId: string) => Promise<{ taskId: string; approvalId: string }>;
   /** Get details of a specific task */
   getTask: (
     taskId: string
@@ -75,7 +82,7 @@ export interface AgentTaskContext {
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
   /** Update task fields (description, blockedBy, reviewerId, etc.) — works even for pending tasks */
-  updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
+  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
   /** Update the schedule config for a scheduled task */
   updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
@@ -199,6 +206,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         'Think carefully about the execution order — a task that needs output from another task MUST list that task ID in its `blocked_by` array.',
         'Tasks without dependencies will execute in parallel; tasks with `blocked_by` will wait for their prerequisites to complete first.',
         'Use subtask_create to break a task into smaller steps within a single task.',
+        'SPLITTING: cut cards by independently-reviewable seam (single execution point / entry / consumer / verification), NEVER by file or by layer — splitting by file makes the cards collide on the same edits. Prefer the smallest number of cards that each have one clear "done" statement in one screen.',
+        'DO NOT open a new card merely to change a specification — update the existing card\'s title/description instead. Regression and acceptance are the reviewer\'s job, not a separate card. A card whose description must say "this version supersedes all previous versions" means the split was wrong.',
       ].join(' '),
       inputSchema: {
         type: 'object',
@@ -455,7 +464,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update a PARENT TASK — add a progress note, change status, update description, modify blocked_by dependencies, or a combination.',
+        'Update a PARENT TASK — add a progress note, change status, update title/description, modify blocked_by dependencies, or a combination.',
         'WARNING: This tool operates on the parent task, NOT on subtasks. To complete a subtask, use subtask_complete instead.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'Task lifecycle is mostly automatic: after approval, tasks start executing automatically; when execution finishes, the system auto-transitions to review and notifies the reviewer; reviewer approval auto-completes the task; revision auto-restarts execution.',
@@ -484,6 +493,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description:
               'Progress note — brief summary of what was done, what is blocked, or next steps. Highly recommended.',
+          },
+          title: {
+            type: 'string',
+            description: 'Updated task title (optional). Works on any task including pending ones — use it to revise a card after a 打回 (changes requested).',
           },
           description: {
             type: 'string',
@@ -521,6 +534,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const taskId = args['task_id'] as string;
           const newStatus = args['status'] as string | undefined;
           const note = args['note'] as string | undefined;
+          const title = args['title'] as string | undefined;
           const description = args['description'] as string | undefined;
           const blockedBy = args['blocked_by'] as string[] | undefined;
           const reviewerId = args['reviewer_id'] as string | undefined;
@@ -545,8 +559,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           }
 
           // Handle field updates first — works for any status including pending
-          if ((description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
+          if ((title !== undefined || description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
             await ctx.updateTaskFields(taskId, {
+              ...(title !== undefined ? { title } : {}),
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
               ...(reviewerId !== undefined ? { reviewerId } : {}),
@@ -664,12 +679,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           } else {
-            // No status change — note, description, and/or blocked_by update
-            if (!note && description === undefined && blockedBy === undefined && !schedule) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a description, blocked_by, or schedule.' });
+            // No status change — note, title, description, and/or blocked_by update
+            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, or schedule.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
@@ -679,7 +694,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           }
         } catch (error) {
@@ -748,6 +763,36 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         }
       },
     },
+
+    ...(ctx.requestTaskApproval
+      ? [
+          {
+            name: 'task_request_approval',
+            description:
+              'Re-initiate the creation-approval gate for a task you own after it was sent back (changes requested / 打回). A send-back performs no state transition: the task stays `pending`, the reviewer\'s feedback lands as a task comment, and this tool is the third step that re-opens the gate after you have revised the title/description with task_update. Fails with an actionable error when the task is not `pending` or already has an active approval.',
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The pending task whose creation approval should be re-initiated' },
+              },
+              required: ['task_id'],
+            },
+            async execute(args: Record<string, unknown>): Promise<string> {
+              try {
+                const result = await ctx.requestTaskApproval!(args['task_id'] as string);
+                return JSON.stringify({
+                  status: 'success',
+                  message: 'Creation approval re-initiated — the reviewer has been asked to decide again.',
+                  taskId: result.taskId,
+                  approvalId: result.approvalId,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
 
     ...(ctx.addTaskNote
       ? [
@@ -980,7 +1025,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
               'Submit your completed work for review. You MUST call this when your task execution is done — the round is NOT complete without it.',
               'Prefer calling from a task session: task_id is auto-filled from the execution context (ALS).',
               'Outside a task session you MUST pass task_id explicitly (the system does not guess from the board).',
-              'Provide a summary and list all deliverables (files or directories) you produced.',
+              'Provide a summary plus the deliverables a human actually cares about — the final reports/documents/products/datasets you produced (usually one or a few, NOT one entry per file). Do NOT register every code/config/intermediate file you touched as its own deliverable; instead list the relevant code file paths inside the body of one markdown deliverable document.',
             ].join(' '),
             inputSchema: {
               type: 'object',
@@ -995,14 +1040,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 },
                 deliverables: {
                   type: 'array',
-                  description: 'All artifacts produced. Each item needs a type, reference, and summary.',
+                  description: 'Human-facing deliverables only — the final reports, documents, products, or datasets a person would open and read (typically 1–3). Do NOT register each code/config/intermediate file separately; reference code changes by file path inside one markdown deliverable document instead. Each item needs a type, reference, and summary.',
                   items: {
                     type: 'object',
                     properties: {
                       type: {
                         type: 'string',
                         enum: ['file', 'directory'],
-                        description: 'file = any file-based content (source, config, docs, reports, etc.), directory = folder of files',
+                        description: 'file = a human-facing file (report, doc, spreadsheet, dataset, product artifact); directory = a folder of such deliverables. Use the deliverable document itself, NOT each source/config file you touched.',
                       },
                       reference: {
                         type: 'string',
@@ -1059,7 +1104,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   status: 'success',
                   taskId: result.id,
                   taskStatus: result.status,
-                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No deliverables recorded — consider adding them next time.'}`,
+                  message: `Work submitted for review. ${parsedDeliverables?.length ? `${parsedDeliverables.length} deliverable(s) recorded.` : 'No human-facing deliverables recorded — if you produced a report/doc/product, add it next time (code paths go inside that doc, not as separate entries).'}`,
                 });
               } catch (error) {
                 const msg = String(error);
@@ -1082,7 +1127,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'requirement_propose',
             description: [
               'Propose a new requirement (需求) for user review.',
-              'Use this when you identify work that should be done but no approved requirement exists.',
+              'Use this ONLY when the work genuinely needs the requirement→task lifecycle: it must continue asynchronously (the human will step away), involve another agent, need a formal review/audit trail, or span ≥2 modules / a data migration / a cross-team boundary.',
+              'BEFORE proposing, ask whether it deserves a requirement at all. If one person can finish it in half a day, with no migration and no cross-team work, and no formal audit trail is needed, do NOT propose a requirement — just do the work in the conversation. Every requirement adds an approval round-trip and a notification storm; spend it only where it buys something.',
               'The proposal will be reviewed by a human user who decides whether to approve or reject it.',
               'Do NOT create tasks directly — propose a requirement first and wait for approval.',
             ].join(' '),

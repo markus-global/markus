@@ -1,5 +1,7 @@
 export * from './secretary.js';
 export * from './locale.js';
+export * from './approval-labels.js';
+export * from './notification-labels.js';
 export * from './types/agent.js';
 export * from './types/org.js';
 export * from './types/task.js';

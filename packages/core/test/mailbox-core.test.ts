@@ -250,7 +250,9 @@ describe('AgentMailbox async and persistence', () => {
     });
 
     expect(mailbox.cleanStaleProcessing()).toBe(3);
-    expect(markDropped).toHaveBeenCalledWith(AGENT_ID);
+    // 跨实例死认领修复后，cleanStaleProcessing 还会传本实例 ownerId：
+    // 认领者非本实例的行也判陈旧（不再「尊重」被杀实例未到期的租约）。
+    expect(markDropped).toHaveBeenCalledWith(AGENT_ID, undefined, mailbox.getOwnerId());
   });
 
   it('emits mailbox:new-item on enqueue', () => {

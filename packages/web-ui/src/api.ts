@@ -221,7 +221,7 @@ export interface ApprovalInfo {
   respondedAt?: string;
   respondedBy?: string;
   responseComment?: string;
-  options?: Array<{ id: string; label: string; description?: string }>;
+  options?: Array<{ id: string; label: string; description?: string; direction?: 'approve' | 'request_changes' | 'reject' }>;
   allowFreeform?: boolean;
   selectedOption?: string;
   questions?: UserInputQuestion[];
@@ -463,6 +463,39 @@ export class ApiError extends Error {
     super(message);
     this.code = code;
   }
+}
+
+/**
+ * The tri-state decision vocabulary understood by the platform gates. Mirrors
+ * the server's `ApprovalIntent` (minus the boolean-fallback case).
+ */
+export type ApprovalOptionDirection = 'approve' | 'request_changes' | 'reject';
+
+const APPROVAL_APPROVE_TOKENS = new Set(['approve', 'approved']);
+const APPROVAL_REJECT_TOKENS = new Set(['reject', 'rejected']);
+const APPROVAL_REQUEST_CHANGES_TOKENS = new Set([
+  'request_changes', 'requestchanges', 'changes_requested', 'revision', 'needs_adjustment', 'needsadjustment',
+]);
+
+/** Normalise a raw option token the way the server's `resolveApprovalIntent` does. */
+function normalizeApprovalToken(raw: string): string {
+  return raw.trim().toLowerCase().replace(/[\s-]+/g, '_');
+}
+
+/**
+ * Client mirror of the server's global intent closure: maps a `selectedOption`
+ * token to the direction it resolves to, or `null` when the token is outside the
+ * closure (the server then falls back to the legacy `approved` boolean). The UI
+ * uses this to label options correctly and to keep `approved` aligned with the
+ * token — in particular so `request_changes` is never treated as an approval.
+ */
+export function resolveApprovalDirection(raw?: string): ApprovalOptionDirection | null {
+  if (!raw) return null;
+  const token = normalizeApprovalToken(raw);
+  if (APPROVAL_APPROVE_TOKENS.has(token)) return 'approve';
+  if (APPROVAL_REQUEST_CHANGES_TOKENS.has(token)) return 'request_changes';
+  if (APPROVAL_REJECT_TOKENS.has(token)) return 'reject';
+  return null;
 }
 
 const _dedupCache = new Map<string, { promise: Promise<unknown>; ts: number }>();
@@ -1336,6 +1369,9 @@ export interface MessageStreamOptions {
   isResume?: boolean;
   fileNames?: string[];
   replyTo?: { id: string; sender: string; text: string } | null;
+  /** The user's own typed text (without injected context chips); the server derives
+   *  a clean session title from it. Omitted when the user typed nothing. */
+  titleSource?: string;
 }
 
 /**
@@ -1370,6 +1406,13 @@ export const api = {
         method: 'POST',
         body: target ? JSON.stringify(target) : undefined,
         headers: target ? { 'Content-Type': 'application/json' } : undefined,
+      }),
+    /** 丢弃单条 mailbox 项（带理由，可回溯）——与 cancelProcessing（打断）不同。 */
+    dropMailboxItem: (id: string, itemId: string, reason?: string) =>
+      request<{ status: string; itemId: string; dropped: boolean }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+        headers: { 'Content-Type': 'application/json' },
       }),
     recoverStaleMailbox: (id: string) =>
       request<{ dropped: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
@@ -1461,7 +1504,7 @@ export const api = {
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string; softDisconnected?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
-          signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource,
         } = options ?? {};
         // Set only once we actually saw the terminal `done` event. Its absence is
         // exactly the soft-disconnect signal: the browser dropped the SSE (page
@@ -1493,6 +1536,7 @@ export const api = {
               isRetry: isRetry || undefined,
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
+              titleSource: titleSource || undefined,
             }),
             signal,
           });
@@ -1697,6 +1741,8 @@ export const api = {
       request(`/tasks/${id}`, { method: 'PUT', body: JSON.stringify({ assignedAgentId: agentId }) }),
     approve: (id: string, runNow?: boolean) => request<{ task: TaskInfo }>(`/tasks/${id}/approve`, { method: 'POST', body: JSON.stringify({ runNow: runNow ?? undefined }) }),
     reject: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/reject`, { method: 'POST' }),
+    /** 建卡闸「重新发起审批」入口 — re-open the creation gate after a 打回. */
+    requestApproval: (id: string) => request<{ taskId: string; approvalId: string }>(`/tasks/${id}/request-approval`, { method: 'POST' }),
     cancel: (id: string, cascade = false) => request<{ task: TaskInfo }>(`/tasks/${id}/cancel`, { method: 'POST', body: JSON.stringify({ cascade }) }),
     getDependentCount: (id: string) => request<{ count: number }>(`/tasks/${id}/dependents`),
     board: (filters?: { projectId?: string }) => {
@@ -1792,6 +1838,8 @@ export const api = {
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
     reject: (id: string, reason: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
+    /** 需求闸「重新发起审批」入口 — re-open the approval gate after a 打回. */
+    requestApproval: (id: string) => request<{ requirementId: string; approvalId: string }>(`/requirements/${id}/request-approval`, { method: 'POST' }),
     cancel: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}/cancel`, { method: 'POST' }),
     delete: (id: string) => request(`/requirements/${id}`, { method: 'DELETE' }),
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
@@ -1885,14 +1933,17 @@ export const api = {
     getAgent: () => request<{
       maxToolIterations: number;
       concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+      maxPendingTasksPerAgent: number;
     }>('/settings/agent'),
     updateAgent: (settings: {
       maxToolIterations?: number;
       concurrent?: { enabled?: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+      maxPendingTasksPerAgent?: number;
     }) =>
       request<{
         maxToolIterations: number;
         concurrent: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+        maxPendingTasksPerAgent: number;
       }>('/settings/agent', { method: 'POST', body: JSON.stringify(settings) }),
     getBrowser: () => request<{ mode: 'embedded' | 'system-chrome'; elementSelection: 'direct' | 'jev'; bringToFront: boolean; remoteDebuggingPort: number; autoCloseTabs: boolean; autoClickAllowDialog: boolean; extensionBridgePort: number; extensionConnected: boolean }>('/settings/browser'),
     updateBrowser: (settings: { mode?: 'embedded' | 'system-chrome'; elementSelection?: 'direct' | 'jev'; bringToFront?: boolean; remoteDebuggingPort?: number; autoCloseTabs?: boolean; autoClickAllowDialog?: boolean }) =>
@@ -2292,6 +2343,19 @@ export const api = {
     streamStatus: (agentId: string, sessionId: string) =>
       request<{ active: boolean; streamId?: string; messageId?: string; lastSeq?: number; status?: string }>(
         `/agents/${agentId}/sessions/${sessionId}/stream/status`,
+      ),
+    /**
+     * 批量流存活性 —— 客户端对打开的 session tab 做兜底对账时用（一次请求覆盖全部 tab）。
+     * `at` 是**服务端**时钟：客户端据此排序，晚到的旧结果不得覆盖更新的权威状态。
+     */
+    streamStatusBatch: (agentId: string, sessionIds: string[]) =>
+      request<{ agentId: string; streaming: Record<string, boolean>; at?: number }>(
+        '/sessions/stream/status',
+        {
+          method: 'POST',
+          body: JSON.stringify({ agentId, sessionIds }),
+          headers: { 'Content-Type': 'application/json' },
+        },
       ),
     /**
      * Reattach to an in-flight generation after page refresh.

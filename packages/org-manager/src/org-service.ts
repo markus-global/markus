@@ -1118,7 +1118,7 @@ export class OrganizationService {
     parts.push('- **Workspace isolation** — Project-bound tasks get an isolated working directory (`task/<id>` branch). Agents work in isolation; the reviewer merges after approval.');
     parts.push('- **`web_search` / `web_fetch`** — Search the web and fetch page content for research, documentation lookup, and real-time information');
     parts.push('- **Task dependencies** — Use `blocked_by` (array of task IDs) to express dependencies between tasks. Dependent tasks wait for their prerequisites, block the dependent task until all prerequisites complete, then auto-start.');
-    parts.push('- **Deliverables** — Use `deliverable_create` to register outputs (files, conventions, architecture decisions) as trackable artifacts');
+    parts.push('- **Deliverables** — Use `deliverable_create` to register the **human-facing** outputs (the reports / docs / products / conventions / architecture decisions a person will read) as trackable artifacts — not each code file you changed');
     parts.push('- **Memory** — Use `memory_save` / `memory_search` for persistent knowledge across sessions');
     parts.push('');
     parts.push('Include workflow guidance in ROLE.md that tells the agent *when* and *how* to use these capabilities for their specific role.');

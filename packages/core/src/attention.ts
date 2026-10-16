@@ -1793,15 +1793,18 @@ export class AttentionController {
     // / workflow_update(actionRequired)）绝不参与深度分拣：
     // 它们需要在带完整工具（含 task_update / task_submit_review / file 等）的正常出队路径
     // executeTask()/review/requirement_action 单独执行，且分拣白名单没有这些工具。
-    // 因此只要头部或队列中存在严格状态事件，就跳过 deliberation，按优先级队列正常出队执行。
+    // 头部是严格事件时按优先级队列正常出队执行即可。
     if (isStrictStateItem(headItem)) return false;
     const queued = this.mailbox.getQueuedItems();
-    if (queued.some(i => isStrictStateItem(i))) return false;
-    if (queued.length === 0) return false;
+    // 严格事件本来就被排除在 deliberation 的视界之外（见循环内的 allItems 过滤），
+    // 因此它们**不得否决**其余消息的批量分拣。旧实现「队列里只要有一条 strict 就
+    // return false」会让**整个队列**退化成逐条唤醒（回复风暴）；判据只看会被分拣看见的那部分。
+    const scorable = queued.filter(i => !isStrictStateItem(i));
+    if (scorable.length === 0) return false;
 
-    if (queued.length >= TRIAGE_BACKLOG_THRESHOLD) return true;
+    if (scorable.length >= TRIAGE_BACKLOG_THRESHOLD) return true;
 
-    const samePriorityCount = queued.filter(i => i.priority <= headItem.priority).length;
+    const samePriorityCount = scorable.filter(i => i.priority <= headItem.priority).length;
     return samePriorityCount > 0;
   }
 
@@ -1886,7 +1889,7 @@ export class AttentionController {
     }
     for (const dropId of result.dropItemIds) {
       if (isProtected(dropId)) continue;
-      this.mailbox.drop(dropId);
+      this.mailbox.drop(dropId, `deliberation: ${result.reasoning ?? ''}`.trim());
     }
 
     // Apply memory updates from deliberation

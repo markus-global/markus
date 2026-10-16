@@ -54,12 +54,18 @@ import {
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
-import type { HITLService } from './hitl-service.js';
+import type { HITLService, ApprovalIntent } from './hitl-service.js';
+import type {
+  ApprovalApplier,
+  ApprovalApplyInput,
+  ApprovalGateSubType,
+  ApprovalTargetPort,
+} from './approval-apply.js';
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
 import type { ProjectService } from './project-service.js';
-import type { RequirementService } from './requirement-service.js';
+import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -256,12 +262,14 @@ export class TaskServiceError extends Error {
   }
 }
 
-export class TaskService {
+export class TaskService implements ApprovalTargetPort {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
+  /** The platform-wide single execution point for approval outcomes. */
+  private approvalApplier?: ApprovalApplier;
   private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
   private hitlService?: HITLService;
   /**
@@ -426,6 +434,186 @@ export class TaskService {
     this.hitlService = hitl;
   }
 
+  /**
+   * Wire the single execution point. Required for approval outcomes to have any
+   * effect: the gate callbacks below only *route* a decision, they never move a
+   * task themselves.
+   */
+  setApprovalApplier(applier: ApprovalApplier): void {
+    this.approvalApplier = applier;
+  }
+
+  // ─── Approval gate port (see approval-apply.ts) ────────────────────────────
+  // TaskService owns exactly two gates:
+  //   `task`        — 建卡闸, task sits in `pending`
+  //   `task_review` — 验收闸, task sits in `review`
+  readonly approvalGateSubTypes: readonly ApprovalGateSubType[] = ['task', 'task_review'];
+
+  /** Window guard — read-only. A directly-invoked admin endpoint may already have moved the task. */
+  canApplyApproval(subType: string, targetId: string): boolean {
+    const task = this.tasks.get(targetId);
+    if (!task) return false;
+    if (subType === 'task') return task.status === 'pending';
+    if (subType === 'task_review') return task.status === 'review';
+    return false;
+  }
+
+  async applyApprovalDecision(input: {
+    subType: string;
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    if (input.subType === 'task') return this.applyCreationGateDecision(input);
+    if (input.subType === 'task_review') return this.applyReviewGateDecision(input);
+    log.warn('TaskService received an approval for a gate it does not own', { subType: input.subType });
+  }
+
+  /**
+   * 建卡闸. Approve/reject keep their exact previous meaning; 打回 performs **zero
+   * state transition** — the task stays `pending`, no `approvedVia`, no
+   * `Approved` note — and instead lands the reviewer's comment on the task and
+   * tells the assignee to revise. The approval entity records the decision
+   * (`changes_requested`), so re-initiating it is a separate, explicit act.
+   */
+  private async applyCreationGateDecision(input: {
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    const task = this.tasks.get(input.targetId);
+    if (!task || task.status !== 'pending') return;
+
+    if (input.intent === 'approve') {
+      this.approveTask(task.id, input.actorId);
+      return;
+    }
+    if (input.intent === 'reject') {
+      this.rejectTask(task.id, input.actorId);
+      return;
+    }
+    // request_changes | needs_adjustment → 打回
+    if (!this.taskCommentRepo) {
+      throw new TaskServiceError(
+        'TASK_COMMENT_REPO_MISSING',
+        'Cannot record a changes-requested decision without a task comment repo',
+        { taskId: task.id },
+      );
+    }
+    // Resolve the actor's DISPLAY name — never leak a raw id into the comment.
+    // A human reviewer's id (user_…) is not a name; resolve it through the wired
+    // user lookup before falling back.
+    const authorName =
+      input.actorName ?? this.resolveActorName(input.actorId, 'human') ?? input.actorId ?? 'reviewer';
+    const reason = input.comment?.trim();
+    const content = [
+      `**Changes requested by ${authorName}**`,
+      '',
+      reason ? reason : '_No reason was given._',
+      '',
+      `Task stays **pending** — revise the task and re-initiate the approval when ready.`,
+    ].join('\n');
+    await this.postTaskComment(
+      task.id,
+      input.actorId ?? 'reviewer',
+      authorName,
+      content,
+      task.assignedAgentId ? [task.assignedAgentId] : undefined,
+      undefined,
+      { authorType: 'human' },
+    );
+  }
+
+  /**
+   * 验收闸. Semantics lifted verbatim from the previous inline promise callback:
+   * approve → settle as approved + `completed`; anything else → settle as revision
+   * + back to `in_progress` (this gate has no terminal rejection, so `reject`
+   * means Request Changes here).
+   */
+  private async applyReviewGateDecision(input: {
+    targetId: string;
+    intent: ApprovalIntent;
+    actorId?: string;
+    actorName?: string;
+    comment?: string;
+  }): Promise<void> {
+    const current = this.tasks.get(input.targetId);
+    if (!current || current.status !== 'review') return;
+    const reviewerId = input.actorId ?? current.reviewerId;
+
+    if (input.intent === 'approve') {
+      this.markReviewSettled(current, 'approved', reviewerId);
+      this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
+      return;
+    }
+
+    // 打回. Same record contract as the creation gate and the requirement gate:
+    // the reviewer's decision lands as a **comment** (a human-attributed,
+    // thread-visible record) — not only as an ad-hoc note. Its delivery is owned
+    // by the status transition below (the task returns to in_progress and
+    // re-executes), so the comment is marked `decision_record`: the comment
+    // channel must not fan a SECOND notification out for the same fact.
+    const reason = input.comment?.trim();
+    const authorName =
+      input.actorName ?? this.resolveActorName(reviewerId, 'human') ?? reviewerId ?? 'reviewer';
+    const content = [
+      `**Changes requested by ${authorName}**`,
+      '',
+      reason ? reason : '_No reason was given._',
+      '',
+      'Re-opening **in_progress** — revise the task and re-submit for review when ready.',
+    ].join('\n');
+    if (!this.taskCommentRepo) {
+      throw new TaskServiceError(
+        'TASK_COMMENT_REPO_MISSING',
+        'Cannot record a changes-requested decision without a task comment repo',
+        { taskId: current.id },
+      );
+    }
+    await this.postTaskComment(
+      current.id,
+      reviewerId,
+      authorName,
+      content,
+      undefined,
+      undefined,
+      { authorType: 'human', commentKind: 'decision_record' },
+    );
+
+    this.markReviewSettled(current, 'revision', reviewerId);
+    this.updateTaskStatus(
+      current.id, 'in_progress', reviewerId, false, false, 'human',
+      reason ? `Revision requested — ${reason}` : 'Revision requested',
+    );
+  }
+
+  /**
+   * Hand a resolved decision to the single execution point.
+   * Never silent: an unwired applier is a composition-root bug and is reported.
+   */
+  private routeApprovalDecision(input: ApprovalApplyInput): void {
+    if (!this.approvalApplier) {
+      log.error('Approval applier not wired — decision was NOT applied', {
+        approvalId: input.approvalId,
+        subType: input.subType,
+        targetId: input.targetId,
+        intent: input.intent,
+      });
+      return;
+    }
+    void this.approvalApplier
+      .apply(input)
+      .catch(err => log.error('Approval applier threw unexpectedly', {
+        approvalId: input.approvalId,
+        targetId: input.targetId,
+        error: String(err),
+      }));
+  }
+
   setProjectService(ps: ProjectService): void {
     this.projectService = ps;
   }
@@ -447,7 +635,7 @@ export class TaskService {
   }
 
   /** Post a structured comment on a task. Called from both agent tools and HTTP API. */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
@@ -547,6 +735,7 @@ export class TaskService {
       };
 
       const isHuman = opts?.authorType === 'human';
+      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -583,11 +772,14 @@ export class TaskService {
         // 2. Notify task assignee as 'task_comment' — skip when assignee is
         // already reached via injectCommentIntoRunningTask (in_progress → live
         // injection) or handlePostTaskComment (terminal → session reply).
-        if (task?.assignedAgentId && !handledByInjection) {
+        // Also skipped for a *decision record*: its delivery is owned by another
+        // channel (the status transition), so fanning it out here would state the
+        // same fact twice.
+        if (task?.assignedAgentId && !handledByInjection && !isDecisionRecord) {
           enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
         }
         // 3. Notify creator (skip in_progress and terminal — same reasons)
-        if (task?.createdBy && !handledByInjection) {
+        if (task?.createdBy && !handledByInjection && !isDecisionRecord) {
           enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
         }
       }
@@ -606,7 +798,7 @@ export class TaskService {
   }
 
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -695,6 +887,7 @@ export class TaskService {
       };
 
       const isHumanReq = opts?.authorType === 'human';
+      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -724,8 +917,11 @@ export class TaskService {
         }
       }
 
-      // 2. Always notify requirement creator as 'requirement_comment'
-      if (req?.createdBy) {
+      // 2. Notify the requirement creator as 'requirement_comment' — UNLESS this is a
+      //    decision record. A 打回 comment is the durable record of a decision that
+      //    already reached the creator through its own channel (requirement_update);
+      //    re-notifying them about the record would state the same fact twice.
+      if (req?.createdBy && !isDecisionRecord) {
         enqueueFor(req.createdBy, 'requirement_comment', `New comment from ${authorName} on a requirement you created`);
       }
     }
@@ -1789,7 +1985,7 @@ export class TaskService {
           '',
           '**ACTION REQUIRED — Call `task_submit_review` NOW with:**',
           '- `summary`: A concise description of what you accomplished',
-          '- `deliverables`: List of files/artifacts you produced or modified',
+          '- `deliverables`: The human-facing deliverables (reports/docs/products/data — usually 1–3). Do NOT list each code/config file separately; put code file paths inside one markdown deliverable doc instead',
           '',
           'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
           '',
@@ -2530,7 +2726,23 @@ export class TaskService {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.creatorRole !== 'human') {
+    // ── One creation fact ⇒ one announcement ────────────────────────────────
+    // An agent-created task that lands in `pending` is announced by the creation
+    // gate's `approval_request` (`openCreationGateApproval`), which already
+    // carries the title, the creator and the priority. Emitting the generic
+    // `task_created` bell on top of it announces the same fact twice, so the two
+    // are made **complementary**: the decision is derived once here and drives
+    // BOTH emissions, so a future edit to one branch cannot silently bring the
+    // duplicate back (the two predicates used to be written out separately).
+    const opensCreationGateApproval =
+      !!this.hitlService && request.creatorRole !== 'human' && task.status === 'pending';
+
+    if (
+      this.hitlService &&
+      request.createdBy &&
+      request.creatorRole !== 'human' &&
+      !opensCreationGateApproval
+    ) {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',
@@ -2567,35 +2779,131 @@ export class TaskService {
       });
     }
 
-    // Request HITL approval (only for agent-created tasks that need approval)
-    if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
-      const creatorId = request.createdBy ?? 'system';
-      const creatorName = this.resolveActorName(creatorId, 'agent') ?? creatorId;
-      this.hitlService.requestApprovalAndWait({
-        agentId: creatorId,
-        agentName: creatorName,
-        type: 'custom',
-        title: task.title,
-        description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
-        details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
-      }).then(result => {
-        const current = this.tasks.get(task.id);
-        if (!current || current.status !== 'pending') return;
-        if (result.approved) {
-          this.approveTask(task.id, result.respondedBy);
-        } else {
-          this.rejectTask(task.id, result.respondedBy);
-        }
-      }).catch(err => {
-        log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
-        const current = this.tasks.get(task.id);
-        if (current?.status === 'pending') {
-          this.rejectTask(task.id, 'system');
-        }
-      });
+    // Request HITL approval (only for agent-created tasks that need approval).
+    // The initiation lives in exactly one place so `createTask` and
+    // `requestTaskApproval` can never drift (see `openCreationGateApproval`),
+    // and it is gated by the same derived flag as the `task_created` bell above
+    // so the two announcements stay complementary.
+    if (opensCreationGateApproval) {
+      this.openCreationGateApproval(task);
     }
 
     return task;
+  }
+
+  /**
+   * The **single implementation** of "open the 建卡闸 approval for a pending task
+   * and route the resulting decision".
+   *
+   * Called from exactly two places — `createTask` (first submission) and
+   * {@link requestTaskApproval} (re-submission after a 打回). Duplicating this
+   * closure is what would let a second copy of the approval-发起逻辑 drift out of
+   * sync with the single execution point, so there is only one.
+   *
+   * The decision is only *routed* (`routeApprovalDecision`); nothing here moves
+   * the task, so a 打回 cannot land a terminal state.
+   */
+  private openCreationGateApproval(task: Task): void {
+    if (!this.hitlService) return;
+    const creatorId = task.createdBy ?? 'system';
+    const creatorName = this.resolveActorName(creatorId, 'agent') ?? creatorId;
+    this.hitlService.requestApprovalAndWait({
+      agentId: creatorId,
+      agentName: creatorName,
+      type: 'custom',
+      title: task.title,
+      description: `Agent "${creatorName}" wants to create task "${task.title}" (priority: ${task.priority}).`,
+      // The sentence as structure, so the chat app renders it in the reader's
+      // language instead of showing the English literal above.
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskCreate',
+        bodyParams: { agentName: creatorName, title: task.title, priority: task.priority },
+      },
+      details: { taskId: task.id, taskTitle: task.title, priority: task.priority, subType: 'task' },
+    }).then(result => {
+      const current = this.tasks.get(task.id);
+      if (!current || current.status !== 'pending') return;
+      // Route only — never transition inline: 打回 must not land a terminal state.
+      this.routeApprovalDecision({
+        approvalId: result.approvalId,
+        subType: 'task',
+        targetId: task.id,
+        intent: result.intent,
+        actorId: result.respondedBy,
+        actorName: this.resolveActorName(result.respondedBy, 'human') ?? result.respondedBy,
+        comment: result.comment,
+      });
+    }).catch(err => {
+      log.error('HITL approval flow error, auto-rejecting task', { taskId: task.id, error: String(err) });
+      const current = this.tasks.get(task.id);
+      if (current?.status !== 'pending') return;
+      // Intent-aware: only a missing/undeliverable decision may fall back to
+      // rejection. If this request already produced a recorded decision (e.g. a
+      // 打回 whose apply path failed), rejecting here would silently turn it into
+      // a terminal rejection.
+      const alreadyRecorded = this.hitlService
+        ?.listApprovals()
+        .some(a => (a.details as Record<string, unknown> | undefined)?.['taskId'] === task.id && a.status !== 'pending');
+      if (alreadyRecorded) {
+        log.warn('Approval decision already recorded — skipping auto-reject', { taskId: task.id });
+        return;
+      }
+      this.rejectTask(task.id, 'system');
+    });
+  }
+
+  /**
+   * Re-initiate the 建卡闸 approval for a task whose previous approval came back
+   * as **打回 (changes requested)** — the third segment of the 打回 loop:
+   *
+   *   ① 打回 does zero state transition (task stays `pending`)
+   *   ② the reviewer's comment lands on the task
+   *   ③ the assignee revises the title/description and calls this to re-open the gate
+   *
+   * Without ③ the task becomes an **orphan**: its approval is no longer `pending`,
+   * so it never shows up in `listApprovals('pending')`, yet nothing put it into a
+   * terminal state — the only exit left would be the admin approve endpoint, which
+   * bypasses the gate entirely.
+   *
+   * Idempotent by construction: refuses (with an actionable error, never a silent
+   * no-op) when the task is not `pending`, when its creator is not a live agent, or
+   * when an approval for it is already active.
+   */
+  requestTaskApproval(taskId: string, actorId?: string): { taskId: string; approvalId: string } {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new TaskServiceError('TASK_NOT_FOUND', `Task not found: ${taskId}`, { taskId });
+    if (task.status !== 'pending') {
+      throw new TaskServiceError(
+        'TASK_NOT_PENDING',
+        `Task ${taskId} is in '${task.status}' — only a pending task's creation approval can be (re-)initiated.`,
+        { taskId, status: task.status },
+      );
+    }
+    if (!this.hitlService) {
+      throw new TaskServiceError('HITL_UNAVAILABLE', 'Approval service is unavailable', { taskId });
+    }
+    if (task.createdBy && this.agentManager && !this.agentManager.hasAgent(task.createdBy)) {
+      throw new TaskServiceError(
+        'TASK_CREATOR_NOT_AGENT',
+        `Task ${taskId} was not created by a live agent — there is no creation gate to re-open.`,
+        { taskId, createdBy: task.createdBy },
+      );
+    }
+    const hasTaskDetails = (a: { details?: unknown }) =>
+      (a.details as Record<string, unknown> | undefined)?.['taskId'] === taskId;
+    const active = this.hitlService.listApprovals('pending').find(hasTaskDetails);
+    if (active) {
+      throw new TaskServiceError(
+        'APPROVAL_ALREADY_ACTIVE',
+        `Task ${taskId} already has an active approval (${active.id}) — answer that one instead of re-initiating.`,
+        { taskId, approvalId: active.id },
+      );
+    }
+    const previousIds = new Set(this.hitlService.listApprovals().filter(hasTaskDetails).map(a => a.id));
+    this.openCreationGateApproval(task);
+    const created = this.hitlService.listApprovals().find(a => hasTaskDetails(a) && !previousIds.has(a.id));
+    log.info('Creation-gate approval re-initiated', { taskId, approvalId: created?.id, actorId });
+    return { taskId, approvalId: created?.id ?? '' };
   }
 
   /** Approve a pending task and transition it to normal flow.
@@ -3019,27 +3327,50 @@ export class TaskService {
       type: 'custom',
       title: task.title,
       description,
+      i18n: {
+        bodyKey: 'notifications.approvalDesc.taskReview',
+        // The first line is the platform's sentence; everything from the first line
+        // break on is the task's own content (its description, its deliverables) —
+        // content, never translated, just carried through the template.
+        bodyParams: {
+          title: task.title,
+          tail: description.slice(
+            description.indexOf('\n') === -1 ? description.length : description.indexOf('\n'),
+          ),
+        },
+      },
       details: { taskId: task.id, taskTitle: task.title, subType: 'task_review' },
       targetUserId: task.reviewerId,
       options: [
-        { id: 'approve', label: 'Approve' },
-        { id: 'reject', label: 'Request Changes' },
+        // `direction` is the meaning; the label is only a fallback. The review
+        // gate's second choice carries the legacy id `reject` but *means*
+        // request-changes (the FSM has no `review → rejected` edge), so resolving
+        // it by id alone would render the destructive word "Reject" over a button
+        // that actually asks for a revision.
+        { id: 'approve', label: 'Approve', direction: 'approve' },
+        // 打回 is a *comment plus resubmit* loop, not a state: without the reason
+        // the assignee gets the work back with nothing to act on. Any surface that
+        // cannot capture free text must therefore not offer it.
+        { id: 'reject', label: 'Request Changes', direction: 'request_changes', requiresComment: true },
       ],
       allowFreeform: true,
     }).then(result => {
       const current = this.tasks.get(task.id);
       if (!current || current.status !== 'review') return;
 
-      if (result.approved) {
-        this.markReviewSettled(current, 'approved', task.reviewerId);
-        this.updateTaskStatus(task.id, 'completed', task.reviewerId, false, false, 'human', 'Review approved');
-      } else {
-        const comment = result.comment ? ` — ${result.comment}` : '';
-        task.notes = task.notes ?? [];
-        task.notes.push(`[Review by human] Revision requested${comment}`);
-        this.markReviewSettled(current, 'revision', task.reviewerId);
-        this.updateTaskStatus(task.id, 'in_progress', task.reviewerId, false, false, 'human', `Revision requested${comment}`);
-      }
+      // Both verdicts route through the single execution point; the review gate's
+      // own semantics (settlement + note + status) live in the gate port and are
+      // unchanged, including "the promise was lost" — the API fallback reaches
+      // the same port method.
+      this.routeApprovalDecision({
+        approvalId: result.approvalId,
+        subType: 'task_review',
+        targetId: task.id,
+        intent: result.intent,
+        actorId: task.reviewerId ?? result.respondedBy,
+        actorName: this.resolveActorName(task.reviewerId ?? result.respondedBy, 'human') ?? task.reviewerId,
+        comment: result.comment,
+      });
     }).catch(err => {
       log.warn('Human reviewer approval failed', { taskId: task.id, error: String(err) });
     });
@@ -4066,7 +4397,7 @@ export class TaskService {
   private governancePolicy: TaskGovernancePolicy = {
     enabled: true,
     defaultTier: 'human',
-    maxPendingTasksPerAgent: 10,
+    maxPendingTasksPerAgent: 20,
     maxTotalActiveTasks: 0,
     requireApprovalForPriority: ['critical', 'high'],
     requireRequirement: true,
@@ -4142,16 +4473,26 @@ export class TaskService {
       }
     }
 
-    if (request.assignedAgentId && policy.maxPendingTasksPerAgent > 0) {
+    // Per-agent task cap. Two-level precedence, no extra fallback layer:
+    //   1) the value configured in 智能体设置 → 任务上限
+    //      (`AgentManager.maxPendingTasksPerAgent`, persisted to markus.json
+    //      `agent.maxPendingTasksPerAgent` via POST /api/settings/agent)
+    //   2) else the governance-policy default (now 20).
+    // Single source of truth: the configured cap is only ever WRITTEN through
+    // POST /api/settings/agent; this method only READS it, so there is exactly
+    // one writer and one reader for the same value.
+    const effectiveAgentCap =
+      this.agentManager?.maxPendingTasksPerAgent ?? policy.maxPendingTasksPerAgent;
+    if (request.assignedAgentId && effectiveAgentCap > 0) {
       const agentTasks = [...this.tasks.values()].filter(
         t =>
           t.assignedAgentId === request.assignedAgentId &&
           !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
       );
-      if (agentTasks.length >= policy.maxPendingTasksPerAgent) {
+      if (agentTasks.length >= effectiveAgentCap) {
         return {
           allowed: false,
-          reason: `Agent task cap reached (${policy.maxPendingTasksPerAgent})`,
+          reason: `Agent task cap reached (${effectiveAgentCap})`,
         };
       }
     }

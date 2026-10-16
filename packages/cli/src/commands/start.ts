@@ -30,6 +30,7 @@ import {
   pickOrgSecretary,
   setEnvValue,
   resolveActionSecret,
+  resolveHostLocale,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -49,6 +50,8 @@ import {
   TaskService,
   APIServer,
   HITLService,
+  ApprovalApplier,
+  routeRecordedDecision,
   type NotificationPriority,
   BillingService,
   LicenseService,
@@ -822,6 +825,19 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
   }
+  // 并发处理配置：从 markus.json 读回 → AgentManager 单一事实源。
+  // 必须在 orgService.loadFromDB 之前设置：恢复的 agent 会以
+  // row.concurrent ?? manager._concurrentConfig 取值（agent-manager L2350），
+  // 故此处赋值即可让「重启后仍按设置值并发」成立（修复「改了没用/重启即丢」）。
+  if (config.agent?.concurrent) {
+    agentManager.concurrentConfig = config.agent.concurrent;
+  }
+  // 每个 agent 的任务上限（智能体设置 → 任务上限）：从 markus.json 读回 →
+  // AgentManager 单一事实源。TaskService.checkTaskLimits 读取该值，未设置时回退
+  // 治理策略默认值。赋值必须早于任何任务创建；与并发配置同处启动早期。
+  if (typeof config.agent?.maxPendingTasksPerAgent === 'number') {
+    agentManager.maxPendingTasksPerAgent = config.agent.maxPendingTasksPerAgent;
+  }
   if (config.codingTools) {
     agentManager.setCodingToolsConfig(config.codingTools);
   }
@@ -1185,6 +1201,33 @@ async function startServerCore(
 
   requirementService.setAgentManager(agentManager);
   requirementService.setHITLService(hitlService);
+
+  // ── Approval outcomes: one execution point ──────────────────────────────────
+  // Both the `requestApprovalAndWait` callbacks (task/requirement gates) and the
+  // HTTP fallback in APIServer route through this applier; its synchronous claim
+  // on the approval entity makes the outcome exactly-once across the two.
+  const approvalApplier = new ApprovalApplier(hitlService);
+  approvalApplier.registerPort(taskService);
+  approvalApplier.registerPort(requirementService);
+  taskService.setApprovalApplier(approvalApplier);
+  requirementService.setApprovalApplier(approvalApplier);
+  apiServer.setApprovalApplier(approvalApplier);
+  // Recording a decision routes it. The router is the inbound surfaces' common
+  // backstop: the `requestApprovalAndWait` callback above is in-memory only and
+  // dies with the process, so a card tap on an approval created before the last
+  // restart used to record "approved" while nothing moved the task (2026-10-16).
+  // Owning the routing here — at the one place a decision is written — means no
+  // surface, present or future, has to remember to apply it.
+  hitlService.setDecisionRouter(response => {
+    routeRecordedDecision(approvalApplier, response.approval, response.decision);
+  });
+  // A requirement 打回 must stay observable on its own entity, so the decision
+  // also lands as a requirement comment — through the existing comment channel
+  // (owned by TaskService), never through a new field or table.
+  requirementService.setRequirementCommentPoster(
+    (requirementId, authorId, authorName, content, mentions, opts) =>
+      taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions, undefined, opts),
+  );
   apiServer.setProjectService(projectService);
   apiServer.setReportService(reportService);
   apiServer.setKnowledgeService(knowledgeService);
@@ -1262,7 +1305,22 @@ async function startServerCore(
         priority: item.type === 'review_stale' ? 'high' : 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
         actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: { taskId: item.taskId, agentId: item.agentId, staleType: item.type },
+        metadata: {
+          taskId: item.taskId,
+          agentId: item.agentId,
+          staleType: item.type,
+          // The title and body as structure: the detector knows *what* to say,
+          // this is the only place that knows the sentence's key.
+          i18n: {
+            titleKey:
+              item.type === 'review_stale'
+                ? 'notifications.titles.staleReview'
+                : item.type === 'stuck_task'
+                  ? 'notifications.titles.stuckTask'
+                  : 'notifications.titles.unstartedTask',
+            ...(item.i18n ?? {}),
+          },
+        },
       });
     }
   });
@@ -1734,7 +1792,13 @@ async function startServerCore(
           priority: 'high',
           actionType: 'open_chat',
           actionTarget: JSON.stringify({ agentId, sessionId: mainSession.id }),
-          metadata: { agentId, sessionId: mainSession.id },
+          metadata: {
+            agentId,
+            sessionId: mainSession.id,
+            // The `reason` is the agent's own words — content, passed through
+            // verbatim. Only the platform's own line is ours to translate.
+            i18n: { titleKey: 'notifications.titles.agentNeedsHelp' },
+          },
         });
         auditService.record({
           orgId: 'default', agentId, type: 'error', action: 'escalation', detail: reason, success: false,
@@ -2218,7 +2282,8 @@ async function startServerCore(
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
-          markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
+          markStaleProcessingAsDropped: (aid: string, nowIso?: string, ownerId?: string) =>
+            mbRepo.markStaleProcessingAsDropped(aid, nowIso, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -2407,17 +2472,16 @@ async function startServerCore(
     ws.broadcast({ type: 'agent:stopped', payload: event, timestamp: new Date().toISOString() });
   });
 
-  // Wire task completion/failure events to WS broadcast
-  eventBus.on('task:completed', (event: unknown) => {
-    const { taskId, agentId } = event as { taskId: string; agentId: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'completed', { agentId });
-  });
-  eventBus.on('task:failed', (event: unknown) => {
-    const { taskId, agentId, error } = event as { taskId: string; agentId: string; error?: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'failed', { agentId, error });
-  });
+  // NOTE (2026-10-16): `task:completed` / `task:failed` are **agent execution
+  // lifecycle** events — "the runtime finished running". They used to be
+  // re-broadcast here as `task:update`, which was wrong twice over: the payload
+  // carries no title (the UI/OS notification degraded to a bare "Task") and the
+  // status was a lie (a finished execution moves the task to `review`, not
+  // `completed`). The **status machine** (`task-service.broadcastStatusChange`)
+  // is the single writer of a task's user-facing status and already emits
+  // `task:update` with the real status *and* the title on every transition, so
+  // these bridges were pure counterfeit. Removed rather than enriched: one fact,
+  // one writer.
 
   // Wire system-wide events to WS broadcast
   eventBus.on('system:pause-all', (event: unknown) => {
@@ -2529,6 +2593,21 @@ async function startServerCore(
       });
       return;
     }
+    // This surface cannot carry free text — `respondToApproval` is called below with
+    // no comment. So a choice that *requires* a written reason must not be accepted
+    // here: recording a request-changes whose reason was never captured sends the
+    // task back with nothing to act on. Cards no longer offer such a choice (the
+    // renderer withholds it and points at Markus); this refuses the taps a card sent
+    // *before* that change can still deliver — fail closed, never a silent mis-apply.
+    const tapped = hitlService.getApproval(approvalId)?.options?.find((o) => o.id === command);
+    if (tapped?.requiresComment) {
+      log.warn('Refused a platform approval action that needs an unwritable comment', {
+        approvalId,
+        command,
+        platform: action.platform,
+      });
+      return;
+    }
     // Mirror UserInputModal: a named option is affirmative unless it is a reject;
     // the tapped option id is recorded as `selectedOption` (was silently dropped).
     const approved = command !== 'reject' && command !== 'request_changes';
@@ -2554,7 +2633,7 @@ async function startServerCore(
     // rewrite (not awaiting it inside this handler) makes it the last write the
     // client applies. Best-effort: failures are logged, never fatal, never roll
     // the decision back.
-    const approval = resolved ?? hitlService.getApproval(approvalId);
+    const approval = resolved?.approval ?? hitlService.getApproval(approvalId);
     const messageId = action.messageId;
     if (approval && messageId) {
       void scheduleCardRewrite(async () => {
@@ -2762,6 +2841,26 @@ async function startServerCore(
     agentName: (id) => {
       try {
         return agentManager.getAgent(id)?.config?.name;
+      } catch {
+        return undefined;
+      }
+    },
+    // …and the team it belongs to, so the notification also says which team it
+    // came from. Same rule: a missing team never holds back the delivery.
+    agentTeamName: (id) => {
+      try {
+        const teamId = agentManager.getAgent(id)?.config?.teamId;
+        return teamId ? orgService.getTeam(teamId)?.name : undefined;
+      } catch {
+        return undefined;
+      }
+    },
+    // …and the language an approval's buttons are written in. The recipient's
+    // own locale wins; the host locale is the fallback. Read lazily so a later
+    // preference change is picked up without a restart.
+    locale: () => {
+      try {
+        return orgService.resolveHumanIdentity(ownerUserId)?.locale ?? resolveHostLocale();
       } catch {
         return undefined;
       }

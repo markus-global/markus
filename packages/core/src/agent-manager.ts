@@ -4,6 +4,7 @@ import {
   generateId,
   stripInternalBlocks,
   type AgentConfig,
+  type AgentConcurrentConfig,
   type AgentProfile,
   type LLMAssignment,
   type AgentActivity,
@@ -293,6 +294,8 @@ export interface TaskServiceBridge {
   getSubtasks?(taskId: string): Array<{ id: string; title: string; status: string }>;
   submitForReview(taskId: string, deliverables: Array<{ type: string; reference: string; summary: string; diffStats?: unknown; testResults?: unknown }>, reviewerId?: string, completionSummary?: string): Promise<{ id: string; status: string }>;
   requestRevision(taskId: string, reason: string, author?: string): Promise<{ id: string; title: string; status: string }>;
+  /** Re-open a pending task's creation-gate approval after a 打回 (see TaskService.requestTaskApproval). */
+  requestTaskApproval?(taskId: string, actorId?: string): { taskId: string; approvalId: string };
   findDuplicateTasks?(orgId: string): Array<{ group: string; tasks: Array<{ id: string; title: string; status: string; createdAt: string }> }>;
   cleanupDuplicateTasks?(orgId: string): { cancelledIds: string[]; count: number };
   getTaskBoardHealth?(orgId: string): Record<string, unknown>;
@@ -491,7 +494,8 @@ export class AgentManager {
   private recallCallbacks?: RecallCallbacks;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
-  private _concurrentConfig?: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' };
+  private _concurrentConfig?: AgentConcurrentConfig;
+  private _maxPendingTasksPerAgent?: number;
   private _codingToolsEnabled = false;
   private _codingToolsConfigs?: Record<string, CodingToolConfig>;
   private templateRegistry?: TemplateRegistry;
@@ -752,11 +756,30 @@ export class AgentManager {
     this._maxToolIterations = value <= 0 ? Infinity : value;
   }
 
-  get concurrentConfig(): { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined {
+  /**
+   * Per-agent *pending-task* cap（智能体设置 → 任务上限）。
+   *
+   * 语义：该上限对**每个 agent 各自独立计数**生效（每个 agent 累计自己名下未
+   * 终结任务数后与该值比较）。`undefined` 表示「未配置」→ TaskService 回退到
+   * 治理策略默认值（20）。
+   *
+   * 单一事实源：唯一写入点 = POST /api/settings/agent（与 maxToolIterations /
+   * concurrentConfig 同一条链路），落库 markus.json `agent.maxPendingTasksPerAgent`，
+   * 启动时由 createServices 读回。本 getter 只被 TaskService.checkTaskLimits 读取。
+   */
+  get maxPendingTasksPerAgent(): number | undefined {
+    return this._maxPendingTasksPerAgent;
+  }
+
+  set maxPendingTasksPerAgent(value: number | undefined) {
+    this._maxPendingTasksPerAgent = value && value > 0 ? value : undefined;
+  }
+
+  get concurrentConfig(): AgentConcurrentConfig | undefined {
     return this._concurrentConfig;
   }
 
-  set concurrentConfig(value: { enabled: boolean; maxWorkers?: number; conflictPolicy?: 'auto' | 'report' } | undefined) {
+  set concurrentConfig(value: AgentConcurrentConfig | undefined) {
     this._concurrentConfig = value;
     // 热传播：同步到所有已加载 agent 的 attention（无需重启进程）。
     for (const info of this.listAgents()) {
@@ -1822,6 +1845,9 @@ export class AgentManager {
         requestRevision: async (taskId, reason) => {
           return ts.requestRevision(taskId, reason, id);
         },
+        requestTaskApproval: ts.requestTaskApproval
+          ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)
+          : undefined,
         getTask: async taskId => {
           return ts.getTask(taskId) ?? null;
         },
@@ -2744,6 +2770,9 @@ export class AgentManager {
           }),
         updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
         requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
+        requestTaskApproval: ts.requestTaskApproval
+          ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)
+          : undefined,
         getTask: async taskId => ts.getTask(taskId) ?? null,
         assignTask: async (taskId, agentId) => ts.assignTask(taskId, agentId, id),
         addTaskNote: async (taskId, note, author) => {

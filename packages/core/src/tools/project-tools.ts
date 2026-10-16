@@ -417,14 +417,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
           {
             name: 'deliverable_create',
             description:
-              'Register a deliverable (file, directory, or artifact) that has already been created on disk. Write the actual content to a file FIRST using shell_execute or other file tools, then call this to track it. Pass the absolute path as `reference` (aliases: `file_path`, `path`). Optionally link a project via `project_id`. If the reference path already exists as a deliverable, the existing record is updated instead of creating a duplicate.',
+              'Register a **human-facing** deliverable (file, directory, or artifact) that has already been created on disk — a report, document, product, dataset, or spec that a person will open and read. Do NOT register each code/config/intermediate file you touched; if you need to reference code changes, write them (with their file paths) inside one markdown deliverable doc and register that single doc instead. Write the actual content to a file FIRST using shell_execute or other file tools, then call this to track it. Pass the absolute path as `reference` (aliases: `file_path`, `path`). Optionally link a project via `project_id`. If the reference path already exists as a deliverable, the existing record is updated instead of creating a duplicate.',
             inputSchema: {
               type: 'object',
               properties: {
                 type: {
                   type: 'string',
                   enum: ['file', 'directory'],
-                  description: 'file = any file-based content (docs, reports, code, etc.), directory = folder of files. Aliases like "document"/"report" are coerced to "file".',
+                  description: 'file = a human-facing file (docs, reports, spreadsheets, datasets, product artifacts — NOT each source/config file you touched), directory = folder of such deliverables. Aliases like "document"/"report" are coerced to "file".',
                 },
                 title: {
                   type: 'string',

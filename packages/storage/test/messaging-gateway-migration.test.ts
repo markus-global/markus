@@ -304,7 +304,7 @@ describe('resolveInstanceConfig — 双读窗口原语', () => {
 });
 
 describe('openSqlite 接线 + fail-safe', () => {
-  it('openSqlite 自动迁移：新表存在、版本推进到 3', () => {
+  it('openSqlite 自动迁移：新表存在、版本推进到最新', () => {
     const legacy = seedLegacy(0);
     addIntegration(legacy, { id: 'i1', orgId: 'org_a', platform: 'feishu', config: '{"appId":"cli_x"}' });
     addAgent(legacy, { id: 'agt_sec', name: 'Secretary', orgId: 'org_a', roleName: 'Secretary' });
@@ -314,7 +314,7 @@ describe('openSqlite 接线 + fail-safe', () => {
     expect(q(db, 'SELECT id FROM platform_instances')).toHaveLength(1);
     expect(q(db, 'SELECT id FROM channel_bindings')).toHaveLength(1);
     const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(ver.user_version).toBe(3);
+    expect(ver.user_version).toBe(4);
 
     // Reopen: the one-shot gate means no second pass — rows stay as they are.
     closeSqlite();

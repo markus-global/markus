@@ -56,17 +56,55 @@ describe('resolved approval card', () => {
     expect(plain).not.toContain('选项');
   });
 
-  it('prefers the resolved display name, falling back to the raw id', () => {
+  it('names the actor: the resolved name when we have one, else a live reference', () => {
     const named = JSON.stringify(
       buildResolvedApprovalCard({ title: 't', body: 'b', status: 'approved', actorId: 'ou_boss', actorName: '老板' }),
     );
     expect(named).toContain('老板');
+    // A resolved name is preferred: it reads the same and pings nobody.
     expect(named).not.toContain('ou_boss');
 
-    const raw = JSON.stringify(
+    // Without a resolved name the card must still not show an unreadable id —
+    // it emits a person reference, which Feishu renders as the display name and
+    // makes tappable, and which needs no contact-read scope.
+    const fallback = JSON.stringify(
       buildResolvedApprovalCard({ title: 't', body: 'b', status: 'approved', actorId: 'ou_boss' }),
     );
-    expect(raw).toContain('ou_boss');
+    expect(fallback).toContain('<at id=ou_boss></at>');
+  });
+
+  it('refuses to emit a reference from an id that is not a plain platform id', () => {
+    // The id is payload from the platform; markup must not be injectable through it.
+    // Interpolating the raw string as a "safe fallback" was tried and *does* inject —
+    // text inside a lark_md element is still markup.
+    const card = JSON.stringify(
+      buildResolvedApprovalCard({
+        title: 't',
+        body: 'b',
+        status: 'approved',
+        actorId: '"><at id=all></at>',
+      }),
+    );
+    expect(card).not.toContain('<at id=all>');
+    // Nothing legible to say about the actor ⇒ the line is omitted, not faked.
+    expect(card).not.toContain('操作人');
+  });
+
+  it('does not let a display name inject card markup', () => {
+    // Any tenant member can set their own display name, so the *resolved* name is
+    // attacker-controlled too — `<at id=all></at>` as a name would mass-mention.
+    const card = JSON.stringify(
+      buildResolvedApprovalCard({
+        title: 't',
+        body: 'b',
+        status: 'approved',
+        actorId: 'ou_boss',
+        actorName: '<at id=all></at>',
+      }),
+    );
+    expect(card).not.toContain('<at id=all>');
+    // It still names the actor — via the id reference, which is checked.
+    expect(card).toContain('<at id=ou_boss></at>');
   });
 });
 
@@ -215,5 +253,41 @@ describe('MessageRouter.resolveActorName', () => {
 
     expect(await router.resolveActorName('feishu', 'bi_feishu_x', '')).toBeNull();
     expect(resolve).not.toHaveBeenCalled();
+  });
+
+  it('asks the platform’s only bot when the action names no instance', async () => {
+    const resolve = vi.fn().mockResolvedValue('老板');
+    const router = new MessageRouter('default');
+    router.registerAdapter(fakeAdapter('feishu', resolve), 'bi_feishu_only');
+
+    expect(await router.resolveActorName('feishu', undefined, 'ou_boss')).toBe('老板');
+    expect(resolve).toHaveBeenCalledWith('ou_boss');
+  });
+
+  it('refuses to guess when the platform hosts several bots', async () => {
+    // An actor id is scoped to the app that issued it — a Feishu `open_id` asked of
+    // a *different* app fails with `99992361 open_id cross app` (observed live on a
+    // two-bot org). Asking an arbitrary bot would therefore return nothing while
+    // looking like a successful lookup, so the honest answer is "I cannot know".
+    const resolveA = vi.fn().mockResolvedValue('老板');
+    const resolveB = vi.fn().mockResolvedValue('老板');
+    const router = new MessageRouter('default');
+    router.registerAdapter(fakeAdapter('feishu', resolveA), 'bi_feishu_1');
+    router.registerAdapter(fakeAdapter('feishu', resolveB), 'bi_feishu_2');
+
+    expect(await router.resolveActorName('feishu', undefined, 'ou_boss')).toBeNull();
+    expect(resolveA).not.toHaveBeenCalled();
+    expect(resolveB).not.toHaveBeenCalled();
+  });
+
+  it('still resolves by explicit instance when several bots share a platform', async () => {
+    const resolveA = vi.fn().mockResolvedValue('老板');
+    const resolveB = vi.fn().mockResolvedValue('CTO');
+    const router = new MessageRouter('default');
+    router.registerAdapter(fakeAdapter('feishu', resolveA), 'bi_feishu_1');
+    router.registerAdapter(fakeAdapter('feishu', resolveB), 'bi_feishu_2');
+
+    expect(await router.resolveActorName('feishu', 'bi_feishu_2', 'ou_other')).toBe('CTO');
+    expect(resolveA).not.toHaveBeenCalled();
   });
 });

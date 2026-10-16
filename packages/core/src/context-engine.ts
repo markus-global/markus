@@ -1524,6 +1524,8 @@ export class ContextEngine {
       lines.push('- **HTML (.html)**: Use for complex, data-rich, or interactive content — dashboards, multi-section reports with charts/tables. Include inline CSS; light JS for interactivity is OK.');
       lines.push('- **Other formats**: JSON/CSV/SVG when that fits the content.');
       lines.push('Default to markdown for brevity; escalate to HTML when richness helps comprehension.');
+      lines.push('');
+      lines.push('**What counts as a deliverable**: a deliverable is something a human will *open and read* — a report, document, product, dataset, or spec. It is NOT every file you touched. Do **not** register each code/config/intermediate file as its own deliverable. When a task changes code, write ONE markdown doc that lists the relevant file paths (and what changed) in its body, and register that single doc.');
     }
 
     lines.push('');
@@ -1536,7 +1538,7 @@ export class ContextEngine {
     lines.push('');
     lines.push('**Task lifecycle** — Create → Execute → Review → Complete:');
     lines.push('- **Create**: `task_create` (REQUIRED: `assigned_agent_id`, `reviewer_id`). Check `task_list` first to avoid duplicates.');
-    lines.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + deliverables (MANDATORY).');
+    lines.push('- **Execute**: Decompose with `subtask_create` → work through subtasks → `task_submit_review` with summary + human-facing deliverables (MANDATORY).');
     lines.push('- **Review**: Reviewer approves with `task_update(status:"completed")` or rejects with `task_update(status:"in_progress", note:"…")`. Workers MUST NOT set status=completed on their own tasks.');
     lines.push('- **Blockers**: Use `task_update(status:"blocked", note:"reason")` when unable to proceed.');
     lines.push('');
@@ -1582,7 +1584,7 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Docs you create → preview them**: Whenever you create or update a user-facing artifact during the conversation (Markdown/HTML report, document, table, code file, diagram, etc.), **open it in the right panel in the SAME turn** so the user sees it immediately — call `open_right_panel` with the artifact\'s **absolute `path`** (or `deliverable_id` once registered). Do not just tell the user a file was written and leave the panel closed.');
         lines.push('');
-        lines.push('**Register docs as deliverables**: After writing an artifact to disk, register it as a deliverable with `deliverable_create` — pass the artifact\'s **absolute path** as `reference`, and set `title` / `summary` in the user\'s language. Then preview it with `open_right_panel({ deliverable_id })`. This makes the work tracked and shareable, not just a loose file.');
+        lines.push('**Register docs as deliverables**: After writing a user-facing artifact to disk — a report/doc/product the human will read, NOT every source file you edited — register it as a deliverable with `deliverable_create`: pass the artifact\'s **absolute path** as `reference`, and set `title` / `summary` in the user\'s language. If a task changed code, put the relevant file paths inside that one document instead of registering each file. Then preview it with `open_right_panel({ deliverable_id })`. This makes the work tracked and shareable, not just a loose file.');
         lines.push('');
         lines.push('**Notification context**: Previous messages in this session may contain `<!-- notify_context: ... -->` metadata comments from your earlier `notify_user` calls. These embed `task_id`, `requirement_id`, and `priority` references. When the human replies to such a message, use these references to retrieve full context (e.g. via `recall_activity`, `task_list`) before responding.');
         break;
@@ -1629,8 +1631,8 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Phase 5 — SUBMIT**: Deliver the completed work.');
         lines.push('- Verify all subtasks are completed or cancelled (`subtask_list`) — the system rejects submission if any subtask is still pending');
-        lines.push('- Register key outputs via `deliverable_create`');
-        lines.push('- `task_submit_review` with a summary of changes and deliverables (MANDATORY)');
+        lines.push('- Register the **human-facing** deliverables via `deliverable_create` (reports / docs / products / data) — do NOT register each code file separately; list code file paths inside one markdown deliverable doc');
+        lines.push('- `task_submit_review` with a summary + those human-facing deliverables (MANDATORY)');
         lines.push('');
         lines.push('**Autonomy**: Work autonomously within your task scope. Execute the full ANALYZE → PLAN → IMPLEMENT → VERIFY → SUBMIT cycle without interruption. Do not pause between phases to ask for permission — only stop if you hit a genuine blocker that requires external input.');
         break;

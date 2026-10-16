@@ -251,3 +251,41 @@ describe('P0 复核追加 · 同持有者不可重复认领（增量断言）', 
     expect(repo.getById('mbx_prio2')!.priority).toBe(0);
   });
 });
+
+// ─── 跨实例死认领清理（2026-10-15 重启僵尸修复）────────────────────────────────
+// 现象：进程重启时，被杀 worker 的 in-flight 行租约仍未到期 → 启动清理「尊重租约」不清它
+//   → 该行永远是 'processing'（UI 幽灵「处理中」），且租约到期后会被回队**再跑一次**。
+// 修法：调用方可传入当前 ownerId；此时「认领者非本实例」一律视为陈旧（跨实例死认领）。
+describe('启动清理 · 跨实例死认领即陈旧（传入 currentOwnerId 时）', () => {
+  it('不传 ownerId → 他人有效租约不动（既有契约，保持不变）', () => {
+    repo.save({ ...row('mbx_f1'), sourceType: 'memory_consolidation' });
+    const t = now().toISOString();
+    repo.claimItem('mbx_f1', 'dead#91901#2', iso(600_000), t); // 未来租约的异主认领
+    expect(repo.markStaleProcessingAsDropped('agt_1', t)).toBe(0);
+    expect(repo.getById('mbx_f1')!.status).toBe('processing');
+  });
+
+  it('传 ownerId → 异主「有效租约」判陈旧并 drop（非 strict-state）', () => {
+    repo.save({ ...row('mbx_f2'), sourceType: 'memory_consolidation' });
+    const t = now().toISOString();
+    repo.claimItem('mbx_f2', 'dead#91901#2', iso(600_000), t);
+    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(1);
+    expect(repo.getById('mbx_f2')!.status).toBe('dropped');
+  });
+
+  it('传 ownerId → 本实例认领（有效租约）不误杀', () => {
+    repo.save({ ...row('mbx_f3'), sourceType: 'memory_consolidation' });
+    const t = now().toISOString();
+    repo.claimItem('mbx_f3', 'me#500#1', iso(600_000), t);
+    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(0);
+    expect(repo.getById('mbx_f3')!.status).toBe('processing');
+  });
+
+  it('传 ownerId → 异主的 strict-state 行回队（不 drop，正式评审不丢）', () => {
+    repo.save(row('mbx_f4')); // review_request = strict-state
+    const t = now().toISOString();
+    repo.claimItem('mbx_f4', 'dead#1', iso(600_000), t);
+    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(0);
+    expect(repo.getById('mbx_f4')!.status).toBe('queued');
+  });
+});
