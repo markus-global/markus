@@ -106,3 +106,93 @@ describe('deepMerge (via loadConfig/saveConfig)', () => {
     expect((cfg.llm.capabilityRouting as any)?.assignments?.text).toBeUndefined();
   });
 });
+
+/**
+ * 并发处理配置（智能体设置 → 并发处理）落 markus.json 的往返一致性。
+ *
+ * 这是「问题3」的持久化契约：POST /api/settings/agent 走 saveConfig 写盘，
+ * 重启时 createServices 走 loadConfig 读回 → AgentManager.concurrentConfig。
+ * 若此层丢字段，重启后并发设置必然回落默认值（历史 bug：改了没用/重启即丢）。
+ */
+describe('agent.concurrent 持久化（保存 → 重载 → 读回）', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `markus-test-concurrent-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('saveConfig → loadConfig 逐字段读回（enabled / maxWorkers / conflictPolicy）', () => {
+    const cfgPath = join(tmpDir, 'markus.json');
+    saveConfig({
+      agent: {
+        maxToolIterations: 30,
+        concurrent: { enabled: true, maxWorkers: 7, conflictPolicy: 'report' },
+      },
+    }, cfgPath);
+
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.agent?.concurrent).toEqual({ enabled: true, maxWorkers: 7, conflictPolicy: 'report' });
+  });
+
+  it('enabled:false 也能读回（关掉并发不能丢，否则重启后又被默认打开）', () => {
+    const cfgPath = join(tmpDir, 'markus.json');
+    saveConfig({ agent: { concurrent: { enabled: false, conflictPolicy: 'auto' } } }, cfgPath);
+
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.agent?.concurrent).toEqual({ enabled: false, conflictPolicy: 'auto' });
+  });
+
+  it('二次保存按字段合并，不被部分更新抹掉（maxWorkers 保留）', () => {
+    const cfgPath = join(tmpDir, 'markus.json');
+    saveConfig({ agent: { concurrent: { enabled: true, maxWorkers: 5, conflictPolicy: 'report' } } }, cfgPath);
+    // 后续只改 conflictPolicy（例如另一个设置项的部分写）
+    saveConfig({ agent: { concurrent: { conflictPolicy: 'auto' } } } as any, cfgPath);
+
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.agent?.concurrent?.maxWorkers).toBe(5);
+    expect(cfg.agent?.concurrent?.conflictPolicy).toBe('auto');
+  });
+});
+
+/**
+ * 任务上限（智能体设置 → 任务上限）落 markus.json 的往返一致性。
+ *
+ * 这是「问题2」的持久化契约：POST /api/settings/agent 走 saveConfig 写盘，
+ * 重启时 createServices 走 loadConfig 读回 → AgentManager.maxPendingTasksPerAgent
+ * → TaskService.checkTaskLimits。若此层丢字段，重启后任务上限必然回落治理默认值。
+ */
+describe('agent.maxPendingTasksPerAgent 持久化（保存 → 重载 → 读回）', () => {
+  let tmpDir: string;
+
+  beforeEach(() => {
+    tmpDir = join(tmpdir(), `markus-test-taskcap-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(tmpDir, { recursive: true });
+  });
+
+  afterEach(() => {
+    rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it('saveConfig → loadConfig 读回任务上限', () => {
+    const cfgPath = join(tmpDir, 'markus.json');
+    saveConfig({ agent: { maxToolIterations: 30, maxPendingTasksPerAgent: 7 } }, cfgPath);
+
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.agent?.maxPendingTasksPerAgent).toBe(7);
+  });
+
+  it('与 concurrent 同处 agent 命名空间，互不覆盖', () => {
+    const cfgPath = join(tmpDir, 'markus.json');
+    saveConfig({ agent: { concurrent: { enabled: true, maxWorkers: 5 } } }, cfgPath);
+    saveConfig({ agent: { maxPendingTasksPerAgent: 15 } } as any, cfgPath);
+
+    const cfg = loadConfig(cfgPath);
+    expect(cfg.agent?.maxPendingTasksPerAgent).toBe(15);
+    expect(cfg.agent?.concurrent?.maxWorkers).toBe(5);
+  });
+});

@@ -8744,6 +8744,10 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        // 任务上限：优先回显配置值；未配置时回显治理策略默认值，与
+        // TaskService.checkTaskLimits 的实际生效口径保持一致。
+        maxPendingTasksPerAgent:
+          am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
       });
       return;
     }
@@ -8768,12 +8772,19 @@ EXPLANATION_END`;
         };
         changed = true;
       }
+      // 每个 agent 的任务上限（智能体设置 → 任务上限）。与 maxToolIterations /
+      // concurrent 同一条配置链路：写入 AgentManager 单一事实源并落库 markus.json。
+      if (typeof body['maxPendingTasksPerAgent'] === 'number') {
+        am.maxPendingTasksPerAgent = body['maxPendingTasksPerAgent'] as number;
+        changed = true;
+      }
       if (changed) {
         try {
           saveConfig({
             agent: {
               maxToolIterations: am.maxToolIterations,
               concurrent: am.concurrentConfig,
+              maxPendingTasksPerAgent: am.maxPendingTasksPerAgent,
             },
           } as any, this.markusConfigPath);
         } catch (e) {
@@ -8795,6 +8806,8 @@ EXPLANATION_END`;
       this.json(res, 200, {
         maxToolIterations: am.maxToolIterations,
         concurrent: am.concurrentConfig ?? { enabled: true, maxWorkers: 3 },
+        maxPendingTasksPerAgent:
+          am.maxPendingTasksPerAgent ?? this.taskService.getGovernancePolicy().maxPendingTasksPerAgent,
       });
       return;
     }

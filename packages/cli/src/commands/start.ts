@@ -822,6 +822,19 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
   }
+  // 并发处理配置：从 markus.json 读回 → AgentManager 单一事实源。
+  // 必须在 orgService.loadFromDB 之前设置：恢复的 agent 会以
+  // row.concurrent ?? manager._concurrentConfig 取值（agent-manager L2350），
+  // 故此处赋值即可让「重启后仍按设置值并发」成立（修复「改了没用/重启即丢」）。
+  if (config.agent?.concurrent) {
+    agentManager.concurrentConfig = config.agent.concurrent;
+  }
+  // 每个 agent 的任务上限（智能体设置 → 任务上限）：从 markus.json 读回 →
+  // AgentManager 单一事实源。TaskService.checkTaskLimits 读取该值，未设置时回退
+  // 治理策略默认值。赋值必须早于任何任务创建；与并发配置同处启动早期。
+  if (typeof config.agent?.maxPendingTasksPerAgent === 'number') {
+    agentManager.maxPendingTasksPerAgent = config.agent.maxPendingTasksPerAgent;
+  }
   if (config.codingTools) {
     agentManager.setCodingToolsConfig(config.codingTools);
   }

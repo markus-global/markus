@@ -176,4 +176,66 @@ describe('createServices', () => {
     expect(services.llmRouter.getSettings().providers.google.configured).toBe(true);
     expect(services.llmRouter.getSettings().providers.ollama.configured).toBe(true);
   }, 60000);
+
+  it('loads agent.concurrent from markus.json into AgentManager on boot (问题3：重启不丢)', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    writeConfig({
+      llm: { defaultProvider: 'anthropic', providers: {} },
+      agent: {
+        maxToolIterations: 30,
+        concurrent: { enabled: true, maxWorkers: 7, conflictPolicy: 'report' },
+      },
+    });
+
+    const config = loadConfig(configPath);
+    const services = await createServices(config);
+
+    // 启动加载：持久化值必须原样进入 AgentManager 单一事实源。
+    expect(services.agentManager.concurrentConfig).toEqual({
+      enabled: true,
+      maxWorkers: 7,
+      conflictPolicy: 'report',
+    });
+  }, 60000);
+
+  it('boots with concurrency disabled when persistence says enabled:false', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    writeConfig({
+      llm: { defaultProvider: 'anthropic', providers: {} },
+      agent: { concurrent: { enabled: false, conflictPolicy: 'auto' } },
+    });
+
+    const config = loadConfig(configPath);
+    const services = await createServices(config);
+
+    expect(services.agentManager.concurrentConfig?.enabled).toBe(false);
+  }, 60000);
+
+  it('loads agent.maxPendingTasksPerAgent from markus.json into AgentManager on boot (问题2：重启不丢)', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    writeConfig({
+      llm: { defaultProvider: 'anthropic', providers: {} },
+      agent: { maxToolIterations: 30, maxPendingTasksPerAgent: 7 },
+    });
+
+    const config = loadConfig(configPath);
+    const services = await createServices(config);
+
+    // 启动加载：持久化值必须原样进入 AgentManager 单一事实源。
+    expect(services.agentManager.maxPendingTasksPerAgent).toBe(7);
+  }, 60000);
+
+  it('leaves the task cap unset when markus.json has no maxPendingTasksPerAgent', async () => {
+    delete process.env.ANTHROPIC_API_KEY;
+    writeConfig({
+      llm: { defaultProvider: 'anthropic', providers: {} },
+      agent: { maxToolIterations: 30 },
+    });
+
+    const config = loadConfig(configPath);
+    const services = await createServices(config);
+
+    // 未配置 → undefined，由 TaskService.checkTaskLimits 回退治理策略默认值（20）。
+    expect(services.agentManager.maxPendingTasksPerAgent).toBeUndefined();
+  }, 60000);
 });

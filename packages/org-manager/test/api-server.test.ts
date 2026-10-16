@@ -2058,6 +2058,39 @@ describe('APIServer route handlers', () => {
         expect(res.status).toBe(200);
       });
 
+      it('POST /api/settings/agent {concurrent} → GET 读回一致（并发配置往返，问题3 验收#1）', async () => {
+        const post = await request(ctx.server, 'POST', '/api/settings/agent', {
+          concurrent: { enabled: true, maxWorkers: 6, conflictPolicy: 'report' },
+        });
+        expect(post.status).toBe(200);
+
+        const get = await request(ctx.server, 'GET', '/api/settings/agent');
+        expect(get.status).toBe(200);
+        // 写进去什么，读出来就是什么（maxWorkers / enabled / conflictPolicy 三字段往返一致）
+        expect(get.json.concurrent).toEqual({ enabled: true, maxWorkers: 6, conflictPolicy: 'report' });
+      });
+
+      it('POST /api/settings/agent {maxPendingTasksPerAgent} → GET 读回一致（任务上限往返，问题2 验收#2）', async () => {
+        const post = await request(ctx.server, 'POST', '/api/settings/agent', {
+          maxPendingTasksPerAgent: 7,
+        });
+        expect(post.status).toBe(200);
+        expect(post.json.maxPendingTasksPerAgent).toBe(7);
+
+        const get = await request(ctx.server, 'GET', '/api/settings/agent');
+        expect(get.status).toBe(200);
+        expect(get.json.maxPendingTasksPerAgent).toBe(7);
+      });
+
+      it('GET /api/settings/agent 未配置任务上限时回显治理策略值（与实际生效口径一致）', async () => {
+        delete (ctx.agentManager as unknown as { maxPendingTasksPerAgent?: number }).maxPendingTasksPerAgent;
+        const get = await request(ctx.server, 'GET', '/api/settings/agent');
+        expect(get.status).toBe(200);
+        // 未配置 per-agent 上限 → 回显治理策略值（不落 0/null）。
+        expect(get.json.maxPendingTasksPerAgent)
+          .toBe(ctx.taskService.getGovernancePolicy().maxPendingTasksPerAgent);
+      });
+
       it('POST /api/settings/network', async () => {
         const res = await request(ctx.server, 'POST', '/api/settings/network', { proxy: '', proxyEnabled: false });
         expect(res.status).toBe(200);

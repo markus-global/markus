@@ -213,6 +213,48 @@ describe('TaskService', () => {
         .toThrow(/Agent task cap/);
     });
 
+    it('per-agent 覆盖：AgentManager 配置的任务上限覆盖治理策略默认值', () => {
+      // 治理默认值放宽到 100，但「设置页 → 任务上限」配了 2 → 应以 2 为准。
+      ts.setGovernancePolicy({
+        enabled: true,
+        defaultTier: 'auto',
+        maxPendingTasksPerAgent: 100,
+        maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [],
+        requireRequirement: false,
+        rules: [],
+      });
+      (agentManager as unknown as { maxPendingTasksPerAgent?: number }).maxPendingTasksPerAgent = 2;
+      ts.createTask(createDefaults({ title: 'First' }) as never);
+      ts.createTask(createDefaults({ title: 'Second' }) as never);
+      expect(() => ts.createTask(createDefaults({ title: 'Third' }) as never))
+        .toThrow(/Agent task cap reached \(2\)/);
+    });
+
+    it('缺省回退：未配置任务上限时回退治理策略默认值（20）', () => {
+      ts.setGovernancePolicy({
+        enabled: true,
+        defaultTier: 'auto',
+        maxPendingTasksPerAgent: 20,
+        maxTotalActiveTasks: 100,
+        requireApprovalForPriority: [],
+        requireRequirement: false,
+        rules: [],
+      });
+      // mock agentManager 无 maxPendingTasksPerAgent 属性 → undefined → 回退 20。
+      expect((agentManager as unknown as { maxPendingTasksPerAgent?: number }).maxPendingTasksPerAgent)
+        .toBeUndefined();
+      for (let i = 0; i < 20; i++) {
+        ts.createTask(createDefaults({ title: `T${i}` }) as never);
+      }
+      expect(() => ts.createTask(createDefaults({ title: 'overflow' }) as never))
+        .toThrow(/Agent task cap reached \(20\)/);
+    });
+
+    it('治理策略默认任务上限 = 20（10→20 变更）', () => {
+      expect(new TaskService().getGovernancePolicy().maxPendingTasksPerAgent).toBe(20);
+    });
+
     it('requires requirementId when policy mandates it', () => {
       ts.setGovernancePolicy({
         enabled: true,
