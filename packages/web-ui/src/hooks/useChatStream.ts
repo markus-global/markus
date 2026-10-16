@@ -1644,9 +1644,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // the AGENT (several session tabs of one agent share it). A turn that ends
       // without a resolved session id — the new-chat tab, or a message the server
       // MERGED into the agent's in-flight processing (no session_start for it) —
-      // would then wipe a SIBLING tab's live mark. chatStore drops to idle, the
-      // buffer manager still reports the conversation as streaming, and the two
-      // answers disagree: the sibling tab's bubble is a "ghost" by chatStore and
+      // would then wipe a SIBLING tab's live mark. The local stream membership drops
+      // to idle while the buffer manager still reports the conversation as
+      // streaming, and the two answers disagree: the sibling tab's bubble is a
       // gets swept (border + 输出中 die) while the backend keeps generating. The
       // unresolved turn can only ever own the placeholder mark, so release that.
       clearStreamSession(sendKey, streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID);

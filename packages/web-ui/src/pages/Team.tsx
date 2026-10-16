@@ -57,6 +57,14 @@ import {
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
 import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
+import {
+  ensureSessionStreamStateFeed,
+  reconcileOpenSessions,
+  sessionStreamState,
+  useAgentSessionStreaming,
+  useSessionStreamRevision,
+  useSessionStreaming,
+} from '../lib/sessionStreamState.ts';
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
@@ -89,7 +97,7 @@ import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
-import { chatStore, useAgentStreaming, useChatStore } from './useChatStore.ts';
+// (chatStore 的客户端 agent-busy 近似已整体删除 —— 见 lib/sessionStreamState.ts)
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -97,7 +105,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
-  stopRunningTools, hasStreamingTail,
+  stopRunningTools,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -698,18 +706,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     return () => { if (streamingTimerRef.current) clearTimeout(streamingTimerRef.current); };
   }, [sending]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // 「这个 agent 此刻在不在回话」**只有一个来源**：chatStore 的 agent busy 标记
-  // （useConversationBuffers 按 hasLiveStream(key) || phase==='streaming' 维护）。
-  // 这里曾再叠一层 `sending || streamingVisual || hasStreamingTail(messages)` 喂给顶部
-  // 状态徽章 —— 三个都是**本地副本**（sending 是视图级、streamingVisual 还有 400ms
-  // 最短展示闩、tail 依赖已被合并过的显示缓冲），切 tab 时它们会瞬间为真，于是顶部
-  // 状态先亮「工作中」再被权威纠正回「空闲」。徽章现在直接读同一个标记。
-
-  // Subscribe to the streaming-agent set so the L2 agent rows (and anything else
-  // reading chatStore during render) re-render the moment a stream opens/closes.
-  // Without this, `chatStore.isAgentStreaming()` is read once per render and its
-  // dot can disagree with L1 / the header until an unrelated state change lands.
-  useChatStore(() => chatStore.getStreamingVersion());
+  // 「这个 agent / 这个会话此刻在不在输出」的唯一权威 = lib/sessionStreamState.ts
+  // （服务端 WS 推送 + 分钟级批量轮询喂入）。组件顶部 `useSessionStreamRevision()` 负责
+  // 重渲染。
+  //
+  // 这里曾有的 chatStore agent-busy 近似（客户端自维护的“谁在流”集合）已整体删除：
+  // 它是个**副本**，寿命与权威不同步，正是「顶部假亮工作中」「侧栏与顶部不一致」的来源。
 
   // Preview mode: typewriter streaming effect for the last agent message
   const previewStreamRef = useRef<{ fullText: string; timers: ReturnType<typeof setTimeout>[] }>({ fullText: '', timers: [] });
@@ -1059,8 +1061,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // 只认**确切 session id**：placeholder 是一个 id，不是通配符（否则一条「新会话」
   // 的流会把该 agent 的每个 tab 都点亮）。消息载荷上持久化的 `isStreaming` 是
   // 中途快照的副本，不能单独点亮边框（见 lib/streamLiveness.ts）。
-  const liveStreamSessions = getStreamSession(activeConvKey);
-  const liveStreamForView = sessionHasLiveStream(liveStreamSessions, activeSessionId);
+  // 本视图「是否在输出」的**唯一权威**：服务端推送（WS `session:stream_state`）+ 分钟级
+  // 批量轮询兜底喂入的 sessionStreamState。此前这里是**传输附着登记簿**
+  // （`getStreamSession`）——对后台/未附着的会话天然为空，见 lib/sessionStreamState.ts。
+  useSessionStreamRevision(); // 订阅：任何会话存活性变化都重渲染本组件
+  const liveStreamForView = sessionStreamState.isStreaming(activeSessionId);
 
   // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
   // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
@@ -1414,6 +1419,46 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [previewMode, previewData]);
 
+  // 存活性权威的供给：① WS 推送（主口径，延迟 ~0）② 分钟级批量轮询（兜底对账）。
+  useEffect(() => {
+    ensureSessionStreamStateFeed();
+  }, []);
+
+  useEffect(() => {
+    if (previewMode || !isActive) return;
+    // 兜底对账：WS 断连 / 服务重启 / 事件丢失时靠它收敛。只对**打开的 session tab**
+    // 跑，一次批量请求覆盖全部（抬绝 per-tab 轮询 —— 本仓库被「轮询打满 CPU」坑过）；
+    // 页面隐藏即暂停，恢复可见时先立刻对账一次再继续。
+    const reconcile = () => {
+      const agentId = currentConvKeyRef.current;
+      const ids = openSessionTabs.map((t) => t.id).filter((id) => id !== NEW_CHAT_PLACEHOLDER_ID);
+      if (agentId && ids.length > 0) void reconcileOpenSessions(agentId, ids);
+    };
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const start = () => {
+      if (timer) return;
+      timer = setInterval(reconcile, 60_000);
+    };
+    const stop = () => {
+      if (timer) clearInterval(timer);
+      timer = null;
+    };
+    const onVisibility = () => {
+      if (document.hidden) stop();
+      else {
+        reconcile();
+        start();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibility);
+    if (!document.hidden) start();
+    reconcile();
+    return () => {
+      stop();
+      document.removeEventListener('visibilitychange', onVisibility);
+    };
+  }, [previewMode, isActive, openSessionTabs]);
+
   useEffect(() => {
     if (previewMode) return;
     if (!isActive) return;
@@ -1433,7 +1478,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // Authoritative stop: an offline agent can never be streaming. Force-clear
         // any stale frontend streaming refcount so the sidebar cannot stay pinned
         // to "working" after a missed endStream (abort / stop / disconnect path).
-        if (status === 'offline') chatStore.clearAgentStreaming(p.agentId as string);
+        // agent 离线不再需要本地清 busy 标记：回合真正结束时服务端注册表会广播 false。
         setAgents(prev => prev.map(a => {
           if (a.id !== p.agentId) return a;
           const next = { ...a };
@@ -4087,7 +4132,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const currentUserName = authUser?.name ?? t('page.fallbackYou');
   const lastMsg = visibleMessages[visibleMessages.length - 1];
   const isLastPending = sending && lastMsg?.sender === 'agent';
-  const isLastVisualStreaming = streamingVisual && liveStreamForView && lastMsg?.sender === 'agent';
+  const isLastVisualStreaming = streamingVisual && lastMsg?.sender === 'agent' && (liveStreamForView || !!previewData);
   const channelTeamMemberIds = useMemo(() => {
     if (chatMode !== 'channel') return null;
     if (activeChannel.startsWith('group:custom:')) {
@@ -4606,7 +4651,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         {agentUnread > 0 ? (
                           <span className="min-w-[16px] h-[16px] flex items-center justify-center text-[9px] font-semibold text-white bg-red-500 rounded-full px-1 leading-none shrink-0">{agentUnread}</span>
                         ) : (
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, chatStore.isAgentStreaming(agent.id)).dotClass}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${resolveAgentStatus(agent.status, sessionStreamState.isAgentStreaming(agent.id)).dotClass}`} />
                         )}
                       </button>
                     );
@@ -5035,25 +5080,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
           {/* Session tab bar (direct mode, chat tab) — hide when only 1 session */}
           {chatMode === 'direct' && selectedAgent && mainTab === 'chat' && openSessionTabs.length > 1 && (() => {
-            // Which of THIS agent's sessions currently have an in-flight stream.
-            // Read live from the buffer manager during render;
-            // useConversationBuffers bumps its own state on every membership
-            // change, so a BACKGROUND tab's dot appears/disappears without
-            // needing the user to switch to it first.
-            const liveStreamSessions = getStreamSession(currentConvKeyRef.current);
-            const isStreamingTab = (s: ChatSessionInfo) =>
-              // 权威：本会话在这台客户端的「在途流登记簿」里。
-              (liveStreamSessions?.has(s.id) ?? false)
-              // 下面两项是**已知的信息源不一致**，暂时保留（2026-10-16）：
-              // 实测发现 getStreamSession() 登记的其实是「本客户端有没有为这个会话
-              // 挂着 SSE」——一个**传输层**登记簿，却被当成「回合是否还活着」的权威。
-              // 它的条目的生命周期由 attach/detach 驱动（进会话 reattach 时补登记、
-              // 离开时释），所以后台会话可能拿不到任何一项 → 圆点缺失。
-              // 直接删掉这两项会把「圆点闪烁」变成「圆点永久消失」（实测：点 tab 后
-              // 圆点消失且 3s 不回，而回合仍在跑）。必须先给客户端一个真正的权威
-              // （服务端 session 级流状态：推送或对打开的 tab 做有限轮询），再删。
-              || (sending && s.id === activeSessionId)
-              || (s.id === activeSessionId && hasStreamingTail(messages));
+            // 只认**服务端权威**（WS `session:stream_state` 推送 + 分钟级批量轮询兜底，
+            // 见 lib/sessionStreamState.ts）。组件顶部已订阅 `useSessionStreamRevision()`，
+            // 任何会话的存活性变化都会重渲染，后台 tab 的圆点无需先切过去。
+            //
+            // 这里曾 OR 三项本地副本：① 传输附着登记簿 `getStreamSession()`（实测它登记
+            // 的其实是「本客户端有没有为这个会话挂着 SSE」，对后台会话天然为空）；
+            // ② 视图级 `sending`；③ 当前 tab 显示缓冲的 `hasStreamingTail`。三者寿命各不
+            // 相同，正是「圆点消失但仍在输出」的来源。权威换成服务端事实后，三项全删。
+            const isStreamingTab = (s: ChatSessionInfo) => sessionStreamState.isStreaming(s.id);
             return (
             <div ref={sessionTabBarRef} className="flex items-center gap-0 px-3 overflow-x-auto scrollbar-hide">
               {openSessionTabs.map(s => {
@@ -6130,10 +6165,11 @@ function AgentStatusBadge({ agent, tasks, onViewProfile }: {
   //
   // 第二个坑：`agent.status` 与「此刻是否正在流式回复」是两个时钟。服务端只在它
   // 自己认识的长期任务上才把进程状态翻到 working，聊天回复期间往往一直是 idle；
-  // 客户端却立刻知道流已经打开（chatStore）。所以只按 agent.status 推导时，同一个
-  // agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部说空闲」。这里统一走
-  // resolveAgentStatus，把本地流式标记也算进去——头部与侧栏从此同一个判据。
-  const streamingHere = useAgentStreaming(agent.id);
+  // 而「此刻是不是在流式回复」由**服务端权威**提供（lib/sessionStreamState.ts）。只按
+  // agent.status 推导时，同一个 agent 在同一瞬间会出现「L1 侧栏说工作中、聊天头部
+  // 说空闲」；统一走 resolveAgentStatus 后，头部与侧栏是同一个判据。
+  // 与侧栏同一个权威：服务端推送/轮询喂入的 sessionStreamState（不再是本地近似）。
+  const streamingHere = useAgentSessionStreaming(agent.id);
   const status = resolveAgentStatus(agent.status, streamingHere);
   const isWorking = status.tone === 'busy';
   const isError = status.tone === 'danger';

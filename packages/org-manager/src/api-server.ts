@@ -3961,7 +3961,8 @@ export class APIServer {
       for (const sid of sessionIds) {
         streaming[sid] = this.activeStreams.getByAgentSession(agentId, sid)?.status === 'streaming';
       }
-      this.json(res, 200, { agentId, streaming });
+      // `at` = 服务端时钟：客户端据此排序（晚到的旧结果不得覆盖更新的权威状态）。
+      this.json(res, 200, { agentId, streaming, at: Date.now() });
       return;
     }
 

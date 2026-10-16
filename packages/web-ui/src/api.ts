@@ -2345,6 +2345,19 @@ export const api = {
         `/agents/${agentId}/sessions/${sessionId}/stream/status`,
       ),
     /**
+     * 批量流存活性 —— 客户端对打开的 session tab 做兜底对账时用（一次请求覆盖全部 tab）。
+     * `at` 是**服务端**时钟：客户端据此排序，晚到的旧结果不得覆盖更新的权威状态。
+     */
+    streamStatusBatch: (agentId: string, sessionIds: string[]) =>
+      request<{ agentId: string; streaming: Record<string, boolean>; at?: number }>(
+        '/sessions/stream/status',
+        {
+          method: 'POST',
+          body: JSON.stringify({ agentId, sessionIds }),
+          headers: { 'Content-Type': 'application/json' },
+        },
+      ),
+    /**
      * Reattach to an in-flight generation after page refresh.
      * Resolves on done/error; 204 means nothing active.
      */
