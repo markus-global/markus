@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.ts';
-import type { DeliverableInfo } from '../api.ts';
+import { api, wsClient, type DeliverableInfo } from '../api.ts';
+
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { DeliverableDetailModal } from './DeliverableDetailModal.tsx';
@@ -68,6 +68,74 @@ export interface ResolvedEntity {
 const cache = new Map<string, ResolvedEntity>();
 const inflight = new Map<string, Promise<ResolvedEntity>>();
 
+/**
+ * Per-id invalidation subscribers.
+ *
+ * A resolved entity's `status` is **mutable** (a task is approved, rejected,
+ * completed…), but this module's cache holds the snapshot from first render — so
+ * a card sitting in a chat bubble kept showing the status it had when the message
+ * arrived. The reported symptom was a task card still reading "pending" after the
+ * task had been rejected. The server owns the status; a WS entity event is the
+ * signal to re-read it, exactly like every other live surface in the app.
+ */
+const listeners = new Map<string, Set<() => void>>();
+
+function subscribeInvalidation(id: string, fn: () => void): () => void {
+  const set = listeners.get(id) ?? new Set<() => void>();
+  set.add(fn);
+  listeners.set(id, set);
+  return () => {
+    set.delete(fn);
+    if (set.size === 0) listeners.delete(id);
+  };
+}
+
+/** Forget an entity's cached metadata and tell every live card to re-read it. */
+export function invalidateEntity(id: string): void {
+  cache.delete(id);
+  for (const fn of listeners.get(id) ?? []) fn();
+}
+
+/**
+ * WS event types that can change an entity's displayed metadata. Deliberately
+ * excludes `agent:update` (high-frequency, and an agent card shows no mutable
+ * status) so a busy org does not thrash the cache.
+ */
+const ENTITY_EVENT_TYPES = [
+  'task:update', 'task:create',
+  'requirement:update', 'requirement:updated',
+  'deliverable:update', 'deliverable:updated',
+  'project:update', 'team:update',
+] as const;
+
+/** The entity id an event is about, across the payload shapes the server emits. */
+function entityIdFromEvent(event: { payload?: unknown }): string | undefined {
+  const p = (event?.payload ?? {}) as Record<string, unknown>;
+  for (const key of ['taskId', 'requirementId', 'deliverableId', 'projectId', 'teamId', 'id'] as const) {
+    const v = p[key];
+    if (typeof v === 'string') return v;
+  }
+  for (const nested of ['requirement', 'deliverable', 'task', 'project', 'team'] as const) {
+    const obj = p[nested] as Record<string, unknown> | undefined;
+    if (obj && typeof obj['id'] === 'string') return obj['id'] as string;
+  }
+  return undefined;
+}
+
+let wsWired = false;
+/** Subscribe once to entity WS events; each one invalidates the matching cards. */
+function wireEntityInvalidation(): void {
+  if (wsWired) return;
+  wsWired = true;
+  const onChange = (event: { payload?: unknown }) => {
+    const id = entityIdFromEvent(event);
+    if (id) invalidateEntity(id);
+  };
+  for (const type of ENTITY_EVENT_TYPES) {
+    try { wsClient.on(type, onChange); } catch { /* ws client unavailable (SSR/tests) */ }
+  }
+}
+
 async function fetchEntity(id: string, type: EntityType): Promise<ResolvedEntity> {
   const base: ResolvedEntity = { id, type, title: id, loading: false };
   try {
@@ -91,20 +159,30 @@ export function useEntityMeta(id: string, typeHint?: EntityType): ResolvedEntity
 
   useEffect(() => {
     if (!type) { setMeta({ id, type: 'task', title: id, loading: false, notFound: true }); return; }
-    const cached = cache.get(id);
-    if (cached) { setMeta(cached); return; }
-    setMeta(m => ({ ...m, type, loading: true }));
     let active = true;
-    let p = inflight.get(id);
-    if (!p) { p = fetchEntity(id, type); inflight.set(id, p); }
-    p.then(res => {
-      cache.set(id, res); inflight.delete(id);
-      if (active) setMeta(res);
-    }).catch(() => {
-      inflight.delete(id);
-      if (active) setMeta({ id, type, title: id, loading: false, notFound: true });
-    });
-    return () => { active = false; };
+
+    // `preferCache` is true on mount (paint instantly from the session cache) and
+    // false on an invalidation (the cached snapshot is the thing that went stale,
+    // so re-read from the server).
+    const load = (preferCache: boolean) => {
+      const cached = preferCache ? cache.get(id) : undefined;
+      if (cached) { setMeta(cached); return; }
+      if (preferCache) setMeta(m => ({ ...m, type, loading: true }));
+      let p = inflight.get(id);
+      if (!p) { p = fetchEntity(id, type); inflight.set(id, p); }
+      p.then(res => {
+        cache.set(id, res); inflight.delete(id);
+        if (active) setMeta(res);
+      }).catch(() => {
+        inflight.delete(id);
+        if (active) setMeta({ id, type, title: id, loading: false, notFound: true });
+      });
+    };
+
+    load(true);
+    wireEntityInvalidation();
+    const unsub = subscribeInvalidation(id, () => load(false));
+    return () => { active = false; unsub(); };
   }, [id, type]);
 
   return meta;
