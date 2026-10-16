@@ -38,6 +38,13 @@ function buildNotificationBlocks(card: SendCard): { blocks: unknown[]; text: str
     { type: 'section', text: { type: 'mrkdwn', text: card.body } },
   ];
 
+  // Origin as a context block (Slack's own "extension" slot for metadata), so a
+  // notification in a shared channel says which agent — and which team — sent it.
+  const originText = slackOriginText(card.origin);
+  if (originText) {
+    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: originText }] });
+  }
+
   const actions = (card.actions ?? []).filter((a) => a.ref);
   if (actions.length > 0) {
     blocks.push({
@@ -54,6 +61,17 @@ function buildNotificationBlocks(card: SendCard): { blocks: unknown[]; text: str
   }
 
   return { blocks, text: `${card.title}\n${card.body}` };
+}
+
+/** `来自 X · 团队 Y`, or `来自 X`, or nothing when no agent is known. */
+function slackOriginText(origin?: { agentName?: string; teamName?: string }): string | undefined {
+  const name = origin?.agentName?.trim();
+  if (!name) return undefined;
+  // Slack mrkdwn: escape the characters Slack treats as syntax so a name
+  // containing `&`, `<` or `>` cannot inject a mention/link into the message.
+  const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const team = origin?.teamName?.trim();
+  return team ? `来自 ${esc(name)} · 团队 ${esc(team)}` : `来自 ${esc(name)}`;
 }
 
 export interface SlackAdapterConfig extends CommAdapterConfig {

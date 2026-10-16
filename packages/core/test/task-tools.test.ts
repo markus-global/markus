@@ -290,6 +290,18 @@ describe('task_update', () => {
     expect(ctx.updateTaskStatus).not.toHaveBeenCalled();
   });
 
+  it('passes a title-only update through to updateTaskFields (打回 revise-title loop)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({
+      task_id: 'tsk_001',
+      title: 'alice loves bob',
+    }));
+    expect(result.status).toBe('success');
+    expect(ctx.updateTaskFields).toHaveBeenCalledWith('tsk_001', { title: 'alice loves bob' });
+    expect(ctx.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
   it('rejects empty update', async () => {
     const ctx = createMockContext();
     const tool = findTool(ctx, 'task_update');

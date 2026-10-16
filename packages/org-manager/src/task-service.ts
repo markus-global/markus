@@ -65,7 +65,7 @@ import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
 import type { ProjectService } from './project-service.js';
-import type { RequirementService } from './requirement-service.js';
+import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -534,12 +534,13 @@ export class TaskService implements ApprovalTargetPort {
    * + back to `in_progress` (this gate has no terminal rejection, so `reject`
    * means Request Changes here).
    */
-  private applyReviewGateDecision(input: {
+  private async applyReviewGateDecision(input: {
     targetId: string;
     intent: ApprovalIntent;
     actorId?: string;
+    actorName?: string;
     comment?: string;
-  }): void {
+  }): Promise<void> {
     const current = this.tasks.get(input.targetId);
     if (!current || current.status !== 'review') return;
     const reviewerId = input.actorId ?? current.reviewerId;
@@ -550,11 +551,44 @@ export class TaskService implements ApprovalTargetPort {
       return;
     }
 
-    const comment = input.comment ? ` — ${input.comment}` : '';
-    current.notes = current.notes ?? [];
-    current.notes.push(`[Review by human] Revision requested${comment}`);
+    // 打回. Same record contract as the creation gate and the requirement gate:
+    // the reviewer's decision lands as a **comment** (a human-attributed,
+    // thread-visible record) — not only as an ad-hoc note. Its delivery is owned
+    // by the status transition below (the task returns to in_progress and
+    // re-executes), so the comment is marked `decision_record`: the comment
+    // channel must not fan a SECOND notification out for the same fact.
+    const reason = input.comment?.trim();
+    const authorName =
+      input.actorName ?? this.resolveActorName(reviewerId, 'human') ?? reviewerId ?? 'reviewer';
+    const content = [
+      `**Changes requested by ${authorName}**`,
+      '',
+      reason ? reason : '_No reason was given._',
+      '',
+      'Re-opening **in_progress** — revise the task and re-submit for review when ready.',
+    ].join('\n');
+    if (!this.taskCommentRepo) {
+      throw new TaskServiceError(
+        'TASK_COMMENT_REPO_MISSING',
+        'Cannot record a changes-requested decision without a task comment repo',
+        { taskId: current.id },
+      );
+    }
+    await this.postTaskComment(
+      current.id,
+      reviewerId,
+      authorName,
+      content,
+      undefined,
+      undefined,
+      { authorType: 'human', commentKind: 'decision_record' },
+    );
+
     this.markReviewSettled(current, 'revision', reviewerId);
-    this.updateTaskStatus(current.id, 'in_progress', reviewerId, false, false, 'human', `Revision requested${comment}`);
+    this.updateTaskStatus(
+      current.id, 'in_progress', reviewerId, false, false, 'human',
+      reason ? `Revision requested — ${reason}` : 'Revision requested',
+    );
   }
 
   /**
@@ -601,7 +635,7 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /** Post a structured comment on a task. Called from both agent tools and HTTP API. */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
@@ -701,6 +735,7 @@ export class TaskService implements ApprovalTargetPort {
       };
 
       const isHuman = opts?.authorType === 'human';
+      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -737,11 +772,14 @@ export class TaskService implements ApprovalTargetPort {
         // 2. Notify task assignee as 'task_comment' — skip when assignee is
         // already reached via injectCommentIntoRunningTask (in_progress → live
         // injection) or handlePostTaskComment (terminal → session reply).
-        if (task?.assignedAgentId && !handledByInjection) {
+        // Also skipped for a *decision record*: its delivery is owned by another
+        // channel (the status transition), so fanning it out here would state the
+        // same fact twice.
+        if (task?.assignedAgentId && !handledByInjection && !isDecisionRecord) {
           enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
         }
         // 3. Notify creator (skip in_progress and terminal — same reasons)
-        if (task?.createdBy && !handledByInjection) {
+        if (task?.createdBy && !handledByInjection && !isDecisionRecord) {
           enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
         }
       }
@@ -760,7 +798,7 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -849,6 +887,7 @@ export class TaskService implements ApprovalTargetPort {
       };
 
       const isHumanReq = opts?.authorType === 'human';
+      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -878,8 +917,11 @@ export class TaskService implements ApprovalTargetPort {
         }
       }
 
-      // 2. Always notify requirement creator as 'requirement_comment'
-      if (req?.createdBy) {
+      // 2. Notify the requirement creator as 'requirement_comment' — UNLESS this is a
+      //    decision record. A 打回 comment is the durable record of a decision that
+      //    already reached the creator through its own channel (requirement_update);
+      //    re-notifying them about the record would state the same fact twice.
+      if (req?.createdBy && !isDecisionRecord) {
         enqueueFor(req.createdBy, 'requirement_comment', `New comment from ${authorName} on a requirement you created`);
       }
     }
@@ -2684,7 +2726,23 @@ export class TaskService implements ApprovalTargetPort {
       agentId: task.assignedAgentId,
       timestamp: task.createdAt,
     });
-    if (this.hitlService && request.createdBy && request.creatorRole !== 'human') {
+    // ── One creation fact ⇒ one announcement ────────────────────────────────
+    // An agent-created task that lands in `pending` is announced by the creation
+    // gate's `approval_request` (`openCreationGateApproval`), which already
+    // carries the title, the creator and the priority. Emitting the generic
+    // `task_created` bell on top of it announces the same fact twice, so the two
+    // are made **complementary**: the decision is derived once here and drives
+    // BOTH emissions, so a future edit to one branch cannot silently bring the
+    // duplicate back (the two predicates used to be written out separately).
+    const opensCreationGateApproval =
+      !!this.hitlService && request.creatorRole !== 'human' && task.status === 'pending';
+
+    if (
+      this.hitlService &&
+      request.createdBy &&
+      request.creatorRole !== 'human' &&
+      !opensCreationGateApproval
+    ) {
       this.hitlService.notify({
         targetUserId: 'all',
         type: 'task_created',
@@ -2723,8 +2781,10 @@ export class TaskService implements ApprovalTargetPort {
 
     // Request HITL approval (only for agent-created tasks that need approval).
     // The initiation lives in exactly one place so `createTask` and
-    // `requestTaskApproval` can never drift (see `openCreationGateApproval`).
-    if (this.hitlService && request.creatorRole !== 'human' && task.status === 'pending') {
+    // `requestTaskApproval` can never drift (see `openCreationGateApproval`),
+    // and it is gated by the same derived flag as the `task_created` bell above
+    // so the two announcements stay complementary.
+    if (opensCreationGateApproval) {
       this.openCreationGateApproval(task);
     }
 

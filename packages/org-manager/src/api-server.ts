@@ -79,7 +79,7 @@ import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
-import { ApprovalApplier, type ApprovalTargetPort } from './approval-apply.js';
+import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -7207,14 +7207,9 @@ EXPLANATION_END`;
       // applier, whose synchronous claim on the approval entity makes the outcome
       // exactly-once (the loser reports `already-applied` / `out-of-window`).
       const details = result.details as Record<string, unknown> | undefined;
-      const subType = details?.['subType'] as string | undefined;
+      const { subType, targetId } = targetOfApproval(details);
       const taskId = details?.['taskId'] as string | undefined;
       const requirementId = details?.['requirementId'] as string | undefined;
-      const targetId = subType === 'task' || subType === 'task_review'
-        ? taskId
-        : subType === 'requirement' || subType === 'requirement_resubmit'
-          ? requirementId
-          : undefined;
       const applier = this.ensureApprovalApplier();
       const outcome = applier
         ? await applier.apply({

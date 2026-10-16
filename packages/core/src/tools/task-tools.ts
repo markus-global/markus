@@ -82,7 +82,7 @@ export interface AgentTaskContext {
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
   /** Update task fields (description, blockedBy, reviewerId, etc.) — works even for pending tasks */
-  updateTaskFields?: (taskId: string, fields: { description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
+  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
   /** Update the schedule config for a scheduled task */
   updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
@@ -464,7 +464,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
     {
       name: 'task_update',
       description: [
-        'Update a PARENT TASK — add a progress note, change status, update description, modify blocked_by dependencies, or a combination.',
+        'Update a PARENT TASK — add a progress note, change status, update title/description, modify blocked_by dependencies, or a combination.',
         'WARNING: This tool operates on the parent task, NOT on subtasks. To complete a subtask, use subtask_complete instead.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'Task lifecycle is mostly automatic: after approval, tasks start executing automatically; when execution finishes, the system auto-transitions to review and notifies the reviewer; reviewer approval auto-completes the task; revision auto-restarts execution.',
@@ -493,6 +493,10 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             type: 'string',
             description:
               'Progress note — brief summary of what was done, what is blocked, or next steps. Highly recommended.',
+          },
+          title: {
+            type: 'string',
+            description: 'Updated task title (optional). Works on any task including pending ones — use it to revise a card after a 打回 (changes requested).',
           },
           description: {
             type: 'string',
@@ -530,6 +534,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const taskId = args['task_id'] as string;
           const newStatus = args['status'] as string | undefined;
           const note = args['note'] as string | undefined;
+          const title = args['title'] as string | undefined;
           const description = args['description'] as string | undefined;
           const blockedBy = args['blocked_by'] as string[] | undefined;
           const reviewerId = args['reviewer_id'] as string | undefined;
@@ -554,8 +559,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           }
 
           // Handle field updates first — works for any status including pending
-          if ((description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
+          if ((title !== undefined || description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
             await ctx.updateTaskFields(taskId, {
+              ...(title !== undefined ? { title } : {}),
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
               ...(reviewerId !== undefined ? { reviewerId } : {}),
@@ -673,12 +679,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           } else {
-            // No status change — note, description, and/or blocked_by update
-            if (!note && description === undefined && blockedBy === undefined && !schedule) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a description, blocked_by, or schedule.' });
+            // No status change — note, title, description, and/or blocked_by update
+            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, or schedule.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
@@ -688,7 +694,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           }
         } catch (error) {

@@ -18,12 +18,20 @@ import {
   type OutboundMessage,
   type OutboundOrigin,
 } from './outbound.js';
-import { resolveNotifyTarget, type NotifyResolution, type NotifyScope, type NotifyTarget, type NotifyTargetLookup } from './notify-route.js';
+import {
+  resolveNotifyTarget,
+  type NotifyCandidate,
+  type NotifyEligibility,
+  type NotifyResolution,
+  type NotifyScope,
+  type NotifySkipped,
+  type NotifyTarget,
+  type NotifyTargetLookup,
+} from './notify-route.js';
 import {
   normalizePriority,
   suppressionReasonFor,
   type NotifyPreferenceSource,
-  type NotifySuppressionReason,
 } from './notify-prefs.js';
 import { renderOutbound, type OutboundFormat, type RenderCapabilities, type RenderedOutbound } from './render.js';
 
@@ -93,6 +101,13 @@ export interface DispatchOutcome {
   suppressed?: boolean;
   /** Why delivery did not happen (`no-notify-target`, `sink-failed`, `notify-off-approval`, …). */
   reason?: string;
+  /**
+   * Every candidate the walk passed over, with the reason each was rejected. Set
+   * only on a full suppression, and it is the difference between "the one bot is
+   * off" and "several bots were available and every one was off" — the latter is a
+   * mis-route worth looking at, the former is an operator's deliberate setting.
+   */
+  skipped?: NotifySkipped[];
 }
 
 export interface OutboundDispatcherOptions {
@@ -123,6 +138,12 @@ export interface OutboundDispatcherOptions {
    * for a name.
    */
   agentName?: (agentId: string) => string | undefined;
+  /**
+   * Resolve the team the origin agent belongs to, so a notification can say
+   * which team it came from. Independent of {@link agentName}: a missing team
+   * never withholds the delivery nor the agent line.
+   */
+  agentTeamName?: (agentId: string) => string | undefined;
 }
 
 /** EventBus task events the dispatcher forwards by default, with their severity. */
@@ -141,7 +162,14 @@ export class OutboundDispatcher {
   private readonly digestTitle: (count: number) => string;
   private readonly actionSecret?: string;
   private readonly agentName?: (agentId: string) => string | undefined;
-  private infoBuffer: OutboundMessage[] = [];
+  private readonly agentTeamName?: (agentId: string) => string | undefined;
+  /**
+   * `info` messages waiting for a digest, each paired with the destination it
+   * already passed eligibility for. Pairing is load-bearing: re-resolving at
+   * flush time could land on a *different* bot than the one that accepted the
+   * items, and deliver the summary somewhere the operator never saw it.
+   */
+  private infoBuffer: Array<{ msg: OutboundMessage; target: NotifyTarget; scope: NotifyScope }> = [];
 
   constructor(opts: OutboundDispatcherOptions) {
     this.lookup = opts.lookup;
@@ -152,6 +180,7 @@ export class OutboundDispatcher {
     this.digestTitle = opts.digestTitle ?? ((n) => `📬 通知汇总（${n} 条）`);
     this.actionSecret = opts.actionSecret;
     this.agentName = opts.agentName;
+    this.agentTeamName = opts.agentTeamName;
   }
 
   /**
@@ -160,18 +189,19 @@ export class OutboundDispatcher {
    * outcome so a caller can see it rather than lose it in a rejected promise.
    */
   async dispatch(msg: OutboundMessage): Promise<DispatchOutcome> {
-    const resolution = this.resolve(msg.origin ?? {});
+    // ── One walk, one decision point ────────────────────────────────────────────
+    // The notification preferences are applied *inside* the walk (as its
+    // eligibility predicate), so an ineligible bot is a candidate the walk moves
+    // past rather than a dead end. Until 2026-10-16 the two were separate steps
+    // and the second one terminated: whichever bot the walk happened to land on,
+    // if its notifications were off the message was dropped — even when another
+    // configured bot could have delivered it.
+    const resolution = this.resolve(msg.origin ?? {}, msg);
     if (resolution.status === 'undelivered') return this.reportUndelivered(msg, resolution.reason);
-
-    // ── The one enforcement point for the notification preferences (design §3, R6) ──
-    // consulted immediately before any delivery, reading the *same* instance the
-    // destination came from. An `info` message that never passes here is not even
-    // buffered for the digest.
-    const suppression = suppressionReasonFor(msg, this.preferences?.preferencesFor(resolution.target));
-    if (suppression) return this.reportSuppressed(msg, resolution.matchedScope, resolution.target, suppression);
+    if (resolution.status === 'suppressed') return this.reportSuppressed(msg, resolution);
 
     if (msg.severity === 'info' && this.digestInfo) {
-      this.infoBuffer.push(msg);
+      this.infoBuffer.push({ msg, target: resolution.target, scope: resolution.matchedScope });
       return { delivered: false, digested: true, scope: resolution.matchedScope };
     }
 
@@ -181,66 +211,102 @@ export class OutboundDispatcher {
       await this.flushDigest();
     }
 
-    return this.deliver(resolution.matchedScope, resolution.target, msg);
+    return this.deliver(resolution.matchedScope, resolution.target, msg, resolution.alternatives);
   }
 
-  /** Send the buffered `info` messages as one summary. No-op when nothing is buffered. */
+  /**
+   * Send the buffered `info` messages as one summary per destination. No-op when
+   * nothing is buffered. Returns the first summary's outcome (the common case is a
+   * single destination); every summary is delivered regardless.
+   */
   async flushDigest(): Promise<DispatchOutcome | undefined> {
     if (this.infoBuffer.length === 0) return undefined;
     const items = this.infoBuffer;
     this.infoBuffer = [];
 
-    const summary: OutboundMessage = {
-      title: this.digestTitle(items.length),
-      body: items.map((m) => `• ${m.title}`).join('\n'),
-      severity: 'info',
-      origin: items.find((m) => m.origin)?.origin,
-    };
-    // Delivered directly, never re-entering the digest branch — otherwise the
-    // summary would be buffered as another info item and never sent.
-    return this.deliverResolved(summary);
+    // Group by destination — each summary goes back to the bot that accepted its
+    // items, and is delivered directly (never re-entering the digest branch,
+    // otherwise the summary would be buffered as another info item).
+    const groups = new Map<string, { target: NotifyTarget; scope: NotifyScope; msgs: OutboundMessage[] }>();
+    for (const item of items) {
+      const key = `${item.target.platform}|${item.target.instanceId ?? ''}|${item.target.receiveIdType ?? ''}|${item.target.nativeId}`;
+      const group = groups.get(key) ?? { target: item.target, scope: item.scope, msgs: [] };
+      group.msgs.push(item.msg);
+      groups.set(key, group);
+    }
+
+    let first: DispatchOutcome | undefined;
+    for (const group of groups.values()) {
+      const summary: OutboundMessage = {
+        title: this.digestTitle(group.msgs.length),
+        body: group.msgs.map((m) => `• ${m.title}`).join('\n'),
+        severity: 'info',
+        origin: group.msgs.find((m) => m.origin)?.origin,
+      };
+      const outcome = await this.deliver(group.scope, group.target, summary);
+      first ??= outcome;
+    }
+    return first;
   }
 
   /**
-   * Resolve the target and deliver — the digest path's core. It deliberately does
-   * **not** re-apply the preference filter: the digest aggregates `info` items that
-   * already passed the one enforcement point in {@link dispatch}.
-   */
-  private async deliverResolved(msg: OutboundMessage): Promise<DispatchOutcome> {
-    const resolution = this.resolve(msg.origin ?? {});
-    if (resolution.status === 'undelivered') return this.reportUndelivered(msg, resolution.reason);
-    return this.deliver(resolution.matchedScope, resolution.target, msg);
-  }
-
-  /**
-   * Record the **intentional** drop — a notification-preference switch turned this
-   * message off (R6). Observable: one outcome and one log line, so flipping a
-   * control has a visible effect instead of changing nothing. Logged at `info`
-   * (this is not an error, unlike a missing destination).
+   * Record the drop and make it legible. A suppression is *intentional* — but
+   * "intentional" only describes the case where there was one candidate and the
+   * operator switched it off. When several destinations existed and every one was
+   * rejected, that is a routing surprise, not a preference, and the log has to say
+   * which bots were considered and why each was passed over (that is precisely the
+   * information whose absence made the 2026-10-16 mis-route read as normal).
    */
   private reportSuppressed(
     msg: OutboundMessage,
-    scope: NotifyScope,
-    target: NotifyTarget,
-    reason: NotifySuppressionReason,
+    resolution: { reason: string; skipped: NotifySkipped[] },
   ): DispatchOutcome {
-    log.info('Outbound message suppressed by notification preference', {
+    log.warn('Outbound message reached no destination — every candidate was ineligible', {
       title: msg.title,
       severity: msg.severity,
       priority: msg.priority,
-      platform: target.platform,
-      instanceId: target.instanceId,
-      reason,
+      reason: resolution.reason,
+      candidatesConsidered: resolution.skipped.length,
+      considered: resolution.skipped.map((s) => ({
+        platform: s.target.platform,
+        instanceId: s.target.instanceId,
+        nativeId: s.target.nativeId,
+        reason: s.reason,
+      })),
     });
-    return { delivered: false, suppressed: true, scope, target, reason };
+    return {
+      delivered: false,
+      suppressed: true,
+      reason: resolution.reason,
+      skipped: resolution.skipped,
+    };
   }
 
   /**
    * Read-only resolution — "is this origin deliverable, and where?". Exposed so
    * Settings can show a reachability state from the *same* walk, without sending.
+   *
+   * With no `msg` the walk is **structural**: it reports the destination the
+   * message *would* prefer, ignoring per-message preferences. Callers that want a
+   * per-message verdict ("would this approval go through?") pass the message.
    */
-  resolve(origin: OutboundOrigin): NotifyResolution {
-    return resolveNotifyTarget(this.orgId, origin, this.lookup);
+  resolve(origin: OutboundOrigin, msg?: Pick<OutboundMessage, 'severity' | 'priority'>): NotifyResolution {
+    return resolveNotifyTarget(
+      this.orgId,
+      origin,
+      this.lookup,
+      msg ? this.eligibilityFor(msg) : undefined,
+    );
+  }
+
+  /**
+   * The one place a candidate is judged: may *this* message go to *that* bot?
+   * Combines the notification preferences of the candidate's own instance with the
+   * message's severity/priority. Returning a reason (rather than a boolean) is what
+   * lets the walk report *why* it passed a destination over.
+   */
+  private eligibilityFor(msg: Pick<OutboundMessage, 'severity' | 'priority'>): NotifyEligibility {
+    return (target) => suppressionReasonFor(msg, this.preferences?.preferencesFor(target));
   }
 
   /**
@@ -285,6 +351,12 @@ export class OutboundDispatcher {
     const unsubs = events.map((event) =>
       bus.on(event, (payload) => {
         const msg = taskEventToOutbound(event, payload, TASK_EVENT_MAP[event] ?? 'info');
+        // A content-free lifecycle event is not a notification — skip it rather
+        // than push a subject-less message to every chat app.
+        if (!msg) {
+          log.debug('Skipped a task event that names nothing — not a notification', { event });
+          return;
+        }
         void this.dispatch(msg).catch((err) => {
           log.error('Failed to dispatch task event', { event, error: String(err) });
         });
@@ -298,30 +370,50 @@ export class OutboundDispatcher {
   }
 
   /**
-   * Prefix the message with who sent it, when the origin agent's name is known.
+   * Stamp the message with who sent it — as **structure**, not as text.
    *
    * This is envelope, not payload: `origin.agentId` already travels for routing,
-   * and this surfaces the human-readable name so a notification landing in a
-   * shared group says *which agent* it came from instead of arriving anonymously.
-   * Applied at the single delivery point, so the card, markdown and plain-text
-   * renderings all carry it. Idempotent (never prefixed twice) and skipped
-   * entirely when the name is unknown — a message is never held back for it.
+   * and here the human-readable agent name (and its team, when it has one) are
+   * resolved onto `origin`. The renderer decides how to show it — an inline line
+   * for text platforms, its own slot for a card — so the two never disagree and
+   * nothing is written into the body that a later stage would have to parse back
+   * out. Idempotent (an already-stamped origin is left as-is) and skipped entirely
+   * when the name is unknown — a message is never held back for it.
    */
   private attribute(msg: OutboundMessage): OutboundMessage {
     const agentId = msg.origin?.agentId;
     if (!agentId) return msg;
-    const name = this.agentName?.(agentId);
+    const name = msg.origin?.agentName ?? this.agentName?.(agentId);
     if (!name) return msg;
-    const marker = `**来自**：${name}`;
-    if (msg.body.startsWith(marker)) return msg;
-    return { ...msg, origin: { ...msg.origin, agentName: name }, body: `${marker}\n\n${msg.body}` };
+    const teamName = msg.origin?.teamName ?? this.agentTeamName?.(agentId);
+    return {
+      ...msg,
+      origin: { ...msg.origin, agentId, agentName: name, ...(teamName ? { teamName } : {}) },
+    };
   }
 
   private async deliver(
     scope: NotifyScope,
     target: NotifyTarget,
     msg: OutboundMessage,
+    alternatives?: NotifyCandidate[],
   ): Promise<DispatchOutcome> {
+    // Several configured destinations and more than one of them could have carried
+    // this: say which won, so "why did the notification show up in *that* chat?"
+    // has an answer in the log instead of in the candidate ordering.
+    const otherInstanceScoped = (alternatives ?? []).filter((c) => c.scope === 'instance');
+    if (scope === 'instance' && otherInstanceScoped.length > 0) {
+      log.warn('Several notification destinations available — the first eligible one was used', {
+        title: msg.title,
+        chosen: { platform: target.platform, instanceId: target.instanceId, nativeId: target.nativeId },
+        alsoAvailable: otherInstanceScoped.map((c) => ({
+          platform: c.target.platform,
+          instanceId: c.target.instanceId,
+          nativeId: c.target.nativeId,
+        })),
+      });
+    }
+
     const caps = this.sink.capabilities(target);
     const rendered = renderOutbound(this.attribute(msg), caps);
     try {
@@ -393,20 +485,40 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   return msg;
 }
 
-/** Build an outbound message from an EventBus task event payload. */
+/**
+ * Build an outbound message from an EventBus task event payload, or `undefined`
+ * when the event carries **nothing a human could read**.
+ *
+ * This is the boundary that stops an *internal signal* from being mistaken for a
+ * *notification* (2026-10-16). The agent execution lifecycle emits
+ * `task:completed` / `task:failed` with only `{ taskId, agentId }` — a fact about
+ * the runtime, not a sentence. Synthesising a message from it produced a
+ * literally context-free `"task:completed"` pushed to Feishu (the dispatcher fell
+ * back to the raw event name as the title) and an "✓ Task" OS notification.
+ *
+ * The user-facing fact ("task ready for review", "task completed: <title>") is
+ * already owned by the status machine → HITL notification, which carries a title
+ * and a task id. A task event is therefore only forwarded when it can name the
+ * thing it is about; otherwise the dispatcher stays silent — a message with no
+ * subject is not a message.
+ */
 export function taskEventToOutbound(
   event: string,
   payload: unknown,
   severity: OutboundMessage['severity'],
-): OutboundMessage {
+): OutboundMessage | undefined {
   const p = (payload && typeof payload === 'object' ? payload : {}) as Record<string, unknown>;
-  const title = typeof p['title'] === 'string' ? (p['title'] as string) : event;
-  const body =
-    typeof p['summary'] === 'string'
+  const named = typeof p['title'] === 'string' && (p['title'] as string).trim().length > 0;
+  const summary =
+    typeof p['summary'] === 'string' && (p['summary'] as string).trim().length > 0
       ? (p['summary'] as string)
-      : typeof p['body'] === 'string'
+      : typeof p['body'] === 'string' && (p['body'] as string).trim().length > 0
         ? (p['body'] as string)
-        : title;
+        : undefined;
+  // Neither a name nor a body ⇒ an internal lifecycle signal, not a notification.
+  if (!named && !summary) return undefined;
+  const title = named ? (p['title'] as string) : event;
+  const body = summary ?? title;
   const origin: OutboundOrigin = {};
   if (typeof p['agentId'] === 'string') origin.agentId = p['agentId'] as string;
   if (typeof p['taskId'] === 'string') origin.taskId = p['taskId'] as string;

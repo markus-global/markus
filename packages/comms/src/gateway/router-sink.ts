@@ -65,6 +65,9 @@ export class RouterOutboundSink implements OutboundSink {
           ...(a.style ? { style: a.style } : {}),
           ref: a.ref,
         })),
+        // The origin travels as structure so the card places the sender (and its
+        // team) in its own slot instead of cramming it into the body text.
+        ...(rendered.origin ? { origin: rendered.origin } : {}),
       };
     }
     return this.deps.router.sendToChannel(

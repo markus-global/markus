@@ -67,6 +67,12 @@ export interface OutboundWiringOptions {
    * it, notifications are delivered unattributed rather than with a raw id.
    */
   agentName?: (agentId: string) => string | undefined;
+  /**
+   * Resolve the team an agent belongs to — shown alongside the agent so a
+   * notification says which team it came from. Optional and independent of
+   * `agentName`: a missing team never blocks a delivery.
+   */
+  agentTeamName?: (agentId: string) => string | undefined;
 }
 
 export interface OutboundWiring {
@@ -115,6 +121,8 @@ export function setupOutboundDispatch(opts: OutboundWiringOptions): OutboundWiri
     orgId,
     digestInfo: opts.digestInfo,
     actionSecret: opts.actionSecret,
+    agentName: opts.agentName,
+    agentTeamName: opts.agentTeamName,
   });
 
   const detachers: Array<() => void> = [];

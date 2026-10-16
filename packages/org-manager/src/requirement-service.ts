@@ -30,6 +30,15 @@ export interface CreateRequirementRequest {
 }
 
 /**
+ * Why a requirement comment exists. A `discussion` comment is a person talking to
+ * the thread — the creator should be told about it. A `decision_record` is a comment
+ * the platform emits **on behalf of a decision** (打回): it is the durable record of
+ * a decision that already reached the creator through its own channel, so re-firing
+ * the comment fan-out would state the same fact twice (one fact, two writers).
+ */
+export type RequirementCommentKind = 'discussion' | 'decision_record';
+
+/**
  * The platform's **existing** requirement-comment channel (owned by
  * `TaskService`). Injected as a narrow function so this service never imports the
  * task layer, and so the side effect can be asserted on directly.
@@ -40,7 +49,7 @@ export type RequirementCommentPoster = (
   authorName: string,
   content: string,
   mentions?: string[],
-  opts?: { authorType?: 'human' | 'agent' },
+  opts?: { authorType?: 'human' | 'agent'; commentKind?: RequirementCommentKind },
 ) => Promise<{ id: string }>;
 
 export class RequirementService implements ApprovalTargetPort {
@@ -518,17 +527,18 @@ export class RequirementService implements ApprovalTargetPort {
     ].join('\n');
 
     try {
-      // No auto-mention of the creator: the changes-requested decision already
-      // reaches them through their explicit mailbox message (notifyCreatorOnDecision),
-      // and a mention would fire a SECOND notification for the same fact. The
-      // comment is the durable record; the mailbox is the actionable channel.
+      // The comment is the durable record; the mailbox is the actionable channel.
+      // Two guards keep the ONE fact (「打回」) from being told twice: ① no auto-mention
+      // of the creator (the mention would fire a second notification), and
+      // ② commentKind='decision_record' — the comment channel itself must not fan the
+      // creator out again, since notifyCreatorOnDecision() already delivers the decision.
       await this.requirementCommentPoster(
         req.id,
         actorId,
         authorName,
         content,
         undefined,
-        { authorType: 'human' },
+        { authorType: 'human', commentKind: 'decision_record' },
       );
     } catch (e) {
       log.error('Failed to record the requirement changes-requested comment', { id: req.id, error: String(e) });

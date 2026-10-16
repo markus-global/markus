@@ -36,8 +36,18 @@ export function buildNotificationCard(opts: {
   title: string;
   body: string;
   actions?: NotificationCardAction[];
+  /** Who sent it — shown in the card's footnote, the origin's own slot. */
+  origin?: { agentName?: string; teamName?: string };
 }): Record<string, unknown> {
   const elements: unknown[] = [{ tag: 'div', text: { tag: 'lark_md', content: opts.body } }];
+
+  // Origin footnote (the card's extension area): the agent that produced the
+  // notification, with the team appended when it belongs to one. Structure in,
+  // not a line we asked the body to carry — so the same fact has one source.
+  const originText = originNote(opts.origin);
+  if (originText) {
+    elements.push({ tag: 'note', elements: [{ tag: 'plain_text', content: originText }] });
+  }
 
   const actions = (opts.actions ?? []).filter((a) => a.ref);
   if (actions.length > 0) {
@@ -61,6 +71,14 @@ export function buildNotificationCard(opts: {
     },
     elements,
   };
+}
+
+/** `来自 X · 团队 Y`, or `来自 X`, or nothing when no agent is known. */
+function originNote(origin?: { agentName?: string; teamName?: string }): string | undefined {
+  const name = origin?.agentName?.trim();
+  if (!name) return undefined;
+  const team = origin?.teamName?.trim();
+  return team ? `来自 ${name} · 团队 ${team}` : `来自 ${name}`;
 }
 
 /** Header words + colour per terminal status. */

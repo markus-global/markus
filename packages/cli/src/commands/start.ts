@@ -50,6 +50,7 @@ import {
   APIServer,
   HITLService,
   ApprovalApplier,
+  routeRecordedDecision,
   type NotificationPriority,
   BillingService,
   LicenseService,
@@ -1210,6 +1211,15 @@ async function startServerCore(
   taskService.setApprovalApplier(approvalApplier);
   requirementService.setApprovalApplier(approvalApplier);
   apiServer.setApprovalApplier(approvalApplier);
+  // Recording a decision routes it. The router is the inbound surfaces' common
+  // backstop: the `requestApprovalAndWait` callback above is in-memory only and
+  // dies with the process, so a card tap on an approval created before the last
+  // restart used to record "approved" while nothing moved the task (2026-10-16).
+  // Owning the routing here — at the one place a decision is written — means no
+  // surface, present or future, has to remember to apply it.
+  hitlService.setDecisionRouter(response => {
+    routeRecordedDecision(approvalApplier, response.approval, response.decision);
+  });
   // A requirement 打回 must stay observable on its own entity, so the decision
   // also lands as a requirement comment — through the existing comment channel
   // (owned by TaskService), never through a new field or table.
@@ -2440,17 +2450,16 @@ async function startServerCore(
     ws.broadcast({ type: 'agent:stopped', payload: event, timestamp: new Date().toISOString() });
   });
 
-  // Wire task completion/failure events to WS broadcast
-  eventBus.on('task:completed', (event: unknown) => {
-    const { taskId, agentId } = event as { taskId: string; agentId: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'completed', { agentId });
-  });
-  eventBus.on('task:failed', (event: unknown) => {
-    const { taskId, agentId, error } = event as { taskId: string; agentId: string; error?: string };
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcastTaskUpdate(taskId, 'failed', { agentId, error });
-  });
+  // NOTE (2026-10-16): `task:completed` / `task:failed` are **agent execution
+  // lifecycle** events — "the runtime finished running". They used to be
+  // re-broadcast here as `task:update`, which was wrong twice over: the payload
+  // carries no title (the UI/OS notification degraded to a bare "Task") and the
+  // status was a lie (a finished execution moves the task to `review`, not
+  // `completed`). The **status machine** (`task-service.broadcastStatusChange`)
+  // is the single writer of a task's user-facing status and already emits
+  // `task:update` with the real status *and* the title on every transition, so
+  // these bridges were pure counterfeit. Removed rather than enriched: one fact,
+  // one writer.
 
   // Wire system-wide events to WS broadcast
   eventBus.on('system:pause-all', (event: unknown) => {
@@ -2795,6 +2804,16 @@ async function startServerCore(
     agentName: (id) => {
       try {
         return agentManager.getAgent(id)?.config?.name;
+      } catch {
+        return undefined;
+      }
+    },
+    // …and the team it belongs to, so the notification also says which team it
+    // came from. Same rule: a missing team never holds back the delivery.
+    agentTeamName: (id) => {
+      try {
+        const teamId = agentManager.getAgent(id)?.config?.teamId;
+        return teamId ? orgService.getTeam(teamId)?.name : undefined;
       } catch {
         return undefined;
       }

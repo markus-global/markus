@@ -108,7 +108,7 @@ function createHarness(opts: { commentFailure?: boolean } = {}) {
 
   const notifySpy = vi.spyOn(hitlService, 'notify').mockReturnValue(undefined as never);
 
-  return { ts, hitlService, applier, comments, notifySpy };
+  return { ts, hitlService, applier, comments, notifySpy, agentManager };
 }
 
 /** Flush the microtask/`setImmediate` queue so `.then` callbacks and the applier settle. */
@@ -314,7 +314,7 @@ describe('验收闸 · promise 丢失后由 HTTP 兜底同一执行点', () => {
   }
 
   it('打回 ⇒ 任务离开 review 返工到 in_progress；通过 ⇒ completed', async () => {
-    const { ts, hitlService, applier } = createHarness();
+    const { ts, hitlService, applier, comments } = createHarness();
     const task = await taskInReview(ts);
     expect(task.status).toBe('review');
 
@@ -340,7 +340,38 @@ describe('验收闸 · promise 丢失后由 HTTP 兜底同一执行点', () => {
     expect(outcome).toMatchObject({ applied: true, reason: 'applied' });
     const after = ts.getTask(task.id)!;
     expect(after.status).toBe('in_progress');
-    expect((after.notes ?? []).some(n => n.includes('Revision requested'))).toBe(true);
+    // 打回的可观测记录 = 评论（人类署名 + 审批原文），与建卡闸/需求闸同口径
+    expect(comments).toHaveLength(1);
+    expect(String(comments[0]!['content'])).toContain('Changes requested');
+    expect(String(comments[0]!['content'])).toContain('写得不够清楚');
+    expect(comments[0]!['authorType']).toBe('human');
+    expect(comments[0]!['authorId']).toBe(REVIEWER);
+  });
+
+  it('验收闸打回 ⇒ 决策记录评论不再扇出：被指派人无 task_comment/mention 通知（交付归执行通道）', async () => {
+    const { ts, hitlService, applier, agentManager, comments } = createHarness();
+    const task = await taskInReview(ts);
+    const approval = hitlService.requestApproval({
+      agentId: task.assignedAgentId,
+      agentName: 'Agent A',
+      type: 'task_review',
+      title: 'Review task',
+      description: 'Review',
+      details: { taskId: task.id, subType: 'task_review' },
+    });
+    // actor ≠ task.reviewerId：否则 isReviewerDuringReview 会自行抑制，测不出新护栏
+    const assignee = agentManager.getAgent(AGENT_A);
+    assignee.enqueueToMailbox.mockClear();
+
+    await applier.apply({
+      approvalId: approval.id, subType: 'task_review', targetId: task.id,
+      intent: 'request_changes', actorId: 'user-1', comment: '不够清楚',
+    });
+
+    const types = assignee.enqueueToMailbox.mock.calls.map(c => c[0]);
+    expect(comments).toHaveLength(1);            // 记录仍在（评论）
+    expect(types).not.toContain('task_comment'); // 但不再冒充「评论通知」
+    expect(types).not.toContain('mention');
   });
 
   it('重复兜底（同一审批第二次）⇒ already-applied，状态不再变动', async () => {
@@ -508,7 +539,7 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     expect(String(comments[0]!['content'])).toContain('Changes requested by Jason Carter');
     expect(String(comments[0]!['content'])).not.toContain('user_1');
     // 人类评论打 authorType='human'（此前硬编码落 'agent'）
-    expect(comments[0]!['opts']).toEqual({ authorType: 'human' });
+    expect(comments[0]!['opts']).toEqual({ authorType: 'human', commentKind: 'decision_record' });
   });
 
   it('打回后需求未终结：仍可被直接批准（证明不是 rejected）', async () => {
@@ -582,5 +613,98 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     expect(comments).toHaveLength(1);
     expect(enqueueToMailbox.mock.calls.length).toBe(mailboxCalls);
     expect(requirements.getRequirement(req.id)!.status).toBe('pending');
+  });
+
+  it('端到端：一次打回 ⇒ 创建者恰收到 1 条 mailbox（决策型 requirement_update），不再附带评论型', async () => {
+    // 真实接线（不 stub 评论通道）：重复通知正是评论通道自己的创建者扇出造成的。
+    const hitlService = new HITLService();
+    const enqueueToMailbox = vi.fn();
+    const agentManager = {
+      hasAgent: vi.fn(() => true),
+      getAgent: vi.fn((id: string) => ({ config: { name: id }, enqueueToMailbox, sendMessage: vi.fn() })),
+    };
+    const requirements = new RequirementService();
+    requirements.setAgentManager(agentManager as never);
+    requirements.setHITLService(hitlService);
+
+    const taskService = new TaskService();
+    taskService.setAgentManager(agentManager as never);
+    taskService.setWSBroadcaster({ broadcast: vi.fn() } as never);
+    taskService.setRequirementCommentRepo({
+      add: vi.fn(async (c: Record<string, unknown>) => ({ ...c, id: 'rc-e2e', createdAt: new Date() })),
+      getByRequirement: vi.fn(() => []),
+    } as never);
+    let reqId = '';
+    taskService.setRequirementService({
+      getRequirement: vi.fn(() => ({ id: reqId, title: 'Proposal', status: 'pending', createdBy: AGENT_A })),
+    } as never);
+    requirements.setRequirementCommentPoster(
+      (requirementId, authorId, authorName, content, mentions, opts) =>
+        taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions, undefined, opts),
+    );
+
+    const applier = new ApprovalApplier(hitlService);
+    applier.registerPort(requirements);
+    requirements.setApprovalApplier(applier);
+    vi.spyOn(hitlService, 'notify').mockReturnValue(undefined as never);
+
+    const req = propose(requirements);
+    reqId = req.id;
+    const approval = hitlService.listApprovals('pending')
+      .find(a => (a.details as Record<string, unknown> | undefined)?.['requirementId'] === req.id)!;
+    expect(approval).toBeTruthy();
+    enqueueToMailbox.mockClear();
+
+    hitlService.respondToApproval(approval.id, false, 'user-1', '改一下', 'request_changes');
+    await flush();
+
+    // 恰一条：决策通道（requirement_update）。评论型不再出现。
+    expect(enqueueToMailbox.mock.calls.map(c => c[0])).toEqual(['requirement_update']);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// N. 新建任务 · 一条「创建」事实 ⇒ 恰一条通知
+//
+// 缺陷：agent 创建、落在 pending 的任务，`createTask` 连打两枪 —— 通用的
+// `task_created` 铃 + 建卡闸的 `approval_request`（后者已覆盖前者全部信息）。
+// 修法不是「先发再拦」，而是把两个发射口收成**互补**：派生一次的决策同时驱动
+// 两者，任何单边改动都无法再让重复回来。
+// ─────────────────────────────────────────────────────────────────────────────
+describe('新建任务通知 · 建卡闸与 task_created 互补，不重复', () => {
+  const typesOf = (spy: { mock: { calls: unknown[][] } }): string[] =>
+    spy.mock.calls.map(c => (c[0] as { type: string }).type);
+
+  it('agent 创建且走建卡闸（pending）⇒ 恰一条 approval_request，无 task_created', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(createDefaults({ creatorRole: 'worker', createdBy: AGENT_B }) as never);
+    expect(task.status).toBe('pending');
+    await flush();
+
+    const types = typesOf(notifySpy);
+    expect(types.filter(t => t === 'task_created')).toHaveLength(0);
+    expect(types.filter(t => t === 'approval_request')).toHaveLength(1);
+  });
+
+  it('agent 创建但无建卡闸（auto-tier，直接 in_progress）⇒ 恰一条 task_created', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(
+      createDefaults({ creatorRole: 'worker', createdBy: AGENT_B, approvedVia: 'workflow' }) as never,
+    );
+    expect(task.status).toBe('in_progress');
+    await flush();
+
+    const types = typesOf(notifySpy);
+    expect(types.filter(t => t === 'task_created')).toHaveLength(1);
+    expect(types.filter(t => t === 'approval_request')).toHaveLength(0);
+  });
+
+  it('人类创建 ⇒ 两条都不发（创建通知与建卡闸都只针对 agent 建卡）', async () => {
+    const { ts, notifySpy } = createHarness();
+    const task = ts.createTask(createDefaults({ creatorRole: 'human' }) as never);
+    expect(task.status).toBe('pending');
+    await flush();
+
+    expect(typesOf(notifySpy)).toHaveLength(0);
   });
 });
