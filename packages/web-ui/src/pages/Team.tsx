@@ -55,6 +55,7 @@ import {
   type ScrollAnchor,
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
+import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
@@ -1073,6 +1074,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   );
   const activeScrollKeyRef = useRef(activeScrollKey);
   activeScrollKeyRef.current = activeScrollKey;
+
+  // ── 输入框草稿：按视图（agent / session tab）各存一份 ──────────────────────
+  // 键与滚动记忆同源（`convKey::sessionId`），见 lib/chatDraftMemory.ts。
+  // `inputKey` = 当前 `input` 里那段文字**属于哪个视图**；它和 `activeScrollKey`
+  // 一旦分叉，就说明用户切了视图，需要「把旧视图的草稿留下、把新视图的取回来」。
+  const [inputKey, setInputKey] = useState(activeScrollKey);
+  // 单写者：store 始终镜像「当前视图 + 当前文本」这一对事实。
+  useEffect(() => {
+    chatDraftMemory.save(inputKey, input);
+  }, [input, inputKey]);
+  // 在 **render 期间**调整 state（React 官方认可的 derive-from-props 模式）：
+  // 放到 effect 里就会先画出一帧「上一个 tab 的文本出现在新 tab 里」。
+  if (inputKey !== activeScrollKey) {
+    if (input !== chatDraftMemory.peek(inputKey)) {
+      // 这一拍里 `input` 是被**外部写者**改的（导航预填 markus_nav_prefillMessage /
+      // markus_nav_chatChips 等，它们和视图切换在同一个 commit 里生效）。那是给
+      // **目标视图**准备的内容 —— 不能当作出走视图的草稿丢掉。
+      chatDraftMemory.save(activeScrollKey, input);
+    } else {
+      // 常规切换：留下旧视图的草稿，取回目标视图的（没有就是空）。
+      chatDraftMemory.save(inputKey, input);
+      setInput(chatDraftMemory.get(activeScrollKey));
+    }
+    setInputKey(activeScrollKey);
+  }
+
   /**
    * Set while a view switch is waiting to be re-positioned. Held until the
    * restore is honoured (or a user gesture / another switch supersedes it), so a
