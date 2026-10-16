@@ -376,6 +376,7 @@
       "completed": "Completed",
       "failed": "Failed",
       "rejected": "Rejected",
+      "revision": "Changes Requested",
       "cancelled": "Cancelled",
       "archived": "Archived",
       "loading": "Loading…",
