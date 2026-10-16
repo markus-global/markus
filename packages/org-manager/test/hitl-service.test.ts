@@ -53,6 +53,45 @@ describe('HITLService', () => {
     } as never);
   });
 
+  describe('notify — excludeUserIds (never notify the actor about their own action)', () => {
+    it('skips the excluded recipient while still delivering to the others', () => {
+      service.setOrgService({
+        listHumanUsers: vi.fn(() => [
+          { id: 'user-1', name: 'Alice' },
+          { id: 'user-2', name: 'Bob' },
+        ]),
+      } as never);
+
+      service.notify({
+        targetUserId: 'all',
+        type: 'requirement_decision',
+        title: 'Requirement changes requested',
+        body: 'body',
+        excludeUserIds: ['user-1'],
+      });
+
+      // The repo persists the recipient as `userId`.
+      const inserted = notificationRepo._notifications as Array<{ userId: string }>;
+      expect(inserted.map(n => n.userId)).toEqual(['user-2']);
+    });
+
+    it('persists nothing when every would-be recipient is excluded', () => {
+      service.setOrgService({
+        listHumanUsers: vi.fn(() => [{ id: 'user-1', name: 'Alice' }]),
+      } as never);
+
+      service.notify({
+        targetUserId: 'all',
+        type: 'requirement_decision',
+        title: 't',
+        body: 'b',
+        excludeUserIds: ['user-1'],
+      });
+
+      expect(notificationRepo.insert).not.toHaveBeenCalled();
+    });
+  });
+
   describe('approval flow', () => {
     it('creates approval and notifies users', () => {
       const handler = vi.fn();

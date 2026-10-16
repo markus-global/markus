@@ -137,9 +137,9 @@ describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗�
     const db = openSqlite(dbPath);
     const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v2_1') as { content: string };
     expect(row.content).toContain('invoke');
-    // 且版本推进到最新（v3 = messaging gateway data model）
+    // 且版本推进到最新（v4 = chat session title 'Main' sentinel cleanup）
     const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(ver.user_version).toBe(3);
+    expect(ver.user_version).toBe(4);
   });
 
   it('user_version 低于 2 时执行一次 purge 并升级到最新', () => {
@@ -157,6 +157,6 @@ describe('openSqlite — 一次性维护步骤版本门（v2 purge 存量清洗�
     const row = db.prepare('SELECT content FROM chat_messages WHERE id = ?').get('cm_v1_1') as { content: string };
     expect(row.content).not.toContain('invoke');
     const ver = db.prepare('PRAGMA user_version').get() as { user_version: number };
-    expect(ver.user_version).toBe(3);
+    expect(ver.user_version).toBe(4);
   });
 });

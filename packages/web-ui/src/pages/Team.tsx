@@ -134,7 +134,11 @@ function sessionTabTitle(s: ChatSessionInfo, t: TFunction): string {
  */
 function sessionTabTooltip(s: ChatSessionInfo, t: TFunction): string {
   const titled = s.title?.trim();
-  const hasOwnTitle = !!titled && titled !== 'Main';
+  // "Has a real title" is just "the title is non-empty". It used to also require
+  // `!== 'Main'`, a sentinel the storage layer fabricated — structure inferred
+  // from a payload value. The storage now leaves the title NULL when there is no
+  // real one, so the field alone is authoritative.
+  const hasOwnTitle = !!titled;
   if (s.isMain) {
     return hasOwnTitle ? `${t('page.sessionMain')} · ${titled}` : t('page.sessionMain');
   }

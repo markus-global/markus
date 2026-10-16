@@ -780,6 +780,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       ? volatile.chatContext.map(c => c.content).join('\n\n') + '\n\n'
       : '';
     const text = (retryText ?? (ctxPrefix + volatile.input)).trim();
+    // The user's own words WITHOUT the injected context-chip prefix — the server
+    // derives a clean session title from this instead of slicing the raw payload
+    // (which produced titles like `[terminal-selection] Terminal: …`).
+    const titleSource = (retryText ?? volatile.input).trim();
     if (!text && volatile.pendingImages.length === 0) return;
     if (volatile.chatMode === 'direct' && !volatile.selectedAgent) return;
     resumeChatScrollFollow();
@@ -1267,6 +1271,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             isResume: options?.isResume,
             fileNames: fileNamesToSend,
             replyTo: replyCtx,
+            titleSource,
           },
         );
         if (currentConvKeyRef.current === sendKey) {

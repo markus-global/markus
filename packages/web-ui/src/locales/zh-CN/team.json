@@ -206,6 +206,7 @@
       "taskFailed": "任务失败：{{title}}",
       "requirementApproved": "需求已批准：{{title}}",
       "requirementRejected": "需求已拒绝：{{title}}",
+      "requirementChangesRequested": "需求已打回：{{title}}",
       "mentionedYou": "{{authorName}} 提到了你",
       "groupMessage": "{{senderName}} 在 {{groupName}} 中"
     },
@@ -214,6 +215,7 @@
       "taskStatusChanged": "任务「{{title}}」状态已变为 {{status}}",
       "requirementApprovedBody": "需求「{{title}}」已批准，正在进行中。",
       "requirementRejectedBody": "需求「{{title}}」已被拒绝。{{reason}}",
+      "requirementChangesRequestedBody": "需求「{{title}}」需修改后再审批 —— 仍处于待审批状态。{{reason}}",
       "mentionPreview": "{{itemTitle}}：{{preview}}"
     },
     "approvalDesc": {

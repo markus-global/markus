@@ -1369,6 +1369,9 @@ export interface MessageStreamOptions {
   isResume?: boolean;
   fileNames?: string[];
   replyTo?: { id: string; sender: string; text: string } | null;
+  /** The user's own typed text (without injected context chips); the server derives
+   *  a clean session title from it. Omitted when the user typed nothing. */
+  titleSource?: string;
 }
 
 /**
@@ -1501,7 +1504,7 @@ export const api = {
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string; softDisconnected?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
-          signal, images, sessionId, isRetry, isResume, fileNames, replyTo,
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource,
         } = options ?? {};
         // Set only once we actually saw the terminal `done` event. Its absence is
         // exactly the soft-disconnect signal: the browser dropped the SSE (page
@@ -1533,6 +1536,7 @@ export const api = {
               isRetry: isRetry || undefined,
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
+              titleSource: titleSource || undefined,
             }),
             signal,
           });

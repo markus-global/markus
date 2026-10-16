@@ -80,6 +80,7 @@ import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import { ApprovalApplier, type ApprovalTargetPort } from './approval-apply.js';
+import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
 import type { LicenseService } from './license-service.js';
@@ -2148,7 +2149,7 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      const title = !session.title ? userMessage.slice(0, 60) : undefined;
+      const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
         session.id,
@@ -2158,7 +2159,7 @@ export class APIServer {
         tokensUsed,
         metadata
       );
-      await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+      if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
     }
@@ -2821,6 +2822,7 @@ export class APIServer {
     sessionId?: string | null,
     replyTo?: { id: string; sender: string; text: string } | null,
     extraMeta?: Record<string, unknown>,
+    titleSource?: string,
   ): Promise<{ sessionId: string; messageId: string } | null> {
     if (!this.storage) return null;
     try {
@@ -2831,7 +2833,7 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
-      const title = !session!.title ? userMessage.slice(0, 60) : undefined;
+      const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       if (images?.length) meta.images = images;
       if (replyTo) {
@@ -4791,6 +4793,9 @@ export class APIServer {
         // conversation it was in.
 
         const userText = body['text'] as string;
+        // The user's own typed words (without injected context chips), used to
+        // derive a clean session title. Absent for retries / non-UI clients.
+        const titleSource = typeof body['titleSource'] === 'string' ? body['titleSource'] : undefined;
         // Persist user-attached files (any type incl. pasted images) to local
         // disk under ~/.markus so the agent gets a real path anchor.
         const persistedAttachments = persistChatImages(images, fileNames, agentId!);
@@ -4804,7 +4809,7 @@ export class APIServer {
 
         if (inject) {
           if (this.storage && sessionId) {
-            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo);
+            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, undefined, titleSource);
           }
           agent.injectFollowUp(agentText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
@@ -4816,7 +4821,7 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
-          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo);
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, undefined, titleSource);
           // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
           // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
           // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在

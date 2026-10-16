@@ -79,6 +79,14 @@
   "approving": "Aprobación…",
   "rejecting": "Rechazo…",
   "loadingEllipsis": "Cargando…",
+  "approvalStatus": {
+    "pending": "Pendiente",
+    "approved": "Aprobada",
+    "changes_requested": "Cambios solicitados",
+    "rejected": "Rechazada",
+    "cancelled": "Cancelada",
+    "expired": "Expirada"
+  },
   "status": {
     "pending": "Pendiente",
     "approved": "Aprobado",

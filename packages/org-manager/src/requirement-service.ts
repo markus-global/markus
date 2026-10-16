@@ -40,6 +40,7 @@ export type RequirementCommentPoster = (
   authorName: string,
   content: string,
   mentions?: string[],
+  opts?: { authorType?: 'human' | 'agent' },
 ) => Promise<{ id: string }>;
 
 export class RequirementService implements ApprovalTargetPort {
@@ -194,7 +195,7 @@ export class RequirementService implements ApprovalTargetPort {
       return;
     }
     // request_changes | needs_adjustment → 打回
-    await this.markChangesRequested(req, actor, input.comment);
+    await this.markChangesRequested(req, actor, input.comment, input.actorName);
   }
 
   /** Route a resolved decision to the single execution point. Never silent. */
@@ -250,7 +251,10 @@ export class RequirementService implements ApprovalTargetPort {
         targetId: req.id,
         intent: result.intent,
         actorId: result.respondedBy ?? 'hitl',
-        actorName: creatorName,
+        // The DECISION-maker, not the creator: a 打回 comment must be attributed to
+        // whoever responded in the UI, resolved to a display name (a human's id is
+        // not a name). Previously this leaked `creatorName`.
+        actorName: this.resolveActorName(result.respondedBy, 'human') ?? result.respondedBy,
         comment: result.comment,
       });
     }).catch(err => {
@@ -489,7 +493,7 @@ export class RequirementService implements ApprovalTargetPort {
    * of "a reviewer asked for changes" lives in those two signals, not in a status
    * marker.
    */
-  async markChangesRequested(req: Requirement, actorId: string, feedback?: string): Promise<Requirement> {
+  async markChangesRequested(req: Requirement, actorId: string, feedback?: string, actorName?: string): Promise<Requirement> {
     const now = new Date().toISOString();
     req.updatedAt = now;
 
@@ -499,7 +503,11 @@ export class RequirementService implements ApprovalTargetPort {
       );
     }
 
-    const authorName = this.resolveAgentName(actorId) ?? actorId;
+    // Resolve a DISPLAY name for the reviewer — a human's raw id (user_…) is not
+    // a name. `input.actorName` (already resolved by the caller) wins; otherwise
+    // resolve through the shared actor-name resolver, which covers humans too.
+    const authorName =
+      actorName ?? this.resolveActorName(actorId, 'human') ?? this.resolveActorName(actorId, 'agent') ?? actorId;
     const reason = feedback?.trim();
     const content = [
       `**Changes requested by ${authorName}**`,
@@ -510,12 +518,17 @@ export class RequirementService implements ApprovalTargetPort {
     ].join('\n');
 
     try {
+      // No auto-mention of the creator: the changes-requested decision already
+      // reaches them through their explicit mailbox message (notifyCreatorOnDecision),
+      // and a mention would fire a SECOND notification for the same fact. The
+      // comment is the durable record; the mailbox is the actionable channel.
       await this.requirementCommentPoster(
         req.id,
         actorId,
         authorName,
         content,
-        req.createdBy ? [req.createdBy] : undefined,
+        undefined,
+        { authorType: 'human' },
       );
     } catch (e) {
       log.error('Failed to record the requirement changes-requested comment', { id: req.id, error: String(e) });
@@ -975,28 +988,28 @@ export class RequirementService implements ApprovalTargetPort {
         body,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
+        // Don't ring the bell for the person who just made the decision.
+        excludeUserIds: decidedBy ? [decidedBy] : undefined,
         metadata: {
           requirementId: req.id,
           decision,
           createdBy: creatorId,
-          // No string-table entry exists for the third state yet (the frontend
-          // card carries its own strings), so the block is omitted rather than
-          // falling through to the *rejected* keys — which would tell the reader
-          // the requirement had been rejected.
-          ...(decision === 'changes_requested'
-            ? {}
-            : {
-                i18n: {
-                  titleKey: decision === 'approved'
-                    ? 'notifications.titles.requirementApproved'
-                    : 'notifications.titles.requirementRejected',
-                  titleParams: { title: req.title },
-                  bodyKey: decision === 'approved'
-                    ? 'notifications.bodies.requirementApprovedBody'
-                    : 'notifications.bodies.requirementRejectedBody',
-                  bodyParams: { title: req.title, reason: reason ?? '' },
-                },
-              }),
+          // All three outcomes carry real string-table entries now, so the bell
+          // and the card render the same localized text (no English fallback).
+          i18n: {
+            titleKey: decision === 'approved'
+              ? 'notifications.titles.requirementApproved'
+              : decision === 'rejected'
+                ? 'notifications.titles.requirementRejected'
+                : 'notifications.titles.requirementChangesRequested',
+            titleParams: { title: req.title },
+            bodyKey: decision === 'approved'
+              ? 'notifications.bodies.requirementApprovedBody'
+              : decision === 'rejected'
+                ? 'notifications.bodies.requirementRejectedBody'
+                : 'notifications.bodies.requirementChangesRequestedBody',
+            bodyParams: { title: req.title, reason: reason ?? '' },
+          },
         },
       });
     }

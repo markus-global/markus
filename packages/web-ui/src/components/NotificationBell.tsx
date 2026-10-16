@@ -146,6 +146,29 @@ export function notifBody(n: NotificationInfo, t: TFunction): string {
   return t(`team:${i18n.bodyKey}`, { ...params, defaultValue: n.body });
 }
 
+/**
+ * How an approval status is *displayed* — dot colour and label colour — in ONE
+ * place. Two list renderings used to inline this ternary each; a single map
+ * means the two can never drift apart.
+ */
+function approvalStatusTone(status: string): { dot: string; text: string } {
+  if (status === 'approved') return { dot: 'bg-green-500', text: 'text-green-500' };
+  if (status === 'cancelled' || status === 'expired') return { dot: 'bg-gray-400', text: 'text-fg-muted' };
+  // pending / changes_requested / rejected all read as "needs attention".
+  return { dot: 'bg-red-500', text: 'text-red-500' };
+}
+
+/**
+ * Approval statuses live in their OWN namespace (`approvalStatus.*`), separate
+ * from the task/requirement status space (`common:status.*`). The two spaces have
+ * different vocabularies — `changes_requested` exists only on the approval side —
+ * and sharing one dictionary is exactly what let a missing key render as the raw
+ * English token in the bell.
+ */
+export function approvalStatusLabel(status: string, t: TFunction): string {
+  return t(`common:approvalStatus.${status}`, { defaultValue: status });
+}
+
 function playNotificationSound() {
   try {
     const ctx = new AudioContext();
@@ -1064,11 +1087,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                       {historyList.slice(0, 50).map(a => (
                         <button key={a.id} onClick={() => isUserInputApproval(a) ? setModalApproval(a) : navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors group">
                           <div className="flex items-center gap-2">
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'bg-gray-400' : 'bg-red-500'}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${approvalStatusTone(a.status).dot}`} />
                             {approvalTypeLabel(a) && <span className="text-[10px] text-fg-tertiary font-medium shrink-0">{approvalTypeLabel(a)}</span>}
                             <span className="text-xs text-fg-secondary truncate flex-1 group-hover:text-fg-primary">{a.title}</span>
-                            <span className={`text-[10px] font-medium shrink-0 ${a.status === 'approved' ? 'text-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'text-fg-muted' : 'text-red-500'}`}>
-                              {t(`common:status.${a.status}`, { defaultValue: a.status })}
+                            <span className={`text-[10px] font-medium shrink-0 ${approvalStatusTone(a.status).text}`}>
+                              {approvalStatusLabel(a.status, t)}
                             </span>
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5 pl-3.5">
@@ -1399,9 +1422,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                       {historyList.slice(0, 50).map(a => (
                         <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors">
                           <div className="flex items-center gap-2">
-                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${a.status === 'approved' ? 'bg-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'bg-gray-400' : 'bg-red-500'}`} />
+                            <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${approvalStatusTone(a.status).dot}`} />
                             <span className="text-xs text-fg-secondary truncate flex-1">{a.title}</span>
-                            <span className={`text-[10px] font-medium shrink-0 ${a.status === 'approved' ? 'text-green-500' : a.status === 'cancelled' || a.status === 'expired' ? 'text-fg-muted' : 'text-red-500'}`}>{t(`common:status.${a.status}`, { defaultValue: a.status })}</span>
+                            <span className={`text-[10px] font-medium shrink-0 ${approvalStatusTone(a.status).text}`}>{approvalStatusLabel(a.status, t)}</span>
                           </div>
                           <div className="flex items-center gap-1.5 mt-0.5 pl-3.5">
                             <span className="text-[10px] text-fg-muted truncate">{approvalSourceLabel(a)}</span>
