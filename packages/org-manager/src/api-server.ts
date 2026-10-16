@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
@@ -125,6 +125,26 @@ import {
 } from './agent-conservator.js';
 
 const log = createLogger('api-server');
+
+// ── Response compression (single implementation point) ──────────────────────
+// Both the JSON API outlet (`json`) and static-asset serving compress through
+// these helpers so the encoding rules live in exactly one place.
+// Below COMPRESS_MIN_BYTES the fixed overhead of gzip/br is not worthwhile.
+const COMPRESS_MIN_BYTES = 1024;
+
+/** Pick the best content-encoding a client accepts for a body of `size` bytes, or null to send raw. */
+function pickContentEncoding(acceptEncoding: string | undefined, size: number): 'br' | 'gzip' | null {
+  if (size < COMPRESS_MIN_BYTES) return null;
+  const accept = (acceptEncoding ?? '').toLowerCase();
+  if (accept.includes('br')) return 'br';
+  if (accept.includes('gzip')) return 'gzip';
+  return null;
+}
+
+/** Encode a body buffer with the chosen content-encoding. */
+function encodeBody(body: Buffer, encoding: 'br' | 'gzip'): Buffer {
+  return encoding === 'br' ? brotliCompressSync(body) : gzipSync(body);
+}
 
 /** One top-level entry of an agent directory, as reported to the storage panel. */
 interface AgentStorageSubItem {
@@ -14189,13 +14209,16 @@ EXPLANATION_END`;
     const cacheControl = opts?.cacheControl ?? (ext === 'html' ? 'no-cache' : 'public, max-age=31536000, immutable');
 
     const COMPRESSIBLE = new Set(['html', 'js', 'mjs', 'css', 'json', 'svg', 'map']);
-    const acceptEncoding = req?.headers?.['accept-encoding'] ?? '';
-    if (COMPRESSIBLE.has(ext) && body.byteLength > 1024 && typeof acceptEncoding === 'string' && acceptEncoding.includes('gzip')) {
-      const compressed = gzipSync(body);
+    const acceptEncoding = req?.headers?.['accept-encoding'];
+    const encoding = COMPRESSIBLE.has(ext)
+      ? pickContentEncoding(typeof acceptEncoding === 'string' ? acceptEncoding : undefined, body.byteLength)
+      : null;
+    if (encoding) {
+      const compressed = encodeBody(body, encoding);
       res.writeHead(200, {
         'Content-Type': contentType,
         'Content-Length': compressed.byteLength,
-        'Content-Encoding': 'gzip',
+        'Content-Encoding': encoding,
         'Cache-Control': cacheControl,
         'Vary': 'Accept-Encoding',
       });
@@ -14335,8 +14358,28 @@ EXPLANATION_END`;
   }
 
   json(res: ServerResponse, status: number, data: unknown): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    // 204/304 are bodyless by spec.
+    if (status === 204 || status === 304) {
+      res.writeHead(status);
+      res.end();
+      return;
+    }
+    const payload = Buffer.from(JSON.stringify(data));
+    const accept = (res as { req?: IncomingMessage }).req?.headers?.['accept-encoding'];
+    const encoding = pickContentEncoding(typeof accept === 'string' ? accept : undefined, payload.byteLength);
+    if (encoding) {
+      const encoded = encodeBody(payload, encoding);
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        'Content-Encoding': encoding,
+        'Content-Length': encoded.byteLength,
+        'Vary': 'Accept-Encoding',
+      });
+      res.end(encoded);
+      return;
+    }
+    res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': payload.byteLength });
+    res.end(payload);
   }
 
   readBody(req: IncomingMessage): Promise<Record<string, unknown>> {
