@@ -242,7 +242,7 @@ const VOCABULARY: Record<string, Record<string, string>> = {
   'common.status.online': { en: 'Online', zh: '在线', es: 'En línea' },
   'common.status.verified': { en: 'Verified', zh: '已验证', es: 'Verificado' },
   'common.status.outdated': { en: 'Outdated', zh: '已过期', es: 'Desactualizado' },
-  'common.status.expired': { en: 'Expired', zh: '已过期', es: 'Gastos' },
+  'common.status.expired': { en: 'Expired', zh: '已过期', es: 'Expirado' },
 };
 
 /** The task priority words, for a param embedded in a sentence. */
