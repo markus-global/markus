@@ -150,3 +150,69 @@ export class ApprovalApplier {
     }
   }
 }
+
+/**
+ * Derive an approval's routable target from its **own** `details`.
+ *
+ * One reader of the details→target contract: which id a gate is keyed on is a
+ * property of the approval, not of the surface that answered it. Two copies of
+ * this mapping is how one surface ends up applying nothing while another works.
+ * Unknown gates return an empty target — the applier reports `unrouted` rather
+ * than guessing at some other id lying around in the payload.
+ */
+export function targetOfApproval(details: Record<string, unknown> | undefined): {
+  subType: string;
+  targetId: string;
+} {
+  const d = details ?? {};
+  const subType = typeof d['subType'] === 'string' ? (d['subType'] as string) : '';
+  const candidate =
+    subType === 'task' || subType === 'task_review'
+      ? d['taskId']
+      : subType === 'requirement' || subType === 'requirement_resubmit'
+        ? d['requirementId']
+        : undefined;
+  return { subType, targetId: typeof candidate === 'string' ? candidate : '' };
+}
+
+/**
+ * Route an **already recorded** decision to its gate.
+ *
+ * Called by the composition root from HITLService's decision router, i.e. by the
+ * single point where a decision is *written* — so no inbound surface (HTTP, a
+ * platform card tap, a future transport) has to remember to apply it. The
+ * applier's synchronous claim keeps this exactly-once alongside the
+ * `requestApprovalAndWait` callback when that callback is still alive.
+ *
+ * Never throws: an unrouted or failed apply is reported by the applier itself.
+ */
+export function routeRecordedDecision(
+  applier: ApprovalApplier,
+  approval: {
+    id: string;
+    details?: Record<string, unknown>;
+    respondedBy?: string;
+    responseComment?: string;
+  },
+  decision: { intent: ApprovalIntent },
+  opts?: { actorId?: string; comment?: string },
+): void {
+  const { subType, targetId } = targetOfApproval(approval.details);
+  void applier
+    .apply({
+      approvalId: approval.id,
+      subType,
+      targetId,
+      intent: decision.intent,
+      actorId: opts?.actorId ?? approval.respondedBy,
+      comment: opts?.comment ?? approval.responseComment,
+    })
+    .catch(err =>
+      log.error('Routing a recorded approval decision threw unexpectedly', {
+        approvalId: approval.id,
+        subType,
+        targetId,
+        error: String(err),
+      }),
+    );
+}

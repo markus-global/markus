@@ -4,7 +4,7 @@ export { APIServer } from './api-server.js';
 export { WSBroadcaster } from './ws-server.js';
 export { HITLService, type NotificationPriority } from './hitl-service.js';
 export type { ApprovalRequest, ApprovalResponse, Notification } from './hitl-service.js';
-export { ApprovalApplier, APPROVAL_GATE_SUB_TYPES } from './approval-apply.js';
+export { ApprovalApplier, APPROVAL_GATE_SUB_TYPES, routeRecordedDecision, targetOfApproval } from './approval-apply.js';
 export type {
   ApprovalApplyInput,
   ApprovalApplyOutcome,

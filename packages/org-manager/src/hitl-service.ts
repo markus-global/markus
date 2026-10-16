@@ -308,6 +308,19 @@ export class HITLService {
     string,
     (result: ApprovalDecision) => void
   >();
+  /**
+   * The router that drives a **recorded decision** to its gate.
+   *
+   * Set once by the composition root. Deliberately owned by this service rather
+   * than by any inbound surface: recording a decision and applying it must not be
+   * two independent obligations, because a surface that honours only the first
+   * one fails **silently** — the 2026-10-16 Feishu card tap that recorded
+   * "approved" while the task stayed `pending`, because the only thing that knew
+   * how to apply it was an in-memory promise that had died with the last restart.
+   * Routing at the single point where a decision is written makes that omission
+   * unrepresentable for every surface, present and future.
+   */
+  private decisionRouter?: (response: ApprovalResponse) => void;
   private notificationHandlers: NotificationHandler[] = [];
   /**
    * Channel-level consumers — the outbound gateway. Deliberately a **separate**
@@ -353,8 +366,15 @@ export class HITLService {
     }
   }
 
-  setApprovalRepo(repo: ApprovalRepo): void {
-    this.approvalRepo = repo;
+  /**
+   * Wire the router that applies a recorded decision to its gate. Called once by
+   * the composition root; see {@link decisionRouter} for why it lives here.
+   */
+  setDecisionRouter(router: (response: ApprovalResponse) => void): void {
+    this.decisionRouter = router;
+  }
+
+  setApprovalRepo(repo: ApprovalRepo): void {    this.approvalRepo = repo;
     // Restore persisted approvals into memory on startup
     try {
       const rows = repo.list();
@@ -585,7 +605,17 @@ export class HITLService {
         ...(decision.unknownOption ? { unknownOption: decision.unknownOption } : {}),
       });
     }
-    return { approval, decision };
+
+    // Route the recorded decision to its gate. Queued as a microtask so a live
+    // waiter's callback — queued the instant `resolve` ran, just above — reaches
+    // the applier's synchronous claim first; the router then loses the claim and
+    // reports `already-applied`. Either way the target moves exactly once, and a
+    // decision still moves it when the waiter died with an earlier process.
+    const response: ApprovalResponse = { approval, decision };
+    if (this.decisionRouter) {
+      queueMicrotask(() => this.decisionRouter?.(response));
+    }
+    return response;
   }
 
   /**

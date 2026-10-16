@@ -50,6 +50,7 @@ import {
   APIServer,
   HITLService,
   ApprovalApplier,
+  routeRecordedDecision,
   type NotificationPriority,
   BillingService,
   LicenseService,
@@ -1210,6 +1211,15 @@ async function startServerCore(
   taskService.setApprovalApplier(approvalApplier);
   requirementService.setApprovalApplier(approvalApplier);
   apiServer.setApprovalApplier(approvalApplier);
+  // Recording a decision routes it. The router is the inbound surfaces' common
+  // backstop: the `requestApprovalAndWait` callback above is in-memory only and
+  // dies with the process, so a card tap on an approval created before the last
+  // restart used to record "approved" while nothing moved the task (2026-10-16).
+  // Owning the routing here — at the one place a decision is written — means no
+  // surface, present or future, has to remember to apply it.
+  hitlService.setDecisionRouter(response => {
+    routeRecordedDecision(approvalApplier, response.approval, response.decision);
+  });
   // A requirement 打回 must stay observable on its own entity, so the decision
   // also lands as a requirement comment — through the existing comment channel
   // (owned by TaskService), never through a new field or table.
