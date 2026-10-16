@@ -65,7 +65,7 @@ import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
 import type { ProjectService } from './project-service.js';
-import type { RequirementService } from './requirement-service.js';
+import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { homedir } from 'node:os';
@@ -760,7 +760,7 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -849,6 +849,7 @@ export class TaskService implements ApprovalTargetPort {
       };
 
       const isHumanReq = opts?.authorType === 'human';
+      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'requirement_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -878,8 +879,11 @@ export class TaskService implements ApprovalTargetPort {
         }
       }
 
-      // 2. Always notify requirement creator as 'requirement_comment'
-      if (req?.createdBy) {
+      // 2. Notify the requirement creator as 'requirement_comment' — UNLESS this is a
+      //    decision record. A 打回 comment is the durable record of a decision that
+      //    already reached the creator through its own channel (requirement_update);
+      //    re-notifying them about the record would state the same fact twice.
+      if (req?.createdBy && !isDecisionRecord) {
         enqueueFor(req.createdBy, 'requirement_comment', `New comment from ${authorName} on a requirement you created`);
       }
     }

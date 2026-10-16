@@ -1144,6 +1144,52 @@ describe('TaskService', () => {
       const agentB = agentManager.getAgent(AGENT_B);
       expect(agentB.enqueueToMailbox).toHaveBeenCalled();
     });
+
+    it('决策记录型评论（打回）不再给创建者发评论通知 —— 决策通道已告知同一事实', async () => {
+      // 一次打回：决策通道发 requirement_update；同一次动作落下的「记录型评论」若
+      // 再触发评论扇出，同一事实就有两个写者 —— 这正是被修的重复通知。
+      ts.setRequirementCommentRepo({
+        add: vi.fn().mockResolvedValue({
+          id: 'rc-3', requirementId: 'req-1', authorId: 'user-1', authorName: 'Jason Carter',
+          authorType: 'human', content: 'Changes requested', createdAt: new Date(),
+        }),
+        getByRequirement: vi.fn(() => []),
+      } as never);
+      ts.setRequirementService({
+        getRequirement: vi.fn(() => ({ id: 'req-1', title: 'Req', status: 'pending', createdBy: AGENT_B })),
+      } as never);
+      const agentB = agentManager.getAgent(AGENT_B);
+      agentB.enqueueToMailbox.mockClear();
+
+      await ts.postRequirementComment('req-1', 'user-1', 'Jason Carter', 'Changes requested', undefined, undefined, {
+        authorType: 'human', commentKind: 'decision_record',
+      });
+
+      const types = agentB.enqueueToMailbox.mock.calls.map(c => c[0]);
+      expect(types).not.toContain('requirement_comment');
+      expect(types).not.toContain('mention');
+      expect(types).toHaveLength(0);
+    });
+
+    it('普通讨论评论仍通知创建者（回归护栏：抑制只针对决策记录）', async () => {
+      ts.setRequirementCommentRepo({
+        add: vi.fn().mockResolvedValue({
+          id: 'rc-4', requirementId: 'req-1', authorId: 'user-1', authorName: 'Jason Carter',
+          authorType: 'human', content: 'A question', createdAt: new Date(),
+        }),
+        getByRequirement: vi.fn(() => []),
+      } as never);
+      ts.setRequirementService({
+        getRequirement: vi.fn(() => ({ id: 'req-1', title: 'Req', status: 'pending', createdBy: AGENT_B })),
+      } as never);
+      const agentB = agentManager.getAgent(AGENT_B);
+      agentB.enqueueToMailbox.mockClear();
+
+      await ts.postRequirementComment('req-1', 'user-1', 'Jason Carter', 'A question');
+
+      const types = agentB.enqueueToMailbox.mock.calls.map(c => c[0]);
+      expect(types).toContain('requirement_comment');
+    });
   });
 
   describe('scheduling and recurrence', () => {

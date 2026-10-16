@@ -508,7 +508,7 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     expect(String(comments[0]!['content'])).toContain('Changes requested by Jason Carter');
     expect(String(comments[0]!['content'])).not.toContain('user_1');
     // 人类评论打 authorType='human'（此前硬编码落 'agent'）
-    expect(comments[0]!['opts']).toEqual({ authorType: 'human' });
+    expect(comments[0]!['opts']).toEqual({ authorType: 'human', commentKind: 'decision_record' });
   });
 
   it('打回后需求未终结：仍可被直接批准（证明不是 rejected）', async () => {
@@ -582,5 +582,52 @@ describe('需求闸 · 打回不落终态（第三个闸门的目标状态必须
     expect(comments).toHaveLength(1);
     expect(enqueueToMailbox.mock.calls.length).toBe(mailboxCalls);
     expect(requirements.getRequirement(req.id)!.status).toBe('pending');
+  });
+
+  it('端到端：一次打回 ⇒ 创建者恰收到 1 条 mailbox（决策型 requirement_update），不再附带评论型', async () => {
+    // 真实接线（不 stub 评论通道）：重复通知正是评论通道自己的创建者扇出造成的。
+    const hitlService = new HITLService();
+    const enqueueToMailbox = vi.fn();
+    const agentManager = {
+      hasAgent: vi.fn(() => true),
+      getAgent: vi.fn((id: string) => ({ config: { name: id }, enqueueToMailbox, sendMessage: vi.fn() })),
+    };
+    const requirements = new RequirementService();
+    requirements.setAgentManager(agentManager as never);
+    requirements.setHITLService(hitlService);
+
+    const taskService = new TaskService();
+    taskService.setAgentManager(agentManager as never);
+    taskService.setWSBroadcaster({ broadcast: vi.fn() } as never);
+    taskService.setRequirementCommentRepo({
+      add: vi.fn(async (c: Record<string, unknown>) => ({ ...c, id: 'rc-e2e', createdAt: new Date() })),
+      getByRequirement: vi.fn(() => []),
+    } as never);
+    let reqId = '';
+    taskService.setRequirementService({
+      getRequirement: vi.fn(() => ({ id: reqId, title: 'Proposal', status: 'pending', createdBy: AGENT_A })),
+    } as never);
+    requirements.setRequirementCommentPoster(
+      (requirementId, authorId, authorName, content, mentions, opts) =>
+        taskService.postRequirementComment(requirementId, authorId, authorName, content, mentions, undefined, opts),
+    );
+
+    const applier = new ApprovalApplier(hitlService);
+    applier.registerPort(requirements);
+    requirements.setApprovalApplier(applier);
+    vi.spyOn(hitlService, 'notify').mockReturnValue(undefined as never);
+
+    const req = propose(requirements);
+    reqId = req.id;
+    const approval = hitlService.listApprovals('pending')
+      .find(a => (a.details as Record<string, unknown> | undefined)?.['requirementId'] === req.id)!;
+    expect(approval).toBeTruthy();
+    enqueueToMailbox.mockClear();
+
+    hitlService.respondToApproval(approval.id, false, 'user-1', '改一下', 'request_changes');
+    await flush();
+
+    // 恰一条：决策通道（requirement_update）。评论型不再出现。
+    expect(enqueueToMailbox.mock.calls.map(c => c[0])).toEqual(['requirement_update']);
   });
 });
