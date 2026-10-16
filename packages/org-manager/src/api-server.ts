@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
 import { gzipSync, brotliCompressSync } from 'node:zlib';
@@ -14381,7 +14382,19 @@ EXPLANATION_END`;
       return;
     }
     const payload = Buffer.from(JSON.stringify(data));
-    const accept = (res as { req?: IncomingMessage }).req?.headers?.['accept-encoding'];
+    const req = (res as { req?: IncomingMessage }).req;
+    // Content-addressed ETag + "revalidate every time": repeated GETs of unchanged
+    // data cost a 304 round-trip instead of reshipping the body; changed data is
+    // always delivered fresh. `private` keeps authenticated payloads out of shared caches.
+    const etag = `"${createHash('sha1').update(payload).digest('hex')}"`;
+    const ifNoneMatch = req?.headers?.['if-none-match'];
+    if (status === 200 && typeof ifNoneMatch === 'string'
+      && ifNoneMatch.split(',').some(tag => tag.trim() === etag)) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    const accept = req?.headers?.['accept-encoding'];
     const encoding = pickContentEncoding(typeof accept === 'string' ? accept : undefined, payload.byteLength);
     if (encoding) {
       const encoded = encodeBody(payload, encoding);
@@ -14390,11 +14403,18 @@ EXPLANATION_END`;
         'Content-Encoding': encoding,
         'Content-Length': encoded.byteLength,
         'Vary': 'Accept-Encoding',
+        'ETag': etag,
+        'Cache-Control': 'private, no-cache',
       });
       res.end(encoded);
       return;
     }
-    res.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': payload.byteLength });
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': payload.byteLength,
+      'ETag': etag,
+      'Cache-Control': 'private, no-cache',
+    });
     res.end(payload);
   }
 
