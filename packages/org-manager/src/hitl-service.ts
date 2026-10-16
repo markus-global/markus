@@ -738,6 +738,13 @@ export class HITLService {
     actionType?: NotificationActionType;
     actionTarget?: string;
     metadata?: Record<string, unknown>;
+    /**
+     * Recipients to skip. The canonical use is "do not notify the actor about
+     * their own action" — a reviewer should not get a bell for a decision they
+     * just made. Kept here (the single fan-out point) so every caller shares one
+     * rule instead of hand-filtering after the fact.
+     */
+    excludeUserIds?: string[];
   }): Notification {
     let targetUserIds: string[];
     if (opts.targetUserId === 'all') {
@@ -750,6 +757,20 @@ export class HITLService {
       }
     } else {
       targetUserIds = [opts.targetUserId];
+    }
+
+    if (opts.excludeUserIds?.length) {
+      const skip = new Set(opts.excludeUserIds);
+      targetUserIds = targetUserIds.filter(id => !skip.has(id));
+    }
+
+    // Everyone who could be reached is the actor → nothing to persist. Still emit
+    // the single channel-level event ("one logical event ⇒ one channel message")
+    // and hand back a built notification so callers keep a non-null return.
+    if (targetUserIds.length === 0) {
+      const n = this.buildNotification({ ...opts });
+      this.emitChannel(n);
+      return n;
     }
 
     let first: Notification | undefined;

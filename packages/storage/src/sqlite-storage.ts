@@ -855,8 +855,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
   //        数百万行大表做 LIKE 全表扫描，曾导致启动耗时 20s+)
   //   v3 = messaging gateway data model (G1): copy legacy `integrations` rows
   //        into platform_instances / channel_bindings (docs/architecture/messaging-gateway.md §5)
+  //   v4 = chat session titles: drop the fabricated 'Main' sentinel that
+  //        `getOrCreateMainSession` used to write (a data-derived value compared
+  //        literally by the UI). Safe to clear: a genuine user title can never be
+  //        produced by the platform, and `is_main` is the real identity flag.
   const SCHEMA_MIGRATION_VERSION = 2;
   const GATEWAY_MIGRATION_VERSION = 3;
+  const TITLE_SENTINEL_MIGRATION_VERSION = 4;
   const LEGACY_HEARTBEAT_DEFAULT_MS = 1800000;
   const userVersion = (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
 
@@ -903,10 +908,32 @@ export function openSqlite(dbPath: string): DatabaseSync {
     }
   }
 
+  // v4 — clear the fabricated 'Main' session-title sentinel (see version note
+  // above). Idempotent: only rows whose title is exactly 'Main' are touched, so
+  // re-running is a no-op and real titles are never disturbed.
+  //
+  // Re-read the version instead of reusing the captured `userVersion`: the
+  // gateway step above may have FAILED and deliberately left the version
+  // unadvanced so it retries next start. Never leapfrog a failed step — only run
+  // this cleanup once every earlier step has actually committed.
+  const versionBeforeTitleCleanup =
+    (_db.prepare('PRAGMA user_version').get() as { user_version?: number } | undefined)?.user_version ?? 0;
+  if (
+    versionBeforeTitleCleanup >= GATEWAY_MIGRATION_VERSION &&
+    versionBeforeTitleCleanup < TITLE_SENTINEL_MIGRATION_VERSION
+  ) {
+    const result = _db
+      .prepare("UPDATE chat_sessions SET title = NULL WHERE title = 'Main'")
+      .run();
+    if (result.changes > 0) {
+      log.info(`Chat session title migration: cleared ${result.changes} fabricated 'Main' title(s)`);
+    }
+    _db.exec(`PRAGMA user_version = ${TITLE_SENTINEL_MIGRATION_VERSION}`);
+  }
+
   log.info('SQLite database opened', { path: dbPath });
   return _db;
 }
-
 export function closeSqlite(): void {
   if (_db) {
     _db.close();
@@ -2295,19 +2322,21 @@ export class SqliteChatSessionRepo {
       : this.db.prepare('SELECT * FROM chat_sessions WHERE agent_id = ? ORDER BY created_at ASC LIMIT 1').get(agentId);
     if (oldest) {
       const row = oldest as Record<string, unknown>;
-      const title = (row['title'] as string) || 'Main';
-      this.db.prepare('UPDATE chat_sessions SET is_main = 1, title = ? WHERE id = ?')
-        .run(title, row['id'] as string);
+      // Promoting a session to "main" must NOT invent a title: `is_main` already
+      // carries that identity, and the old code wrote the literal 'Main' here —
+      // a data-derived sentinel that then leaked into UI string comparisons
+      // (`titled !== 'Main'`). Leave the title exactly as it was.
+      this.db.prepare('UPDATE chat_sessions SET is_main = 1 WHERE id = ?')
+        .run(row['id'] as string);
       row['is_main'] = 1;
-      row['title'] = title;
       return this._mapSession(row);
     }
     const id = generateId('cs');
     const ts = now();
     this.db
       .prepare('INSERT INTO chat_sessions (id, agent_id, user_id, title, is_main, created_at, last_message_at) VALUES (?,?,?,?,1,?,?)')
-      .run(id, agentId, userId ?? null, 'Main', ts, ts);
-    return { id, agentId, userId: userId ?? null, title: 'Main', isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
+      .run(id, agentId, userId ?? null, null, ts, ts);
+    return { id, agentId, userId: userId ?? null, title: null, isMain: true, createdAt: new Date(ts), lastMessageAt: new Date(ts) };
   }
 
   getSessionsByAgent(agentId: string, limit = 50, userId?: string) {

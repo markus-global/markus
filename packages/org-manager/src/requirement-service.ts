@@ -518,12 +518,16 @@ export class RequirementService implements ApprovalTargetPort {
     ].join('\n');
 
     try {
+      // No auto-mention of the creator: the changes-requested decision already
+      // reaches them through their explicit mailbox message (notifyCreatorOnDecision),
+      // and a mention would fire a SECOND notification for the same fact. The
+      // comment is the durable record; the mailbox is the actionable channel.
       await this.requirementCommentPoster(
         req.id,
         actorId,
         authorName,
         content,
-        req.createdBy ? [req.createdBy] : undefined,
+        undefined,
         { authorType: 'human' },
       );
     } catch (e) {
@@ -984,6 +988,8 @@ export class RequirementService implements ApprovalTargetPort {
         body,
         actionType: 'navigate',
         actionTarget: JSON.stringify({ path: `/work?openRequirement=${req.id}` }),
+        // Don't ring the bell for the person who just made the decision.
+        excludeUserIds: decidedBy ? [decidedBy] : undefined,
         metadata: {
           requirementId: req.id,
           decision,
