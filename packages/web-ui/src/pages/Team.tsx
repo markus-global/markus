@@ -1109,6 +1109,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   } | null>(null);
 
   /**
+   * 刚插入一页更早的历史（`loadMore`）时挂起的一次**布局补偿**。
+   *
+   * 为什么它不是「滚动意图」：向上翻页把历史插到当前内容**上方**，视口要做的只是
+   * 「跟着平移**恰好**新增的那段高度」—— 这是有闭式解的布局补偿，不是导航。
+   * 表达成意图（「跳到某一行」）就必须先猜那一行在哪（目标行在视口外、量不到 →
+   * 用虚拟表的**估算**偏移一次性硬跳），于是出现单帧几万像素的突变 + 重试链收敛。
+   *
+   * 现在记的只有「翻页前的滚动内容高度」，插入后在**绘制前**补上差值即可（见
+   * 下方 message 布局 effect 的 prepend 分支）。`key` 保证它只服务所属的那个视图。
+   */
+  const pendingPrependRef = useRef<{ key: string; scrollHeight: number } | null>(null);
+
+  /**
    * 「跳到某条消息」的导航意图（搜索命中 / 通知深链）。目标可能在不同 Agent / session
    * tab，需要分阶段满足前提后才跳。**在滚动意图旁边声明** —— 它就是「这个视图接下来
    * 该停在哪」的意图，和 pendingRestoreRef 属于同一族。
@@ -1864,20 +1877,33 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // inside a message we return false so the virtualizer skips its scroll
   // compensation and the clicked row stays anchored (top-fixed) — otherwise, for
   // a row near the viewport top, the default `item.start < scrollOffset` rule
-  // shifts the whole list up and the clicked header scrolls off-screen. Outside a
-  // user toggle we replicate the library default so normal scrolling through
-  // not-yet-measured items above the viewport stays stable.
+  // shifts the whole list up and the clicked header scrolls off-screen.
+  //
+  // ── 为什么「用户接管期间」不能整体关掉补偿（上滑加载历史错位的根因）──────────
+  //
+  // 旧实现是 `if (userTakeoverRef.current || gestureActive()) return false;`，
+  // 本意：别让**流式气泡**（视口最下方那一行）变高时把视口从用户手里拽回去。
+  // 但“向上翻页加载历史”恰恰是「用户接管 + 视口**上方**插入了一批尚未测量的行」：
+  // 这些行一旦被测量，它们下方所有行的 `start` 都会变大 → 内容在用户脚下整体下移。
+  // 虚拟表对这一支的补偿（virtual-core `resizeItem` → `scrollAdjustments += delta`，
+  // 见 @tanstack/virtual-core#resizeItem）正是防这件事的**唯一**正确机制 —— 它在
+  // 同一帧里同时移动 `scrollTop` 与虚拟表自己的 range，不产生「估算位置」的中间态。
+  // 把它整体关掉之后，就只剩“按估算值一次性硬跳几万像素、再靠重试链收敛”那条路，
+  // 于是用户看到位置突变、原来在读的那一行被推到视口外。
+  //
+  // 收敛为：**只对「视口内/下方」的行保留抑制**（那才是当初要防的力：气泡在底部），
+  // 视口**上方**的行永远按库的默认规则补偿。把已滚过去的内容钉住，不会把视口拽向
+  // 任何目标，因此既不与手势冲突，也不改变「跳到某条消息」的落位 —— 后者由滚动意图
+  // 独占驱动（下面这一支显式让位）。
   chatVirtualizer.shouldAdjustScrollPositionOnItemSizeChange = (item, _delta, instance) => {
     if (isVirtualScrollAdjustSuppressed()) return false;
-    // While the user owns the viewport (taken over, or mid-gesture), do NOT let
-    // the virtualizer compensate scroll when a streaming bubble's height changes
-    // mid-flight. That compensation is a second, independent force pulling the
-    // viewport back toward the growing bubble and fighting the user's gesture.
-    // Keyed on the *takeover* flag (sticky) rather than a per-event intent flag
-    // (which any programmatic path could clear) so the suppression cannot lapse
-    // for a frame in the middle of a drag.
-    if (userTakeoverRef.current || gestureActive()) return false;
-    return item.start < (instance.scrollOffset ?? 0);
+    // 显式跳转（搜索结果 / ⌘F / 通知深链）由滚动意图独占驱动视口：不叠加第二种补偿，
+    // 保持它原有的落位行为不变。
+    if (pendingRestoreRef.current?.priority === 'jump') return false;
+    // 视口**上方**的行变高 → 永远补偿（这是「上滑加载历史」保持视口不动的唯一机制）。
+    if (item.start < (instance.scrollOffset ?? 0)) return true;
+    // 视口内/下方的行变高（视口里的流式气泡）→ 用户接管或手势期间不补偿，避免抢视口。
+    return false;
   };
 
   // NOTE: Do NOT call chatVirtualizer.measure() on message changes.
@@ -2424,13 +2450,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // Snap to bottom after message DOM updates, but only if user hasn't scrolled up.
   // Do NOT depend on `activities` — activity ticks during streaming would force
   // repeated scrollToBottom and fight the user / expand-anchor.
-  // When items are prepended (loadMore), anchor scroll to the previously top-visible item.
   useLayoutEffect(() => {
+    // ⓪ 刚插入了一页更早的历史：把视口按「上方新增的高度」平移，并在**绘制前**让
+    //    虚拟表重读偏移量。这是「向上翻页=布局补偿」的**唯一**执行点（不再走滚动意图）。
+    //
+    //    为什么必须在这里（layout effect）而不是 rAF/定时器里：layout effect 在 DOM
+    //    提交后、**浏览器绘制前**同步跑；写 scrollTop + 派发一次原生 scroll 事件
+    //    （virtual-core 的 observeElementOffset 会同步更新它自己的 scrollOffset 并
+    //    notify → React 在本次 commit 内把渲染范围一起推到新位置），于是渲染范围与
+    //    scrollTop 同帧前进 —— 既没有「先跳到估算位置再收敛」的突变，也不会出现
+    //    「scrollTop 已远走、渲染范围还在原地」导致视口落空的一帧。
+    //    （放在 rAF 里跑就会晚一拍：那一帧的错误位置会被真的画出来。）
+    const pp = pendingPrependRef.current;
+    if (pp) {
+      pendingPrependRef.current = null;
+      // 有未满足的 `jump` 意图时，视口由它独占驱动 —— 布局补偿让位（跳转自己的翻页
+      // 不能被这次平移拽走）。其余情况（用户上滑加载历史）都由这里补。
+      if (!pendingRestoreRef.current && pp.key === activeScrollKeyRef.current) {
+        const el = chatScrollRef.current;
+        const delta = el ? el.scrollHeight - pp.scrollHeight : 0;
+        if (el && delta > 0) {
+          el.scrollTop += delta;
+          el.dispatchEvent(new Event('scroll'));
+        }
+      }
+    }
     // Fresh content (a prepended page, a streamed chunk, a loaded transcript) means
     // every row was re-measured — re-assert the pending intent against the new
-    // layout. There is deliberately no second branch here: a prepend IS an anchor
-    // too (see loadMore), so this single intent is the only thing that may move the
-    // viewport. The old `scrollToIndex(newCount)` branch was a second scroll writer
+    // layout. The old `scrollToIndex(newCount)` branch was a second scroll writer
     // that ignored intents entirely and armed virtual-core's own reconcile loop.
     if (pendingRestoreRef.current) {
       kickScrollRestore();
@@ -2687,21 +2734,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         if (currentConvKeyRef.current !== convKey || activeScrollKeyRef.current !== viewKeyAtRequest) {
           return 0;
         }
-        // 「向上翻页必须保持视口不动」是一个**布局补偿**，不是导航：把它表达成
-        // 「翻页前视口顶部那一行」的 anchor，交给**唯一**的滚动意图机制。
-        // 锚点必须在改动前采集（此刻 DOM 还是旧内容）。
+        // 「向上翻页必须保持视口不动」是一个**布局补偿**，不是导航：视口只需按
+        // 「插入到上方的这段高度」平移。于是这里记的只是**翻页前的滚动内容高度**，
+        // 插入后由 message 布局 effect 在**绘制前**补上差值（pendingPrependRef）。
+        // 必须在改动前采集（此刻 DOM 还是旧内容）。
         //
-        // 刻意不再用 `chatVirtualizer.scrollToIndex(newMsgs.length, {align:'start'})`：
-        //   ① 它会点亮 virtual-core 内部一个 ≤5s、**不可取消**的 rAF reconcile 循环
-        //      （scrollState/reconcileScroll）：该下标的偏移量每变一次就重新推视口，
-        //      而惰性测量的行高恰好在「跳转落位」的那几百毫秒里持续变化 → 跳转被拽走；
-        //   ② 它拿「本次新增条数」当**渲染列表的下标**用，而渲染的是缓冲区的一个
-        //      投影（剔除活动日志行/已确认通知）→ 下标整体偏移；
-        //   ③ 它不受意图机制管辖，跳转正在落位时照样滚。
+        // 刻意【不】走滚动意图（原来是把「视口顶部那一行」当 anchor 交给意图机制）：
+        //   ① 目标行在视口**外**，量不到 → 只能退回虚拟表的**估算**偏移，一次性硬跳
+        //      几万像素，再靠重试链收敛 → 用户看到位置突变、并出现「视口落空」的一帧；
+        //   ② 意图在 rAF/定时器里跑（绘制之后），第一帧的错误位置会被真的画出来。
+        // 同理刻意不用 `chatVirtualizer.scrollToIndex/scrollToOffset`：它们会点亮
+        // virtual-core 内部一个 ≤5s、**不可取消**的 rAF reconcile 循环
+        // （scrollState/reconcileScroll），之后任何行高变化都会重新推视口。
         const scrollEl = chatScrollRef.current;
-        const prependAnchor = scrollEl
-          ? captureChatScrollAnchor(readRenderedRowOffsets(scrollEl), scrollEl)
-          : null;
+        const prependScrollHeight = scrollEl ? scrollEl.scrollHeight : null;
         // Write the AUTHORITATIVE buffer FIRST (synchronously), then the display.
         // Order matters: the pagination gate/cursor and any reader of this buffer
         // must see the page the moment this function reports it added, while a
@@ -2716,10 +2762,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         // 边界与内容**同时**前进（同一个 key、同一个写者）：这一页已经进了缓冲，
         // 游标才允许前移。反之（上面被丢弃的那一页）一律不动边界。
         writeWindowBounds(bufId, { hasMore: more, oldestCursor: oldestOf });
-        if (prependAnchor) {
-          // `prepend` 优先级：它压过切视图的 `restore`，但**让位**给未满足的
-          // `jump`（跳转自己的翻页不能被翻页锚点拽走）。
-          scheduleScrollRestoreToAnchor(activeScrollKeyRef.current, prependAnchor, 'prepend');
+        if (prependScrollHeight !== null) {
+          // 布局补偿的唯一执行点：message 布局 effect 的 prepend 分支（绘制前）。
+          // 若此刻有未满足的 `jump` 意图在驱动视口，那一支会让位给意图（见下）。
+          pendingPrependRef.current = { key: activeScrollKeyRef.current, scrollHeight: prependScrollHeight };
         }
         setMessages(combined);
         return newMsgs.length;
