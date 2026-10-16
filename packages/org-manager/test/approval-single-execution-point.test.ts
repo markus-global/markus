@@ -108,7 +108,7 @@ function createHarness(opts: { commentFailure?: boolean } = {}) {
 
   const notifySpy = vi.spyOn(hitlService, 'notify').mockReturnValue(undefined as never);
 
-  return { ts, hitlService, applier, comments, notifySpy };
+  return { ts, hitlService, applier, comments, notifySpy, agentManager };
 }
 
 /** Flush the microtask/`setImmediate` queue so `.then` callbacks and the applier settle. */
@@ -314,7 +314,7 @@ describe('验收闸 · promise 丢失后由 HTTP 兜底同一执行点', () => {
   }
 
   it('打回 ⇒ 任务离开 review 返工到 in_progress；通过 ⇒ completed', async () => {
-    const { ts, hitlService, applier } = createHarness();
+    const { ts, hitlService, applier, comments } = createHarness();
     const task = await taskInReview(ts);
     expect(task.status).toBe('review');
 
@@ -340,7 +340,38 @@ describe('验收闸 · promise 丢失后由 HTTP 兜底同一执行点', () => {
     expect(outcome).toMatchObject({ applied: true, reason: 'applied' });
     const after = ts.getTask(task.id)!;
     expect(after.status).toBe('in_progress');
-    expect((after.notes ?? []).some(n => n.includes('Revision requested'))).toBe(true);
+    // 打回的可观测记录 = 评论（人类署名 + 审批原文），与建卡闸/需求闸同口径
+    expect(comments).toHaveLength(1);
+    expect(String(comments[0]!['content'])).toContain('Changes requested');
+    expect(String(comments[0]!['content'])).toContain('写得不够清楚');
+    expect(comments[0]!['authorType']).toBe('human');
+    expect(comments[0]!['authorId']).toBe(REVIEWER);
+  });
+
+  it('验收闸打回 ⇒ 决策记录评论不再扇出：被指派人无 task_comment/mention 通知（交付归执行通道）', async () => {
+    const { ts, hitlService, applier, agentManager, comments } = createHarness();
+    const task = await taskInReview(ts);
+    const approval = hitlService.requestApproval({
+      agentId: task.assignedAgentId,
+      agentName: 'Agent A',
+      type: 'task_review',
+      title: 'Review task',
+      description: 'Review',
+      details: { taskId: task.id, subType: 'task_review' },
+    });
+    // actor ≠ task.reviewerId：否则 isReviewerDuringReview 会自行抑制，测不出新护栏
+    const assignee = agentManager.getAgent(AGENT_A);
+    assignee.enqueueToMailbox.mockClear();
+
+    await applier.apply({
+      approvalId: approval.id, subType: 'task_review', targetId: task.id,
+      intent: 'request_changes', actorId: 'user-1', comment: '不够清楚',
+    });
+
+    const types = assignee.enqueueToMailbox.mock.calls.map(c => c[0]);
+    expect(comments).toHaveLength(1);            // 记录仍在（评论）
+    expect(types).not.toContain('task_comment'); // 但不再冒充「评论通知」
+    expect(types).not.toContain('mention');
   });
 
   it('重复兜底（同一审批第二次）⇒ already-applied，状态不再变动', async () => {
