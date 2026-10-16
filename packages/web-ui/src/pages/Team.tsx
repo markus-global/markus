@@ -3864,7 +3864,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       ? `@[${name}](${entityType}:${entityId})`
       : name.includes(' ') ? `@[${name}]` : `@${name}`;
     const icon = entityType ? (ENTITY_TYPE_ICON[entityType] ?? '📄') : '🤖';
-    addChatContext({ label: `${icon} ${name}`, content: `${content} ` });
+    // Label the TYPE, not just the icon: `[☑任务] 标题`. An icon alone asks the
+    // reader to memorise a glyph-to-type mapping that is never explained.
+    const typeLabel = entityType
+      ? t(`page.mentionType.${entityType}`, { defaultValue: entityType })
+      : t('page.mentionType.agent');
+    addChatContext({ label: `[${icon}${typeLabel}] ${name}`, content: `${content} ` });
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
@@ -5708,8 +5713,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }`}
                 >
                   <Avatar name={item.agent.name} avatarUrl={item.agent.avatarUrl} size={24} bgClass="bg-brand-500/20 text-brand-500" />
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0">{t('page.mentionType.agent')}</span>
                   <span className="flex-1 min-w-0 truncate">{item.agent.name}</span>
-                  <span className="text-xs text-fg-tertiary ml-auto">{item.agent.role}</span>
+                  <span className="text-xs text-fg-tertiary ml-auto shrink-0">{item.agent.role}</span>
                 </button>
               ) : (
                 <button
@@ -5722,8 +5728,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }`}
                 >
                   <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ENTITY_TYPE_ICON[item.entity.entityType] ?? '📄'}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0">{t(`page.mentionType.${item.entity.entityType}`, { defaultValue: item.entity.entityType })}</span>
                   <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
-                  <span className="text-xs text-fg-tertiary ml-auto">{item.entity.role}</span>
+                  <span className="text-xs text-fg-tertiary ml-auto shrink-0">{item.entity.role}</span>
                 </button>
               ))}
             </div>
