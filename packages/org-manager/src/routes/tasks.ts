@@ -5,6 +5,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
 import { TaskServiceError } from '../task-service.js';
 
+/** Default cap applied to each terminal board bucket (completed/failed/rejected/cancelled/archived). */
+const DEFAULT_BOARD_TERMINAL_LIMIT = 100;
+
 export async function handleTasksRoutes(
   server: APIServer,
   req: IncomingMessage,
@@ -460,8 +463,34 @@ export async function handleTasksRoutes(
     if (path === '/api/taskboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const board = server.taskService.getTaskBoard(orgId, { projectId });
-      server.json(res, 200, { board });
+      // Terminal buckets grow unbounded — cap them by default (?full=1 opts out).
+      const full = url.searchParams.get('full') === '1';
+      const limitParam = url.searchParams.get('terminalLimit');
+      const parsedLimit = limitParam ? Math.max(parseInt(limitParam, 10) || 0, 0) : DEFAULT_BOARD_TERMINAL_LIMIT;
+      const terminalLimit = full ? 0 : parsedLimit;
+      const { board, counts } = server.taskService.getTaskBoard(orgId, { projectId, terminalLimit });
+      server.json(res, 200, { board, counts });
+      return true;
+    }
+
+    // Lightweight board for dashboards: active columns + authoritative counts,
+    // without the (potentially huge) terminal buckets.
+    if (path === '/api/taskboard/summary' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      // Cap `failed` so a long tail of failures can't bloat the dashboard either;
+      // counts.failed still reports the true total.
+      const { board, counts } = server.taskService.getTaskBoard(orgId, { projectId, terminalLimit: 50 });
+      server.json(res, 200, {
+        board: {
+          pending: board.pending,
+          in_progress: board.in_progress,
+          blocked: board.blocked,
+          review: board.review,
+          failed: board.failed,
+        },
+        counts,
+      });
       return true;
     }
 

@@ -13890,6 +13890,7 @@ EXPLANATION_END`;
       exact('/api/tasks/deliverables', 'GET'),
       exact('/api/tasks/dashboard', 'GET'),
       exact('/api/taskboard', 'GET'),
+      exact('/api/taskboard/summary', 'GET'),
       exact('/api/ops/dashboard', 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),

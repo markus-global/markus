@@ -1749,7 +1749,18 @@ export const api = {
       const params = new URLSearchParams();
       if (filters?.projectId) params.set('projectId', filters.projectId);
       const qs = params.toString();
-      return request<{ board: Record<string, TaskInfo[]> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+    },
+    /**
+     * Lightweight board for dashboards: active columns (+ recent `failed`) with the
+     * authoritative per-status `counts`, but no (potentially huge) terminal lists.
+     * Prefer this over `board()` when you only need counts + actionable tasks.
+     */
+    boardSummary: (filters?: { projectId?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.projectId) params.set('projectId', filters.projectId);
+      const qs = params.toString();
+      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard/summary${qs ? `?${qs}` : ''}`);
     },
     listSubtasks: (taskId: string) => request<{ subtasks: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }> }>(`/tasks/${taskId}/subtasks`),
     createSubtask: (taskId: string, title: string) =>
