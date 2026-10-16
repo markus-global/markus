@@ -2250,7 +2250,8 @@ async function startServerCore(
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
-          markStaleProcessingAsDropped: (aid: string) => mbRepo.markStaleProcessingAsDropped(aid),
+          markStaleProcessingAsDropped: (aid: string, nowIso?: string, ownerId?: string) =>
+            mbRepo.markStaleProcessingAsDropped(aid, nowIso, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({

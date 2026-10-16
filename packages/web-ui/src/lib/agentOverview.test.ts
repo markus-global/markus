@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
+  deriveTriageBatchSummary,
   resolveTokensToday,
   visibleStorageBuckets,
   storageBucketLabelKey,
@@ -385,5 +386,27 @@ describe('resolveAgentStatus', () => {
   it('keeps an already-working agent working (no flicker back to idle)', () => {
     expect(resolveAgentStatus('working', true)).toEqual(agentStatusPresentation('working'));
     expect(resolveAgentStatus('working', false).tone).toBe('busy');
+  });
+});
+
+describe('deriveTriageBatchSummary — 是否在批量处理必须可见', () => {
+  it('只有主项 ⇒ 单条（isBatch=false）', () => {
+    expect(deriveTriageBatchSummary(undefined)).toMatchObject({ processed: 1, total: 1, isBatch: false });
+    expect(deriveTriageBatchSummary({})).toMatchObject({ total: 1, isBatch: false });
+    expect(deriveTriageBatchSummary({ deferredItemIds: [], droppedItemIds: [] })).toMatchObject({ total: 1, isBatch: false });
+  });
+
+  it('延后/丢弃/inline 计入批次大小 ⇒ isBatch=true', () => {
+    expect(deriveTriageBatchSummary({ deferredItemIds: ['a', 'b'] })).toMatchObject({
+      processed: 1, deferred: 2, dropped: 0, inlineCompleted: 0, total: 3, isBatch: true,
+    });
+    expect(deriveTriageBatchSummary({
+      droppedItemIds: ['x'], inlineCompletedIds: ['y'],
+    })).toMatchObject({ processed: 1, dropped: 1, inlineCompleted: 1, total: 3, isBatch: true });
+  });
+
+  it('容错缺失的可选数组', () => {
+    expect(deriveTriageBatchSummary({ deferredItemIds: undefined })).toMatchObject({ total: 1, isBatch: false });
+    expect(deriveTriageBatchSummary(null)).toMatchObject({ total: 1, isBatch: false });
   });
 });

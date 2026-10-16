@@ -1404,6 +1404,13 @@ export const api = {
         body: target ? JSON.stringify(target) : undefined,
         headers: target ? { 'Content-Type': 'application/json' } : undefined,
       }),
+    /** 丢弃单条 mailbox 项（带理由，可回溯）——与 cancelProcessing（打断）不同。 */
+    dropMailboxItem: (id: string, itemId: string, reason?: string) =>
+      request<{ status: string; itemId: string; dropped: boolean }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+        headers: { 'Content-Type': 'application/json' },
+      }),
     recoverStaleMailbox: (id: string) =>
       request<{ dropped: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
     evolveFromMessage: (

@@ -7,7 +7,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
-import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, type OverviewSectionId } from '../lib/agentOverview.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -2381,6 +2381,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
   const QUEUE_COLLAPSE_THRESHOLD = 3;
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   const load = useCallback(async (reset = true) => {
     if (reset) setLoading(true);
@@ -2397,6 +2398,16 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     } catch { /* ignore */ }
     setLoading(false);
   }, [agentId, catFilter, statusFilter]);
+
+  /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——对齐后端的 mailbox:dropped 审计。 */
+  const handleDrop = useCallback(async (itemId: string) => {
+    setActionBusyId(itemId);
+    try {
+      await api.agents.dropMailboxItem(agentId, itemId, 'operator');
+      await load();
+    } catch { /* ignore */ }
+    finally { setActionBusyId(null); }
+  }, [agentId, load]);
 
   const loadMore = useCallback(async () => {
     if (!mailbox) return;
@@ -2675,6 +2686,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm">🧠</span>
             <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider">{t('agent:profilePage.mind.deliberationInProgress')}</h4>
+            <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300">{t('agent:profilePage.mind.batchDeliberating')}</span>
             <span className="text-[10px] text-fg-quaternary ml-auto">{t('agent:profilePage.mind.since', { time: new Date(mind.deliberationActivity.startedAt).toLocaleTimeString() })}</span>
           </div>
           <ActivityLog agentId={agentId} activityId={mind.deliberationActivity.activityId} isLive />
@@ -2685,6 +2697,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       {mind?.lastTriage && (() => {
         const triageAgeMs = Date.now() - new Date(mind.lastTriage.timestamp).getTime();
         const isStale = triageAgeMs > 60_000;
+        const batchSummary = deriveTriageBatchSummary(mind.lastTriage);
         return (
           <section className={`bg-surface-2 rounded-lg border p-3 transition-opacity ${isStale ? 'border-border-subtle opacity-60' : 'border-indigo-500/20'}`}>
             <details open={!isStale}>
@@ -2696,6 +2709,11 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <p className="text-xs text-fg-secondary leading-relaxed mt-2">{mind.lastTriage.reasoning}</p>
               <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
                 <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">{t('agent:profilePage.mind.processingItem', { id: mind.lastTriage.processedItemId.slice(0, 12) })}</span>
+                <span className={`px-1.5 py-0.5 rounded ${batchSummary.isBatch ? 'bg-indigo-500/15 text-indigo-300' : 'bg-surface-3 text-fg-tertiary'}`}>
+                  {batchSummary.isBatch
+                    ? t('agent:profilePage.mind.batchSize', { count: batchSummary.total })
+                    : t('agent:profilePage.mind.singleItem')}
+                </span>
                 {mind.lastTriage.deferredItemIds.length > 0 && (
                   <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">{t('agent:profilePage.mind.deferred', { count: mind.lastTriage.deferredItemIds.length })}</span>
                 )}
@@ -2855,6 +2873,20 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                               <span className="text-fg-tertiary shrink-0">{new Date(d.createdAt).toLocaleTimeString()}</span>
                             </div>
                           ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* 操作：丢弃这一条（停止/打断走已有的 ✕ 按钮）——不必离开本页 */}
+                    {canManageAgents && (
+                      <div className="space-y-2">
+                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.actions')}</h5>
+                        <div className="flex gap-2">
+                          <button
+                            disabled={actionBusyId === item.id}
+                            onClick={() => { void handleDrop(item.id); }}
+                            className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-400 hover:bg-red-500/25 disabled:opacity-40 transition-colors"
+                          >{t('agent:profilePage.mind.dropBtn')}</button>
                         </div>
                       </div>
                     )}

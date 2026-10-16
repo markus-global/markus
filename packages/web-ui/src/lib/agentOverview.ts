@@ -335,3 +335,41 @@ export function resolveOverviewSection(
 export function deliverableClickTarget(hostAvailable: boolean | undefined): 'right-panel' | 'page' {
   return hostAvailable ? 'right-panel' : 'page';
 }
+
+// ─── Triage / batch visibility ───────────────────────────────────────────────
+
+export interface TriageBatchSummary {
+  processed: number;
+  deferred: number;
+  dropped: number;
+  inlineCompleted: number;
+  /** Every item this triage cycle accounted for. */
+  total: number;
+  /** True when the cycle handled more than one item — i.e. batching actually engaged. */
+  isBatch: boolean;
+}
+
+/**
+ * Summarise one triage/deliberation cycle.
+ *
+ * The overview already listed 处理中 / 延后 / 丢弃 chips, but nothing answered the
+ * question the operator actually has: *was this wake-up a batch, or a single
+ * message?* A cycle that only ever shows `total === 1` is the signature of
+ * batching not engaging — every message waking the agent on its own, i.e. the
+ * reply storm. Making the batch size visible is what turns that from a
+ * suspicion into an observable.
+ */
+export function deriveTriageBatchSummary(
+  lastTriage?: {
+    deferredItemIds?: string[];
+    droppedItemIds?: string[];
+    inlineCompletedIds?: string[];
+  } | null,
+): TriageBatchSummary {
+  const deferred = lastTriage?.deferredItemIds?.length ?? 0;
+  const dropped = lastTriage?.droppedItemIds?.length ?? 0;
+  const inlineCompleted = lastTriage?.inlineCompletedIds?.length ?? 0;
+  const processed = 1; // the primary item the triage picked
+  const total = processed + deferred + dropped + inlineCompleted;
+  return { processed, deferred, dropped, inlineCompleted, total, isBatch: total > 1 };
+}

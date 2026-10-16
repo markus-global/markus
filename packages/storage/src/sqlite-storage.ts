@@ -4752,21 +4752,32 @@ export class SqliteMailboxRepo {
    * 写成等价 SQL：该谓词含 payload 分支，用 SQL 复制会与 shared 实现双源分叉，
    * 破坏「判定逻辑单一实现」。
    *
+   * `currentOwnerId`（可选）—— 「跨实例死认领即陈旧」（2026-10-15 重启僵尸修复）：
+   * 被杀 worker 的 in-flight 行租约仍未到期时，上面「尊重租约」的判据会放过它，让它
+   * 永远停在 processing（UI 幽灵）且租约到期后被回队再跑。调用方（启动清理/看门狗）
+   * 传入自身 ownerId 后，**认领者非本实例**的行一律计为陈旧 —— 非 strict-state → drop，
+   * strict-state → 回队。不传时保持既有「不误杀他人有效租约」语义。
+   *
    * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
-  markStaleProcessingAsDropped(agentId: string, nowIso?: string): number {
+  markStaleProcessingAsDropped(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
+
+    // 陈旧判据（SELECT 与 UPDATE 共用同一实现，不复制）：无认领 / 无租约 / 租约过期，
+    // 或（仅当调用方给出 ownerId 时）认领者非本实例。
+    const staleWhere =
+      `agent_id = ? AND status = 'processing'
+        AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?`
+      + (currentOwnerId ? ' OR (claimed_by IS NOT NULL AND claimed_by <> ?)' : '')
+      + ')';
+    const params: string[] = currentOwnerId ? [agentId, now, currentOwnerId] : [agentId, now];
 
     // (d) 第一步：候选中属 strict-state 的行**回队**。回队后其 status 变为 'queued'，
     // 下方原 SQL 自然不再命中 ⇒ 非 strict-state 的处置路径保持逐字不变。
     try {
       const candidates = this.db
-        .prepare(
-          `SELECT id, source_type, payload FROM mailbox_items
-            WHERE agent_id = ? AND status = 'processing'
-              AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
-        )
-        .all(agentId, now) as Array<{ id: string; source_type: string; payload: string | null }>;
+        .prepare(`SELECT id, source_type, payload FROM mailbox_items WHERE ${staleWhere}`)
+        .all(...params) as Array<{ id: string; source_type: string; payload: string | null }>;
       for (const row of candidates) {
         const item = {
           sourceType: row.source_type as MailboxItemType,
@@ -4782,14 +4793,10 @@ export class SqliteMailboxRepo {
       });
     }
 
-    // 原 SQL 逐字保留：非 strict-state 行（及未被回队的行）继续 drop。
+    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续 drop。
     const result = this.db
-      .prepare(
-        `UPDATE mailbox_items SET status = 'dropped'
-          WHERE agent_id = ? AND status = 'processing'
-            AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?)`
-      )
-      .run(agentId, now);
+      .prepare(`UPDATE mailbox_items SET status = 'dropped' WHERE ${staleWhere}`)
+      .run(...params);
     return (result as { changes?: number }).changes ?? 0;
   }
 
