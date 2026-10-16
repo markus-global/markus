@@ -19,9 +19,13 @@
  * Consumers:
  *   · `comms/gateway/dispatcher` — localizes a notification on its way to a chat
  *     app, from the same `metadata.i18n` the bell uses;
- *   · `web-ui` i18n bootstrap — merges {@link notificationResources} into the
- *     `team` namespace, so `t('team:notifications.titles.…')` keeps working with
- *     the keys deleted from the locale JSON files (no second copy to drift).
+ *   · `web-ui` — reads its own copy from the locale JSON files. The browser bundle
+ *     cannot import this package (see `web-ui/src/constants/providers.ts`), so
+ *     there are physically two copies and they are kept in step by
+ *     `comms/test/notification-vocabulary-parity.test.ts`, which fails naming the
+ *     key, the language and both strings when they drift.
+ *     {@link notificationResources} exists for that guard (and for any future
+ *     non-browser consumer), not for a runtime merge.
  */
 import { normalizeLanguage } from './locale.js';
 
