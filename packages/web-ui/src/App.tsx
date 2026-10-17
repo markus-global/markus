@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense, useSyncExternalStore } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
@@ -25,6 +25,7 @@ import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContext.tsx';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
+import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -57,30 +58,38 @@ function syncLocalePreferences(user: AuthUser): void {
   } catch { /* Intl / navigator unavailable */ }
 }
 
-function PageFallback() {
+function PageFallback({ docScroll }: { docScroll?: boolean } = {}) {
   return (
-    <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse">
+    <div className={`flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse ${docScroll ? 'min-h-[50dvh]' : ''}`}>
       Loading...
     </div>
   );
 }
 
 const PageSlot = memo(function PageSlot({
-  id, activePage, children,
+  id, activePage, docScroll, children,
 }: {
   id: PageId;
   activePage: PageId;
+  /** Mobile document-root scrolling: demote this slot to a plain block so the
+   *  page's own `flex-1` becomes inert and content flows into the document. */
+  docScroll?: boolean;
   children: React.ReactNode;
 }) {
   const active = id === activePage;
   return (
-    <div className="flex-1 overflow-hidden flex flex-col" style={active ? undefined : HIDDEN_STYLE}>
-      <Suspense fallback={<PageFallback />}>
+    <div
+      data-page-slot
+      className={docScroll ? 'block overflow-hidden' : 'flex-1 overflow-hidden flex flex-col'}
+      style={active ? undefined : HIDDEN_STYLE}
+    >
+      <Suspense fallback={<PageFallback docScroll={docScroll} />}>
         {children}
       </Suspense>
     </div>
   );
 }, (prev, next) => {
+  if (prev.docScroll !== next.docScroll) return false;
   const wasVisible = prev.id === prev.activePage;
   const isVisible = next.id === next.activePage;
   if (wasVisible !== isVisible) return false;
@@ -112,6 +121,30 @@ export function App() {
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const isMobile = useIsMobile();
+  // Mobile document-root scrolling: on phones (<= 767px) we let <html>/<body>
+  // scroll so the browser can auto-hide its own toolbar. Excluded on Team, whose
+  // chat relies on a virtualized INNER scroll container that must keep its height.
+  // The chat layer keeps an inner scroller (its message list is virtualized and
+  // bound to an inner element), so it opts out of document scrolling; every other
+  // mobile page lets the document scroll so the browser toolbar can auto-hide.
+  const chatLayerNeedsInnerScroll = useSyncExternalStore(
+    subscribeDocScrollBlocked, getDocScrollBlocked, () => false,
+  );
+  const docScroll = isMobile && !(page === PAGE.TEAM && chatLayerNeedsInnerScroll);
+  useEffect(() => {
+    const root = document.documentElement;
+    root.classList.toggle('mobile-doc-scroll', docScroll);
+    return () => { root.classList.remove('mobile-doc-scroll'); };
+  }, [docScroll]);
+  // Mobile document scrolling makes the document the single scroller shared by
+  // every page. Always start a page at the top: restoring a previous position
+  // (or inheriting the outgoing page's, which gets clamped) can land the page at
+  // its bottom — where it can no longer scroll, so the browser toolbar stops
+  // auto-hiding and the feature looks broken.
+  useLayoutEffect(() => {
+    if (!docScroll) return;
+    window.scrollTo(0, 0);
+  }, [page, docScroll]);
   const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
@@ -857,7 +890,7 @@ export function App() {
   }
 
   return (
-    <div className={`flex h-dvh bg-surface-primary text-fg-primary overflow-x-hidden ${isMobile ? 'flex-col' : ''}`}>
+    <div className={`flex ${docScroll ? 'min-h-dvh' : 'h-dvh overflow-x-hidden'} bg-surface-primary text-fg-primary ${isMobile ? 'flex-col' : ''}`}>
       {/* Desktop sidebar (hidden on Settings page) */}
       {!isMobile && page !== PAGE.SETTINGS && (
         <>
@@ -892,7 +925,7 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 overflow-hidden flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
+      <div className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>{t('llmBanner.message')}</span>
@@ -915,10 +948,10 @@ export function App() {
             </span>
           </div>
         )}
-        <main className="flex-1 overflow-hidden flex flex-col relative">
+        <main className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col relative`}>
           {(Object.keys(pageElements) as PageId[]).map(id => (
             mountedPages.has(id) ? (
-              <PageSlot key={id} id={id} activePage={page}>
+              <PageSlot key={id} id={id} activePage={page} docScroll={docScroll}>
                 {pageElements[id]}
               </PageSlot>
             ) : null

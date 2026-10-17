@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
+import { setDocScrollBlocked } from '../lib/mobileDocScroll.ts';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -198,6 +199,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     : mobileShowChat ? 'chat'
     : 'roster';
   const mobileTeamId = mobileTeamHash ? mobileTeamHash[1] : null;
+
+  // Only the chat layer needs a fixed-height inner scroller (its list is
+  // virtualized). L1 roster / L2 team flow into the document, so the mobile
+  // browser toolbar can auto-hide there too. App scopes this flag to Team.
+  useEffect(() => {
+    setDocScrollBlocked(isMobile && mobileLayer === 'chat');
+    return () => setDocScrollBlocked(false);
+  }, [isMobile, mobileLayer]);
 
   const enterMobileDetail = useCallback(() => {
     // Back from L3 is derived from the conversation's own team (see
