@@ -892,6 +892,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [showSessions, setShowSessions] = useState(false);
   // Mobile-only overflow menu in the chat header (detail / search / new / history).
   const [showMoreMenu, setShowMoreMenu] = useState(false);
+  // Horizontal swipe on the transcript cycles between the open session tabs.
+  const sessionSwipeRef = useRef<{ x: number; y: number } | null>(null);
   // Inline rename state: which session is being renamed + the draft value
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingDraft, setRenamingDraft] = useState('');
@@ -4846,7 +4848,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
                       >
                         <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                        {t('page.newChatPlus')}
+                        {t('page.newChat')}
                       </button>
                     )}
                     {chatMode === 'direct' && !isProfileTab(mainTab) && (
@@ -5483,7 +5485,34 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
+            // Swipe left/right = previous/next open session tab (same order as the
+            // cycle-session shortcuts). Requires a deliberate, mostly horizontal
+            // drag so vertical scrolling and taps never switch sessions.
+            if (chatMode !== 'direct' || mainTab !== 'chat' || openSessionTabs.length < 2) return;
+            const touch = e.touches[0];
+            if (touch) sessionSwipeRef.current = { x: touch.clientX, y: touch.clientY };
+          } : undefined} onTouchEnd={isMobile ? (e) => {
+            const start = sessionSwipeRef.current;
+            sessionSwipeRef.current = null;
+            if (!start) return;
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            const dx = touch.clientX - start.x;
+            const dy = touch.clientY - start.y;
+            if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+            const nextId = cycleSessionTabId(openSessionTabs.map(s => s.id), activeSessionId, dx < 0 ? 1 : -1);
+            if (!nextId) return;
+            const target = openSessionTabs.find(s => s.id === nextId);
+            if (!target) return;
+            if (target.id === NEW_CHAT_PLACEHOLDER_ID) {
+              setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+              resetConv(currentConvKeyRef.current, NEW_CHAT_PLACEHOLDER_ID);
+              setMessages([]);
+            } else {
+              void switchSession(target);
+            }
+          } : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -5552,6 +5581,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
+                      {isMobile && msg.sender === 'agent' && (
+                        <Avatar
+                          name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
+                          avatarUrl={agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl}
+                          size={18}
+                          bgClass="bg-brand-500/15 text-brand-600"
+                          className="rounded self-center"
+                        />
+                      )}
                       <span className="text-sm font-medium text-fg-primary">
                         {msg.sender === 'user'
                           ? currentUserName
@@ -5684,30 +5722,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           )}
           <div ref={messagesEnd} />
-        </div>
 
-          {/* Scroll to bottom — normal flow row above the input, never floats over it */}
+          {/* Scroll to bottom — floats over the transcript.
+              It used to be a normal-flow row between the list and the composer:
+              a full-width band that ate the last lines of the conversation. A
+              sticky pill inside the scrollport has no band at all — only the
+              button itself is visible (and only it takes pointer events). */}
           {showScrollBtn && mainTab === 'chat' && (
-            <div
-              className={`flex justify-center ${isMobile ? 'px-3' : `px-5 ${chatRightReserve}`} shrink-0 ${isMobile ? 'pb-1 pt-0' : 'pb-1'}`}
-            >
-              <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
-                <button
-                  onClick={() => {
-                    // Explicit jump = the user handing the viewport back.
-                    resumeChatScrollFollow();
-                    scrollChatToBottom('smooth');
-                  }}
-                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
-                >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
-                  {newMsgCount > 0
-                    ? t('page.newMessages', { count: newMsgCount })
-                    : t('page.scrollToBottom')}
-                </button>
-              </div>
+            <div className="sticky bottom-0 z-20 pointer-events-none flex justify-center pb-2">
+              <button
+                onClick={() => {
+                  // Explicit jump = the user handing the viewport back.
+                  resumeChatScrollFollow();
+                  scrollChatToBottom('smooth');
+                }}
+                className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/90 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
+              >
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+                {newMsgCount > 0
+                  ? t('page.newMessages', { count: newMsgCount })
+                  : t('page.scrollToBottom')}
+              </button>
             </div>
           )}
+        </div>
 
         {/* Avatar popover */}
         {avatarPopover && (() => {
@@ -6111,7 +6149,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }}
                 />
               )}
-              {sending && chatMode !== 'dm' ? (
+              {(chatMode === 'direct' ? sending && liveStreamForView : sending) && chatMode !== 'dm' ? (
                 <button
                   onClick={stopSending}
                   className={`${compactComposer ? 'w-8 h-8 rounded-full flex items-center justify-center' : 'px-3 py-2.5 rounded-xl'} bg-red-600 hover:bg-red-500 text-white text-sm transition-colors`}
