@@ -64,6 +64,7 @@ import type {
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
+import { CommentDigest, isTerminalTaskStatus, resolveCommentAttention } from './task-attention.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -272,6 +273,8 @@ export class TaskServiceError extends Error {
 export class TaskService implements ApprovalTargetPort {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
+  /** Coalescing buffer for record-only comments (see task-attention.ts). */
+  private readonly commentDigest = new CommentDigest();
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
@@ -691,23 +694,36 @@ export class TaskService implements ApprovalTargetPort {
       },
       timestamp: new Date().toISOString(),
     });
-    // Inject live comment into running agent's context (or trigger post-task reply)
-    this.injectCommentIntoRunningTask(taskId, authorName, content);
+    // ── Attention economy: ONE decision point for "does this comment wake anyone?" ──
+    // See docs/architecture/task-attention-economy.md. Before this, plain
+    // agent-to-agent comments woke the assignee and creator, were live-injected
+    // into the running session, and (on closed cards) started a whole new LLM
+    // turn. 60% of those wakes ended in `end_turn`.
+    const attentionTask = this.tasks.get(taskId);
+    const attention = resolveCommentAttention({
+      authorId,
+      authorType: opts?.authorType === 'human' ? 'human' : 'agent',
+      mentions,
+      taskStatus: attentionTask?.status ?? 'unknown',
+      assignedAgentId: attentionTask?.assignedAgentId,
+      createdBy: attentionTask?.createdBy,
+      reviewerId: attentionTask?.reviewerId,
+      commentKind: opts?.commentKind,
+    });
 
-    // Notify agents about the comment
-    if (this.agentManager) {
+    // Record-only comments reach the assignee as a COALESCED digest (never a
+    // per-comment interruption); directives are delivered immediately.
+    this.injectCommentIntoRunningTask(taskId, authorName, content, {
+      commentId: comment.id,
+      directive: !attention.recordOnly,
+    });
+
+    // Notify agents about the comment.
+    if (this.agentManager && !attention.recordOnly) {
       const task = this.tasks.get(taskId);
       const taskTitle = task?.title ?? taskId;
       const taskStatus = task?.status ?? 'unknown';
       const notified = new Set<string>();
-
-      // Suppress assignee/creator notifications when the reviewer posts during
-      // an active review.  The review outcome is communicated via the status
-      // transition (completed / in_progress revision), not intermediate comments.
-      // @mention notifications are still delivered.
-      const isReviewerDuringReview = task?.status === 'review'
-        && !!task.reviewerId
-        && authorId === task.reviewerId;
 
       // Count consecutive agent-only comments for streak awareness
       let agentStreak = 0;
@@ -733,7 +749,7 @@ export class TaskService implements ApprovalTargetPort {
           lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
-        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`If you do decide a reply IS warranted, gather full context first:`);
         lines.push(`1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`);
         lines.push(`2. Read ALL previous comments on this task to understand the conversation thread`);
         lines.push(`3. Only THEN formulate your response using \`task_comment\``);
@@ -742,7 +758,6 @@ export class TaskService implements ApprovalTargetPort {
       };
 
       const isHuman = opts?.authorType === 'human';
-      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -772,23 +787,18 @@ export class TaskService implements ApprovalTargetPort {
         }
       }
 
-      if (!isReviewerDuringReview) {
-        const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
-        const handledByInjection = task?.status === 'in_progress' || (task?.status && terminalStatuses.has(task.status));
-
-        // 2. Notify task assignee as 'task_comment' — skip when assignee is
-        // already reached via injectCommentIntoRunningTask (in_progress → live
-        // injection) or handlePostTaskComment (terminal → session reply).
-        // Also skipped for a *decision record*: its delivery is owned by another
-        // channel (the status transition), so fanning it out here would state the
-        // same fact twice.
-        if (task?.assignedAgentId && !handledByInjection && !isDecisionRecord) {
-          enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
-        }
-        // 3. Notify creator (skip in_progress and terminal — same reasons)
-        if (task?.createdBy && !handledByInjection && !isDecisionRecord) {
-          enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
-        }
+      // Wake exactly the agents the attention decision named. Mentions are
+      // already enqueued above as `mention` (explicit addressing); this loop
+      // covers the two state-change signals: human author and reviewer verdict.
+      for (const target of attention.wake) {
+        if (target.reason === 'mention') continue;
+        enqueueFor(
+          target.agentId,
+          'task_comment',
+          target.reason === 'review_verdict'
+            ? `Reviewer verdict from ${authorName} on the task you are executing`
+            : `Comment from ${authorName} on a task you own or execute`,
+        );
       }
     }
     const serialized = {
@@ -885,7 +895,7 @@ export class TaskService implements ApprovalTargetPort {
           lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
-        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`If you decide a reply IS warranted, gather full context first:`);
         lines.push(`1. Call \`requirement_get\` with requirement_id "${requirementId}" to see the full description, linked tasks, and all comments`);
         lines.push(`2. Read ALL previous comments to understand the conversation thread`);
         lines.push(`3. Only THEN formulate your response using \`requirement_comment\``);
@@ -3052,15 +3062,23 @@ export class TaskService implements ApprovalTargetPort {
 
   /**
    * Fallback actor-type resolution for the terminal-revert guard, used only
-   * when the caller did not pass an explicit `updatedByType`. A caller id that
-   * resolves in the agent roster is an agent; anything else (human user id,
-   * unknown) is not — unknown ids fail closed to non-agent (humans/system own
-   * reopen authority; agents always pass explicit 'agent' type).
+   * when the caller did not pass an explicit `updatedByType`. FAIL CLOSED: an
+   * id that is not a known human user is treated as an agent.
+   *
+   * History (T25, 2026-10-17): this used to default *unknown* ids to 'human',
+   * while the agent tool surface never passed an explicit type — so every agent
+   * revert of a completed card was a bet on whether the optional `agentManager`
+   * collaborator happened to be wired. It wasn't, and the guard silently passed.
    */
   private resolveActorTypeForGuard(updatedBy?: string): 'human' | 'agent' | 'system' {
     if (!updatedBy) return 'system';
     if (this.agentManager?.hasAgent(updatedBy)) return 'agent';
-    return 'human';
+    if (this.userNameLookup) {
+      try {
+        if (this.userNameLookup(updatedBy)) return 'human';
+      } catch { /* ignore */ }
+    }
+    return 'agent';
   }
 
   private resolveActorName(actorId?: string, actorType?: string): string | null {    if (!actorId) return null;
@@ -5864,42 +5882,197 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /**
-   * Inject a live comment into a running task's agent session.
-   * The comment becomes a user message in the LLM context, so the agent
-   * sees it on its next turn and can act on the feedback immediately.
+   * Record a comment into a running task's context — COALESCED, never per-comment.
    *
-   * For completed tasks, triggers an asynchronous post-task conversation
-   * where the agent reads the comment, replies, and records the exchange.
+   * Record-only comments (the 2026-10-17 storm case) pile up in a per-session
+   * buffer and are delivered as ONE non-directive digest per window. Directives
+   * (mention / human author / reviewer verdict) are delivered the same way — the
+   * difference is they also enqueue a mailbox item, not that they interrupt.
+   *
+   * For a closed card, only a directive justifies spending a whole new LLM turn
+   * (`handlePostTaskComment`); a record-only comment just stays in the thread.
    */
-  injectCommentIntoRunningTask(taskId: string, authorName: string, content: string): void {
+  injectCommentIntoRunningTask(
+    taskId: string,
+    authorName: string,
+    content: string,
+    opts?: { commentId?: string; directive?: boolean },
+  ): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
-    const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
-    if (terminalStatuses.has(task.status)) {
-      void this.handlePostTaskComment(taskId, task, authorName, content);
+    if (isTerminalTaskStatus(task.status)) {
+      if (opts?.directive) void this.handlePostTaskComment(taskId, task, authorName, content);
       return;
     }
 
     if (task.status !== 'in_progress') return;
     if (!task.assignedAgentId || !this.agentManager) return;
 
-    try {
-      const agent = this.agentManager.getAgent(task.assignedAgentId);
-      const round = task.executionRound ?? 1;
-      const sessionId = `task_${taskId}_r${round}`;
-      const injectedMessage = [
-        `⚡ **LIVE COMMENT from ${authorName}** (just posted while you are working):`,
-        '',
+    const agentId = task.assignedAgentId;
+    const round = task.executionRound ?? 1;
+    const sessionId = `task_${taskId}_r${round}`;
+
+    this.commentDigest.enqueue(
+      sessionId,
+      {
+        commentId: opts?.commentId ?? '',
+        authorName,
         content,
-        '',
-        '**IMPORTANT: Address this comment in your current work. It may contain new instructions, corrections, or feedback that you must follow.**',
-      ].join('\n');
-      agent.injectUserMessage(sessionId, injectedMessage);
-      log.info('Injected live comment into agent session', { taskId, sessionId, authorName });
-    } catch (err) {
-      log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
+        createdAt: new Date().toISOString(),
+      },
+      message => {
+        try {
+          const agent = this.agentManager!.getAgent(agentId);
+          agent.injectUserMessage(sessionId, message);
+          log.info('Delivered coalesced comment digest', { taskId, sessionId });
+        } catch (err) {
+          log.warn('Failed to deliver comment digest', { taskId, error: String(err) });
+        }
+      },
+    );
+  }
+
+  // ─── Attention economy: one open question + single-point adjudication ──────
+
+  /**
+   * Open THE open question for a task. At most one may exist: a second one is
+   * rejected with an actionable message naming the existing question and its
+   * decider. This is what stops "argue in 43 comments until someone gives up".
+   */
+  askTaskDecision(
+    taskId: string,
+    input: { text: string; askedBy: string; askedByName: string; deciderId?: string },
+  ): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new TaskServiceError('TASK_NOT_FOUND', `Task not found: ${taskId}`, { taskId });
+    const text = (input.text ?? '').trim();
+    if (!text) throw new TaskServiceError('QUESTION_REQUIRED', 'A decision question needs non-empty text.', { taskId });
+
+    if (task.openQuestion) {
+      const q = task.openQuestion;
+      throw new TaskServiceError(
+        'OPEN_QUESTION_EXISTS',
+        `Task "${task.title}" already has one open question (asked by ${q.askedByName}): "${q.text}".`
+        + ` Only one open question is allowed per card — get it decided with task_decide (decider: ${q.deciderId ?? task.reviewerId})`
+        + ` or withdraw it before opening another. If you are just recording information, use task_note instead.`,
+        { taskId, openQuestionId: q.id },
+      );
     }
+
+    const deciderId = input.deciderId ?? task.reviewerId;
+    const question = {
+      id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      text,
+      askedBy: input.askedBy,
+      askedByName: input.askedByName,
+      at: new Date().toISOString(),
+      deciderId,
+    };
+
+    const now = new Date().toISOString();
+    task.openQuestion = question;
+    task.updatedAt = now;
+    void (this.taskRepo as unknown as { update: (id: string, data: Record<string, unknown>) => Promise<void> } | undefined)
+      ?.update(taskId, { openQuestion: question });
+
+    this.addTaskNote(taskId, `[OPEN QUESTION] ${input.askedByName}: ${text} (decider: ${deciderId})`, input.askedByName);
+    this.ws?.broadcastTaskUpdate(taskId, task.status, { title: task.title });
+
+    // The decider is the ONE person who must act — waking them is the point.
+    try {
+      const decider = this.agentManager?.getAgent(deciderId);
+      decider?.enqueueToMailbox('mention', {
+        summary: `Decision needed on task "${task.title}"`,
+        content: [
+          `${input.askedByName} is blocked on a decision and named you as the decider.`,
+          '',
+          `Task: "${task.title}" (${taskId}, status: ${task.status})`,
+          `Open question: ${text}`,
+          '',
+          'Answer with `task_decide` (point + decision + optional rationale). For facts you can read from the repo, decide from evidence — do not open a discussion thread.',
+        ].join('\n'),
+        taskId,
+      }, { metadata: { senderName: input.askedByName, senderRole: 'agent', taskId } });
+    } catch { /* decider offline — the question is still on the card */ }
+
+    return task;
+  }
+
+  /**
+   * Record THE ruling on a contested point. Closes the open question, appends to
+   * the append-only decision log, and (optionally) notifies the assignee once.
+   * Authority is restricted to the reviewer, the creator, or a human.
+   */
+  recordTaskDecision(
+    taskId: string,
+    input: { point: string; decision: string; rationale?: string; decidedBy: string; decidedByName: string; isHuman?: boolean },
+  ): Task {
+    const task = this.tasks.get(taskId);
+    if (!task) throw new TaskServiceError('TASK_NOT_FOUND', `Task not found: ${taskId}`, { taskId });
+
+    const point = (input.point ?? '').trim();
+    const decision = (input.decision ?? '').trim();
+    if (!point || !decision) {
+      throw new TaskServiceError('DECISION_INCOMPLETE', 'A decision needs both `point` and `decision`.', { taskId });
+    }
+
+    const authorized = input.isHuman
+      || input.decidedBy === task.reviewerId
+      || input.decidedBy === task.createdBy;
+    if (!authorized) {
+      throw new TaskServiceError(
+        'DECISION_NOT_AUTHORIZED',
+        `Only the task reviewer (${task.reviewerId}), the creator (${task.createdBy ?? 'n/a'}), or a human can decide a contested point on "${task.title}".`
+        + ' If you believe the decision is wrong, open ONE open question with task_ask_decision — do not argue in the comment thread.',
+        { taskId },
+      );
+    }
+
+    const record = {
+      id: `d_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      point,
+      decision,
+      rationale: input.rationale?.trim() || undefined,
+      decidedBy: input.decidedBy,
+      decidedByName: input.decidedByName,
+      at: new Date().toISOString(),
+    };
+
+    task.decisions = [...(task.decisions ?? []), record];
+    task.openQuestion = undefined;
+    task.updatedAt = record.at;
+    void (this.taskRepo as unknown as { update: (id: string, data: Record<string, unknown>) => Promise<void> } | undefined)
+      ?.update(taskId, { decisions: task.decisions, openQuestion: null });
+
+    this.addTaskNote(
+      taskId,
+      `[DECISION] ${input.decidedByName} on "${point}" → ${decision}${record.rationale ? ` (why: ${record.rationale})` : ''}`,
+      input.decidedByName,
+    );
+    this.ws?.broadcastTaskUpdate(taskId, task.status, { title: task.title });
+
+    // One bounded notification: the assignee needs to know the point is closed.
+    if (task.assignedAgentId && task.assignedAgentId !== input.decidedBy) {
+      try {
+        const assignee = this.agentManager?.getAgent(task.assignedAgentId);
+        assignee?.enqueueToMailbox('task_comment', {
+          summary: `Decision recorded on task "${task.title}"`,
+          content: [
+            `${input.decidedByName} decided a contested point on task "${task.title}" (${taskId}).`,
+            '',
+            `Point: ${point}`,
+            `Decision: ${decision}`,
+            ...(record.rationale ? [`Why: ${record.rationale}`] : []),
+            '',
+            'This is final for this card — follow it. No reply is required; do not re-open the discussion.',
+          ].join('\n'),
+          taskId,
+        }, { metadata: { senderName: input.decidedByName, senderRole: 'agent', taskId } });
+      } catch { /* assignee offline */ }
+    }
+
+    return task;
   }
 
   /**

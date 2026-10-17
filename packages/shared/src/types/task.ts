@@ -77,6 +77,35 @@ export interface SubTask {
   completedAt?: string;
 }
 
+/**
+ * One open question per task — the platform primitive that replaces
+ * "argue in the comment thread until someone gives up".
+ *
+ * See docs/architecture/task-attention-economy.md §3.2.
+ */
+export interface TaskOpenQuestion {
+  id: string;
+  text: string;
+  askedBy: string;
+  askedByName: string;
+  at: string;
+  /** Who is expected to decide. Defaults to the task reviewer. */
+  deciderId?: string;
+}
+
+/** A single point of record, decided by the one actor with authority over it. */
+export interface TaskDecision {
+  id: string;
+  /** The disputed point / frozen fact, stated neutrally. */
+  point: string;
+  /** The ruling. This is what everyone follows from now on. */
+  decision: string;
+  rationale?: string;
+  decidedBy: string;
+  decidedByName: string;
+  at: string;
+}
+
 export interface Task {
   id: string;
   orgId: string;
@@ -124,6 +153,12 @@ export interface Task {
   deliverables?: TaskDeliverable[];
   /** Agent's completion summary (set on task_submit_review) */
   completionSummary?: string;
+
+  // ── Attention-economy fields (see docs/architecture/task-attention-economy.md) ──
+  /** At most ONE open question per task. A second one is rejected until this is decided. */
+  openQuestion?: TaskOpenQuestion;
+  /** Append-only adjudication log — the single authority on contested frozen facts. */
+  decisions?: TaskDecision[];
 
   // ── Scheduling fields ──
   /** 'standard' (default) or 'scheduled' for cron/recurring tasks */

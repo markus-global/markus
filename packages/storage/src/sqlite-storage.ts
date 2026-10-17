@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at TEXT,
   task_type TEXT NOT NULL DEFAULT 'standard',
   schedule_config TEXT,
+  open_question TEXT,
+  decisions TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -747,6 +749,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'tasks', column: 'task_type', sql: "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'standard'" },
     { table: 'tasks', column: 'schedule_config', sql: "ALTER TABLE tasks ADD COLUMN schedule_config TEXT" },
     { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
+    { table: 'tasks', column: 'open_question', sql: "ALTER TABLE tasks ADD COLUMN open_question TEXT" },
+    { table: 'tasks', column: 'decisions', sql: "ALTER TABLE tasks ADD COLUMN decisions TEXT DEFAULT '[]'" },
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
@@ -1410,7 +1414,7 @@ export class SqliteTaskRepo {
 
   async update(
     id: string,
-    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerId?: string; updatedBy?: string }
+    data: { title?: string; description?: string; priority?: string; notes?: string[]; blockedBy?: string[]; projectId?: string | null; requirementId?: string | null; scheduleConfig?: Record<string, unknown> | null; reviewerId?: string; updatedBy?: string; openQuestion?: unknown; decisions?: unknown[] }
   ) {
     const sets: string[] = [];
     const vals: SqlParams = [];
@@ -1453,6 +1457,14 @@ export class SqliteTaskRepo {
     if ((data as any).reviewerType !== undefined) {
       sets.push('reviewer_type = ?');
       vals.push((data as any).reviewerType);
+    }
+    if (data.openQuestion !== undefined) {
+      sets.push('open_question = ?');
+      vals.push(data.openQuestion === null ? null : toJson(data.openQuestion));
+    }
+    if (data.decisions !== undefined) {
+      sets.push('decisions = ?');
+      vals.push(toJson(data.decisions));
     }
     if (data.updatedBy !== undefined) {
       sets.push('updated_by = ?');
@@ -1624,6 +1636,8 @@ export class SqliteTaskRepo {
       taskType: (r['task_type'] as string) ?? 'standard',
       scheduleConfig: fromJson(r['schedule_config'] as string),
       completionSummary: (r['completion_summary'] as string) ?? undefined,
+      openQuestion: fromJson(r['open_question'] as string) ?? undefined,
+      decisions: fromJson<unknown[]>(r['decisions'] as string) ?? [],
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
       dueAt: toDate(r['due_at'] as string),

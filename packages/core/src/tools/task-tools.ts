@@ -60,6 +60,26 @@ export interface AgentTaskContext {
     status: string
   ) => Promise<{ id: string; title: string; status: string }>;
   /**
+   * Attention economy: open THE open question on a task (at most one per card).
+   * See docs/architecture/task-attention-economy.md §3.2.
+   */
+  askTaskDecision?: (
+    taskId: string,
+    text: string,
+    askerId: string,
+    askerName: string,
+    deciderId?: string,
+  ) => { id: string; title: string; status: string } | Promise<{ id: string; title: string; status: string }>;
+  /** Attention economy: record the ruling on a contested point (reviewer/creator/human only). */
+  recordTaskDecision?: (
+    taskId: string,
+    point: string,
+    decision: string,
+    rationale: string | undefined,
+    deciderId: string,
+    deciderName: string,
+  ) => { id: string; title: string; status: string } | Promise<{ id: string; title: string; status: string }>;
+  /**
    * Re-open a task's **creation gate** approval after a 打回 (changes requested).
    * Only valid while the task is still `pending` and has no active approval —
    * a 打回 performs zero state transition, so without this the task would be an
@@ -585,6 +605,20 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           }
 
           if (newStatus) {
+            // Terminal-state authority (T25, 2026-10-17): an agent can NOT reopen a
+            // closed card. A stray `task_update` flipped completed → in_progress 94s
+            // after approval and silently broke the card's blockedBy dependents.
+            if (newStatus === 'in_progress') {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.status === 'completed') {
+                return JSON.stringify({
+                  status: 'denied',
+                  error:
+                    'This task is already completed — an agent cannot reopen it. Rework goes through the reviewer BEFORE closure (request revision while the card is in review); after closure only a human can reopen it. If you found a real defect, open ONE open question with task_ask_decision instead of flipping the status.',
+                });
+              }
+            }
+
             if (newStatus === 'review') {
               const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
               if (existing?.assignedAgentId === ctx.agentId) {
@@ -785,6 +819,92 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   message: 'Creation approval re-initiated — the reviewer has been asked to decide again.',
                   taskId: result.taskId,
                   approvalId: result.approvalId,
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.askTaskDecision
+      ? [
+          {
+            name: 'task_ask_decision',
+            description: [
+              'Ask ONE decision question on a task and name the decider — the replacement for arguing in the comment thread.',
+              'Rules the platform enforces: (a) at most ONE open question per card — a second ask is rejected with the existing question and its decider;',
+              '(b) the decider is woken; nobody else is;',
+              '(c) the decider answers with task_decide, which closes the question and appends a ruling to the card.',
+              'USE ONLY when another agent/human must CHOOSE between options and you cannot settle it from evidence.',
+              'DO NOT use for status updates, corrections, or facts you can verify yourself — those belong in task_note (one-way record).',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID the question belongs to' },
+                question: { type: 'string', description: 'The single question, stated so it can be answered with a decision (include the options if there are any)' },
+                decider_id: { type: 'string', description: 'Agent ID expected to decide. Defaults to the task reviewer.' },
+              },
+              required: ['task_id', 'question'],
+            },
+            async execute(args: Record<string, unknown>) {
+              try {
+                const task = await ctx.askTaskDecision!(
+                  args['task_id'] as string,
+                  args['question'] as string,
+                  ctx.agentId,
+                  ctx.agentName,
+                  args['decider_id'] as string | undefined,
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  task: { id: task.id, title: task.title, status: task.status },
+                  message: 'Open question recorded. The decider has been woken. Do NOT chase it in comments — continue what you can, or wait.',
+                });
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
+    ...(ctx.recordTaskDecision
+      ? [
+          {
+            name: 'task_decide',
+            description: [
+              'Record the ruling on a contested point of a task — the single point of authority for “whose snapshot is right”.',
+              'Appends to an append-only decision log, closes the card’s open question, and notifies the assignee once.',
+              'Authority: the task reviewer, the task creator, or a human. Anyone else is rejected.',
+              'This is how you END a disagreement: state the point neutrally, state the ruling, cite the anchor (file/line/contract §).',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                task_id: { type: 'string', description: 'The task ID to record the decision on' },
+                point: { type: 'string', description: 'The contested point / frozen fact, stated neutrally (not who is right)' },
+                decision: { type: 'string', description: 'The ruling everyone follows from now on' },
+                rationale: { type: 'string', description: 'Optional: evidence/anchor (file:line, contract section, test result)' },
+              },
+              required: ['task_id', 'point', 'decision'],
+            },
+            async execute(args: Record<string, unknown>) {
+              try {
+                const task = await ctx.recordTaskDecision!(
+                  args['task_id'] as string,
+                  args['point'] as string,
+                  args['decision'] as string,
+                  args['rationale'] as string | undefined,
+                  ctx.agentId,
+                  ctx.agentName,
+                );
+                return JSON.stringify({
+                  status: 'success',
+                  task: { id: task.id, title: task.title, status: task.status },
+                  message: 'Decision recorded and the open question closed. No reply is expected from anyone.',
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });

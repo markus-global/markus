@@ -1053,7 +1053,7 @@ describe('TaskService', () => {
   });
 
   describe('postTaskComment notifications', () => {
-    it('notifies mentioned agents and injects comment into in-progress task', async () => {
+    it('notifies mentioned agents immediately and never interrupts the running session mid-work', async () => {
       const taskCommentRepo = {
         add: vi.fn().mockResolvedValue({
           id: 'c2',
@@ -1087,7 +1087,9 @@ describe('TaskService', () => {
         expect.any(Object),
       );
       const agentA = agentManager.getAgent(AGENT_A);
-      expect(agentA.injectUserMessage).toHaveBeenCalled();
+      // Attention economy (2026-10-17): comments never live-inject per comment.
+      // They land in a coalesced digest delivered on the next window.
+      expect(agentA.injectUserMessage).not.toHaveBeenCalled();
     });
 
     it('notifies human mentions via HITL service', async () => {
@@ -1617,7 +1619,7 @@ describe('TaskService', () => {
       expect(ts.getTask(task.id)!.deliverables![0]!.summary).toMatch(/Run #|New output/);
     });
 
-    it('suppresses assignee notification when reviewer comments during review', async () => {
+    it('wakes the assignee when a human comments during review', async () => {
       const taskCommentRepo = {
         add: vi.fn().mockResolvedValue({
           id: 'c-rev', taskId: 't', authorId: REVIEWER, authorName: 'Reviewer',
@@ -1633,7 +1635,10 @@ describe('TaskService', () => {
         authorType: 'human',
       });
 
-      expect(agentManager.getAgent(AGENT_A).enqueueToMailbox).not.toHaveBeenCalled();
+      // A human speaking is a high-value signal (people write rarely) — the
+      // assignee IS woken. What no longer happens is a plain agent-to-agent
+      // comment waking them (see task-attention.test.ts).
+      expect(agentManager.getAgent(AGENT_A).enqueueToMailbox).toHaveBeenCalled();
     });
 
     it('runTaskFresh executes without prior context after retryTaskFresh', async () => {

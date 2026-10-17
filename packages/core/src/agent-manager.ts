@@ -269,7 +269,11 @@ export interface TaskServiceBridge {
     pageSize: number;
     totalPages: number;
   };
-  updateTaskStatus(id: string, status: string, updatedBy?: string): { id: string; title: string; status: string };
+  updateTaskStatus(id: string, status: string, updatedBy?: string, internal?: boolean, skipAutoStart?: boolean, updatedByType?: 'human' | 'agent' | 'system'): { id: string; title: string; status: string };
+  /** Attention economy: open THE open question on a task (at most one). */
+  askTaskDecision(taskId: string, input: { text: string; askedBy: string; askedByName: string; deciderId?: string }): { id: string; title: string; status: string };
+  /** Attention economy: record the ruling on a contested point (reviewer/creator/human only). */
+  recordTaskDecision(taskId: string, input: { point: string; decision: string; rationale?: string; decidedBy: string; decidedByName: string }): { id: string; title: string; status: string };
   getTask(
     id: string
   ):
@@ -1840,7 +1844,18 @@ export class AgentManager {
           });
         },
         updateTaskStatus: async (taskId, status) => {
-          return ts.updateTaskStatus(taskId, status, id);
+          // Explicit actor type — the platform must never INFER "who am I" from the
+          // payload. T25 (2026-10-17): inference defaulted unknown ids to 'human'
+          // and let an agent revert a completed card.
+          return ts.updateTaskStatus(taskId, status, id, false, false, 'agent');
+        },
+        askTaskDecision: (taskId, text, askerId, askerName, deciderId) => {
+          const t = ts.askTaskDecision(taskId, { text, askedBy: askerId, askedByName: askerName, deciderId });
+          return { id: t.id, title: t.title, status: t.status };
+        },
+        recordTaskDecision: (taskId, point, decision, rationale, deciderId, deciderName) => {
+          const t = ts.recordTaskDecision(taskId, { point, decision, rationale, decidedBy: deciderId, decidedByName: deciderName });
+          return { id: t.id, title: t.title, status: t.status };
         },
         requestRevision: async (taskId, reason) => {
           return ts.requestRevision(taskId, reason, id);
@@ -2768,7 +2783,16 @@ export class AgentManager {
             page: filter?.page,
             pageSize: filter?.pageSize,
           }),
-        updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
+        updateTaskStatus: async (taskId, status) =>
+          ts.updateTaskStatus(taskId, status, id, false, false, 'agent'),
+        askTaskDecision: (taskId, text, askerId, askerName, deciderId) => {
+          const t = ts.askTaskDecision(taskId, { text, askedBy: askerId, askedByName: askerName, deciderId });
+          return { id: t.id, title: t.title, status: t.status };
+        },
+        recordTaskDecision: (taskId, point, decision, rationale, deciderId, deciderName) => {
+          const t = ts.recordTaskDecision(taskId, { point, decision, rationale, decidedBy: deciderId, decidedByName: deciderName });
+          return { id: t.id, title: t.title, status: t.status };
+        },
         requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
         requestTaskApproval: ts.requestTaskApproval
           ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)

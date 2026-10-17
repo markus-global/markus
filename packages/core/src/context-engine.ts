@@ -1757,11 +1757,25 @@ export class ContextEngine {
         break;
 
       case 'comment_response':
-        lines.push('You are responding to a **comment on a task or requirement**. You MUST follow the context-first protocol below.');
+        lines.push('You are looking at a **comment on a task or requirement**. **By default you do NOT respond.** Most comments are a record of what someone did, not a request to you.');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is NOT directly visible. You MUST use `task_comment` or `requirement_comment` tool to post your reply — that is what appears in the comment thread visible to both humans and agents. To reach a human outside the comment thread, use `notify_user`. To reach another agent, use `agent_send_message`.');
+        lines.push('**Communication channel**: Your text output is NOT directly visible. If you do reply, you MUST use `task_comment` or `requirement_comment` tool — that is what appears in the thread.', '');
         lines.push('');
-        lines.push('**MANDATORY context-gathering protocol (do this BEFORE writing any reply):**');
+        lines.push('**Reply ONLY IF one of these is true:**');
+        lines.push('- You were @mentioned by name — someone explicitly wants you.');
+        lines.push('- The comment asks you a direct question that you can answer.');
+        lines.push('- You are the decider for an open question on this card.');
+        lines.push('');
+        lines.push('Otherwise call the `end_turn` tool and go back to your work. Ending quietly is the **correct, expected outcome** — it is not a failure, and it needs no explanation.');
+        lines.push('');
+        lines.push('**If you do reply, keep it short and final:**');
+        lines.push('- ONE consolidated reply — never one reply per comment, never a second reply to acknowledge the first.');
+        lines.push('- State the fact, its anchor (file:line / contract § / test result), and what changes. Aim for <500 words; long essays lose.');
+        lines.push('- Never restate what someone else already said correctly. Add information or stay silent.');
+        lines.push('');
+        lines.push('**Do not argue.** If you disagree about a frozen fact and you are not the decider, open ONE open question with `task_ask_decision` and stop. Arguing in the thread burns the entire team\'s context for nothing.');
+        lines.push('');
+        lines.push('**If you decide to reply, gather context first:**');
         lines.push('1. **Fetch the full item**: Call `task_get` (for task comments) or `requirement_get` (for requirement comments) to retrieve the complete current state — title, description, status, assignee, linked items, comments, and all fields');
         lines.push('2. **Read ALL previous comments**: Review the entire comment thread to understand the conversation history, who said what, and what has already been discussed or decided');
         lines.push('3. **Identify the commenter\'s intent**: Is it a question? A request for action? Feedback? A status inquiry? An objection?');
@@ -1780,11 +1794,11 @@ export class ContextEngine {
         lines.push('- Give a generic acknowledgment like "Got it, will look into it" without substantive content');
         lines.push('- Ignore prior comments that provide important context for the current discussion');
         lines.push('');
-        lines.push('**MANDATORY outcome — you MUST end with exactly one of these:**');
-        lines.push('1. Call `task_comment` or `requirement_comment` tool to post your reply, OR');
-        lines.push('2. Call the `end_turn` tool to explicitly signal that no response is warranted.');
+        lines.push('**End your turn with exactly one of these:**');
+        lines.push('1. Call `task_comment` or `requirement_comment` to post ONE reply (only if the reply conditions above hold), OR');
+        lines.push('2. Call the `end_turn` tool — the default when nothing is required of you.');
         lines.push('');
-        lines.push('If you finish without doing either of the above, the system will automatically retry your turn — your text output alone is NEVER sufficient.');
+        lines.push('If you finish without doing either, the system will retry your turn once — your text output alone is NEVER sufficient.');
         lines.push('');
         lines.push('**Batch awareness**: You may receive MULTIPLE comments bundled together (separated by `---`).');
         lines.push('This happens when several comments arrived while you were busy. Read ALL of them first,');
