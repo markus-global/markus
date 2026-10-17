@@ -1275,7 +1275,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <svg className={`w-4 h-4 shrink-0 text-fg-tertiary transition-transform ${expandedProvider === 'markus' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </div>
                 {expandedProvider === 'markus' && (
-                  <div className="px-5 pb-5 space-y-3 border-t border-border-default/50">
+                  <div className="px-4 md:px-5 pb-5 space-y-3 border-t border-border-default/50">
                     <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetupLogin')}</p>
                     <button onClick={() => navBus.navigate(PAGE.SETTINGS, { tab: 'account' })}
                       className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">
@@ -1360,7 +1360,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
 
                 {expandedProvider === name && (
-                  <div className="px-5 pb-4 border-t border-border-default pt-4 space-y-4">
+                  <div className="px-4 md:px-5 pb-4 border-t border-border-default pt-4 space-y-4">
                     {name === 'ollama' && (
                       <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
                         <div className="flex items-center gap-2">
@@ -1431,13 +1431,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                               <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
-                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
                                 {editProviderSaving ? t('common:saving') : t('common:save')}
                               </button>
                               <button onClick={() => setEditingProvider(null)}
-                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                                 {t('common:cancel')}
                               </button>
                             </div>
@@ -1461,7 +1461,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                           <div className="flex flex-wrap gap-2 mt-2">
                             <button onClick={e => { e.stopPropagation(); void testProvider(name); }}
                               disabled={testingProvider === name}
-                              className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                              className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
                               {testingProvider === name ? (
                                 <><svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>{t('modelProviders.testing')}</>
                               ) : t('modelProviders.test')}
@@ -1470,14 +1470,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 base URL / key editing (and its upstream must not be surfaced). */}
                             {name !== 'markus' && (
                               <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
-                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                                 {t('common:edit')}
                               </button>
                             )}
                             {name !== 'markus' && (
                               <button onClick={e => { e.stopPropagation(); setProviderDeleteTarget({ name, label: info.displayName ?? name }); }}
                                 disabled={deletingProvider === name}
-                                className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
+                                className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap">
                                 {deletingProvider === name ? t('common:deleting') : t('common:delete')}
                               </button>
                             )}
@@ -1755,13 +1755,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || addProviderForm.name === '__custom__' || !addProviderForm.model}
-                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
                   {addProviderSaving ? t('modelProviders.adding') : t('modelProviders.addProviderSubmit')}
                 </button>
                 <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); setAddProviderCatalogModels([]); setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 }); }}
-                  className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                  className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                   {t('common:cancel')}
                 </button>
               </div>
@@ -1945,7 +1945,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── Default Provider ───── */}
         <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
@@ -1960,7 +1960,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors shrink-0 whitespace-nowrap">
                     {saving ? t('common:saving') : t('common:save')}
                   </button>
                 )}
@@ -1968,7 +1968,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
             {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
 
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
+            <div className="flex flex-col gap-3 border-t border-border-default pt-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
@@ -1987,7 +1987,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }
                   } catch { /* ignore */ }
                 }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? false) ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
@@ -2142,7 +2142,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxToolIterations')}</div>
@@ -2210,18 +2210,18 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ── Concurrent Processing（并发处理） ── */}
         <Section title={t('concurrent.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
             <div className="text-xs text-fg-tertiary">{t('concurrent.description')}</div>
 
             {/* Enable toggle */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('concurrent.enabled')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.enabledDesc')}</div>
               </div>
               <button
                 onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
-                className={`relative w-10 h-5 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
+                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
               </button>
@@ -2291,7 +2291,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
           {/* ── Backend selector: built-in browser vs system Chrome ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.backendTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.backendDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2340,7 +2340,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
 
           {/* ── Element selection: HOW the agent picks an element (orthogonal to the backend above) ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.elementSelectionTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.elementSelectionDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2390,7 +2390,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Mode status: depends on selected backend ── */}
           {browserMode === 'embedded' ? (
-            <div className="bg-surface-elevated rounded-xl p-5 mb-4 flex items-start gap-3">
+            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 flex items-start gap-3">
               <span className="mt-0.5 w-2 h-2 rounded-full bg-green-400 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold text-fg-primary">{t('browserAutomation.embeddedActiveTitle')}</div>
@@ -2412,7 +2412,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </div>
           ) : (
-            <div className={`rounded-xl p-5 mb-4 ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated border border-border-default'}`}>
+            <div className={`rounded-xl p-4 md:p-5 mb-4 ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated border border-border-default'}`}>
               <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
                 <div className="flex min-w-0 items-center gap-2">
                   <span className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStatus')}</span>
@@ -2454,7 +2454,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionDownloadError') }); }
                             setBrowserSaving(false);
                           }}
-                          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                          className="mt-2 inline-flex max-w-full items-center gap-1.5 px-3 py-1.5 text-xs text-left break-words bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                           {browserSaving ? t('browserAutomation.extensionStep1Downloading') : t('browserAutomation.extensionStep1Btn')}
@@ -2503,7 +2503,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </>
               )}
 
-              <div className="mt-4 pt-4 border-t border-border-default flex items-center justify-between">
+              <div className="mt-4 pt-4 border-t border-border-default flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="text-xs text-fg-tertiary mr-4">{t('browserAutomation.backendVerifyDesc')}</div>
                 <button
                   onClick={async () => {
@@ -2524,9 +2524,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           )}
 
           {/* ── General Settings (always visible) ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.generalSettings')}</div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.bringToFront')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.bringToFrontDesc')}</div>
@@ -2544,12 +2544,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserBringToFront ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${browserBringToFront ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserBringToFront ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
+            <div className="flex flex-col gap-3 border-t border-border-default pt-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoCloseTabs')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoCloseTabsDesc')}</div>
@@ -2567,7 +2567,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClose ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${browserAutoClose ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
@@ -2578,13 +2578,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Advanced: alternative ways to connect System Chrome (only when extension not connected) ── */}
           {browserMode === 'system-chrome' && !browserExtensionConnected && (
-            <div className="bg-surface-elevated rounded-xl p-5 mb-4 space-y-4">
+            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 space-y-4">
               <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.advancedOptions')}</div>
 
               {/* Auto-click Chrome Allow Dialog toggle */}
               <div>
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 mr-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex-1 min-w-0 md:mr-4">
                     <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoClickAllowDialogDesc')}</div>
                     <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
@@ -2593,7 +2593,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     <button
                       disabled={browserSaving}
                       onClick={async () => {
@@ -3218,7 +3218,7 @@ function CollapsibleAvailableModels({
               value={filter}
               onChange={e => setFilter(e.target.value)}
               placeholder={t('modelProviders.filterModels')}
-              className="flex-1 max-w-[220px] px-2 py-1 text-[10px] rounded-md bg-surface-overlay/50 border border-border-default text-fg-secondary placeholder:text-fg-tertiary"
+              className="flex-1 min-w-0 max-w-[220px] px-2 py-1 text-[10px] rounded-md bg-surface-overlay/50 border border-border-default text-fg-secondary placeholder:text-fg-tertiary"
             />
           )}
         </div>
@@ -3330,7 +3330,7 @@ function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
                 )}
                 <button
                   onClick={() => onAdd(id)}
-                  className="text-[9px] text-brand-500 hover:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                  className="text-[9px] text-brand-500 hover:text-brand-400 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0"
                 >
                   {t('modelProviders.addModel')}
                 </button>
@@ -3410,7 +3410,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
         <input type="text" placeholder={t('modelProviders.modelId')} value={addModelForm.id}
           onChange={e => setAddModelForm({ ...addModelForm, id: e.target.value })}
           className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
@@ -3449,11 +3449,11 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </label>
         <div className="flex-1" />
         <button onClick={onAdd} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
-          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors">
+          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors whitespace-nowrap">
           {addModelSaving ? t('modelProviders.adding') : t('common:create')}
         </button>
         <button onClick={onCancel}
-          className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors">
+          className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors whitespace-nowrap">
           {t('common:cancel')}
         </button>
       </div>

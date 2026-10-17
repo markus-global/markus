@@ -319,7 +319,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
       </div>
 
       {/* Default / Fallback Model */}
-      <div className="bg-surface-elevated rounded-xl p-5 space-y-3">
+      <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-fg-primary">{t('modelRouting.defaultModelTitle')}</h3>
           <p className="text-xs text-fg-tertiary mt-1">{t('modelRouting.defaultModelDesc')}</p>
@@ -353,7 +353,7 @@ export function ModelRoutingSection({ onSave, configuredProviders }: Props) {
       </div>
 
       {/* Capability-Model Assignment Table */}
-      <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+      <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-fg-primary">{t('modelRouting.capabilityAssignTitle')}</h3>
           <p className="text-xs text-fg-tertiary mt-1">{t('modelRouting.capabilityAssignDesc')}</p>
@@ -451,14 +451,14 @@ function CapabilityGroup({
           return (
             <div
               key={capabilityType}
-              className={`flex items-center gap-3 px-3 py-2 rounded-lg ${
+              className={`flex flex-wrap items-center gap-2 px-3 py-2 rounded-lg md:flex-nowrap md:gap-3 ${
                 isMismatch ? 'bg-red-500/10 border border-red-500/30'
                 : isStale ? 'bg-yellow-500/10 border border-yellow-500/30'
                 : !hasModels && !assignment ? 'bg-amber-500/5 border border-amber-500/20'
                 : 'bg-surface-overlay/40'
               }`}
             >
-              <div className="w-28 shrink-0">
+              <div className="w-full shrink-0 md:w-28">
                 <span className="text-xs text-fg-primary">{t(`modelRouting.capabilities.${capabilityType}`)}</span>
               </div>
               <div className="flex-1 min-w-0">
