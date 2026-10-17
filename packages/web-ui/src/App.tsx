@@ -2,7 +2,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, mem
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
-import { useNavRingSwipe, ringStep, ringIndex, currentRingSub, requestRingSub, ringDebugNote } from './lib/navRing.ts';
+import { useNavRingSwipe, ringStep, ringIndex, currentRingSub, requestRingSub, ringDebugLog } from './lib/navRing.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -529,16 +529,23 @@ export function App() {
   // ONE definition lives in lib/navRing.ts; this is the only gesture entry point
   // for page-level swipes, and containers that own a horizontal gesture opt out
   // with `data-swipe-owner`.
+  const ringStepNo = useRef(0);
   const onRingStep = useCallback((delta: 1 | -1) => {
     const from = pageRef.current;
     const sub = currentRingSub(from);
     const step = ringStep(from, sub, delta);
-    // Dev-only readout (no console on a phone): this is the measurement that tells
-    // us whether the ring resolved the location the user actually sees.
-    ringDebugNote(`${from}:${sub ?? '-'}  idx=${ringIndex(from, sub)}  ${delta > 0 ? '+1' : '-1'}  →  ${step ? `${step.page}:${step.sub ?? '-'}` : 'OFF-RING'}`);
+    // Dev-only readout (no console on a phone): each swipe appends one line to a
+    // persistent, copyable panel so a report can quote exactly what the ring
+    // resolved instead of describing what the screen did.
+    ringStepNo.current += 1;
+    ringDebugLog(`#${ringStepNo.current} ${from}:${sub ?? '-'} idx=${ringIndex(from, sub)} ${delta > 0 ? '左滑+1' : '右滑-1'} → ${step ? `${step.page}:${step.sub ?? '-'}` : 'OFF-RING'}`);
     if (!step) return; // off-ring pages (settings, search, store) ignore swipes
     if (step.sub) requestRingSub(step.page, step.sub);
     navigate(step.page);
+    const target = step;
+    window.setTimeout(() => {
+      ringDebugLog(`    落点 hash=${location.hash || '(none)'} 页面自报=${currentRingSub(target.page) ?? '-'}`);
+    }, 700);
   }, [navigate]);
 
   useNavRingSwipe({ enabled: isMobile, onStep: onRingStep });
