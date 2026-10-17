@@ -6,6 +6,7 @@ import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
+import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -116,7 +117,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
     return unsub;
   }, [agentId, reload]);
 
-  if (!agent) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">{t('agent:profilePage.loadingAgent')}</div>;
+  if (!agent) return <PageLoading label={t('agent:profilePage.loadingAgent')} />;
 
   const statusDot = agentStatusPresentation(agent.state.status).dotClass;
   const canManageAgents = authUser?.role === 'owner' || authUser?.role === 'admin';

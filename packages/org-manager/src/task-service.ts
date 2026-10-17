@@ -73,6 +73,13 @@ import { CronExpressionParser } from 'cron-parser';
 
 const log = createLogger('task-service');
 
+/**
+ * Board buckets that accumulate unbounded over an org's lifetime (archived tasks
+ * alone can reach tens of MB). The board endpoint caps these; active buckets
+ * (pending/in_progress/blocked/review) stay complete.
+ */
+const TERMINAL_BOARD_STATUSES: ReadonlyArray<TaskStatus> = ['completed', 'failed', 'rejected', 'cancelled', 'archived'];
+
 /** Format a Date as local time with timezone, e.g. "2026-03-17 22:45:59 (Asia/Shanghai, UTC+08:00)" */
 function formatLocalTimestamp(d: Date = new Date()): string {
   const pad = (n: number) => String(n).padStart(2, '0');
@@ -3687,7 +3694,9 @@ export class TaskService implements ApprovalTargetPort {
     });
 
     // ── Pagination ──
-    const pageSize = Math.min(Math.max(opts?.pageSize ?? 20, 1), TASK_LIST_PAGE_MAX);
+    // Small default page: the first paint should not ship the whole board.
+    // Callers that need more scroll explicitly (page/pageSize) or load more.
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 10, 1), TASK_LIST_PAGE_MAX);
     const totalPages = Math.max(Math.ceil(total / pageSize), 1);
     const page = Math.min(Math.max(opts?.page ?? 1, 1), totalPages);
     const start = (page - 1) * pageSize;
@@ -3700,7 +3709,12 @@ export class TaskService implements ApprovalTargetPort {
     return [...this.tasks.values()].filter(t => t.assignedAgentId === agentId);
   }
 
-  getTaskBoard(orgId: string, filters?: { projectId?: string }): Record<TaskStatus, Task[]> {
+  getTaskBoard(orgId: string, filters?: { projectId?: string; terminalLimit?: number }): {
+    /** Per-status task lists. Terminal buckets may be capped (see `terminalLimit`). */
+    board: Record<TaskStatus, Task[]>;
+    /** True per-status totals, regardless of any bucket cap — the authoritative counts. */
+    counts: Record<TaskStatus, number>;
+  } {
     const board: Record<TaskStatus, Task[]> = {
       pending: [],
       in_progress: [],
@@ -3712,19 +3726,41 @@ export class TaskService implements ApprovalTargetPort {
       cancelled: [],
       archived: [],
     };
+    const counts: Record<TaskStatus, number> = {
+      pending: 0,
+      in_progress: 0,
+      blocked: 0,
+      review: 0,
+      completed: 0,
+      failed: 0,
+      rejected: 0,
+      cancelled: 0,
+      archived: 0,
+    };
 
     for (const task of this.tasks.values()) {
       if (task.orgId !== orgId) continue;
       if (filters?.projectId && task.projectId !== filters.projectId) continue;
-      const bucket = board[task.status];
-      if (bucket) {
-        bucket.push(task);
-      } else {
-        (board.pending as Task[]).push(task);
+      const status: TaskStatus = board[task.status] ? task.status : 'pending';
+      counts[status] += 1;
+      board[status].push(task);
+    }
+
+    // Terminal buckets grow unbounded over an org's lifetime (archived alone can be
+    // tens of MB). Cap them to the most-recent N when a limit is given; active
+    // buckets stay complete. `counts` still reports the true totals.
+    const limit = filters?.terminalLimit ?? 0;
+    if (limit > 0) {
+      for (const status of TERMINAL_BOARD_STATUSES) {
+        const bucket = board[status];
+        if (bucket.length > limit) {
+          bucket.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
+          board[status] = bucket.slice(0, limit);
+        }
       }
     }
 
-    return board;
+    return { board, counts };
   }
 
   getDashboard(orgId?: string): {

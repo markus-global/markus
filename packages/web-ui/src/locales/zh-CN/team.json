@@ -51,7 +51,9 @@
     "annPlaceholder": "在此编写团队公告（支持 Markdown）...",
     "normsPlaceholder": "定义团队规范和工作协议（支持 Markdown）...",
     "noAnnouncements": "暂无公告，点击添加。",
-    "noNorms": "暂未定义规范，点击添加。"
+    "noNorms": "暂未定义规范，点击添加。",
+    "noMembers": "暂无成员",
+    "teamMissing": "未找到该团队"
   },
   "contextMenu": {
     "renameTeam": "重命名团队",

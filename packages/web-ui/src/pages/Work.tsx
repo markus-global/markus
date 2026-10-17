@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
 import {
   type ScheduleDraft,
@@ -6173,7 +6174,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     selectProject, selectAllProjects, openItemDetail, setL1CollapsedPersisted, layout,
   ]);
 
-  if (loading) return <div className="flex-1 flex items-center justify-center text-fg-tertiary">{t('work:task.loadingPage')}</div>;
+  if (loading) return <PageLoading label={t('work:task.loadingPage')} />;
 
   const hasDetail = rightDetailMode !== 'closed' || !!(selectedTask || selectedReq);
   const dualDetail = !isMobile && !!(selectedTask && selectedReq) && rightDetailMode === 'item';

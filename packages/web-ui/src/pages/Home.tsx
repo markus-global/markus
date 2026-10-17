@@ -89,6 +89,8 @@ export interface HomePreviewData {
   agents?: AgentInfo[];
   teams?: TeamInfo[];
   board?: Record<string, TaskInfo[]>;
+  /** Authoritative per-status task counts (from the board summary). */
+  boardCounts?: Record<string, number>;
   ops?: OpsDashboard | null;
   requirements?: RequirementInfo[];
   projects?: ProjectInfo[];
@@ -104,6 +106,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
+  const [boardCounts, setBoardCounts] = useState<Record<string, number>>(previewData?.boardCounts ?? {});
   const [ops, setOps] = useState<OpsDashboard | null>(previewData?.ops ?? null);
   const opsPeriod = '7d' as const;
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.requirements ?? []);
@@ -185,6 +188,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     if (previewData.agents) setAgents(previewData.agents);
     if (previewData.teams) setTeams(previewData.teams);
     if (previewData.board) setBoard(previewData.board);
+    if (previewData.boardCounts) setBoardCounts(previewData.boardCounts);
     setOps(previewData.ops ?? null);
     setAllRequirements(previewData.requirements ?? []);
     setProjects(previewData.projects ?? []);
@@ -211,9 +215,12 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
       }).catch(() => {});
     }).catch(() => {});
     const teamsP = api.teams.list().then(d => setTeams(d.teams)).catch(() => {});
-    api.tasks.board().then(d => setBoard(d.board)).catch(() => {});
+    // Summary board: counts for every status + active/failed columns only —
+    // avoids pulling the (unbounded) terminal task lists just to show numbers.
+    api.tasks.boardSummary().then(d => { setBoard(d.board); setBoardCounts(d.counts); }).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
-    const reqsP = api.requirements.list().then(d => setAllRequirements(d.requirements)).catch(() => {});
+    // Lean list: Home only needs requirement counts by status (no descriptions).
+    const reqsP = api.requirements.list({ lean: true }).then(d => setAllRequirements(d.requirements)).catch(() => {});
     const projsP = api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
     api.deliverables.search({ limit: 18 }).then(d => {
       setDeliverableTotal(d.total);
@@ -399,10 +406,15 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [previewMode, opsPeriod, isActive, refresh]);
 
   // ── Computed ──
+  // Prefer authoritative counts from the board summary; fall back to list lengths
+  // (e.g. preview fixtures) when counts aren't present.
   const rootStatusCounts: Record<string, number> = {};
-  for (const [status, tasks] of Object.entries(board)) {
+  const countSource: Record<string, number> = Object.keys(boardCounts).length > 0
+    ? boardCounts
+    : Object.fromEntries(Object.entries(board).map(([s, tasks]) => [s, tasks.length]));
+  for (const [status, count] of Object.entries(countSource)) {
     if (status === 'archived') continue;
-    if (tasks.length > 0) rootStatusCounts[status] = tasks.length;
+    if (count > 0) rootStatusCounts[status] = count;
   }
   const completed = rootStatusCounts['completed'] ?? 0;
   const totalRootTasks = Object.values(rootStatusCounts).reduce((s, c) => s + c, 0);

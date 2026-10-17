@@ -32,7 +32,7 @@ export interface AgentOption {
 }
 
 async function fetchAgentOptions(): Promise<AgentOption[]> {
-  const { agents } = await api.agents.list();
+  const { agents } = await api.agents.list({ lean: true });
   return agents.map((a) => ({ id: a.id, name: a.name, role: a.role }));
 }
 

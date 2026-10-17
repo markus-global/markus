@@ -2525,6 +2525,19 @@ export class SqliteChatSessionRepo {
     return { messages: rows.slice(0, limit).reverse(), hasMore };
   }
 
+  /**
+   * Fetch ONE message with its full, unclipped metadata.
+   * Used by the chat detail endpoint: history pages ship a lean view, and the
+   * full execution trace (tool args/results/thinking) is loaded only when the
+   * user expands a block.
+   */
+  getMessage(sessionId: string, messageId: string) {
+    const row = this.db
+      .prepare('SELECT * FROM chat_messages WHERE id = ? AND session_id = ?')
+      .get(messageId, sessionId) as Record<string, unknown> | undefined;
+    return row ? this._mapMsg(row) : null;
+  }
+
   getMessageCount(sessionId: string): number {
     const r = this.db
       .prepare('SELECT COUNT(*) as cnt FROM chat_messages WHERE session_id = ?')

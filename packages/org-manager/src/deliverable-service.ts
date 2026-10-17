@@ -163,7 +163,7 @@ export class DeliverableService {
     limit?: number;
   }): { results: Deliverable[]; total: number } {
     const offset = opts.offset ?? 0;
-    const limit = opts.limit ?? 100;
+    const limit = opts.limit ?? 30;
     const queryLower = opts.query?.toLowerCase();
     const keywords = queryLower ? queryLower.split(/\s+/).filter(Boolean) : [];
 

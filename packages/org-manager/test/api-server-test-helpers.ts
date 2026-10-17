@@ -115,6 +115,8 @@ export async function request(
   };
   const req = new MockIncomingMessage(method, path, reqHeaders, bodyStr);
   const res = new MockServerResponse();
+  // Mirror Node's ServerResponse.req, which handlers read for content negotiation.
+  (res as unknown as { req: unknown }).req = req;
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req._simulate();
   await waitForResponse(res);
@@ -142,6 +144,7 @@ export async function requestRaw(
   };
   const req = new MockIncomingMessage(method, path, reqHeaders, '');
   const res = new MockServerResponse();
+  (res as unknown as { req: unknown }).req = req;
   server.handleRequest(req as unknown as IncomingMessage, res as unknown as ServerResponse);
   req.emit('data', bodyBuf);
   req.emit('end');
@@ -353,6 +356,7 @@ export function createMockStorage(): StorageBridge {
         id: sessionId, agentId: AGENT_A, userId: 'anonymous', title: 'Chat', isMain: false,
       })),
       getMessages: vi.fn(async () => ({ messages: [{ id: 'm1', role: 'user', content: 'Hi' }], hasMore: false })),
+      getMessage: vi.fn((_sessionId: string, messageId: string) => ({ id: messageId, role: 'assistant', content: 'Hi' })),
       hasAnySessions: vi.fn(() => true),
       deleteSession: vi.fn(async () => {}),
       deleteLastExchange: vi.fn(async () => {}),

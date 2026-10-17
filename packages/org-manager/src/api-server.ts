@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createHash } from 'node:crypto';
 import { join, resolve, dirname } from 'node:path';
 import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync, statSync } from 'node:fs';
-import { gzipSync } from 'node:zlib';
+import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
 import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
@@ -80,6 +81,7 @@ import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
+import { leanChatMessage } from './message-lean.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -125,6 +127,26 @@ import {
 } from './agent-conservator.js';
 
 const log = createLogger('api-server');
+
+// ── Response compression (single implementation point) ──────────────────────
+// Both the JSON API outlet (`json`) and static-asset serving compress through
+// these helpers so the encoding rules live in exactly one place.
+// Below COMPRESS_MIN_BYTES the fixed overhead of gzip/br is not worthwhile.
+const COMPRESS_MIN_BYTES = 1024;
+
+/** Pick the best content-encoding a client accepts for a body of `size` bytes, or null to send raw. */
+function pickContentEncoding(acceptEncoding: string | undefined, size: number): 'br' | 'gzip' | null {
+  if (size < COMPRESS_MIN_BYTES) return null;
+  const accept = (acceptEncoding ?? '').toLowerCase();
+  if (accept.includes('br')) return 'br';
+  if (accept.includes('gzip')) return 'gzip';
+  return null;
+}
+
+/** Encode a body buffer with the chosen content-encoding. */
+function encodeBody(body: Buffer, encoding: 'br' | 'gzip'): Buffer {
+  return encoding === 'br' ? brotliCompressSync(body) : gzipSync(body);
+}
 
 /** One top-level entry of an agent directory, as reported to the storage panel. */
 interface AgentStorageSubItem {
@@ -4096,7 +4118,44 @@ export class APIServer {
         this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
       } catch { /* best-effort */ }
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
-      this.json(res, 200, result);
+      // History pages ship a LEAN view of the execution trace: full tool
+      // arguments/results and intermediate text are 44x the prose and are only
+      // needed when the user expands a process block (see message-lean.ts).
+      // `?lean=0` keeps the old full payload for diagnostics.
+      const lean = url.searchParams.get('lean') !== '0';
+      const messages = lean
+        ? result.messages.map((m: { metadata?: unknown }) => leanChatMessage(m))
+        : result.messages;
+      this.json(res, 200, { messages, hasMore: result.hasMore });
+      return;
+    }
+
+    // Full, unclipped detail for ONE message — loaded when the user expands a
+    // process block in a lean history page.
+    if (path.match(/^\/api\/sessions\/[^/]+\/messages\/[^/]+$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const sessionId = parts[3]!;
+      const messageId = parts[5]!;
+      if (!this.storage) {
+        this.json(res, 404, { error: 'Message not found' });
+        return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (session && session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
+      }
+      const message = this.storage.chatSessionRepo.getMessage(sessionId, messageId);
+      if (!message) {
+        this.json(res, 404, { error: 'Message not found' });
+        return;
+      }
+      this.json(res, 200, { message });
       return;
     }
 
@@ -4445,6 +4504,11 @@ export class APIServer {
 
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
+      // lean=1: light payload for pickers/searchers that only need id/name/role/status.
+      // Skips the per-agent runtime + conservator derivation and skill-warning lookups
+      // below — the bulk of this endpoint's CPU cost and payload. Live-status views keep
+      // the default; full detail is also available on GET /api/agents/:id.
+      const lean = url.searchParams.get('lean') === '1';
       let agents = this.orgService.getAgentManager().listAgents() as Array<Record<string, unknown>>;
       // Merge avatarUrl from storage
       if (this.storage) {
@@ -4480,6 +4544,10 @@ export class APIServer {
         agents = agents.map(a =>
           disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
+      }
+      if (lean) {
+        this.json(res, 200, { agents });
+        return;
       }
       // OB-1: 把「笼统的思考中」展开为可读运行阶段 —— idle/thinking/running/
       // waiting-dependency/degraded/blocked/error/offline + 阻塞依赖标题 + 最近活动。
@@ -7163,7 +7231,12 @@ EXPLANATION_END`;
           return true;
         });
       }
-      this.json(res, 200, { approvals });
+      // Bounded list: approvals accumulate over a long-lived org. Callers page with
+      // limit/offset; `total` lets the UI show counts without fetching everything.
+      const total = approvals.length;
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50), 500);
+      const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
+      this.json(res, 200, { approvals: approvals.slice(offset, offset + limit), total, limit, offset });
       return;
     }
 
@@ -12984,18 +13057,33 @@ EXPLANATION_END`;
       const status = url.searchParams.get('status') ?? undefined;
       const source = url.searchParams.get('source') ?? undefined;
       const projectId = url.searchParams.get('projectId') ?? undefined;
+      // `lean=1` drops the (large) description so list consumers that only need
+      // titles/counts don't ship the whole corpus. `limit`/`offset` bound the page.
+      const lean = url.searchParams.get('lean') === '1';
+      const limitParam = url.searchParams.get('limit');
+      const offsetParam = url.searchParams.get('offset');
+      const limit = limitParam ? Math.max(parseInt(limitParam, 10) || 0, 0) : 0;
+      const offset = offsetParam ? Math.max(parseInt(offsetParam, 10) || 0, 0) : 0;
       if (!this.requirementService) {
         this.json(res, 200, { requirements: [] });
         return;
       }
-      this.json(res, 200, {
-        requirements: this.requirementService.listRequirements({
-          orgId,
-          status: status as any,
-          source: source as any,
-          projectId,
-        }),
+      let requirements = this.requirementService.listRequirements({
+        orgId,
+        status: status as any,
+        source: source as any,
+        projectId,
       });
+      const total = requirements.length;
+      if (offset > 0) requirements = requirements.slice(offset);
+      if (limit > 0) requirements = requirements.slice(0, limit);
+      if (lean) {
+        requirements = requirements.map(r => {
+          const { description: _description, ...rest } = r;
+          return rest as typeof r;
+        });
+      }
+      this.json(res, 200, { requirements, total });
       return;
     }
 
@@ -13840,6 +13928,7 @@ EXPLANATION_END`;
 
       // ── Sessions / Channels ──────────────────────────────────────────────
       regex(/^\/api\/sessions\/[^/]+\/messages$/, 'GET'),
+      regex(/^\/api\/sessions\/[^/]+\/messages\/[^/]+$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/channels\/[^/]+\/messages$/, 'GET', 'POST'),
 
@@ -13870,6 +13959,7 @@ EXPLANATION_END`;
       exact('/api/tasks/deliverables', 'GET'),
       exact('/api/tasks/dashboard', 'GET'),
       exact('/api/taskboard', 'GET'),
+      exact('/api/taskboard/summary', 'GET'),
       exact('/api/ops/dashboard', 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),
@@ -14189,13 +14279,16 @@ EXPLANATION_END`;
     const cacheControl = opts?.cacheControl ?? (ext === 'html' ? 'no-cache' : 'public, max-age=31536000, immutable');
 
     const COMPRESSIBLE = new Set(['html', 'js', 'mjs', 'css', 'json', 'svg', 'map']);
-    const acceptEncoding = req?.headers?.['accept-encoding'] ?? '';
-    if (COMPRESSIBLE.has(ext) && body.byteLength > 1024 && typeof acceptEncoding === 'string' && acceptEncoding.includes('gzip')) {
-      const compressed = gzipSync(body);
+    const acceptEncoding = req?.headers?.['accept-encoding'];
+    const encoding = COMPRESSIBLE.has(ext)
+      ? pickContentEncoding(typeof acceptEncoding === 'string' ? acceptEncoding : undefined, body.byteLength)
+      : null;
+    if (encoding) {
+      const compressed = encodeBody(body, encoding);
       res.writeHead(200, {
         'Content-Type': contentType,
         'Content-Length': compressed.byteLength,
-        'Content-Encoding': 'gzip',
+        'Content-Encoding': encoding,
         'Cache-Control': cacheControl,
         'Vary': 'Accept-Encoding',
       });
@@ -14335,8 +14428,47 @@ EXPLANATION_END`;
   }
 
   json(res: ServerResponse, status: number, data: unknown): void {
-    res.writeHead(status, { 'Content-Type': 'application/json' });
-    res.end(JSON.stringify(data));
+    // 204/304 are bodyless by spec.
+    if (status === 204 || status === 304) {
+      res.writeHead(status);
+      res.end();
+      return;
+    }
+    const payload = Buffer.from(JSON.stringify(data));
+    const req = (res as { req?: IncomingMessage }).req;
+    // Content-addressed ETag + "revalidate every time": repeated GETs of unchanged
+    // data cost a 304 round-trip instead of reshipping the body; changed data is
+    // always delivered fresh. `private` keeps authenticated payloads out of shared caches.
+    const etag = `"${createHash('sha1').update(payload).digest('hex')}"`;
+    const ifNoneMatch = req?.headers?.['if-none-match'];
+    if (status === 200 && typeof ifNoneMatch === 'string'
+      && ifNoneMatch.split(',').some(tag => tag.trim() === etag)) {
+      res.writeHead(304, { ETag: etag, 'Cache-Control': 'private, no-cache' });
+      res.end();
+      return;
+    }
+    const accept = req?.headers?.['accept-encoding'];
+    const encoding = pickContentEncoding(typeof accept === 'string' ? accept : undefined, payload.byteLength);
+    if (encoding) {
+      const encoded = encodeBody(payload, encoding);
+      res.writeHead(status, {
+        'Content-Type': 'application/json',
+        'Content-Encoding': encoding,
+        'Content-Length': encoded.byteLength,
+        'Vary': 'Accept-Encoding',
+        'ETag': etag,
+        'Cache-Control': 'private, no-cache',
+      });
+      res.end(encoded);
+      return;
+    }
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': payload.byteLength,
+      'ETag': etag,
+      'Cache-Control': 'private, no-cache',
+    });
+    res.end(payload);
   }
 
   readBody(req: IncomingMessage): Promise<Record<string, unknown>> {

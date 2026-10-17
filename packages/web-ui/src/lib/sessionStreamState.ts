@@ -26,7 +26,6 @@
  */
 
 import { useSyncExternalStore } from 'react';
-import { api, wsClient } from '../api.ts';
 
 export interface SessionStreamEntry {
   agentId: string;
@@ -73,13 +72,26 @@ export class SessionStreamState {
 
   /**
    * 本端乐观提示（发送 / 显式停止的即时反馈）。
-   * **不得**覆盖已有的服务端条目 —— 权威一旦发过话，本地就不再猜。
+   *
+   * 排序规则与服务器事件一致：**按时间**，不是按来源。旧的实现是「只要已有服务端
+   * 条目就一律拒绝本地写入」，这条规则把**同一个会话的上一回合终态**（服务端
+   * `streaming:false`）当成了对本回合的裁决 —— 于是第二次发送之后，直到服务端
+   * 推送新的 `streaming:true` 之前，`liveStreamForView` 一直是 false：
+   *  · 气泡拿不到「在途」身份（画不出 ActivityIndicator），
+   *  · 但同时又不是终态 → 渲染成一个**只有按钮没有正文的空气泡**。
+   * 这就是「刚发完消息，看到一个空白气泡，过一会才变成输出中/正文」的机制。
+   *
+   * 新规则：本地写只要比手里的服务端条目**更新**就生效；服务端随后到达的事件
+   * （时间戳更晚）依旧压过它 —— 权威仍可否决派生，只是不再用上一回合的裁决
+   * 回答这一回合的问题。
    */
   applyLocalOptimistic(agentId: string, sessionId: string, streaming: boolean): void {
     const prev = this.bySession.get(sessionId);
-    if (prev && prev.source === 'server') return;
+    const at = Date.now();
+    // 同一时刻或更晚的服务端状态仍然优先（服务端时间可能领先本机时钟）。
+    if (prev && prev.source === 'server' && prev.at >= at) return;
     const changed = !prev || prev.streaming !== streaming;
-    this.bySession.set(sessionId, { agentId, streaming, source: 'local', at: Date.now() });
+    this.bySession.set(sessionId, { agentId, streaming, source: 'local', at });
     if (changed) this.bump();
   }
 
@@ -131,47 +143,6 @@ export class SessionStreamState {
 }
 
 export const sessionStreamState = new SessionStreamState();
-
-/** WS 载荷形状（服务端 `session:stream_state`）。 */
-function readStreamStateEvent(event: unknown): { agentId: string; sessionId: string; streaming: boolean } | null {
-  const p = (event as { payload?: { agentId?: unknown; sessionId?: unknown; streaming?: unknown } })?.payload;
-  if (!p || typeof p.sessionId !== 'string' || typeof p.streaming !== 'boolean') return null;
-  return {
-    agentId: typeof p.agentId === 'string' ? p.agentId : '',
-    sessionId: p.sessionId,
-    streaming: p.streaming,
-  };
-}
-
-let feedAttached = false;
-
-/**
- * 接上权威供给（幂等）。WS 推送是主口径；轮询兜底由调用方按打开的 tab 触发
- * （见 `reconcileOpenSessions`）。
- */
-export function ensureSessionStreamStateFeed(): void {
-  if (feedAttached) return;
-  feedAttached = true;
-  wsClient.on('session:stream_state', (event: unknown) => {
-    const s = readStreamStateEvent(event);
-    if (!s) return;
-    // 信封的 timestamp 是**服务端**时钟 —— 排序必须用它，不能用本地时钟。
-    const at = Date.parse((event as { timestamp?: string }).timestamp ?? '') || Date.now();
-    sessionStreamState.applyServerState(s.agentId, s.sessionId, s.streaming, at);
-  });
-}
-
-/** 对打开的会话做一次批量对账（一次请求覆盖全部 tab）。 */
-export async function reconcileOpenSessions(agentId: string, sessionIds: string[]): Promise<void> {
-  if (!agentId || sessionIds.length === 0) return;
-  try {
-    const res = await api.sessions.streamStatusBatch(agentId, sessionIds);
-    sessionStreamState.reconcileFromServer(agentId, res.streaming ?? {}, res.at);
-  } catch {
-    /* 对账失败不改写状态：保留上一次已知权威，等下一轮 */
-  }
-  sessionStreamState.prune();
-}
 
 /**
  * 订阅**任意**会话的存活性变化。返回值（revision）无需使用 —— 调用它本身就让组件在

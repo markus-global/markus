@@ -5,6 +5,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
 import { TaskServiceError } from '../task-service.js';
 
+/** Default cap applied to each terminal board bucket (completed/failed/rejected/cancelled/archived). */
+const DEFAULT_BOARD_TERMINAL_LIMIT = 100;
+
 export async function handleTasksRoutes(
   server: APIServer,
   req: IncomingMessage,
@@ -26,18 +29,62 @@ export async function handleTasksRoutes(
       const pageSizeParam = url.searchParams.get('pageSize');
       const page = pageParam ? parseInt(pageParam, 10) : undefined;
       const pageSize = pageSizeParam ? parseInt(pageSizeParam, 10) : undefined;
+      // lean=1 drops the heavy embedded payload (description, notes, subtasks,
+      // deliverables, result) for callers that only need lightweight rows — e.g.
+      // the Team @-mention index. Full detail still comes from GET /api/tasks/:id.
+      const lean = url.searchParams.get('lean') === '1';
 
       const result = server.taskService.queryTasks({
         orgId, status, assignedAgentId, projectId, requirementId,
         priority, search, sortBy, sortOrder, page, pageSize,
       });
+      if (lean) {
+        const rows = result.tasks as unknown as Array<Record<string, unknown>>;
+        result.tasks = rows.map(t => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+          priority: t.priority,
+          assignedAgentId: t.assignedAgentId,
+          reviewerId: t.reviewerId,
+          reviewerType: t.reviewerType,
+          projectId: t.projectId,
+          requirementId: t.requirementId,
+          executionRound: t.executionRound,
+          taskType: t.taskType,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        })) as typeof result.tasks;
+      }
       server.json(res, 200, result);
       return true;
     }
 
     if (path === '/api/tasks/scheduled' && req.method === 'GET') {
-      const tasks = server.taskService.listScheduledTasks();
-      server.json(res, 200, { tasks });
+      // Bounded + lean: a long-lived org accumulates many recurring tasks, and each
+      // full Task carries subtasks/notes/deliverables/result. Callers page with
+      // limit/offset; lean drops the heavy fields but keeps scheduleConfig (the
+      // whole point of a scheduled task).
+      const all = server.taskService.listScheduledTasks();
+      const total = all.length;
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20), 200);
+      const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
+      const lean = url.searchParams.get('lean') === '1';
+      const page = all.slice(offset, offset + limit).map(t => lean ? {
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        assignedAgentId: t.assignedAgentId,
+        reviewerId: t.reviewerId,
+        projectId: t.projectId,
+        requirementId: t.requirementId,
+        taskType: t.taskType,
+        scheduleConfig: t.scheduleConfig,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      } : t);
+      server.json(res, 200, { tasks: page, total, limit, offset });
       return true;
     }
 
@@ -460,8 +507,34 @@ export async function handleTasksRoutes(
     if (path === '/api/taskboard' && req.method === 'GET') {
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const projectId = url.searchParams.get('projectId') ?? undefined;
-      const board = server.taskService.getTaskBoard(orgId, { projectId });
-      server.json(res, 200, { board });
+      // Terminal buckets grow unbounded — cap them by default (?full=1 opts out).
+      const full = url.searchParams.get('full') === '1';
+      const limitParam = url.searchParams.get('terminalLimit');
+      const parsedLimit = limitParam ? Math.max(parseInt(limitParam, 10) || 0, 0) : DEFAULT_BOARD_TERMINAL_LIMIT;
+      const terminalLimit = full ? 0 : parsedLimit;
+      const { board, counts } = server.taskService.getTaskBoard(orgId, { projectId, terminalLimit });
+      server.json(res, 200, { board, counts });
+      return true;
+    }
+
+    // Lightweight board for dashboards: active columns + authoritative counts,
+    // without the (potentially huge) terminal buckets.
+    if (path === '/api/taskboard/summary' && req.method === 'GET') {
+      const orgId = url.searchParams.get('orgId') ?? 'default';
+      const projectId = url.searchParams.get('projectId') ?? undefined;
+      // Cap `failed` so a long tail of failures can't bloat the dashboard either;
+      // counts.failed still reports the true total.
+      const { board, counts } = server.taskService.getTaskBoard(orgId, { projectId, terminalLimit: 50 });
+      server.json(res, 200, {
+        board: {
+          pending: board.pending,
+          in_progress: board.in_progress,
+          blocked: board.blocked,
+          review: board.review,
+          failed: board.failed,
+        },
+        counts,
+      });
       return true;
     }
 

@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, memo, type MouseEven
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import type { AgentInfo } from '../api.ts';
+import { api, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
@@ -15,7 +15,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { Avatar } from '../components/Avatar.tsx';
-import { isRememberActionVisible, stripNotifyContext, stripThinkingBlocks, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
+import { isRememberActionVisible, stripNotifyContext, stripThinkingBlocks, storedSegmentsToMsgSegments, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
 export { isRememberActionVisible };
 
 // ─── NotificationBadge ────────────────────────────────────────────────────────
@@ -264,11 +264,12 @@ export function MessageActions({
   const { t } = useTranslation(['team', 'common']);
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
   const isStopped = msg.isStopped;
-  const isEmptyReply = !!msg.emptyReply || (
-    msg.sender === 'agent' && !msg.text?.trim() && !(msg.segments?.some(s =>
-      (s.type === 'text' && (s.content || s.thinking)) || s.type === 'tool'
-    ))
-  );
+  // Only the server's verdict counts. "This bubble has no text yet" is NOT evidence
+  // that the turn produced nothing: while history is still loading, or before the
+  // first delta lands, the body is legitimately empty. Deriving the verdict here is
+  // what made the newest agent bubble say "no output" and then flip to the real
+  // answer a moment later.
+  const isEmptyReply = msg.emptyReply === true;
   const canRetry = isLastAgentMsg !== false;
   const canRemember = isRememberActionVisible(showRemember, msg.sender) && !!onRemember;
   return (
@@ -689,6 +690,7 @@ export function ProcessRun({
   isLastBlock,
   hideApprovalCards,
   reconnecting,
+  onExpand,
 }: {
   entries: ExecutionStreamEntryUI[];
   summary: ProcessRunSummary;
@@ -697,6 +699,11 @@ export function ProcessRun({
   /** 这是时间线上的最后一块 —— 只有它可能以「思考中」收尾。 */
   isLastBlock: boolean;
   hideApprovalCards?: boolean;
+  /**
+   * Fired the first time the row is opened. History pages ship a clipped trace,
+   * so this is the signal to fetch the full one for that message.
+   */
+  onExpand?: () => void;
   /**
    * SSE 传输断了、正在自动接回（服务端其实还在跑）。
    * 此时**不能**收起「输出中」的活动反馈 —— 否则用户会以为这一轮已经结束，
@@ -763,7 +770,7 @@ const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconne
     <div className="min-w-0">
       <button
         type="button"
-        onClick={() => setOpen(v => !v)}
+        onClick={() => { setOpen(v => !v); if (!open) onExpand?.(); }}
         aria-expanded={open}
         data-process-state={state}
         title={labelText}
@@ -1027,13 +1034,34 @@ export const AgentMessageBody = memo(function AgentMessageBody({
   knownNames?: string[];
 }) {
   const { t } = useTranslation(['team', 'common']);
-  const segments = msg.segments;
   const isStopped = msg.isStopped;
   // 过程（思考/工具）默认折成一行，流式中和结束后**同一套结构** ——
   // 展开状态由每个过程块自己持有（见 ProcessRun）。
   // 这轮结束后，最终结果之前的一切还会再整体折进顶部一行
   // （见 collapsibleBlockCount），这里持的就是那一行的展开开关。
   const [showFullHistory, setShowFullHistory] = useState(false);
+
+  // History pages ship a LEAN trace (tool results/args/thinking clipped) because
+  // the full trace is ~44x the prose. The collapsed bubble renders from the lean
+  // view; the first expand fetches the untouched original exactly once.
+  const [detailSegments, setDetailSegments] = useState<MsgSegment[] | null>(null);
+  const detailRequested = useRef(false);
+  const requestDetail = useCallback(() => {
+    if (!msg.needsDetail || !msg.sessionId || detailRequested.current) return;
+    detailRequested.current = true;
+    api.sessions.getMessageDetail(msg.sessionId, msg.id)
+      .then(({ message }) => {
+        const stored = message.metadata?.segments;
+        if (stored?.length) setDetailSegments(storedSegmentsToMsgSegments(stored));
+      })
+      .catch(() => { /* keep rendering the lean view */ });
+  }, [msg.needsDetail, msg.sessionId, msg.id]);
+
+  useEffect(() => {
+    if (showFullHistory) requestDetail();
+  }, [showFullHistory, requestDetail]);
+
+  const segments = detailSegments ?? msg.segments;
 
   // Include thinking length — thinking_delta updates seg.thinking without changing
   // content length, and a content-only key would freeze the timeline mid-stream.
@@ -1156,6 +1184,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
               isLastBlock={globalIndex === blocks.length - 1}
               hideApprovalCards
               reconnecting={!!msg.reconnecting}
+              onExpand={requestDetail}
             />
           );
         })}
@@ -1176,7 +1205,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {!isStreaming && !displayText && blocks.length === 0 && inlineCards.length === 0 && !isStopped && (msg.emptyReply || !msg.isError) && (
+        {!isStreaming && !displayText && blocks.length === 0 && inlineCards.length === 0 && !isStopped && msg.emptyReply === true && (
           <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
             <span>{t('page.emptyReply')}</span>
           </div>
@@ -1236,7 +1265,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{legacyText.replace(/^⚠\s*/, '')}</p>
           : <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} />)
         : null}
-      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && (msg.emptyReply || !msg.isError) && (
+      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && msg.emptyReply === true && (
         <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
           <span>{t('page.emptyReply')}</span>
         </div>

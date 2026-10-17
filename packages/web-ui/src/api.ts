@@ -97,7 +97,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -1391,7 +1391,8 @@ export function dispatchThinkingDelta(
 
 export const api = {
   agents: {
-    list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
+    /** `lean` skips the per-agent runtime derivation — use for pickers/searchers. */
+    list: (opts?: { lean?: boolean }) => request<{ agents: AgentInfo[] }>(`/agents${opts?.lean ? '?lean=1' : ''}`).then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
     create: (name: string, roleName?: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
@@ -1715,8 +1716,11 @@ export const api = {
       sortOrder?: string;
       page?: number;
       pageSize?: number;
+      /** Drop heavy embedded fields (description/notes/subtasks/deliverables/result). */
+      lean?: boolean;
     }) => {
       const params = new URLSearchParams();
+      if (filters?.lean) params.set('lean', '1');
       if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.projectId) params.set('projectId', filters.projectId);
@@ -1728,6 +1732,7 @@ export const api = {
       if (filters?.page !== null && filters?.page !== undefined) params.set('page', String(filters.page));
       if (filters?.pageSize !== null && filters?.pageSize !== undefined) params.set('pageSize', String(filters.pageSize));
       const qs = params.toString();
+      // (lean handled above)
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
@@ -1749,7 +1754,18 @@ export const api = {
       const params = new URLSearchParams();
       if (filters?.projectId) params.set('projectId', filters.projectId);
       const qs = params.toString();
-      return request<{ board: Record<string, TaskInfo[]> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+    },
+    /**
+     * Lightweight board for dashboards: active columns (+ recent `failed`) with the
+     * authoritative per-status `counts`, but no (potentially huge) terminal lists.
+     * Prefer this over `board()` when you only need counts + actionable tasks.
+     */
+    boardSummary: (filters?: { projectId?: string }) => {
+      const params = new URLSearchParams();
+      if (filters?.projectId) params.set('projectId', filters.projectId);
+      const qs = params.toString();
+      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard/summary${qs ? `?${qs}` : ''}`);
     },
     listSubtasks: (taskId: string) => request<{ subtasks: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }> }>(`/tasks/${taskId}/subtasks`),
     createSubtask: (taskId: string, title: string) =>
@@ -1818,12 +1834,16 @@ export const api = {
       request<{ ok: boolean; path: string }>('/files/write', { method: 'POST', body: JSON.stringify({ path: filePath, content }) }),
   },
   requirements: {
-    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string }) => {
+    list: (filters?: { orgId?: string; status?: string; source?: string; projectId?: string; limit?: number; offset?: number; lean?: boolean }) => {
       const params = new URLSearchParams();
       if (filters?.orgId) params.set('orgId', filters.orgId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.source) params.set('source', filters.source);
       if (filters?.projectId) params.set('projectId', filters.projectId);
+      if (filters?.limit) params.set('limit', String(filters.limit));
+      if (filters?.offset) params.set('offset', String(filters.offset));
+      // lean: omit `description` (large) — use for lists that only need titles/counts.
+      if (filters?.lean) params.set('lean', '1');
       const qs = params.toString();
       return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`);
     },
@@ -2312,7 +2332,7 @@ export const api = {
      */
     create: (agentId: string) =>
       request<{ session: ChatSessionInfo }>(`/agents/${agentId}/sessions`, { method: 'POST' }),
-    listByAgent: (agentId: string, limit = 20, page = 1) =>
+    listByAgent: (agentId: string, limit = 10, page = 1) =>
       request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
         `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
       ),
@@ -2321,9 +2341,18 @@ export const api = {
         `/sessions/${sessionId}/title`,
         { method: 'PATCH', body: JSON.stringify({ title }) }
       ),
-    getMessages: (sessionId: string, limit = 50, before?: string) =>
+    getMessages: (sessionId: string, limit = 30, before?: string) =>
       request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
+      ),
+    /**
+     * Full execution trace for ONE message. History pages ship a lean view
+     * (`metadata.segmentsTruncated`); this returns the unclipped original when
+     * the user expands a process block.
+     */
+    getMessageDetail: (sessionId: string, messageId: string) =>
+      request<{ message: ChatMessageInfo }>(
+        `/sessions/${sessionId}/messages/${encodeURIComponent(messageId)}`
       ),
     delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
     /**
@@ -2495,7 +2524,7 @@ export const api = {
     },
   },
   channels: {
-    getMessages: (channel: string, limit = 50, before?: string) =>
+    getMessages: (channel: string, limit = 30, before?: string) =>
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
@@ -2529,9 +2558,13 @@ export const api = {
 
   // ─── Approvals & Notifications ─────────────────────────────────────
   approvals: {
-    list: (status?: string) => {
-      const qs = status ? `?status=${status}` : '';
-      return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
+    list: (status?: string, opts?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (status) qs.set('status', status);
+      if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+      if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
+      const s = qs.toString();
+      return request<{ approvals: ApprovalInfo[]; total: number; limit: number; offset: number }>(`/approvals${s ? `?${s}` : ''}`);
     },
     respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) =>
       request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption, answers }) }),

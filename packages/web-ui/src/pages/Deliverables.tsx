@@ -92,8 +92,9 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     return () => window.removeEventListener('popstate', handler);
   }, [isMobile]);
 
-  const DATE_PAGE_SIZE = 100;
-  const ALL_ITEMS_LIMIT = 5000;
+  // First paint carries a small page; infinite scroll loads the rest.
+  const DATE_PAGE_SIZE = 20;
+  const ALL_ITEMS_LIMIT = 60;
   const [items, setItems] = useState<DeliverableInfo[]>(previewData?.items ?? []);
   const [totalCount, setTotalCount] = useState(previewData?.items?.length ?? 0);
   const [loadingMore, setLoadingMore] = useState(false);

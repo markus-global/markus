@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback, useRef, useMemo } from 'react';
 import { useTranslation, Trans } from 'react-i18next';
 import { api, type StorageInfo, type OrphanInfo, type AuthUser, type HumanUserInfo, type CatalogModel, hubApi, getHubUser, getHubToken, ensureHubAuth } from '../api.ts';
 import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
+import { ListLoading } from '../components/AsyncState.tsx';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -2868,6 +2869,9 @@ const ROLE_COLORS: Record<string, string> = {
 function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['settings', 'common']);
   const [users, setUsers] = useState<HumanUserInfo[]>([]);
+  // `true` until the first fetch settles — the table must not render
+  // "no users" before it knows.
+  const [usersLoading, setUsersLoading] = useState(true);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editRole, setEditRole] = useState('');
@@ -2884,7 +2888,10 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   const [addPassword, setAddPassword] = useState('');
 
   const loadUsers = useCallback(() => {
-    api.users.list(authUser?.orgId).then(d => setUsers(d.users)).catch(() => {});
+    api.users.list(authUser?.orgId)
+      .then(d => setUsers(d.users))
+      .catch(() => {})
+      .finally(() => setUsersLoading(false));
   }, [authUser?.orgId]);
 
   useEffect(() => { loadUsers(); }, [loadUsers]);
@@ -3034,7 +3041,10 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
             </tr>
           </thead>
           <tbody>
-            {users.length === 0 && (
+            {usersLoading && users.length === 0 && (
+              <tr><td colSpan={4} className="px-4 py-6"><ListLoading rows={3} variant="skeleton" /></td></tr>
+            )}
+            {!usersLoading && users.length === 0 && (
               <tr><td colSpan={4} className="px-4 py-6 text-center text-fg-tertiary text-xs">{t('settings:userManagement.noUsers')}</td></tr>
             )}
             {users.map(u => {

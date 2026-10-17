@@ -15,6 +15,7 @@ import {
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
   msgHasContent,
+  shouldRenderChatMsg,
   pickStreamReattachTarget,
   stopRunningTools,
   stripEmbeddedReplyQuote,
@@ -244,6 +245,49 @@ describe('pickStreamReattachTarget', () => {
       mk('a1', 'agent', '⚠ error', { isError: true }),
     ];
     expect(pickStreamReattachTarget(msgs, { allowCurrentTurnPartial: true })).toBeUndefined();
+  });
+});
+
+describe('shouldRenderChatMsg — an empty bubble must be unpaintable', () => {
+  const agentMsg = (id: string, text = '', opts: Partial<ChatMsg> = {}) =>
+    ({ id, sender: 'agent', text, time: '12:00', ...opts }) as ChatMsg;
+
+  it('keeps any message that has a body', () => {
+    expect(shouldRenderChatMsg(agentMsg('a1', 'answer'), false)).toBe(true);
+    expect(shouldRenderChatMsg(agentMsg('a2', '', { segments: [{ type: 'text', content: 'x' }] }), false)).toBe(true);
+    expect(shouldRenderChatMsg(agentMsg('a3', '', { segments: [{ type: 'tool', key: 'k', tool: 'shell', status: 'done' }] }), false)).toBe(true);
+  });
+
+  it('never drops a user message', () => {
+    expect(shouldRenderChatMsg({ id: 'u1', sender: 'user', text: '', time: '12:00' } as ChatMsg, false)).toBe(true);
+  });
+
+  it('drops a content-less agent row that is NOT the live tail (the reported empty bubble)', () => {
+    // Send placeholder / reattach placeholder / soft-disconnect snapshot: all
+    // are `isStreaming:true` with no body, and all used to paint a bubble with
+    // action buttons until some reconcile path removed them a few seconds later.
+    expect(shouldRenderChatMsg(agentMsg('a1', '', { isStreaming: true, segments: [] }), false)).toBe(false);
+    expect(shouldRenderChatMsg(agentMsg('a2', '', { segments: [] }), false)).toBe(false);
+    expect(shouldRenderChatMsg(agentMsg('a3', '   ', { isStreaming: true }), false)).toBe(false);
+  });
+
+  it('keeps the empty bubble while it IS the in-flight affordance', () => {
+    expect(shouldRenderChatMsg(agentMsg('a1', '', { isStreaming: true, segments: [] }), true)).toBe(true);
+  });
+
+  it('does not resurrect a stopped bubble as the in-flight one', () => {
+    expect(shouldRenderChatMsg(agentMsg('a1', '', { isStopped: true }), true)).toBe(false);
+  });
+
+  it('always shows the server empty-reply verdict (so Retry is reachable)', () => {
+    expect(shouldRenderChatMsg(agentMsg('a1', '', { emptyReply: true }), false)).toBe(true);
+  });
+
+  it('keeps rows that render something other than prose (activities / images)', () => {
+    expect(shouldRenderChatMsg(agentMsg('a1', '', {
+      activities: [{ id: 's1', label: 'thinking', status: 'done' } as never],
+    }), false)).toBe(true);
+    expect(shouldRenderChatMsg(agentMsg('a2', '', { images: ['data:image/png;base64,AA'] }), false)).toBe(true);
   });
 });
 

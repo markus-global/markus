@@ -73,7 +73,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
     const lower = q.toLowerCase();
     try {
       const [agentsRes, tasksRes, requirementsRes, projectsRes, deliverablesRes, teamsRes] = await Promise.allSettled([
-        api.agents.list(),
+        api.agents.list({ lean: true }),
         api.tasks.list({ search: q, pageSize: 20 }),
         api.requirements.list(),
         api.projects.list(),

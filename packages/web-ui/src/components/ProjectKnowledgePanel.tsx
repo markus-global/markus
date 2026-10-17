@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, type DeliverableInfo, type ProjectInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { ListLoading } from './AsyncState.tsx';
 
 /**
  * 项目详情「知识库」区块（需求 A / V2 架构）。
@@ -19,7 +20,9 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
   const paths = project.knowledgeBasePaths ?? [];
   const [draftPath, setDraftPath] = useState('');
   const [syncing, setSyncing] = useState(false);
-  const [loadingDocs, setLoadingDocs] = useState(false);
+  // `true` from the start: the panel must not claim "no documents" before the
+  // first fetch settles (premature-empty bug).
+  const [loadingDocs, setLoadingDocs] = useState(true);
   const [docs, setDocs] = useState<DeliverableInfo[]>([]);
   const [notice, setNotice] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
   const [confirmRemovePath, setConfirmRemovePath] = useState<string | null>(null);
@@ -220,7 +223,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
           {t('work:project.kbDocsHeading')}{docs.length > 0 && <span className="ml-1 text-fg-quaternary">({docs.length})</span>}
         </h5>
         {loadingDocs ? (
-          <p className="text-[11px] text-fg-tertiary">{t('work:project.kbLoadingDocs')}</p>
+          <ListLoading variant="text" label={t('work:project.kbLoadingDocs')} className="px-0" />
         ) : docs.length === 0 ? (
           <p className="text-[11px] text-fg-tertiary">{t('work:project.kbNoDocs')}</p>
         ) : (
