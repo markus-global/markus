@@ -6143,10 +6143,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
-                  {/* Icon-only on very narrow screens: with the label, the row was 30px
-                      wider than a 315px viewport and `Filter` ended up off the edge. */}
-                  <span className="hidden min-[360px]:inline">{(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}</span>
+                  <span>{(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}</span>
                 </button>
               )}
             </div>
