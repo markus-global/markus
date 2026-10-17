@@ -847,7 +847,7 @@ describe('FeishuAdapter', () => {
       vi.unstubAllGlobals();
     });
 
-    it('normalises SDK payloads and reports instanceId + channelKind (p2p → dm)', async () => {
+    it('normalises SDK payloads and reports channelKind (p2p → dm), leaving the instance to the router', async () => {
       const fresh = new FeishuAdapter();
       vi.stubGlobal(
         'fetch',
@@ -882,7 +882,9 @@ describe('FeishuAdapter', () => {
       expect(handler).toHaveBeenCalledOnce();
       const msg = handler.mock.calls[0][0];
       expect(msg.content.text).toBe('lc hello');
-      expect(msg.instanceId).toBe('bi_support');
+      // The bot instance is not an adapter fact (#376): the router stamps it on
+      // arrival, so an adapter that forgets can no longer lose it.
+      expect(msg.instanceId).toBeUndefined();
       expect(msg.channelKind).toBe('dm');
 
       await fresh.disconnect();

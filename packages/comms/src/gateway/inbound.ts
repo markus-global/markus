@@ -112,15 +112,18 @@ export function resolveInboundTarget(
     matchedScope = 'explicit';
   }
 
-  // 2) channel — the most specific persisted route. A binding without an
-  //    instance (bootstrap/legacy shape) matches a message without one.
+  // 2) channel — the most specific persisted route. A binding **without** an
+  //    instance is the pre-instance (legacy `markus.json`) shape: it names a
+  //    channel of the platform's single implicit bot — and that bot's registered
+  //    id *is* the platform id (`registerAdapter` default) — so it matches that
+  //    bot and only that bot. Prefer an instance-exact row when both exist.
   if (!agentId && env.nativeId) {
-    const channelBinding = bindings.find(
-      (b) =>
-        b.scope === 'channel' &&
-        (b.instanceId ?? '') === inst &&
-        b.nativeId === env.nativeId,
+    const candidates = bindings.filter(
+      (b) => b.scope === 'channel' && b.nativeId === env.nativeId,
     );
+    const channelBinding =
+      candidates.find((b) => (b.instanceId ?? '') === inst) ??
+      candidates.find((b) => !b.instanceId && inst === env.platform);
     if (channelBinding) {
       agentId = channelBinding.agentId;
       matchedScope = 'channel';

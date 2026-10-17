@@ -502,10 +502,10 @@ export class FeishuAdapter implements CommAdapter {
       replyToId: undefined,
       threadId: msgEvent.message_id,
       timestamp: new Date().toISOString(),
-      // Bot identity + social context (design §6.5): the resolver needs both to
-      // pick the bound agent (instance) and the isolated session (kind). A p2p
-      // chat is a `dm`; everything else is a `group` — isolation stays the default.
-      instanceId: this.config?.instanceId ?? this.platform,
+      // Only the *platform-derived* context lives here: a p2p chat is a `dm`,
+      // everything else a `group` (isolation stays the default). The bot
+      // instance is **not** an adapter fact — the router stamps it on arrival,
+      // because it is the connection that actually received the message (#376).
       channelKind: msgEvent.chat_type === 'p2p' ? 'dm' : 'group',
     };
 

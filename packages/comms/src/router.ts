@@ -546,6 +546,23 @@ export class MessageRouter {
   }
 
   private async routeIncomingMessage(message: Message, source: RegisteredBot): Promise<void> {
+    // ── One invariant, one writer: the receiving bot stamps its own instance id.
+    //
+    // This is the *only* place `Message.instanceId` is set. It has to be, because
+    // the router is the only party that knows which bot's handler fired: the
+    // handler is wired per registered bot (`wireAdapter`), so `source` is the
+    // receiving connection by construction. Stamping it inside each adapter made
+    // this one invariant have one writer *per platform* — Discord lost it until
+    // #375, Telegram and WhatsApp until #376, and any new adapter starts out
+    // wrong. The assignment (not `??=`) is deliberate: an adapter cannot supply a
+    // better answer than the connection that actually received the message, and
+    // honouring a stale adapter value would let the two disagree.
+    //
+    // Stamp **before** the connection-test port and target resolution: a test
+    // reply is matched against the instance that is being verified, so it must
+    // already carry the id.
+    message.instanceId = source.instanceId;
+
     // Connection tests come first: a verification reply is a handshake, not a
     // conversation, so it is consumed here and never reaches an agent.
     if (this.connectionTests) {
