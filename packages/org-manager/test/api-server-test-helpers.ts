@@ -356,6 +356,7 @@ export function createMockStorage(): StorageBridge {
         id: sessionId, agentId: AGENT_A, userId: 'anonymous', title: 'Chat', isMain: false,
       })),
       getMessages: vi.fn(async () => ({ messages: [{ id: 'm1', role: 'user', content: 'Hi' }], hasMore: false })),
+      getMessage: vi.fn((_sessionId: string, messageId: string) => ({ id: messageId, role: 'assistant', content: 'Hi' })),
       hasAnySessions: vi.fn(() => true),
       deleteSession: vi.fn(async () => {}),
       deleteLastExchange: vi.fn(async () => {}),
