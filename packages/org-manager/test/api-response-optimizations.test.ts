@@ -10,6 +10,11 @@ import { createTestServer, request, type TestContext } from './api-server-test-h
  *  - bounded terminal buckets / summary board
  */
 
+// Auth is covered by its own suite; these payload tests run with auth disabled so the
+// owner-scoped GET /api/approvals returns data instead of 401. authEnabled is a per-request
+// getter, so a module-scope set is enough (vitest isolates each test file).
+process.env['AUTH_ENABLED'] = 'false';
+
 const BIG_DESC = 'x'.repeat(4000);
 
 function setRequirements(ctx: TestContext, rows: Array<Record<string, unknown>>): void {
@@ -212,6 +217,43 @@ describe('API response optimizations', () => {
       expect(first.description).toBeUndefined();
       expect(first.notes).toBeUndefined();
       expect(first.subtasks).toBeUndefined();
+    });
+  });
+
+  describe('agents lean', () => {
+    it('lean omits the derived runtime block; default includes it', async () => {
+      const full = await request(ctx.server, 'GET', '/api/agents');
+      const lean = await request(ctx.server, 'GET', '/api/agents?lean=1');
+      expect(full.status).toBe(200);
+      expect(lean.status).toBe(200);
+      const fullAgent = (full.json.agents as Array<Record<string, unknown>>)[0]!;
+      const leanAgent = (lean.json.agents as Array<Record<string, unknown>>)[0]!;
+      expect('runtime' in fullAgent).toBe(true);
+      expect('runtime' in leanAgent).toBe(false);
+      // Identity fields survive lean so pickers still render.
+      expect(leanAgent.id).toBe(fullAgent.id);
+      expect(leanAgent.name).toBe(fullAgent.name);
+    });
+  });
+
+  describe('approvals pagination', () => {
+    const rows = Array.from({ length: 7 }, (_, i) => ({ id: `appr-${i}`, status: 'pending', title: `T${i}` }));
+
+    it('bounds the list, reports total, honours limit/offset', async () => {
+      ctx.server.setHITLService({
+        listApprovals: () => rows,
+        onNotification: () => {},
+        onApprovalChanged: () => {},
+      } as never);
+      const all = await request(ctx.server, 'GET', '/api/approvals');
+      expect(all.status).toBe(200);
+      expect(all.json.total).toBe(7);
+      expect((all.json.approvals as unknown[]).length).toBe(7);
+
+      const paged = await request(ctx.server, 'GET', '/api/approvals?limit=3&offset=5');
+      expect((paged.json.approvals as unknown[]).length).toBe(2);
+      expect(paged.json.limit).toBe(3);
+      expect(paged.json.offset).toBe(5);
     });
   });
 });

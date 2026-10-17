@@ -51,7 +51,7 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
     setError(null);
     try {
       const [{ agents }, teamData] = await Promise.all([
-        api.agents.list(),
+        api.agents.list({ lean: true }),
         api.teams.list(),
       ]);
       const teamRefs = teamData.teams.map(tm => ({ id: tm.id, name: tm.name }));

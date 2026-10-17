@@ -1391,7 +1391,8 @@ export function dispatchThinkingDelta(
 
 export const api = {
   agents: {
-    list: () => request<{ agents: AgentInfo[] }>('/agents').then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
+    /** `lean` skips the per-agent runtime derivation — use for pickers/searchers. */
+    list: (opts?: { lean?: boolean }) => request<{ agents: AgentInfo[] }>(`/agents${opts?.lean ? '?lean=1' : ''}`).then(d => ({ ...d, agents: d.agents.filter(a => a.name) })),
     get: (id: string) => request<AgentDetail>(`/agents/${id}`),
     create: (name: string, roleName?: string, agentRole?: 'manager' | 'worker', teamId?: string) =>
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
@@ -2548,9 +2549,13 @@ export const api = {
 
   // ─── Approvals & Notifications ─────────────────────────────────────
   approvals: {
-    list: (status?: string) => {
-      const qs = status ? `?status=${status}` : '';
-      return request<{ approvals: ApprovalInfo[] }>(`/approvals${qs}`);
+    list: (status?: string, opts?: { limit?: number; offset?: number }) => {
+      const qs = new URLSearchParams();
+      if (status) qs.set('status', status);
+      if (opts?.limit !== undefined) qs.set('limit', String(opts.limit));
+      if (opts?.offset !== undefined) qs.set('offset', String(opts.offset));
+      const s = qs.toString();
+      return request<{ approvals: ApprovalInfo[]; total: number; limit: number; offset: number }>(`/approvals${s ? `?${s}` : ''}`);
     },
     respond: (id: string, approved: boolean, respondedBy?: string, comment?: string, selectedOption?: string, answers?: UserInputAnswer[]) =>
       request<{ approval: ApprovalInfo }>(`/approvals/${id}`, { method: 'POST', body: JSON.stringify({ approved, respondedBy, comment, selectedOption, answers }) }),

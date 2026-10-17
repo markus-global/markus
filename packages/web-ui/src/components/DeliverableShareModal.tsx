@@ -266,7 +266,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
       let producerName = agentId;
       if (agentId) {
         try {
-          const { agents } = await api.agents.list();
+          const { agents } = await api.agents.list({ lean: true });
           const ag = agents.find((a: { id: string }) => a.id === agentId);
           if (ag) producerName = ag.name || agentId;
         } catch {

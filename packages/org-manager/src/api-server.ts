@@ -4466,6 +4466,11 @@ export class APIServer {
 
     // Agents
     if (path === '/api/agents' && req.method === 'GET') {
+      // lean=1: light payload for pickers/searchers that only need id/name/role/status.
+      // Skips the per-agent runtime + conservator derivation and skill-warning lookups
+      // below — the bulk of this endpoint's CPU cost and payload. Live-status views keep
+      // the default; full detail is also available on GET /api/agents/:id.
+      const lean = url.searchParams.get('lean') === '1';
       let agents = this.orgService.getAgentManager().listAgents() as Array<Record<string, unknown>>;
       // Merge avatarUrl from storage
       if (this.storage) {
@@ -4501,6 +4506,10 @@ export class APIServer {
         agents = agents.map(a =>
           disconnectedIds.has(a.id as string) ? { ...a, status: 'offline' } : a
         );
+      }
+      if (lean) {
+        this.json(res, 200, { agents });
+        return;
       }
       // OB-1: 把「笼统的思考中」展开为可读运行阶段 —— idle/thinking/running/
       // waiting-dependency/degraded/blocked/error/offline + 阻塞依赖标题 + 最近活动。
@@ -7184,7 +7193,12 @@ EXPLANATION_END`;
           return true;
         });
       }
-      this.json(res, 200, { approvals });
+      // Bounded list: approvals accumulate over a long-lived org. Callers page with
+      // limit/offset; `total` lets the UI show counts without fetching everything.
+      const total = approvals.length;
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '200', 10) || 200), 500);
+      const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
+      this.json(res, 200, { approvals: approvals.slice(offset, offset + limit), total, limit, offset });
       return;
     }
 
