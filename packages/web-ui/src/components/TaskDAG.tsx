@@ -715,12 +715,23 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       const docMode = document.documentElement.classList.contains('mobile-doc-scroll');
       const inPanel = host !== null;
       if (!docMode && !inPanel) { setDocViewportHeight(null); return; }
-      const hostRect = host
-        ? host.getBoundingClientRect()
-        : { top: 0, bottom: window.innerHeight };
+      // Measure against the host's SCROLLPORT, never against its content box.
+      // `getBoundingClientRect().bottom` grows with the content we are sizing, so
+      // using it as the bound fed the result back into the input: the canvas
+      // measured itself at 806px, then 1.6k, then 13.8k… `clientHeight` is the
+      // visible box and does not move when content grows.
+      //
+      // The offset must be taken in the host's CONTENT coordinates too (rect + its
+      // own scrollTop), otherwise scrolling the page would inflate the result by
+      // exactly the amount scrolled.
+      const scrollportHeight = host ? host.clientHeight : window.innerHeight;
+      const scrollportTop = host ? host.getBoundingClientRect().top : 0;
+      const scrollTop = host ? host.scrollTop : window.scrollY;
       const elRect = el.getBoundingClientRect();
-      // Distance from the canvas top to the bottom of its own host box.
-      const available = hostRect.bottom - elRect.top - 8;
+      const offsetInContent = elRect.top - scrollportTop + scrollTop;
+      // A canvas is meant to fill one screen, never to become the page: clamping to
+      // the viewport is the invariant that breaks any runaway feedback on its own.
+      const available = Math.min(scrollportHeight, window.innerHeight) - offsetInContent - 8;
       setDocViewportHeight(Math.max(320, Math.round(available)));
       if (host && observed !== host) {
         observer.disconnect();
@@ -740,6 +751,18 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
       classObserver.disconnect();
     };
   }, []);
+
+  // ReactFlow's `fitView` (the prop) runs ONCE, at init. A canvas that is later
+  // resized keeps a transform computed against the old box: the graph stays
+  // cropped (or shrunk to minZoom) even though the container is now correct.
+  // Re-fit whenever the measured height changes — mount, rotation, panel resize.
+  useEffect(() => {
+    if (docViewportHeight === null) return;
+    const id = requestAnimationFrame(() => {
+      rfRef.current?.fitView({ padding: 0.2 });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [docViewportHeight]);
 
   if (tasks.length === 0) {
     return (
@@ -774,7 +797,12 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         onInit={(instance) => { rfRef.current = instance; }}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.3}
+        // Measured on a 39-node graph at 622px wide: the content needs 0.243 to
+        // fit, so a 0.3 floor silently cropped the outermost nodes — fitView
+        // clamps and reports success, leaving no hint that part of the graph is
+        // unreachable by fit. Allow the canvas to shrink far enough to hold the
+        // whole graph; the user can still zoom in from there.
+        minZoom={0.08}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
         connectionLineStyle={{ stroke: '#818cf8', strokeWidth: 2, strokeDasharray: '6 3' }}
