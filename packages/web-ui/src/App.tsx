@@ -26,7 +26,7 @@ import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContex
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
-import { getMobileNavDepth, getMobileNavDepthServer, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
+import { getMobileNavDepths, getMobileNavDepthsServer, mobileNavDepthOf, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -135,9 +135,8 @@ export function App() {
   // The bottom nav belongs to TOP-LEVEL pages only: a page that drilled into a
   // detail view declares depth > 0 and gets the full screen. Scoped by owner so
   // a stale declaration from a page you just left can never hide today's nav.
-  const navDepth = useSyncExternalStore(subscribeMobileNavDepth, getMobileNavDepth, getMobileNavDepthServer);
-  const inMobileSubPage = navDepth.owner === page && navDepth.depth > 0;
-  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && !inMobileSubPage;
+  const navDepths = useSyncExternalStore(subscribeMobileNavDepth, getMobileNavDepths, getMobileNavDepthsServer);
+  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && mobileNavDepthOf(navDepths, page) === 0;
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('mobile-doc-scroll', docScroll);
