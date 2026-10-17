@@ -61,8 +61,30 @@ export async function handleTasksRoutes(
     }
 
     if (path === '/api/tasks/scheduled' && req.method === 'GET') {
-      const tasks = server.taskService.listScheduledTasks();
-      server.json(res, 200, { tasks });
+      // Bounded + lean: a long-lived org accumulates many recurring tasks, and each
+      // full Task carries subtasks/notes/deliverables/result. Callers page with
+      // limit/offset; lean drops the heavy fields but keeps scheduleConfig (the
+      // whole point of a scheduled task).
+      const all = server.taskService.listScheduledTasks();
+      const total = all.length;
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50), 200);
+      const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
+      const lean = url.searchParams.get('lean') === '1';
+      const page = all.slice(offset, offset + limit).map(t => lean ? {
+        id: t.id,
+        title: t.title,
+        status: t.status,
+        priority: t.priority,
+        assignedAgentId: t.assignedAgentId,
+        reviewerId: t.reviewerId,
+        projectId: t.projectId,
+        requirementId: t.requirementId,
+        taskType: t.taskType,
+        scheduleConfig: t.scheduleConfig,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      } : t);
+      server.json(res, 200, { tasks: page, total, limit, offset });
       return true;
     }
 

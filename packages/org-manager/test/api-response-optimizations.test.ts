@@ -165,4 +165,53 @@ describe('API response optimizations', () => {
       expect(counts.archived).toBe(10);
     });
   });
+
+  describe('scheduled tasks list', () => {
+    function seedScheduled(ts: TaskService, n: number): void {
+      const map = (ts as unknown as { tasks: Map<string, unknown> }).tasks;
+      for (let i = 0; i < n; i++) {
+        map.set(`sched-${i}`, {
+          id: `sched-${i}`, orgId: 'default', title: `S${i}`, status: 'pending', priority: 'medium',
+          assignedAgentId: 'agent-a', reviewerId: 'reviewer-1', taskType: 'scheduled',
+          scheduleConfig: { every: '1d' }, description: BIG_DESC,
+          notes: ['n1'], subtasks: [{ id: 'sub-1' }],
+          createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-01T00:00:00.000Z',
+        });
+      }
+      map.set('std-1', {
+        id: 'std-1', orgId: 'default', title: 'Std', status: 'pending', priority: 'medium',
+        assignedAgentId: 'agent-a', reviewerId: 'reviewer-1', taskType: 'standard',
+        updatedAt: '2026-01-01T00:00:00.000Z',
+      });
+    }
+
+    it('paginates with a bounded default and reports total', async () => {
+      seedScheduled(ctx.taskService, 120);
+      const res = await request(ctx.server, 'GET', '/api/tasks/scheduled');
+      expect(res.status).toBe(200);
+      expect(res.json.total).toBe(120);
+      expect(res.json.limit).toBe(50);
+      expect((res.json.tasks as unknown[]).length).toBe(50);
+      expect((res.json.tasks as Array<Record<string, unknown>>)[0]!.taskType).toBe('scheduled');
+    });
+
+    it('honours limit/offset and clamps an oversized limit', async () => {
+      seedScheduled(ctx.taskService, 120);
+      const paged = await request(ctx.server, 'GET', '/api/tasks/scheduled?limit=10&offset=100');
+      expect((paged.json.tasks as unknown[]).length).toBe(10);
+      expect(paged.json.offset).toBe(100);
+      const clamped = await request(ctx.server, 'GET', '/api/tasks/scheduled?limit=9999');
+      expect(clamped.json.limit).toBe(200);
+    });
+
+    it('lean drops heavy fields but keeps scheduleConfig', async () => {
+      seedScheduled(ctx.taskService, 3);
+      const res = await request(ctx.server, 'GET', '/api/tasks/scheduled?lean=1');
+      const first = (res.json.tasks as Array<Record<string, unknown>>)[0]!;
+      expect(first.scheduleConfig).toBeTruthy();
+      expect(first.description).toBeUndefined();
+      expect(first.notes).toBeUndefined();
+      expect(first.subtasks).toBeUndefined();
+    });
+  });
 });
