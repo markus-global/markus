@@ -29,11 +29,33 @@ export async function handleTasksRoutes(
       const pageSizeParam = url.searchParams.get('pageSize');
       const page = pageParam ? parseInt(pageParam, 10) : undefined;
       const pageSize = pageSizeParam ? parseInt(pageSizeParam, 10) : undefined;
+      // lean=1 drops the heavy embedded payload (description, notes, subtasks,
+      // deliverables, result) for callers that only need lightweight rows — e.g.
+      // the Team @-mention index. Full detail still comes from GET /api/tasks/:id.
+      const lean = url.searchParams.get('lean') === '1';
 
       const result = server.taskService.queryTasks({
         orgId, status, assignedAgentId, projectId, requirementId,
         priority, search, sortBy, sortOrder, page, pageSize,
       });
+      if (lean) {
+        const rows = result.tasks as unknown as Array<Record<string, unknown>>;
+        result.tasks = rows.map(t => ({
+          id: t.id,
+          title: t.title,
+          status: t.status,
+          priority: t.priority,
+          assignedAgentId: t.assignedAgentId,
+          reviewerId: t.reviewerId,
+          reviewerType: t.reviewerType,
+          projectId: t.projectId,
+          requirementId: t.requirementId,
+          executionRound: t.executionRound,
+          taskType: t.taskType,
+          createdAt: t.createdAt,
+          updatedAt: t.updatedAt,
+        })) as typeof result.tasks;
+      }
       server.json(res, 200, result);
       return true;
     }

@@ -1715,8 +1715,11 @@ export const api = {
       sortOrder?: string;
       page?: number;
       pageSize?: number;
+      /** Drop heavy embedded fields (description/notes/subtasks/deliverables/result). */
+      lean?: boolean;
     }) => {
       const params = new URLSearchParams();
+      if (filters?.lean) params.set('lean', '1');
       if (filters?.assignedAgentId) params.set('assignedAgentId', filters.assignedAgentId);
       if (filters?.status) params.set('status', filters.status);
       if (filters?.projectId) params.set('projectId', filters.projectId);
@@ -1728,6 +1731,7 @@ export const api = {
       if (filters?.page !== null && filters?.page !== undefined) params.set('page', String(filters.page));
       if (filters?.pageSize !== null && filters?.pageSize !== undefined) params.set('pageSize', String(filters.pageSize));
       const qs = params.toString();
+      // (lean handled above)
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`);
     },
     get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
