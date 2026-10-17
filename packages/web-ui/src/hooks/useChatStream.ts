@@ -1312,9 +1312,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                   .map(s => (s as { content: string }).content)
                   .join('');
               }
-              const empty = !finalText?.trim() && !finalSegs.some(s =>
-                (s.type === 'text' && (s.content || s.thinking)) || s.type === 'tool'
-              );
+              const empty = streamResult.emptyReply === true;
               u[idx] = {
                 ...u[idx]!,
                 text: finalText,
@@ -1343,7 +1341,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
                 .map(s => s.content)
                 .join('');
               const finalText = committedText || streamResult.content || msg.text;
-              const empty = !finalText?.trim() && committed.length === 0;
+              const empty = streamResult.emptyReply === true;
               if (committed.length > 0 || finalText || streamResult.cancelled || streamResult.emptyReply || empty) {
                 u[idx] = {
                   ...msg,

@@ -17,6 +17,7 @@ import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
+import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
   filterCompletedStarts, attachSubagentLogsToEntries,
@@ -763,7 +764,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [loadingChat, setLoadingChat] = useState(false);
+  // Initialise to `true`: the first paint must not claim "this conversation is empty"
+  // before the first load settles. Every resolution path clears it (buffer hit,
+  // DB load, no-sessions, error) — see the conv-switch effect below.
+  const [loadingChat, setLoadingChat] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
   // Monotonic switch counter: only the LATEST switchSession may clear loadingChat.
   // Rapid tab switching otherwise lets an older request's finally{} kill the
   // spinner of the session that is actually being viewed now.
@@ -1012,7 +1017,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         const [projRes, reqRes, taskRes, delRes, teamsRes] = await Promise.all([
           api.projects.list().catch(() => ({ projects: [] as Array<{ id: string; name: string; status: string }> })),
           api.requirements.list({ lean: true }).catch(() => ({ requirements: [] as Array<{ id: string; title: string; priority: string }> })),
-          api.tasks.list({ pageSize: 100, lean: true }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
+          api.tasks.list({ pageSize: 20, lean: true }).catch(() => ({ tasks: [] as Array<{ id: string; title: string; status: string }> })),
           api.deliverables.search({ limit: 100 }).catch(() => ({ results: [] as Array<{ id: string; title: string; type: string }> })),
           api.teams.list().catch(() => ({ teams: [] as TeamInfo[], ungrouped: [] })),
         ]);
@@ -2645,7 +2650,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Load sessions list for agent (paginated — History panel loads 20 at a time)
   const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); setSessionsLoading(false); return []; }
+    setSessionsLoading(true);
     try {
       const res = await api.sessions.listByAgent(agentId, 20, 1);
       setSessions(res.sessions);
@@ -2654,6 +2660,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setSessionsHasMore(!!res.hasMore);
       return res.sessions;
     } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+    finally { setSessionsLoading(false); }
   }, []);
 
   // ── useChatStream: streaming orchestration extracted into a hook ──────────
@@ -5242,9 +5249,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
-                {sessions.length === 0 && (
+                {sessionsLoading && sessions.length === 0 ? (
+                  <ListLoading rows={3} variant="skeleton" className="px-2 py-2" />
+                ) : sessions.length === 0 ? (
                   <div className="text-xs text-fg-tertiary text-center py-6">{t('page.noConversationsYet')}</div>
-                )}
+                ) : null}
                 {(() => {
                   const now = new Date();
                   const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
@@ -5406,11 +5415,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         {/* Chat Tab: Messages */}
         <div className={`flex-1 overflow-hidden flex flex-col relative ${isEmptyChat ? 'justify-center' : ''} ${mainTab !== 'chat' ? 'hidden' : ''}`}>
           {loadingChat && visibleMessages.length === 0 && (
-            <div className="flex-1 flex flex-col items-center justify-center gap-3">
-              <svg className="animate-spin h-6 w-6 text-brand-400" viewBox="0 0 24 24" fill="none">
-                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-              </svg>
+            <div className="flex-1 flex flex-col items-center justify-center gap-2.5" role="status" aria-live="polite">
+              <Spinner className="h-6 w-6 text-brand-400" />
               <div className="flex flex-col items-center gap-0.5">
                 <span className="text-xs text-fg-tertiary animate-pulse">
                   {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}

@@ -4,6 +4,7 @@ import { api, type AgentInfo, type TaskInfo, type ProjectInfo, type DeliverableI
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { PageLoading, EmptyState } from '../components/AsyncState.tsx';
 
 type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows';
 
@@ -149,17 +150,14 @@ export function SearchPage() {
 
       {/* Results */}
       <div className="flex-1 overflow-y-auto px-4 pb-4">
-        {loading && (
-          <div className="flex items-center justify-center py-12">
-            <div className="text-fg-tertiary text-sm animate-pulse">{t('common:loading')}</div>
-          </div>
-        )}
+        {loading && <PageLoading className="py-12" />}
 
         {!loading && searched && !hasResults && (
-          <div className="flex flex-col items-center justify-center py-12 text-center">
-            <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" className="text-fg-tertiary mb-3"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
-            <p className="text-sm text-fg-tertiary">{t('common:noResults', { defaultValue: '没有找到相关结果' })}</p>
-          </div>
+          <EmptyState
+            className="py-12"
+            icon={<svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>}
+            title={t('common:noResults', { defaultValue: '没有找到相关结果' })}
+          />
         )}
 
         {!loading && hasResults && (

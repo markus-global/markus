@@ -264,11 +264,12 @@ export function MessageActions({
   const { t } = useTranslation(['team', 'common']);
   const isError = msg.isError || (msg.sender === 'agent' && msg.text.startsWith('⚠'));
   const isStopped = msg.isStopped;
-  const isEmptyReply = !!msg.emptyReply || (
-    msg.sender === 'agent' && !msg.text?.trim() && !(msg.segments?.some(s =>
-      (s.type === 'text' && (s.content || s.thinking)) || s.type === 'tool'
-    ))
-  );
+  // Only the server's verdict counts. "This bubble has no text yet" is NOT evidence
+  // that the turn produced nothing: while history is still loading, or before the
+  // first delta lands, the body is legitimately empty. Deriving the verdict here is
+  // what made the newest agent bubble say "no output" and then flip to the real
+  // answer a moment later.
+  const isEmptyReply = msg.emptyReply === true;
   const canRetry = isLastAgentMsg !== false;
   const canRemember = isRememberActionVisible(showRemember, msg.sender) && !!onRemember;
   return (
@@ -1176,7 +1177,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           : <RequirementApprovalCard key={c.key} info={c.info} />
         )}
 
-        {!isStreaming && !displayText && blocks.length === 0 && inlineCards.length === 0 && !isStopped && (msg.emptyReply || !msg.isError) && (
+        {!isStreaming && !displayText && blocks.length === 0 && inlineCards.length === 0 && !isStopped && msg.emptyReply === true && (
           <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
             <span>{t('page.emptyReply')}</span>
           </div>
@@ -1236,7 +1237,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           ? <p className="text-[13px] text-fg-tertiary leading-relaxed whitespace-pre-wrap">{legacyText.replace(/^⚠\s*/, '')}</p>
           : <MarkdownMessage content={legacyText} onMentionClick={onMentionClick} knownNames={knownNames} />)
         : null}
-      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && (msg.emptyReply || !msg.isError) && (
+      {!isStreaming && !legacyText && !hasActivities && !isStopped && msg.sender === 'agent' && msg.emptyReply === true && (
         <div className="flex items-start gap-1.5 text-[13px] text-fg-tertiary leading-relaxed">
           <span>{t('page.emptyReply')}</span>
         </div>

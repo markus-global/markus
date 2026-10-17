@@ -195,8 +195,8 @@ describe('API response optimizations', () => {
       const res = await request(ctx.server, 'GET', '/api/tasks/scheduled');
       expect(res.status).toBe(200);
       expect(res.json.total).toBe(120);
-      expect(res.json.limit).toBe(50);
-      expect((res.json.tasks as unknown[]).length).toBe(50);
+      expect(res.json.limit).toBe(20);
+      expect((res.json.tasks as unknown[]).length).toBe(20);
       expect((res.json.tasks as Array<Record<string, unknown>>)[0]!.taskType).toBe('scheduled');
     });
 

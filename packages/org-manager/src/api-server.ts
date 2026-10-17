@@ -7196,7 +7196,7 @@ EXPLANATION_END`;
       // Bounded list: approvals accumulate over a long-lived org. Callers page with
       // limit/offset; `total` lets the UI show counts without fetching everything.
       const total = approvals.length;
-      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '200', 10) || 200), 500);
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50), 500);
       const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
       this.json(res, 200, { approvals: approvals.slice(offset, offset + limit), total, limit, offset });
       return;

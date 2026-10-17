@@ -3694,7 +3694,9 @@ export class TaskService implements ApprovalTargetPort {
     });
 
     // ── Pagination ──
-    const pageSize = Math.min(Math.max(opts?.pageSize ?? 20, 1), TASK_LIST_PAGE_MAX);
+    // Small default page: the first paint should not ship the whole board.
+    // Callers that need more scroll explicitly (page/pageSize) or load more.
+    const pageSize = Math.min(Math.max(opts?.pageSize ?? 10, 1), TASK_LIST_PAGE_MAX);
     const totalPages = Math.max(Math.ceil(total / pageSize), 1);
     const page = Math.min(Math.max(opts?.page ?? 1, 1), totalPages);
     const start = (page - 1) * pageSize;

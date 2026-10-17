@@ -2332,7 +2332,7 @@ export const api = {
      */
     create: (agentId: string) =>
       request<{ session: ChatSessionInfo }>(`/agents/${agentId}/sessions`, { method: 'POST' }),
-    listByAgent: (agentId: string, limit = 20, page = 1) =>
+    listByAgent: (agentId: string, limit = 10, page = 1) =>
       request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
         `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
       ),
@@ -2341,7 +2341,7 @@ export const api = {
         `/sessions/${sessionId}/title`,
         { method: 'PATCH', body: JSON.stringify({ title }) }
       ),
-    getMessages: (sessionId: string, limit = 50, before?: string) =>
+    getMessages: (sessionId: string, limit = 30, before?: string) =>
       request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
@@ -2515,7 +2515,7 @@ export const api = {
     },
   },
   channels: {
-    getMessages: (channel: string, limit = 50, before?: string) =>
+    getMessages: (channel: string, limit = 30, before?: string) =>
       request<{ messages: ChannelMessageInfo[]; hasMore: boolean }>(
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),

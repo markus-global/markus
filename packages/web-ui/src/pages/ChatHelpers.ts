@@ -492,7 +492,10 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
   if (m.metadata?.isError || (m.role === 'assistant' && m.content.startsWith('⚠'))) {
     base.isError = true;
   }
-  if (m.metadata?.emptyReply || (m.role === 'assistant' && !m.content && !m.metadata?.segments?.length && (m.metadata?.isError || m.metadata?.isStopped))) {
+  // Authoritative only: the server stamps `emptyReply` on a genuinely empty terminal
+  // turn. An assistant row that merely has no content yet (history still loading,
+  // stream not started) must NOT become a "no output" verdict here.
+  if (m.metadata?.emptyReply === true) {
     base.emptyReply = true;
     // Surface as error so Retry is always visible (not hover-only).
     if (!base.isStopped) base.isError = true;

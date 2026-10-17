@@ -67,7 +67,7 @@ export async function handleTasksRoutes(
       // whole point of a scheduled task).
       const all = server.taskService.listScheduledTasks();
       const total = all.length;
-      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50), 200);
+      const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '20', 10) || 20), 200);
       const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
       const lean = url.searchParams.get('lean') === '1';
       const page = all.slice(offset, offset + limit).map(t => lean ? {

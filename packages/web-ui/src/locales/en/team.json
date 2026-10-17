@@ -51,7 +51,9 @@
     "annPlaceholder": "Write team announcements here (Markdown supported)...",
     "normsPlaceholder": "Define team norms and working agreements (Markdown supported)...",
     "noAnnouncements": "No announcements yet. Click to add.",
-    "noNorms": "No norms defined yet. Click to add."
+    "noNorms": "No norms defined yet. Click to add.",
+    "noMembers": "No members",
+    "teamMissing": "Team not found"
   },
   "contextMenu": {
     "renameTeam": "Rename Team",

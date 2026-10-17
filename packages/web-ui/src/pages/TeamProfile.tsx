@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab } from '../api.ts';
 import type { TeamInfo, TeamMemberInfo } from '../api.ts';
 import { Avatar } from '../components/Avatar.tsx';
+import { PageLoading, ListLoading, EmptyState } from '../components/AsyncState.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 
 const LazyMarkdownMessage = lazy(() =>
@@ -35,6 +36,10 @@ const STATUS_DOT: Record<string, string> = {
 export function TeamProfile({ teamId, onBack, inline, headless, activeTab: externalTab, onSelectAgent }: Props) {
   const { t } = useTranslation('team');
   const [team, setTeam] = useState<TeamInfo | null>(null);
+  // "Not found" may only be claimed after the first fetch settled — otherwise a
+  // slow load looks identical to a deleted team.
+  const [teamLoading, setTeamLoading] = useState(true);
+  const [contentLoading, setContentLoading] = useState(true);
   const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<TeamTab>('overview');
   const effectiveTab = headless && externalTab ? externalTab : tab;
@@ -65,9 +70,11 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
       const st = await api.teams.status(teamId);
       setTeamStatuses(st.agents);
     } catch { /* ignore */ }
+    finally { setTeamLoading(false); }
   }, [teamId]);
 
   const loadFiles = useCallback(async () => {
+    setContentLoading(true);
     try {
       const ann = await api.teams.getFile(teamId, 'ANNOUNCEMENT.md');
       setAnnouncements(ann.content);
@@ -76,6 +83,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
       const n = await api.teams.getFile(teamId, 'NORMS.md');
       setNorms(n.content);
     } catch { setNorms(''); }
+    finally { setContentLoading(false); }
   }, [teamId]);
 
   useEffect(() => {
@@ -120,7 +128,11 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
     reload();
   };
 
-  if (!team) return <div className="flex-1 flex items-center justify-center text-fg-tertiary text-sm">Loading team...</div>;
+  if (!team) {
+    return teamLoading
+      ? <PageLoading label={t('common:loading', { defaultValue: 'Loading…' })} />
+      : <EmptyState icon={<span className="text-2xl">🫥</span>} title={t('teamProfile.teamMissing', { defaultValue: 'Team not found' })} />;
+  }
 
   const managerMember = team.members.find(m => m.agentRole === 'manager');
   const onlineCount = teamStatuses.filter(s => s.status !== 'offline').length;
@@ -188,6 +200,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
               onSave={() => saveFile('ANNOUNCEMENT.md', annDraft)}
               placeholder={t('teamProfile.annPlaceholder')}
               emptyText={t('teamProfile.noAnnouncements')}
+              loading={contentLoading}
             />
           )}
           {effectiveTab === 'norms' && (
@@ -203,6 +216,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
               onSave={() => saveFile('NORMS.md', normsDraft)}
               placeholder={t('teamProfile.normsPlaceholder')}
               emptyText={t('teamProfile.noNorms')}
+              loading={contentLoading}
             />
           )}
           {effectiveTab === 'settings' && (
@@ -353,7 +367,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                   </div>
                 );
               })}
-              {team.members.length === 0 && <div className="text-sm text-fg-tertiary text-center py-8">No members</div>}
+              {team.members.length === 0 && <div className="text-sm text-fg-tertiary text-center py-8">{t('teamProfile.noMembers', { defaultValue: 'No members' })}</div>}
             </div>
           </div>
         )}
@@ -372,6 +386,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
             onSave={() => saveFile('ANNOUNCEMENT.md', annDraft)}
             placeholder={t('teamProfile.annPlaceholder')}
             emptyText={t('teamProfile.noAnnouncements')}
+            loading={contentLoading}
           />
         )}
 
@@ -389,6 +404,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
             onSave={() => saveFile('NORMS.md', normsDraft)}
             placeholder={t('teamProfile.normsPlaceholder')}
             emptyText={t('teamProfile.noNorms')}
+            loading={contentLoading}
           />
         )}
 
@@ -451,7 +467,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
 }
 
 function MarkdownEditorSection({
-  content, draft, setDraft, editing, setEditing, textareaRef, contentRef, saving, onSave, placeholder, emptyText,
+  content, draft, setDraft, editing, setEditing, textareaRef, contentRef, saving, onSave, placeholder, emptyText, loading,
 }: {
   content: string;
   draft: string;
@@ -464,6 +480,8 @@ function MarkdownEditorSection({
   onSave: () => void;
   placeholder: string;
   emptyText: string;
+  /** True while the file is still being fetched — suppresses the "empty" text. */
+  loading?: boolean;
 }) {
   if (editing) {
     return (
@@ -495,7 +513,9 @@ function MarkdownEditorSection({
       tabIndex={0}
       onKeyDown={e => { if (e.key === 'Enter') { setDraft(content); setEditing(true); } }}
     >
-      {content.trim() ? (
+      {loading && !content.trim() ? (
+        <ListLoading variant="text" className="px-1 py-2" />
+      ) : content.trim() ? (
         <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
           <LazyMarkdownMessage content={content} className="text-sm text-fg-secondary leading-relaxed" />
         </Suspense>

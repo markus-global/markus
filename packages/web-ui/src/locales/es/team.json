@@ -51,7 +51,9 @@
     "annPlaceholder": "Escribir anuncios de equipo aquí (Markdown apoyó)...",
     "normsPlaceholder": "Definir las normas del equipo y los acuerdos de trabajo)...",
     "noAnnouncements": "Aún no hay anuncios. Haga clic para añadir.",
-    "noNorms": "Aún no se han definido normas. Haga clic para añadir."
+    "noNorms": "Aún no se han definido normas. Haga clic para añadir.",
+    "noMembers": "Sin miembros",
+    "teamMissing": "Equipo no encontrado"
   },
   "contextMenu": {
     "renameTeam": "Rename Team",
