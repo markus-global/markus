@@ -4848,6 +4848,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
   const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
   const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
+  // The workflows board is the last tab, so a left swipe there has no "next" to
+  // move to — useSwipeTabs reports it as onSwipeOutRight. The owner wants that
+  // gesture to walk back to the dependency graph, which is the tab just before it.
+  const workflowsSwipeOpts = useMemo(() => ({ onSwipeOutRight: () => setBoardType('dag') }), []);
+  const workflowsSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, workflowsSwipeOpts);
   const [showClosed, setShowClosed] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
@@ -6345,6 +6350,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           />
           </div>
         ) : boardType === 'workflows' ? (
+          <div
+            className="flex-1 min-h-0 flex flex-col relative"
+            onTouchStart={isMobile ? workflowsSwipe.onTouchStart : undefined}
+            onTouchEnd={isMobile ? workflowsSwipe.onTouchEnd : undefined}
+          >
           <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
             const openReqInDag = (req: RequirementInfo) => {
               forceOpenReq(req);
@@ -6363,6 +6373,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               }).catch(() => {});
             }
           }} />
+          {/* Back to the dependency graph. A left swipe does the same thing (see
+              workflowsSwipe above); the button makes it discoverable without
+              having to guess the gesture. */}
+          {isMobile && (
+            <button onClick={() => setBoardType('dag')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toDag', 'Dependency graph')}>
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            </button>
+          )}
+          </div>
         ) : boardType === 'dag' ? (
           <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
           <TaskDAG
@@ -6391,6 +6410,14 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           {isMobile && (
             <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
               <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" /></svg>
+            </button>
+          )}
+          {/* Onward to the workflows board. The dependency graph used to be the
+              last view a thumb could reach; adding a fourth view left it with no
+              way forward except the header toggle. Mirrors the button on the left. */}
+          {isMobile && (
+            <button onClick={() => setBoardType('workflows')} className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toWorkflows', 'Workflows')}>
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
             </button>
           )}
           </div>
