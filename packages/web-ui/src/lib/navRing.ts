@@ -88,11 +88,43 @@ export function ringStep(page: PageId, sub: RingSub | undefined, delta: 1 | -1):
 }
 
 /** Finger moves right (+1, forward) or left (-1, back). */
+/**
+ * Finger travelling from RIGHT to LEFT (dx < 0) ADVANCES; left to right steps
+ * back. This is the convention the work board already had before the ring
+ * existed (useSwipeTabs did the same), so the four task views keep their feel.
+ */
 export function ringDelta(dx: number, dy: number): 1 | -1 | 0 {
   if (Math.abs(dx) < RING_SWIPE_THRESHOLD_PX) return 0;
   const angle = (Math.atan2(Math.abs(dy), Math.abs(dx)) * 180) / Math.PI;
   if (angle > RING_SWIPE_ANGLE_LIMIT_DEG) return 0;
-  return dx > 0 ? 1 : -1;
+  return dx < 0 ? 1 : -1;
+}
+
+/**
+ * A horizontally scrollable ancestor owns the gesture until it reaches its edge.
+ * Without this, dragging the kanban board sideways would also switch views.
+ * `forward` = finger right→left = content scrolling forward (scrollLeft grows).
+ */
+export function scrollConsumesHorizontal(
+  scrollLeft: number,
+  clientWidth: number,
+  scrollWidth: number,
+  forward: boolean,
+): boolean {
+  if (scrollWidth <= clientWidth + 1) return false;
+  return forward ? scrollLeft + clientWidth < scrollWidth - 1 : scrollLeft > 1;
+}
+
+function horizontalScrollerConsumes(el: Element | null, forward: boolean): boolean {
+  let node: Element | null = el;
+  while (node && node !== document.documentElement) {
+    const overflowX = getComputedStyle(node).overflowX;
+    if ((overflowX === 'auto' || overflowX === 'scroll') && node.scrollWidth > node.clientWidth + 1) {
+      if (scrollConsumesHorizontal(node.scrollLeft, node.clientWidth, node.scrollWidth, forward)) return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
 }
 
 // ── Sub-view commands ───────────────────────────────────────────────────────
@@ -133,12 +165,14 @@ export function ringShouldIgnore(target: EventTarget | null): boolean {
 
 export function useNavRingSwipe(opts: { enabled: boolean; onStep: (delta: 1 | -1) => void }): void {
   const start = useRef<{ x: number; y: number } | null>(null);
+  const startTarget = useRef<Element | null>(null);
   const onStepRef = useRef(opts.onStep);
   onStepRef.current = opts.onStep;
 
   useEffect(() => {
     if (!opts.enabled) return undefined;
     const onStart = (e: TouchEvent) => {
+      startTarget.current = (e.target as Element) ?? null;
       if (ringShouldIgnore(e.target)) { start.current = null; return; }
       const t = e.touches[0];
       start.current = t ? { x: t.clientX, y: t.clientY } : null;
@@ -150,7 +184,11 @@ export function useNavRingSwipe(opts: { enabled: boolean; onStep: (delta: 1 | -1
       const t = e.changedTouches[0];
       if (!t) return;
       const delta = ringDelta(t.clientX - s.x, t.clientY - s.y);
-      if (delta !== 0) onStepRef.current(delta);
+      if (delta === 0) return;
+      // The kanban board and other wide tables scroll horizontally: while such a
+      // container can still move this way, the gesture belongs to it, not the ring.
+      if (horizontalScrollerConsumes(startTarget.current, delta === 1)) return;
+      onStepRef.current(delta);
     };
     document.addEventListener('touchstart', onStart, { passive: true });
     document.addEventListener('touchend', onEnd, { passive: true });

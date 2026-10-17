@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NAV_RING, ringIndex, ringStep, ringDelta, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
+import { NAV_RING, ringIndex, ringStep, ringDelta, scrollConsumesHorizontal, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
 import { PAGE } from '../routes.ts';
 
 describe('navRing: shape', () => {
@@ -93,9 +93,10 @@ describe('navRing: stepping', () => {
 });
 
 describe('navRing: gesture → direction', () => {
-  it('finger moving right is forward, left is back', () => {
-    expect(ringDelta(80, 4)).toBe(1);
-    expect(ringDelta(-80, 4)).toBe(-1);
+  it('finger travelling right→left advances, left→right steps back', () => {
+    // Owner's definition: 向左滑 = press on the right edge, drag toward the left.
+    expect(ringDelta(-80, 4)).toBe(1);
+    expect(ringDelta(80, 4)).toBe(-1);
   });
 
   it('ignores gestures shorter than the threshold', () => {
@@ -106,5 +107,25 @@ describe('navRing: gesture → direction', () => {
   it('ignores gestures that are mostly vertical', () => {
     expect(ringDelta(80, 200)).toBe(0);
     expect(ringDelta(-80, -200)).toBe(0);
+  });
+});
+
+describe('navRing: horizontal scrollers keep their gesture', () => {
+  it('a container that can still scroll forward consumes the swipe', () => {
+    // 0..1000 wide in a 300 viewport, sitting mid-way → can scroll further
+    expect(scrollConsumesHorizontal(400, 300, 1000, true)).toBe(true);
+  });
+
+  it('at the forward edge the ring takes over', () => {
+    expect(scrollConsumesHorizontal(700, 300, 1000, true)).toBe(false);
+  });
+
+  it('at the back edge the ring takes over', () => {
+    expect(scrollConsumesHorizontal(0, 300, 1000, false)).toBe(false);
+  });
+
+  it('a container with nothing to scroll never consumes the swipe', () => {
+    expect(scrollConsumesHorizontal(0, 300, 300, true)).toBe(false);
+    expect(scrollConsumesHorizontal(0, 300, 300, false)).toBe(false);
   });
 });
