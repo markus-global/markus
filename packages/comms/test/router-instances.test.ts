@@ -99,8 +99,17 @@ describe('MessageRouter — bot instances (G2)', () => {
     const ops = stubAdapter('telegram');
     router.registerAdapter(sales, 'bi_tg_sales');
     router.registerAdapter(ops, 'bi_tg_ops');
-    router.bindAgentToChannel('agent-sales', 'telegram', 'C1');
-    router.bindAgentToChannel('agent-ops', 'telegram', 'C2');
+    // Instance-scoped channel bindings — the shape the gateway persists. The
+    // message carries the receiving instance (the router stamps it, #376), so a
+    // binding is addressed by that instance, not by the platform.
+    const channelBindings = [
+      { scope: 'channel' as const, instanceId: 'bi_tg_sales', nativeId: 'C1', kind: null, agentId: 'agent-sales' },
+      { scope: 'channel' as const, instanceId: 'bi_tg_ops', nativeId: 'C2', kind: null, agentId: 'agent-ops' },
+    ];
+    router.setBindingLookup({
+      bindings: (_orgId, platform) => (platform === 'telegram' ? channelBindings : []),
+      platformDefaultAgent: () => undefined,
+    });
     // The handler receives the resolved target (G3 contract), so the agent id
     // is `target.agentId` — not the target object itself.
     router.setAgentHandler(async (target) => `ack:${target.agentId}`);

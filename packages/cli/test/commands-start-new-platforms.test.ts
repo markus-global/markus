@@ -156,13 +156,15 @@ describe('startup — inbound routing to the bound agent (end to end)', () => {
     await new Promise((r) => setTimeout(r, 0));
 
     // The handler now receives the resolved target — agent *and* conversation
-    // identity — not a bare agent id (G3). The explicit channel binding wins and
-    // names the conversation; with no instance on the message the key is
-    // instance-less.
+    // identity — not a bare agent id (G3). The legacy channel binding (no
+    // instance id) matches the platform's implicit single bot, whose registered
+    // id *is* the platform id; since #376 the router stamps that id on the
+    // message, so the conversation key names the bot instead of being
+    // instance-less. One-time rename for legacy setups, by design.
     expect(received).toEqual([
       {
         agentId: 'agent-7',
-        conversationKey: 'im::group:chan-9',
+        conversationKey: 'im:loopback:group:chan-9',
         matchedScope: 'channel',
         text: 'hello',
       },

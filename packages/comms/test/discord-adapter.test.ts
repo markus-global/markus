@@ -63,7 +63,6 @@ describe('DiscordAdapter', () => {
     expect(handler).toHaveBeenCalledWith(
       expect.objectContaining({
         platform: 'discord',
-        instanceId: 'discord',
         direction: 'inbound',
         channelId: 'channel-1',
         senderId: 'user-1',

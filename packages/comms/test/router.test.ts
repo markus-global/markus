@@ -287,7 +287,9 @@ describe('MessageRouter', () => {
   it('gives two groups of one instance independent session keys (D3)', async () => {
     const router = new MessageRouter();
     const adapter = makeMockAdapter('feishu');
-    router.registerAdapter(adapter);
+    // Register under the real bot instance: the router stamps inbound messages
+    // with it (#376), so tests that exercise instance routing must use it here.
+    router.registerAdapter(adapter, 'bi_1');
     const keys: string[] = [];
     router.setAgentHandler(async (target) => {
       keys.push(target.conversationKey);
@@ -300,10 +302,10 @@ describe('MessageRouter', () => {
       platformDefaultAgent: () => undefined,
     });
 
-    await router.connectAll([{ platform: 'feishu' }]);
+    await router.connectAll([{ platform: 'feishu', instanceId: 'bi_1' }]);
     const onMessage = (adapter.onMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_A', instanceId: 'bi_1', channelKind: 'group', agentId: '' }));
-    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_B', instanceId: 'bi_1', channelKind: 'group', agentId: '' }));
+    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_A', channelKind: 'group', agentId: '' }));
+    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_B', channelKind: 'group', agentId: '' }));
 
     expect(keys).toHaveLength(2);
     expect(keys[0]).not.toBe(keys[1]);
@@ -313,7 +315,7 @@ describe('MessageRouter', () => {
   it('ignores inbound on a notification channel (outbound-only, not a silent drop)', async () => {
     const router = new MessageRouter();
     const adapter = makeMockAdapter('feishu');
-    router.registerAdapter(adapter);
+    router.registerAdapter(adapter, 'bi_1');
     const handler = vi.fn();
     router.setAgentHandler(handler);
     router.setBindingLookup({
@@ -323,9 +325,9 @@ describe('MessageRouter', () => {
       platformDefaultAgent: () => undefined,
     });
 
-    await router.connectAll([{ platform: 'feishu' }]);
+    await router.connectAll([{ platform: 'feishu', instanceId: 'bi_1' }]);
     const onMessage = (adapter.onMessage as ReturnType<typeof vi.fn>).mock.calls[0][0];
-    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_notify', instanceId: 'bi_1', agentId: '' }));
+    await onMessage(makeMessage({ platform: 'feishu', channelId: 'oc_notify', agentId: '' }));
 
     expect(handler).not.toHaveBeenCalled();
     expect(logCapture.lines.some((l) => /notification channel is outbound-only/i.test(l.msg))).toBe(true);

@@ -31,7 +31,7 @@ export class DiscordAdapter implements CommAdapter {
 
     const client = new DiscordClient(clientConfig);
 
-    await client.connect((message) => this.handleMessage(message, discordConfig.instanceId ?? this.platform));
+    await client.connect((message) => this.handleMessage(message));
 
     this.client = client;
     this.connected = true;
@@ -70,7 +70,7 @@ export class DiscordAdapter implements CommAdapter {
     return this.connected && (this.client?.isConnected() ?? false);
   }
 
-  private async handleMessage(message: DiscordMessage, instanceId: string = this.platform): Promise<void> {
+  private async handleMessage(message: DiscordMessage): Promise<void> {
     if (message.author.bot || !message.content) {
       return;
     }
@@ -78,7 +78,6 @@ export class DiscordAdapter implements CommAdapter {
     const mapped: Message = {
       id: msgId(),
       platform: 'discord',
-      instanceId,
       direction: 'inbound',
       channelId: message.channel_id,
       senderId: message.author.id,
