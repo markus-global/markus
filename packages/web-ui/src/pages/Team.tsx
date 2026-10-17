@@ -5743,25 +5743,33 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           <div ref={messagesEnd} />
 
           {/* Scroll to bottom — floats over the transcript.
-              It used to be a normal-flow row between the list and the composer:
-              a full-width band that ate the last lines of the conversation. A
-              sticky pill inside the scrollport has no band at all — only the
-              button itself is visible (and only it takes pointer events). */}
+              Must contribute ZERO height to the scroll content. Whether this
+              affordance is shown is decided by `scrollHeight - clientHeight -
+              scrollTop`; if it occupies space inside the scroller, showing it
+              grows scrollHeight by its own height (measured: 42px), which flips
+              the decision that governs it — a bistable loop right around the
+              bottom threshold, visible as endless flicker. Clicking the button
+              never hit it because the jump lands on the true bottom, where the
+              distance is 0 either way.
+              So: a zero-height sticky anchor, and the pill absolutely positioned
+              inside it. The affordance can no longer influence its own trigger. */}
           {showScrollBtn && mainTab === 'chat' && (
-            <div className="sticky bottom-0 z-20 pointer-events-none flex justify-center pb-2">
-              <button
-                onClick={() => {
-                  // Explicit jump = the user handing the viewport back.
-                  resumeChatScrollFollow();
-                  scrollChatToBottom('smooth');
-                }}
-                className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/90 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
-                {newMsgCount > 0
-                  ? t('page.newMessages', { count: newMsgCount })
-                  : t('page.scrollToBottom')}
-              </button>
+            <div className="sticky bottom-0 z-20 h-0 pointer-events-none">
+              <div className="absolute inset-x-0 bottom-2 flex justify-center">
+                <button
+                  onClick={() => {
+                    // Explicit jump = the user handing the viewport back.
+                    resumeChatScrollFollow();
+                    scrollChatToBottom('smooth');
+                  }}
+                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/90 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
+                  {newMsgCount > 0
+                    ? t('page.newMessages', { count: newMsgCount })
+                    : t('page.scrollToBottom')}
+                </button>
+              </div>
             </div>
           )}
         </div>
