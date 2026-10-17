@@ -89,14 +89,13 @@ task.decisions?:    { id, point, decision, rationale?, decidedBy, decidedByName,
 
 ## 5. 测试计划
 
-- `task-attention.test.ts`：信号判别表（mention / human / reviewer / 普通评论）+ digest 合并窗口 + 上限。
+- `task-attention.test.ts`：信号判别表（mention / human / reviewer / 普通评论）+ `shouldInjectIntoSession`（human 进 / agent 不进）。
 - `task-decision.test.ts`：一卡一未决问题（第二个被拒、错误可行动）+ 裁决权限（reviewer/creator 可，普通 agent 不可）+ 裁决关闭 openQuestion。
 - `task-terminal-revert.test.ts`：agent 回退 completed → 抛错；human → 允许；system 恢复路径 → 允许。
 - 回归：`postTaskComment` 普通评论**不再**产生 mailbox 项（红→绿）。
 
 ## 6. 已知残余
 
-- digest 是**进程内内存**缓冲：进程崩溃会丢未 flush 的 FYI（可接受——那些本就是非指令性留痕；完整线程仍在 `task_comments`）。
 - `openQuestion` 只能在**同一张卡**上一问一答，不支持子问题树。
 - 前端（web-ui）尚未渲染 `openQuestion` / `decisions` 面板（本轮只做后端 + 工具面 + 提示词）。
 - `needs_decision` 的语义没有塞进 `task_comment`（避免 flag 汤），而是独立工具；SOP 文档需同步。

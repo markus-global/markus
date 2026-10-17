@@ -64,7 +64,7 @@ import type {
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
-import { CommentDigest, isTerminalTaskStatus, resolveCommentAttention } from './task-attention.js';
+import { isTerminalTaskStatus, resolveCommentAttention, shouldInjectIntoSession, type CommentAuthorType } from './task-attention.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -273,8 +273,6 @@ export class TaskServiceError extends Error {
 export class TaskService implements ApprovalTargetPort {
   private tasks = new Map<string, Task>();
   private agentManager?: AgentManager;
-  /** Coalescing buffer for record-only comments (see task-attention.ts). */
-  private readonly commentDigest = new CommentDigest();
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   private taskLogRepo?: TaskLogRepo;
@@ -711,11 +709,10 @@ export class TaskService implements ApprovalTargetPort {
       commentKind: opts?.commentKind,
     });
 
-    // Record-only comments reach the assignee as a COALESCED digest (never a
-    // per-comment interruption); directives are delivered immediately.
+    // Only human comments enter a running session (see task-attention.ts).
     this.injectCommentIntoRunningTask(taskId, authorName, content, {
       commentId: comment.id,
-      directive: !attention.recordOnly,
+      authorType: opts?.authorType === 'human' ? 'human' : 'agent',
     });
 
     // Notify agents about the comment.
@@ -5882,55 +5879,50 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /**
-   * Record a comment into a running task's context — COALESCED, never per-comment.
+   * Deliver a comment into a running agent's session — HUMAN AUTHORS ONLY.
    *
-   * Record-only comments (the 2026-10-17 storm case) pile up in a per-session
-   * buffer and are delivered as ONE non-directive digest per window. Directives
-   * (mention / human author / reviewer verdict) are delivered the same way — the
-   * difference is they also enqueue a mailbox item, not that they interrupt.
+   * An agent's comment does NOT enter another agent's context while that agent
+   * is working. It stays in the thread and, when it names someone or is a state
+   * change, wakes that agent through the mailbox instead. A human speaking is
+   * the one interruption worth taking mid-task.
    *
-   * For a closed card, only a directive justifies spending a whole new LLM turn
-   * (`handlePostTaskComment`); a record-only comment just stays in the thread.
+   * On a closed card, only a human comment starts a post-task turn.
    */
   injectCommentIntoRunningTask(
     taskId: string,
     authorName: string,
     content: string,
-    opts?: { commentId?: string; directive?: boolean },
+    opts?: { commentId?: string; authorType?: CommentAuthorType },
   ): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
+    if (!shouldInjectIntoSession(opts?.authorType ?? 'agent')) return;
+
     if (isTerminalTaskStatus(task.status)) {
-      if (opts?.directive) void this.handlePostTaskComment(taskId, task, authorName, content);
+      void this.handlePostTaskComment(taskId, task, authorName, content);
       return;
     }
 
     if (task.status !== 'in_progress') return;
     if (!task.assignedAgentId || !this.agentManager) return;
 
-    const agentId = task.assignedAgentId;
-    const round = task.executionRound ?? 1;
-    const sessionId = `task_${taskId}_r${round}`;
-
-    this.commentDigest.enqueue(
-      sessionId,
-      {
-        commentId: opts?.commentId ?? '',
-        authorName,
+    try {
+      const agent = this.agentManager.getAgent(task.assignedAgentId);
+      const round = task.executionRound ?? 1;
+      const sessionId = `task_${taskId}_r${round}`;
+      const injectedMessage = [
+        `**${authorName} (human) commented on this task while you are working:**`,
+        '',
         content,
-        createdAt: new Date().toISOString(),
-      },
-      message => {
-        try {
-          const agent = this.agentManager!.getAgent(agentId);
-          agent.injectUserMessage(sessionId, message);
-          log.info('Delivered coalesced comment digest', { taskId, sessionId });
-        } catch (err) {
-          log.warn('Failed to deliver comment digest', { taskId, error: String(err) });
-        }
-      },
-    );
+        '',
+        'A person is speaking to you directly — take it into account in what you are doing. If it changes the task, follow it; if it is only an observation, note it and continue.',
+      ].join('\n');
+      agent.injectUserMessage(sessionId, injectedMessage);
+      log.info('Injected human comment into agent session', { taskId, sessionId, authorName });
+    } catch (err) {
+      log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
+    }
   }
 
   // ─── Attention economy: one open question + single-point adjudication ──────

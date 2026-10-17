@@ -1087,9 +1087,10 @@ describe('TaskService', () => {
         expect.any(Object),
       );
       const agentA = agentManager.getAgent(AGENT_A);
-      // Attention economy (2026-10-17): comments never live-inject per comment.
-      // They land in a coalesced digest delivered on the next window.
-      expect(agentA.injectUserMessage).not.toHaveBeenCalled();
+      // A human (authorType 'human') IS injected into the running session —
+      // humans are the one interruption worth taking mid-task. Agent comments
+      // never are (see task-attention.test.ts).
+      expect(agentA.injectUserMessage).toHaveBeenCalled();
     });
 
     it('notifies human mentions via HITL service', async () => {

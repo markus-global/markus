@@ -183,43 +183,39 @@ describe('one open question per card + single-point adjudication', () => {
   });
 });
 
-describe('comment attention — record-only comments stop waking the team', () => {
+describe('comment attention — only a human enters a running session', () => {
   let ctx: ReturnType<typeof setup>;
 
-  beforeEach(() => {
-    vi.useFakeTimers();
-    ctx = setup();
-  });
-  afterEach(() => { vi.useRealTimers(); });
+  beforeEach(() => { ctx = setup(); });
 
-  it('a plain peer comment wakes nobody and does not interrupt the running session', async () => {
+  it('an agent comment wakes nobody and never enters the running session', async () => {
     const task = ctx.create();
     ctx.ts.approveTask(task.id, 'user-1'); // → in_progress
-
-    await ctx.ts.postTaskComment(
-      task.id, PEER, '数据库工程师',
-      'Snapshot corrected: the ledger figure is 41, not 47.', // no mention
-    );
-
-    expect(ctx.agents.get(AGENT)!.enqueueToMailbox).not.toHaveBeenCalled();
-    expect(ctx.agents.get(AGENT)!.injectUserMessage).not.toHaveBeenCalled();
-  });
-
-  it('coalesces several record-only comments into ONE digest message', async () => {
-    const task = ctx.create();
-    ctx.ts.approveTask(task.id, 'user-1');
 
     for (let i = 0; i < 4; i++) {
       await ctx.ts.postTaskComment(task.id, PEER, '数据库工程师', `correction ${i}`);
     }
 
-    vi.advanceTimersByTime(60_000);
+    // No mailbox wake, and — the point — nothing injected into the session.
+    expect(ctx.agents.get(AGENT)!.enqueueToMailbox).not.toHaveBeenCalled();
+    expect(ctx.agents.get(AGENT)!.injectUserMessage).not.toHaveBeenCalled();
+  });
+
+  it('a human comment is injected into the running session, verbatim', async () => {
+    const task = ctx.create();
+    ctx.ts.approveTask(task.id, 'user-1');
+
+    await ctx.ts.postTaskComment(
+      task.id, 'user-1', 'Jason Carter',
+      'Stop and fix the ledger figure first.',
+      undefined, undefined, { authorType: 'human' },
+    );
 
     const injected = ctx.agents.get(AGENT)!.injectUserMessage.mock.calls;
     expect(injected).toHaveLength(1);
     const message = String(injected[0][1]);
-    expect(message).toContain('4 new comments were recorded');
-    expect(message).toContain('RECORD, not a request');
+    expect(message).toContain('Stop and fix the ledger figure first.');
+    expect(message).toContain('(human)');
   });
 
   it('a mention still wakes the named agent immediately', async () => {

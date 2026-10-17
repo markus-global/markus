@@ -1,8 +1,8 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import {
-  CommentDigest,
   isTerminalTaskStatus,
   resolveCommentAttention,
+  shouldInjectIntoSession,
 } from '../src/task-attention.js';
 
 /**
@@ -11,7 +11,7 @@ import {
  * Before this decision function existed, "does this comment wake someone?" was
  * answered in three different places and every one of them said YES:
  *   - postTaskComment fanned out to assignee + creator,
- *   - injectCommentIntoRunningTask live-injected each comment into the running
+ *   - injectCommentIntoRunningTask injected every comment into the running
  *     session with "IMPORTANT: address this comment",
  *   - handlePostTaskComment started a whole new LLM turn on closed cards.
  *
@@ -91,85 +91,12 @@ describe('resolveCommentAttention — the single "does this wake anyone?" decisi
   });
 });
 
-describe('CommentDigest — coalescing, never per-comment', () => {
-  beforeEach(() => { vi.useFakeTimers(); });
-  afterEach(() => { vi.useRealTimers(); });
-
-  const item = (n: number) => ({
-    commentId: `tc_${n}`,
-    authorName: `agent-${n}`,
-    content: `comment body ${n}`,
+describe('shouldInjectIntoSession — only a human enters a running session', () => {
+  it('injects a human comment', () => {
+    expect(shouldInjectIntoSession('human')).toBe(true);
   });
 
-  it('batches every comment in one window into ONE message', () => {
-    const digest = new CommentDigest({ windowMs: 1000 });
-    const flush = vi.fn();
-    for (let i = 0; i < 5; i++) digest.enqueue('sess-1', item(i), flush);
-
-    expect(digest.pending('sess-1')).toBe(5);
-    expect(flush).not.toHaveBeenCalled();
-
-    vi.advanceTimersByTime(1000);
-
-    expect(flush).toHaveBeenCalledTimes(1);
-    const [message, items] = flush.mock.calls[0];
-    expect(items).toHaveLength(5);
-    expect(message).toContain('5 new comments were recorded');
-    expect(digest.pending('sess-1')).toBe(0);
-    digest.dispose();
-  });
-
-  it('renders a NON-directive message (the interrupted-work bug)', () => {
-    const digest = new CommentDigest({ windowMs: 1000 });
-    const flush = vi.fn();
-    digest.enqueue('sess-1', item(1), flush);
-    vi.advanceTimersByTime(1000);
-
-    const message = flush.mock.calls[0][0] as string;
-    expect(message).toContain('RECORD, not a request');
-    expect(message).not.toContain('IMPORTANT: Address this comment in your current work');
-    expect(message).toContain('task_get');
-    digest.dispose();
-  });
-
-  it('caps a flush and keeps the remainder queued', () => {
-    const digest = new CommentDigest({ windowMs: 1000, maxItems: 3 });
-    const flush = vi.fn();
-    for (let i = 0; i < 5; i++) digest.enqueue('sess-1', item(i), flush);
-    vi.advanceTimersByTime(1000);
-
-    expect(flush.mock.calls[0][1]).toHaveLength(3);
-    expect(digest.pending('sess-1')).toBe(2);
-
-    vi.advanceTimersByTime(1000);
-    expect(flush).toHaveBeenCalledTimes(2);
-    expect(flush.mock.calls[1][1]).toHaveLength(2);
-    digest.dispose();
-  });
-
-  it('truncates long comments but points at the full thread', () => {
-    const digest = new CommentDigest({ windowMs: 1000, excerptChars: 10 });
-    const flush = vi.fn();
-    digest.enqueue('sess-1', { commentId: 'tc_x', authorName: 'a', content: 'x'.repeat(500) }, flush);
-    vi.advanceTimersByTime(1000);
-
-    const message = flush.mock.calls[0][0] as string;
-    expect(message).toContain('[truncated — full text in the thread]');
-    digest.dispose();
-  });
-
-  it('keeps sessions independent', () => {
-    const digest = new CommentDigest({ windowMs: 1000, maxItems: 10 });
-    const flushA = vi.fn();
-    const flushB = vi.fn();
-    digest.enqueue('sess-a', item(1), flushA);
-    digest.enqueue('sess-b', item(2), flushB);
-    vi.advanceTimersByTime(1000);
-
-    expect(flushA).toHaveBeenCalledTimes(1);
-    expect(flushB).toHaveBeenCalledTimes(1);
-    expect(flushA.mock.calls[0][1]).toHaveLength(1);
-    expect(flushB.mock.calls[0][1]).toHaveLength(1);
-    digest.dispose();
+  it('never injects an agent comment — no buffering, no coalescing, no truncation', () => {
+    expect(shouldInjectIntoSession('agent')).toBe(false);
   });
 });
