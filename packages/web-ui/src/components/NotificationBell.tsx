@@ -5,6 +5,7 @@ import type { TFunction } from 'i18next';
 import { api, hubApi, invalidateApiCache, wsClient, resolveApprovalDirection, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { registerRingSubSource, onRingSubRequest } from '../lib/navRing.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
 import { openExternal } from '../hooks/useElectron.ts';
@@ -230,6 +231,23 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [loadingMore, setLoadingMore] = useState(false);
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
+  const tabRef = useRef<'approvals' | 'notifications'>(tab);
+  tabRef.current = tab;
+  // Ring integration (lib/navRing.ts): the notifications page owns TWO ring steps —
+  // approvals and notifications. It registers a GETTER instead of publishing a copy,
+  // so a tap, a restore or any other path that changes the tab is seen by the ring
+  // immediately (a cached copy made the ring skip one of the two views). Only the
+  // embedded (page) instance registers; the header popover is a different context.
+  useEffect(() => {
+    if (!embeddedMode) return undefined;
+    return registerRingSubSource(PAGE.NOTIFICATIONS, () => (tabRef.current === 'approvals' ? 'approvals' : 'notifications'));
+  }, [embeddedMode]);
+  useEffect(() => onRingSubRequest((p, sub) => {
+    if (p !== PAGE.NOTIFICATIONS) return;
+    const next = sub === 'approvals' ? 'approvals' : 'notifications';
+    setTab(next);
+    lastTabRef.current = next;
+  }), []);
   const [creditDialog, setCreditDialog] = useState(false);
   /** 通知列表过滤：默认只看未读（Owner 诉求），可切到「全部」（未读 + 已读）。 */
   const [notifFilter, setNotifFilter] = useState<'unread' | 'all'>('unread');
@@ -1224,24 +1242,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   ) : null;
 
   if (embeddedMode) {
+    // The two tabs are two steps on the app-wide swipe ring (lib/navRing.ts), which
+    // is the ONLY place that turns a horizontal swipe into navigation. This view
+    // used to run its own tab swipe as well: the inner handler fired first, moved
+    // the tab, and then the ring read the already-moved tab and advanced a second
+    // step — one physical swipe, two destinations.
     const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
     const tabIdx = tabs.indexOf(tab);
-
-    const handleSwipe = (() => {
-      let startX = 0;
-      let startY = 0;
-      return {
-        onTouchStart: (e: React.TouchEvent) => { startX = e.touches[0].clientX; startY = e.touches[0].clientY; },
-        onTouchEnd: (e: React.TouchEvent) => {
-          const dx = e.changedTouches[0].clientX - startX;
-          const dy = e.changedTouches[0].clientY - startY;
-          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-            if (dx < 0 && tabIdx < tabs.length - 1) setTab(tabs[tabIdx + 1]);
-            if (dx > 0 && tabIdx > 0) setTab(tabs[tabIdx - 1]);
-          }
-        },
-      };
-    })();
 
     return (
       <>
@@ -1270,7 +1277,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         {tab === 'notifications' && notifFilterBar}
 
         {/* Swipeable content */}
-        <div className="flex-1 overflow-hidden relative" {...handleSwipe}>
+        <div className="flex-1 overflow-hidden relative">
           <div
             className="flex h-full transition-transform duration-300 ease-out"
             style={{ transform: `translateX(-${tabIdx * 100}%)` }}

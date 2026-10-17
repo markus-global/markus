@@ -125,7 +125,7 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
   }, [focusIndex]);
 
   return (
-    <div ref={containerRef} className="relative" onKeyDown={handleKeyDown}>
+    <div ref={containerRef} className="relative min-w-0" onKeyDown={handleKeyDown}>
       <button
         type="button"
         onClick={() => { setOpen(!open); setSearch(''); setFocusIndex(-1); }}

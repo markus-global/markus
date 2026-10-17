@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, mem
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
+import { useNavRingSwipe, ringStep, currentRingSub, requestRingSub } from './lib/navRing.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -26,6 +27,7 @@ import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContex
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
+import { getMobileNavDepths, getMobileNavDepthsServer, mobileNavDepthOf, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -131,6 +133,11 @@ export function App() {
     subscribeDocScrollBlocked, getDocScrollBlocked, () => false,
   );
   const docScroll = isMobile && !(page === PAGE.TEAM && chatLayerNeedsInnerScroll);
+  // The bottom nav belongs to TOP-LEVEL pages only: a page that drilled into a
+  // detail view declares depth > 0 and gets the full screen. Scoped by owner so
+  // a stale declaration from a page you just left can never hide today's nav.
+  const navDepths = useSyncExternalStore(subscribeMobileNavDepth, getMobileNavDepths, getMobileNavDepthsServer);
+  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && mobileNavDepthOf(navDepths, page) === 0;
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('mobile-doc-scroll', docScroll);
@@ -516,6 +523,21 @@ export function App() {
   useEffect(() => {
     navBus.setHandler((p, params) => navigate(p, params));
   }, [navigate]);
+
+  // Horizontal swipe ring (owner spec, 2026-10-17): overview → team L1 → approvals
+  // → notifications → tasks(backlog/kanban/dag/workflows) → deliverables → wrap.
+  // ONE definition lives in lib/navRing.ts; this is the only gesture entry point
+  // for page-level swipes, and containers that own a horizontal gesture opt out
+  // with `data-swipe-owner`.
+  const onRingStep = useCallback((delta: 1 | -1) => {
+    const from = pageRef.current;
+    const step = ringStep(from, currentRingSub(from), delta);
+    if (!step) return; // off-ring pages (settings, search, store) ignore swipes
+    if (step.sub) requestRingSub(step.page, step.sub);
+    navigate(step.page);
+  }, [navigate]);
+
+  useNavRingSwipe({ enabled: isMobile, onStep: onRingStep });
 
   // While on L0, keep the rail highlight aligned with the active page
   // (e.g. Overview selected when the app opens on Overview / when entering L0).
@@ -925,7 +947,7 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
+      <div className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col min-w-0 ${showBottomNav ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>{t('llmBanner.message')}</span>
@@ -959,8 +981,8 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile bottom nav (hidden on Settings/Search pages) */}
-      {isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && (
+      {/* Mobile bottom nav (top-level pages only — hidden on Settings/Search and on sub-pages) */}
+      {showBottomNav && (
         <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
       )}
 

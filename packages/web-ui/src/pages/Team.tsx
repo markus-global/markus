@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { setDocScrollBlocked } from '../lib/mobileDocScroll.ts';
+import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -96,7 +97,6 @@ import {
 } from './tabDefs.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
@@ -210,6 +210,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => {
     setDocScrollBlocked(isMobile && mobileLayer === 'chat');
     return () => setDocScrollBlocked(false);
+  }, [isMobile, mobileLayer]);
+
+  // Team L2 (team detail) / L3 (chat) are sub-pages: the bottom nav belongs to
+  // the L1 roster only, so a detail view gets the whole screen.
+  useEffect(() => {
+    setMobileNavDepth(PAGE.TEAM, isMobile && mobileLayer !== 'roster' ? 1 : 0);
+    return () => setMobileNavDepth(PAGE.TEAM, 0);
   }, [isMobile, mobileLayer]);
 
   const enterMobileDetail = useCallback(() => {
@@ -622,12 +629,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [isMobile]);
 
-  const mainTabsList = [{ id: 'chat' as const }, { id: 'profile' as const }];
+  // Mobile: the detail ("profile") view is opt-in from the overflow menu, never
+  // a swipe destination — a horizontal swipe on a phone already means
+  // swipe-back, and having both made one gesture do two things.
+  const mainTabsList = isMobile
+    ? [{ id: 'chat' as const }]
+    : [{ id: 'chat' as const }, { id: 'profile' as const }];
   const handleMainTabSwipe = useCallback((tab: MainTab) => {
     if (tab === 'profile') switchToProfile();
     else { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }
   }, [switchToProfile]);
-  const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
   const handleViewProfile = useCallback((agentId: string, opts?: { tab?: ProfileTab; highlightMailboxId?: string }) => {
     setChatMode('direct');
@@ -767,6 +778,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A page that arrives quickly must not flash an indicator. The old overlay was
+  // a full-width gradient band painted at the top of the transcript, so every
+  // near-top scroll that triggered a (usually instant) fetch made the page blink.
+  const [loadingMoreVisible, setLoadingMoreVisible] = useState(false);
+  useEffect(() => {
+    if (!loadingMore) { setLoadingMoreVisible(false); return; }
+    const id = setTimeout(() => setLoadingMoreVisible(true), 250);
+    return () => clearTimeout(id);
+  }, [loadingMore]);
   // Initialise to `true`: the first paint must not claim "this conversation is empty"
   // before the first load settles. Every resolution path clears it (buffer hit,
   // DB load, no-sessions, error) — see the conv-switch effect below.
@@ -877,6 +897,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Mobile-only overflow menu in the chat header (detail / search / new / history).
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
+  // Horizontal swipe on the transcript cycles between the open session tabs.
+  const sessionSwipeRef = useRef<{ x: number; y: number } | null>(null);
   // Inline rename state: which session is being renamed + the draft value
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingDraft, setRenamingDraft] = useState('');
@@ -4783,63 +4807,79 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
                 </button>
-                <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
-                {chatMode === 'direct' && currentAgent && (
-                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
-                )}
-              </div>
-              {/* Mobile Row 2: tabs + actions */}
-              <div className="flex items-center px-3 h-9 gap-1 border-t border-border-default/40">
+                {/* Name + process state share ONE line, horizontally centered:
+                    the state is a coloured dot, not a labelled pill, so the
+                    header stays one row on a phone instead of stacking a
+                    second status row under it. */}
+                <div className="flex-1 min-w-0 flex items-center justify-center gap-1.5">
+                  <span className="font-semibold text-sm truncate min-w-0">{modeTitle}</span>
+                  {chatMode === 'direct' && currentAgent && (
+                    <AgentStatusDot agent={currentAgent} />
+                  )}
+                </div>
                 <button
-                  onClick={() => { if (isProfileTab(mainTab)) history.back(); else setMainTab('chat'); }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    mainTab === 'chat' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                  }`}
-                >{t('page.chatTitle')}</button>
-                <button
-                  onClick={() => { if (!isProfileTab(mainTab)) switchToProfile(); }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    isProfileTab(mainTab) ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                  }`}
-                >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
-                <div className="flex-1" />
-                <button
-                  onClick={() => { setFindOpen(o => !o); if (findOpen) setFindCursor(-1); }}
-                  className={`p-1 rounded-md transition-colors shrink-0 ${findOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
+                  onClick={() => setShowMoreMenu(o => !o)}
+                  aria-label={t('page.moreActions', { defaultValue: '更多操作' })}
+                  className={`p-1.5 rounded-md transition-colors shrink-0 ${showMoreMenu ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary'}`}
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
                 </button>
-                {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
-                  <button
-                    onClick={() => setShowMemberPanel(!showMemberPanel)}
-                    className={`text-[11px] px-2 py-1 rounded-md font-medium shrink-0 flex items-center gap-1 ${
-                      showMemberPanel ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                    }`}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                    {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
-                  </button>
-                )}
-                {chatMode === 'direct' && !isProfileTab(mainTab) && (
-                  <>
-                    <button
-                      onClick={newConversation}
-                      title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
-                    >{t('page.newChatPlus')}</button>
-                    <button
-                      ref={historyBtnRef}
-                      onClick={() => setShowSessions(!showSessions)}
-                      className={`p-1 rounded-md transition-colors shrink-0 ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}
-                      title={t('page.historyTitle')}
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </button>
-                  </>
-                )}
               </div>
+              {/* Everything Row 2 used to hold lives here instead. A phone has
+                  no spare row for a tab strip plus three icon buttons, and the
+                  tab strip made the detail view reachable by swiping — a
+                  gesture that fought the horizontal swipe-back gesture. The
+                  detail view is now opt-in via this menu and always exited
+                  with Back, never by swiping. */}
+              {showMoreMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
+                  <div className="absolute right-2 top-full z-50 w-44 py-1 bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40">
+                    <button
+                      onClick={() => { setShowMoreMenu(false); if (!isProfileTab(mainTab)) switchToProfile(); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="3.5" /><path d="M5 20a7 7 0 1 1 14 0" /></svg>
+                      {chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}
+                    </button>
+                    <button
+                      onClick={() => { setShowMoreMenu(false); setFindOpen(true); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                      {t('page.findTitle', { defaultValue: '搜索' })}
+                    </button>
+                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); newConversation(); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+                        {t('page.newChat')}
+                      </button>
+                    )}
+                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
+                      <button
+                        ref={historyBtnRef}
+                        onClick={() => { setShowMoreMenu(false); setShowSessions(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        {t('page.historyTitle')}
+                      </button>
+                    )}
+                    {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); setShowMemberPanel(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                        {t('page.membersTitle', { defaultValue: '成员' })} ({activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0})
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           ) : (
           /* Desktop: redesigned header with flattened tabs + inline editing */
@@ -5392,7 +5432,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           </div>
         )}
         {isMobile && mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
-          <div className="flex-1 overflow-y-auto" onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 overflow-y-auto">
             <TeamProfile
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
@@ -5443,16 +5483,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </div>
             </div>
           )}
-          {loadingMore && (
-            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center items-center gap-2 py-2 bg-gradient-to-b from-surface-primary/90 to-transparent pointer-events-none">
+          {loadingMoreVisible && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center pointer-events-none pt-2">
+              <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-secondary/90 backdrop-blur-sm border border-border-default shadow">
               <svg className="animate-spin h-3.5 w-3.5 text-brand-400" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
+              </span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'p-2.5' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div ref={chatScrollRef} data-swipe-owner className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
+            // Swipe left/right = previous/next open session tab (same order as the
+            // cycle-session shortcuts). Requires a deliberate, mostly horizontal
+            // drag so vertical scrolling and taps never switch sessions.
+            if (chatMode !== 'direct' || mainTab !== 'chat' || openSessionTabs.length < 2) return;
+            const touch = e.touches[0];
+            if (touch) sessionSwipeRef.current = { x: touch.clientX, y: touch.clientY };
+          } : undefined} onTouchEnd={isMobile ? (e) => {
+            const start = sessionSwipeRef.current;
+            sessionSwipeRef.current = null;
+            if (!start) return;
+            const touch = e.changedTouches[0];
+            if (!touch) return;
+            const dx = touch.clientX - start.x;
+            const dy = touch.clientY - start.y;
+            if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+            const nextId = cycleSessionTabId(openSessionTabs.map(s => s.id), activeSessionId, dx < 0 ? 1 : -1);
+            if (!nextId) return;
+            const target = openSessionTabs.find(s => s.id === nextId);
+            if (!target) return;
+            if (target.id === NEW_CHAT_PLACEHOLDER_ID) {
+              setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
+              resetConv(currentConvKeyRef.current, NEW_CHAT_PLACEHOLDER_ID);
+              setMessages([]);
+            } else {
+              void switchSession(target);
+            }
+          } : undefined}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>
@@ -5489,10 +5558,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className="flex-1 h-px bg-border-default" />
                   </div>
                 )}
-                <div id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
+                <div id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${isMobile ? 'gap-0' : 'gap-3'}`}>
                   {chatMode === 'channel' ? (
                     <div
-                      className="shrink-0 cursor-pointer"
+                      className={`shrink-0 cursor-pointer ${isMobile ? 'hidden' : ''}`}
                       onClick={(e) => {
                         if (msg.sender === 'agent' && msg.agentId) {
                           const rect = e.currentTarget.getBoundingClientRect();
@@ -5509,7 +5578,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       />
                     </div>
                   ) : (
-                    <div className="shrink-0">
+                    <div className={`shrink-0 ${isMobile ? 'hidden' : ''}`}>
                       <Avatar
                         name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
                         avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
@@ -5521,6 +5590,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
+                      {/* One avatar treatment for BOTH sides on mobile: same size,
+                          same place (start of the name row). An agent reply used to
+                          get an 18px inline avatar while the user kept a 32px column
+                          avatar — the agent looked like a lesser participant. */}
+                      {isMobile && (
+                        <Avatar
+                          name={msg.sender === 'user'
+                            ? currentUserName
+                            : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
+                          avatarUrl={msg.sender === 'user'
+                            ? authUser?.avatarUrl
+                            : agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl}
+                          size={22}
+                          bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
+                          className="rounded self-center"
+                        />
+                      )}
                       <span className="text-sm font-medium text-fg-primary">
                         {msg.sender === 'user'
                           ? currentUserName
@@ -5653,21 +5739,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           )}
           <div ref={messagesEnd} />
-        </div>
 
-          {/* Scroll to bottom — normal flow row above the input, never floats over it */}
+          {/* Scroll to bottom — floats over the transcript.
+              Must contribute ZERO height to the scroll content. Whether this
+              affordance is shown is decided by `scrollHeight - clientHeight -
+              scrollTop`; if it occupies space inside the scroller, showing it
+              grows scrollHeight by its own height (measured: 42px), which flips
+              the decision that governs it — a bistable loop right around the
+              bottom threshold, visible as endless flicker. Clicking the button
+              never hit it because the jump lands on the true bottom, where the
+              distance is 0 either way.
+              So: a zero-height sticky anchor, and the pill absolutely positioned
+              inside it. The affordance can no longer influence its own trigger. */}
           {showScrollBtn && mainTab === 'chat' && (
-            <div
-              className={`flex justify-center ${isMobile ? 'px-3' : `px-5 ${chatRightReserve}`} shrink-0 ${isMobile ? 'pb-1 pt-0' : 'pb-1'}`}
-            >
-              <div className={`${isMobile ? '' : 'max-w-3xl mx-auto'} flex justify-center`}>
+            <div className="sticky bottom-0 z-20 h-0 pointer-events-none">
+              <div className="absolute inset-x-0 bottom-2 flex justify-center">
                 <button
                   onClick={() => {
                     // Explicit jump = the user handing the viewport back.
                     resumeChatScrollFollow();
                     scrollChatToBottom('smooth');
                   }}
-                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/95 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
+                  className="pointer-events-auto flex items-center gap-1.5 px-3.5 py-2 bg-surface-secondary/90 backdrop-blur-sm border border-border-default rounded-full shadow-lg hover:bg-surface-elevated transition-colors text-xs text-fg-secondary"
                 >
                   <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
                   {newMsgCount > 0
@@ -5677,6 +5770,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </div>
             </div>
           )}
+        </div>
 
         {/* Avatar popover */}
         {avatarPopover && (() => {
@@ -6080,7 +6174,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   }}
                 />
               )}
-              {sending && chatMode !== 'dm' ? (
+              {(chatMode === 'direct' ? sending && liveStreamForView : sending) && chatMode !== 'dm' ? (
                 <button
                   onClick={stopSending}
                   className={`${compactComposer ? 'w-8 h-8 rounded-full flex items-center justify-center' : 'px-3 py-2.5 rounded-xl'} bg-red-600 hover:bg-red-500 text-white text-sm transition-colors`}
@@ -6180,6 +6274,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         <ImagePreviewModal src={imagePreviewSrc} onClose={() => setImagePreviewSrc(null)} />
       )}
     </div>
+  );
+}
+
+/**
+ * Compact process-state marker for the mobile chat header: colour + icon only,
+ * sitting right next to the name so the header needs a single row.
+ *
+ * Same authority as the desktop badge (resolveAgentStatus + the server-side
+ * stream state) — this is a smaller presentation of one fact, not a second
+ * opinion about it.
+ */
+function AgentStatusDot({ agent }: { agent: AgentInfo }) {
+  const { t } = useTranslation(['common']);
+  const streamingHere = useAgentSessionStreaming(agent.id);
+  const status = resolveAgentStatus(agent.status, streamingHere);
+  const label = status.labelKey ? t(`common:${status.labelKey}`) : '';
+  return (
+    <span
+      className={`shrink-0 w-2 h-2 rounded-full ${status.dotClass} ${status.tone === 'busy' ? 'animate-pulse' : ''}`}
+      title={label}
+      aria-label={label}
+    />
   );
 }
 

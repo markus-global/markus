@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, hubApi, toPackageSlug, type AgentInfo, type AuthUser, type HubVisibility, type HubModerationStatus, type HubOrg, type HubItem } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
+import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { isElectron, openExternal } from '../hooks/useElectron.ts';
@@ -427,6 +428,13 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
     history.pushState(null, '', hashPath(PAGE.BUILDER, `${art.type}/${encodeURIComponent(art.name)}`));
     window.dispatchEvent(new HashChangeEvent('hashchange'));
   };
+
+  // An artifact detail is a sub-page: the bottom nav belongs to the Builder
+  // tab shell, not to a full-screen editor.
+  useEffect(() => {
+    setMobileNavDepth(PAGE.BUILDER, subRoute ? 1 : 0);
+    return () => setMobileNavDepth(PAGE.BUILDER, 0);
+  }, [subRoute]);
 
   if (subRoute) {
     return (
