@@ -10,6 +10,7 @@ import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
 import { SendToChatModal, shortForChip } from '../components/SendToChat.tsx';
+import { onScrollAnywhere, scrollMetrics } from '../lib/scrollMetrics.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
@@ -299,6 +300,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const refresh = useCallback(async () => {
     setLoading(true);
     listRef.current?.scrollTo({ top: 0, behavior: 'instant' });
+    // In document-scroll mode the pane is not the scroller; reset the real one.
+    if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: 'instant' });
     try {
       const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
       setItems(results);
@@ -496,21 +499,21 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const checkNeedMore = useCallback(() => {
     const el = listRef.current;
     if (!el || loading || loadingMore || items.length >= totalCount) return;
-    if (el.scrollHeight <= el.clientHeight + 100) {
+    // The list pane is not the scroller on mobile (the document is), so "is the
+    // viewport taller than its content" must be measured on the real scroller.
+    const m = scrollMetrics(el);
+    if (m.scrollHeight <= m.clientHeight + 100) {
       loadMore();
     }
   }, [loading, loadingMore, items.length, totalCount, loadMore]);
 
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
     const handleScroll = () => {
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
-        loadMore();
-      }
+      // One measurement for both layouts: element scroller (desktop) or document
+      // root (mobile document scrolling).
+      if (scrollMetrics(listRef.current).atBottom) loadMore();
     };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
+    return onScrollAnywhere(handleScroll);
   }, [loadMore]);
 
   useEffect(() => { checkNeedMore(); }, [checkNeedMore, defaultCollapsed, groupOverrides]);
@@ -925,21 +928,30 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatItems, selected, previewMode, isMobile, isActive, layout, sidebarCollapsed]);
 
-  const pullStartRef = useRef<{ y: number; scrollTop: number } | null>(null);
+  const pullStartRef = useRef<{ y: number; x: number } | null>(null);
   const handlePullStart = useCallback((e: React.TouchEvent) => {
     if (!isMobile) return;
-    const el = listRef.current;
-    if (!el || el.scrollTop > 0) return;
-    pullStartRef.current = { y: e.touches[0].clientY, scrollTop: el.scrollTop };
+    // Only a gesture that STARTS at the very top can be a pull-to-refresh.
+    if (!scrollMetrics(listRef.current).atTop) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    pullStartRef.current = { y: touch.clientY, x: touch.clientX };
   }, [isMobile]);
   const handlePullEnd = useCallback((e: React.TouchEvent) => {
     if (!isMobile || !pullStartRef.current || pullRefreshing) return;
-    const dy = e.changedTouches[0].clientY - pullStartRef.current.y;
+    const touch = e.changedTouches[0];
+    const start = pullStartRef.current;
     pullStartRef.current = null;
-    if (dy > 80 && listRef.current && listRef.current.scrollTop <= 0) {
-      setPullRefreshing(true);
-      refresh().finally(() => setPullRefreshing(false));
-    }
+    if (!touch) return;
+    const dy = touch.clientY - start.y;
+    const dx = Math.abs(touch.clientX - start.x);
+    // A deliberate downward pull, not a horizontal swipe and not a stray tap:
+    // it must still start from the top when the finger lifts, so scrolling back
+    // up mid-gesture never triggers a reload.
+    if (dy < 72 || dx > dy) return;
+    if (!scrollMetrics(listRef.current).atTop) return;
+    setPullRefreshing(true);
+    refresh().finally(() => setPullRefreshing(false));
   }, [isMobile, pullRefreshing, refresh]);
 
   const handleSelectItem = (item: DeliverableInfo) => {
@@ -1455,7 +1467,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </div>
           </div>
         ) : (
-          <div className={`p-4 md:p-6 space-y-4 ${showFullHeightPreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
+          <div className={`px-3 py-3 md:p-6 space-y-4 ${showFullHeightPreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
             {/* File missing warning */}
             {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
