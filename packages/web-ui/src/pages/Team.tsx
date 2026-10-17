@@ -4847,7 +4847,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
                     >
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
-                      {t('page.findTitle', { defaultValue: '搜索' })}
+                      {t('page.findInConversation')}
                     </button>
                     {chatMode === 'direct' && !isProfileTab(mainTab) && (
                       <button
