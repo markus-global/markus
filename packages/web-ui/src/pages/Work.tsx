@@ -25,7 +25,7 @@ import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
-import { publishRingSub, onRingSubRequest } from '../lib/navRing.ts';
+import { registerRingSubSource, onRingSubRequest } from '../lib/navRing.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
@@ -4846,9 +4846,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
   // Horizontal swipe at PAGE level belongs to the ring (lib/navRing.ts); the four
   // board views are four steps on that ring, so this page no longer runs its own
-  // swipe recognisers. It only announces which view is showing and accepts a
-  // command to switch — one source of truth for "where am I on the axis".
-  useEffect(() => { publishRingSub(PAGE.WORK, boardType); }, [boardType]);
+  // swipe recognisers. It registers a GETTER so the ring always reads the live
+  // view (never a cached copy) and accepts a command to switch.
+  useEffect(() => registerRingSubSource(PAGE.WORK, () => boardTypeRef.current), []);
   useEffect(() => onRingSubRequest((p, sub) => {
     if (p !== PAGE.WORK) return;
     if (!(BOARD_TYPE_ORDER as readonly string[]).includes(sub)) return;

@@ -53,17 +53,22 @@ export const RING_SWIPE_THRESHOLD_PX = 50;
 /** Reject gestures that are more vertical than this. Matches useSwipeTabs. */
 export const RING_SWIPE_ANGLE_LIMIT_DEG = 30;
 
-// ── Live sub-view registry ──────────────────────────────────────────────────
-// Pages stay mounted, so the ring cannot read their sub-state from the URL. Each
-// owner publishes what it is showing; the ring reads it at gesture time.
-const subs = new Map<PageId, RingSub>();
+// ── Live sub-view sources ───────────────────────────────────────────────────
+// The ring must not cache what a page is showing: the page owns that fact, and a
+// cached copy goes stale the moment the sub-view changes by any other path (a tap,
+// a restore, a deep link) — the ring would then skip a step. Each owner registers
+// a GETTER; the ring asks at gesture time and always gets the truth.
+const subSources = new Map<PageId, () => RingSub | undefined>();
 
-export function publishRingSub(page: PageId, sub: RingSub): void {
-  subs.set(page, sub);
+export function registerRingSubSource(page: PageId, getter: () => RingSub | undefined): () => void {
+  subSources.set(page, getter);
+  return () => {
+    if (subSources.get(page) === getter) subSources.delete(page);
+  };
 }
 
 export function currentRingSub(page: PageId): RingSub | undefined {
-  return subs.get(page);
+  return subSources.get(page)?.();
 }
 
 /**
@@ -132,7 +137,6 @@ const RING_SUB_EVENT = 'markus:ring-sub';
 
 /** Ask a page to show a specific sub-view (e.g. the tasks page → kanban). */
 export function requestRingSub(page: PageId, sub: RingSub): void {
-  publishRingSub(page, sub);
   window.dispatchEvent(new CustomEvent(RING_SUB_EVENT, { detail: { page, sub } }));
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { NAV_RING, ringIndex, ringStep, ringDelta, scrollConsumesHorizontal, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
+import { NAV_RING, ringIndex, ringStep, ringDelta, scrollConsumesHorizontal, registerRingSubSource, currentRingSub, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
 import { PAGE } from '../routes.ts';
 
 describe('navRing: shape', () => {
@@ -107,6 +107,19 @@ describe('navRing: gesture → direction', () => {
   it('ignores gestures that are mostly vertical', () => {
     expect(ringDelta(80, 200)).toBe(0);
     expect(ringDelta(-80, -200)).toBe(0);
+  });
+});
+
+describe('navRing: live sub-view source', () => {
+  it('reads the page’s current sub-view at call time, never a cached copy', () => {
+    let tab: 'approvals' | 'notifications' = 'approvals';
+    const unregister = registerRingSubSource(PAGE.NOTIFICATIONS, () => tab);
+    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBe('approvals');
+    // the page changes its own state directly — the ring must see it immediately
+    tab = 'notifications';
+    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBe('notifications');
+    unregister();
+    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBeUndefined();
   });
 });
 

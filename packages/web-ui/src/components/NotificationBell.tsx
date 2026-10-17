@@ -5,7 +5,7 @@ import type { TFunction } from 'i18next';
 import { api, hubApi, invalidateApiCache, wsClient, resolveApprovalDirection, type NotificationInfo, type ApprovalInfo, type UserInputAnswer } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { publishRingSub, onRingSubRequest } from '../lib/navRing.ts';
+import { registerRingSubSource, onRingSubRequest } from '../lib/navRing.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { muteCreditNotifications } from '../pages/ChatComponents.tsx';
 import { openExternal } from '../hooks/useElectron.ts';
@@ -231,14 +231,17 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [loadingMore, setLoadingMore] = useState(false);
   const notifScrollRef = useRef<HTMLDivElement>(null);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
+  const tabRef = useRef<'approvals' | 'notifications'>(tab);
+  tabRef.current = tab;
   // Ring integration (lib/navRing.ts): the notifications page owns TWO ring steps —
-  // approvals and notifications — so this component announces which one is showing
-  // and accepts a command to switch. Only the embedded (page) instance publishes;
-  // the header popover is a different context and must not move the ring.
+  // approvals and notifications. It registers a GETTER instead of publishing a copy,
+  // so a tap, a restore or any other path that changes the tab is seen by the ring
+  // immediately (a cached copy made the ring skip one of the two views). Only the
+  // embedded (page) instance registers; the header popover is a different context.
   useEffect(() => {
-    if (!embeddedMode) return;
-    publishRingSub(PAGE.NOTIFICATIONS, tab === 'approvals' ? 'approvals' : 'notifications');
-  }, [tab, embeddedMode]);
+    if (!embeddedMode) return undefined;
+    return registerRingSubSource(PAGE.NOTIFICATIONS, () => (tabRef.current === 'approvals' ? 'approvals' : 'notifications'));
+  }, [embeddedMode]);
   useEffect(() => onRingSubRequest((p, sub) => {
     if (p !== PAGE.NOTIFICATIONS) return;
     const next = sub === 'approvals' ? 'approvals' : 'notifications';
