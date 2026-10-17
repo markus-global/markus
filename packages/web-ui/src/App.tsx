@@ -129,6 +129,25 @@ export function App() {
     root.classList.toggle('mobile-doc-scroll', docScroll);
     return () => { root.classList.remove('mobile-doc-scroll'); };
   }, [docScroll]);
+  // Mobile document scrolling makes the document the single scroller shared by
+  // every page, so its scroll position must be tracked per page. Without this,
+  // returning from a taller page leaves the document clamped at the bottom —
+  // where it can no longer scroll — and the browser's toolbar auto-hide stops.
+  const docScrollPositions = useRef<Record<string, number>>({});
+  const docScrollPage = useRef<PageId>(page);
+  useLayoutEffect(() => { docScrollPage.current = page; }, [page]);
+  useEffect(() => {
+    if (!docScroll) return;
+    const remember = () => {
+      docScrollPositions.current[docScrollPage.current] = window.scrollY;
+    };
+    window.addEventListener('scroll', remember, { passive: true });
+    return () => window.removeEventListener('scroll', remember);
+  }, [docScroll]);
+  useLayoutEffect(() => {
+    if (!docScroll) return;
+    window.scrollTo(0, docScrollPositions.current[page] ?? 0);
+  }, [page, docScroll]);
   const theme = useTheme();
   const sidebar = useResizablePanel({
     side: 'left',
