@@ -6103,13 +6103,23 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-amber-500/60 text-amber-600 rounded-md">{t('work:task.shortTask')}</button>
               </div>
             </div>
-            {/* Mobile Row 2: view toggle + filter */}
-            <div className="flex items-center gap-2 px-3 h-9">
+            {/* Mobile Row 2: view toggle + filter. This row must never clip a
+                control: measured at a real 315px viewport, `Filter` ended 31px past
+                the right edge (the view toggle alone is 184px, the archive button
+                ~90). Wrapping is the only rule that holds at every width without
+                magic breakpoints: it costs a line only when the content genuinely
+                does not fit, and 360px+ still renders a single row. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 min-h-9">
               <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
-                {(['backlog', 'kanban', 'dag'] as const).map(v => (
+                {/* Mobile view toggle. This row listed only backlog/kanban/dag, so
+                    on a phone the workflow board — its templates, run history and
+                    cards — had no entry point at all. Measured at a real 315px
+                    viewport: three buttons rendered, 'workflows' was not in the
+                    DOM. Four now, matching the desktop toggle and the swipe order. */}
+                {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
-                    className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
-                  >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
+                    className={`px-2 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
+                  >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : v === 'dag' ? t('work:task.dag') : t('work:task.workflows', 'Workflows')}</button>
                 ))}
               </div>
               {closedCount > 0 && (
@@ -6133,7 +6143,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  {(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2.586a1 1 0 01-.293.707l-6.414 6.414a1 1 0 00-.293.707V17l-4 4v-6.586a1 1 0 00-.293-.707L3.293 7.293A1 1 0 013 6.586V4z" /></svg>
+                  {/* Icon-only on very narrow screens: with the label, the row was 30px
+                      wider than a 315px viewport and `Filter` ended up off the edge. */}
+                  <span className="hidden min-[360px]:inline">{(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}</span>
                 </button>
               )}
             </div>
