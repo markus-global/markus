@@ -485,6 +485,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       name: 'task_update',
       description: [
         'Update a PARENT TASK — add a progress note, change status, update title/description, modify blocked_by dependencies, or a combination.',
+        'This is the SINGLE SOURCE OF TRUTH for the task: if the objective, scope, acceptance criteria, or a frozen fact changes, update the title/description HERE. Never deliver a fact or goal change only as a comment — the next agent reads the card, not the thread.',
         'WARNING: This tool operates on the parent task, NOT on subtasks. To complete a subtask, use subtask_complete instead.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'Task lifecycle is mostly automatic: after approval, tasks start executing automatically; when execution finishes, the system auto-transitions to review and notifies the reviewer; reviewer approval auto-completes the task; revision auto-restarts execution.',
@@ -919,7 +920,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_note',
             description:
-              'Add a one-way progress note to a task\'s timeline log without changing its status. Use this to record intermediate findings, decisions, or milestones. For interactive discussion with other agents or humans, use task_comment instead.',
+              'Add a one-way progress note to a task\'s timeline log without changing its status. Use this to record intermediate findings, decisions, or milestones. It wakes nobody — if another agent must act, use task_comment with a mention; if a fact/goal changed, use task_update.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -1619,20 +1620,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_comment',
             description: [
-              'Post a structured comment on a task. Use this for discussion, questions, feedback, or coordination with other agents and humans.',
-              'Supports @mentions — include agent IDs in the mentions array to notify them.',
-              'Supports reply_to_comment_id — set it to a comment ID (from task_get) to create a structural reply link visible in the UI.',
-              'Use this instead of task_note when you want interactive dialogue rather than a one-way progress log.',
+              'Post a comment on a task — this is an EXECUTION RECORD, not a change request.',
+              'Use it for: what I did, what I found, what is next, a status note others may need later.',
+              'WRONG use of this tool (the #1 source of noise): announcing a fact/goal change, or restating what someone already wrote. If the goal, scope, or a frozen fact changes, edit the card with task_update (title/description) — a comment is not read by the next agent.',
+              'To ask a specific agent to act, put their agent ID in mentions — that is the ONLY thing that wakes another agent. No mention ⇒ nobody is notified. Never mention for FYI.',
+              'At most ONE open question per card: use task_ask_decision and stop — do not argue in the thread.',
+              'One short comment; never one per point, never a follow-up just to acknowledge. If nothing is needed from anyone, write nothing (end_turn).',
             ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {
                 task_id: { type: 'string', description: 'The task ID to comment on' },
-                content: { type: 'string', description: 'The comment text. You can reference agents with @name in the text for readability.' },
+                content: { type: 'string', description: 'The execution record: what you did / found / need next. Not for changing facts (use task_update) and not for restating what someone already said.' },
                 mentions: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'Array of agent IDs to notify about this comment. Use agent_list_colleagues to find IDs.',
+                  description: 'Agent IDs you are ASKING TO ACT. This is the only wakeup signal — no mention means nobody is notified. Never mention for FYI. Use agent_list_colleagues to find IDs.',
                 },
                 reply_to_comment_id: {
                   type: 'string',

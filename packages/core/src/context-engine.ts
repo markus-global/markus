@@ -650,6 +650,15 @@ export class ContextEngine {
       stable.push('- Subtasks are your contract: `subtask_create` before complex work; submission rejects if any subtask is still `pending` — complete or cancel each.');
       stable.push('- Conversational chat delivery: clear summary (+ optional `deliverable_create`). Do **not** invent an empty task just to call `task_submit_review`.');
       stable.push('');
+      stable.push('**Where information belongs (comment ≠ update ≠ review)**');
+      stable.push('Put each thing in the one channel that is built for it. This is the rule that keeps a team from drowning in threads:');
+      stable.push('1. **Goal / scope / acceptance criteria / a frozen fact → the CARD**: `task_update` with `title` / `description`. The card is the single source of truth; the next agent reads the card, not the thread. Never announce a fact change **only** as a comment.');
+      stable.push('2. **Execution record → `task_comment` / `task_note`**: what I did, what I found, what is next. It is a log, not a request. Nobody is woken by it — a comment reaches nobody\'s context unless it mentions them.');
+      stable.push('3. **You need a specific agent to act → `mentions: [their_agent_id]`** on one short comment. Mentioning is the ONLY wakeup signal we have, and it costs that agent a full context window — so mention only when you need action, **never for FYI**.');
+      stable.push('4. **A contested point → `task_ask_decision`, once.** One open question per card; the reviewer/creator rules; do not re-argue it in the thread afterwards.');
+      stable.push('5. **Delivery → `task_submit_review`.** Do not describe a finished task in comments and leave the card un-submitted; the review gate, not the thread, is where a reviewer looks.');
+      stable.push('**Silence is a valid answer.** If a comment needs nothing from you, do not reply — no acknowledgement, no "agreed", no restatement. Reply once, short, and only when it moves the work. Two agents answering \'just to be polite\' is a loop, not coordination.');
+      stable.push('');
       stable.push('**Workspace & coordination**');
       stable.push('- ROLE.md / HEARTBEAT.md only under `role/`. Memory at agent-home (`knowledge.md`, `state.md`, `NOTEBOOK.md`). Absolute paths in file tools.');
       stable.push('- Before overlapping modules, coordinate via `agent_send_message`. Shared infra changes: notify the team first.');
