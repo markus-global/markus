@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense } from 'react';
+import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, memo, lazy, Suspense, useSyncExternalStore } from 'react';
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
@@ -25,6 +25,7 @@ import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContext.tsx';
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
+import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -123,30 +124,26 @@ export function App() {
   // Mobile document-root scrolling: on phones (<= 767px) we let <html>/<body>
   // scroll so the browser can auto-hide its own toolbar. Excluded on Team, whose
   // chat relies on a virtualized INNER scroll container that must keep its height.
-  const docScroll = isMobile && page !== PAGE.TEAM;
+  // The chat layer keeps an inner scroller (its message list is virtualized and
+  // bound to an inner element), so it opts out of document scrolling; every other
+  // mobile page lets the document scroll so the browser toolbar can auto-hide.
+  const chatLayerNeedsInnerScroll = useSyncExternalStore(
+    subscribeDocScrollBlocked, getDocScrollBlocked, () => false,
+  );
+  const docScroll = isMobile && !(page === PAGE.TEAM && chatLayerNeedsInnerScroll);
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('mobile-doc-scroll', docScroll);
     return () => { root.classList.remove('mobile-doc-scroll'); };
   }, [docScroll]);
   // Mobile document scrolling makes the document the single scroller shared by
-  // every page, so its scroll position must be tracked per page. Without this,
-  // returning from a taller page leaves the document clamped at the bottom —
-  // where it can no longer scroll — and the browser's toolbar auto-hide stops.
-  const docScrollPositions = useRef<Record<string, number>>({});
-  const docScrollPage = useRef<PageId>(page);
-  useLayoutEffect(() => { docScrollPage.current = page; }, [page]);
-  useEffect(() => {
-    if (!docScroll) return;
-    const remember = () => {
-      docScrollPositions.current[docScrollPage.current] = window.scrollY;
-    };
-    window.addEventListener('scroll', remember, { passive: true });
-    return () => window.removeEventListener('scroll', remember);
-  }, [docScroll]);
+  // every page. Always start a page at the top: restoring a previous position
+  // (or inheriting the outgoing page's, which gets clamped) can land the page at
+  // its bottom — where it can no longer scroll, so the browser toolbar stops
+  // auto-hiding and the feature looks broken.
   useLayoutEffect(() => {
     if (!docScroll) return;
-    window.scrollTo(0, docScrollPositions.current[page] ?? 0);
+    window.scrollTo(0, 0);
   }, [page, docScroll]);
   const theme = useTheme();
   const sidebar = useResizablePanel({
