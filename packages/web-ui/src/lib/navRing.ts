@@ -167,38 +167,79 @@ export function ringShouldIgnore(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * Dev-only readout: what the ring decided for the last gesture. On a real phone
+ * there is no console, so the decision has to be visible on screen — this is how
+ * "the ring skipped a step" becomes a measurement instead of a guess.
+ * Never rendered in production builds.
+ */
+export function ringDebugNote(text: string): void {
+  if (!import.meta.env?.DEV) return;
+  let el = document.getElementById('__ring_debug');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = '__ring_debug';
+    el.style.cssText =
+      'position:fixed;top:4px;left:4px;right:4px;z-index:2147483647;background:#111;color:#4ade80;' +
+      'font:11px/1.45 ui-monospace,monospace;padding:6px 8px;border-radius:6px;opacity:.94;pointer-events:none;white-space:pre-wrap';
+    document.body.appendChild(el);
+  }
+  el.textContent = text;
+  const t = (el as HTMLElement & { _t?: number })._t;
+  if (t) window.clearTimeout(t);
+  (el as HTMLElement & { _t?: number })._t = window.setTimeout(() => el?.remove(), 4000);
+}
+
+// ── Gesture entry point (module-level, exactly one listener) ────────────────
+// Registered ONCE for the whole app. When every hook call installed its own
+// listener (or HMR left an old one behind), a single physical swipe advanced two
+// steps — the ring must never move more than once per gesture.
+type StepHandler = (delta: 1 | -1) => void;
+
+let handler: StepHandler | null = null;
+let installed = false;
+let gestureOpen = false;
+let start: { x: number; y: number } | null = null;
+let startTarget: Element | null = null;
+
+function handleTouchStart(e: TouchEvent): void {
+  gestureOpen = true;
+  startTarget = (e.target as Element) ?? null;
+  if (ringShouldIgnore(e.target)) { start = null; return; }
+  const t = e.touches[0];
+  start = t ? { x: t.clientX, y: t.clientY } : null;
+}
+
+function handleTouchEnd(e: TouchEvent): void {
+  if (!gestureOpen) return; // this gesture was already handled
+  gestureOpen = false;
+  const s = start;
+  start = null;
+  if (!s) return;
+  const t = e.changedTouches[0];
+  if (!t) return;
+  const delta = ringDelta(t.clientX - s.x, t.clientY - s.y);
+  if (delta === 0) return;
+  // A wide table (kanban) owns the gesture while it can still scroll.
+  if (horizontalScrollerConsumes(startTarget, delta === 1)) return;
+  handler?.(delta);
+}
+
+function installNavRingListener(): void {
+  if (installed) return;
+  document.addEventListener('touchstart', handleTouchStart, { passive: true });
+  document.addEventListener('touchend', handleTouchEnd, { passive: true });
+  installed = true;
+}
+
 export function useNavRingSwipe(opts: { enabled: boolean; onStep: (delta: 1 | -1) => void }): void {
-  const start = useRef<{ x: number; y: number } | null>(null);
-  const startTarget = useRef<Element | null>(null);
   const onStepRef = useRef(opts.onStep);
   onStepRef.current = opts.onStep;
-
   useEffect(() => {
     if (!opts.enabled) return undefined;
-    const onStart = (e: TouchEvent) => {
-      startTarget.current = (e.target as Element) ?? null;
-      if (ringShouldIgnore(e.target)) { start.current = null; return; }
-      const t = e.touches[0];
-      start.current = t ? { x: t.clientX, y: t.clientY } : null;
-    };
-    const onEnd = (e: TouchEvent) => {
-      const s = start.current;
-      start.current = null;
-      if (!s) return;
-      const t = e.changedTouches[0];
-      if (!t) return;
-      const delta = ringDelta(t.clientX - s.x, t.clientY - s.y);
-      if (delta === 0) return;
-      // The kanban board and other wide tables scroll horizontally: while such a
-      // container can still move this way, the gesture belongs to it, not the ring.
-      if (horizontalScrollerConsumes(startTarget.current, delta === 1)) return;
-      onStepRef.current(delta);
-    };
-    document.addEventListener('touchstart', onStart, { passive: true });
-    document.addEventListener('touchend', onEnd, { passive: true });
-    return () => {
-      document.removeEventListener('touchstart', onStart);
-      document.removeEventListener('touchend', onEnd);
-    };
+    const mine: StepHandler = (delta) => onStepRef.current(delta);
+    handler = mine;
+    installNavRingListener();
+    return () => { if (handler === mine) handler = null; };
   }, [opts.enabled]);
 }
