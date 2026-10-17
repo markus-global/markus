@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { NAV_RING, ringIndex, ringStep, ringDelta, scrollConsumesHorizontal, registerRingSubSource, currentRingSub, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
+import { NAV_RING, ringIndex, ringStep, ringDelta, scrollConsumesHorizontal, registerRingSubSource, currentRingSub, ringBlockedByPageDepth, RING_SWIPE_THRESHOLD_PX } from './navRing.ts';
+import { setMobileNavDepth, getMobileNavDepths, isTopLevelPage } from './mobileNavDepth.ts';
 import { PAGE } from '../routes.ts';
 
 describe('navRing: shape', () => {
@@ -140,5 +141,42 @@ describe('navRing: horizontal scrollers keep their gesture', () => {
   it('a container with nothing to scroll never consumes the swipe', () => {
     expect(scrollConsumesHorizontal(0, 300, 300, true)).toBe(false);
     expect(scrollConsumesHorizontal(0, 300, 300, false)).toBe(false);
+  });
+});
+
+describe('navRing: top-level pages only', () => {
+  it('an off-depth page lets the ring step', () => {
+    setMobileNavDepth(PAGE.TEAM, 0);
+    expect(ringBlockedByPageDepth(PAGE.TEAM)).toBe(false);
+  });
+
+  it('a page showing a second-level surface blocks the ring', () => {
+    setMobileNavDepth(PAGE.TEAM, 1);
+    expect(ringBlockedByPageDepth(PAGE.TEAM)).toBe(true);
+    setMobileNavDepth(PAGE.TEAM, 0);
+    expect(ringBlockedByPageDepth(PAGE.TEAM)).toBe(false);
+  });
+
+  it('depth is scoped per page — a detail on one page cannot block another', () => {
+    setMobileNavDepth(PAGE.WORK, 1);
+    expect(ringBlockedByPageDepth(PAGE.WORK)).toBe(true);
+    expect(ringBlockedByPageDepth(PAGE.DELIVERABLES)).toBe(false);
+    expect(ringBlockedByPageDepth(PAGE.HOME)).toBe(false);
+    setMobileNavDepth(PAGE.WORK, 0);
+  });
+
+  it('the ring and the bottom nav answer with the same fact', () => {
+    setMobileNavDepth(PAGE.DELIVERABLES, 1);
+    const depths = getMobileNavDepths();
+    // bottom nav wants a top-level page too — one predicate, no second copy
+    expect(isTopLevelPage(depths, PAGE.DELIVERABLES)).toBe(false);
+    expect(ringBlockedByPageDepth(PAGE.DELIVERABLES)).toBe(true);
+    setMobileNavDepth(PAGE.DELIVERABLES, 0);
+    expect(isTopLevelPage(getMobileNavDepths(), PAGE.DELIVERABLES)).toBe(true);
+    expect(ringBlockedByPageDepth(PAGE.DELIVERABLES)).toBe(false);
+  });
+
+  it('an unknown page is never blocked (off-ring pages already no-op)', () => {
+    expect(ringBlockedByPageDepth(null)).toBe(false);
   });
 });
