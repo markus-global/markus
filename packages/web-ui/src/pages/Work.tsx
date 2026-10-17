@@ -25,6 +25,7 @@ import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
+import { publishRingSub, onRingSubRequest } from '../lib/navRing.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
@@ -2270,7 +2271,7 @@ function TaskDetailPanel({
 
         {/* Scrollable content area */}
         <div className="flex-1 min-h-0 relative">
-        <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
+        <div ref={scrollContainerRef} data-swipe-owner className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
           <div className={activeTab === 'logs' ? 'min-w-0 min-h-full' : 'hidden'}>
               {runError && (
@@ -4843,16 +4844,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<BoardType>(previewData?.initialBoardType ?? 'backlog');
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
-  const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }, { id: 'workflows' as const }], []);
-  const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
+  // Horizontal swipe at PAGE level belongs to the ring (lib/navRing.ts); the four
+  // board views are four steps on that ring, so this page no longer runs its own
+  // swipe recognisers. It only announces which view is showing and accepts a
+  // command to switch — one source of truth for "where am I on the axis".
+  useEffect(() => { publishRingSub(PAGE.WORK, boardType); }, [boardType]);
+  useEffect(() => onRingSubRequest((p, sub) => {
+    if (p !== PAGE.WORK) return;
+    if (!(BOARD_TYPE_ORDER as readonly string[]).includes(sub)) return;
+    setBoardType(sub as BoardType);
+  }), []);
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
-  const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
-  const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
-  // The workflows board is the last tab, so a left swipe there has no "next" to
-  // move to — useSwipeTabs reports it as onSwipeOutRight. The owner wants that
-  // gesture to walk back to the dependency graph, which is the tab just before it.
-  const workflowsSwipeOpts = useMemo(() => ({ onSwipeOutRight: () => setBoardType('dag') }), []);
-  const workflowsSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, workflowsSwipeOpts);
   const [showClosed, setShowClosed] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
@@ -6334,7 +6336,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </div>
           </div>
         ) : boardType === 'backlog' ? (
-          <div className="flex-1 min-h-0 flex flex-col" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 min-h-0 flex flex-col">
           <BacklogTable
             tasks={filterTasks(Object.values(board).flat())}
             requirements={filteredReqs}
@@ -6352,8 +6354,6 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         ) : boardType === 'workflows' ? (
           <div
             className="flex-1 min-h-0 flex flex-col relative"
-            onTouchStart={isMobile ? workflowsSwipe.onTouchStart : undefined}
-            onTouchEnd={isMobile ? workflowsSwipe.onTouchEnd : undefined}
           >
           <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
             const openReqInDag = (req: RequirementInfo) => {
@@ -6378,7 +6378,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               graph keeps its own right-chevron button to come the other way. */}
           </div>
         ) : boardType === 'dag' ? (
-          <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 min-h-0 flex flex-col relative">
           <TaskDAG
             tasks={(() => {
               const allDagTasks = filterTasks(Object.values(board).flat(), true);
@@ -6417,7 +6417,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           )}
           </div>
         ) : (
-          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5" onTouchStart={isMobile ? kanbanSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? kanbanSwipe.onTouchEnd : undefined}>
+          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5">
             <div className="flex gap-3 items-stretch">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);

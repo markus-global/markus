@@ -2,6 +2,7 @@ import { useEffect, useLayoutEffect, useState, useCallback, useMemo, useRef, mem
 import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash, MOBILE_REDIRECTS, L0_NAV_PAGES, PAGES_WITH_L1 } from './routes.ts';
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
+import { useNavRingSwipe, ringStep, currentRingSub, requestRingSub } from './lib/navRing.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -522,6 +523,21 @@ export function App() {
   useEffect(() => {
     navBus.setHandler((p, params) => navigate(p, params));
   }, [navigate]);
+
+  // Horizontal swipe ring (owner spec, 2026-10-17): overview → team L1 → approvals
+  // → notifications → tasks(backlog/kanban/dag/workflows) → deliverables → wrap.
+  // ONE definition lives in lib/navRing.ts; this is the only gesture entry point
+  // for page-level swipes, and containers that own a horizontal gesture opt out
+  // with `data-swipe-owner`.
+  const onRingStep = useCallback((delta: 1 | -1) => {
+    const from = pageRef.current;
+    const step = ringStep(from, currentRingSub(from), delta);
+    if (!step) return; // off-ring pages (settings, search, store) ignore swipes
+    if (step.sub) requestRingSub(step.page, step.sub);
+    navigate(step.page);
+  }, [navigate]);
+
+  useNavRingSwipe({ enabled: isMobile, onStep: onRingStep });
 
   // While on L0, keep the rail highlight aligned with the active page
   // (e.g. Overview selected when the app opens on Overview / when entering L0).

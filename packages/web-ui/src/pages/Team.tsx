@@ -97,7 +97,6 @@ import {
 } from './tabDefs.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
@@ -640,7 +639,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (tab === 'profile') switchToProfile();
     else { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }
   }, [switchToProfile]);
-  const mainTabSwipe = useSwipeTabs(mainTabsList, mainTab, handleMainTabSwipe);
 
   const handleViewProfile = useCallback((agentId: string, opts?: { tab?: ProfileTab; highlightMailboxId?: string }) => {
     setChatMode('direct');
@@ -5434,7 +5432,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           </div>
         )}
         {isMobile && mainTab === 'profile' && chatMode === 'channel' && activeTeamId && (
-          <div className="flex-1 overflow-y-auto" onTouchStart={isMobile ? mainTabSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? mainTabSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 overflow-y-auto">
             <TeamProfile
               teamId={activeTeamId}
               onBack={() => setMainTab('chat')}
@@ -5496,7 +5494,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </span>
             </div>
           )}
-          <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
+          <div ref={chatScrollRef} data-swipe-owner className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
             // Swipe left/right = previous/next open session tab (same order as the
             // cycle-session shortcuts). Requires a deliberate, mostly horizontal
             // drag so vertical scrolling and taps never switch sessions.

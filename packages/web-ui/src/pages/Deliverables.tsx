@@ -19,7 +19,6 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
-import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 
@@ -159,9 +158,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   });
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [pullRefreshing, setPullRefreshing] = useState(false);
-  const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'team' as const }, { id: 'agent' as const }], []);
-  const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'team') => { setGroupBy(g); }, []);
-  const groupSwipe = useSwipeTabs(groupTabs, groupBy, handleGroupSwipe);
+
   const listRef = useRef<HTMLDivElement>(null);
 
   // File preview
@@ -1292,8 +1289,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         )}
 
         <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1 transition-opacity duration-150" style={{ opacity: loading ? 0.5 : 1 }}
-          onTouchStart={isMobile ? (e) => { groupSwipe.onTouchStart(e); handlePullStart(e); } : undefined}
-          onTouchEnd={isMobile ? (e) => { groupSwipe.onTouchEnd(e); handlePullEnd(e); } : undefined}>
+          onTouchStart={isMobile ? handlePullStart : undefined}
+          onTouchEnd={isMobile ? handlePullEnd : undefined}>
           {pullRefreshing && (
             <div className="flex items-center justify-center gap-2 py-2 text-brand-500">
               <Spinner /> <span className="text-[10px]">{t('filters.refreshing')}</span>
