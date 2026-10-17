@@ -1242,24 +1242,13 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   ) : null;
 
   if (embeddedMode) {
+    // The two tabs are two steps on the app-wide swipe ring (lib/navRing.ts), which
+    // is the ONLY place that turns a horizontal swipe into navigation. This view
+    // used to run its own tab swipe as well: the inner handler fired first, moved
+    // the tab, and then the ring read the already-moved tab and advanced a second
+    // step — one physical swipe, two destinations.
     const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
     const tabIdx = tabs.indexOf(tab);
-
-    const handleSwipe = (() => {
-      let startX = 0;
-      let startY = 0;
-      return {
-        onTouchStart: (e: React.TouchEvent) => { startX = e.touches[0].clientX; startY = e.touches[0].clientY; },
-        onTouchEnd: (e: React.TouchEvent) => {
-          const dx = e.changedTouches[0].clientX - startX;
-          const dy = e.changedTouches[0].clientY - startY;
-          if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.5) {
-            if (dx < 0 && tabIdx < tabs.length - 1) setTab(tabs[tabIdx + 1]);
-            if (dx > 0 && tabIdx > 0) setTab(tabs[tabIdx - 1]);
-          }
-        },
-      };
-    })();
 
     return (
       <>
@@ -1288,7 +1277,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         {tab === 'notifications' && notifFilterBar}
 
         {/* Swipeable content */}
-        <div className="flex-1 overflow-hidden relative" {...handleSwipe}>
+        <div className="flex-1 overflow-hidden relative">
           <div
             className="flex h-full transition-transform duration-300 ease-out"
             style={{ transform: `translateX(-${tabIdx * 100}%)` }}
