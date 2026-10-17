@@ -685,7 +685,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
 
   if (tasks.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="doc-scroll-viewport flex-1 flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 max-w-sm text-center">
           <svg className="w-10 h-10 text-fg-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           <p className="text-sm font-medium text-fg-secondary">{t('work:task.dagEmptyTitle')}</p>
@@ -702,8 +702,13 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
   const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
 
+  // A canvas viewport must own its height. On mobile the document is the
+  // scroller (see lib/mobileDocScroll.ts), which deliberately collapses the
+  // page's `flex-1` chain — so `height:100%` here would resolve against an
+  // auto-height parent and ReactFlow would paint into zero pixels (the graph
+  // looked blank). `doc-scroll-viewport` gives it a bounded dvh height instead.
   return (
-    <div className="flex-1 min-h-0 relative" style={{ height: '100%' }}>
+    <div className="doc-scroll-viewport flex-1 min-h-0 relative" style={{ height: '100%' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}

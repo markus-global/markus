@@ -222,6 +222,13 @@ body {
     height: auto;
     min-height: 0;
   }
+  /* Scrolling the document collapses every `flex-1` height chain on purpose.
+     A canvas-like viewport (the task dependency graph) cannot inherit its
+     height from that chain — it must own one, or it paints into zero pixels. */
+  html.mobile-doc-scroll .doc-scroll-viewport {
+    height: 70dvh;
+    min-height: 320px;
+  }
 }
 
 .prose :is(p, li, td, th, dd, dt, figcaption, caption, blockquote) {
