@@ -81,6 +81,7 @@ import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
+import { leanChatMessage } from './message-lean.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -4117,7 +4118,44 @@ export class APIServer {
         this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
       } catch { /* best-effort */ }
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
-      this.json(res, 200, result);
+      // History pages ship a LEAN view of the execution trace: full tool
+      // arguments/results and intermediate text are 44x the prose and are only
+      // needed when the user expands a process block (see message-lean.ts).
+      // `?lean=0` keeps the old full payload for diagnostics.
+      const lean = url.searchParams.get('lean') !== '0';
+      const messages = lean
+        ? result.messages.map((m: { metadata?: unknown }) => leanChatMessage(m))
+        : result.messages;
+      this.json(res, 200, { messages, hasMore: result.hasMore });
+      return;
+    }
+
+    // Full, unclipped detail for ONE message — loaded when the user expands a
+    // process block in a lean history page.
+    if (path.match(/^\/api\/sessions\/[^/]+\/messages\/[^/]+$/) && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const parts = path.split('/');
+      const sessionId = parts[3]!;
+      const messageId = parts[5]!;
+      if (!this.storage) {
+        this.json(res, 404, { error: 'Message not found' });
+        return;
+      }
+      const session = this.storage.chatSessionRepo.getSession(sessionId);
+      if (session && session.userId && session.userId !== authUser.userId) {
+        const isAdminOrOwner = authUser.role === 'owner' || authUser.role === 'admin';
+        if (!isAdminOrOwner) {
+          this.json(res, 403, { error: 'Access denied: this session belongs to another user' });
+          return;
+        }
+      }
+      const message = this.storage.chatSessionRepo.getMessage(sessionId, messageId);
+      if (!message) {
+        this.json(res, 404, { error: 'Message not found' });
+        return;
+      }
+      this.json(res, 200, { message });
       return;
     }
 
@@ -13890,6 +13928,7 @@ EXPLANATION_END`;
 
       // ── Sessions / Channels ──────────────────────────────────────────────
       regex(/^\/api\/sessions\/[^/]+\/messages$/, 'GET'),
+      regex(/^\/api\/sessions\/[^/]+\/messages\/[^/]+$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/channels\/[^/]+\/messages$/, 'GET', 'POST'),
 

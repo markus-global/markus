@@ -16,6 +16,14 @@ export interface ChatMsg {
   rawCreatedAt?: string;
   agentName?: string;
   agentId?: string;
+  /** Owning chat session — needed to lazy-load the full trace of one message. */
+  sessionId?: string;
+  /**
+   * True when this message came from a lean history page: `segments` carry a
+   * clipped execution trace (tool results/args/thinking). The full trace is
+   * fetched once, on first expand, via `api.sessions.getMessageDetail`.
+   */
+  needsDetail?: boolean;
   segments?: MsgSegment[];
   activities?: ActivityStep[];
   isError?: boolean;
@@ -482,7 +490,12 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     time: cachedLocaleTime(m.createdAt),
     rawCreatedAt: m.createdAt,
     agentId: m.role !== 'user' ? m.agentId : undefined,
+    sessionId: m.sessionId,
   };
+  // Lean history page: the trace is clipped and must be re-fetched on expand.
+  if (m.metadata?.segmentsTruncated === true) {
+    base.needsDetail = true;
+  }
   if (m.role !== 'user' && m.metadata?.segments && m.metadata.segments.length > 0) {
     base.segments = storedSegmentsToMsgSegments(m.metadata.segments);
   }

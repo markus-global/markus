@@ -97,7 +97,7 @@ export interface ChatMessageInfo {
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -2344,6 +2344,15 @@ export const api = {
     getMessages: (sessionId: string, limit = 30, before?: string) =>
       request<{ messages: ChatMessageInfo[]; hasMore: boolean }>(
         `/sessions/${sessionId}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
+      ),
+    /**
+     * Full execution trace for ONE message. History pages ship a lean view
+     * (`metadata.segmentsTruncated`); this returns the unclipped original when
+     * the user expands a process block.
+     */
+    getMessageDetail: (sessionId: string, messageId: string) =>
+      request<{ message: ChatMessageInfo }>(
+        `/sessions/${sessionId}/messages/${encodeURIComponent(messageId)}`
       ),
     delete: (sessionId: string) => request(`/sessions/${sessionId}`, { method: 'DELETE' }),
     /**
