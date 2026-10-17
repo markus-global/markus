@@ -835,9 +835,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'task_ask_decision',
             description: [
               'Ask ONE decision question on a task and name the decider — the replacement for arguing in the comment thread.',
+              'This tool does NOT block: it records the question on the card and wakes the named decider. The task stays in_progress; nothing pauses you.',
+              'So having asked: STOP the work that depends on this point and END YOUR TURN. Do not guess, do not proceed on the assumption, do not chase it in comments — you will be woken with the ruling and told to resume.',
               'Rules the platform enforces: (a) at most ONE open question per card — a second ask is rejected with the existing question and its decider;',
-              '(b) the decider is woken; nobody else is;',
-              '(c) the decider answers with task_decide, which closes the question and appends a ruling to the card.',
+              '(b) the named decider (default: reviewer) is woken, nobody else;',
+              '(c) whoever can decide: the named decider, the reviewer, the creator, or a human — and their task_decide wakes YOU back;',
+              '(d) if nobody answers within 30 minutes the question escalates once to the creator.',
               'USE ONLY when another agent/human must CHOOSE between options and you cannot settle it from evidence.',
               'DO NOT use for status updates, corrections, or facts you can verify yourself — those belong in task_note (one-way record).',
             ].join(' '),
@@ -862,7 +865,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 return JSON.stringify({
                   status: 'success',
                   task: { id: task.id, title: task.title, status: task.status },
-                  message: 'Open question recorded. The decider has been woken. Do NOT chase it in comments — continue what you can, or wait.',
+                  message: 'Open question recorded; the decider has been woken. STOP the work that depends on this point and END YOUR TURN — do not guess and do not chase it in comments. You will be woken with the ruling and told to resume.',
                 });
               } catch (error) {
                 return JSON.stringify({ status: 'error', error: String(error) });
@@ -878,8 +881,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             name: 'task_decide',
             description: [
               'Record the ruling on a contested point of a task — the single point of authority for “whose snapshot is right”.',
-              'Appends to an append-only decision log, closes the card’s open question, and notifies the assignee once.',
-              'Authority: the task reviewer, the task creator, or a human. Anyone else is rejected.',
+              'Appends to an append-only decision log and closes the card\'s open question.',
+              'It wakes the ASKER and the assignee exactly once, telling them to resume — that wake is what restarts the paused work.',
+              'Authority: the named decider, the task reviewer, the task creator, or a human. Anyone else is rejected.',
               'This is how you END a disagreement: state the point neutrally, state the ruling, cite the anchor (file/line/contract §).',
             ].join(' '),
             inputSchema: {

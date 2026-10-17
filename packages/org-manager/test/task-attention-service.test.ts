@@ -158,7 +158,7 @@ describe('one open question per card + single-point adjudication', () => {
       decision: 'schema.sql',
       decidedBy: PEER,
       decidedByName: 'DB',
-    })).toThrow(/Only the task reviewer/i);
+    })).toThrow(/Only the named decider|Only the task reviewer/i);
   });
 
   it('records the ruling, closes the question, and notifies the assignee once', () => {
@@ -225,5 +225,111 @@ describe('comment attention — only a human enters a running session', () => {
     await ctx.ts.postTaskComment(task.id, PEER, '数据库工程师', 'please confirm', [AGENT]);
 
     expect(ctx.agents.get(AGENT)!.enqueueToMailbox).toHaveBeenCalledTimes(1);
+  });
+});
+
+/**
+ * The ask → decide loop must actually close. These four tests exist because the
+ * first implementation did not: the ruling only woke the ASSIGNEE, so an asker
+ * who was a peer (the common case — a DB engineer asking on a backend-owned
+ * card) never learned the answer, and the card stalled silently on a guess.
+ */
+describe('ask → decide loop: the ruling wakes the asker back', () => {
+  let ctx: ReturnType<typeof setup>;
+
+  beforeEach(() => { ctx = setup(); });
+
+  function activeTask() {
+    const task = ctx.create();
+    ctx.ts.approveTask(task.id, 'user-1');
+    expect(ctx.ts.getTask(task.id)!.status).toBe('in_progress');
+    return task;
+  }
+
+  it('task_ask_decision leaves the card in_progress and does not pause anything', () => {
+    const task = activeTask();
+    ctx.ts.askTaskDecision(task.id, {
+      text: 'Is the ledger figure 41 or 47?',
+      askedBy: PEER,
+      askedByName: '数据库工程师',
+    });
+
+    const after = ctx.ts.getTask(task.id)!;
+    // Documented state machine: status unchanged; the wait lives in openQuestion.
+    expect(after.status).toBe('in_progress');
+    expect(after.openQuestion?.text).toContain('ledger figure');
+    expect(ctx.agents.get(REVIEWER)!.enqueueToMailbox).toHaveBeenCalledTimes(1);
+  });
+
+  it('wakes the ASKER (not just the assignee) when the ruling lands', () => {
+    const task = activeTask();
+    ctx.ts.askTaskDecision(task.id, {
+      text: 'Is the ledger figure 41 or 47?',
+      askedBy: PEER,
+      askedByName: '数据库工程师',
+    });
+
+    ctx.ts.recordTaskDecision(task.id, {
+      point: 'ledger figure',
+      decision: '41 — the earlier snapshot was stale',
+      decidedBy: REVIEWER,
+      decidedByName: 'Reviewer',
+    });
+
+    expect(ctx.ts.getTask(task.id)!.openQuestion).toBeUndefined();
+    const askerCalls = ctx.agents.get(PEER)!.enqueueToMailbox.mock.calls;
+    expect(askerCalls).toHaveLength(1);
+    const payload = askerCalls[0][1] as { content: string };
+    expect(payload.content).toContain('You asked this');
+    expect(payload.content).toContain('41');
+  });
+
+  it('a named peer decider can actually decide (no dead-lock)', () => {
+    const task = activeTask();
+    ctx.ts.askTaskDecision(task.id, {
+      text: 'Which snapshot wins?',
+      askedBy: PEER,
+      askedByName: '数据库工程师',
+      deciderId: AGENT, // assignee, NOT the reviewer
+    });
+
+    // Previously this threw DECISION_NOT_AUTHORIZED — the asker had woken a
+    // decider who was structurally unable to answer.
+    expect(() => ctx.ts.recordTaskDecision(task.id, {
+      point: 'snapshot',
+      decision: 'mine',
+      decidedBy: AGENT,
+      decidedByName: 'Backend',
+    })).not.toThrow();
+    expect(ctx.ts.getTask(task.id)!.decisions).toHaveLength(1);
+  });
+
+  it('rejects asking yourself, and asking on a closed card', () => {
+    const task = activeTask();
+    expect(() => ctx.ts.askTaskDecision(task.id, {
+      text: 'self', askedBy: PEER, askedByName: '数据库工程师', deciderId: PEER,
+    })).toThrow();
+
+    const closed = ctx.create();
+    ctx.ts.approveTask(closed.id, 'user-1');
+    ctx.ts.updateTaskStatus(closed.id, 'review', AGENT, false, false, 'agent');
+    ctx.ts.updateTaskStatus(closed.id, 'completed', REVIEWER, false, false, 'agent');
+    expect(() => ctx.ts.askTaskDecision(closed.id, {
+      text: 'too late', askedBy: PEER, askedByName: '数据库工程师',
+    })).toThrow();
+  });
+
+  it('escalates a stale question exactly once', () => {
+    const task = activeTask();
+    ctx.ts.askTaskDecision(task.id, {
+      text: 'unanswered', askedBy: PEER, askedByName: '数据库工程师',
+    });
+    const before = ctx.agents.get(REVIEWER)!.enqueueToMailbox.mock.calls.length; // the ask itself
+
+    ctx.ts.escalateStaleQuestions(-1); // everything is "stale"
+    ctx.ts.escalateStaleQuestions(-1); // must not spam again
+
+    const after = ctx.agents.get(REVIEWER)!.enqueueToMailbox.mock.calls.length;
+    expect(after - before).toBe(1);
   });
 });

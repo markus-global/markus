@@ -91,6 +91,8 @@ export interface TaskOpenQuestion {
   at: string;
   /** Who is expected to decide. Defaults to the task reviewer. */
   deciderId?: string;
+  /** Set once the escalation (stale question) has been sent — prevents repeat spam. */
+  escalatedAt?: string;
 }
 
 /** A single point of record, decided by the one actor with authority over it. */

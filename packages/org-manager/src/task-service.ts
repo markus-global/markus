@@ -1062,6 +1062,9 @@ export class TaskService implements ApprovalTargetPort {
       // recovery window produces no further transition event of its own, so
       // without this pass its dependents would stay `blocked` forever.
       this.reevaluateBlockedDependents();
+      // Safety net for the ask→decide loop: an unanswered question escalates
+      // once instead of stalling the card silently.
+      this.escalateStaleQuestions();
     }, intervalMs);
   }
 
@@ -5941,6 +5944,17 @@ export class TaskService implements ApprovalTargetPort {
     const text = (input.text ?? '').trim();
     if (!text) throw new TaskServiceError('QUESTION_REQUIRED', 'A decision question needs non-empty text.', { taskId });
 
+    // Asking on a closed card is meaningless: nothing is executing, and the
+    // ruling could never be applied.
+    if (isTerminalTaskStatus(task.status)) {
+      throw new TaskServiceError(
+        'TASK_NOT_ACTIVE',
+        `Task "${task.title}" is ${task.status} — a decision question only makes sense while work is active (in_progress / review).`
+        + ' If you need a new piece of work, create a task; if you are recording a fact, use task_note.',
+        { taskId },
+      );
+    }
+
     if (task.openQuestion) {
       const q = task.openQuestion;
       throw new TaskServiceError(
@@ -5953,6 +5967,24 @@ export class TaskService implements ApprovalTargetPort {
     }
 
     const deciderId = input.deciderId ?? task.reviewerId;
+
+    // Guards that keep the ask→decide loop from dead-locking:
+    //  - you cannot name yourself (that is a monologue, not a decision)
+    //  - the named decider must exist, otherwise the question can never close
+    if (deciderId === input.askedBy) {
+      throw new TaskServiceError(
+        'DECIDER_IS_ASKER',
+        'You cannot name yourself as the decider. Settle it from evidence, or name the reviewer / a human.',
+        { taskId },
+      );
+    }
+    if (deciderId && deciderId.startsWith('agt_') && this.agentManager && !this.agentManager.hasAgent(deciderId)) {
+      throw new TaskServiceError(
+        'DECIDER_NOT_FOUND',
+        `Unknown decider "${deciderId}" — an agent that does not exist can never answer. Use agent_list_colleagues to pick a real one.`,
+        { taskId, deciderId },
+      );
+    }
     const question = {
       id: `q_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
       text,
@@ -6009,13 +6041,18 @@ export class TaskService implements ApprovalTargetPort {
       throw new TaskServiceError('DECISION_INCOMPLETE', 'A decision needs both `point` and `decision`.', { taskId });
     }
 
+    const openQuestion = task.openQuestion;
     const authorized = input.isHuman
       || input.decidedBy === task.reviewerId
-      || input.decidedBy === task.createdBy;
+      || input.decidedBy === task.createdBy
+      // The specifically named decider must be able to answer — otherwise
+      // `task_ask_decision(decider_id: <peer>)` would dead-lock: it wakes that
+      // peer, and this check would then refuse their ruling.
+      || (!!openQuestion?.deciderId && input.decidedBy === openQuestion.deciderId);
     if (!authorized) {
       throw new TaskServiceError(
         'DECISION_NOT_AUTHORIZED',
-        `Only the task reviewer (${task.reviewerId}), the creator (${task.createdBy ?? 'n/a'}), or a human can decide a contested point on "${task.title}".`
+        `Only the named decider (${openQuestion?.deciderId ?? 'n/a'}), the task reviewer (${task.reviewerId}), the creator (${task.createdBy ?? 'n/a'}), or a human can decide a contested point on "${task.title}".`
         + ' If you believe the decision is wrong, open ONE open question with task_ask_decision — do not argue in the comment thread.',
         { taskId },
       );
@@ -6044,11 +6081,21 @@ export class TaskService implements ApprovalTargetPort {
     );
     this.ws?.broadcastTaskUpdate(taskId, task.status, { title: task.title });
 
-    // One bounded notification: the assignee needs to know the point is closed.
-    if (task.assignedAgentId && task.assignedAgentId !== input.decidedBy) {
+    // Wake EVERYONE whose work was waiting on this ruling — the asker first.
+    // Waking only the assignee was a real defect: when the asker is a peer
+    // (a DB engineer asking on a backend-owned card), the asker never learned
+    // the answer and the card silently stalled on a guess.
+    const waiters = new Set<string>();
+    if (openQuestion?.askedBy) waiters.add(openQuestion.askedBy);
+    if (task.assignedAgentId) waiters.add(task.assignedAgentId);
+    waiters.delete(input.decidedBy);
+
+    for (const agentId of waiters) {
       try {
-        const assignee = this.agentManager?.getAgent(task.assignedAgentId);
-        assignee?.enqueueToMailbox('task_comment', {
+        const agent = this.agentManager?.getAgent(agentId);
+        if (!agent) continue;
+        const isAsker = agentId === openQuestion?.askedBy;
+        agent.enqueueToMailbox('task_comment', {
           summary: `Decision recorded on task "${task.title}"`,
           content: [
             `${input.decidedByName} decided a contested point on task "${task.title}" (${taskId}).`,
@@ -6057,14 +6104,61 @@ export class TaskService implements ApprovalTargetPort {
             `Decision: ${decision}`,
             ...(record.rationale ? [`Why: ${record.rationale}`] : []),
             '',
-            'This is final for this card — follow it. No reply is required; do not re-open the discussion.',
+            isAsker
+              ? 'You asked this. The question is closed — resume your work on this card from where you stopped, following the ruling above.'
+              : 'This is final for this card — follow it. No reply is required; do not re-open the discussion.',
           ].join('\n'),
           taskId,
         }, { metadata: { senderName: input.decidedByName, senderRole: 'agent', taskId } });
-      } catch { /* assignee offline */ }
+      } catch { /* agent offline */ }
     }
 
     return task;
+  }
+
+  /**
+   * Safety net for the ask→decide loop: an unanswered question must not stall a
+   * card silently. Once a question is older than `maxAgeMs`, escalate ONCE to the
+   * creator (or reviewer), and mark the question so it never repeats.
+   *
+   * Without this, "wait for a ruling" has the same failure shape as a lost wakeup:
+   * nothing errors, nothing moves, and only a human noticing the silence helps.
+   */
+  escalateStaleQuestions(maxAgeMs = 30 * 60_000): void {
+    const now = Date.now();
+    for (const task of this.tasks.values()) {
+      const q = task.openQuestion;
+      if (!q || q.escalatedAt || isTerminalTaskStatus(task.status)) continue;
+      const age = now - new Date(q.at).getTime();
+      if (!Number.isFinite(age) || age < maxAgeMs) continue;
+
+      q.escalatedAt = new Date().toISOString();
+      void (this.taskRepo as unknown as { update: (id: string, data: Record<string, unknown>) => Promise<void> } | undefined)
+        ?.update(task.id, { openQuestion: q });
+
+      const target = task.createdBy && task.createdBy !== q.askedBy ? task.createdBy : task.reviewerId;
+      if (!target || target === q.askedBy) continue;
+
+      const minutes = Math.round(age / 60_000);
+      try {
+        const agent = this.agentManager?.getAgent(target);
+        agent?.enqueueToMailbox('task_comment', {
+          summary: `Open question unanswered ${minutes}min on task "${task.title}"`,
+          content: [
+            `A decision question on "${task.title}" (${task.id}) has been open for ${minutes} minutes.`,
+            '',
+            `Asked by: ${q.askedByName}`,
+            `Question: ${q.text}`,
+            `Named decider: ${q.deciderId ?? task.reviewerId}`,
+            '',
+            'Either decide it now with `task_decide`, or reassign the question deliberately.',
+          ].join('\n'),
+          taskId: task.id,
+        }, { metadata: { senderName: 'system', senderRole: 'agent', taskId: task.id } });
+      } catch { /* agent offline */ }
+
+      this.addTaskNote(task.id, `[ESCALATED] open question unanswered for ${minutes} min → ${target}`, 'system');
+    }
   }
 
   /**
