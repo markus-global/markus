@@ -30,7 +30,6 @@
  * fetched on expand.
  */
 export const LEAN_CAPS = {
-  textContent: 300,
   thinking: 200,
   toolError: 200,
 } as const;
@@ -57,18 +56,6 @@ function clipString(value: unknown, cap: number): { out: string; clipped: boolea
   if (typeof value !== 'string') return { out: '', clipped: false };
   if (value.length <= cap) return { out: value, clipped: false };
   return { out: value.slice(0, cap), clipped: true };
-}
-
-function clipArguments(value: unknown): { out: unknown; clipped: boolean } {
-  if (value === null || value === undefined) return { out: value, clipped: false };
-  let serialized: string;
-  try {
-    serialized = JSON.stringify(value);
-  } catch {
-    return { out: undefined, clipped: true };
-  }
-  if (serialized.length <= LEAN_CAPS.toolArguments) return { out: value, clipped: false };
-  return { out: serialized.slice(0, LEAN_CAPS.toolArguments), clipped: true };
 }
 
 function leanSegment(seg: unknown, isLastText: boolean): { seg: Seg; clipped: boolean } | null {
