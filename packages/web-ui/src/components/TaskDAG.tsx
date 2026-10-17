@@ -697,20 +697,48 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const rootRef = useRef<HTMLDivElement>(null);
   const [docViewportHeight, setDocViewportHeight] = useState<number | null>(null);
   useEffect(() => {
+    let observed: HTMLElement | Document = document;
     const measure = () => {
       const el = rootRef.current;
+      if (!el) { setDocViewportHeight(null); return; }
+      // Which box actually bounds this canvas? Not necessarily the window: the same
+      // page can be previewed inside a right-side panel, where the available height
+      // is the panel's, not the viewport's. Measuring window.innerHeight there gave
+      // a canvas several hundred pixels taller than its panel — the graph was
+      // cropped and the space below it wasted.
+      let host: HTMLElement | null = el.parentElement;
+      while (host) {
+        const overflowY = getComputedStyle(host).overflowY;
+        if ((overflowY === 'auto' || overflowY === 'scroll') && host.clientHeight > 0) break;
+        host = host.parentElement;
+      }
       const docMode = document.documentElement.classList.contains('mobile-doc-scroll');
-      if (!el || !docMode) { setDocViewportHeight(null); return; }
-      // rect.top + scrollY is the element's offset in the document, independent
-      // of how far the page happens to be scrolled right now.
-      const docTop = el.getBoundingClientRect().top + window.scrollY;
-      setDocViewportHeight(Math.max(320, Math.round(window.innerHeight - docTop - 8)));
+      const inPanel = host !== null;
+      if (!docMode && !inPanel) { setDocViewportHeight(null); return; }
+      const hostRect = host
+        ? host.getBoundingClientRect()
+        : { top: 0, bottom: window.innerHeight };
+      const elRect = el.getBoundingClientRect();
+      // Distance from the canvas top to the bottom of its own host box.
+      const available = hostRect.bottom - elRect.top - 8;
+      setDocViewportHeight(Math.max(320, Math.round(available)));
+      if (host && observed !== host) {
+        observer.disconnect();
+        observer.observe(host);
+        observed = host;
+      }
     };
+    const observer = new ResizeObserver(measure);
     measure();
+    observer.observe(document.documentElement);
     window.addEventListener('resize', measure);
-    const observer = new MutationObserver(measure);
-    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
-    return () => { window.removeEventListener('resize', measure); observer.disconnect(); };
+    const classObserver = new MutationObserver(measure);
+    classObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer.disconnect();
+      classObserver.disconnect();
+    };
   }, []);
 
   if (tasks.length === 0) {
