@@ -264,9 +264,9 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
       <div ref={contentRef}>
         <ErrorBoundary
           resetKeys={[processedRest]}
-          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap pr-8 text-fg-secondary ${className}`}>{rest}</div>}
+          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap pr-2 sm:pr-8 text-fg-secondary ${className}`}>{rest}</div>}
         >
-        <div className={`prose prose-sm max-w-none break-words pr-8 text-fg-secondary ${className}`}>
+        <div className={`prose prose-sm max-w-none break-words pr-2 sm:pr-8 text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
             const firstLine = full.split('\n')[0] ?? '';

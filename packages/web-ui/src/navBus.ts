@@ -16,8 +16,15 @@ export const navBus = {
     if (params) {
       Object.entries(params).forEach(([k, v]) => localStorage.setItem(`markus_nav_${k}`, v));
     }
-    window.dispatchEvent(new CustomEvent('markus:navigate', { detail: { page, params } }));
+    // Page-level navigation FIRST, then the page-specific handler.
+    //
+    // The reverse order looks harmless but is a URL race: the specific handler
+    // sets a sub-route (e.g. `team/d` to open a conversation) and the generic
+    // navigation then rewrites the URL to the page root (`team`), so the
+    // app-wide state — including "is this a sub-page, hide the bottom nav" —
+    // disagrees with what the user was actually sent to.
     _handler?.(page, params);
+    window.dispatchEvent(new CustomEvent('markus:navigate', { detail: { page, params } }));
   },
   setSettingsReturnPage(page: PageId) {
     if (page !== PAGE.SETTINGS) _settingsReturnPage = page;

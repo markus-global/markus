@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type AuthUser } from '../api.ts';
+import { api, wsClient, getHubToken, hubApi, type DeliverableInfo, type ProjectInfo, type AgentInfo, type TeamInfo, type HumanUserInfo, type AuthUser } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ContentRenderer, resolveFormat, type HtmlSelectionData } from '../components/ContentRenderer.tsx';
 import { OfficePreviewer } from '../components/OfficePreviewer.tsx';
@@ -9,14 +9,16 @@ import type { DirectoryEntry } from '../api.ts';
 import { copyPlainText } from '../components/markdown-copy.ts';
 import { ArtifactPreview, type BuilderMode } from '../components/BuilderArtifact.tsx';
 import { DeliverableShareModal } from '../components/DeliverableShareModal.tsx';
+import { SendToChatModal, shortForChip } from '../components/SendToChat.tsx';
+import { onScrollAnywhere, scrollMetrics } from '../lib/scrollMetrics.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
+import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
-import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 
@@ -59,6 +61,28 @@ function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, un
   return t('time.yearsAgo', { count: Math.floor(months / 12) });
 }
 
+/**
+ * The context chip that represents a deliverable above the chat input.
+ *
+ * One builder for every entry point (right-panel "add to conversation", the
+ * desktop FAB, the mobile "send to conversation" picker): the chip is part of
+ * the contract with the agent, so it must never drift between surfaces.
+ */
+function buildDeliverableChip(d: DeliverableInfo): { label: string; content: string } {
+  const title = d.title?.trim() || d.id;
+  return {
+    label: `📄 ${shortForChip(title)}`,
+    content: [
+      `[deliverable]`,
+      `ID: ${d.id}`,
+      `Title: ${d.title ?? ''}`,
+      d.reference ? `Reference: ${d.reference}` : '',
+      d.taskId ? `Task: ${d.taskId}` : '',
+      d.projectId ? `Project: ${d.projectId}` : '',
+    ].filter(Boolean).join('\n'),
+  };
+}
+
 const ARTIFACT_META: Record<string, { icon: string; color: string }> = {
   agent: { icon: '\u2726', color: 'bg-brand-500/10 text-brand-500' },
   team:  { icon: '\u25C8', color: 'bg-blue-500/10 text-blue-600' },
@@ -80,6 +104,12 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
+  // The deliverable detail on a phone is a sub-page: the bottom nav belongs to
+  // the list, not to a full-screen document.
+  useEffect(() => {
+    setMobileNavDepth(PAGE.DELIVERABLES, isMobile && mobileShowDetail ? 1 : 0);
+    return () => setMobileNavDepth(PAGE.DELIVERABLES, 0);
+  }, [isMobile, mobileShowDetail]);
 
   useEffect(() => {
     if (!isMobile) return;
@@ -100,6 +130,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const [loadingMore, setLoadingMore] = useState(false);
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
+  const [users, setUsers] = useState<HumanUserInfo[]>([]);
+  const [sendToChatOpen, setSendToChatOpen] = useState(false);
   const [teams, setTeams] = useState<TeamInfo[]>([]);
   const [loading, setLoading] = useState(previewData ? false : true);
   const [searchQuery, setSearchQuery] = useState('');
@@ -126,9 +158,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   });
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [pullRefreshing, setPullRefreshing] = useState(false);
-  const groupTabs = useMemo(() => [{ id: 'date' as const }, { id: 'project' as const }, { id: 'team' as const }, { id: 'agent' as const }], []);
-  const handleGroupSwipe = useCallback((g: 'project' | 'agent' | 'date' | 'team') => { setGroupBy(g); }, []);
-  const groupSwipe = useSwipeTabs(groupTabs, groupBy, handleGroupSwipe);
+
   const listRef = useRef<HTMLDivElement>(null);
 
   // File preview
@@ -213,6 +243,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     if (previewMode) return;
     api.projects.list().then(r => setProjects(r.projects)).catch(() => {});
     api.agents.list().then(r => setAgents(r.agents ?? [])).catch(() => {});
+    api.users.list().then(r => setUsers(r.users ?? [])).catch(() => {});
     api.teams.list().then(r => setTeams(r.teams ?? [])).catch(() => {});
     api.system.info().then(info => setSharedDir(info.dataDir + '/shared')).catch(() => {});
     api.deliverables.checkHealth().then(r => setMissingFileIds(new Set(r.missingFiles))).catch(() => {});
@@ -266,6 +297,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const refresh = useCallback(async () => {
     setLoading(true);
     listRef.current?.scrollTo({ top: 0, behavior: 'instant' });
+    // In document-scroll mode the pane is not the scroller; reset the real one.
+    if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: 'instant' });
     try {
       const { results, total } = await api.deliverables.search({ ...searchParams, offset: 0, limit: fetchLimit });
       setItems(results);
@@ -463,21 +496,21 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const checkNeedMore = useCallback(() => {
     const el = listRef.current;
     if (!el || loading || loadingMore || items.length >= totalCount) return;
-    if (el.scrollHeight <= el.clientHeight + 100) {
+    // The list pane is not the scroller on mobile (the document is), so "is the
+    // viewport taller than its content" must be measured on the real scroller.
+    const m = scrollMetrics(el);
+    if (m.scrollHeight <= m.clientHeight + 100) {
       loadMore();
     }
   }, [loading, loadingMore, items.length, totalCount, loadMore]);
 
   useEffect(() => {
-    const el = listRef.current;
-    if (!el) return;
     const handleScroll = () => {
-      if (el.scrollTop + el.clientHeight >= el.scrollHeight - 100) {
-        loadMore();
-      }
+      // One measurement for both layouts: element scroller (desktop) or document
+      // root (mobile document scrolling).
+      if (scrollMetrics(listRef.current).atBottom) loadMore();
     };
-    el.addEventListener('scroll', handleScroll, { passive: true });
-    return () => el.removeEventListener('scroll', handleScroll);
+    return onScrollAnywhere(handleScroll);
   }, [loadMore]);
 
   useEffect(() => { checkNeedMore(); }, [checkNeedMore, defaultCollapsed, groupOverrides]);
@@ -892,21 +925,30 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [flatItems, selected, previewMode, isMobile, isActive, layout, sidebarCollapsed]);
 
-  const pullStartRef = useRef<{ y: number; scrollTop: number } | null>(null);
+  const pullStartRef = useRef<{ y: number; x: number } | null>(null);
   const handlePullStart = useCallback((e: React.TouchEvent) => {
     if (!isMobile) return;
-    const el = listRef.current;
-    if (!el || el.scrollTop > 0) return;
-    pullStartRef.current = { y: e.touches[0].clientY, scrollTop: el.scrollTop };
+    // Only a gesture that STARTS at the very top can be a pull-to-refresh.
+    if (!scrollMetrics(listRef.current).atTop) return;
+    const touch = e.touches[0];
+    if (!touch) return;
+    pullStartRef.current = { y: touch.clientY, x: touch.clientX };
   }, [isMobile]);
   const handlePullEnd = useCallback((e: React.TouchEvent) => {
     if (!isMobile || !pullStartRef.current || pullRefreshing) return;
-    const dy = e.changedTouches[0].clientY - pullStartRef.current.y;
+    const touch = e.changedTouches[0];
+    const start = pullStartRef.current;
     pullStartRef.current = null;
-    if (dy > 80 && listRef.current && listRef.current.scrollTop <= 0) {
-      setPullRefreshing(true);
-      refresh().finally(() => setPullRefreshing(false));
-    }
+    if (!touch) return;
+    const dy = touch.clientY - start.y;
+    const dx = Math.abs(touch.clientX - start.x);
+    // A deliberate downward pull, not a horizontal swipe and not a stray tap:
+    // it must still start from the top when the finger lifts, so scrolling back
+    // up mid-gesture never triggers a reload.
+    if (dy < 72 || dx > dy) return;
+    if (!scrollMetrics(listRef.current).atTop) return;
+    setPullRefreshing(true);
+    refresh().finally(() => setPullRefreshing(false));
   }, [isMobile, pullRefreshing, refresh]);
 
   const handleSelectItem = (item: DeliverableInfo) => {
@@ -1008,21 +1050,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
     // 交付物本身作为一个标签，让 agent 明确知道讨论的是哪个交付物。
     const chips: Array<{ label: string; content: string }> = [];
-    if (deliverableId) {
-      const dTitle = selected?.title?.trim() || deliverableId;
-      const dLabel = dTitle.length > 40 ? `${dTitle.slice(0, 24)}…${dTitle.slice(-12)}` : dTitle;
-      chips.push({
-        label: `📄 ${dLabel}`,
-        content: [
-          `[deliverable]`,
-          `ID: ${deliverableId}`,
-          `Title: ${selected?.title ?? ''}`,
-          selected?.reference ? `Reference: ${selected.reference}` : '',
-          selected?.taskId ? `Task: ${selected.taskId}` : '',
-          selected?.projectId ? `Project: ${selected.projectId}` : '',
-        ].filter(Boolean).join('\n'),
-      });
-    }
+    if (selected) chips.push(buildDeliverableChip(selected));
     if (selectionText?.trim()) {
       const short = selectionText.trim().length > 40
         ? `${selectionText.trim().slice(0, 24)}…${selectionText.trim().slice(-12)}`
@@ -1261,8 +1289,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         )}
 
         <div ref={listRef} className="flex-1 overflow-y-auto p-2 space-y-1 transition-opacity duration-150" style={{ opacity: loading ? 0.5 : 1 }}
-          onTouchStart={isMobile ? (e) => { groupSwipe.onTouchStart(e); handlePullStart(e); } : undefined}
-          onTouchEnd={isMobile ? (e) => { groupSwipe.onTouchEnd(e); handlePullEnd(e); } : undefined}>
+          onTouchStart={isMobile ? handlePullStart : undefined}
+          onTouchEnd={isMobile ? handlePullEnd : undefined}>
           {pullRefreshing && (
             <div className="flex items-center justify-center gap-2 py-2 text-brand-500">
               <Spinner /> <span className="text-[10px]">{t('filters.refreshing')}</span>
@@ -1436,7 +1464,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             </div>
           </div>
         ) : (
-          <div className={`p-6 space-y-4 ${showFullHeightPreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
+          <div className={`px-3 py-3 md:p-6 space-y-4 ${showFullHeightPreview ? 'flex flex-col min-h-0 h-full' : ''}`}>
             {/* File missing warning */}
             {!previewMode && missingFileIds.has(selected.id) && (
               <div className="flex items-center gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-lg text-amber-600 text-xs">
@@ -1816,18 +1844,38 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
       </div>
 
-        {/* Floating chat FAB — jump to Team Chat with this deliverable in the right panel */}
-        {selected?.agentId && !isMobile && (
+        {/* Floating chat FAB — desktop: open in the Team Chat right panel.
+            Mobile: there is no right panel, so the FAB opens the recipient
+            picker and attaches this deliverable as an input chip instead. */}
+        {selected?.agentId && (
           <button
             type="button"
-            onClick={() => openInTeamChat()}
-            className="absolute bottom-6 right-6 z-20 w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in"
-            title={t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
+            onClick={() => { if (isMobile) setSendToChatOpen(true); else openInTeamChat(); }}
+            className={`${isMobile
+              ? 'fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom))] right-4 z-40'
+              : 'absolute bottom-6 right-6 z-20'} w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in`}
+            title={isMobile
+              ? t('chat.sendToChat', { defaultValue: 'Send to conversation' })
+              : t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
+            aria-label={isMobile
+              ? t('chat.sendToChat', { defaultValue: 'Send to conversation' })
+              : t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
           >
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
             </svg>
           </button>
+        )}
+
+        {sendToChatOpen && selected && (
+          <SendToChatModal
+            chipLabel={buildDeliverableChip(selected).label}
+            chipContent={buildDeliverableChip(selected).content}
+            agents={agents}
+            users={users}
+            defaultTarget={selected.agentId ? `agent:${selected.agentId}` : undefined}
+            onClose={() => setSendToChatOpen(false)}
+          />
         )}
       </div>
       )}

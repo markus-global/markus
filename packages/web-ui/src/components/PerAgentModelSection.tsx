@@ -151,14 +151,14 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
 
   if (rows === null && !error) {
     return (
-      <div className="bg-surface-elevated rounded-xl p-5 text-sm text-fg-tertiary">
+      <div className="bg-surface-elevated rounded-xl p-4 md:p-5 text-sm text-fg-tertiary">
         {t('common:loading', { defaultValue: 'Loading…' })}
       </div>
     );
   }
 
   return (
-    <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+    <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
       <div className="flex items-center justify-between">
         <div>
           <div className="text-sm font-medium">{t('perAgentModel.title', { defaultValue: 'Per-agent default model' })}</div>
@@ -186,12 +186,12 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
               </div>
               <div className="space-y-2">
                 {g.rows.map(r => (
-                  <div key={r.id} className="flex items-center justify-between gap-3 text-sm">
-                    <div className="flex-1 truncate">
+                  <div key={r.id} className="flex flex-col gap-2 text-sm md:flex-row md:items-center md:justify-between md:gap-3">
+                    <div className="min-w-0 flex-1 truncate">
                       <span className="font-medium">{r.name}</span>
                       <span className="text-xs text-fg-tertiary ml-2 truncate">{r.id}</span>
                     </div>
-                    <div className="flex items-center gap-2 w-[320px]">
+                    <div className="flex w-full min-w-0 items-center gap-2 md:w-[320px]">
                       {r.override ? (
                         <>
                           <ModelSelect

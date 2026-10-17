@@ -222,6 +222,19 @@ body {
     height: auto;
     min-height: 0;
   }
+  /* Scrolling the document collapses every `flex-1` height chain on purpose.
+     A canvas-like viewport (the task dependency graph) cannot inherit its
+     height from that chain — it must own one, or it paints into zero pixels. */
+  html.mobile-doc-scroll .doc-scroll-viewport {
+    /* A canvas viewport must OWN its height. As a `flex: 1 1 0%` child of a
+       content-sized flex column, its used height is the parent's share — not the
+       height we measured — and the min-height then becomes the real height. The
+       graph ended up 320px tall inside an 806px slot while the page could not
+       scroll at all. `flex: 0 0 auto` makes the measured height authoritative. */
+    flex: 0 0 auto;
+    height: 70dvh;
+    min-height: 320px;
+  }
 }
 
 .prose :is(p, li, td, th, dd, dt, figcaption, caption, blockquote) {

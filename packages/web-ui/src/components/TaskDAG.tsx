@@ -683,9 +683,90 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     setPendingDelete(null);
   }, [pendingDelete, taskMap, showToast, onDependencyChange, t]);
 
+  // A canvas viewport must own its height. On mobile the document is the
+  // scroller (see lib/mobileDocScroll.ts), which deliberately collapses the
+  // page's `flex-1` chain — so `height:100%` here resolves against an
+  // auto-height parent and ReactFlow paints into nothing.
+  //
+  // A fixed dvh is also wrong: it ignores whatever chrome sits above the graph,
+  // so the canvas either overflows the screen or leaves a dead band below it.
+  // Measure instead — the canvas takes exactly the screen height it has left.
+  //
+  // Declared above the empty-state early return on purpose: hooks must run in
+  // the same order on every render.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [docViewportHeight, setDocViewportHeight] = useState<number | null>(null);
+  useEffect(() => {
+    let observed: HTMLElement | Document = document;
+    const measure = () => {
+      const el = rootRef.current;
+      if (!el) { setDocViewportHeight(null); return; }
+      // Which box actually bounds this canvas? Not necessarily the window: the same
+      // page can be previewed inside a right-side panel, where the available height
+      // is the panel's, not the viewport's. Measuring window.innerHeight there gave
+      // a canvas several hundred pixels taller than its panel — the graph was
+      // cropped and the space below it wasted.
+      let host: HTMLElement | null = el.parentElement;
+      while (host) {
+        const overflowY = getComputedStyle(host).overflowY;
+        if ((overflowY === 'auto' || overflowY === 'scroll') && host.clientHeight > 0) break;
+        host = host.parentElement;
+      }
+      const docMode = document.documentElement.classList.contains('mobile-doc-scroll');
+      const inPanel = host !== null;
+      if (!docMode && !inPanel) { setDocViewportHeight(null); return; }
+      // Measure against the host's SCROLLPORT, never against its content box.
+      // `getBoundingClientRect().bottom` grows with the content we are sizing, so
+      // using it as the bound fed the result back into the input: the canvas
+      // measured itself at 806px, then 1.6k, then 13.8k… `clientHeight` is the
+      // visible box and does not move when content grows.
+      //
+      // The offset must be taken in the host's CONTENT coordinates too (rect + its
+      // own scrollTop), otherwise scrolling the page would inflate the result by
+      // exactly the amount scrolled.
+      const scrollportHeight = host ? host.clientHeight : window.innerHeight;
+      const scrollportTop = host ? host.getBoundingClientRect().top : 0;
+      const scrollTop = host ? host.scrollTop : window.scrollY;
+      const elRect = el.getBoundingClientRect();
+      const offsetInContent = elRect.top - scrollportTop + scrollTop;
+      // A canvas is meant to fill one screen, never to become the page: clamping to
+      // the viewport is the invariant that breaks any runaway feedback on its own.
+      const available = Math.min(scrollportHeight, window.innerHeight) - offsetInContent - 8;
+      setDocViewportHeight(Math.max(320, Math.round(available)));
+      if (host && observed !== host) {
+        observer.disconnect();
+        observer.observe(host);
+        observed = host;
+      }
+    };
+    const observer = new ResizeObserver(measure);
+    measure();
+    observer.observe(document.documentElement);
+    window.addEventListener('resize', measure);
+    const classObserver = new MutationObserver(measure);
+    classObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => {
+      window.removeEventListener('resize', measure);
+      observer.disconnect();
+      classObserver.disconnect();
+    };
+  }, []);
+
+  // ReactFlow's `fitView` (the prop) runs ONCE, at init. A canvas that is later
+  // resized keeps a transform computed against the old box: the graph stays
+  // cropped (or shrunk to minZoom) even though the container is now correct.
+  // Re-fit whenever the measured height changes — mount, rotation, panel resize.
+  useEffect(() => {
+    if (docViewportHeight === null) return;
+    const id = requestAnimationFrame(() => {
+      rfRef.current?.fitView({ padding: 0.2 });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [docViewportHeight]);
+
   if (tasks.length === 0) {
     return (
-      <div className="flex-1 flex items-center justify-center">
+      <div className="doc-scroll-viewport flex-1 flex items-center justify-center">
         <div className="flex flex-col items-center gap-3 max-w-sm text-center">
           <svg className="w-10 h-10 text-fg-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M13 10V3L4 14h7v7l9-11h-7z" /></svg>
           <p className="text-sm font-medium text-fg-secondary">{t('work:task.dagEmptyTitle')}</p>
@@ -703,7 +784,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
 
   return (
-    <div className="flex-1 min-h-0 relative" style={{ height: '100%' }}>
+    <div ref={rootRef} className="doc-scroll-viewport flex-1 min-h-0 relative" style={{ height: docViewportHeight ?? '100%' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -716,7 +797,12 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
         onInit={(instance) => { rfRef.current = instance; }}
         nodeTypes={nodeTypes}
         fitView
-        minZoom={0.3}
+        // Measured on a 39-node graph at 622px wide: the content needs 0.243 to
+        // fit, so a 0.3 floor silently cropped the outermost nodes — fitView
+        // clamps and reports success, leaving no hint that part of the graph is
+        // unreachable by fit. Allow the canvas to shrink far enough to hold the
+        // whole graph; the user can still zoom in from there.
+        minZoom={0.08}
         maxZoom={2}
         proOptions={{ hideAttribution: true }}
         connectionLineStyle={{ stroke: '#818cf8', strokeWidth: 2, strokeDasharray: '6 3' }}

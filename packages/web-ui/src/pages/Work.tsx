@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
 import {
@@ -24,6 +25,7 @@ import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId, hashPath } from '../routes.ts';
+import { registerRingSubSource, onRingSubRequest } from '../lib/navRing.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
@@ -31,6 +33,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 
 const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
@@ -250,41 +253,13 @@ type ChatSendableEntity = {
   projectId?: string | null;
 };
 
-/** 默认收件人 = 创建者（智能体或人类）；创建者解析不出来时退回第一个智能体。 */
-function resolveDefaultChatTarget(createdBy: string | undefined, agents: AgentInfo[], users: HumanUserInfo[]): string {
-  if (createdBy) {
-    if (agents.some(a => a.id === createdBy)) return `agent:${createdBy}`;
-    if (users.some(u => u.id === createdBy)) return `human:${createdBy}`;
-  }
-  if (agents[0]) return `agent:${agents[0].id}`;
-  if (users[0]) return `human:${users[0].id}`;
-  return '';
-}
-
-/** 详情面板头部的小按钮：打开「发送到对话」弹窗。 */
-function SendToChatButton({ onClick, label }: { onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      title={label}
-      aria-label={label}
-      className="shrink-0 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg border border-border-default text-xs text-fg-secondary hover:text-brand-500 hover:border-brand-500/40 hover:bg-brand-500/10 transition-colors"
-    >
-      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />
-        <line x1="12" y1="7" x2="12" y2="11" />
-        <line x1="10" y1="9" x2="14" y2="9" />
-      </svg>
-      <span className="hidden sm:inline">{label}</span>
-    </button>
-  );
-}
-
 /**
  * 「发送到对话」弹窗：选一个智能体 / 成员，把当前需求或任务作为上下文标签
  * 带到 Team Chat 的输入框上方（与产出物「发送到对话」、@ 提及的行为一致），
  * 用户随后可自由补充说明再发送。
+ *
+ * 选择器 / 导航是共享实现（components/SendToChat.tsx）；这里只负责构造需求、
+ * 任务自己的上下文标签——一种能力一个实现，标签格式归本页。
  */
 function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
   kind: 'requirement' | 'task';
@@ -294,21 +269,8 @@ function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
   projects: ProjectInfo[];
   onClose: () => void;
 }) {
-  const { t } = useTranslation(['work', 'common']);
-  const [target, setTarget] = useState(() => resolveDefaultChatTarget(entity.createdBy, agents, users));
-  const [query, setQuery] = useState('');
-
-  const rows = useMemo(() => {
-    const q = query.trim().toLowerCase();
-    const hit = (label: string) => !q || label.toLowerCase().includes(q);
-    return [
-      ...agents.filter(a => hit(a.name)).map(a => ({ value: `agent:${a.id}`, name: a.name, meta: a.status, isAgent: true })),
-      ...users.filter(u => hit(u.name)).map(u => ({ value: `human:${u.id}`, name: u.name, meta: '', isAgent: false })),
-    ];
-  }, [agents, users, query]);
-
   const title = entity.title?.trim() || entity.id;
-  const short = title.length > 40 ? `${title.slice(0, 24)}…${title.slice(-12)}` : title;
+  const short = shortForChip(title);
   const projectName = entity.projectId
     ? (projects.find(p => p.id === entity.projectId)?.name ?? entity.projectId)
     : '';
@@ -323,135 +285,15 @@ function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
     projectName ? `Project: ${projectName}` : '',
   ].filter(Boolean).join('\n');
 
-  const [targetType, targetId] = target.split(':');
-  const targetName = targetType === 'agent'
-    ? (agents.find(a => a.id === targetId)?.name ?? '')
-    : (users.find(u => u.id === targetId)?.name ?? '');
-
-  const handleSend = () => {
-    if (!target) return;
-    const [type, id] = target.split(':');
-    const params: Record<string, string> = {
-      chatChips: JSON.stringify([{ label: chipLabel, content: chipContent }]),
-    };
-    if (type === 'agent') params.agentId = id;
-    else params.dm = id;
-    navBus.navigate(PAGE.TEAM, params);
-    onClose();
-  };
-
   return (
-    <div className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4" onClick={onClose}>
-      <div
-        className="w-full max-w-md max-h-[85vh] flex flex-col bg-surface-primary border border-border-default rounded-2xl shadow-2xl overflow-hidden"
-        onClick={e => e.stopPropagation()}
-      >
-        {/* Header */}
-        <div className="px-5 pt-4 pb-3 border-b border-border-default shrink-0">
-          <div className="flex items-start justify-between gap-3">
-            <h3 className="text-sm font-semibold text-fg-primary">
-              {t('work:task.sendToChatTitle', { defaultValue: '发送到对话' })}
-            </h3>
-            <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none -mt-1" aria-label={t('common:close')}>&times;</button>
-          </div>
-          <p className="mt-1 text-xs text-fg-tertiary leading-relaxed">
-            {t('work:task.sendToChatHint', { defaultValue: '选择要发送到的对话，它会作为上下文标签加入输入框，你可以接着补充说明。' })}
-          </p>
-        </div>
-
-        {/* Target picker */}
-        <div className="px-5 pt-3 pb-2 shrink-0">
-          <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">
-            {t('work:task.sendToChatTarget', { defaultValue: '发送给' })}
-          </label>
-          <div className="relative">
-            <svg className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-fg-tertiary pointer-events-none" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-            <input
-              value={query}
-              onChange={e => setQuery(e.target.value)}
-              placeholder={t('work:task.sendToChatSearch', { defaultValue: '搜索智能体或成员…' })}
-              className="w-full pl-8 pr-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm text-fg-primary outline-none focus:border-brand-500 placeholder:text-fg-tertiary"
-            />
-          </div>
-          <div className="mt-1.5 text-[11px] text-fg-tertiary truncate">
-            {targetName
-              ? `${t('work:task.sendToChatTarget', { defaultValue: '发送给' })}：${targetName}`
-              : t('work:task.sendToChatNoTarget', { defaultValue: '当前没有可发送的对象' })}
-          </div>
-        </div>
-
-        {/* Target list */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
-          {rows.length === 0 ? (
-            <div className="px-3 py-6 text-center text-xs text-fg-tertiary">
-              {t('work:task.sendToChatEmpty', { defaultValue: '没有匹配的对象' })}
-            </div>
-          ) : rows.map((r, i) => {
-            const newGroup = i === 0 || rows[i - 1].isAgent !== r.isAgent;
-            const selected = r.value === target;
-            return (
-              <div key={r.value}>
-                {newGroup && (
-                  <div className="px-3 pt-2 pb-1 text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
-                    {r.isAgent
-                      ? t('work:task.sendToChatAgents', { defaultValue: '智能体' })
-                      : t('work:task.sendToChatHumans', { defaultValue: '成员' })}
-                  </div>
-                )}
-                <button
-                  type="button"
-                  onClick={() => setTarget(r.value)}
-                  className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition-colors ${
-                    selected ? 'bg-brand-500/15 text-brand-500 font-medium' : 'text-fg-secondary hover:bg-surface-elevated'
-                  }`}
-                >
-                  <span className="w-5 h-5 flex items-center justify-center text-sm shrink-0">{r.isAgent ? '🤖' : '👤'}</span>
-                  <span className="flex-1 min-w-0 truncate text-sm">{r.name}</span>
-                  {r.meta && <span className="text-[10px] text-fg-tertiary shrink-0">{r.meta}</span>}
-                  {selected && (
-                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                      <polyline points="20 6 9 17 4 12" />
-                    </svg>
-                  )}
-                </button>
-              </div>
-            );
-          })}
-        </div>
-
-        {/* Footer: context preview + actions */}
-        <div className="px-5 py-3 border-t border-border-default bg-surface-secondary/40 shrink-0">
-          <span className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">
-            {t('work:task.sendToChatContext', { defaultValue: '将加入的上下文标签' })}
-          </span>
-          <span
-            className="inline-flex items-center gap-1 max-w-full pl-2 pr-2 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
-            title={chipContent}
-          >
-            <span className="truncate">{chipLabel}</span>
-          </span>
-          <div className="mt-3 flex items-center justify-end gap-2">
-            <button
-              type="button"
-              onClick={onClose}
-              className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors"
-            >
-              {t('common:cancel')}
-            </button>
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={!target}
-              className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
+    <SharedSendToChatModal
+      chipLabel={chipLabel}
+      chipContent={chipContent}
+      agents={agents}
+      users={users}
+      defaultTarget={resolveDefaultChatTarget(entity.createdBy, agents, users)}
+      onClose={onClose}
+    />
   );
 }
 
@@ -2429,7 +2271,7 @@ function TaskDetailPanel({
 
         {/* Scrollable content area */}
         <div className="flex-1 min-h-0 relative">
-        <div ref={scrollContainerRef} className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
+        <div ref={scrollContainerRef} data-swipe-owner className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
           <div className={activeTab === 'logs' ? 'min-w-0 min-h-full' : 'hidden'}>
               {runError && (
@@ -4104,9 +3946,9 @@ function SaveAsWorkflowModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-surface-primary border border-border-default rounded-2xl shadow-2xl w-[640px] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-primary border border-border-default rounded-2xl shadow-2xl w-full max-w-[640px] mx-4 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-border-default">
           <div>
             <h2 className="text-base font-semibold text-fg-primary">{t('work:task.saveAsWorkflow', 'Save as Workflow')}</h2>
             <p className="text-xs text-fg-tertiary mt-0.5">{t('work:task.saveAsWorkflowDesc', 'Turn this task structure into a reusable workflow template')}</p>
@@ -4117,9 +3959,9 @@ function SaveAsWorkflowModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 space-y-4">
           {/* Name & Description */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.workflowName', 'Name')}</label>
               <input
@@ -4537,7 +4379,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
             const hasRunning = wfRuns.some(r => r.status === 'running' || (r.status as string) === 'paused');
             return (
             <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
-              <div className="flex items-start justify-between gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
@@ -4545,9 +4387,9 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                     <span className="text-[11px] text-fg-tertiary">{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <span
-                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors"
+                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors max-w-[12rem] truncate"
                     title={t('work:task.workflowSendToAgent', 'Send to agent chat')}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -4590,7 +4432,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                             {idx + 1}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span className="text-xs font-medium text-fg-primary">{step.name}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary">{step.role}</span>
                               {step.depends_on && step.depends_on.length > 0 && (
@@ -4905,6 +4747,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
   mobileShowDetailRef.current = mobileShowDetail;
+  // A task/requirement detail on a phone is a sub-page: the bottom nav belongs
+  // to the board/list view, not to a full-screen detail.
+  useEffect(() => {
+    setMobileNavDepth(PAGE.WORK, isMobile && mobileShowDetail ? 1 : 0);
+    return () => setMobileNavDepth(PAGE.WORK, 0);
+  }, [isMobile, mobileShowDetail]);
   // ── State ──
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
   const [viewMode, setViewMode] = useState<ViewMode>('all');
@@ -4996,11 +4844,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<BoardType>(previewData?.initialBoardType ?? 'backlog');
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
-  const boardTabs = useMemo(() => [{ id: 'backlog' as const }, { id: 'kanban' as const }, { id: 'dag' as const }, { id: 'workflows' as const }], []);
-  const boardSwipe = useSwipeTabs(boardTabs, boardType, setBoardType);
+  // Horizontal swipe at PAGE level belongs to the ring (lib/navRing.ts); the four
+  // board views are four steps on that ring, so this page no longer runs its own
+  // swipe recognisers. It registers a GETTER so the ring always reads the live
+  // view (never a cached copy) and accepts a command to switch.
+  useEffect(() => registerRingSubSource(PAGE.WORK, () => boardTypeRef.current), []);
+  useEffect(() => onRingSubRequest((p, sub) => {
+    if (p !== PAGE.WORK) return;
+    if (!(BOARD_TYPE_ORDER as readonly string[]).includes(sub)) return;
+    setBoardType(sub as BoardType);
+  }), []);
   const kanbanScrollRef = useRef<HTMLDivElement>(null);
-  const kanbanSwipeOpts = useMemo(() => ({ scrollContainerRef: kanbanScrollRef }), []);
-  const kanbanSwipe = useSwipeTabs(boardTabs, boardType, setBoardType, kanbanSwipeOpts);
   const [showClosed, setShowClosed] = useState(false);
   const [statusFilter, setStatusFilter] = useState<string | null>(null);
   const [showFilterSheet, setShowFilterSheet] = useState(false);
@@ -6256,13 +6110,23 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-amber-500/60 text-amber-600 rounded-md">{t('work:task.shortTask')}</button>
               </div>
             </div>
-            {/* Mobile Row 2: view toggle + filter */}
-            <div className="flex items-center gap-2 px-3 h-9">
+            {/* Mobile Row 2: view toggle + filter. This row must never clip a
+                control: measured at a real 315px viewport, `Filter` ended 31px past
+                the right edge (the view toggle alone is 184px, the archive button
+                ~90). Wrapping is the only rule that holds at every width without
+                magic breakpoints: it costs a line only when the content genuinely
+                does not fit, and 360px+ still renders a single row. */}
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-1 px-3 py-1.5 min-h-9">
               <div className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
-                {(['backlog', 'kanban', 'dag'] as const).map(v => (
+                {/* Mobile view toggle. This row listed only backlog/kanban/dag, so
+                    on a phone the workflow board — its templates, run history and
+                    cards — had no entry point at all. Measured at a real 315px
+                    viewport: three buttons rendered, 'workflows' was not in the
+                    DOM. Four now, matching the desktop toggle and the swipe order. */}
+                {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
                   <button key={v} onClick={() => setBoardType(v)}
-                    className={`px-2 py-0.5 text-[10px] font-medium transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
-                  >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : t('work:task.dag')}</button>
+                    className={`px-2 py-0.5 text-[10px] font-medium whitespace-nowrap transition-colors ${boardType === v ? 'bg-brand-600/25 text-brand-500' : 'text-fg-tertiary'}`}
+                  >{v === 'backlog' ? t('work:task.backlog') : v === 'kanban' ? t('work:task.kanban') : v === 'dag' ? t('work:task.dag') : t('work:task.workflows', 'Workflows')}</button>
                 ))}
               </div>
               {closedCount > 0 && (
@@ -6286,7 +6150,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                       : 'border border-border-default text-fg-secondary'
                   }`}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" /></svg>
-                  {(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}
+                  <span>{(agentFilter.size + (myTasksOnly ? 1 : 0)) > 0 ? t('work:task.filterWithCount', { count: agentFilter.size + (myTasksOnly ? 1 : 0) }) : t('work:task.filter')}</span>
                 </button>
               )}
             </div>
@@ -6342,7 +6206,6 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </button>
           )}
 
-          {/* View toggle */}
           <div data-no-drag className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
             {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
@@ -6473,7 +6336,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </div>
           </div>
         ) : boardType === 'backlog' ? (
-          <div className="flex-1 min-h-0 flex flex-col" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 min-h-0 flex flex-col">
           <BacklogTable
             tasks={filterTasks(Object.values(board).flat())}
             requirements={filteredReqs}
@@ -6489,6 +6352,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           />
           </div>
         ) : boardType === 'workflows' ? (
+          <div
+            className="flex-1 min-h-0 flex flex-col relative"
+          >
           <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
             const openReqInDag = (req: RequirementInfo) => {
               forceOpenReq(req);
@@ -6507,8 +6373,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               }).catch(() => {});
             }
           }} />
+          {/* No button here on purpose: leaving this view is a gesture (left swipe),
+              decided by the owner. The wrapper above owns the touch handlers; the
+              graph keeps its own right-chevron button to come the other way. */}
+          </div>
         ) : boardType === 'dag' ? (
-          <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
+          <div className="flex-1 min-h-0 flex flex-col relative">
           <TaskDAG
             tasks={(() => {
               const allDagTasks = filterTasks(Object.values(board).flat(), true);
@@ -6537,9 +6407,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" /></svg>
             </button>
           )}
+          {/* Onward to the workflows board. The dependency graph used to be the
+              last view a thumb could reach; adding a fourth view left it with no
+              way forward except the header toggle. Mirrors the button on the left. */}
+          {isMobile && (
+            <button onClick={() => setBoardType('workflows')} className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toWorkflows', 'Workflows')}>
+              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+            </button>
+          )}
           </div>
         ) : (
-          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5" onTouchStart={isMobile ? kanbanSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? kanbanSwipe.onTouchEnd : undefined}>
+          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5">
             <div className="flex gap-3 items-stretch">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);

@@ -1144,13 +1144,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           <h1 className="text-base font-semibold text-fg-primary">{t(`settings:${visibleTabs.find(tb => tb.id === resolvedTab)?.labelKey || 'title'}`)}</h1>
         </div>
       )}
-      {resolvedTab !== null && <div className="p-7 space-y-10 max-w-4xl mx-auto w-full">
+      {resolvedTab !== null && <div className="p-4 md:p-7 space-y-10 max-w-4xl mx-auto w-full">
 
         {/* ───── General: system status + appearance ───── */}
         {resolvedTab === 'appearance' && <>
         <Section title={t('systemStatus.title')}>
           {health ? (
-            <div className="grid grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3 md:gap-4">
               <InfoCard label={t('systemStatus.status')} value={health.status === 'ok' ? t('systemStatus.healthy') : health.status} color="green" />
               <InfoCard label={t('systemStatus.version')} value={health.version} color="indigo" />
               <InfoCard label={t('systemStatus.activeAgents')} value={String(health.agents)} color="purple" />
@@ -1264,18 +1264,18 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             {!markusConfigured && (
             <Section title="Markus Cloud AI">
               <div className="bg-surface-secondary border border-brand-500/30 rounded-xl overflow-hidden transition-colors hover:border-brand-500/50">
-                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === 'markus' ? null : 'markus'); setQuickSetupKey(''); setQuickSetupMsg(null); }}>
-                  <div className="flex items-center gap-3">
-                    <span className="w-2.5 h-2.5 rounded-full bg-brand-500 shadow-[0_0_6px_rgba(99,102,241,0.4)]" />
-                    <div>
+                <div className="flex items-center justify-between gap-3 px-4 py-4 md:px-5 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === 'markus' ? null : 'markus'); setQuickSetupKey(''); setQuickSetupMsg(null); }}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className="w-2.5 h-2.5 shrink-0 rounded-full bg-brand-500 shadow-[0_0_6px_rgba(99,102,241,0.4)]" />
+                    <div className="min-w-0">
                       <span className="text-sm font-medium">Markus Cloud AI</span>
                       <div className="text-xs text-fg-tertiary mt-0.5">{t('modelProviders.markusHint')}</div>
                     </div>
                   </div>
-                  <svg className={`w-4 h-4 text-fg-tertiary transition-transform ${expandedProvider === 'markus' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
+                  <svg className={`w-4 h-4 shrink-0 text-fg-tertiary transition-transform ${expandedProvider === 'markus' ? 'rotate-180' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" /></svg>
                 </div>
                 {expandedProvider === 'markus' && (
-                  <div className="px-5 pb-5 space-y-3 border-t border-border-default/50">
+                  <div className="px-4 md:px-5 pb-5 space-y-3 border-t border-border-default/50">
                     <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetupLogin')}</p>
                     <button onClick={() => navBus.navigate(PAGE.SETTINGS, { tab: 'account' })}
                       className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">
@@ -1317,11 +1317,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         </div>
                       )}
                       <div className={`bg-surface-secondary border rounded-xl overflow-hidden transition-colors ${info.configured ? 'border-border-default hover:border-gray-600' : 'border-border-default/50 hover:border-brand-500/30'}`}>
-                <div className="flex items-center justify-between px-5 py-4 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === name ? null : name); setQuickSetupKey(''); setQuickSetupMsg(null); setAddProviderCatalogModels([]); setAddProviderForm(f => ({ ...f, name: '', model: '' })); }}>
-                  <div className="flex items-center gap-3">
-                    <span className={`w-2 h-2 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
-                    <div>
-                      <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between gap-3 px-4 py-4 md:px-5 cursor-pointer" onClick={() => { setExpandedProvider(expandedProvider === name ? null : name); setQuickSetupKey(''); setQuickSetupMsg(null); setAddProviderCatalogModels([]); setAddProviderForm(f => ({ ...f, name: '', model: '' })); }}>
+                  <div className="flex items-center gap-3 min-w-0">
+                    <span className={`w-2 h-2 shrink-0 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
                         <span className="text-sm font-medium">{info.displayName ?? name}</span>
                         {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
                         {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">{t('modelProviders.disabled')}</span>}
@@ -1344,7 +1344,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       </div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-4">
+                  <div className="flex shrink-0 items-center gap-4">
                     {info.configured && (
                       <button
                         onClick={e => { e.stopPropagation(); void toggleProvider(name, !info.enabled); }}
@@ -1360,7 +1360,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
 
                 {expandedProvider === name && (
-                  <div className="px-5 pb-4 border-t border-border-default pt-4 space-y-4">
+                  <div className="px-4 md:px-5 pb-4 border-t border-border-default pt-4 space-y-4">
                     {name === 'ollama' && (
                       <div className="bg-surface-elevated/40 rounded-lg p-4 space-y-3">
                         <div className="flex items-center gap-2">
@@ -1431,20 +1431,20 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                   className="w-full px-3 py-1.5 text-xs bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                               </div>
                             </div>
-                            <div className="flex gap-2">
+                            <div className="flex flex-wrap gap-2">
                               <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
-                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
                                 {editProviderSaving ? t('common:saving') : t('common:save')}
                               </button>
                               <button onClick={() => setEditingProvider(null)}
-                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                                 {t('common:cancel')}
                               </button>
                             </div>
                           </div>
                         ) : (
                           <>
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="text-[10px] text-fg-tertiary uppercase tracking-wider shrink-0">{t('modelProviders.testModel')}</span>
                             <FilterableSelect
                               value={testModelFor[name] ?? ''}
@@ -1455,13 +1455,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               emptyText={t('modelPicker.empty')}
                               customHint={t('modelPicker.useTyped')}
                               ariaLabel={t('modelProviders.testModel')}
-                              className="w-[260px]"
+                              className="w-full min-w-0 md:w-[260px]"
                             />
                           </div>
-                          <div className="flex gap-2 mt-2">
+                          <div className="flex flex-wrap gap-2 mt-2">
                             <button onClick={e => { e.stopPropagation(); void testProvider(name); }}
                               disabled={testingProvider === name}
-                              className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5">
+                              className="px-3 py-1.5 text-xs border border-green-500/30 text-green-500 hover:bg-green-500/10 rounded-lg transition-colors disabled:opacity-40 flex items-center gap-1.5 whitespace-nowrap">
                               {testingProvider === name ? (
                                 <><svg className="w-3 h-3 animate-spin" fill="none" viewBox="0 0 24 24"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" /><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" /></svg>{t('modelProviders.testing')}</>
                               ) : t('modelProviders.test')}
@@ -1470,14 +1470,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                                 base URL / key editing (and its upstream must not be surfaced). */}
                             {name !== 'markus' && (
                               <button onClick={e => { e.stopPropagation(); startEditProvider(name, info); }}
-                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                                className="px-3 py-1.5 text-xs border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                                 {t('common:edit')}
                               </button>
                             )}
                             {name !== 'markus' && (
                               <button onClick={e => { e.stopPropagation(); setProviderDeleteTarget({ name, label: info.displayName ?? name }); }}
                                 disabled={deletingProvider === name}
-                                className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40">
+                                className="px-3 py-1.5 text-xs border border-red-500/30 text-red-400 hover:bg-red-500/10 rounded-lg transition-colors disabled:opacity-40 whitespace-nowrap">
                                 {deletingProvider === name ? t('common:deleting') : t('common:delete')}
                               </button>
                             )}
@@ -1755,13 +1755,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     className="w-full px-3 py-2 text-sm bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
                 </div>
               </div>
-              <div className="flex gap-2">
+              <div className="flex flex-wrap gap-2">
                 <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || addProviderForm.name === '__custom__' || !addProviderForm.model}
-                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
                   {addProviderSaving ? t('modelProviders.adding') : t('modelProviders.addProviderSubmit')}
                 </button>
                 <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); setAddProviderCatalogModels([]); setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 }); }}
-                  className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors">
+                  className="px-4 py-2 text-sm border border-border-default text-fg-secondary hover:bg-surface-elevated rounded-lg transition-colors whitespace-nowrap">
                   {t('common:cancel')}
                 </button>
               </div>
@@ -1791,8 +1791,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               {envModels && envModels.detected.length > 0 && (
                 <div className="space-y-2">
                   {envModels.detected.map(d => (
-                    <label key={d.provider} className="flex items-center justify-between bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
-                      <div className="flex items-center gap-3">
+                    <label key={d.provider} className="flex items-center justify-between gap-3 bg-surface-elevated/30 rounded-lg px-4 py-3 cursor-pointer hover:bg-surface-elevated/50 transition-colors">
+                      <div className="flex min-w-0 items-center gap-3">
                         <input type="checkbox" checked={envSelected[d.provider] ?? false}
                           onChange={e => setEnvSelected({ ...envSelected, [d.provider]: e.target.checked })}
                           className="w-4 h-4 rounded bg-surface-overlay border-gray-600 text-brand-500 focus:ring-brand-500" />
@@ -1805,7 +1805,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                           </div>
                         </div>
                       </div>
-                      <div className="text-xs text-fg-tertiary">
+                      <div className="shrink-0 text-right text-xs text-fg-tertiary">
                         {Object.keys(d.envVars).map(k => <div key={k}><code>{k}</code></div>)}
                       </div>
                     </label>
@@ -1910,16 +1910,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               <div className="space-y-2 border-t border-border-default pt-4">
                 <span className="text-xs font-medium text-fg-secondary">{t('oauthAuth.connectedAccounts')}</span>
                 {authProfiles.filter(p => p.hasOAuth).map(profile => (
-                  <div key={profile.id} className={`flex items-center justify-between px-4 py-3 rounded-lg border ${
+                  <div key={profile.id} className={`flex items-center justify-between gap-3 px-4 py-3 rounded-lg border ${
                     profile.oauthExpired ? 'bg-amber-500/5 border-amber-500/20' : 'bg-surface-secondary border-border-default'
                   }`}>
-                    <div className="flex items-center gap-2.5">
+                    <div className="flex min-w-0 items-center gap-2.5">
                       <span className={`w-2 h-2 rounded-full ${profile.oauthExpired ? 'bg-amber-400' : 'bg-green-400'}`} />
                       <span className="text-xs text-fg-primary font-medium">{profile.label ?? profile.provider}</span>
                       {profile.accountId && <span className="text-[10px] text-fg-muted">({profile.accountId.slice(0, 12)}...)</span>}
                       {profile.oauthExpired && <span className="text-[10px] px-1.5 py-0.5 rounded-md bg-amber-500/15 text-amber-600 font-medium">{t('oauthAuth.expired')}</span>}
                     </div>
-                    <div className="flex items-center gap-2">
+                    <div className="flex shrink-0 items-center gap-2">
                       {profile.oauthExpired && (
                         <button
                           onClick={() => startOAuthLogin(profile.provider)}
@@ -1945,22 +1945,22 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── Default Provider ───── */}
         <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.primaryProviderDesc')}</div>
               </div>
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 min-w-0">
                 {llm ? (
                   <select value={selectedProvider} onChange={e => { setSelectedProvider(e.target.value); setSaveMsg(null); }}
-                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-48 focus:border-brand-500 outline-none">
+                    className="px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm w-full min-w-0 md:w-48 focus:border-brand-500 outline-none">
                     {enabledProviders.length > 0 ? enabledProviders.map(p => <option key={p} value={p}>{llm.providers[p]?.displayName ?? p}</option>) : <option value="">{t('defaultProvider.noProviders')}</option>}
                   </select>
                 ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors">
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors shrink-0 whitespace-nowrap">
                     {saving ? t('common:saving') : t('common:save')}
                   </button>
                 )}
@@ -1968,7 +1968,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
             {saveMsg && <Msg type={saveMsg.type} text={saveMsg.text} />}
 
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
+            <div className="flex flex-col gap-3 border-t border-border-default pt-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('defaultProvider.autoFallback')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('defaultProvider.autoFallbackDesc')}</div>
@@ -1987,7 +1987,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }
                   } catch { /* ignore */ }
                 }}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${(llm?.autoFallback ?? false) ? 'bg-green-500' : 'bg-gray-600'}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${(llm?.autoFallback ?? false) ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
@@ -2142,13 +2142,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxToolIterations')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxToolIterationsDesc')}</div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
                   type="number"
                   min={0}
@@ -2174,12 +2174,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </div>
             {/* Per-agent 任务上限（每个 agent 各自独立计数） */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxPendingTasksPerAgent')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxPendingTasksPerAgentDesc')}</div>
               </div>
-              <div className="flex items-center gap-2">
+              <div className="flex shrink-0 items-center gap-2">
                 <input
                   type="number"
                   min={1}
@@ -2210,25 +2210,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ── Concurrent Processing（并发处理） ── */}
         <Section title={t('concurrent.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
             <div className="text-xs text-fg-tertiary">{t('concurrent.description')}</div>
 
             {/* Enable toggle */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('concurrent.enabled')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.enabledDesc')}</div>
               </div>
               <button
                 onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
-                className={`relative w-10 h-5 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
+                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
               </button>
             </div>
 
             {/* Max Workers */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('concurrent.maxWorkers')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.maxWorkersDesc')}</div>
@@ -2245,7 +2245,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
 
             {/* Conflict Policy */}
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('concurrent.conflictPolicy')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.conflictPolicyDesc')}</div>
@@ -2291,7 +2291,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
           {/* ── Backend selector: built-in browser vs system Chrome ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.backendTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.backendDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2340,7 +2340,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
 
           {/* ── Element selection: HOW the agent picks an element (orthogonal to the backend above) ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.elementSelectionTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.elementSelectionDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2390,7 +2390,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Mode status: depends on selected backend ── */}
           {browserMode === 'embedded' ? (
-            <div className="bg-surface-elevated rounded-xl p-5 mb-4 flex items-start gap-3">
+            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 flex items-start gap-3">
               <span className="mt-0.5 w-2 h-2 rounded-full bg-green-400 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold text-fg-primary">{t('browserAutomation.embeddedActiveTitle')}</div>
@@ -2412,13 +2412,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </div>
           ) : (
-            <div className={`rounded-xl p-5 mb-4 ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated border border-border-default'}`}>
-              <div className="flex items-center justify-between mb-2">
-                <div className="flex items-center gap-2">
+            <div className={`rounded-xl p-4 md:p-5 mb-4 ${browserExtensionConnected ? 'bg-green-500/5 border border-green-500/20' : 'bg-surface-elevated border border-border-default'}`}>
+              <div className="flex flex-wrap items-center justify-between gap-2 mb-2">
+                <div className="flex min-w-0 items-center gap-2">
                   <span className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStatus')}</span>
                   <span className="text-xs text-fg-tertiary">({t('browserAutomation.backendCurrentTag')})</span>
                 </div>
-                <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${browserExtensionConnected ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/20 text-gray-400'}`}>
+                <span className={`inline-flex shrink-0 items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium ${browserExtensionConnected ? 'bg-green-500/20 text-green-400' : 'bg-gray-600/20 text-gray-400'}`}>
                   <span className={`w-1.5 h-1.5 rounded-full ${browserExtensionConnected ? 'bg-green-400' : 'bg-gray-400'}`} />
                   {browserExtensionConnected ? t('browserAutomation.extensionConnected') : t('browserAutomation.extensionDisconnected')}
                 </span>
@@ -2454,7 +2454,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionDownloadError') }); }
                             setBrowserSaving(false);
                           }}
-                          className="mt-2 inline-flex items-center gap-1.5 px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                          className="mt-2 inline-flex max-w-full items-center gap-1.5 px-3 py-1.5 text-xs text-left break-words bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                           {browserSaving ? t('browserAutomation.extensionStep1Downloading') : t('browserAutomation.extensionStep1Btn')}
@@ -2503,7 +2503,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </>
               )}
 
-              <div className="mt-4 pt-4 border-t border-border-default flex items-center justify-between">
+              <div className="mt-4 pt-4 border-t border-border-default flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                 <div className="text-xs text-fg-tertiary mr-4">{t('browserAutomation.backendVerifyDesc')}</div>
                 <button
                   onClick={async () => {
@@ -2524,9 +2524,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           )}
 
           {/* ── General Settings (always visible) ── */}
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4 mb-4">
+          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4 mb-4">
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.generalSettings')}</div>
-            <div className="flex items-center justify-between">
+            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.bringToFront')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.bringToFrontDesc')}</div>
@@ -2544,12 +2544,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserBringToFront ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${browserBringToFront ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserBringToFront ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
             </div>
-            <div className="flex items-center justify-between border-t border-border-default pt-4">
+            <div className="flex flex-col gap-3 border-t border-border-default pt-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoCloseTabs')}</div>
                 <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoCloseTabsDesc')}</div>
@@ -2567,7 +2567,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   setBrowserSaving(false);
                 }}
                 disabled={browserSaving}
-                className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors ${browserAutoClose ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
+                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${browserAutoClose ? 'bg-green-500' : 'bg-gray-600'} ${browserSaving ? 'opacity-50' : ''}`}
               >
                 <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${browserAutoClose ? 'translate-x-4' : 'translate-x-1'}`} />
               </button>
@@ -2578,13 +2578,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Advanced: alternative ways to connect System Chrome (only when extension not connected) ── */}
           {browserMode === 'system-chrome' && !browserExtensionConnected && (
-            <div className="bg-surface-elevated rounded-xl p-5 mb-4 space-y-4">
+            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 space-y-4">
               <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.advancedOptions')}</div>
 
               {/* Auto-click Chrome Allow Dialog toggle */}
               <div>
-                <div className="flex items-center justify-between">
-                  <div className="flex-1 mr-4">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                  <div className="flex-1 min-w-0 md:mr-4">
                     <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.autoClickAllowDialog')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.autoClickAllowDialogDesc')}</div>
                     <div className="text-xs text-fg-tertiary mt-2 space-y-0.5">
@@ -2593,7 +2593,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       <div>{t('browserAutomation.autoClickAllowDialogLinuxNote')}</div>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     <button
                       disabled={browserSaving}
                       onClick={async () => {
@@ -2638,7 +2638,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
               {/* Remote Debugging Port */}
               <div className="border-t border-border-default pt-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.remoteDebuggingPort')}</div>
                     <div className="text-xs text-fg-tertiary mt-0.5">
@@ -2647,7 +2647,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       {t('browserAutomation.remoteDebuggingPortDescTail')}
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex shrink-0 items-center gap-2">
                     <input
                       type="number"
                       min={0}
@@ -2708,7 +2708,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               return (
               <>
                 <div className="space-y-3">
-                  <div className="flex items-start justify-between gap-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
                     <div className="min-w-0">
                       <div className="text-2xl font-semibold tracking-tight text-fg-primary tabular-nums">
                         {formatBytes(storageInfo.totalSize, t)}
@@ -2980,7 +2980,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
         </button>
       ) : (
         <div className="mb-3 p-4 rounded-lg border border-border-default space-y-3">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
               <label className="text-[11px] text-fg-tertiary mb-1 block">{t('settings:userManagement.name')}</label>
               <input value={addName} onChange={e => setAddName(e.target.value)} autoFocus
@@ -3031,6 +3031,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
             <button onClick={() => setInviteLink(null)} className="shrink-0 text-fg-tertiary hover:text-fg-secondary text-sm">×</button>
           </div>
         )}
+        <div className="overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-border-default/60 text-fg-tertiary text-[11px] uppercase tracking-wider">
@@ -3135,6 +3136,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
             })}
           </tbody>
         </table>
+        </div>
       </div>
     </Section>
   );
@@ -3216,7 +3218,7 @@ function CollapsibleAvailableModels({
               value={filter}
               onChange={e => setFilter(e.target.value)}
               placeholder={t('modelProviders.filterModels')}
-              className="flex-1 max-w-[220px] px-2 py-1 text-[10px] rounded-md bg-surface-overlay/50 border border-border-default text-fg-secondary placeholder:text-fg-tertiary"
+              className="flex-1 min-w-0 max-w-[220px] px-2 py-1 text-[10px] rounded-md bg-surface-overlay/50 border border-border-default text-fg-secondary placeholder:text-fg-tertiary"
             />
           )}
         </div>
@@ -3328,7 +3330,7 @@ function ExpandableCatalogModels({ models, providerName, t, onAdd }: {
                 )}
                 <button
                   onClick={() => onAdd(id)}
-                  className="text-[9px] text-brand-500 hover:text-brand-400 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
+                  className="text-[9px] text-brand-500 hover:text-brand-400 opacity-100 md:opacity-0 md:group-hover:opacity-100 transition-opacity shrink-0"
                 >
                   {t('modelProviders.addModel')}
                 </button>
@@ -3408,7 +3410,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </div>
       )}
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+      <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-2">
         <input type="text" placeholder={t('modelProviders.modelId')} value={addModelForm.id}
           onChange={e => setAddModelForm({ ...addModelForm, id: e.target.value })}
           className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary placeholder-fg-tertiary focus:border-brand-500 outline-none" />
@@ -3422,7 +3424,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
           onChange={e => setAddModelForm({ ...addModelForm, maxOutputTokens: Number(e.target.value) })}
           className="px-2 py-1 text-xs bg-surface-primary border border-border-default rounded text-fg-primary focus:border-brand-500 outline-none" />
       </div>
-      <div className="flex items-center gap-3">
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
         <div className="flex items-center gap-1">
           <span className="text-[10px] text-fg-tertiary">{t('modelProviders.costPerMillionIn')}</span>
           <input type="number" step="0.01" value={addModelForm.costInput}
@@ -3447,11 +3449,11 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </label>
         <div className="flex-1" />
         <button onClick={onAdd} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
-          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors">
+          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors whitespace-nowrap">
           {addModelSaving ? t('modelProviders.adding') : t('common:create')}
         </button>
         <button onClick={onCancel}
-          className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors">
+          className="px-2 py-1 text-[10px] border border-border-default text-fg-secondary hover:bg-surface-elevated rounded transition-colors whitespace-nowrap">
           {t('common:cancel')}
         </button>
       </div>
@@ -3965,7 +3967,7 @@ function LicensePlanCard({ isEnterprise, licenseInfo, daysRemaining, effectiveVa
           {featureKeys.map(f => (<span key={f} className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-brand-500 bg-brand-600/6 border border-brand-500/10">{FEATURE_ICONS[f]} {featureI18n[f]}</span>))}
         </div>
         {effectiveOrgName && (
-          <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
             <div className="flex items-center justify-between px-3 py-2 rounded-lg bg-surface-primary/40 border border-border-default/30">
               <span className="text-fg-tertiary">{t('license.organization')}</span><span className="font-medium text-fg-primary">{effectiveOrgName}</span>
             </div>
