@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, useCallback, useMemo, useSyncExternalStore, type MouseEvent as ReactMouseEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import { setDocScrollBlocked } from '../lib/mobileDocScroll.ts';
+import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
@@ -210,6 +211,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => {
     setDocScrollBlocked(isMobile && mobileLayer === 'chat');
     return () => setDocScrollBlocked(false);
+  }, [isMobile, mobileLayer]);
+
+  // Team L2 (team detail) / L3 (chat) are sub-pages: the bottom nav belongs to
+  // the L1 roster only, so a detail view gets the whole screen.
+  useEffect(() => {
+    setMobileNavDepth(PAGE.TEAM, isMobile && mobileLayer !== 'roster' ? 1 : 0);
+    return () => setMobileNavDepth(PAGE.TEAM, 0);
   }, [isMobile, mobileLayer]);
 
   const enterMobileDetail = useCallback(() => {

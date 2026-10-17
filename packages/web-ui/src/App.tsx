@@ -26,6 +26,7 @@ import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContex
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
+import { getMobileNavDepth, getMobileNavDepthServer, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -131,6 +132,12 @@ export function App() {
     subscribeDocScrollBlocked, getDocScrollBlocked, () => false,
   );
   const docScroll = isMobile && !(page === PAGE.TEAM && chatLayerNeedsInnerScroll);
+  // The bottom nav belongs to TOP-LEVEL pages only: a page that drilled into a
+  // detail view declares depth > 0 and gets the full screen. Scoped by owner so
+  // a stale declaration from a page you just left can never hide today's nav.
+  const navDepth = useSyncExternalStore(subscribeMobileNavDepth, getMobileNavDepth, getMobileNavDepthServer);
+  const inMobileSubPage = navDepth.owner === page && navDepth.depth > 0;
+  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && !inMobileSubPage;
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('mobile-doc-scroll', docScroll);
@@ -925,7 +932,7 @@ export function App() {
         </>
       )}
 
-      <div className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col min-w-0 ${isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH ? 'pb-14' : ''}`}>
+      <div className={`flex-1 ${docScroll ? '' : 'overflow-hidden'} flex flex-col min-w-0 ${showBottomNav ? 'pb-14' : ''}`}>
         {llmConfigured === false && !llmBannerDismissed && page !== PAGE.SETTINGS && (
           <div className="flex items-center justify-between px-4 py-2 bg-amber-500/10 border-b border-amber-500/30 text-amber-600 text-sm shrink-0">
             <span className={isMobile ? 'text-xs' : ''}>{t('llmBanner.message')}</span>
@@ -959,8 +966,8 @@ export function App() {
         </main>
       </div>
 
-      {/* Mobile bottom nav (hidden on Settings/Search pages) */}
-      {isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && (
+      {/* Mobile bottom nav (top-level pages only — hidden on Settings/Search and on sub-pages) */}
+      {showBottomNav && (
         <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
       )}
 
