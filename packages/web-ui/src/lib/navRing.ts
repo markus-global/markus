@@ -19,6 +19,7 @@
  */
 import { useEffect, useRef } from 'react';
 import { PAGE, type PageId } from '../routes.ts';
+import { getMobileNavDepths, isTopLevelPage } from './mobileNavDepth.ts';
 
 /** Sub-view inside a page that owns more than one ring step. */
 export type RingSub =
@@ -167,6 +168,25 @@ export function ringShouldIgnore(target: EventTarget | null): boolean {
   return false;
 }
 
+/**
+ * The ring is a TOP-LEVEL navigation affordance only.
+ *
+ * When a page has drilled into a second-level surface — Team L2/L3 chat, a
+ * task / requirement / deliverable detail, a builder sub-route — that surface
+ * owns its own horizontal gestures. Stepping the app out from under the user
+ * mid-detail is never what they meant, and `data-swipe-owner` alone cannot
+ * cover it: the marker only excuses the containers that remember to carry it,
+ * so every unmarked strip (a header, the space around an input) still walked
+ * the whole app sideways.
+ *
+ * Rather than a second per-page opt-out list, this asks the same question the
+ * bottom nav asks (`isTopLevelPage`) — one fact, one execution point.
+ */
+export function ringBlockedByPageDepth(page: PageId | null | undefined): boolean {
+  if (!page) return false;
+  return !isTopLevelPage(getMobileNavDepths(), page);
+}
+
 // ── Gesture entry point (module-level, exactly one listener) ────────────────
 // Registered ONCE for the whole app. When every hook call installed its own
 // listener (or HMR left an old one behind), a single physical swipe advanced two
@@ -174,6 +194,7 @@ export function ringShouldIgnore(target: EventTarget | null): boolean {
 type StepHandler = (delta: 1 | -1) => void;
 
 let handler: StepHandler | null = null;
+let activePage: (() => PageId | null) | null = null;
 let installed = false;
 let gestureOpen = false;
 let start: { x: number; y: number } | null = null;
@@ -197,6 +218,10 @@ function handleTouchEnd(e: TouchEvent): void {
   if (!t) return;
   const delta = ringDelta(t.clientX - s.x, t.clientY - s.y);
   if (delta === 0) return;
+  // Checked at the moment of action, against the page that is actually active
+  // now — not a value captured when the hook was mounted. A detail view opened
+  // during the gesture (or a stale render) must not be stepped over.
+  if (ringBlockedByPageDepth(activePage?.() ?? null)) return;
   // A wide table (kanban) owns the gesture while it can still scroll.
   if (horizontalScrollerConsumes(startTarget, delta === 1)) return;
   handler?.(delta);
@@ -209,14 +234,25 @@ function installNavRingListener(): void {
   installed = true;
 }
 
-export function useNavRingSwipe(opts: { enabled: boolean; onStep: (delta: 1 | -1) => void }): void {
+export function useNavRingSwipe(opts: {
+  enabled: boolean;
+  onStep: (delta: 1 | -1) => void;
+  /** Current top-level page, read at gesture time (never captured at mount). */
+  activePage?: () => PageId | null;
+}): void {
   const onStepRef = useRef(opts.onStep);
   onStepRef.current = opts.onStep;
+  const pageGetterRef = useRef(opts.activePage);
+  pageGetterRef.current = opts.activePage;
   useEffect(() => {
     if (!opts.enabled) return undefined;
     const mine: StepHandler = (delta) => onStepRef.current(delta);
     handler = mine;
+    activePage = () => pageGetterRef.current?.() ?? null;
     installNavRingListener();
-    return () => { if (handler === mine) handler = null; };
+    return () => {
+      if (handler === mine) handler = null;
+      activePage = null;
+    };
   }, [opts.enabled]);
 }

@@ -27,7 +27,7 @@ import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContex
 import { useTheme } from './hooks/useTheme.ts';
 import { useIsMobile } from './hooks/useIsMobile.ts';
 import { getDocScrollBlocked, subscribeDocScrollBlocked } from './lib/mobileDocScroll.ts';
-import { getMobileNavDepths, getMobileNavDepthsServer, mobileNavDepthOf, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
+import { getMobileNavDepths, getMobileNavDepthsServer, isTopLevelPage, subscribeMobileNavDepth } from './lib/mobileNavDepth.ts';
 import { prefetch, PREFETCH_KEYS } from './prefetchCache.ts';
 import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
@@ -137,7 +137,7 @@ export function App() {
   // detail view declares depth > 0 and gets the full screen. Scoped by owner so
   // a stale declaration from a page you just left can never hide today's nav.
   const navDepths = useSyncExternalStore(subscribeMobileNavDepth, getMobileNavDepths, getMobileNavDepthsServer);
-  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && mobileNavDepthOf(navDepths, page) === 0;
+  const showBottomNav = isMobile && page !== PAGE.SETTINGS && page !== PAGE.SEARCH && isTopLevelPage(navDepths, page);
   useEffect(() => {
     const root = document.documentElement;
     root.classList.toggle('mobile-doc-scroll', docScroll);
@@ -537,7 +537,7 @@ export function App() {
     navigate(step.page);
   }, [navigate]);
 
-  useNavRingSwipe({ enabled: isMobile, onStep: onRingStep });
+  useNavRingSwipe({ enabled: isMobile, activePage: () => pageRef.current, onStep: onRingStep });
 
   // While on L0, keep the rail highlight aligned with the active page
   // (e.g. Overview selected when the app opens on Overview / when entering L0).

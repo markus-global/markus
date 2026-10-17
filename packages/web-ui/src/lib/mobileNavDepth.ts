@@ -40,6 +40,19 @@ export function mobileNavDepthOf(snapshotValue: MobileNavDepths, page: PageId): 
   return snapshotValue[page] ?? 0;
 }
 
+/**
+ * Is `page` showing a top-level surface right now?
+ *
+ * This is the ONE answer to "may app-level chrome act here?" — both the bottom
+ * nav (render or not) and the swipe ring (step or not) ask this same function.
+ * Anything that re-derives it separately is a copy that drifts, and the visible
+ * failure is exactly the one this function exists to prevent: a detail view
+ * losing its gesture to whatever the copy still believed.
+ */
+export function isTopLevelPage(snapshotValue: MobileNavDepths, page: PageId): boolean {
+  return mobileNavDepthOf(snapshotValue, page) === 0;
+}
+
 export function subscribeMobileNavDepth(cb: () => void): () => void {
   listeners.add(cb);
   return () => { listeners.delete(cb); };
