@@ -6373,14 +6373,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               }).catch(() => {});
             }
           }} />
-          {/* Back to the dependency graph. A left swipe does the same thing (see
-              workflowsSwipe above); the button makes it discoverable without
-              having to guess the gesture. */}
-          {isMobile && (
-            <button onClick={() => setBoardType('dag')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toDag', 'Dependency graph')}>
-              <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
-            </button>
-          )}
+          {/* No button here on purpose: leaving this view is a gesture (left swipe),
+              decided by the owner. The wrapper above owns the touch handlers; the
+              graph keeps its own right-chevron button to come the other way. */}
           </div>
         ) : boardType === 'dag' ? (
           <div className="flex-1 min-h-0 flex flex-col relative" onTouchStart={isMobile ? boardSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? boardSwipe.onTouchEnd : undefined}>
