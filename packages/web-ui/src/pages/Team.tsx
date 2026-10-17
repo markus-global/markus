@@ -60,13 +60,15 @@ import {
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
 import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
-  ensureSessionStreamStateFeed,
-  reconcileOpenSessions,
   sessionStreamState,
   useAgentSessionStreaming,
   useSessionStreamRevision,
   useSessionStreaming,
 } from '../lib/sessionStreamState.ts';
+import {
+  ensureSessionStreamStateFeed,
+  reconcileOpenSessions,
+} from '../lib/sessionStreamStateFeed.ts';
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
@@ -108,6 +110,7 @@ import {
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
   dedupeAdjacentUserMessages,
   stopRunningTools,
+  shouldRenderChatMsg,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
@@ -1932,9 +1935,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const hiddenNotifyMsgIdSet = useMemo(() => new Set(hiddenNotifyMsgIds), [hiddenNotifyMsgIds]);
   const visibleMessages = useMemo(() => {
     const base = chatMode === 'channel' ? messages : messages.filter(m => !m.isActivityLog);
-    if (hiddenNotifyMsgIdSet.size === 0) return base;
-    return base.filter(m => !(m.isNotification && hiddenNotifyMsgIdSet.has(m.id)));
-  }, [messages, chatMode, hiddenNotifyMsgIdSet]);
+    const shown = hiddenNotifyMsgIdSet.size === 0
+      ? base
+      : base.filter(m => !(m.isNotification && hiddenNotifyMsgIdSet.has(m.id)));
+    // ONE choke point for "does this row get a bubble?" — see
+    // ChatHelpers#shouldRenderChatMsg. A content-less agent row used to paint an
+    // empty bubble WITH action buttons until some reconcile path dropped it a
+    // few seconds later; the rule now makes that transient unpaintable.
+    //
+    // In-flight means: the payload says streaming AND the server authority
+    // confirms this view is still generating (payload `isStreaming` survives in
+    // persisted soft-disconnect snapshots, so it can't be trusted alone), or the
+    // preview typewriter — which deliberately clears the last message's text to
+    // retype it.
+    const previewTyping = previewMode && streamingVisual ? shown.length - 1 : -1;
+    return shown.filter((m, i) =>
+      shouldRenderChatMsg(m, i === previewTyping || (!!m.isStreaming && liveStreamForView)),
+    );
+  }, [messages, chatMode, hiddenNotifyMsgIdSet, liveStreamForView, previewMode, streamingVisual]);
 
   // Keep composer height in sync when switching empty ↔ non-empty sessions.
   useEffect(() => {

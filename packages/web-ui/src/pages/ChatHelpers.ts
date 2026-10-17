@@ -101,6 +101,48 @@ export function msgHasContent(msg: ChatMsg): boolean {
 }
 
 /**
+ * Should this message be in the transcript AT ALL?
+ *
+ * ## Why this exists
+ *
+ * The bubble is rendered for every row in the list: avatar + name + timestamp
+ * and, once the turn is not in flight, the action row (copy / retry / reply).
+ * Nothing in the renderer required the row to have a body, so a content-less
+ * agent row painted as **an empty bubble with buttons**. Every producer of such
+ * a row is a *transient* one:
+ *
+ *   · the optimistic placeholder minted on send (`text:''`, `segments:[]`);
+ *   · the reattach placeholder minted when the client suspects a live stream;
+ *   · a soft-disconnect snapshot persisted with no content yet;
+ *   · a stale row left in a conversation buffer (id never converged).
+ *
+ * All of them were reconciled away a few seconds later — which is exactly the
+ * reported behaviour: "an empty bubble with every button except the text shows
+ * up out of nowhere, then disappears on its own". Per-row cleanup can always be
+ * one path short (that is how the family of Team Chat bugs kept recurring), so
+ * the rule lives here, once, and the list applies it at its single choke point.
+ *
+ * The empty bubble is only *legitimate* while it is the in-flight affordance
+ * (ActivityIndicator) or when the server stamped a verdict we must show.
+ *
+ * @param inFlight this specific bubble is the live tail of a stream the server
+ *   authority confirms is still generating for the view on screen. Note the
+ *   payload's `isStreaming` is NOT that authority — it survives in persisted
+ *   snapshots long after the turn ended (see lib/streamLiveness.ts).
+ */
+export function shouldRenderChatMsg(msg: ChatMsg, inFlight: boolean): boolean {
+  if (msg.sender === 'user') return true;
+  if (msgHasContent(msg)) return true;
+  // Steps and image attachments are rendered even without prose.
+  if ((msg.activities?.length ?? 0) > 0 || (msg.images?.length ?? 0) > 0) return true;
+  // Server verdict for a genuinely empty terminal turn → "no output" + Retry.
+  if (msg.emptyReply === true) return true;
+  // In-flight: the empty bubble IS the loading state.
+  if (inFlight && !msg.isStopped) return true;
+  return false;
+}
+
+/**
  * True when the TARGET conversation still has a live (non-stopped) streaming
  * bubble in its tail. This is the authoritative "agent is still generating"
  * check for the header badge — covers the reattach window where `sending`

@@ -28,13 +28,25 @@ describe('SessionStreamState — 存活性单一权威', () => {
     expect(s.isStreaming('sess1')).toBe(true);
   });
 
-  it('服务端状态始终压过本地乐观提示（含 false 压 true）', () => {
+  it('服务端状态压过本地乐观提示（含 false 压 true）', () => {
     const s = new SessionStreamState();
     s.applyLocalOptimistic('a1', 'sess1', true);
     expect(s.isStreaming('sess1')).toBe(true);        // 本端立刻反馈
-    s.applyServerState('a1', 'sess1', false, 5000);   // 权威说结束了
+    s.applyServerState('a1', 'sess1', false, Date.now() + 1_000); // 权威说结束了（更新的时间）
     expect(s.isStreaming('sess1')).toBe(false);
-    s.applyLocalOptimistic('a1', 'sess1', true);      // 本地乐观不得翻案
+  });
+
+  it('新回合的本地乐观提示可以越过上一回合的服务端终态（按时间，不按来源）', () => {
+    // 回归：旧规则「只要已有服务端条目就一律拒绝本地写入」把上一回合的 terminal
+    // 当成了对本回合的裁决。后果是第二次发送后 `liveStreamForView` 仍为 false，
+    // 气泡既不是「在途」也不是终态 → 渲染成只有按钮、没有正文的空气泡。
+    const s = new SessionStreamState();
+    s.applyServerState('a1', 'sess1', false, 1000);   // 上一回合结束
+    expect(s.isStreaming('sess1')).toBe(false);
+    s.applyLocalOptimistic('a1', 'sess1', true);      // 用户发送了新一轮
+    expect(s.isStreaming('sess1')).toBe(true);
+    // 但**更晚**的服务端事件依旧压过它 —— 权威仍可否决派生。
+    s.applyServerState('a1', 'sess1', false, Date.now() + 1_000);
     expect(s.isStreaming('sess1')).toBe(false);
   });
 

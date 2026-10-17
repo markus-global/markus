@@ -43,6 +43,7 @@ import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { decideOnStreamEnd, normalizeServerStreamStatus } from '../lib/streamLiveness.ts';
+import { sessionStreamState } from '../lib/sessionStreamState.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
@@ -1071,6 +1072,13 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           userStoppedSessionsRef.current.delete(event.sessionId);
           if (prevStreamSessionId && prevStreamSessionId !== event.sessionId) {
             clearStreamSession(sendKey, prevStreamSessionId);
+            // The turn moved from the placeholder id to the real session id —
+            // carry the optimistic in-flight hint across, or the view loses it
+            // and the fresh bubble turns back into an empty one.
+            if (volatile.selectedAgent && prevStreamSessionId === NEW_CHAT_PLACEHOLDER_ID) {
+              sessionStreamState.applyLocalOptimistic(volatile.selectedAgent, prevStreamSessionId, false);
+              sessionStreamState.applyLocalOptimistic(volatile.selectedAgent, event.sessionId, true);
+            }
           }
           setStreamSession(sendKey, event.sessionId);
           // Replace optimistic user id with the server-persisted id so reload/dedupe align.
@@ -1260,6 +1268,20 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // Add this session to the set of actively streaming sessions for this agent.
       if (streamSessionAtStart) {
         setStreamSession(sendKey, streamSessionAtStart);
+      }
+      // The authoritative "is this view streaming" flag is server-fed (WS +
+      // polling), so at THIS instant it still holds the PREVIOUS turn's terminal
+      // `false` — or nothing at all for a brand-new chat. Without the optimistic
+      // hint the placeholder we just created is neither in flight nor finished:
+      // it rendered as an empty bubble with action buttons until the server's
+      // first `stream_state` landed (seconds on a remote connection).
+      // The hint is timestamp-ordered and any newer server event overrides it.
+      if (volatile.selectedAgent) {
+        sessionStreamState.applyLocalOptimistic(
+          volatile.selectedAgent,
+          streamSessionAtStart ?? NEW_CHAT_PLACEHOLDER_ID,
+          true,
+        );
       }
 
       try {
@@ -1648,6 +1670,16 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // gets swept (border + 输出中 die) while the backend keeps generating. The
       // unresolved turn can only ever own the placeholder mark, so release that.
       clearStreamSession(sendKey, streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID);
+      // Terminal: release the optimistic in-flight hint too. Without this the
+      // view would stay "streaming" for the rest of the turn's TTL and keep an
+      // empty bubble alive as if it were still the loading affordance.
+      if (volatile.selectedAgent) {
+        sessionStreamState.applyLocalOptimistic(
+          volatile.selectedAgent,
+          streamSessionId ?? NEW_CHAT_PLACEHOLDER_ID,
+          false,
+        );
+      }
       endStream(sendKey);
       if ([...streamCtrlsRef.current.values()].includes(abortCtrl) || streamCtrlsRef.current.size === 0) {
         dropStreamCtl(abortCtrl);
