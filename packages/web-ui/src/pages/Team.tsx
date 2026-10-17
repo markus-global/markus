@@ -780,6 +780,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const [hasMore, setHasMore] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
+  // A page that arrives quickly must not flash an indicator. The old overlay was
+  // a full-width gradient band painted at the top of the transcript, so every
+  // near-top scroll that triggered a (usually instant) fetch made the page blink.
+  const [loadingMoreVisible, setLoadingMoreVisible] = useState(false);
+  useEffect(() => {
+    if (!loadingMore) { setLoadingMoreVisible(false); return; }
+    const id = setTimeout(() => setLoadingMoreVisible(true), 250);
+    return () => clearTimeout(id);
+  }, [loadingMore]);
   // Initialise to `true`: the first paint must not claim "this conversation is empty"
   // before the first load settles. Every resolution path clears it (buffer hit,
   // DB load, no-sessions, error) — see the conv-switch effect below.
@@ -5476,13 +5485,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </div>
             </div>
           )}
-          {loadingMore && (
-            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center items-center gap-2 py-2 bg-gradient-to-b from-surface-primary/90 to-transparent pointer-events-none">
+          {loadingMoreVisible && (
+            <div className="absolute top-0 left-0 right-0 z-10 flex justify-center pointer-events-none pt-2">
+              <span className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-surface-secondary/90 backdrop-blur-sm border border-border-default shadow">
               <svg className="animate-spin h-3.5 w-3.5 text-brand-400" viewBox="0 0 24 24" fill="none">
                 <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
                 <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
               </svg>
               <span className="text-xs text-fg-tertiary">{t('page.loadingEarlierMessages')}</span>
+              </span>
             </div>
           )}
           <div ref={chatScrollRef} className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
@@ -5549,10 +5560,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className="flex-1 h-px bg-border-default" />
                   </div>
                 )}
-                <div id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${isMobile && msg.sender === 'agent' ? 'gap-0' : 'gap-3'}`}>
+                <div id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${isMobile ? 'gap-0' : 'gap-3'}`}>
                   {chatMode === 'channel' ? (
                     <div
-                      className={`shrink-0 cursor-pointer ${isMobile && msg.sender === 'agent' ? 'hidden' : ''}`}
+                      className={`shrink-0 cursor-pointer ${isMobile ? 'hidden' : ''}`}
                       onClick={(e) => {
                         if (msg.sender === 'agent' && msg.agentId) {
                           const rect = e.currentTarget.getBoundingClientRect();
@@ -5569,7 +5580,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       />
                     </div>
                   ) : (
-                    <div className={`shrink-0 ${isMobile && msg.sender === 'agent' ? 'hidden' : ''}`}>
+                    <div className={`shrink-0 ${isMobile ? 'hidden' : ''}`}>
                       <Avatar
                         name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
                         avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
@@ -5581,12 +5592,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   )}
                   <div className="min-w-0 flex-1">
                     <div className="flex items-baseline gap-2">
-                      {isMobile && msg.sender === 'agent' && (
+                      {/* One avatar treatment for BOTH sides on mobile: same size,
+                          same place (start of the name row). An agent reply used to
+                          get an 18px inline avatar while the user kept a 32px column
+                          avatar — the agent looked like a lesser participant. */}
+                      {isMobile && (
                         <Avatar
-                          name={msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent'))}
-                          avatarUrl={agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl}
-                          size={18}
-                          bgClass="bg-brand-500/15 text-brand-600"
+                          name={msg.sender === 'user'
+                            ? currentUserName
+                            : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
+                          avatarUrl={msg.sender === 'user'
+                            ? authUser?.avatarUrl
+                            : agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl}
+                          size={22}
+                          bgClass={msg.sender === 'user' ? 'bg-brand-600' : 'bg-brand-500/15 text-brand-600'}
                           className="rounded self-center"
                         />
                       )}
