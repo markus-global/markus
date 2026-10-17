@@ -630,7 +630,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     }
   }, [isMobile]);
 
-  const mainTabsList = [{ id: 'chat' as const }, { id: 'profile' as const }];
+  // Mobile: the detail ("profile") view is opt-in from the overflow menu, never
+  // a swipe destination — a horizontal swipe on a phone already means
+  // swipe-back, and having both made one gesture do two things.
+  const mainTabsList = isMobile
+    ? [{ id: 'chat' as const }]
+    : [{ id: 'chat' as const }, { id: 'profile' as const }];
   const handleMainTabSwipe = useCallback((tab: MainTab) => {
     if (tab === 'profile') switchToProfile();
     else { if (isProfileTab(mainTabRef.current)) history.back(); else setMainTab('chat'); }
@@ -885,6 +890,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [sessionsLoadingMore, setSessionsLoadingMore] = useState(false);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [showSessions, setShowSessions] = useState(false);
+  // Mobile-only overflow menu in the chat header (detail / search / new / history).
+  const [showMoreMenu, setShowMoreMenu] = useState(false);
   // Inline rename state: which session is being renamed + the draft value
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingDraft, setRenamingDraft] = useState('');
@@ -4791,63 +4798,79 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 >
                   <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
                 </button>
-                <span className="font-semibold text-sm truncate min-w-0 flex-1">{modeTitle}</span>
-                {chatMode === 'direct' && currentAgent && (
-                  <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
-                )}
-              </div>
-              {/* Mobile Row 2: tabs + actions */}
-              <div className="flex items-center px-3 h-9 gap-1 border-t border-border-default/40">
+                {/* Name + process state share ONE line, horizontally centered:
+                    the state is a coloured dot, not a labelled pill, so the
+                    header stays one row on a phone instead of stacking a
+                    second status row under it. */}
+                <div className="flex-1 min-w-0 flex items-center justify-center gap-1.5">
+                  <span className="font-semibold text-sm truncate min-w-0">{modeTitle}</span>
+                  {chatMode === 'direct' && currentAgent && (
+                    <AgentStatusDot agent={currentAgent} />
+                  )}
+                </div>
                 <button
-                  onClick={() => { if (isProfileTab(mainTab)) history.back(); else setMainTab('chat'); }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    mainTab === 'chat' ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                  }`}
-                >{t('page.chatTitle')}</button>
-                <button
-                  onClick={() => { if (!isProfileTab(mainTab)) switchToProfile(); }}
-                  className={`px-2.5 py-1 text-xs font-medium rounded-md transition-colors ${
-                    isProfileTab(mainTab) ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                  }`}
-                >{chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}</button>
-                <div className="flex-1" />
-                <button
-                  onClick={() => { setFindOpen(o => !o); if (findOpen) setFindCursor(-1); }}
-                  className={`p-1 rounded-md transition-colors shrink-0 ${findOpen ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'}`}
+                  onClick={() => setShowMoreMenu(o => !o)}
+                  aria-label={t('page.moreActions', { defaultValue: '更多操作' })}
+                  className={`p-1.5 rounded-md transition-colors shrink-0 ${showMoreMenu ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary'}`}
                 >
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                  <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.7" /><circle cx="12" cy="12" r="1.7" /><circle cx="19" cy="12" r="1.7" /></svg>
                 </button>
-                {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
-                  <button
-                    onClick={() => setShowMemberPanel(!showMemberPanel)}
-                    className={`text-[11px] px-2 py-1 rounded-md font-medium shrink-0 flex items-center gap-1 ${
-                      showMemberPanel ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary'
-                    }`}
-                  >
-                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-                    {activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0}
-                  </button>
-                )}
-                {chatMode === 'direct' && !isProfileTab(mainTab) && (
-                  <>
-                    <button
-                      onClick={newConversation}
-                      title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-[11px] text-brand-500 px-2 py-1 rounded-md bg-brand-500/10 font-medium shrink-0"
-                    >{t('page.newChatPlus')}</button>
-                    <button
-                      ref={historyBtnRef}
-                      onClick={() => setShowSessions(!showSessions)}
-                      className={`p-1 rounded-md transition-colors shrink-0 ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary'}`}
-                      title={t('page.historyTitle')}
-                    >
-                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                      </svg>
-                    </button>
-                  </>
-                )}
               </div>
+              {/* Everything Row 2 used to hold lives here instead. A phone has
+                  no spare row for a tab strip plus three icon buttons, and the
+                  tab strip made the detail view reachable by swiping — a
+                  gesture that fought the horizontal swipe-back gesture. The
+                  detail view is now opt-in via this menu and always exited
+                  with Back, never by swiping. */}
+              {showMoreMenu && (
+                <>
+                  <div className="fixed inset-0 z-40" onClick={() => setShowMoreMenu(false)} />
+                  <div className="absolute right-2 top-full z-50 w-44 py-1 bg-surface-secondary border border-border-default rounded-xl shadow-2xl shadow-black/40">
+                    <button
+                      onClick={() => { setShowMoreMenu(false); if (!isProfileTab(mainTab)) switchToProfile(); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="8" r="3.5" /><path d="M5 20a7 7 0 1 1 14 0" /></svg>
+                      {chatMode === 'channel' ? t('page.teamTab') : t('page.profileTab')}
+                    </button>
+                    <button
+                      onClick={() => { setShowMoreMenu(false); setFindOpen(true); }}
+                      className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                    >
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
+                      {t('page.findTitle', { defaultValue: '搜索' })}
+                    </button>
+                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); newConversation(); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
+                        {t('page.newChatPlus')}
+                      </button>
+                    )}
+                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
+                      <button
+                        ref={historyBtnRef}
+                        onClick={() => { setShowMoreMenu(false); setShowSessions(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+                        {t('page.historyTitle')}
+                      </button>
+                    )}
+                    {chatMode === 'channel' && activeGroupChat?.type === 'custom' && (
+                      <button
+                        onClick={() => { setShowMoreMenu(false); setShowMemberPanel(true); }}
+                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
+                      >
+                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
+                        {t('page.membersTitle', { defaultValue: '成员' })} ({activeGroupChat.members?.length ?? activeGroupChat.memberCount ?? 0})
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
             </>
           ) : (
           /* Desktop: redesigned header with flattened tabs + inline editing */
@@ -5497,10 +5520,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className="flex-1 h-px bg-border-default" />
                   </div>
                 )}
-                <div id={`msg-${msg.id}`} className="group/msg flex gap-3 transition-colors rounded-lg">
+                <div id={`msg-${msg.id}`} className={`group/msg flex transition-colors rounded-lg ${isMobile && msg.sender === 'agent' ? 'gap-0' : 'gap-3'}`}>
                   {chatMode === 'channel' ? (
                     <div
-                      className="shrink-0 cursor-pointer"
+                      className={`shrink-0 cursor-pointer ${isMobile && msg.sender === 'agent' ? 'hidden' : ''}`}
                       onClick={(e) => {
                         if (msg.sender === 'agent' && msg.agentId) {
                           const rect = e.currentTarget.getBoundingClientRect();
@@ -5517,7 +5540,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       />
                     </div>
                   ) : (
-                    <div className="shrink-0">
+                    <div className={`shrink-0 ${isMobile && msg.sender === 'agent' ? 'hidden' : ''}`}>
                       <Avatar
                         name={msg.sender === 'user' ? currentUserName : (msg.agentName ?? (chatMode === 'direct' ? currentAgent?.name ?? t('page.fallbackAgent') : t('page.fallbackAgent')))}
                         avatarUrl={msg.sender === 'user' ? authUser?.avatarUrl : (agents.find(a => a.id === (msg.agentId ?? (chatMode === 'direct' ? currentAgent?.id : undefined)))?.avatarUrl)}
@@ -6188,6 +6211,28 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         <ImagePreviewModal src={imagePreviewSrc} onClose={() => setImagePreviewSrc(null)} />
       )}
     </div>
+  );
+}
+
+/**
+ * Compact process-state marker for the mobile chat header: colour + icon only,
+ * sitting right next to the name so the header needs a single row.
+ *
+ * Same authority as the desktop badge (resolveAgentStatus + the server-side
+ * stream state) — this is a smaller presentation of one fact, not a second
+ * opinion about it.
+ */
+function AgentStatusDot({ agent }: { agent: AgentInfo }) {
+  const { t } = useTranslation(['common']);
+  const streamingHere = useAgentSessionStreaming(agent.id);
+  const status = resolveAgentStatus(agent.status, streamingHere);
+  const label = status.labelKey ? t(`common:${status.labelKey}`) : '';
+  return (
+    <span
+      className={`shrink-0 w-2 h-2 rounded-full ${status.dotClass} ${status.tone === 'busy' ? 'animate-pulse' : ''}`}
+      title={label}
+      aria-label={label}
+    />
   );
 }
 
