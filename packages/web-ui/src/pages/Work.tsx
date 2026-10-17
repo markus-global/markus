@@ -3945,9 +3945,9 @@ function SaveAsWorkflowModal({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 backdrop-blur-sm" onClick={onClose}>
-      <div className="bg-surface-primary border border-border-default rounded-2xl shadow-2xl w-[640px] max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+      <div className="bg-surface-primary border border-border-default rounded-2xl shadow-2xl w-full max-w-[640px] mx-4 max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
         {/* Header */}
-        <div className="flex items-center justify-between px-6 py-4 border-b border-border-default">
+        <div className="flex items-center justify-between px-4 sm:px-6 py-4 border-b border-border-default">
           <div>
             <h2 className="text-base font-semibold text-fg-primary">{t('work:task.saveAsWorkflow', 'Save as Workflow')}</h2>
             <p className="text-xs text-fg-tertiary mt-0.5">{t('work:task.saveAsWorkflowDesc', 'Turn this task structure into a reusable workflow template')}</p>
@@ -3958,9 +3958,9 @@ function SaveAsWorkflowModal({
         </div>
 
         {/* Body */}
-        <div className="flex-1 overflow-auto px-6 py-4 space-y-4">
+        <div className="flex-1 overflow-auto px-4 sm:px-6 py-4 space-y-4">
           {/* Name & Description */}
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1 block">{t('work:task.workflowName', 'Name')}</label>
               <input
@@ -4378,7 +4378,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
             const hasRunning = wfRuns.some(r => r.status === 'running' || (r.status as string) === 'paused');
             return (
             <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
-              <div className="flex items-start justify-between gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
+              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2">
                     <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
@@ -4386,9 +4386,9 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                     <span className="text-[11px] text-fg-tertiary">{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
                   </div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0">
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <span
-                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors"
+                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors max-w-[12rem] truncate"
                     title={t('work:task.workflowSendToAgent', 'Send to agent chat')}
                     onClick={(e) => {
                       e.stopPropagation();
@@ -4431,7 +4431,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                             {idx + 1}
                           </div>
                           <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
+                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
                               <span className="text-xs font-medium text-fg-primary">{step.name}</span>
                               <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary">{step.role}</span>
                               {step.depends_on && step.depends_on.length > 0 && (
@@ -6189,7 +6189,6 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             </button>
           )}
 
-          {/* View toggle */}
           <div data-no-drag className="flex items-center border border-border-default/60 rounded-md overflow-hidden shrink-0">
             {(['backlog', 'kanban', 'dag', 'workflows'] as const).map(v => (
               <button key={v} onClick={() => setBoardType(v)}
