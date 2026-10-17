@@ -683,6 +683,36 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     setPendingDelete(null);
   }, [pendingDelete, taskMap, showToast, onDependencyChange, t]);
 
+  // A canvas viewport must own its height. On mobile the document is the
+  // scroller (see lib/mobileDocScroll.ts), which deliberately collapses the
+  // page's `flex-1` chain — so `height:100%` here resolves against an
+  // auto-height parent and ReactFlow paints into nothing.
+  //
+  // A fixed dvh is also wrong: it ignores whatever chrome sits above the graph,
+  // so the canvas either overflows the screen or leaves a dead band below it.
+  // Measure instead — the canvas takes exactly the screen height it has left.
+  //
+  // Declared above the empty-state early return on purpose: hooks must run in
+  // the same order on every render.
+  const rootRef = useRef<HTMLDivElement>(null);
+  const [docViewportHeight, setDocViewportHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const measure = () => {
+      const el = rootRef.current;
+      const docMode = document.documentElement.classList.contains('mobile-doc-scroll');
+      if (!el || !docMode) { setDocViewportHeight(null); return; }
+      // rect.top + scrollY is the element's offset in the document, independent
+      // of how far the page happens to be scrolled right now.
+      const docTop = el.getBoundingClientRect().top + window.scrollY;
+      setDocViewportHeight(Math.max(320, Math.round(window.innerHeight - docTop - 8)));
+    };
+    measure();
+    window.addEventListener('resize', measure);
+    const observer = new MutationObserver(measure);
+    observer.observe(document.documentElement, { attributes: true, attributeFilter: ['class'] });
+    return () => { window.removeEventListener('resize', measure); observer.disconnect(); };
+  }, []);
+
   if (tasks.length === 0) {
     return (
       <div className="doc-scroll-viewport flex-1 flex items-center justify-center">
@@ -702,13 +732,8 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
   const sourceTask = pendingDelete ? taskMap.get(pendingDelete.source) : null;
   const targetTask = pendingDelete ? taskMap.get(pendingDelete.target) : null;
 
-  // A canvas viewport must own its height. On mobile the document is the
-  // scroller (see lib/mobileDocScroll.ts), which deliberately collapses the
-  // page's `flex-1` chain — so `height:100%` here would resolve against an
-  // auto-height parent and ReactFlow would paint into zero pixels (the graph
-  // looked blank). `doc-scroll-viewport` gives it a bounded dvh height instead.
   return (
-    <div className="doc-scroll-viewport flex-1 min-h-0 relative" style={{ height: '100%' }}>
+    <div ref={rootRef} className="doc-scroll-viewport flex-1 min-h-0 relative" style={{ height: docViewportHeight ?? '100%' }}>
       <ReactFlow
         nodes={nodes}
         edges={edges}
