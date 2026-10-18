@@ -81,8 +81,8 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
-  /** Update task fields (description, blockedBy, reviewerId, etc.) — works even for pending tasks */
-  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
+  /** Update task fields (description, blockedBy, reviewerId, requirementId, etc.) — works even for pending tasks */
+  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human'; requirementId?: string | null }) => Promise<{ id: string; title: string; status: string }>;
   /** Update the schedule config for a scheduled task */
   updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
@@ -192,6 +192,51 @@ export interface AgentTaskContext {
   };
   orgId?: string;
 }
+
+/**
+ * Reject tool arguments the schema does not declare.
+ *
+ * Why this exists (BUG-2, 2026-10-18): `task_update(task_id, requirement_id=R2)`
+ * returned `{"status":"success"}` while changing nothing — the caller passed a
+ * real field that the service layer supports but the tool layer did not know, and
+ * it was dropped without a word. A silent no-op is the worst possible answer:
+ * the caller believes the card changed and moves on. Every task/requirement tool
+ * that writes state must fail loud on parameters it cannot honour.
+ *
+ * Returns the error payload (a JSON string) when unknown args are present, or
+ * null when the call is clean.
+ */
+function rejectUnknownArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  allowed: readonly string[]
+): string | null {
+  const unknown = Object.keys(args).filter(k => !allowed.includes(k));
+  if (unknown.length === 0) return null;
+  return JSON.stringify({
+    status: 'error',
+    error:
+      `${toolName} does not accept: ${unknown.join(', ')}. ` +
+      `Accepted: ${allowed.join(', ')}. NOTHING was changed — retry with a supported field.`,
+  });
+}
+
+/** Fields `task_update` can write (keep in sync with its inputSchema). */
+const TASK_UPDATE_FIELDS = [
+  'task_id',
+  'status',
+  'note',
+  'title',
+  'description',
+  'blocked_by',
+  'reviewer_id',
+  'reviewer_type',
+  'schedule',
+  'requirement_id',
+] as const;
+
+/** Statuses an agent may set on a requirement (keep in sync with the tool schema). */
+const REQUIREMENT_AGENT_STATUSES: readonly string[] = ['cancelled', 'rejected', 'completed'];
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
   return [
@@ -516,6 +561,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             enum: ['agent', 'human'],
             description: 'Whether the new reviewer is an agent or a human user. Required when changing reviewer_id.',
           },
+          requirement_id: {
+            type: 'string',
+            description:
+              'Move this task to a different requirement (需求) — e.g. when requirements are split, merged or archived. The target requirement must exist and be an active (approved) requirement; the move is recorded in the audit trail. Only the task creator can re-link a task. Use requirement_list / requirement_get to confirm the exact ID before passing it.',
+          },
           schedule: {
             type: 'object',
             description: 'Update the schedule for a scheduled (recurring) task. Only works on tasks with taskType "scheduled". Set either "every" OR "cron", not both.',
@@ -539,9 +589,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const blockedBy = args['blocked_by'] as string[] | undefined;
           const reviewerId = args['reviewer_id'] as string | undefined;
           const reviewerType = args['reviewer_type'] as 'agent' | 'human' | undefined;
+          const requirementId = args['requirement_id'] as string | undefined;
 
-          // Permission check: only task creator can modify blocked_by or reviewer
-          if (blockedBy !== undefined || reviewerId !== undefined) {
+          // BUG-2 (2026-10-18): unknown parameters used to be dropped silently.
+          const unknownArgError = rejectUnknownArgs('task_update', args, TASK_UPDATE_FIELDS);
+          if (unknownArgError) return unknownArgError;
+
+          // Permission check: only task creator can modify blocked_by, reviewer or requirement
+          if (blockedBy !== undefined || reviewerId !== undefined || requirementId !== undefined) {
             const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
             const createdBy = (existing as Record<string, unknown> | null)?.['createdBy'] as string | undefined;
             if (blockedBy !== undefined && createdBy && createdBy !== ctx.agentId) {
@@ -556,16 +611,31 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 error: 'Only the task creator or a manager can change the reviewer.',
               });
             }
+            if (requirementId !== undefined && createdBy && createdBy !== ctx.agentId) {
+              return JSON.stringify({
+                status: 'denied',
+                error:
+                  "Only the task creator can re-link a task to another requirement (moving someone else's card across requirements changes their governance chain). Ask the creator, or a human, to do it.",
+              });
+            }
           }
 
           // Handle field updates first — works for any status including pending
-          if ((title !== undefined || description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
+          if (
+            (title !== undefined ||
+              description !== undefined ||
+              blockedBy !== undefined ||
+              reviewerId !== undefined ||
+              requirementId !== undefined) &&
+            ctx.updateTaskFields
+          ) {
             await ctx.updateTaskFields(taskId, {
               ...(title !== undefined ? { title } : {}),
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
               ...(reviewerId !== undefined ? { reviewerId } : {}),
               ...(reviewerType !== undefined ? { reviewerType } : {}),
+              ...(requirementId !== undefined ? { requirementId } : {}),
             });
           }
 
@@ -1314,10 +1384,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'requirement_update_status',
             description: [
-              'Update the status of a requirement (需求). Supports: cancelled, rejected.',
+              'Update the status of a requirement (需求). Supports: cancelled, rejected, completed.',
               'WARNING: Only use this when absolutely necessary or when explicitly instructed by a human administrator.',
               'Do NOT change the status of existing requirements without a very strong reason.',
               'Valid reasons include: the requirement is no longer relevant, it duplicates another requirement,',
+              'all of its tasks are done (status="completed"),',
               'or a human admin explicitly asked you to cancel/reject it.',
               'Always provide a clear reason explaining why the status change is needed.',
             ].join(' '),
@@ -1330,8 +1401,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 },
                 status: {
                   type: 'string',
-                  enum: ['cancelled', 'rejected'],
-                  description: 'New status. Use "cancelled" to cancel a requirement, or "rejected" to reject a proposed requirement.',
+                  enum: ['cancelled', 'rejected', 'completed'],
+                  description: 'New status. "completed" when all linked work is done, "cancelled" to abandon the requirement, or "rejected" to reject a proposed requirement.',
                 },
                 reason: {
                   type: 'string',
@@ -1342,9 +1413,26 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const unknownArgError = rejectUnknownArgs('requirement_update_status', args, [
+                  'requirement_id',
+                  'status',
+                  'reason',
+                ]);
+                if (unknownArgError) return unknownArgError;
+                // BUG-3b (2026-10-18): the schema enum was narrower than the
+                // service's VALID_STATUSES, so callers followed the documented
+                // contract and lost `completed`. Enforce the advertised set here
+                // so an unsupported value fails loud instead of drifting.
+                const requestedStatus = args['status'] as string;
+                if (!REQUIREMENT_AGENT_STATUSES.includes(requestedStatus)) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: `Unsupported requirement status "${requestedStatus}". This tool accepts: ${REQUIREMENT_AGENT_STATUSES.join(', ')}.`,
+                  });
+                }
                 const req = await ctx.updateRequirementStatus!(
                   args['requirement_id'] as string,
-                  args['status'] as string,
+                  requestedStatus,
                   args['reason'] as string
                 );
                 log.info(`Requirement status updated by agent ${ctx.agentId}`, {
@@ -1405,6 +1493,23 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                // BUG-3 (2026-10-18): `status` used to be accepted and silently
+                // dropped. Point the caller at the tool that actually moves status.
+                if (args['status'] !== undefined) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error:
+                      'requirement_update does NOT change status — it only edits title/description/priority/tags. NOTHING was changed. Use requirement_update_status(requirement_id, status, reason) for status changes (e.g. status="completed").',
+                  });
+                }
+                const unknownArgError = rejectUnknownArgs('requirement_update', args, [
+                  'requirement_id',
+                  'title',
+                  'description',
+                  'priority',
+                  'tags',
+                ]);
+                if (unknownArgError) return unknownArgError;
                 const data: { title?: string; description?: string; priority?: string; tags?: string[] } = {};
                 if (args['title']) data.title = args['title'] as string;
                 if (args['description']) data.description = args['description'] as string;

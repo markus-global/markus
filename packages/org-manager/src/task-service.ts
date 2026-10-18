@@ -2604,13 +2604,23 @@ export class TaskService implements ApprovalTargetPort {
       }
     }
 
-    // ── Auto-inherit projectId from the linked requirement ──
+    // ── Validate + auto-inherit from the linked requirement ──
+    // BUG-4 (2026-10-18): a typo'd requirementId (one extra character) wrote a
+    // card into invisibility — it disappears from the requirement view and from
+    // requirement.taskIds, keeps occupying the assignee's quota, and no
+    // agent-facing tool can repair it. Validate at the single write point
+    // instead of trusting the caller.
     if (request.requirementId && this.requirementService) {
       const req = this.requirementService.getRequirement(request.requirementId);
-      if (req) {
-        if (!request.projectId && req.projectId) {
-          request.projectId = req.projectId;
-        }
+      if (!req) {
+        throw new Error(
+          `Task creation failed: requirement "${request.requirementId}" does not exist. ` +
+            `A task hung on a non-existent requirement becomes an orphan — invisible in every requirement view. ` +
+            `Confirm the exact ID with requirement_list / requirement_get and retry.`
+        );
+      }
+      if (!request.projectId && req.projectId) {
+        request.projectId = req.projectId;
       }
     }
 
@@ -3890,7 +3900,18 @@ export class TaskService implements ApprovalTargetPort {
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
     if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
-    if (data.requirementId !== undefined) task.requirementId = data.requirementId ?? undefined;
+    if (data.requirementId !== undefined) {
+      this.assertRebindableRequirement(data.requirementId);
+      const previousRequirementId = task.requirementId;
+      task.requirementId = data.requirementId ?? undefined;
+      if (previousRequirementId !== task.requirementId) {
+        // Cross-requirement moves change a card's governance chain — keep an
+        // auditable line on the card itself (BUG-1, 2026-10-18).
+        const from = previousRequirementId ?? '(none)';
+        const to = task.requirementId ?? '(none)';
+        this.addTaskNote(id, `Requirement re-linked: ${from} → ${to}`, updatedBy);
+      }
+    }
     if (data.reviewerId !== undefined) task.reviewerId = data.reviewerId;
     if (data.reviewerType !== undefined) task.reviewerType = data.reviewerType;
 
@@ -3935,8 +3956,41 @@ export class TaskService implements ApprovalTargetPort {
     return task;
   }
 
-  private reevaluateBlockedStatus(task: Task): void {
-    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
+  /**
+   * Guard for re-linking a task to another requirement (BUG-4, 2026-10-18).
+   *
+   * Two failure modes this closes:
+   *  - a typo'd / non-existent requirement id writes a card into invisibility
+   *    (orphan: gone from the requirement view, still pending, still eating the
+   *    assignee's quota, unrepairable from any agent-facing tool);
+   *  - hanging live work on an unapproved requirement (pending / rejected /
+   *    cancelled) silently detaches it from the governance chain.
+   */
+  private assertRebindableRequirement(requirementId: string | null): void {
+    if (requirementId === null) {
+      throw new Error(
+        'Cannot detach a task from its requirement — a task with no requirement becomes an orphan ' +
+          '(invisible in every requirement view). Re-link it to a valid requirement, or cancel/archive the task instead.'
+      );
+    }
+    if (!this.requirementService) return;
+    const req = this.requirementService.getRequirement(requirementId);
+    if (!req) {
+      throw new Error(
+        `Requirement "${requirementId}" does not exist — a task hung on a non-existent requirement becomes ` +
+          `an orphan (invisible in every requirement view). Confirm the exact ID with requirement_list / ` +
+          `requirement_get before re-linking.`
+      );
+    }
+    if (req.status === 'pending' || req.status === 'rejected' || req.status === 'cancelled') {
+      throw new Error(
+        `Cannot re-link a task to requirement "${req.title}" (${req.id}) — its status is "${req.status}", ` +
+          `not an approved/active requirement. Get the requirement approved first, or pick the active requirement.`
+      );
+    }
+  }
+
+  private reevaluateBlockedStatus(task: Task): void {    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
     if (task.status === 'blocked' && !shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
