@@ -669,7 +669,11 @@ html.electron-darwin .electron-mac-top-safe {
    produced. Team.tsx applies `.streaming-bubble` only while the stream is live
    and drops it the instant the turn ends, so the effect stops by itself.
    Drawn as a masked ring rather than a border-image: border-image ignores
-   border-radius and would square off the bubble's corners. */
+   border-radius and would square off the bubble's corners.
+
+   The ring means "this turn is still producing" — which INCLUDES thinking and
+   tool calls with no prose yet (owner, 2026-10-18). Do not gate it on the bubble
+   having text: an agent that is running tools *is* outputting. */
 .streaming-bubble {
   position: relative;
   min-height: 2.5rem;

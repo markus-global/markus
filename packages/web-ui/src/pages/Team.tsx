@@ -1135,22 +1135,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // `inputKey` = 当前 `input` 里那段文字**属于哪个视图**；它和 `activeScrollKey`
   // 一旦分叉，就说明用户切了视图，需要「把旧视图的草稿留下、把新视图的取回来」。
   const [inputKey, setInputKey] = useState(activeScrollKey);
-  // 单写者：store 始终镜像「当前视图 + 当前文本」这一对事实。
+  // 单写者：store 始终镜像「当前视图 + 当前**完整**草稿」这一对事实。
+  // 草稿 = 文字 + 待发图片 + 引用片段 + 回复目标 —— 只存文字会让后三者跟着视图乱串
+  // （在 A tab 贴的图跑到 B tab），见 lib/chatDraftMemory.ts 的头部说明。
   useEffect(() => {
-    chatDraftMemory.save(inputKey, input);
-  }, [input, inputKey]);
+    chatDraftMemory.save(inputKey, { text: input, images: pendingImages, context: chatContext, replyTo: chatReplyTo });
+  }, [input, inputKey, pendingImages, chatContext, chatReplyTo]);
   // 在 **render 期间**调整 state（React 官方认可的 derive-from-props 模式）：
   // 放到 effect 里就会先画出一帧「上一个 tab 的文本出现在新 tab 里」。
   if (inputKey !== activeScrollKey) {
-    if (input !== chatDraftMemory.peek(inputKey)) {
+    const outgoing = { text: input, images: pendingImages, context: chatContext, replyTo: chatReplyTo };
+    if (input !== chatDraftMemory.peek(inputKey).text) {
       // 这一拍里 `input` 是被**外部写者**改的（导航预填 markus_nav_prefillMessage /
       // markus_nav_chatChips 等，它们和视图切换在同一个 commit 里生效）。那是给
       // **目标视图**准备的内容 —— 不能当作出走视图的草稿丢掉。
-      chatDraftMemory.save(activeScrollKey, input);
+      // 图片/引用/回复目标不参与这个判据：它们只会由用户在本视图里产生，
+      // 所以这里照常落在目标视图上，不会把 A 的图搬到 B。
+      chatDraftMemory.save(activeScrollKey, outgoing);
     } else {
-      // 常规切换：留下旧视图的草稿，取回目标视图的（没有就是空）。
-      chatDraftMemory.save(inputKey, input);
-      setInput(chatDraftMemory.get(activeScrollKey));
+      // 常规切换：留下旧视图的**完整**草稿，取回目标视图的。
+      chatDraftMemory.save(inputKey, outgoing);
+      const restored = chatDraftMemory.get(activeScrollKey);
+      setInput(restored.text);
+      setPendingImages(restored.images);
+      setChatContext(restored.context);
+      setChatReplyTo(restored.replyTo);
     }
     setInputKey(activeScrollKey);
   }
@@ -5540,6 +5549,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 msgIsStreaming: !!msg.isStreaming,
                 liveStreamForView,
               });
+              // 光环 = 「这轮还在输出」，**不看有没有正文**：思考、工具调用都算输出，
+              // 即使还没吐出任何文字也该让用户看到这轮是活的（老板 2026-10-18）。
+              // 气泡里那列工具行的问题由 visibleTimelineBlocks 解决，不靠光环。
               const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
               const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
 
