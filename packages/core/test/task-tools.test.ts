@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createAgentTaskTools, type AgentTaskContext } from '../src/tools/task-tools.js';
+import { expandArgAliases } from '../src/tools/tool-args.js';
 
 function createMockContext(overrides?: Partial<AgentTaskContext>): AgentTaskContext {
   return {
@@ -911,10 +912,13 @@ describe('task_update requirement re-link (BUG-1/BUG-2)', () => {
   it('fails loud on an undeclared parameter instead of silently succeeding (BUG-2)', async () => {
     const ctx = createMockContext({ getTask: creatorTask() });
     const tool = findTool(ctx, 'task_update');
-    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirementId: 'req_2' }));
+    // NOTE (2026-10-18): this used `requirementId` as the "undeclared" field — but that is
+    // dispatch's own camelCase alias of a DECLARED field (requirement_id). Treating it as
+    // unknown is what took every multi-word argument offline in production; the case now
+    // uses a field the tool genuinely cannot honour, in both casings.
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', assignee_agent_id: 'agt_x' }));
     expect(result.status).toBe('error');
-    expect(result.error).toContain('requirementId');
-    expect(result.error).toContain('requirement_id'); // names the field that IS accepted
+    expect(result.error).toContain('assignee_agent_id');
     expect(result.error).toContain('NOTHING was changed');
     expect(ctx.updateTaskFields).not.toHaveBeenCalled();
   });
@@ -980,5 +984,82 @@ describe('task_update re-link receipt & write-path guard', () => {
     const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
     expect(result.status).toBe('error');
     expect(result.error).toContain('NOTHING was changed');
+  });
+});
+
+describe('argument contract — the tool must accept what dispatch delivers (P0, 2026-10-18)', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  // Dispatch expands every call with BOTH casing variants and injects reserved
+  // `_`-prefixed session keys *before* the tool sees it. A strict validator comparing
+  // raw spellings against a snake_case whitelist therefore rejected the platform's own
+  // decorations and refused every multi-word argument — task_update, requirement_update
+  // and requirement_update_status were all dead in production. These cases call the tool
+  // with dispatch-shaped args, which is the only shape that proves the guard is safe.
+  const asDispatchDelivers = (args: Record<string, unknown>) => ({
+    ...expandArgAliases(args),
+    _browserSessionId: 'sess_1',
+    _terminalSessionId: 'sess_1',
+  });
+
+  it('task_update accepts a note-only call shaped like dispatch delivers it', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', note: 'progress' })));
+    expect(result.status).not.toBe('error');
+    // A note-only call lands on the note path, not the field-write path.
+    expect(ctx.addTaskNote).toHaveBeenCalledWith('tsk_001', 'progress', 'Test Agent');
+  });
+
+  it('task_update accepts a re-link call shaped like dispatch delivers it', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', requirement_id: 'req_2' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateTaskFields).toHaveBeenCalledWith(
+      'tsk_001',
+      expect.objectContaining({ requirementId: 'req_2' })
+    );
+  });
+
+  it('requirement_update accepts dispatch-shaped args', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ requirement_id: 'req_1', title: 'New title' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirement).toHaveBeenCalled();
+  });
+
+  it('requirement_update_status accepts dispatch-shaped args', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ requirement_id: 'req_1', status: 'completed' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirementStatus).toHaveBeenCalled();
+  });
+
+  it('still fails loud on a genuinely unknown argument — in either casing', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const snake = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', bogus_field: 1 }))
+    );
+    const camel = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', bogusField: 1 }))
+    );
+    expect(snake.status).toBe('error');
+    expect(snake.error).toContain('bogus_field');
+    expect(camel.status).toBe('error');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
   });
 });

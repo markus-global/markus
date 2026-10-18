@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { findUnknownArgs } from './tool-args.js';
 import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
 
 const log = createLogger('task-tools');
@@ -211,7 +212,12 @@ function rejectUnknownArgs(
   args: Record<string, unknown>,
   allowed: readonly string[]
 ): string | null {
-  const unknown = Object.keys(args).filter(k => !allowed.includes(k));
+  // Compare CANONICAL names: dispatch expands every call with both casing variants and
+  // injects reserved `_`-prefixed context keys, so comparing raw spellings against a
+  // bare snake_case whitelist rejects the platform's own decorations — which is exactly
+  // how this guard once refused every multi-word argument in production (2026-10-18).
+  // `findUnknownArgs` is the single owner of that contract (tools/tool-args.ts).
+  const unknown = findUnknownArgs(args, allowed);
   if (unknown.length === 0) return null;
   return JSON.stringify({
     status: 'error',

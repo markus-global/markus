@@ -194,29 +194,14 @@ function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
 /** @see isToolErrorResult — kept as a local alias for call sites in this file. */
 const isErrorResult = isToolErrorResult;
 
-/**
- * Tool input schemas declare snake_case params (e.g. `project_id`), but models
- * frequently emit camelCase (`projectId`) instead. Without this, a tool silently
- * reads `undefined`, returns a misleading "X is required" error, and the model —
- * seeing that it *did* provide the value — retries the identical call forever.
- * To make tool dispatch tolerant, we add the missing casing variant for every
- * top-level key (aliases only; the original keys are preserved, and existing
- * keys are never overwritten). Internal keys (leading underscore) are skipped.
- */
-function addArgCasingAliases(args: unknown): Record<string, unknown> {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) {
-    return (args ?? {}) as Record<string, unknown>;
-  }
-  const out: Record<string, unknown> = { ...(args as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (key.startsWith('_')) continue;
-    const camel = key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-    const snake = key.replace(/([A-Z])/g, (_, c: string) => '_' + c.toLowerCase());
-    if (camel !== key && !(camel in out)) out[camel] = value;
-    if (snake !== key && !(snake in out)) out[snake] = value;
-  }
-  return out;
-}
+// Tool input schemas declare snake_case params (e.g. `project_id`), but models
+// frequently emit camelCase (`projectId`) instead. Dispatch therefore expands every
+// call's args with both casing variants. That expansion lives in ONE place
+// (`tools/tool-args.ts`) together with the validator that inspects those args — when
+// the two were implemented separately, the strict validator rejected the platform's
+// own aliases and broke every multi-word argument in production (2026-10-18).
+import { expandArgAliases as addArgCasingAliases } from './tools/tool-args.js';
+export { expandArgAliases as addArgCasingAliases } from './tools/tool-args.js';
 
 export type ToolOutputCallback = (chunk: string) => void;
 
