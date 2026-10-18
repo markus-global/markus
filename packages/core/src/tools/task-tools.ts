@@ -620,6 +620,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             }
           }
 
+          // BUG-2 class (2026-10-18): if the write path is missing we must NOT fall
+          // through to the success payload below — that is the same silent no-op.
+          const wantsFieldUpdate =
+            title !== undefined ||
+            description !== undefined ||
+            blockedBy !== undefined ||
+            reviewerId !== undefined ||
+            requirementId !== undefined;
+          if (wantsFieldUpdate && !ctx.updateTaskFields) {
+            return JSON.stringify({
+              status: 'error',
+              error:
+                'This agent context cannot update task fields (updateTaskFields is unavailable). NOTHING was changed.',
+            });
+          }
+
           // Handle field updates first — works for any status including pending
           if (
             (title !== undefined ||
@@ -749,7 +765,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${requirementId !== undefined ? ` — moved to requirement ${requirementId}` : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           } else {
             // No status change — note, title, description, and/or blocked_by update
@@ -764,7 +780,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${requirementId !== undefined ? ` — moved to requirement ${requirementId}` : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           }
         } catch (error) {

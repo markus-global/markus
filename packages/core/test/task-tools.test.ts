@@ -957,3 +957,28 @@ describe('requirement status tools (BUG-3/BUG-3b)', () => {
     expect(ctx.updateRequirementStatus).not.toHaveBeenCalled();
   });
 });
+
+describe('task_update re-link receipt & write-path guard', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  it('reports the move in its success message (the caller must see which requirement it landed on)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('success');
+    expect(result.message).toContain('moved to requirement req_2');
+  });
+
+  it('fails loud when the write path is unavailable — no silent no-op', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    delete (ctx as { updateTaskFields?: unknown }).updateTaskFields;
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('NOTHING was changed');
+  });
+});
