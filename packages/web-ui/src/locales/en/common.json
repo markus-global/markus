@@ -278,6 +278,7 @@
       "list_network_requests": "Network requests",
       "lighthouse_audit": "Running audit",
       "agent_send_message": "Messaging colleague",
+      "agent_ask_agent": "Asking another agent",
       "agent_list_colleagues": "Checking team",
       "memory_save": "Saving memory",
       "memory_search": "Searching memory",

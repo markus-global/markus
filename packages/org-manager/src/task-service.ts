@@ -53,6 +53,7 @@ import {
   type ReviewReport,
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
+import { assertValidProjectReference } from './project-reference.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
 import type { HITLService, ApprovalIntent } from './hitl-service.js';
 import type {
@@ -64,6 +65,7 @@ import type {
 import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
+import { isTerminalTaskStatus, resolveCommentAttention, shouldInjectIntoSession, type CommentAuthorType } from './task-attention.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -691,23 +693,35 @@ export class TaskService implements ApprovalTargetPort {
       },
       timestamp: new Date().toISOString(),
     });
-    // Inject live comment into running agent's context (or trigger post-task reply)
-    this.injectCommentIntoRunningTask(taskId, authorName, content);
+    // ── Attention economy: ONE decision point for "does this comment wake anyone?" ──
+    // See docs/architecture/task-attention-economy.md. Before this, plain
+    // agent-to-agent comments woke the assignee and creator, were live-injected
+    // into the running session, and (on closed cards) started a whole new LLM
+    // turn. 60% of those wakes ended in `end_turn`.
+    const attentionTask = this.tasks.get(taskId);
+    const attention = resolveCommentAttention({
+      authorId,
+      authorType: opts?.authorType === 'human' ? 'human' : 'agent',
+      mentions,
+      taskStatus: attentionTask?.status ?? 'unknown',
+      assignedAgentId: attentionTask?.assignedAgentId,
+      createdBy: attentionTask?.createdBy,
+      reviewerId: attentionTask?.reviewerId,
+      commentKind: opts?.commentKind,
+    });
 
-    // Notify agents about the comment
-    if (this.agentManager) {
+    // Only human comments enter a running session (see task-attention.ts).
+    this.injectCommentIntoRunningTask(taskId, authorName, content, {
+      commentId: comment.id,
+      authorType: opts?.authorType === 'human' ? 'human' : 'agent',
+    });
+
+    // Notify agents about the comment.
+    if (this.agentManager && !attention.recordOnly) {
       const task = this.tasks.get(taskId);
       const taskTitle = task?.title ?? taskId;
       const taskStatus = task?.status ?? 'unknown';
       const notified = new Set<string>();
-
-      // Suppress assignee/creator notifications when the reviewer posts during
-      // an active review.  The review outcome is communicated via the status
-      // transition (completed / in_progress revision), not intermediate comments.
-      // @mention notifications are still delivered.
-      const isReviewerDuringReview = task?.status === 'review'
-        && !!task.reviewerId
-        && authorId === task.reviewerId;
 
       // Count consecutive agent-only comments for streak awareness
       let agentStreak = 0;
@@ -733,7 +747,7 @@ export class TaskService implements ApprovalTargetPort {
           lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
-        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`If you do decide a reply IS warranted, gather full context first:`);
         lines.push(`1. Call \`task_get\` with task ID "${taskId}" to see the complete task state, description, and all comments`);
         lines.push(`2. Read ALL previous comments on this task to understand the conversation thread`);
         lines.push(`3. Only THEN formulate your response using \`task_comment\``);
@@ -742,7 +756,6 @@ export class TaskService implements ApprovalTargetPort {
       };
 
       const isHuman = opts?.authorType === 'human';
-      const isDecisionRecord = opts?.commentKind === 'decision_record';
       const enqueueFor = (agentId: string, type: 'task_comment' | 'mention', reason: string) => {
         if (notified.has(agentId) || agentId === authorId) return;
         notified.add(agentId);
@@ -772,23 +785,18 @@ export class TaskService implements ApprovalTargetPort {
         }
       }
 
-      if (!isReviewerDuringReview) {
-        const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
-        const handledByInjection = task?.status === 'in_progress' || (task?.status && terminalStatuses.has(task.status));
-
-        // 2. Notify task assignee as 'task_comment' — skip when assignee is
-        // already reached via injectCommentIntoRunningTask (in_progress → live
-        // injection) or handlePostTaskComment (terminal → session reply).
-        // Also skipped for a *decision record*: its delivery is owned by another
-        // channel (the status transition), so fanning it out here would state the
-        // same fact twice.
-        if (task?.assignedAgentId && !handledByInjection && !isDecisionRecord) {
-          enqueueFor(task.assignedAgentId, 'task_comment', `New comment from ${authorName} on your assigned task`);
-        }
-        // 3. Notify creator (skip in_progress and terminal — same reasons)
-        if (task?.createdBy && !handledByInjection && !isDecisionRecord) {
-          enqueueFor(task.createdBy, 'task_comment', `New comment from ${authorName} on a task you created`);
-        }
+      // Wake exactly the agents the attention decision named. Mentions are
+      // already enqueued above as `mention` (explicit addressing); this loop
+      // covers the two state-change signals: human author and reviewer verdict.
+      for (const target of attention.wake) {
+        if (target.reason === 'mention') continue;
+        enqueueFor(
+          target.agentId,
+          'task_comment',
+          target.reason === 'review_verdict'
+            ? `Reviewer verdict from ${authorName} on the task you are executing`
+            : `Comment from ${authorName} on a task you own or execute`,
+        );
       }
     }
     const serialized = {
@@ -885,7 +893,7 @@ export class TaskService implements ApprovalTargetPort {
           lines.push(`Consider whether your reply adds genuinely new information. If the discussion is going in circles, call the end_turn tool and let results speak.`);
         }
         lines.push(``);
-        lines.push(`**MANDATORY before replying**: You MUST first understand the full context:`);
+        lines.push(`If you decide a reply IS warranted, gather full context first:`);
         lines.push(`1. Call \`requirement_get\` with requirement_id "${requirementId}" to see the full description, linked tasks, and all comments`);
         lines.push(`2. Read ALL previous comments to understand the conversation thread`);
         lines.push(`3. Only THEN formulate your response using \`requirement_comment\``);
@@ -2604,15 +2612,33 @@ export class TaskService implements ApprovalTargetPort {
       }
     }
 
-    // ── Auto-inherit projectId from the linked requirement ──
+    // ── Validate + auto-inherit from the linked requirement ──
+    // BUG-4 (2026-10-18): a typo'd requirementId (one extra character) wrote a
+    // card into invisibility — it disappears from the requirement view and from
+    // requirement.taskIds, keeps occupying the assignee's quota, and no
+    // agent-facing tool can repair it. Validate at the single write point
+    // instead of trusting the caller.
     if (request.requirementId && this.requirementService) {
       const req = this.requirementService.getRequirement(request.requirementId);
-      if (req) {
-        if (!request.projectId && req.projectId) {
-          request.projectId = req.projectId;
-        }
+      if (!req) {
+        throw new Error(
+          `Task creation failed: requirement "${request.requirementId}" does not exist. ` +
+            `A task hung on a non-existent requirement becomes an orphan — invisible in every requirement view. ` +
+            `Confirm the exact ID with requirement_list / requirement_get and retry.`
+        );
+      }
+      if (!request.projectId && req.projectId) {
+        request.projectId = req.projectId;
       }
     }
+
+    // A project reference is validated at creation, ONCE, after inheritance has resolved it —
+    // this covers both an explicit projectId and one inherited from the requirement. Two
+    // separate checks (one per branch) would be two execution points for one invariant.
+    // Inheriting a bogus id is how the 129 historical project orphans entered; refusing forces
+    // the requirement's projectId to be fixed at the source instead of fanning it out to every
+    // card created under it.
+    if (request.projectId) this.assertValidProjectReference(request.projectId);
 
     const scheduleConfig = request.scheduleConfig
       ? { ...request.scheduleConfig, currentRuns: 0, nextRunAt: computeInitialNextRun(request.scheduleConfig) }
@@ -3052,15 +3078,23 @@ export class TaskService implements ApprovalTargetPort {
 
   /**
    * Fallback actor-type resolution for the terminal-revert guard, used only
-   * when the caller did not pass an explicit `updatedByType`. A caller id that
-   * resolves in the agent roster is an agent; anything else (human user id,
-   * unknown) is not — unknown ids fail closed to non-agent (humans/system own
-   * reopen authority; agents always pass explicit 'agent' type).
+   * when the caller did not pass an explicit `updatedByType`. FAIL CLOSED: an
+   * id that is not a known human user is treated as an agent.
+   *
+   * History (T25, 2026-10-17): this used to default *unknown* ids to 'human',
+   * while the agent tool surface never passed an explicit type — so every agent
+   * revert of a completed card was a bet on whether the optional `agentManager`
+   * collaborator happened to be wired. It wasn't, and the guard silently passed.
    */
   private resolveActorTypeForGuard(updatedBy?: string): 'human' | 'agent' | 'system' {
     if (!updatedBy) return 'system';
     if (this.agentManager?.hasAgent(updatedBy)) return 'agent';
-    return 'human';
+    if (this.userNameLookup) {
+      try {
+        if (this.userNameLookup(updatedBy)) return 'human';
+      } catch { /* ignore */ }
+    }
+    return 'agent';
   }
 
   private resolveActorName(actorId?: string, actorType?: string): string | null {    if (!actorId) return null;
@@ -3889,8 +3923,36 @@ export class TaskService implements ApprovalTargetPort {
     if (data.title !== undefined) task.title = data.title;
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
-    if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
-    if (data.requirementId !== undefined) task.requirementId = data.requirementId ?? undefined;
+    if (data.projectId !== undefined) {
+      // Validate the explicit write too: locking only the re-link path would leave
+      // PUT /api/tasks/:id minting project orphans tomorrow.
+      if (data.projectId) this.assertValidProjectReference(data.projectId);
+      task.projectId = data.projectId ?? undefined;
+    }
+    if (data.requirementId !== undefined) {
+      const req = this.assertRebindableRequirement(data.requirementId);
+      // projectId is DERIVED from the requirement, so it is recomputed HERE at the write
+      // point instead of being left as a stale cache. A re-link used to swap only the
+      // requirement while the project stayed behind — the same orphan as a bad requirement
+      // id, one field over. Validate before mutating: a throw must leave the task untouched.
+      const cascadedProjectId = req.projectId || undefined;
+      if (cascadedProjectId) this.assertValidProjectReference(cascadedProjectId);
+      const previousRequirementId = task.requirementId;
+      const previousProjectId = task.projectId;
+      task.requirementId = data.requirementId ?? undefined;
+      task.projectId = cascadedProjectId;
+      if (previousRequirementId !== task.requirementId) {
+        // Cross-requirement moves change a card's governance chain — keep an
+        // auditable line on the card itself (BUG-1, 2026-10-18).
+        const from = previousRequirementId ?? '(none)';
+        const to = task.requirementId ?? '(none)';
+        const projectNote =
+          previousProjectId !== task.projectId
+            ? ` (project: ${previousProjectId ?? '(none)'} → ${task.projectId ?? '(none)'})`
+            : '';
+        this.addTaskNote(id, `Requirement re-linked: ${from} → ${to}${projectNote}`, updatedBy);
+      }
+    }
     if (data.reviewerId !== undefined) task.reviewerId = data.reviewerId;
     if (data.reviewerType !== undefined) task.reviewerType = data.reviewerType;
 
@@ -3935,8 +3997,76 @@ export class TaskService implements ApprovalTargetPort {
     return task;
   }
 
-  private reevaluateBlockedStatus(task: Task): void {
-    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
+  /**
+   * Guard for re-linking a task to another requirement (BUG-4, 2026-10-18).
+   *
+   * Two failure modes this closes:
+   *  - a typo'd / non-existent requirement id writes a card into invisibility
+   *    (orphan: gone from the requirement view, still pending, still eating the
+   *    assignee's quota, unrepairable from any agent-facing tool);
+   *  - hanging live work on an unapproved requirement (pending / rejected /
+   *    cancelled) silently detaches it from the governance chain.
+   */
+  /**
+   * Statuses a card may be re-linked INTO — an ALLOWLIST on purpose. The requirement status
+   * domain also contains `pending`, `failed`, `rejected`, `cancelled` and `archived`; a denylist
+   * silently permits every status introduced later, and "re-link onto the archived requirement"
+   * is a fresh way to mint an invisible card — the exact failure this guard exists to stop.
+   */
+  private static readonly REBINDABLE_REQUIREMENT_STATUSES: ReadonlySet<string> = new Set([
+    'in_progress',
+    'blocked',
+    'review',
+    'completed',
+  ]);
+
+  private assertRebindableRequirement(
+    requirementId: string | null
+  ): NonNullable<ReturnType<RequirementService['getRequirement']>> {
+    if (requirementId === null) {
+      throw new Error(
+        'Cannot detach a task from its requirement — a task with no requirement becomes an orphan ' +
+          '(invisible in every requirement view). Re-link it to a valid requirement, or cancel/archive the task instead.'
+      );
+    }
+    // Fail CLOSED when requirement lookup is unavailable: "cannot verify the target" must
+    // never mean "write it anyway" — an unvalidated reference is precisely the orphan this
+    // guard exists to prevent.
+    if (!this.requirementService) {
+      throw new Error(
+        'Cannot re-link a task: requirement lookup is unavailable in this process, so the target ' +
+          'cannot be verified. Refusing rather than writing an unvalidated requirement reference.'
+      );
+    }
+    const req = this.requirementService.getRequirement(requirementId);
+    if (!req) {
+      throw new Error(
+        `Requirement "${requirementId}" does not exist — a task hung on a non-existent requirement becomes ` +
+          `an orphan (invisible in every requirement view). Confirm the exact ID with requirement_list / ` +
+          `requirement_get before re-linking.`
+      );
+    }
+    if (!TaskService.REBINDABLE_REQUIREMENT_STATUSES.has(req.status)) {
+      throw new Error(
+        `Cannot re-link a task to requirement "${req.title}" (${req.id}) — its status is "${req.status}", ` +
+          `not an approved/active requirement. Get the requirement approved first, or pick the active requirement.`
+      );
+    }
+    return req;
+  }
+
+  /**
+   * A project id is a REFERENCE, not free text. Writing one that is not in the project table
+   * is how "project orphans" were minted (129 archived rows point at `n/a` / `proj_default` /
+   * hand-typed ids). Same invariant as the requirement guard: a reference we cannot verify
+   * must be refused, never written.
+   */
+  private assertValidProjectReference(projectId: string): void {
+    // Shared with RequirementService — one owner for the rule (see project-reference.ts).
+    assertValidProjectReference(this.projectService, projectId, 'task');
+  }
+
+  private reevaluateBlockedStatus(task: Task): void {    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
     if (task.status === 'blocked' && !shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
@@ -5864,19 +5994,27 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /**
-   * Inject a live comment into a running task's agent session.
-   * The comment becomes a user message in the LLM context, so the agent
-   * sees it on its next turn and can act on the feedback immediately.
+   * Deliver a comment into a running agent's session — HUMAN AUTHORS ONLY.
    *
-   * For completed tasks, triggers an asynchronous post-task conversation
-   * where the agent reads the comment, replies, and records the exchange.
+   * An agent's comment does NOT enter another agent's context while that agent
+   * is working. It stays in the thread and, when it names someone or is a state
+   * change, wakes that agent through the mailbox instead. A human speaking is
+   * the one interruption worth taking mid-task.
+   *
+   * On a closed card, only a human comment starts a post-task turn.
    */
-  injectCommentIntoRunningTask(taskId: string, authorName: string, content: string): void {
+  injectCommentIntoRunningTask(
+    taskId: string,
+    authorName: string,
+    content: string,
+    opts?: { commentId?: string; authorType?: CommentAuthorType },
+  ): void {
     const task = this.tasks.get(taskId);
     if (!task) return;
 
-    const terminalStatuses = new Set(['completed', 'accepted', 'archived']);
-    if (terminalStatuses.has(task.status)) {
+    if (!shouldInjectIntoSession(opts?.authorType ?? 'agent')) return;
+
+    if (isTerminalTaskStatus(task.status)) {
       void this.handlePostTaskComment(taskId, task, authorName, content);
       return;
     }
@@ -5889,14 +6027,14 @@ export class TaskService implements ApprovalTargetPort {
       const round = task.executionRound ?? 1;
       const sessionId = `task_${taskId}_r${round}`;
       const injectedMessage = [
-        `⚡ **LIVE COMMENT from ${authorName}** (just posted while you are working):`,
+        `**${authorName} (human) commented on this task while you are working:**`,
         '',
         content,
         '',
-        '**IMPORTANT: Address this comment in your current work. It may contain new instructions, corrections, or feedback that you must follow.**',
+        'A person is speaking to you directly — take it into account in what you are doing. If it changes the task, follow it; if it is only an observation, note it and continue.',
       ].join('\n');
       agent.injectUserMessage(sessionId, injectedMessage);
-      log.info('Injected live comment into agent session', { taskId, sessionId, authorName });
+      log.info('Injected human comment into agent session', { taskId, sessionId, authorName });
     } catch (err) {
       log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
     }

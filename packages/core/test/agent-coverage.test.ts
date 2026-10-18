@@ -183,6 +183,9 @@ describe('executeTask and task lifecycle', () => {
 describe('session reply and respondInSession', () => {
   it('sendSessionReply routes through mailbox and returns reply', async () => {
     const router = makeMockRouter({
+      // Close-out continuation goes through chat(), not chatStream(). Same text on both
+      // channels so this test asserts routing, not which call produced the final message.
+      chatFn: async () => makeResponse('Session reply.', 'end_turn'),
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Session ' });
         return makeResponse(`Session reply.`, 'end_turn');
@@ -960,6 +963,8 @@ describe('performDeliberation and cognitive pipeline', () => {
 
   it('routes session_reply through mailbox with sessionId', async () => {
     const router = makeMockRouter({
+      // See the note in 'sendSessionReply routes through mailbox and returns reply'.
+      chatFn: async () => makeResponse('Session reply.', 'end_turn'),
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Session ' });
         return makeResponse(`Session reply.`, 'end_turn');

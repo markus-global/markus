@@ -137,6 +137,7 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   deliverable_search:   { label: 'Searching deliverables', icon: '🔍' },
   deliverable_list:     { label: 'Listing deliverables',   icon: '📦' },
   deliverable_update:   { label: 'Updating deliverable',   icon: '📦' },
+  agent_ask_agent:      { label: 'Asking another agent',   icon: '💬' },
   git_status:           { label: 'Git status',             icon: '🔀' },
   git_diff:             { label: 'Git diff',               icon: '🔀' },
   git_log:              { label: 'Git log',                icon: '📜' },

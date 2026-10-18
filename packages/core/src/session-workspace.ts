@@ -18,7 +18,9 @@ export type AgentScenario =
   | 'review'
   | 'requirement_action'
   | 'workflow_action'
-  | 'deliberation';
+  | 'deliberation'
+  /** Answering another agent's blocking question (`agent_ask_agent`). */
+  | 'peer_query';
 
 /** Runtime mirror of {@link AgentScenario} — the single authoritative list.
  *  Used to validate scenario strings that cross a serialization boundary
@@ -36,6 +38,7 @@ export const AGENT_SCENARIOS: readonly AgentScenario[] = [
   'requirement_action',
   'workflow_action',
   'deliberation',
+  'peer_query',
 ];
 
 /** Narrow an untrusted value to an `AgentScenario`, or `undefined`.

@@ -109,6 +109,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at TEXT,
   task_type TEXT NOT NULL DEFAULT 'standard',
   schedule_config TEXT,
+  open_question TEXT,
+  decisions TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -747,6 +749,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'tasks', column: 'task_type', sql: "ALTER TABLE tasks ADD COLUMN task_type TEXT NOT NULL DEFAULT 'standard'" },
     { table: 'tasks', column: 'schedule_config', sql: "ALTER TABLE tasks ADD COLUMN schedule_config TEXT" },
     { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
+    { table: 'tasks', column: 'open_question', sql: "ALTER TABLE tasks ADD COLUMN open_question TEXT" },
+    { table: 'tasks', column: 'decisions', sql: "ALTER TABLE tasks ADD COLUMN decisions TEXT DEFAULT '[]'" },
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
@@ -5229,16 +5233,31 @@ export class SqliteApprovalRepo {
     );
   }
 
-  list(status?: string): ApprovalRow[] {
+  list(opts?: { status?: string; limit?: number; offset?: number }): ApprovalRow[] {
     const conditions: string[] = [];
     const params: SQLInputValue[] = [];
-    if (status) {
+    if (opts?.status) {
       conditions.push('status = ?');
-      params.push(status);
+      params.push(opts.status);
     }
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const sql = `SELECT * FROM approvals ${where} ORDER BY requested_at DESC LIMIT 200`;
+    // Time order is mandatory: callers page this list, and the in-memory map's
+    // insertion order (restore snapshot first) is NOT time order.
+    // No implicit LIMIT: a silent cap is exactly how 2300+ approvals became
+    // unreachable. Callers that want a bound pass one (restore cap).
+    let sql = `SELECT * FROM approvals ${where} ORDER BY requested_at DESC`;
+    if (opts?.limit !== undefined) {
+      sql += ' LIMIT ? OFFSET ?';
+      params.push(opts.limit, opts.offset ?? 0);
+    }
     return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  count(status?: string): number {
+    const row = status
+      ? this.db.prepare('SELECT COUNT(*) AS c FROM approvals WHERE status = ?').get(status) as { c: number } | undefined
+      : this.db.prepare('SELECT COUNT(*) AS c FROM approvals').get() as { c: number } | undefined;
+    return row?.c ?? 0;
   }
 
   get(id: string): ApprovalRow | undefined {

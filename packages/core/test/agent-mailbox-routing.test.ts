@@ -186,7 +186,13 @@ describe('Agent mailbox item routing', () => {
       taskId: 'task_rev_1',
     }, { senderId: 'mgr_1', senderName: 'Manager', senderRole: 'manager' });
 
-    expect(reply).toContain('Handled');
+    // CONTRACT (2026-10-18): a review turn is complete only when the CARD changed.
+    // The mock router answers with text but never touches `task_rev_1`, which is exactly
+    // the shape of the four reviews that stalled for 15h on 2026-10-17 (21s/26s/45s,
+    // zero action, recorded as `completed` because the turn closed with `end_turn`).
+    // Reporting an empty reply is deliberate: the attention layer treats it as
+    // unfinished and requeues, instead of silently consuming the review request.
+    expect(reply).toBe('');
     await agent.stop();
   });
 

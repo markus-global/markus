@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import type { TaskService } from '../src/task-service.js';
-import { createTestServer, request, type TestContext } from './api-server-test-helpers.js';
+import { createTestServer, createMockHITLService, request, type TestContext } from './api-server-test-helpers.js';
 
 /**
  * Covers the remote-access payload optimizations:
@@ -240,11 +240,9 @@ describe('API response optimizations', () => {
     const rows = Array.from({ length: 7 }, (_, i) => ({ id: `appr-${i}`, status: 'pending', title: `T${i}` }));
 
     it('bounds the list, reports total, honours limit/offset', async () => {
-      ctx.server.setHITLService({
-        listApprovals: () => rows,
-        onNotification: () => {},
-        onApprovalChanged: () => {},
-      } as never);
+      // Only `listApprovals` is overridden: the double derives `listApprovalsPage`
+      // from it, so this test exercises the real paging path, not a stub of it.
+      ctx.server.setHITLService(createMockHITLService({ listApprovals: () => rows }));
       const all = await request(ctx.server, 'GET', '/api/approvals');
       expect(all.status).toBe(200);
       expect(all.json.total).toBe(7);

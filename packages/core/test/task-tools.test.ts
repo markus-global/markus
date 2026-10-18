@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { createAgentTaskTools, type AgentTaskContext } from '../src/tools/task-tools.js';
+import { expandArgAliases } from '../src/tools/tool-args.js';
 
 function createMockContext(overrides?: Partial<AgentTaskContext>): AgentTaskContext {
   return {
@@ -872,5 +873,224 @@ describe('task tools error paths', () => {
     }));
     expect(result.status).toBe('error');
     expect(result.error).toContain('Resubmit denied');
+  });
+});
+
+// ─── BUG-1～4 / 2026-10-18：改挂需求 + 静默失败类缺陷回归 ───────────────────
+
+describe('task_update requirement re-link (BUG-1/BUG-2)', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  it('passes requirement_id through to updateTaskFields (creator)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('success');
+    expect(ctx.updateTaskFields).toHaveBeenCalledWith(
+      'tsk_001',
+      expect.objectContaining({ requirementId: 'req_2' }),
+    );
+  });
+
+  it('denies a re-link from a non-creator', async () => {
+    const ctx = createMockContext({
+      getTask: vi.fn(async () => ({
+        id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+        priority: 'medium', createdBy: 'agt_other',
+      })),
+    });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('denied');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
+  });
+
+  it('fails loud on an undeclared parameter instead of silently succeeding (BUG-2)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    // NOTE (2026-10-18): this used `requirementId` as the "undeclared" field — but that is
+    // dispatch's own camelCase alias of a DECLARED field (requirement_id). Treating it as
+    // unknown is what took every multi-word argument offline in production; the case now
+    // uses a field the tool genuinely cannot honour, in both casings.
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', assignee_agent_id: 'agt_x' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('assignee_agent_id');
+    expect(result.error).toContain('NOTHING was changed');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
+  });
+});
+
+describe('requirement status tools (BUG-3/BUG-3b)', () => {
+  it('requirement_update refuses status and points at requirement_update_status (BUG-3)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(await tool.execute({ requirement_id: 'req_001', status: 'completed' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('requirement_update_status');
+    expect(ctx.updateRequirement).not.toHaveBeenCalled();
+  });
+
+  it('requirement_update_status advertises completed in its schema (BUG-3b)', () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const statusSchema = (tool.inputSchema as any).properties.status;
+    expect(statusSchema.enum).toContain('completed');
+  });
+
+  it('requirement_update_status accepts completed end to end (BUG-3b)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(await tool.execute({
+      requirement_id: 'req_001', status: 'completed', reason: 'all linked tasks are done',
+    }));
+    expect(result.status).toBe('success');
+    expect(ctx.updateRequirementStatus).toHaveBeenCalledWith('req_001', 'completed', 'all linked tasks are done');
+  });
+
+  it('requirement_update_status rejects a status outside the advertised set', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(await tool.execute({
+      requirement_id: 'req_001', status: 'in_progress', reason: 'x',
+    }));
+    expect(result.status).toBe('error');
+    expect(ctx.updateRequirementStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('task_update re-link receipt & write-path guard', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  it('reports the move in its success message (the caller must see which requirement it landed on)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('success');
+    expect(result.message).toContain('moved to requirement req_2');
+  });
+
+  it('fails loud when the write path is unavailable — no silent no-op', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    delete (ctx as { updateTaskFields?: unknown }).updateTaskFields;
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('NOTHING was changed');
+  });
+});
+
+describe('argument contract — the tool must accept what dispatch delivers (P0, 2026-10-18)', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  // Dispatch expands every call with BOTH casing variants and injects reserved
+  // `_`-prefixed session keys *before* the tool sees it. A strict validator comparing
+  // raw spellings against a snake_case whitelist therefore rejected the platform's own
+  // decorations and refused every multi-word argument — task_update, requirement_update
+  // and requirement_update_status were all dead in production. These cases call the tool
+  // with dispatch-shaped args, which is the only shape that proves the guard is safe.
+  const asDispatchDelivers = (args: Record<string, unknown>) => ({
+    ...expandArgAliases(args),
+    _browserSessionId: 'sess_1',
+    _terminalSessionId: 'sess_1',
+  });
+
+  it('task_update accepts a note-only call shaped like dispatch delivers it', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', note: 'progress' })));
+    expect(result.status).not.toBe('error');
+    // A note-only call lands on the note path, not the field-write path.
+    expect(ctx.addTaskNote).toHaveBeenCalledWith('tsk_001', 'progress', 'Test Agent');
+  });
+
+  it('task_update accepts a re-link call shaped like dispatch delivers it', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', requirement_id: 'req_2' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateTaskFields).toHaveBeenCalledWith(
+      'tsk_001',
+      expect.objectContaining({ requirementId: 'req_2' })
+    );
+  });
+
+  it('requirement_update accepts dispatch-shaped args', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ requirement_id: 'req_1', title: 'New title' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirement).toHaveBeenCalled();
+  });
+
+  it('requirement_update_status accepts dispatch-shaped args', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(
+      await tool.execute(asDispatchDelivers({ requirement_id: 'req_1', status: 'completed' }))
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirementStatus).toHaveBeenCalled();
+  });
+
+  it('still fails loud on a genuinely unknown argument — in either casing', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const snake = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', bogus_field: 1 }))
+    );
+    const camel = JSON.parse(
+      await tool.execute(asDispatchDelivers({ task_id: 'tsk_001', bogusField: 1 }))
+    );
+    expect(snake.status).toBe('error');
+    expect(snake.error).toContain('bogus_field');
+    expect(camel.status).toBe('error');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
+  });
+});
+
+describe('requirement_update project_id — the repair path for a bad project reference', () => {
+  it('passes project_id through as projectId (dispatch-shaped args)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(
+      await tool.execute({
+        ...expandArgAliases({ requirement_id: 'req_1', project_id: 'proj_real' }),
+        _browserSessionId: 'sess_1',
+        _terminalSessionId: 'sess_1',
+      })
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirement).toHaveBeenCalledWith('req_1', expect.objectContaining({ projectId: 'proj_real' }));
+  });
+
+  it('treats an empty project_id as an explicit clear', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    await tool.execute({ requirement_id: 'req_1', project_id: '' });
+    expect(ctx.updateRequirement).toHaveBeenCalledWith('req_1', expect.objectContaining({ projectId: null }));
+  });
+
+  it('still refuses status — it only edits fields (BUG-3 contract kept)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(await tool.execute({ requirement_id: 'req_1', status: 'completed' }));
+    expect(result.status).toBe('error');
+    expect(ctx.updateRequirement).not.toHaveBeenCalled();
   });
 });

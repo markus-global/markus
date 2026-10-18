@@ -22,8 +22,32 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+
+/**
+ * Peer agent as seen by `askAgent` (the `agent_ask_agent` tool).
+ *
+ * The options bag is typed with the REAL `sendMessage` signature on purpose.
+ * An earlier version declared it as `o?: unknown`, which silently disabled the
+ * compiler check and let `sourceType: 'a2a'` through. `'a2a'` is not a
+ * `MailboxItemType`, so the mailbox had no registry entry for it →
+ * `detectAbnormalCompletion()` returned "normal" → the item was marked
+ * `completed` in 0 ms without ever running an LLM turn, and the caller's
+ * responsePromise never resolved. The tool failed 100% of the time, silently.
+ * Deriving the type from `Agent['sendMessage']` makes that class of typo a
+ * compile error instead of a silent runtime no-op.
+ */
+type PeerSendOptions = NonNullable<Parameters<Agent['sendMessage']>[3]>;
+type PeerAgent = {
+  sendMessage: (
+    message: string,
+    senderId?: string,
+    senderInfo?: { name?: string; role?: string },
+    options?: PeerSendOptions,
+  ) => Promise<string>;
+};
 import type { OrgContext } from './context-engine.js';
 import type { LLMRouter } from './llm/router.js';
 import { RoleLoader } from './role-loader.js';
@@ -269,7 +293,7 @@ export interface TaskServiceBridge {
     pageSize: number;
     totalPages: number;
   };
-  updateTaskStatus(id: string, status: string, updatedBy?: string): { id: string; title: string; status: string };
+  updateTaskStatus(id: string, status: string, updatedBy?: string, internal?: boolean, skipAutoStart?: boolean, updatedByType?: 'human' | 'agent' | 'system'): { id: string; title: string; status: string };
   getTask(
     id: string
   ):
@@ -1840,7 +1864,49 @@ export class AgentManager {
           });
         },
         updateTaskStatus: async (taskId, status) => {
-          return ts.updateTaskStatus(taskId, status, id);
+          // Explicit actor type — the platform must never INFER "who am I" from the
+          // payload. T25 (2026-10-17): inference defaulted unknown ids to 'human'
+          // and let an agent revert a completed card.
+          return ts.updateTaskStatus(taskId, status, id, false, false, 'agent');
+        },
+        askAgent: async (toAgentId, question, contextText, timeoutSeconds) => {
+          if (!toAgentId) throw new Error('agent_id is required');
+          if (toAgentId === id) throw new Error('You cannot ask yourself — settle it from evidence, or ask the human with request_user_input.');
+          let target: PeerAgent | undefined;
+          try { target = this.getAgent(toAgentId) as unknown as PeerAgent; } catch { target = undefined; }
+          if (!target) throw new Error(`Unknown agent "${toAgentId}" — use agent_list_colleagues to find a real one.`);
+          const timeoutMs = Math.min(Math.max((timeoutSeconds ?? 300) * 1000, 5_000), 900_000);
+          let fromName = 'another agent';
+          try { fromName = (this.getAgent(id) as unknown as { name?: string }).name ?? fromName; } catch { /* keep fallback */ }
+          const message = [
+            question.trim(),
+            contextText?.trim() ? `\n\nContext provided by ${fromName}:\n${contextText.trim()}` : '',
+            '\n\n(You are being asked directly by another agent. Your reply is returned to them verbatim — answer in one paragraph. You may ask the human if you truly cannot answer; you cannot ask another agent.)',
+          ].join('');
+          const started = Date.now();
+          try {
+            const reply = await Promise.race([
+              target.sendMessage(
+                message, id, { name: fromName, role: 'agent' },
+                { scenario: 'peer_query', sourceType: 'a2a_message', peerQueryDepth: 1, priority: MailboxPriorityLevel.high },
+              ),
+              new Promise<never>((_, reject) => {
+                const t = setTimeout(() => reject(new Error('PEER_QUERY_TIMEOUT')), timeoutMs);
+                (t as unknown as { unref?: () => void }).unref?.();
+              }),
+            ]);
+            return { status: 'answered' as const, agent: { id: toAgentId }, answer: String(reply ?? '').trim(), elapsed_ms: Date.now() - started };
+          } catch (err) {
+            if (String(err).includes('PEER_QUERY_TIMEOUT')) {
+              return {
+                status: 'timeout' as const,
+                agent: { id: toAgentId },
+                elapsed_ms: Date.now() - started,
+                message: `No answer within ${Math.round(timeoutMs / 1000)}s. Proceed on your best judgement and state the assumption you used, or ask the human with request_user_input.`,
+              };
+            }
+            return { status: 'unavailable' as const, agent: { id: toAgentId }, elapsed_ms: Date.now() - started, message: String(err) };
+          }
         },
         requestRevision: async (taskId, reason) => {
           return ts.requestRevision(taskId, reason, id);
@@ -2768,7 +2834,47 @@ export class AgentManager {
             page: filter?.page,
             pageSize: filter?.pageSize,
           }),
-        updateTaskStatus: async (taskId, status) => ts.updateTaskStatus(taskId, status, id),
+        updateTaskStatus: async (taskId, status) =>
+          ts.updateTaskStatus(taskId, status, id, false, false, 'agent'),
+        askAgent: async (toAgentId, question, contextText, timeoutSeconds) => {
+          if (!toAgentId) throw new Error('agent_id is required');
+          if (toAgentId === id) throw new Error('You cannot ask yourself — settle it from evidence, or ask the human with request_user_input.');
+          let target: PeerAgent | undefined;
+          try { target = this.getAgent(toAgentId) as unknown as PeerAgent; } catch { target = undefined; }
+          if (!target) throw new Error(`Unknown agent "${toAgentId}" — use agent_list_colleagues to find a real one.`);
+          const timeoutMs = Math.min(Math.max((timeoutSeconds ?? 300) * 1000, 5_000), 900_000);
+          let fromName = 'another agent';
+          try { fromName = (this.getAgent(id) as unknown as { name?: string }).name ?? fromName; } catch { /* keep fallback */ }
+          const message = [
+            question.trim(),
+            contextText?.trim() ? `\n\nContext provided by ${fromName}:\n${contextText.trim()}` : '',
+            '\n\n(You are being asked directly by another agent. Your reply is returned to them verbatim — answer in one paragraph. You may ask the human if you truly cannot answer; you cannot ask another agent.)',
+          ].join('');
+          const started = Date.now();
+          try {
+            const reply = await Promise.race([
+              target.sendMessage(
+                message, id, { name: fromName, role: 'agent' },
+                { scenario: 'peer_query', sourceType: 'a2a_message', peerQueryDepth: 1, priority: MailboxPriorityLevel.high },
+              ),
+              new Promise<never>((_, reject) => {
+                const t = setTimeout(() => reject(new Error('PEER_QUERY_TIMEOUT')), timeoutMs);
+                (t as unknown as { unref?: () => void }).unref?.();
+              }),
+            ]);
+            return { status: 'answered' as const, agent: { id: toAgentId }, answer: String(reply ?? '').trim(), elapsed_ms: Date.now() - started };
+          } catch (err) {
+            if (String(err).includes('PEER_QUERY_TIMEOUT')) {
+              return {
+                status: 'timeout' as const,
+                agent: { id: toAgentId },
+                elapsed_ms: Date.now() - started,
+                message: `No answer within ${Math.round(timeoutMs / 1000)}s. Proceed on your best judgement and state the assumption you used, or ask the human with request_user_input.`,
+              };
+            }
+            return { status: 'unavailable' as const, agent: { id: toAgentId }, elapsed_ms: Date.now() - started, message: String(err) };
+          }
+        },
         requestRevision: async (taskId, reason) => ts.requestRevision(taskId, reason, id),
         requestTaskApproval: ts.requestTaskApproval
           ? async (taskId: string) => ts.requestTaskApproval!(taskId, id)

@@ -210,8 +210,7 @@
       "requirementRejected": "Requirement rejected: {{title}}",
       "requirementChangesRequested": "Requirement changes requested: {{title}}",
       "mentionedYou": "{{authorName}} mentioned you",
-      "groupMessage": "{{senderName}} in {{groupName}}"
-,
+      "groupMessage": "{{senderName}} in {{groupName}}",
       "staleReview": "Stale review",
       "stuckTask": "Stuck task",
       "unstartedTask": "Unstarted task",
@@ -224,8 +223,7 @@
       "requirementApprovedBody": "Requirement \"{{title}}\" has been approved and is now in progress.",
       "requirementRejectedBody": "Requirement \"{{title}}\" has been rejected.{{reason}}",
       "requirementChangesRequestedBody": "Requirement \"{{title}}\" needs changes before approval — it is still pending.{{reason}}",
-      "mentionPreview": "{{itemTitle}}: {{preview}}"
-,
+      "mentionPreview": "{{itemTitle}}: {{preview}}",
       "staleTaskInProgress": "Task \"{{title}}\" has been in_progress for {{hours}}h",
       "staleTaskInReview": "Task \"{{title}}\" has been in review for {{hours}}h with no action",
       "staleTaskUnstarted": "Task \"{{title}}\" awaiting approval for {{hours}}h"

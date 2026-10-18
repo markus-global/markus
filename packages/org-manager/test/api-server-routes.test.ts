@@ -12,6 +12,7 @@ import {
   request,
   MockServerResponse,
   type TestContext,
+  createMockHITLService,
 } from './api-server-test-helpers.js';
 
 const mockFetch = vi.fn();
@@ -517,18 +518,7 @@ describe('APIServer targeted route coverage', () => {
     it('setHITLService notification callback broadcasts to user', () => {
       const onNotification = vi.fn();
       const server = createTestServer().server;
-      server.setHITLService({
-        onNotification,
-        onApprovalChanged: vi.fn(),
-        listApprovals: vi.fn(() => []),
-        requestApproval: vi.fn(),
-        getApproval: vi.fn(),
-        respondToApproval: vi.fn(),
-        listNotifications: vi.fn(() => []),
-        countNotifications: vi.fn(() => ({ total: 0, unread: 0 })),
-        markNotificationRead: vi.fn(),
-        markAllNotificationsRead: vi.fn(),
-      } as never);
+      server.setHITLService(createMockHITLService({ onNotification }));
       const cb = onNotification.mock.calls[0]?.[0] as ((n: { targetUserId: string }) => void) | undefined;
       expect(cb).toBeTypeOf('function');
       cb?.({ targetUserId: 'user-1', id: 'n1', read: false } as never);

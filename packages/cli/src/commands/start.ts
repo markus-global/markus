@@ -1287,6 +1287,7 @@ async function startServerCore(
 
   // Wire ProjectService into TaskService (workspace management is handled by agents)
   taskService.setProjectService(projectService);
+  requirementService.setProjectService(projectService);
   taskService.setRequirementService(requirementService);
 
   // Auto-archive: archive terminal tasks and requirements after configured thresholds
@@ -1297,6 +1298,30 @@ async function startServerCore(
   // Stale task detection: alert humans when tasks are stuck in review/in_progress/pending
   const staleDetector = new StaleDetector(taskService, undefined, (items) => {
     for (const item of items) {
+      // A review reminder belongs to the REVIEWER, not to a human. The 2026-10-17
+      // failure was exactly this inversion: nobody able to act was ever told, and the
+      // only signal fired 12h later into the human's bell. Wake the owner of the step
+      // first; escalate to a human only if that agent cannot be reached.
+      if (item.type === 'review_reminder' && item.agentId) {
+        try {
+          const reviewer = agentManager.getAgent(item.agentId);
+          void reviewer
+            .sendMessage(item.message, undefined, undefined, {
+              sourceType: 'review_request',
+              ...(item.taskId ? { taskId: item.taskId } : {}),
+            })
+            .catch((err: unknown) =>
+              log.warn('Review reminder delivery failed', { taskId: item.taskId, error: String(err) }),
+            );
+          continue;
+        } catch (err) {
+          log.warn('Reviewer unavailable for reminder — escalating to human', {
+            agentId: item.agentId,
+            taskId: item.taskId,
+            error: String(err),
+          });
+        }
+      }
       hitlService.notify({
         targetUserId: 'all',
         type: 'system',

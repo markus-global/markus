@@ -7218,25 +7218,43 @@ EXPLANATION_END`;
         | 'approved'
         | 'rejected'
         | undefined;
-      let approvals = this.hitlService?.listApprovals(status ?? undefined) ?? [];
       const isPrivileged = authUser.role === 'owner' || authUser.role === 'admin';
-      if (!isPrivileged) {
-        approvals = approvals.filter(a => {
-          if (a.approverUserIds?.length) {
-            return a.approverUserIds.includes(authUser.userId);
-          }
-          if (a.targetUserId && a.targetUserId !== 'all') {
-            return a.targetUserId === authUser.userId;
-          }
-          return true;
-        });
-      }
       // Bounded list: approvals accumulate over a long-lived org. Callers page with
       // limit/offset; `total` lets the UI show counts without fetching everything.
-      const total = approvals.length;
       const limit = Math.min(Math.max(1, parseInt(url.searchParams.get('limit') ?? '50', 10) || 50), 500);
       const offset = Math.max(0, parseInt(url.searchParams.get('offset') ?? '0', 10) || 0);
-      this.json(res, 200, { approvals: approvals.slice(offset, offset + limit), total, limit, offset });
+      let approvals;
+      let total;
+      if (isPrivileged || !this.hitlService) {
+        // Page in the database, ordered by time: the in-memory mirror only holds
+        // the newest N rows and its insertion order puts everything requested
+        // after startup at the END — so map-slicing hid pending approvals and
+        // made older history unreachable ("审批没法加载历史").
+        const page = this.hitlService?.listApprovalsPage({ status, limit, offset }) ?? { approvals: [], total: 0 };
+        approvals = page.approvals;
+        total = page.total;
+      } else {
+        // Approver scoping is a predicate over rows, not a column query, so it has
+        // to run BEFORE paging. Read the full matching set and page the result —
+        // no `limit: 500` over-fetch, because that constant would silently make an
+        // approver's rows beyond the 500th unreachable while still reporting an
+        // honest-looking smaller total (the exact bug this endpoint just shed).
+        // Only non-owner/admin humans take this path; the heavy read is bounded by
+        // the org's approval count, not by request rate.
+        const all = (this.hitlService.listApprovalsPage({ status, limit: Number.MAX_SAFE_INTEGER, offset: 0 }).approvals)
+          .filter(a => {
+            if (a.approverUserIds?.length) {
+              return a.approverUserIds.includes(authUser.userId);
+            }
+            if (a.targetUserId && a.targetUserId !== 'all') {
+              return a.targetUserId === authUser.userId;
+            }
+            return true;
+          });
+        total = all.length;
+        approvals = all.slice(offset, offset + limit);
+      }
+      this.json(res, 200, { approvals, total, limit, offset });
       return;
     }
 
