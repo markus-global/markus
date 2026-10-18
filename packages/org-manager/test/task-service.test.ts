@@ -1990,3 +1990,75 @@ describe('TaskService', () => {
     });
   });
 });
+
+// ─── BUG-1/BUG-4 (2026-10-18)：改挂需求 + 孤儿卡（需求不存在的任务）防护 ───
+
+describe('TaskService requirement linkage guards', () => {
+  type ReqStub = { id: string; title: string; status: string; projectId?: string };
+  const ACTIVE: ReqStub = { id: 'req_active', title: 'Active req', status: 'in_progress', projectId: 'proj_inherited' };
+  const ACTIVE2: ReqStub = { id: 'req_active2', title: 'Second active req', status: 'approved' };
+  const PENDING: ReqStub = { id: 'req_pending', title: 'Unapproved req', status: 'pending' };
+  const CANCELLED: ReqStub = { id: 'req_cancelled', title: 'Cancelled req', status: 'cancelled' };
+
+  function withRequirements(extra: ReqStub[] = []) {
+    const { svc, agentManager } = createService();
+    const reqs = [ACTIVE, ACTIVE2, PENDING, CANCELLED, ...extra];
+    svc.setRequirementService({
+      getRequirement: (id: string) => reqs.find(r => r.id === id),
+      linkTask: vi.fn(),
+    } as never);
+    return { svc, agentManager };
+  }
+
+  let ts: TaskService;
+  afterEach(() => {
+    ts.stopTimeoutChecker();
+    vi.restoreAllMocks();
+  });
+
+  it('createTask rejects a non-existent requirement instead of minting an orphan (BUG-4)', () => {
+    ({ svc: ts } = withRequirements());
+    expect(() => ts.createTask(createDefaults({ requirementId: 'req_actve' }) as never))
+      .toThrow(/requirement "req_actve" does not exist/);
+  });
+
+  it('createTask still inherits projectId from a real requirement', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(task.requirementId).toBe('req_active');
+    expect(task.projectId).toBe('proj_inherited');
+  });
+
+  it('updateTask re-links the card and leaves an audit note on it (BUG-1)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    const updated = ts.updateTask(task.id, { requirementId: ACTIVE2.id } as never, 'agent-a');
+    expect(updated.requirementId).toBe(ACTIVE2.id);
+    // cross-requirement moves change the governance chain → must leave a trace
+    expect((updated.notes ?? []).join('\n')).toMatch(/Requirement re-linked: req_active → req_active2/);
+  });
+
+  it('updateTask rejects an unknown requirement — no silent drop (BUG-4)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_typo' } as never, 'agent-a'))
+      .toThrow(/does not exist/);
+    expect(ts.getTask(task.id)!.requirementId).toBeUndefined();
+  });
+
+  it('updateTask refuses to hang live work on an unapproved requirement', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_pending' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_cancelled' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+  });
+
+  it('updateTask refuses to detach a card from its requirement (that is what makes it invisible)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(() => ts.updateTask(task.id, { requirementId: null } as never, 'agent-a'))
+      .toThrow(/Cannot detach a task from its requirement/);
+  });
+});

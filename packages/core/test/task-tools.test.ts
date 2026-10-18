@@ -874,3 +874,86 @@ describe('task tools error paths', () => {
     expect(result.error).toContain('Resubmit denied');
   });
 });
+
+// ─── BUG-1～4 / 2026-10-18：改挂需求 + 静默失败类缺陷回归 ───────────────────
+
+describe('task_update requirement re-link (BUG-1/BUG-2)', () => {
+  const creatorTask = () =>
+    vi.fn(async () => ({
+      id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+      priority: 'medium', createdBy: 'agt_test',
+    }));
+
+  it('passes requirement_id through to updateTaskFields (creator)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('success');
+    expect(ctx.updateTaskFields).toHaveBeenCalledWith(
+      'tsk_001',
+      expect.objectContaining({ requirementId: 'req_2' }),
+    );
+  });
+
+  it('denies a re-link from a non-creator', async () => {
+    const ctx = createMockContext({
+      getTask: vi.fn(async () => ({
+        id: 'tsk_001', title: 'T', description: 'D', status: 'in_progress',
+        priority: 'medium', createdBy: 'agt_other',
+      })),
+    });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirement_id: 'req_2' }));
+    expect(result.status).toBe('denied');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
+  });
+
+  it('fails loud on an undeclared parameter instead of silently succeeding (BUG-2)', async () => {
+    const ctx = createMockContext({ getTask: creatorTask() });
+    const tool = findTool(ctx, 'task_update');
+    const result = JSON.parse(await tool.execute({ task_id: 'tsk_001', requirementId: 'req_2' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('requirementId');
+    expect(result.error).toContain('requirement_id'); // names the field that IS accepted
+    expect(result.error).toContain('NOTHING was changed');
+    expect(ctx.updateTaskFields).not.toHaveBeenCalled();
+  });
+});
+
+describe('requirement status tools (BUG-3/BUG-3b)', () => {
+  it('requirement_update refuses status and points at requirement_update_status (BUG-3)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(await tool.execute({ requirement_id: 'req_001', status: 'completed' }));
+    expect(result.status).toBe('error');
+    expect(result.error).toContain('requirement_update_status');
+    expect(ctx.updateRequirement).not.toHaveBeenCalled();
+  });
+
+  it('requirement_update_status advertises completed in its schema (BUG-3b)', () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const statusSchema = (tool.inputSchema as any).properties.status;
+    expect(statusSchema.enum).toContain('completed');
+  });
+
+  it('requirement_update_status accepts completed end to end (BUG-3b)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(await tool.execute({
+      requirement_id: 'req_001', status: 'completed', reason: 'all linked tasks are done',
+    }));
+    expect(result.status).toBe('success');
+    expect(ctx.updateRequirementStatus).toHaveBeenCalledWith('req_001', 'completed', 'all linked tasks are done');
+  });
+
+  it('requirement_update_status rejects a status outside the advertised set', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update_status');
+    const result = JSON.parse(await tool.execute({
+      requirement_id: 'req_001', status: 'in_progress', reason: 'x',
+    }));
+    expect(result.status).toBe('error');
+    expect(ctx.updateRequirementStatus).not.toHaveBeenCalled();
+  });
+});

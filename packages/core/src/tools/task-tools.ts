@@ -753,8 +753,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             });
           } else {
             // No status change — note, title, description, and/or blocked_by update
-            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, or schedule.' });
+            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule && requirementId === undefined) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, requirement_id, or schedule.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
