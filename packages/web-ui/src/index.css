@@ -671,13 +671,12 @@ html.electron-darwin .electron-mac-top-safe {
    Drawn as a masked ring rather than a border-image: border-image ignores
    border-radius and would square off the bubble's corners.
 
-   No `min-height` here on purpose (removed 2026-10-18): the floor existed only to
-   keep the ring visible on a nearly-empty bubble, and that is exactly the "big
-   empty framed box" users saw during long tool-only turns. The ring is now gated
-   on the bubble having prose (lib/chatBubbleProse.ts), so it never wraps nothing —
-   and a height floor can only re-introduce the empty box. */
+   The ring means "this turn is still producing" — which INCLUDES thinking and
+   tool calls with no prose yet (owner, 2026-10-18). Do not gate it on the bubble
+   having text: an agent that is running tools *is* outputting. */
 .streaming-bubble {
   position: relative;
+  min-height: 2.5rem;
   border-radius: 0.75rem;
 }
 .streaming-bubble::after {

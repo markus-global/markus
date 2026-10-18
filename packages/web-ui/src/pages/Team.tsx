@@ -59,7 +59,6 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
-import { bubbleHasProse, shouldPaintStreamingRing } from '../lib/chatBubbleProse.ts';
 import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
   sessionStreamState,
@@ -5550,11 +5549,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 msgIsStreaming: !!msg.isStreaming,
                 liveStreamForView,
               });
-              const showStreamingBubble = shouldPaintStreamingRing({
-                live: (isLastVisualStreaming && isLastMsg) || isStreamingMsg,
-                sender: msg.sender,
-                hasProse: bubbleHasProse(msg),
-              });
+              // 光环 = 「这轮还在输出」，**不看有没有正文**：思考、工具调用都算输出，
+              // 即使还没吐出任何文字也该让用户看到这轮是活的（老板 2026-10-18）。
+              // 气泡里那列工具行的问题由 visibleTimelineBlocks 解决，不靠光环。
+              const showStreamingBubble = (isLastVisualStreaming && isLastMsg) || isStreamingMsg;
               const showActions = chatMode === 'channel' || (!isStreamingMsg || msg.isStopped);
 
               return (
