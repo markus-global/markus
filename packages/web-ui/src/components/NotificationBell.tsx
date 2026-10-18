@@ -1416,7 +1416,6 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     // the tab, and then the ring read the already-moved tab and advanced a second
     // step — one physical swipe, two destinations.
     const tabs: Array<'approvals' | 'notifications'> = ['approvals', 'notifications'];
-    const tabIdx = tabs.indexOf(tab);
 
     return (
       <>
@@ -1444,16 +1443,21 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
         {/* Actions bar */}
         {tab === 'notifications' && notifFilterBar}
 
-        {/* Swipeable content */}
+        {/* Content — ONLY the active tab is laid out.
+            This used to be a `translateX` row holding BOTH tabs side by side
+            (a leftover from the in-view tab swipe the nav ring replaced). Under
+            mobile document scrolling every `h-full` in the chain collapses to
+            `auto`, so each pane sized to its OWN content and the row stretched
+            to the taller one: the hidden tab's height leaked into the document.
+            Measured on the notifications page: empty 未读 pane = 64px, row =
+            3297px (the approvals tab) → 2648px of scrollable blank, and the
+            scroll handler hid the top/bottom chrome because it looked like the
+            user was reading downward. The popover above never had this because
+            it has always rendered one pane; now both do. */}
         <div className="flex-1 overflow-hidden relative">
-          <div
-            className="flex h-full transition-transform duration-300 ease-out"
-            style={{ transform: `translateX(-${tabIdx * 100}%)` }}
-          >
-            <div
-              className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin"
-            >
-              {approvals.length === 0 ? (
+          <div className="h-full overflow-y-auto scrollbar-thin">
+            {tab === 'approvals' && (
+              approvals.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
@@ -1639,12 +1643,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                     </>
                   )}
                 </div>
-              )}
-            </div>
-            <div
-              className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin"
-            >
-              {visibleNotifications.length === 0 ? (
+              )
+            )}
+
+            {tab === 'notifications' && (
+              visibleNotifications.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
@@ -1675,8 +1678,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                     <div ref={notifSentinelRef} aria-hidden className="h-px" />
                   )}
                 </div>
-              )}
-            </div>
+              )
+            )}
           </div>
         </div>
       </div>
