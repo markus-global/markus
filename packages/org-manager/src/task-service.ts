@@ -3899,17 +3899,34 @@ export class TaskService implements ApprovalTargetPort {
     if (data.title !== undefined) task.title = data.title;
     if (data.description !== undefined) task.description = data.description;
     if (data.priority !== undefined) task.priority = data.priority;
-    if (data.projectId !== undefined) task.projectId = data.projectId ?? undefined;
+    if (data.projectId !== undefined) {
+      // Validate the explicit write too: locking only the re-link path would leave
+      // PUT /api/tasks/:id minting project orphans tomorrow.
+      if (data.projectId) this.assertValidProjectReference(data.projectId);
+      task.projectId = data.projectId ?? undefined;
+    }
     if (data.requirementId !== undefined) {
-      this.assertRebindableRequirement(data.requirementId);
+      const req = this.assertRebindableRequirement(data.requirementId);
+      // projectId is DERIVED from the requirement, so it is recomputed HERE at the write
+      // point instead of being left as a stale cache. A re-link used to swap only the
+      // requirement while the project stayed behind — the same orphan as a bad requirement
+      // id, one field over. Validate before mutating: a throw must leave the task untouched.
+      const cascadedProjectId = req.projectId || undefined;
+      if (cascadedProjectId) this.assertValidProjectReference(cascadedProjectId);
       const previousRequirementId = task.requirementId;
+      const previousProjectId = task.projectId;
       task.requirementId = data.requirementId ?? undefined;
+      task.projectId = cascadedProjectId;
       if (previousRequirementId !== task.requirementId) {
         // Cross-requirement moves change a card's governance chain — keep an
         // auditable line on the card itself (BUG-1, 2026-10-18).
         const from = previousRequirementId ?? '(none)';
         const to = task.requirementId ?? '(none)';
-        this.addTaskNote(id, `Requirement re-linked: ${from} → ${to}`, updatedBy);
+        const projectNote =
+          previousProjectId !== task.projectId
+            ? ` (project: ${previousProjectId ?? '(none)'} → ${task.projectId ?? '(none)'})`
+            : '';
+        this.addTaskNote(id, `Requirement re-linked: ${from} → ${to}${projectNote}`, updatedBy);
       }
     }
     if (data.reviewerId !== undefined) task.reviewerId = data.reviewerId;
@@ -3979,7 +3996,9 @@ export class TaskService implements ApprovalTargetPort {
     'completed',
   ]);
 
-  private assertRebindableRequirement(requirementId: string | null): void {
+  private assertRebindableRequirement(
+    requirementId: string | null
+  ): NonNullable<ReturnType<RequirementService['getRequirement']>> {
     if (requirementId === null) {
       throw new Error(
         'Cannot detach a task from its requirement — a task with no requirement becomes an orphan ' +
@@ -4007,6 +4026,29 @@ export class TaskService implements ApprovalTargetPort {
       throw new Error(
         `Cannot re-link a task to requirement "${req.title}" (${req.id}) — its status is "${req.status}", ` +
           `not an approved/active requirement. Get the requirement approved first, or pick the active requirement.`
+      );
+    }
+    return req;
+  }
+
+  /**
+   * A project id is a REFERENCE, not free text. Writing one that is not in the project table
+   * is how "project orphans" were minted (129 archived rows point at `n/a` / `proj_default` /
+   * hand-typed ids). Same invariant as the requirement guard: a reference we cannot verify
+   * must be refused, never written.
+   */
+  private assertValidProjectReference(projectId: string): void {
+    if (!this.projectService) {
+      throw new Error(
+        'Cannot set projectId: project lookup is unavailable in this process, so the target cannot ' +
+          'be verified. Refusing rather than writing an unvalidated project reference.'
+      );
+    }
+    if (!this.projectService.getProject(projectId)) {
+      throw new Error(
+        `Project "${projectId}" does not exist — a task pointing at a non-existent project is a project ` +
+          `orphan (it falls out of every project view and every project-scoped report). ` +
+          `Fix the requirement's projectId first, or pick a real project id.`
       );
     }
   }

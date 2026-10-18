@@ -2084,4 +2084,68 @@ describe('TaskService requirement linkage guards', () => {
     expect(() => ts.updateTask(task.id, { requirementId: null } as never, 'agent-a'))
       .toThrow(/Cannot detach a task from its requirement/);
   });
+
+  // ── projectId is DERIVED, not cached: validate + cascade (CTO ruling (a), 2026-10-18) ──
+
+  const REAL_PROJECTS = ['proj_inherited', 'proj_real'];
+  const GHOST_REQ: ReqStub = {
+    id: 'req_ghost_project',
+    title: 'Req carrying a bogus project id',
+    status: 'in_progress',
+    projectId: 'proj_anteum',
+  };
+
+  function withProjects(extra: ReqStub[] = []) {
+    const r = withRequirements(extra);
+    r.svc.setProjectService({
+      getProject: (id: string) =>
+        REAL_PROJECTS.includes(id) ? { id, name: id, status: 'active' } : null,
+    } as never);
+    return r;
+  }
+
+  it('re-linking cascades projectId from the target requirement', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults() as never);
+    expect(task.projectId).toBeUndefined();
+    const moved = ts.updateTask(task.id, { requirementId: 'req_active' } as never, 'agent-a');
+    expect(moved.requirementId).toBe('req_active');
+    expect(moved.projectId).toBe('proj_inherited');
+  });
+
+  it('re-linking to a requirement without a project clears it — an honest clear, not a stale cache', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(task.projectId).toBe('proj_inherited');
+    const moved = ts.updateTask(task.id, { requirementId: ACTIVE2.id } as never, 'agent-a');
+    expect(moved.projectId).toBeUndefined();
+  });
+
+  it('re-linking onto a requirement with a non-existent projectId is rejected whole', () => {
+    ({ svc: ts } = withProjects([GHOST_REQ]));
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(() => ts.updateTask(task.id, { requirementId: GHOST_REQ.id } as never, 'agent-a'))
+      .toThrow(/Project "proj_anteum" does not exist/);
+    // Rejected BEFORE mutation: neither field moved.
+    const after = ts.getTask(task.id)!;
+    expect(after.requirementId).toBe('req_active');
+    expect(after.projectId).toBe('proj_inherited');
+  });
+
+  it('re-linking fails closed when project lookup is unavailable', () => {
+    ({ svc: ts } = withRequirements()); // requirement lookup wired, project lookup deliberately not
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_active' } as never, 'agent-a'))
+      .toThrow(/project lookup is unavailable/);
+  });
+
+  it('a direct projectId write is validated too — the PUT path cannot mint project orphans', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { projectId: 'proj_ghost' } as never, 'agent-a'))
+      .toThrow(/Project "proj_ghost" does not exist/);
+    expect(ts.getTask(task.id)!.projectId).toBeUndefined();
+    const ok = ts.updateTask(task.id, { projectId: 'proj_real' } as never, 'agent-a');
+    expect(ok.projectId).toBe('proj_real');
+  });
 });
