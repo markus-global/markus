@@ -152,6 +152,7 @@ import {
   REVIEWER,
   TEAM_1,
   TEST_PASSWORD_HASH,
+  createMockHITLService,
   createTestServer,
   request,
   requestRaw,
@@ -1116,21 +1117,12 @@ describe('APIServer extended route coverage', () => {
     });
 
     it('POST /api/approvals/:id rejects unauthorized responder', async () => {
-      ctx.server.setHITLService({
-        onNotification: vi.fn(),
-        onApprovalChanged: vi.fn(),
-        listApprovals: vi.fn(() => []),
-        requestApproval: vi.fn(),
+      ctx.server.setHITLService(createMockHITLService({
         getApproval: vi.fn(() => ({
           id: 'appr-x', status: 'pending', title: 'X', agentId: AGENT_A,
           approverUserIds: ['other-user'],
         })),
-        respondToApproval: vi.fn(),
-        listNotifications: vi.fn(() => []),
-        countNotifications: vi.fn(() => ({ total: 0, unread: 0 })),
-        markNotificationRead: vi.fn(),
-        markAllNotificationsRead: vi.fn(),
-      } as never);
+      }));
       const res = await request(ctx.server, 'POST', '/api/approvals/appr-x', { approved: true });
       expect([200, 403, 404]).toContain(res.status);
     });
@@ -1185,18 +1177,10 @@ describe('APIServer extended route coverage', () => {
     });
 
     it('POST /api/settings/integrations/feishu/register completes QR flow', async () => {
-      ctx.server.setHITLService({
-        onNotification: vi.fn(),
-        onApprovalChanged: vi.fn(),
+      ctx.server.setHITLService(createMockHITLService({
         listApprovals: vi.fn(() => [{ id: 'a1', title: 'Approve X', agentName: 'Agent A' }]),
-        requestApproval: vi.fn(),
-        getApproval: vi.fn(),
-        respondToApproval: vi.fn(),
-        listNotifications: vi.fn(() => []),
         countNotifications: vi.fn(() => ({ total: 2, unread: 1 })),
-        markNotificationRead: vi.fn(),
-        markAllNotificationsRead: vi.fn(),
-      } as never);
+      }));
       const res = await request(ctx.server, 'POST', '/api/settings/integrations/feishu/register');
       expect(res.status).toBe(200);
       expect(res.json).toMatchObject({ success: expect.any(Boolean) });
@@ -1557,18 +1541,10 @@ describe('APIServer extended route coverage', () => {
     });
 
     it('POST /api/settings/integrations/feishu/register zh welcome with pending items', async () => {
-      ctx.server.setHITLService({
-        onNotification: vi.fn(),
-        onApprovalChanged: vi.fn(),
+      ctx.server.setHITLService(createMockHITLService({
         listApprovals: vi.fn(() => [{ id: 'a1', title: '审批事项', agentName: 'Agent A' }]),
-        requestApproval: vi.fn(),
-        getApproval: vi.fn(),
-        respondToApproval: vi.fn(),
-        listNotifications: vi.fn(() => []),
         countNotifications: vi.fn(() => ({ total: 3, unread: 2 })),
-        markNotificationRead: vi.fn(),
-        markAllNotificationsRead: vi.fn(),
-      } as never);
+      }));
       const res = await request(ctx.server, 'POST', '/api/settings/integrations/feishu/register');
       expect(res.status).toBe(200);
       if (res.json.success === true) {

@@ -148,6 +148,7 @@ export type {
   ReviewContext,
 } from './review-service.js';
 export { EventBus } from './events.js';
+export { decideTurnReply, shouldComposeAnswer, type TurnReply, type TurnReplyInput } from './turn-completion.js';
 export { AgentMailbox, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
 export {
   AttentionController,

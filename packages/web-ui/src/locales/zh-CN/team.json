@@ -210,8 +210,7 @@
       "requirementRejected": "需求已拒绝：{{title}}",
       "requirementChangesRequested": "需求已打回：{{title}}",
       "mentionedYou": "{{authorName}} 提到了你",
-      "groupMessage": "{{senderName}} 在 {{groupName}} 中"
-,
+      "groupMessage": "{{senderName}} 在 {{groupName}} 中",
       "staleReview": "审核停滞",
       "stuckTask": "任务卡住",
       "unstartedTask": "任务未启动",
@@ -224,8 +223,7 @@
       "requirementApprovedBody": "需求「{{title}}」已批准，正在进行中。",
       "requirementRejectedBody": "需求「{{title}}」已被拒绝。{{reason}}",
       "requirementChangesRequestedBody": "需求「{{title}}」需修改后再审批 —— 仍处于待审批状态。{{reason}}",
-      "mentionPreview": "{{itemTitle}}：{{preview}}"
-,
+      "mentionPreview": "{{itemTitle}}：{{preview}}",
       "staleTaskInProgress": "任务「{{title}}」已进行 {{hours}} 小时",
       "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作",
       "staleTaskUnstarted": "任务「{{title}}」已等待审批 {{hours}} 小时"

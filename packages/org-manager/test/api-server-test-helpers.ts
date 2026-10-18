@@ -3,6 +3,7 @@ import { EventEmitter } from 'node:events';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { APIServer } from '../src/api-server.js';
 import { TaskService } from '../src/task-service.js';
+import type { HITLService } from '../src/hitl-service.js';
 import type { OrganizationService } from '../src/org-service.js';
 import type { StorageBridge } from '../src/storage-bridge.js';
 
@@ -442,6 +443,44 @@ export interface TestContext {
   agentManager: ReturnType<typeof createMockAgentManager>;
 }
 
+/**
+ * Complete HITLService double.
+ *
+ * APIServer calls a fixed set of HITLService methods, and every hand-written
+ * partial mock is a latent 500: the route reads `service.listApprovalsPage(...)`,
+ * so a mock that predates that method throws a TypeError at request time. That is
+ * exactly what broke CI on 2026-10-18 — the approvals read path moved to
+ * `listApprovalsPage` and four fixtures still only had `listApprovals`. One
+ * factory means "the interface grew" is a single edit instead of a hunt.
+ *
+ * `listApprovalsPage` is derived from the double's own `listApprovals`, so a test
+ * that only overrides the latter still gets correct status/limit/offset paging.
+ */
+export function createMockHITLService(overrides: Record<string, unknown> = {}): HITLService {
+  const merged: Record<string, unknown> = {
+    onNotification: vi.fn(),
+    onApprovalChanged: vi.fn(),
+    listApprovals: vi.fn((): Array<Record<string, unknown>> => []),
+    requestApproval: vi.fn(() => ({ id: 'appr-1', status: 'pending', title: 'Test' })),
+    getApproval: vi.fn(() => null),
+    respondToApproval: vi.fn(() => null),
+    claimApply: vi.fn(() => true),
+    listNotifications: vi.fn(() => []),
+    countNotifications: vi.fn(() => ({ total: 0, unread: 0 })),
+    markNotificationRead: vi.fn(),
+    markAllNotificationsRead: vi.fn(),
+    ...overrides,
+  };
+  if (!overrides['listApprovalsPage']) {
+    merged['listApprovalsPage'] = (opts: { status?: string; limit: number; offset: number }) => {
+      const all = (merged['listApprovals'] as (status?: string) => Array<{ status?: string }>)(opts.status);
+      const filtered = opts.status ? all.filter(a => a.status === opts.status) : all;
+      return { approvals: filtered.slice(opts.offset, opts.offset + opts.limit), total: filtered.length };
+    };
+  }
+  return merged as unknown as HITLService;
+}
+
 export function createTestServer(): TestContext {
   const agentManager = createMockAgentManager();
   const orgService = createMockOrgService(agentManager);
@@ -452,15 +491,21 @@ export function createTestServer(): TestContext {
     enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
     requireApprovalForPriority: [], requireRequirement: false, rules: [],
   });
+  // Production wires the project lookup into TaskService (cli/start.ts) and a projectId is a
+  // validated REFERENCE on write (2026-10-18). The fixture must model that, or task creation
+  // fails closed for reasons the test never intended to exercise.
+  taskService.setProjectService({
+    getProject: (id: string) => (id === PROJECT_1 ? { id, name: 'Project One', orgId: 'default' } : null),
+  } as never);
   const storage = createMockStorage();
   const server = new APIServer(orgService, taskService, 0);
   server.setStorage(storage);
   server.setAuditService({ record: vi.fn(), query: vi.fn(() => []), summary: vi.fn(() => ({ total: 0, byType: {} })), getSummary: vi.fn(() => ({ total: 0 })), getTokenUsage: vi.fn(() => []) } as never);
-  server.setHITLService({
-    onNotification: vi.fn(),
-    onApprovalChanged: vi.fn(),
-    listApprovals: vi.fn(() => []),
-    requestApproval: vi.fn(() => ({ id: 'appr-1', status: 'pending', title: 'Test' })),
+  server.setHITLService(createMockHITLService({
+    listNotifications: vi.fn(() => [{ id: 'notif-1', read: false }]),
+    countNotifications: vi.fn(() => ({ total: 1, unread: 1 })),
+    markNotificationRead: vi.fn(() => true),
+    markAllNotificationsRead: vi.fn(() => 1),
     getApproval: vi.fn((id: string) => id === 'appr-pending' ? {
       id: 'appr-pending', status: 'pending', title: 'Approve task', agentId: AGENT_A,
       details: { taskId: 'task-x', subType: 'task' },
@@ -472,12 +517,7 @@ export function createTestServer(): TestContext {
       },
       decision: { intent: approved ? 'approve' : 'reject' },
     })),
-    claimApply: vi.fn(() => true),
-    listNotifications: vi.fn(() => [{ id: 'notif-1', read: false }]),
-    countNotifications: vi.fn(() => ({ total: 1, unread: 1 })),
-    markNotificationRead: vi.fn(() => true),
-    markAllNotificationsRead: vi.fn(() => 1),
-  } as never);
+  }));
   server.setBillingService({
     getUsage: vi.fn(() => ({ tokens: 0, cost: 0 })), getAgentUsage: vi.fn(() => []),
     getUsageSummary: vi.fn(() => ({ storageBytes: 1024 })), setOrgPlan: vi.fn(), getOrgPlan: vi.fn(() => 'free'),

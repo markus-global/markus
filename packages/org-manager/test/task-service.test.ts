@@ -89,6 +89,10 @@ async function createTaskInReview(ts: TaskService) {
 function createService(overrides: { governanceEnabled?: boolean; executionHandler?: Parameters<typeof createMockAgentManager>[0] } = {}) {
   const agentManager = createMockAgentManager(overrides.executionHandler);
   const svc = new TaskService();
+  // Production always wires the project lookup (cli/start.ts), so the default fixture models
+  // that: a projectId write is a REFERENCE validated on write (2026-10-18). Cases that need a
+  // strict project table (ghost-id rejection) override this with `withProjects()`.
+  svc.setProjectService({ getProject: (id: string) => ({ id }) } as never);
   svc.setGovernancePolicy({
     enabled: overrides.governanceEnabled ?? false,
     defaultTier: 'auto',
@@ -596,6 +600,11 @@ describe('TaskService', () => {
         linkTask: vi.fn(),
       };
       ts.setRequirementService(requirementService as never);
+      // The inherited project is validated as a reference (same invariant as re-link),
+      // so the fixture must expose the project it claims to inherit from.
+      ts.setProjectService({
+        getProject: (id: string) => (id === 'proj-from-req' ? { id, name: id, status: 'active' } : null),
+      } as never);
 
       const task = ts.createTask(createDefaults({
         requirementId: 'req-1',
@@ -1053,7 +1062,7 @@ describe('TaskService', () => {
   });
 
   describe('postTaskComment notifications', () => {
-    it('notifies mentioned agents and injects comment into in-progress task', async () => {
+    it('notifies mentioned agents immediately and never interrupts the running session mid-work', async () => {
       const taskCommentRepo = {
         add: vi.fn().mockResolvedValue({
           id: 'c2',
@@ -1087,6 +1096,9 @@ describe('TaskService', () => {
         expect.any(Object),
       );
       const agentA = agentManager.getAgent(AGENT_A);
+      // A human (authorType 'human') IS injected into the running session —
+      // humans are the one interruption worth taking mid-task. Agent comments
+      // never are (see task-attention.test.ts).
       expect(agentA.injectUserMessage).toHaveBeenCalled();
     });
 
@@ -1617,7 +1629,7 @@ describe('TaskService', () => {
       expect(ts.getTask(task.id)!.deliverables![0]!.summary).toMatch(/Run #|New output/);
     });
 
-    it('suppresses assignee notification when reviewer comments during review', async () => {
+    it('wakes the assignee when a human comments during review', async () => {
       const taskCommentRepo = {
         add: vi.fn().mockResolvedValue({
           id: 'c-rev', taskId: 't', authorId: REVIEWER, authorName: 'Reviewer',
@@ -1633,7 +1645,10 @@ describe('TaskService', () => {
         authorType: 'human',
       });
 
-      expect(agentManager.getAgent(AGENT_A).enqueueToMailbox).not.toHaveBeenCalled();
+      // A human speaking is a high-value signal (people write rarely) — the
+      // assignee IS woken. What no longer happens is a plain agent-to-agent
+      // comment waking them (see task-attention.test.ts).
+      expect(agentManager.getAgent(AGENT_A).enqueueToMailbox).toHaveBeenCalled();
     });
 
     it('runTaskFresh executes without prior context after retryTaskFresh', async () => {
@@ -1988,5 +2003,176 @@ describe('TaskService', () => {
       // Non-scheduled tasks should not get nextRunAt modified
       expect(accepted.scheduleConfig?.nextRunAt).toBeUndefined();
     });
+  });
+});
+
+// ─── BUG-1/BUG-4 (2026-10-18)：改挂需求 + 孤儿卡（需求不存在的任务）防护 ───
+
+describe('TaskService requirement linkage guards', () => {
+  type ReqStub = { id: string; title: string; status: string; projectId?: string };
+  const ACTIVE: ReqStub = { id: 'req_active', title: 'Active req', status: 'in_progress', projectId: 'proj_inherited' };
+  const ACTIVE2: ReqStub = { id: 'req_active2', title: 'Second active req', status: 'review' };
+  const PENDING: ReqStub = { id: 'req_pending', title: 'Unapproved req', status: 'pending' };
+  const CANCELLED: ReqStub = { id: 'req_cancelled', title: 'Cancelled req', status: 'cancelled' };
+  // Real statuses from RequirementService.VALID_STATUSES that a denylist used to let through.
+  const ARCHIVED: ReqStub = { id: 'req_archived', title: 'Archived req', status: 'archived' };
+  const FAILED: ReqStub = { id: 'req_failed', title: 'Failed req', status: 'failed' };
+
+  function withRequirements(extra: ReqStub[] = []) {
+    const { svc, agentManager } = createService();
+    const reqs = [ACTIVE, ACTIVE2, PENDING, CANCELLED, ARCHIVED, FAILED, ...extra];
+    svc.setRequirementService({
+      getRequirement: (id: string) => reqs.find(r => r.id === id),
+      linkTask: vi.fn(),
+    } as never);
+    return { svc, agentManager };
+  }
+
+  let ts: TaskService;
+  afterEach(() => {
+    ts.stopTimeoutChecker();
+    vi.restoreAllMocks();
+  });
+
+  it('createTask rejects a non-existent requirement instead of minting an orphan (BUG-4)', () => {
+    ({ svc: ts } = withRequirements());
+    expect(() => ts.createTask(createDefaults({ requirementId: 'req_actve' }) as never))
+      .toThrow(/requirement "req_actve" does not exist/);
+  });
+
+  it('createTask still inherits projectId from a real requirement', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(task.requirementId).toBe('req_active');
+    expect(task.projectId).toBe('proj_inherited');
+  });
+
+  it('updateTask re-links the card and leaves an audit note on it (BUG-1)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    const updated = ts.updateTask(task.id, { requirementId: ACTIVE2.id } as never, 'agent-a');
+    expect(updated.requirementId).toBe(ACTIVE2.id);
+    // cross-requirement moves change the governance chain → must leave a trace
+    expect((updated.notes ?? []).join('\n')).toMatch(/Requirement re-linked: req_active → req_active2/);
+  });
+
+  it('updateTask rejects an unknown requirement — no silent drop (BUG-4)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_typo' } as never, 'agent-a'))
+      .toThrow(/does not exist/);
+    expect(ts.getTask(task.id)!.requirementId).toBeUndefined();
+  });
+
+  it('updateTask refuses to hang live work on an unapproved requirement', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_pending' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_cancelled' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+  });
+
+  it('updateTask refuses archived/failed requirements — a status denylist let them through', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    // Re-linking back onto the ARCHIVED (old) requirement is the reverse of the boss's
+    // reorganization and mints exactly the invisible card this guard exists to stop.
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_archived' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_failed' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(ts.getTask(task.id)!.requirementId).toBe('req_active');
+  });
+
+  it('updateTask fails closed when requirement lookup is unavailable', () => {
+    ({ svc: ts } = createService()); // deliberately NOT wiring setRequirementService
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_unverifiable' } as never, 'agent-a'))
+      .toThrow(/requirement lookup is unavailable/);
+    expect(ts.getTask(task.id)!.requirementId).toBeUndefined();
+  });
+
+  it('updateTask refuses to detach a card from its requirement (that is what makes it invisible)', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(() => ts.updateTask(task.id, { requirementId: null } as never, 'agent-a'))
+      .toThrow(/Cannot detach a task from its requirement/);
+  });
+
+  // ── projectId is DERIVED, not cached: validate + cascade (CTO ruling (a), 2026-10-18) ──
+
+  const REAL_PROJECTS = ['proj_inherited', 'proj_real'];
+  const GHOST_REQ: ReqStub = {
+    id: 'req_ghost_project',
+    title: 'Req carrying a bogus project id',
+    status: 'in_progress',
+    projectId: 'proj_anteum',
+  };
+
+  function withProjects(extra: ReqStub[] = []) {
+    const r = withRequirements(extra);
+    r.svc.setProjectService({
+      getProject: (id: string) =>
+        REAL_PROJECTS.includes(id) ? { id, name: id, status: 'active' } : null,
+    } as never);
+    return r;
+  }
+
+  it('re-linking cascades projectId from the target requirement', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults() as never);
+    expect(task.projectId).toBeUndefined();
+    const moved = ts.updateTask(task.id, { requirementId: 'req_active' } as never, 'agent-a');
+    expect(moved.requirementId).toBe('req_active');
+    expect(moved.projectId).toBe('proj_inherited');
+  });
+
+  it('re-linking to a requirement without a project clears it — an honest clear, not a stale cache', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(task.projectId).toBe('proj_inherited');
+    const moved = ts.updateTask(task.id, { requirementId: ACTIVE2.id } as never, 'agent-a');
+    expect(moved.projectId).toBeUndefined();
+  });
+
+  it('re-linking onto a requirement with a non-existent projectId is rejected whole', () => {
+    ({ svc: ts } = withProjects([GHOST_REQ]));
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    expect(() => ts.updateTask(task.id, { requirementId: GHOST_REQ.id } as never, 'agent-a'))
+      .toThrow(/Project "proj_anteum" does not exist/);
+    // Rejected BEFORE mutation: neither field moved.
+    const after = ts.getTask(task.id)!;
+    expect(after.requirementId).toBe('req_active');
+    expect(after.projectId).toBe('proj_inherited');
+  });
+
+  it('createTask rejects a requirement whose projectId is not a real project', () => {
+    // Inheritance is the other half of the same door: a bogus project id must be refused
+    // at creation too, not fanned out to every card created under that requirement.
+    ({ svc: ts } = withProjects([GHOST_REQ]));
+    expect(() => ts.createTask(createDefaults({ requirementId: GHOST_REQ.id }) as never))
+      .toThrow(/Project "proj_anteum" does not exist/);
+  });
+
+  it('re-linking fails closed when project lookup is unavailable', () => {
+    ({ svc: ts } = withRequirements());
+    // Simulate a process that never wired the project service (some CLI paths construct
+    // TaskService standalone). Creating without a requirement stays legal — there is no
+    // project reference to verify — but cascading one onto a re-link must refuse.
+    delete (ts as unknown as { projectService?: unknown }).projectService;
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_active' } as never, 'agent-a'))
+      .toThrow(/project lookup is unavailable/);
+  });
+
+  it('a direct projectId write is validated too — the PUT path cannot mint project orphans', () => {
+    ({ svc: ts } = withProjects());
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { projectId: 'proj_ghost' } as never, 'agent-a'))
+      .toThrow(/Project "proj_ghost" does not exist/);
+    expect(ts.getTask(task.id)!.projectId).toBeUndefined();
+    const ok = ts.updateTask(task.id, { projectId: 'proj_real' } as never, 'agent-a');
+    expect(ok.projectId).toBe('proj_real');
   });
 });

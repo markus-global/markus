@@ -5,6 +5,7 @@ import { APIServer } from '../src/api-server.js';
 import { TaskService } from '../src/task-service.js';
 import type { OrganizationService } from '../src/org-service.js';
 import type { StorageBridge } from '../src/storage-bridge.js';
+import { createMockHITLService } from './api-server-test-helpers.js';
 
 // ── Module mocks ──────────────────────────────────────────────────────────────
 
@@ -583,18 +584,7 @@ function createTestServer(): TestContext {
     getSummary: vi.fn(() => ({ total: 0 })),
     getTokenUsage: vi.fn(() => []),
   } as never);
-  server.setHITLService({
-    onNotification: vi.fn(),
-    onApprovalChanged: vi.fn(),
-    listApprovals: vi.fn(() => []),
-    requestApproval: vi.fn(() => ({ id: 'appr-1', status: 'pending', title: 'Test' })),
-    getApproval: vi.fn(() => null),
-    respondToApproval: vi.fn(() => null),
-    listNotifications: vi.fn(() => []),
-    countNotifications: vi.fn(() => ({ total: 0, unread: 0 })),
-    markNotificationRead: vi.fn(),
-    markAllNotificationsRead: vi.fn(),
-  } as never);
+  server.setHITLService(createMockHITLService());
   server.setBillingService({
     getUsage: vi.fn(() => ({ tokens: 0, cost: 0 })),
     getAgentUsage: vi.fn(() => []),

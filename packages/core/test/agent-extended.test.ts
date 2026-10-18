@@ -159,7 +159,7 @@ describe('handleMessageStream', () => {
 
     const events: string[] = [];
     const ensure = (agent as unknown as {
-      ensureTurnCompleted: (r: string, s: string, e: (evt: { type: string; text?: string }) => void) => Promise<string>;
+      ensureTurnCompleted: (r: string, s: string, e: (evt: { type: string; text?: string }) => void) => Promise<{ text: string; completed: boolean }>;
     }).ensureTurnCompleted.bind(agent);
 
     const result = await ensure('Here is the plan.', sessionId, (evt) => {
@@ -168,10 +168,12 @@ describe('handleMessageStream', () => {
 
     // Continuation content is streamed to the UI live...
     expect(events.join('')).toContain('Finishing the report now.');
-    // ...and no magic token is injected into the reply: completion is typed now, so there
-    // is nothing to append and nothing to strip.
-    expect(result).not.toContain('HANDLE_COMPLETE');
-    expect(result.length).toBeGreaterThan(0);
+    // ...and only the FINAL response crosses the turn boundary: the pre-continuation
+    // text ('Here is the plan.') is not glued onto it any more (2026-10-18 narration leak).
+    expect(result.text).toBe('Finishing the report now.');
+    expect(result.text).not.toContain('Here is the plan.');
+    expect(result.text).not.toContain('HANDLE_COMPLETE');
+    expect(result.completed).toBe(true);
   });
 });
 

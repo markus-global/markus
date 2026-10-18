@@ -246,6 +246,15 @@ export interface ApprovalOption {
   requiresComment?: boolean;
 }
 
+/**
+ * How many approvals the service mirrors into memory at startup. Memory is the
+ * live working set only; full history is paged from the repo (listApprovalsPage).
+ */
+export const APPROVALS_IN_MEMORY_CAP = 200;
+
+/** One persisted approval row, as returned by {@link ApprovalRepo.list}. */
+type ApprovalRepoRow = ReturnType<ApprovalRepo['list']>[number];
+
 export interface ApprovalRepo {
   upsert(a: {
     id: string;
@@ -271,7 +280,15 @@ export interface ApprovalRepo {
     appliedAt?: string;
     appliedIntent?: string;
   }): void;
-  list(status?: string): Array<{
+  /**
+   * Time-ordered page of persisted approvals (newest first).
+   *
+   * `limit`/`offset` exist because history is READ from here: the in-memory map
+   * only mirrors the newest APPROVALS_IN_MEMORY_CAP rows, so paging from memory
+   * can never reach real history. Omitting `limit` means "no implicit cap" — the
+   * old hardcoded `LIMIT 200` silently made 2300+ approvals unreachable.
+   */
+  list(opts?: { status?: string; limit?: number; offset?: number }): Array<{
     id: string;
     agentId: string;
     agentName: string;
@@ -295,6 +312,8 @@ export interface ApprovalRepo {
     appliedAt?: string;
     appliedIntent?: string;
   }>;
+  /** Total rows matching `status`, so a paged caller can report a real total. */
+  count?(status?: string): number;
   get(id: string): {
     id: string;
     agentId: string;
@@ -400,42 +419,79 @@ export class HITLService {
     this.decisionRouter = router;
   }
 
-  setApprovalRepo(repo: ApprovalRepo): void {    this.approvalRepo = repo;
-    // Restore persisted approvals into memory on startup
+  setApprovalRepo(repo: ApprovalRepo): void {
+    this.approvalRepo = repo;
+    // Restore persisted approvals into memory on startup.
+    //
+    // Memory is a WORKING SET (pending + recently resolved), not the history
+    // store: history is read from the repo page by page (see listApprovalsPage).
+    // The cap is explicit here instead of hidden inside the repo query — the old
+    // silent `LIMIT 200` made 2300+ of this org's 2521 approvals unreachable.
     try {
-      const rows = repo.list();
+      const rows = repo.list({ limit: APPROVALS_IN_MEMORY_CAP });
       for (const row of rows) {
-        if (!this.approvals.has(row.id)) {
-          this.approvals.set(row.id, {
-            id: row.id,
-            agentId: row.agentId,
-            agentName: row.agentName,
-            type: row.type as ApprovalRequest['type'],
-            title: row.title,
-            description: row.description,
-            details: row.details,
-            status: row.status as ApprovalStatus,
-            requestedAt: row.requestedAt,
-            respondedAt: row.respondedAt,
-            respondedBy: row.respondedBy,
-            responseComment: row.responseComment,
-            expiresAt: row.expiresAt,
-            options: row.options,
-            allowFreeform: row.allowFreeform,
-            selectedOption: row.selectedOption,
-            appliedAt: row.appliedAt,
-            appliedIntent: row.appliedIntent as ApprovalIntent | undefined,
-            questions: row.questions,
-            answers: row.answers,
-            approverUserIds: row.approverUserIds,
-            targetUserId: row.targetUserId,
-          });
-        }
+        if (!this.approvals.has(row.id)) this.approvals.set(row.id, this.rowToApproval(row));
       }
       log.info(`Restored ${rows.length} approvals from storage`);
     } catch (err) {
       log.warn('Failed to restore approvals from storage', { error: String(err) });
     }
+  }
+
+  /**
+   * Paged, time-ordered approval read — the ONE read path for the list API.
+   *
+   * Two defects this replaces (owner report 2026-10-18 "审批似乎没法加载历史"):
+   *  - The map only mirrors the newest {@link APPROVALS_IN_MEMORY_CAP} rows, so
+   *    slicing the map could never reach real history.
+   *  - `slice(offset, offset+limit)` over the map followed INSERTION order, and
+   *    the restore inserts the startup snapshot first — every approval requested
+   *    after startup landed at the END of the map and never appeared on page 1.
+   *    The pending approvals were literally invisible in the bell.
+   */
+  listApprovalsPage(opts: { status?: ApprovalStatus; limit: number; offset: number }): { approvals: ApprovalRequest[]; total: number } {
+    const { status, limit, offset } = opts;
+    if (this.approvalRepo) {
+      try {
+        const rows = this.approvalRepo.list({ status, limit, offset });
+        const total = this.approvalRepo.count ? this.approvalRepo.count(status) : rows.length;
+        return { approvals: rows.map(r => this.rowToApproval(r)), total };
+      } catch (err) {
+        log.warn('Approval repo paging failed — falling back to memory', { error: String(err) });
+      }
+    }
+    const all = [...this.approvals.values()]
+      .filter(a => !status || a.status === status)
+      .sort((a, b) => new Date(b.requestedAt).getTime() - new Date(a.requestedAt).getTime());
+    return { approvals: all.slice(offset, offset + limit), total: all.length };
+  }
+
+  /** Single mapping from persisted row → domain object (restore + paging share it). */
+  private rowToApproval(row: ApprovalRepoRow): ApprovalRequest {
+    return {
+      id: row.id,
+      agentId: row.agentId,
+      agentName: row.agentName,
+      type: row.type as ApprovalRequest['type'],
+      title: row.title,
+      description: row.description,
+      details: row.details,
+      status: row.status as ApprovalStatus,
+      requestedAt: row.requestedAt,
+      respondedAt: row.respondedAt,
+      respondedBy: row.respondedBy,
+      responseComment: row.responseComment,
+      expiresAt: row.expiresAt,
+      options: row.options,
+      allowFreeform: row.allowFreeform,
+      selectedOption: row.selectedOption,
+      appliedAt: row.appliedAt,
+      appliedIntent: row.appliedIntent as ApprovalIntent | undefined,
+      questions: row.questions,
+      answers: row.answers,
+      approverUserIds: row.approverUserIds,
+      targetUserId: row.targetUserId,
+    };
   }
 
   /**

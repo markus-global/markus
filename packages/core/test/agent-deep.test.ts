@@ -428,6 +428,11 @@ describe('respondInSession and sendSessionReply', () => {
 
   it('sendSessionReply routes through mailbox to respondInSession', async () => { // timeout 20000ms
     const router = makeMockRouter({
+      // The close-out continuation (turn completion) calls chat(), not chatStream().
+      // Keep both channels answering with the same text so this test asserts ROUTING,
+      // not which of the two produced the final message (2026-10-18 contract change:
+      // only the turn's final response crosses the turn boundary).
+      chatFn: async () => makeResponse('Reply in session.', 'end_turn'),
       streamFn: async (_req, onEvent) => {
         onEvent?.({ type: 'text_delta', text: 'Reply in session.' });
         return makeResponse(`Reply in session.`, 'end_turn');

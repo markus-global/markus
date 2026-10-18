@@ -25,7 +25,7 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'projects', prefixes: ['list_projects', 'get_project', 'create_project', 'update_project', 'delete_project', 'project_stats', 'project_structure', 'code_stats', 'git_'] },
   { id: 'deliverables', prefixes: ['deliverable_create', 'deliverable_search', 'deliverable_list', 'deliverable_update', 'office_generate'] },
   { id: 'packages', prefixes: ['package_list', 'package_install', 'hub_search', 'hub_install', 'builder_list', 'builder_install', 'markus-hub__'] },
-  { id: 'communication', prefixes: ['agent_send_message', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task', 'feishu_'] },
+  { id: 'communication', prefixes: ['agent_send_message', 'agent_ask_agent', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task', 'feishu_'] },
   { id: 'memory', prefixes: ['memory_', 'recall_context', 'recall_activity', 'notebook_upsert', 'notebook_clear', 'notebook_read', 'session'] },
   { id: 'knowledge', prefixes: ['kb_search', 'kb_list', 'kb_read'] },
   { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message'] },

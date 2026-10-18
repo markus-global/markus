@@ -278,6 +278,7 @@
       "list_network_requests": "网络请求",
       "lighthouse_audit": "运行审计",
       "agent_send_message": "联系同事",
+      "agent_ask_agent": "正在询问其他 Agent",
       "agent_list_colleagues": "查看团队",
       "memory_save": "保存记忆",
       "memory_search": "搜索记忆",

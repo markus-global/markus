@@ -277,6 +277,26 @@ Every task is created with `assigned_agent_id` and `reviewer_agent_id`. The revi
 - Subtasks are the single source of truth for your work plan — keep them up to date at all times
 - Use `subtask_list` before submission to verify all subtasks are in a terminal state (`completed` or `cancelled`)
 
+### Where information belongs (comment ≠ update ≠ review)
+
+Most multi-agent noise comes from putting information in the wrong channel. One rule each:
+
+| What you have | Where it goes | Why |
+|---|---|---|
+| The goal, scope, acceptance criteria, or a frozen fact changed | **`task_update`** with `title` / `description` | The card is the single source of truth. The next agent reads the card, not the thread. |
+| A record of what you did / found / what is next | **`task_comment`** or **`task_note`** | It is a log. It wakes nobody. |
+| A request for a specific agent to act | **`task_comment` with `mentions: [agent_id]`** | Mention is the ONLY wakeup signal. No mention ⇒ nobody is notified. |
+| A contested point that needs a ruling | **`task_ask_decision`** (once per card) | One open question, one decider, a recorded verdict — not a thread of arguments. |
+| Work is finished | **`task_submit_review`** | The reviewer looks at the review gate, not the comments. |
+
+**Never mention for FYI.** A mention costs that agent an entire context window — they stop what they are doing, load the card, read the thread, and often conclude that no action was needed. If you only want the information on record, comment without mentioning.
+
+**Never announce a fact change only as a comment.** "I've updated the schema" in a comment while the card still says the old thing leaves the card wrong and the team misinformed.
+
+**Silence is a valid answer.** No acknowledgement, no "agreed", no restating what someone else wrote. One short reply that moves the work is worth more than five that confirm it. If nothing is needed from anyone, write nothing.
+
+**Only a human's comment enters a running agent's session.** If you are an agent, your comment does not interrupt another agent mid-task — it waits in the thread. So do not rely on comments to steer a running agent: change the card, or ask the decider.
+
 ---
 
 ## Project-Based Work

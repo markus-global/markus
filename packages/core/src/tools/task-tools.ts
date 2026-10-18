@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { findUnknownArgs } from './tool-args.js';
 import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
 
 const log = createLogger('task-tools');
@@ -60,6 +61,23 @@ export interface AgentTaskContext {
     status: string
   ) => Promise<{ id: string; title: string; status: string }>;
   /**
+   * Ask another agent a question and WAIT for the answer (blocking).
+   * Implemented by the agent manager: it delivers the question as a peer query
+   * and awaits the target's turn, so the reply comes back inside THIS turn.
+   */
+  askAgent?: (
+    toAgentId: string,
+    question: string,
+    context: string | undefined,
+    timeoutSeconds: number | undefined,
+  ) => Promise<{
+    status: 'answered' | 'timeout' | 'unavailable';
+    agent?: { id: string; name?: string };
+    answer?: string;
+    elapsed_ms?: number;
+    message?: string;
+  }>;
+  /**
    * Re-open a task's **creation gate** approval after a 打回 (changes requested).
    * Only valid while the task is still `pending` and has no active approval —
    * a 打回 performs zero state transition, so without this the task would be an
@@ -81,8 +99,8 @@ export interface AgentTaskContext {
   assignTask?: (taskId: string, agentId: string) => Promise<{ id: string; status: string }>;
   /** Add a progress note to a task */
   addTaskNote?: (taskId: string, note: string, author?: string) => Promise<void>;
-  /** Update task fields (description, blockedBy, reviewerId, etc.) — works even for pending tasks */
-  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) => Promise<{ id: string; title: string; status: string }>;
+  /** Update task fields (description, blockedBy, reviewerId, requirementId, etc.) — works even for pending tasks */
+  updateTaskFields?: (taskId: string, fields: { title?: string; description?: string; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human'; requirementId?: string | null }) => Promise<{ id: string; title: string; status: string }>;
   /** Update the schedule config for a scheduled task */
   updateScheduleConfig?: (taskId: string, config: { every?: string; cron?: string; maxRuns?: number; timezone?: string }) => Promise<{ id: string; title: string; status: string }>;
   /** Cancel a pending task (calls rejectTask under the hood) */
@@ -165,7 +183,7 @@ export interface AgentTaskContext {
   /** Update a requirement's fields (title, description, priority, tags) */
   updateRequirement?: (
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[] }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
   ) => Promise<{ id: string; title: string; status: string }>;
   /** Resubmit a rejected requirement for review, optionally updating fields */
   resubmitRequirement?: (
@@ -192,6 +210,56 @@ export interface AgentTaskContext {
   };
   orgId?: string;
 }
+
+/**
+ * Reject tool arguments the schema does not declare.
+ *
+ * Why this exists (BUG-2, 2026-10-18): `task_update(task_id, requirement_id=R2)`
+ * returned `{"status":"success"}` while changing nothing — the caller passed a
+ * real field that the service layer supports but the tool layer did not know, and
+ * it was dropped without a word. A silent no-op is the worst possible answer:
+ * the caller believes the card changed and moves on. Every task/requirement tool
+ * that writes state must fail loud on parameters it cannot honour.
+ *
+ * Returns the error payload (a JSON string) when unknown args are present, or
+ * null when the call is clean.
+ */
+function rejectUnknownArgs(
+  toolName: string,
+  args: Record<string, unknown>,
+  allowed: readonly string[]
+): string | null {
+  // Compare CANONICAL names: dispatch expands every call with both casing variants and
+  // injects reserved `_`-prefixed context keys, so comparing raw spellings against a
+  // bare snake_case whitelist rejects the platform's own decorations — which is exactly
+  // how this guard once refused every multi-word argument in production (2026-10-18).
+  // `findUnknownArgs` is the single owner of that contract (tools/tool-args.ts).
+  const unknown = findUnknownArgs(args, allowed);
+  if (unknown.length === 0) return null;
+  return JSON.stringify({
+    status: 'error',
+    error:
+      `${toolName} does not accept: ${unknown.join(', ')}. ` +
+      `Accepted: ${allowed.join(', ')}. NOTHING was changed — retry with a supported field.`,
+  });
+}
+
+/** Fields `task_update` can write (keep in sync with its inputSchema). */
+const TASK_UPDATE_FIELDS = [
+  'task_id',
+  'status',
+  'note',
+  'title',
+  'description',
+  'blocked_by',
+  'reviewer_id',
+  'reviewer_type',
+  'schedule',
+  'requirement_id',
+] as const;
+
+/** Statuses an agent may set on a requirement (keep in sync with the tool schema). */
+const REQUIREMENT_AGENT_STATUSES: readonly string[] = ['cancelled', 'rejected', 'completed'];
 
 export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] {
   return [
@@ -465,6 +533,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
       name: 'task_update',
       description: [
         'Update a PARENT TASK — add a progress note, change status, update title/description, modify blocked_by dependencies, or a combination.',
+        'This is the SINGLE SOURCE OF TRUTH for the task: if the objective, scope, acceptance criteria, or a frozen fact changes, update the title/description HERE. Never deliver a fact or goal change only as a comment — the next agent reads the card, not the thread.',
         'WARNING: This tool operates on the parent task, NOT on subtasks. To complete a subtask, use subtask_complete instead.',
         'You can call this with just a note (no status change) to record progress without affecting the task lifecycle.',
         'Task lifecycle is mostly automatic: after approval, tasks start executing automatically; when execution finishes, the system auto-transitions to review and notifies the reviewer; reviewer approval auto-completes the task; revision auto-restarts execution.',
@@ -516,6 +585,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             enum: ['agent', 'human'],
             description: 'Whether the new reviewer is an agent or a human user. Required when changing reviewer_id.',
           },
+          requirement_id: {
+            type: 'string',
+            description:
+              'Move this task to a different requirement (需求) — e.g. when requirements are split, merged or archived. The target requirement must exist and be an active (approved) requirement; the move is recorded in the audit trail. Only the task creator can re-link a task. Use requirement_list / requirement_get to confirm the exact ID before passing it.',
+          },
           schedule: {
             type: 'object',
             description: 'Update the schedule for a scheduled (recurring) task. Only works on tasks with taskType "scheduled". Set either "every" OR "cron", not both.',
@@ -539,9 +613,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           const blockedBy = args['blocked_by'] as string[] | undefined;
           const reviewerId = args['reviewer_id'] as string | undefined;
           const reviewerType = args['reviewer_type'] as 'agent' | 'human' | undefined;
+          const requirementId = args['requirement_id'] as string | undefined;
 
-          // Permission check: only task creator can modify blocked_by or reviewer
-          if (blockedBy !== undefined || reviewerId !== undefined) {
+          // BUG-2 (2026-10-18): unknown parameters used to be dropped silently.
+          const unknownArgError = rejectUnknownArgs('task_update', args, TASK_UPDATE_FIELDS);
+          if (unknownArgError) return unknownArgError;
+
+          // Permission check: only task creator can modify blocked_by, reviewer or requirement
+          if (blockedBy !== undefined || reviewerId !== undefined || requirementId !== undefined) {
             const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
             const createdBy = (existing as Record<string, unknown> | null)?.['createdBy'] as string | undefined;
             if (blockedBy !== undefined && createdBy && createdBy !== ctx.agentId) {
@@ -556,16 +635,47 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 error: 'Only the task creator or a manager can change the reviewer.',
               });
             }
+            if (requirementId !== undefined && createdBy && createdBy !== ctx.agentId) {
+              return JSON.stringify({
+                status: 'denied',
+                error:
+                  "Only the task creator can re-link a task to another requirement (moving someone else's card across requirements changes their governance chain). Ask the creator, or a human, to do it.",
+              });
+            }
+          }
+
+          // BUG-2 class (2026-10-18): if the write path is missing we must NOT fall
+          // through to the success payload below — that is the same silent no-op.
+          const wantsFieldUpdate =
+            title !== undefined ||
+            description !== undefined ||
+            blockedBy !== undefined ||
+            reviewerId !== undefined ||
+            requirementId !== undefined;
+          if (wantsFieldUpdate && !ctx.updateTaskFields) {
+            return JSON.stringify({
+              status: 'error',
+              error:
+                'This agent context cannot update task fields (updateTaskFields is unavailable). NOTHING was changed.',
+            });
           }
 
           // Handle field updates first — works for any status including pending
-          if ((title !== undefined || description !== undefined || blockedBy !== undefined || reviewerId !== undefined) && ctx.updateTaskFields) {
+          if (
+            (title !== undefined ||
+              description !== undefined ||
+              blockedBy !== undefined ||
+              reviewerId !== undefined ||
+              requirementId !== undefined) &&
+            ctx.updateTaskFields
+          ) {
             await ctx.updateTaskFields(taskId, {
               ...(title !== undefined ? { title } : {}),
               ...(description !== undefined ? { description } : {}),
               ...(blockedBy !== undefined ? { blockedBy } : {}),
               ...(reviewerId !== undefined ? { reviewerId } : {}),
               ...(reviewerType !== undefined ? { reviewerType } : {}),
+              ...(requirementId !== undefined ? { requirementId } : {}),
             });
           }
 
@@ -585,6 +695,20 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           }
 
           if (newStatus) {
+            // Terminal-state authority (T25, 2026-10-17): an agent can NOT reopen a
+            // closed card. A stray `task_update` flipped completed → in_progress 94s
+            // after approval and silently broke the card's blockedBy dependents.
+            if (newStatus === 'in_progress') {
+              const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
+              if (existing?.status === 'completed') {
+                return JSON.stringify({
+                  status: 'denied',
+                  error:
+                    'This task is already completed — an agent cannot reopen it. Rework goes through the reviewer BEFORE closure (request revision while the card is in review); after closure only a human can reopen it. If you found a real defect, ask the person who owns that area with agent_ask_agent — do not flip the status.',
+                });
+              }
+            }
+
             if (newStatus === 'review') {
               const existing = ctx.getTask ? await ctx.getTask(taskId) : null;
               if (existing?.assignedAgentId === ctx.agentId) {
@@ -679,12 +803,12 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task.title}" updated to ${task.status}${note ? ` — note recorded` : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${requirementId !== undefined ? ` — moved to requirement ${requirementId}` : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           } else {
             // No status change — note, title, description, and/or blocked_by update
-            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule) {
-              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, or schedule.' });
+            if (!note && title === undefined && description === undefined && blockedBy === undefined && !schedule && requirementId === undefined) {
+              return JSON.stringify({ status: 'error', error: 'Provide at least a status, a note, a title, a description, blocked_by, requirement_id, or schedule.' });
             }
             if (note && ctx.addTaskNote) {
               await ctx.addTaskNote(taskId, note, ctx.agentName);
@@ -694,7 +818,7 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             return JSON.stringify({
               status: 'success',
               task,
-              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${schedule ? ' — schedule updated' : ''}`,
+              message: `Task "${task?.title ?? taskId}" updated${note ? ' — note recorded' : ''}${title !== undefined ? ' — title updated' : ''}${description !== undefined ? ' — description updated' : ''}${blockedBy !== undefined ? ' — blocked_by updated' : ''}${requirementId !== undefined ? ` — moved to requirement ${requirementId}` : ''}${schedule ? ' — schedule updated' : ''}`,
             });
           }
         } catch (error) {
@@ -794,12 +918,61 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
         ]
       : []),
 
+    ...(ctx.askAgent
+      ? [
+          {
+            name: 'agent_ask_agent',
+            description: [
+              'Ask ONE other agent a question and WAIT for their answer. This call BLOCKS your turn — you get the answer back here and continue from it.',
+              'Use it when you need a decision, a fact you cannot verify yourself, or a check from the agent who owns that area. Without the answer, continuing would be guessing.',
+              'Ask a specific, answerable question and give them the context they need (task id, file:line, what you already ruled out). One question per call.',
+              'Prefer this over asking in a task comment thread: a blocking answer comes back inside your turn, with no round-trip and no thread to re-read.',
+              'If the answer is a judgement call about a frozen fact, ask the owner of that fact. If it is about priorities or scope, ask the human with request_user_input instead.',
+              'Deadlock protection: an agent that is itself answering such a question cannot ask another agent (the tool is removed from their toolset for that turn) — they can still ask the human. So chains never nest.',
+              'On timeout you may proceed on your best judgement and say explicitly which assumption you used.',
+              'An EMPTY answer is still an answer — the agent had nothing to add. If that leaves you short, sharpen the question and ask again.',
+            ].join(' '),
+            inputSchema: {
+              type: 'object',
+              properties: {
+                agent_id: { type: 'string', description: 'Agent ID to ask (agent_list_colleagues to find it)' },
+                question: { type: 'string', description: 'The single question, answerable in a paragraph' },
+                context: { type: 'string', description: 'Optional: the facts they need — task id, file:line, what you already ruled out' },
+                timeout_seconds: { type: 'number', description: 'Max wait in seconds (default 300, max 900)' },
+              },
+              required: ['agent_id', 'question'],
+            },
+            async execute(args: Record<string, unknown>) {
+              try {
+                const result = await ctx.askAgent!(
+                  args['agent_id'] as string,
+                  args['question'] as string,
+                  args['context'] as string | undefined,
+                  args['timeout_seconds'] as number | undefined,
+                );
+                // An empty reply is a legitimate answer (owner ruling 2026-10-18):
+                // say so instead of making the caller treat it as a failure.
+                if (result.status === 'answered' && !(result.answer ?? '').trim()) {
+                  return JSON.stringify({
+                    ...result,
+                    message: 'The agent returned an EMPTY answer — that counts as answered (they had nothing to add). If you need more, sharpen the question and ask again.',
+                  });
+                }
+                return JSON.stringify(result);
+              } catch (error) {
+                return JSON.stringify({ status: 'error', error: String(error) });
+              }
+            },
+          } as AgentToolHandler,
+        ]
+      : []),
+
     ...(ctx.addTaskNote
       ? [
           {
             name: 'task_note',
             description:
-              'Add a one-way progress note to a task\'s timeline log without changing its status. Use this to record intermediate findings, decisions, or milestones. For interactive discussion with other agents or humans, use task_comment instead.',
+              'Add a one-way progress note to a task\'s timeline log without changing its status. Use this to record intermediate findings, decisions, or milestones. It wakes nobody — if another agent must act, use task_comment with a mention; if a fact/goal changed, use task_update.',
             inputSchema: {
               type: 'object',
               properties: {
@@ -1314,10 +1487,11 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'requirement_update_status',
             description: [
-              'Update the status of a requirement (需求). Supports: cancelled, rejected.',
+              'Update the status of a requirement (需求). Supports: cancelled, rejected, completed.',
               'WARNING: Only use this when absolutely necessary or when explicitly instructed by a human administrator.',
               'Do NOT change the status of existing requirements without a very strong reason.',
               'Valid reasons include: the requirement is no longer relevant, it duplicates another requirement,',
+              'all of its tasks are done (status="completed"),',
               'or a human admin explicitly asked you to cancel/reject it.',
               'Always provide a clear reason explaining why the status change is needed.',
             ].join(' '),
@@ -1330,8 +1504,8 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 },
                 status: {
                   type: 'string',
-                  enum: ['cancelled', 'rejected'],
-                  description: 'New status. Use "cancelled" to cancel a requirement, or "rejected" to reject a proposed requirement.',
+                  enum: ['cancelled', 'rejected', 'completed'],
+                  description: 'New status. "completed" when all linked work is done, "cancelled" to abandon the requirement, or "rejected" to reject a proposed requirement.',
                 },
                 reason: {
                   type: 'string',
@@ -1342,9 +1516,26 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const unknownArgError = rejectUnknownArgs('requirement_update_status', args, [
+                  'requirement_id',
+                  'status',
+                  'reason',
+                ]);
+                if (unknownArgError) return unknownArgError;
+                // BUG-3b (2026-10-18): the schema enum was narrower than the
+                // service's VALID_STATUSES, so callers followed the documented
+                // contract and lost `completed`. Enforce the advertised set here
+                // so an unsupported value fails loud instead of drifting.
+                const requestedStatus = args['status'] as string;
+                if (!REQUIREMENT_AGENT_STATUSES.includes(requestedStatus)) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error: `Unsupported requirement status "${requestedStatus}". This tool accepts: ${REQUIREMENT_AGENT_STATUSES.join(', ')}.`,
+                  });
+                }
                 const req = await ctx.updateRequirementStatus!(
                   args['requirement_id'] as string,
-                  args['status'] as string,
+                  requestedStatus,
                   args['reason'] as string
                 );
                 log.info(`Requirement status updated by agent ${ctx.agentId}`, {
@@ -1400,16 +1591,43 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   items: { type: 'string' },
                   description: 'Updated tags (if changing)',
                 },
+                project_id: {
+                  type: 'string',
+                  description:
+                    'Correct the requirement\'s project reference (must be an existing project id). ' +
+                    'This is the repair path for a requirement whose project_id is wrong or missing — ' +
+                    'tasks inherit it, so fixing it here unblocks re-linking cards onto this requirement.',
+                },
               },
               required: ['requirement_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
-                const data: { title?: string; description?: string; priority?: string; tags?: string[] } = {};
+                // BUG-3 (2026-10-18): `status` used to be accepted and silently
+                // dropped. Point the caller at the tool that actually moves status.
+                if (args['status'] !== undefined) {
+                  return JSON.stringify({
+                    status: 'error',
+                    error:
+                      'requirement_update does NOT change status — it only edits title/description/priority/tags. NOTHING was changed. Use requirement_update_status(requirement_id, status, reason) for status changes (e.g. status="completed").',
+                  });
+                }
+                const unknownArgError = rejectUnknownArgs('requirement_update', args, [
+                  'requirement_id',
+                  'title',
+                  'description',
+                  'priority',
+                  'tags',
+                  'project_id',
+                ]);
+                if (unknownArgError) return unknownArgError;
+                const data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null } = {};
                 if (args['title']) data.title = args['title'] as string;
                 if (args['description']) data.description = args['description'] as string;
                 if (args['priority']) data.priority = args['priority'] as string;
                 if (args['tags']) data.tags = args['tags'] as string[];
+                // Empty string clears the reference; a non-empty id is validated by the service.
+                if (args['project_id'] !== undefined) data.projectId = (args['project_id'] as string) || null;
                 const req = await ctx.updateRequirement!(
                   args['requirement_id'] as string,
                   data
@@ -1499,20 +1717,22 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
           {
             name: 'task_comment',
             description: [
-              'Post a structured comment on a task. Use this for discussion, questions, feedback, or coordination with other agents and humans.',
-              'Supports @mentions — include agent IDs in the mentions array to notify them.',
-              'Supports reply_to_comment_id — set it to a comment ID (from task_get) to create a structural reply link visible in the UI.',
-              'Use this instead of task_note when you want interactive dialogue rather than a one-way progress log.',
+              'Post a comment on a task — this is an EXECUTION RECORD, not a change request.',
+              'Use it for: what I did, what I found, what is next, a status note others may need later.',
+              'WRONG use of this tool (the #1 source of noise): announcing a fact/goal change, or restating what someone already wrote. If the goal, scope, or a frozen fact changes, edit the card with task_update (title/description) — a comment is not read by the next agent.',
+              'To ask a specific agent to act, put their agent ID in mentions — that is the ONLY thing that wakes another agent. No mention ⇒ nobody is notified. Never mention for FYI.',
+              'At most ONE open question per card: use agent_ask_agent to get the answer you need, then act on it — do not argue in the thread.',
+              'One short comment; never one per point, never a follow-up just to acknowledge. If nothing is needed from anyone, write nothing (end_turn).',
             ].join(' '),
             inputSchema: {
               type: 'object',
               properties: {
                 task_id: { type: 'string', description: 'The task ID to comment on' },
-                content: { type: 'string', description: 'The comment text. You can reference agents with @name in the text for readability.' },
+                content: { type: 'string', description: 'The execution record: what you did / found / need next. Not for changing facts (use task_update) and not for restating what someone already said.' },
                 mentions: {
                   type: 'array',
                   items: { type: 'string' },
-                  description: 'Array of agent IDs to notify about this comment. Use agent_list_colleagues to find IDs.',
+                  description: 'Agent IDs you are ASKING TO ACT. This is the only wakeup signal — no mention means nobody is notified. Never mention for FYI. Use agent_list_colleagues to find IDs.',
                 },
                 reply_to_comment_id: {
                   type: 'string',

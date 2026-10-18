@@ -147,6 +147,9 @@ describe('RequirementService', () => {
   describe('CRUD helpers', () => {
     it('updates, links tasks, lists, and deletes', () => {
       const req = service.createRequirement(baseRequest());
+      // A projectId write is a REFERENCE and is validated on write (2026-10-18); production
+      // always wires the project lookup, so the fixture must model that too.
+      service.setProjectService({ getProject: (id: string) => ({ id }) } as never);
       service.updateRequirement(req.id, { priority: 'high', title: 'renamed', projectId: 'proj-2' });
       expect(service.getRequirement(req.id)?.priority).toBe('high');
       expect(service.getRequirement(req.id)?.title).toBe('renamed');
@@ -325,5 +328,43 @@ describe('RequirementService', () => {
       service.updateRequirementStatus(req.id, 'blocked', 'user-1', 'human');
       expect(enqueue).toHaveBeenCalled();
     });
+  });
+});
+
+
+describe('RequirementService project reference guard (2026-10-18)', () => {
+  const build = () => {
+    const svc = new RequirementService();
+    const req = svc.createRequirement({
+      title: 'R', description: 'D', priority: 'high', projectId: 'proj_real',
+      createdBy: 'agt_a', creatorRole: 'worker',
+    } as never);
+    return { svc, req };
+  };
+
+  it('accepts a project that exists', () => {
+    const { svc, req } = build();
+    svc.setProjectService({ getProject: (id: string) => (id === 'proj_real' ? { id } : null) } as never);
+    svc.updateRequirement(req.id, { projectId: 'proj_real' });
+    expect(svc.getRequirement(req.id)?.projectId).toBe('proj_real');
+  });
+
+  it('rejects a project that does not exist, and changes nothing', () => {
+    const { svc, req } = build();
+    svc.setProjectService({ getProject: () => null } as never);
+    expect(() => svc.updateRequirement(req.id, { projectId: 'proj_anteum' })).toThrow(/does not exist/);
+    expect(svc.getRequirement(req.id)?.projectId).toBe('proj_real');
+  });
+
+  it('fails closed when the project lookup is not wired', () => {
+    const { svc, req } = build();
+    expect(() => svc.updateRequirement(req.id, { projectId: 'proj_real' })).toThrow(/lookup is unavailable/);
+    expect(svc.getRequirement(req.id)?.projectId).toBe('proj_real');
+  });
+
+  it('allows an explicit clear (null) without a lookup', () => {
+    const { svc, req } = build();
+    svc.updateRequirement(req.id, { projectId: null });
+    expect(svc.getRequirement(req.id)?.projectId).toBeUndefined();
   });
 });

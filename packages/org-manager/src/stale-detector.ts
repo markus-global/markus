@@ -5,13 +5,29 @@ const log = createLogger('stale-detector');
 
 export interface StaleConfig {
   maxInProgressMs: number;
+  /**
+   * Reviewer-facing reminder: a card sitting in review with no action for this long
+   * wakes the REVIEWER, not a human. Sized against real behaviour — a competent
+   * review of a large card takes 3–8 minutes, so 30 minutes means "this turn
+   * produced nothing", not "the reviewer is slow".
+   */
+  reviewReminderMs: number;
+  /**
+   * Human escalation: only after the reviewer has already been reminded and the card
+   * is STILL untouched does a human get a notification.
+   *
+   * History: this used to be the ONLY review signal (12h, humans only). Reviewers were
+   * never reminded at all, so a review turn that produced no action (2026-10-17: four
+   * cards, two independent reviewers, 21s/26s/45s turns) sat silent until a human
+   * happened to notice 15 hours later. Notify the responsible party first.
+   */
   maxReviewWaitMs: number;
   maxAssignedUnstartedMs: number;
   maxBranchDivergenceCommits: number;
 }
 
 export interface StaleItem {
-  type: 'stuck_task' | 'review_stale' | 'unstarted_task' | 'branch_diverged';
+  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'unstarted_task' | 'branch_diverged';
   taskId?: string;
   ageMs: number;
   agentId?: string;
@@ -26,7 +42,8 @@ export interface StaleItem {
 
 const DEFAULT_CONFIG: StaleConfig = {
   maxInProgressMs: 24 * 60 * 60 * 1000,
-  maxReviewWaitMs: 12 * 60 * 60 * 1000,
+  reviewReminderMs: 30 * 60 * 1000,
+  maxReviewWaitMs: 4 * 60 * 60 * 1000,
   maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
   maxBranchDivergenceCommits: 100,
 };
@@ -103,6 +120,23 @@ export class StaleDetector {
           message: `Task "${task.title}" has been in_progress for ${Math.round(age / 3600000)}h`,
           i18n: {
             bodyKey: 'notifications.bodies.staleTaskInProgress',
+            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
+          },
+        });
+      }
+
+      // `age` is measured from `updatedAt`, which IS the authoritative "last time anyone
+      // touched this card" fact. A card whose updatedAt still equals its submission
+      // timestamp has not been acted on at all — measured scoped to the current review
+      // round, this separated all four 2026-10-17 stuck cards from the 20 review turns
+      // that really did decide, with no false positives and no new instrumentation.
+      if (task.status === 'review' && age > this.config.reviewReminderMs) {
+        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'review_reminder', {
+          ageMs: age,
+          agentId: task.reviewerId ?? task.assignedAgentId,
+          message: `Task "${task.title}" has been awaiting your review for ${Math.round(age / 60000)}min with no action on the card`,
+          i18n: {
+            bodyKey: 'notifications.bodies.staleTaskInReview',
             bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
           },
         });

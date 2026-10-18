@@ -12,10 +12,51 @@ import { openExternal } from '../hooks/useElectron.ts';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import { UserInputModal } from './UserInputModal.tsx';
 import { timeAgo } from '../lib/timeAgo.ts';
+import { decideNextPage, mergeNotificationPage } from '../lib/notificationPaging.ts';
 
 /** A request_user_input carries an explicit multi-question payload. */
 function isUserInputApproval(a: ApprovalInfo): boolean {
   return Array.isArray(a.questions) && a.questions.length > 0;
+}
+
+/** What "mutable" means for an approval: the decision, not the title/id. */
+const approvalFieldChanged = (prev: ApprovalInfo, row: ApprovalInfo): boolean =>
+  prev.status !== row.status || prev.respondedAt !== row.respondedAt;
+
+/**
+ * Auto-paging trigger — ONE mechanism for every list, in every layout.
+ *
+ * A sentinel element is rendered at the end of a list; when it scrolls into view
+ * the next page is requested. This replaced two things:
+ *  - the header popover's scroll handler (geometry maths on the scroll container);
+ *  - the 「加载更多历史」 button the approvals list used to need (Owner, 2026-10-18:
+ *    same popover, same intent, two different interactions).
+ *
+ * IntersectionObserver rather than `scrollTop + clientHeight >= scrollHeight`
+ * because the same list lives in two layouts: inside the popover it scrolls its
+ * own box, while on the notifications PAGE it is a full-height column that scrolls
+ * with the window. The observer is clipped by whichever ancestor scrolls, so one
+ * implementation covers both — and it also fires when the list is shorter than
+ * the viewport, where no scroll event would ever arrive.
+ *
+ * Loop safety does NOT live here: a loader self-guards (in-flight ref, cursor,
+ * `hasMore`) and the sentinel is unmounted when `active` turns false.
+ */
+function useAutoPageOnReach(
+  ref: React.RefObject<HTMLDivElement | null>,
+  active: boolean,
+  onReach: () => void,
+): void {
+  useEffect(() => {
+    const el = ref.current;
+    if (!el || !active || typeof IntersectionObserver === 'undefined') return undefined;
+    const io = new IntersectionObserver(
+      entries => { if (entries.some(e => e.isIntersecting)) onReach(); },
+      { rootMargin: '160px' },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref, active, onReach]);
 }
 
 interface Props {
@@ -212,6 +253,11 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [tab, setTab] = useState<'approvals' | 'notifications'>('approvals');
   const [notifications, setNotifications] = useState<NotificationInfo[]>([]);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
+  /** Total approvals on the server — lets the history list page instead of guessing. */
+  const [approvalsTotal, setApprovalsTotal] = useState(0);
+  /** "Is there another history page" — decided by the same rule as notifications. */
+  const [approvalsHasMore, setApprovalsHasMore] = useState(false);
+  const [loadingApprovalsMore, setLoadingApprovalsMore] = useState(false);
   const [responding, setResponding] = useState<string | null>(null);
   const [modalApproval, setModalApproval] = useState<ApprovalInfo | null>(null);
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
@@ -230,6 +276,32 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [hasMoreNotifications, setHasMoreNotifications] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
   const notifScrollRef = useRef<HTMLDivElement>(null);
+  /**
+   * Latest list for event handlers / async callbacks, without putting it in
+   * effect deps (that recreated callbacks → re-ran the mount effect → fetchData
+   * → setNotifications → an /api/notifications loop).
+   */
+  const notificationsRef = useRef(notifications);
+  notificationsRef.current = notifications;
+  /** Same reason as `notificationsRef`: async paging needs the latest approvals. */
+  const approvalsRef = useRef(approvals);
+  approvalsRef.current = approvals;
+  /**
+   * The paging cursor: how many rows the SERVER has handed us. Monotonic.
+   * Deliberately not `notifications.length` — a refresh merges into the list and
+   * the list is also filtered for display; deriving the cursor from a mutable
+   * array is what let a refresh rewind pagination (the scroll flicker).
+   */
+  const loadedCountRef = useRef(0);
+  /**
+   * The approvals paging cursor — same rule, same reason: rows the SERVER has
+   * handed us, monotonic. It used to be `approvals.length`, an array that a 60s
+   * refresh and every approve/reject mutate, so offsets drifted (skipping or
+   * repeating rows) exactly like the notification list did before 2c60150e.
+   */
+  const approvalsLoadedRef = useRef(0);
+  /** Synchronous in-flight guard: a burst of scroll events lands before React re-renders. */
+  const loadingApprovalsMoreRef = useRef(false);
   const lastTabRef = useRef<'approvals' | 'notifications'>('approvals');
   const tabRef = useRef<'approvals' | 'notifications'>(tab);
   tabRef.current = tab;
@@ -253,6 +325,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [notifFilter, setNotifFilter] = useState<'unread' | 'all'>('unread');
 
   const NOTIF_PAGE_SIZE = 30;
+  const APPROVAL_PAGE_SIZE = 50;
   /**
    * 未读视图一次取多少条。同时也是内嵌侧栏的渲染上限 —— 两者必须是同一个数，
    * 否则「数字」和「列表条数」又会分叉。
@@ -266,15 +339,35 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       invalidateApiCache('/notifications');
       const [n, a, u] = await Promise.all([
         api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: 0 }),
-        api.approvals.list(),
+        api.approvals.list(undefined, { limit: APPROVAL_PAGE_SIZE }),
         api.notifications.list(userId, true, { limit: NOTIF_UNREAD_LIMIT, offset: 0 }),
       ]);
-      setNotifications(n.notifications);
+      // UPSERT, never replace: this refresh runs on a 60s timer and on every WS
+      // notification/approval event. Replacing the list with page 1 collapsed it
+      // under the user, which clamped scrollTop to the bottom and re-armed the
+      // infinite-scroll handler — the popover flicker (owner report 2026-10-18).
+      setNotifications(prev => mergeNotificationPage(prev, n.notifications));
       setUnreadNotifs(u.notifications);
       const serverUnread = n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length;
       setUnreadCount(serverUnread);
-      setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
-      setApprovals(a.approvals);
+      // Only seed the cursor / "is there another page" while no paging has
+      // happened yet. Page 1 is already in the list, so the cursor starts AT it —
+      // starting from 0 would make the first loadMore re-request page 1, see only
+      // duplicates and (correctly) terminate pagination on the spot.
+      // Recomputing hasMore from page-1 length after paging started would re-open
+      // a list that had already paginated to the end; the cursor is the authority.
+      if (loadedCountRef.current === 0) {
+        loadedCountRef.current = n.notifications.length;
+        setHasMoreNotifications(n.totalCount != null ? n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
+      }
+      setApprovals(prev => mergeNotificationPage(prev, a.approvals, approvalFieldChanged));
+      setApprovalsTotal(a.total ?? 0);
+      // Seed the approvals cursor from page 1 exactly once, and only while paging
+      // has not started — a refresh must not rewind a list the user already walked.
+      if (approvalsLoadedRef.current === 0) {
+        approvalsLoadedRef.current = a.approvals.length;
+        setApprovalsHasMore((a.total ?? 0) > a.approvals.length);
+      }
       if (!initialFetchDone.current) {
         const pending = a.approvals.filter((ap: any) => ap.status === 'pending').length;
         prevPendingRef.current = pending;
@@ -283,18 +376,89 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     } catch { /* */ }
   }, [userId]);
 
+  /**
+   * Synchronous re-entrancy guard. React state lands one render late, so a burst
+   * of scroll events at the bottom all used to pass `loadingMore === false` and
+   * fire concurrent requests AT THE SAME OFFSET.
+   */
+  const loadingMoreRef = useRef(false);
   const loadMoreNotifications = useCallback(async () => {
-    if (loadingMore || !hasMoreNotifications) return;
+    // 未读视图是服务端一次性快照（全量未读查询），没有游标可翻。之前这里照常
+    // 向「全部」的游标追加用户根本看不见的已读行：没有视觉进展，每次触底都重新
+    // 发一类请求 —— 闪烁的第二个来源。
+    if (notifFilter !== 'all') return;
+    if (loadingMoreRef.current || !hasMoreNotifications) return;
+    loadingMoreRef.current = true;
     setLoadingMore(true);
+    const offset = loadedCountRef.current;
     try {
-      const n = await api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset: notifications.length });
-      if (n.notifications.length > 0) {
-        setNotifications(prev => [...prev, ...n.notifications.filter(nn => !prev.some(p => p.id === nn.id))]);
-      }
-      setHasMoreNotifications(n.totalCount != null ? notifications.length + n.notifications.length < n.totalCount : n.notifications.length >= NOTIF_PAGE_SIZE);
-    } catch { /* */ }
+      const n = await api.notifications.list(userId, false, { limit: NOTIF_PAGE_SIZE, offset });
+      // Cursor advances by what the SERVER returned, so it stays monotonic even
+      // when rows are deduped or a concurrent refresh merged into the list.
+      loadedCountRef.current = offset + n.notifications.length;
+      const known = new Set(notificationsRef.current.map(x => x.id));
+      const incoming = n.notifications.filter(x => !known.has(x.id));
+      if (incoming.length > 0) setNotifications(prev => mergeNotificationPage(prev, incoming));
+      // ONE rule for "is there another page" (lib/notificationPaging.ts).
+      setHasMoreNotifications(decideNextPage({
+        loadedCount: loadedCountRef.current,
+        received: n.notifications.length,
+        fresh: incoming.length,
+        totalCount: n.totalCount,
+        pageSize: NOTIF_PAGE_SIZE,
+      }).hasMore);
+    } catch { /* transient failure: keep the cursor, retry on the next scroll */ }
+    loadingMoreRef.current = false;
     setLoadingMore(false);
-  }, [userId, notifications.length, loadingMore, hasMoreNotifications]);
+  }, [userId, hasMoreNotifications, notifFilter]);
+
+  /**
+   * History paging for the 审批 tab.
+   *
+   * The old list could not reach history at all: the API returned one unfiltered
+   * page (50 rows out of an in-memory mirror capped at 200 while the DB held
+   * 2521) and the view hard-sliced it to 50. Now the API is time-ordered and
+   * paged from the database, and this walks it page by page.
+   */
+  const loadMoreApprovals = useCallback(async () => {
+    if (loadingApprovalsMoreRef.current || !approvalsHasMore) return;
+    loadingApprovalsMoreRef.current = true;
+    setLoadingApprovalsMore(true);
+    const offset = approvalsLoadedRef.current;
+    try {
+      const a = await api.approvals.list(undefined, { limit: APPROVAL_PAGE_SIZE, offset });
+      // Cursor advances by what the SERVER returned, so it stays monotonic even
+      // when rows are deduped or a concurrent refresh merged into the list.
+      approvalsLoadedRef.current = offset + a.approvals.length;
+      const known = new Set(approvalsRef.current.map(x => x.id));
+      const incoming = a.approvals.filter(x => !known.has(x.id));
+      if (incoming.length > 0) setApprovals(prev => mergeNotificationPage(prev, incoming, approvalFieldChanged));
+      if (a.total != null) setApprovalsTotal(a.total);
+      // ONE rule for "is there another page" (lib/notificationPaging.ts).
+      setApprovalsHasMore(decideNextPage({
+        loadedCount: approvalsLoadedRef.current,
+        received: a.approvals.length,
+        fresh: incoming.length,
+        totalCount: a.total,
+        pageSize: APPROVAL_PAGE_SIZE,
+      }).hasMore);
+    } catch { /* transient: keep what we have, the next scroll retries */ }
+    loadingApprovalsMoreRef.current = false;
+    setLoadingApprovalsMore(false);
+  }, [approvalsHasMore]);
+
+  /**
+   * The two auto-paging triggers. `hasMore` gates them, so a list that reached the
+   * end (or has no cursor to walk, like the unread snapshot) fires nothing.
+   */
+  const approvalsSentinelRef = useRef<HTMLDivElement>(null);
+  const notifSentinelRef = useRef<HTMLDivElement>(null);
+  useAutoPageOnReach(approvalsSentinelRef, approvalsHasMore, loadMoreApprovals);
+  useAutoPageOnReach(
+    notifSentinelRef,
+    notifFilter === 'all' && hasMoreNotifications,
+    loadMoreNotifications,
+  );
 
   const markReadByRef = useCallback((e: Event) => {
     const detail = (e as CustomEvent).detail as { taskId?: string; requirementId?: string } | undefined;
@@ -315,12 +479,6 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       return prev.map(n => toMark.some(m => m.id === n.id) ? { ...n, read: true } : n);
     });
   }, []);
-
-  // Keep latest notifications for event handlers without putting them in effect deps
-  // (that previously recreated onCreditExhausted → re-ran the mount effect →
-  // fetchData → setNotifications → infinite /api/notifications+/approvals loop).
-  const notificationsRef = useRef(notifications);
-  notificationsRef.current = notifications;
 
   const onCreditExhausted = useCallback(async () => {
     const hasUnread = notificationsRef.current.some(n => !n.read && n.type === 'system' && n.metadata?.creditExhausted);
@@ -907,6 +1065,14 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     </div>
   );
 
+  /**
+   * Bottom sentinel for the 审批 history list. Auto-paging replaces the old
+   * "加载更多历史" button; this row is the visible proof that a page is in flight.
+   */
+  const approvalsLoadingRow = loadingApprovalsMore ? (
+    <div className="px-3 py-2 text-[11px] text-fg-tertiary text-center">{t('common:loading')}</div>
+  ) : null;
+
   const panelContent = (
     <>
       {/* Tabs + Close */}
@@ -941,12 +1107,8 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
       {/* Actions bar */}
       {tab === 'notifications' && notifFilterBar}
 
-      {/* Content */}
-      <div ref={notifScrollRef} className="flex-1 overflow-y-auto" onScroll={(e) => {
-        if (tab !== 'notifications' || !hasMoreNotifications || loadingMore) return;
-        const el = e.currentTarget;
-        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 80) loadMoreNotifications();
-      }}>
+      {/* Content — one scroll trigger for whichever tab is showing. */}
+      <div ref={notifScrollRef} className="flex-1 overflow-y-auto">
             {tab === 'approvals' && (
               approvals.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
@@ -1126,7 +1288,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           {t('team:notifications.approvalHistory')}
                         </div>
                       )}
-                      {historyList.slice(0, 50).map(a => (
+                      {historyList.map(a => (
                         <button key={a.id} onClick={() => isUserInputApproval(a) ? setModalApproval(a) : navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors group">
                           <div className="flex items-center gap-2">
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${approvalStatusTone(a.status).dot}`} />
@@ -1146,6 +1308,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           )}
                         </button>
                       ))}
+                      {approvalsLoadingRow}
+                      {/* Reach-me element: scrolling it into view pulls the next history page. */}
+                      {approvalsHasMore && <div ref={approvalsSentinelRef} aria-hidden className="h-px" />}
                     </>
                   )}
                 </div>
@@ -1202,6 +1367,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
                       </svg>
                     </div>
+                  )}
+                  {notifFilter === 'all' && hasMoreNotifications && (
+                    <div ref={notifSentinelRef} aria-hidden className="h-px" />
                   )}
                 </div>
               )
@@ -1282,7 +1450,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             className="flex h-full transition-transform duration-300 ease-out"
             style={{ transform: `translateX(-${tabIdx * 100}%)` }}
           >
-            <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
+            <div
+              className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin"
+            >
               {approvals.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{t('team:notifications.noApprovals')}</div>
               ) : (
@@ -1450,7 +1620,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                   {historyList.length > 0 && (
                     <>
                       {pendingList.length > 0 && <div className="px-3 py-1.5 text-[10px] font-medium text-fg-tertiary uppercase tracking-wider bg-surface-overlay/30">{t('team:notifications.approvalHistory')}</div>}
-                      {historyList.slice(0, 50).map(a => (
+                      {historyList.map(a => (
                         <button key={a.id} onClick={() => navigateForApproval(a)} className="w-full text-left px-3 py-2.5 hover:bg-surface-overlay/50 transition-colors">
                           <div className="flex items-center gap-2">
                             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${approvalStatusTone(a.status).dot}`} />
@@ -1464,17 +1634,21 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                           </div>
                         </button>
                       ))}
+                      {approvalsLoadingRow}
+                      {approvalsHasMore && <div ref={approvalsSentinelRef} aria-hidden className="h-px" />}
                     </>
                   )}
                 </div>
               )}
             </div>
-            <div className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin">
+            <div
+              className="w-full shrink-0 h-full overflow-y-auto scrollbar-thin"
+            >
               {visibleNotifications.length === 0 ? (
                 <div className="p-6 text-center text-xs text-fg-tertiary">{emptyNotifText}</div>
               ) : (
                 <div className="divide-y divide-border-default/50">
-                  {visibleNotifications.slice(0, notifFilter === 'unread' ? NOTIF_UNREAD_LIMIT : 50).map(n => {
+                  {visibleNotifications.map(n => {
                     const typeColor = TYPE_COLOR[n.type] ?? 'text-fg-tertiary';
                     return (
                       <button key={n.id} onClick={() => handleNotificationClick(n)} className={`w-full text-left px-3 py-2.5 flex gap-2.5 transition-colors ${n.read ? 'opacity-50 hover:opacity-70' : 'hover:bg-surface-overlay'}`}>
@@ -1497,6 +1671,9 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
                       </button>
                     );
                   })}
+                  {notifFilter === 'all' && hasMoreNotifications && (
+                    <div ref={notifSentinelRef} aria-hidden className="h-px" />
+                  )}
                 </div>
               )}
             </div>

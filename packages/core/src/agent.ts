@@ -53,6 +53,7 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
+import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
@@ -129,6 +130,21 @@ import { TaskPriority, TaskStatus } from './concurrent/task-queue.js';
 import { ToolLoopDetector } from './tool-loop-detector.js';
 import { RepetitionGuard } from './repetition-detector.js';
 
+/**
+ * Tools that change a task's authoritative state (or leave a durable trace on it).
+ *
+ * A review turn that calls none of these on the card it was asked to review has not
+ * reviewed anything, whatever it said. `task_note` counts because it bumps
+ * `tasks.updatedAt`, keeping this set consistent with the stale detector's
+ * "has anyone touched this card" criterion.
+ */
+const TASK_MUTATING_TOOLS = new Set([
+  'task_update',
+  'task_submit_review',
+  'request_revision',
+  'task_note',
+]);
+
 const log = createLogger('agent');
 
 /**
@@ -194,29 +210,14 @@ function createMarkerStrippingDelta(rawEmit: (text: string) => void) {
 /** @see isToolErrorResult — kept as a local alias for call sites in this file. */
 const isErrorResult = isToolErrorResult;
 
-/**
- * Tool input schemas declare snake_case params (e.g. `project_id`), but models
- * frequently emit camelCase (`projectId`) instead. Without this, a tool silently
- * reads `undefined`, returns a misleading "X is required" error, and the model —
- * seeing that it *did* provide the value — retries the identical call forever.
- * To make tool dispatch tolerant, we add the missing casing variant for every
- * top-level key (aliases only; the original keys are preserved, and existing
- * keys are never overwritten). Internal keys (leading underscore) are skipped.
- */
-function addArgCasingAliases(args: unknown): Record<string, unknown> {
-  if (!args || typeof args !== 'object' || Array.isArray(args)) {
-    return (args ?? {}) as Record<string, unknown>;
-  }
-  const out: Record<string, unknown> = { ...(args as Record<string, unknown>) };
-  for (const [key, value] of Object.entries(args as Record<string, unknown>)) {
-    if (key.startsWith('_')) continue;
-    const camel = key.replace(/_([a-z0-9])/g, (_, c: string) => c.toUpperCase());
-    const snake = key.replace(/([A-Z])/g, (_, c: string) => '_' + c.toLowerCase());
-    if (camel !== key && !(camel in out)) out[camel] = value;
-    if (snake !== key && !(snake in out)) out[snake] = value;
-  }
-  return out;
-}
+// Tool input schemas declare snake_case params (e.g. `project_id`), but models
+// frequently emit camelCase (`projectId`) instead. Dispatch therefore expands every
+// call's args with both casing variants. That expansion lives in ONE place
+// (`tools/tool-args.ts`) together with the validator that inspects those args — when
+// the two were implemented separately, the strict validator rejected the platform's
+// own aliases and broke every multi-word argument in production (2026-10-18).
+import { expandArgAliases as addArgCasingAliases } from './tools/tool-args.js';
+export { expandArgAliases as addArgCasingAliases } from './tools/tool-args.js';
 
 export type ToolOutputCallback = (chunk: string) => void;
 
@@ -295,6 +296,14 @@ interface HandleMessageOptions {
   waitForReply?: boolean;
   /** Whether this agent was directly @mentioned in the message. */
   directMention?: boolean;
+  /**
+   * Depth of the peer-query chain this turn is answering (0 = not answering one).
+   * Set to 1 when the turn was started by `agent_ask_agent`. While > 0 the
+   * `agent_ask_agent` tool is REMOVED from this turn's toolset — that is what makes
+   * agent→agent ask chains structurally impossible, so two agents can never wait
+   * on each other. An answering agent can still ask the HUMAN (request_user_input).
+   */
+  peerQueryDepth?: number;
 }
 
 /** Context-usage percentage (0-100) at/above which a turn-level memory flush preflight fires. */
@@ -595,6 +604,13 @@ export class Agent {
    */
   private endTurnRequested = false;
   /**
+   * 0 = normal turn; >0 = this turn is ANSWERING another agent's peer query.
+   * While >0 `agent_ask_agent` is filtered out of the toolset, so ask chains
+   * cannot nest and two agents can never wait on each other (deadlock-free by
+   * construction). An answering agent can still ask the HUMAN.
+   */
+  private peerQueryDepth = 0;
+  /**
    * Monotonic counter of `end_turn` tool invocations. The AttentionDelegate wrapper
    * snapshots it around one mailbox turn: an increase means THIS turn ended
    * deliberately, so it returns {@link END_TURN_REPLY_SENTINEL} to the attention
@@ -604,6 +620,19 @@ export class Agent {
    * specific turn even with concurrent workers.
    */
   private endTurnCount = 0;
+  /**
+   * Task ids this turn actually MUTATED (task_update / task_submit_review /
+   * request_revision / task_note). Used by the review path to judge a review turn by
+   * what it CHANGED rather than by what it SAID.
+   *
+   * Why: on 2026-10-17 four cards sat in review for 15h. Their review turns were
+   * 21s/26s/45s with no action on the card, yet each was recorded as `completed`
+   * because the turn closed with the typed `end_turn` sentinel — a turn-closing
+   * signal mistaken for evidence of work. Empty (`retry_count = 0`) proved the
+   * empty-reply branch never fired, so "check whether the reply is empty" could never
+   * catch this. The only honest question is whether the card changed.
+   */
+  private turnTaskMutations = new Set<string>();
   /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
   private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
@@ -1290,6 +1319,7 @@ export class Agent {
         toolEventCollector: options?.toolEventCollector,
         waitForReply: options?.waitForReply,
         directMention: options?.directMention,
+        peerQueryDepth: options?.peerQueryDepth,
         sessionRestore: options?.sessionRestore,
       },
     };
@@ -1554,6 +1584,7 @@ export class Agent {
           // controller — an intentional empty reply must COMPLETE the item, not be
           // mistaken for an abnormal/empty LLM turn and requeued forever.
           const endTurnCountBefore = this.endTurnCount;
+          this.turnTaskMutations.clear();
           const result = await this.processMailboxItemInternal(item, batchItems, batchContext);
           const endedTurnViaTool = this.endTurnCount > endTurnCountBefore;
           // C2 (measurement only): record turn-level harness health. With the typed
@@ -1746,12 +1777,21 @@ export class Agent {
     reply: string,
     sessionId?: string,
     onEvent?: (event: LLMStreamEvent & { agentEvent?: string }) => void,
-  ): Promise<string> {
-    if (!reply || reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') return reply;
+  ): Promise<TurnReply> {
+    // NOTE: an EMPTY reply must NOT short-circuit here. Ending the turn with nothing at
+    // all is precisely the case this safety net exists for (2026-10-17: review turns that
+    // produced no output were left uncompleted and silently recorded as done). Only the
+    // explicit non-answers below mean "there is nothing to continue".
+    if (reply === '[cancelled]' || reply === '[preempted]' || reply === '[merged]') {
+      return { text: reply, completed: true };
+    }
     // Typed completion signal. `endTurnRequested` is reset at the START of the next
     // turn, so immediately after a turn returns it still describes THAT turn.
-    if (this.endTurnRequested) return reply;
-    if (!sessionId || !this.memory.getSession(sessionId)) return reply;
+    if (this.endTurnRequested) return { text: reply, completed: true };
+    // The safety net cannot run without a session. Nothing happened after `reply` either,
+    // so the turn's own text stands — do NOT report the turn as unfinished just because
+    // the continuation was unavailable (that would turn a good answer into a retry loop).
+    if (!sessionId || !this.memory.getSession(sessionId)) return { text: reply, completed: true };
 
     log.info('Turn finished without an end_turn signal — continuing in-session to close it out', {
       agentId: this.id,
@@ -1785,9 +1825,15 @@ export class Agent {
         hasMultimodal: multimodalToolNames.filter(n => llmTools.some(t => t.name === n)),
         sessionToolNames: selectCtx.sessionToolNames,
       });
+      // This is a safety net, NOT an extension of the work session. It exists to close
+      // out a turn that forgot to end — so it finishes what was already started and then
+      // ANSWERS. It must not invite a new work programme: 2026-10-18 a DM turn used the
+      // continuation to carry out an entire refactor and never answered the peer.
       const systemPrompt =
-        'You are continuing a previous response. Finish any remaining work using tools if needed. ' +
-        'Do not stop after only announcing a plan. When finished, end with the required completion marker.';
+        'You are continuing a previous response. Finish only the actions you already started, ' +
+        'then ANSWER the message you were processing — what you did, the outcome, what is still open. ' +
+        'Do not start new work: a long-running change belongs in a task, not in this turn. ' +
+        'When finished, call the `end_turn` tool.';
 
       const prepare = async () => this.contextEngine.prepareMessages({
         systemPrompt,
@@ -1817,12 +1863,14 @@ export class Agent {
         ? createMarkerStrippingDelta((text) => onEvent({ type: 'text_delta', text }))
         : undefined;
 
-      const contParts: string[] = [];
-      if (response.content) { contParts.push(response.content); contDelta?.emit(response.content); }
+      if (response.content) contDelta?.emit(response.content);
 
       let toolIter = 0;
-      // Allow real remaining work, but keep a hard bound (this is still one continuation).
-      const maxIter = Math.min(this._maxToolIterations, 24);
+      let continuationDidWork = false;
+      // Allow real remaining work, but keep a hard bound. This is a CLOSE-OUT of a turn
+      // that forgot to end, not a second work session: the bound is deliberately small
+      // (24 used to let a runaway continuation refactor two packages inside a DM turn).
+      const maxIter = Math.min(this._maxToolIterations, 4);
       while (
         shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
       ) {
@@ -1850,6 +1898,7 @@ export class Agent {
             toolCalls: response.toolCalls,
             reasoningContent: response.reasoningContent,
           });
+          continuationDidWork = true;
           for (const tc of response.toolCalls!) {
             try {
               let result = await this.executeTool(tc, undefined, sessionId);
@@ -1876,7 +1925,7 @@ export class Agent {
           this.getEffectiveProvider(),
           { sessionId: this.currentSessionId },
         );
-        if (response.content) { contParts.push(response.content); contDelta?.emit(response.content); }
+        if (response.content) contDelta?.emit(response.content);
       }
 
       if (response.finishReason !== 'tool_use') {
@@ -1888,15 +1937,102 @@ export class Agent {
       }
 
       contDelta?.flush();
-      return reply + contParts.join('');
+
+      // ── What may leave the turn (single judgement point) ───────────────────
+      // This used to be `return reply + contParts.join('')`, which glued every piece of
+      // interim narration onto the answer. On 2026-10-18 that shipped 15 fragments of
+      // "继续施工。先看…" to a DM as the reply and cost the peer a whole turn. Only the
+      // FINAL response of a turn is an answer; narration never crosses the boundary.
+      const finalText = response.toolCalls && response.toolCalls.length > 0
+        ? undefined
+        : (response.content ?? '');
+
+      let composedAnswer: string | undefined;
+      if (shouldComposeAnswer({ finalText, endTurnRequested: this.endTurnRequested, continuationDidWork })) {
+        // The turn ran out of budget mid-work. Compose the answer deliberately with
+        // tools disabled, so the work is not lost and the peer gets a real message.
+        composedAnswer = await this.composeAnswerWithoutTools(sessionId);
+      }
+
+      return decideTurnReply({
+        finalText,
+        reply,
+        endTurnRequested: this.endTurnRequested,
+        composedAnswer,
+        continuationDidWork,
+      });
     } catch (err) {
-      log.warn('Failed to obtain completion marker via continuation — returning original reply', {
+      log.warn('Failed to obtain completion marker via continuation — the turn stays incomplete', {
         agentId: this.id,
         sessionId,
         error: String(err),
       });
-      return reply;
+      // Never fall back to the pre-continuation text: for an unfinished turn it is
+      // narration. An empty reply is recorded as abnormal, which is the honest state.
+      return { text: '', completed: false };
     }
+  }
+
+  /**
+   * Compose the answer for a turn that ran out of budget before answering.
+   * One call, tools disabled — the turn's work already happened, this only turns it
+   * into a message. Returns '' when even that fails (turn stays incomplete).
+   */
+  private async composeAnswerWithoutTools(sessionId: string): Promise<string> {
+    try {
+      this.memory.appendMessage(sessionId, {
+        role: 'user',
+        content:
+          '[SYSTEM] This turn ran out of budget before you answered the sender. ' +
+          'Call NO tools. Reply now with the message they need: what you did (or deliberately ' +
+          'did not do), the outcome, and anything still open. Be short.',
+      });
+      const prepared = await this.contextEngine.prepareMessages({
+        systemPrompt:
+          'You are closing out a turn that ran out of budget. Answer the message you were ' +
+          'processing. Do not call tools and do not start new work.',
+        sessionMessages: this.memory.getRecentMessages(sessionId, 80),
+        memory: this.memory,
+        sessionId,
+        agentId: this.id,
+        ...this.getPrepareBudgetOpts(),
+        toolDefinitions: [],
+        volatileState: this.volatileState,
+      });
+      const response = await this.llmRouter.chat(
+        {
+          messages: prepared.messages,
+          ...(this.getEffectiveModel() ? { model: this.getEffectiveModel() } : {}),
+        },
+        this.getEffectiveProvider(),
+        { sessionId: this.currentSessionId },
+      );
+      const text = (response.content ?? '').trim();
+      if (text) this.memory.appendMessage(sessionId, { role: 'assistant', content: text });
+      return text;
+    } catch (err) {
+      log.warn('Failed to compose a closing answer — turn stays incomplete', {
+        agentId: this.id,
+        sessionId,
+        error: String(err),
+      });
+      return '';
+    }
+  }
+
+  /**
+   * The single gate between a finished turn and the mailbox.
+   * An incomplete turn delivers NOTHING, so attention records it as abnormal
+   * (retry, then a visible drop) instead of shipping narration as if it were an answer.
+   */
+  private acceptTurnReply(done: TurnReply, item: { id: string; sourceType: string }): string {
+    if (done.completed) return done.text;
+    log.warn('Turn ended without a final answer — delivering nothing so attention can retry', {
+      agentId: this.id,
+      itemId: item.id,
+      type: item.sourceType,
+    });
+    return '';
   }
 
   /**
@@ -1979,6 +2115,11 @@ export class Agent {
       if (ex.allowedTools !== undefined) {
         opts.allowedTools = new Set(ex.allowedTools as string[]);
       }
+      // Peer-query depth must survive the mailbox hop: it is what removes
+      // `agent_ask_agent` from an answering turn's toolset.
+      if (ex.peerQueryDepth !== undefined) {
+        opts.peerQueryDepth = Number(ex.peerQueryDepth) || 0;
+      }
       return opts;
     };
 
@@ -2028,10 +2169,13 @@ export class Agent {
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
               if (needsTurnCompletion && item.sourceType !== 'human_chat') {
-                reply = await this.ensureTurnCompleted(
-                  reply,
-                  this.currentSessionId,
-                  extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
+                reply = this.acceptTurnReply(
+                  await this.ensureTurnCompleted(
+                    reply,
+                    this.currentSessionId,
+                    extra.onEvent as (event: LLMStreamEvent & { agentEvent?: string }) => void,
+                  ),
+                  item,
                 );
               }
               resolveResponse(reply);
@@ -2086,7 +2230,10 @@ export class Agent {
             opts,
           );
           if (needsTurnCompletion && item.sourceType !== 'human_chat') {
-            reply = await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId);
+            reply = this.acceptTurnReply(
+              await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId),
+              item,
+            );
           }
           // P3: 重启后从 DB 恢复的排队项（发起方 responsePromise 随 JSON 丢失，SSEHandler /
           // api-server 请求线程已死）→ worker 兜底把回复写回 DB 会话（cs_*），否则前端
@@ -2210,7 +2357,7 @@ export class Agent {
             senderInfo,
             buildHandleOpts({ sessionId: mentionSessionId, scenario: 'a2a' }),
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, mentionSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, mentionSessionId), item);
           resolveResponse(reply);
           return reply;
         }
@@ -2302,6 +2449,7 @@ export class Agent {
 
         case 'review_request': {
           const reviewSessionId = `review_${this.id}_${ts}`;
+          const reviewTaskId = (item.payload.taskId ?? item.metadata?.taskId) as string | undefined;
           let reply = await this.handleMessage(
             item.payload.content,
             item.metadata?.senderId,
@@ -2310,7 +2458,21 @@ export class Agent {
               : undefined,
             buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, reviewSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
+          // A review is finished only when the CARD changed. A closed turn is not evidence:
+          // the `end_turn` sentinel is produced whenever the turn stops, including when the
+          // model produced nothing at all. Reporting the empty reply makes the attention
+          // layer treat this as unfinished (requeue with backoff) instead of silently
+          // marking the review request consumed — see the 2026-10-17 review-stall incident.
+          if (reviewTaskId && !this.turnTaskMutations.has(reviewTaskId)) {
+            log.warn('Review turn left the card untouched — reporting it as unfinished so it is requeued', {
+              agentId: this.id,
+              taskId: reviewTaskId,
+              replyLength: reply?.length ?? 0,
+              endedViaEndTurn: this.endTurnRequested,
+            });
+            reply = '';
+          }
           resolveResponse(reply);
           return reply;
         }
@@ -2347,7 +2509,7 @@ export class Agent {
             undefined,
             buildHandleOpts({ sessionId: sysSessionId, scenario: sysScenario }),
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, sysSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, sysSessionId), item);
           resolveResponse(reply);
           return reply;
         }
@@ -2360,7 +2522,7 @@ export class Agent {
             undefined,
             buildHandleOpts({ sessionId: memSessionId, scenario: 'memory_consolidation' }),
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, memSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, memSessionId), item);
           resolveResponse(reply);
           return reply;
         }
@@ -2370,7 +2532,7 @@ export class Agent {
           const onLog = (extra.onLog as ((entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void)) ?? (() => {});
           if (sessionId) {
             let reply = await this.respondInSession(sessionId, item.payload.content, onLog);
-            if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, sessionId);
+            if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, sessionId), item);
             resolveResponse(reply);
             return reply;
           }
@@ -2381,7 +2543,7 @@ export class Agent {
             senderInfo,
             buildHandleOpts({ sessionId: srFallbackSessionId }),
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, srFallbackSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, srFallbackSessionId), item);
           resolveResponse(reply);
           return reply;
         }
@@ -2412,7 +2574,7 @@ export class Agent {
             undefined,
             cbOpts,
           );
-          if (needsTurnCompletion) reply = await this.ensureTurnCompleted(reply, cbOpts.sessionId ?? this.currentSessionId);
+          if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, cbOpts.sessionId ?? this.currentSessionId), item);
           resolveResponse(reply);
           return reply;
         }
@@ -4641,6 +4803,8 @@ export class Agent {
 
     // Per-turn reset: the end_turn signal never carries over between turns.
     this.endTurnRequested = false;
+    // Peer-query depth is per turn: 0 = free agent, >0 = answering another agent.
+    this.peerQueryDepth = options?.peerQueryDepth ?? 0;
 
     const scenario = options?.scenario ?? 'chat';
     const isLightweight = scenario !== 'chat' && scenario !== 'task_execution' && scenario !== 'review';
@@ -7940,6 +8104,13 @@ export class Agent {
     });
     this.pruneEvictedActivatedTools(this.toolSelector.consumeEvictedActivated());
 
+    // Deadlock protection (structural, single execution point): a turn that is
+    // answering a peer query cannot ask another agent. Chains therefore never
+    // nest — A→B only. B may still ask the human (request_user_input).
+    if (this.peerQueryDepth > 0) {
+      return tools.filter(t => t.name !== 'agent_ask_agent');
+    }
+
     return tools;
   }
 
@@ -8498,6 +8669,13 @@ export class Agent {
       const reason = typeof toolCall.arguments.reason === 'string' ? toolCall.arguments.reason.trim() : '';
       log.info('Agent ended turn via end_turn tool', { agentId: this.id, sessionId, reason: reason || undefined });
       return JSON.stringify({ status: 'ok', ended: true, note: 'Turn ended. Do not send further messages in this turn.' });
+    }
+
+    // Record the cards this turn mutated (see turnTaskMutations). This is the tool
+    // boundary, so it catches every loop variant without each caller remembering.
+    if (TASK_MUTATING_TOOLS.has(toolCall.name)) {
+      const target = (toolCall.arguments as Record<string, unknown> | undefined)?.task_id;
+      if (typeof target === 'string' && target) this.turnTaskMutations.add(target);
     }
 
     // Handle the discover_tools meta-tool: activate requested tools, skills, and skill MCP servers
