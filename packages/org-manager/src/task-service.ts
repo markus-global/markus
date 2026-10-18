@@ -2620,6 +2620,12 @@ export class TaskService implements ApprovalTargetPort {
         );
       }
       if (!request.projectId && req.projectId) {
+        // An inherited project is still a REFERENCE: the same existence check the re-link
+        // path uses applies here, otherwise "create" stays the open door for project
+        // orphans (129 historical rows entered exactly this way). Refusing here forces the
+        // requirement's projectId to be fixed at the source instead of fanning a bogus id
+        // out to every card created under it.
+        this.assertValidProjectReference(req.projectId);
         request.projectId = req.projectId;
       }
     }

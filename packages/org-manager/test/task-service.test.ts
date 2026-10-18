@@ -596,6 +596,11 @@ describe('TaskService', () => {
         linkTask: vi.fn(),
       };
       ts.setRequirementService(requirementService as never);
+      // The inherited project is validated as a reference (same invariant as re-link),
+      // so the fixture must expose the project it claims to inherit from.
+      ts.setProjectService({
+        getProject: (id: string) => (id === 'proj-from-req' ? { id, name: id, status: 'active' } : null),
+      } as never);
 
       const task = ts.createTask(createDefaults({
         requirementId: 'req-1',
@@ -2026,7 +2031,7 @@ describe('TaskService requirement linkage guards', () => {
   });
 
   it('createTask still inherits projectId from a real requirement', () => {
-    ({ svc: ts } = withRequirements());
+    ({ svc: ts } = withProjects());
     const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
     expect(task.requirementId).toBe('req_active');
     expect(task.projectId).toBe('proj_inherited');
@@ -2130,6 +2135,14 @@ describe('TaskService requirement linkage guards', () => {
     const after = ts.getTask(task.id)!;
     expect(after.requirementId).toBe('req_active');
     expect(after.projectId).toBe('proj_inherited');
+  });
+
+  it('createTask rejects a requirement whose projectId is not a real project', () => {
+    // Inheritance is the other half of the same door: a bogus project id must be refused
+    // at creation too, not fanned out to every card created under that requirement.
+    ({ svc: ts } = withProjects([GHOST_REQ]));
+    expect(() => ts.createTask(createDefaults({ requirementId: GHOST_REQ.id }) as never))
+      .toThrow(/Project "proj_anteum" does not exist/);
   });
 
   it('re-linking fails closed when project lookup is unavailable', () => {
