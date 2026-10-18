@@ -3966,6 +3966,19 @@ export class TaskService implements ApprovalTargetPort {
    *  - hanging live work on an unapproved requirement (pending / rejected /
    *    cancelled) silently detaches it from the governance chain.
    */
+  /**
+   * Statuses a card may be re-linked INTO — an ALLOWLIST on purpose. The requirement status
+   * domain also contains `pending`, `failed`, `rejected`, `cancelled` and `archived`; a denylist
+   * silently permits every status introduced later, and "re-link onto the archived requirement"
+   * is a fresh way to mint an invisible card — the exact failure this guard exists to stop.
+   */
+  private static readonly REBINDABLE_REQUIREMENT_STATUSES: ReadonlySet<string> = new Set([
+    'in_progress',
+    'blocked',
+    'review',
+    'completed',
+  ]);
+
   private assertRebindableRequirement(requirementId: string | null): void {
     if (requirementId === null) {
       throw new Error(
@@ -3973,7 +3986,15 @@ export class TaskService implements ApprovalTargetPort {
           '(invisible in every requirement view). Re-link it to a valid requirement, or cancel/archive the task instead.'
       );
     }
-    if (!this.requirementService) return;
+    // Fail CLOSED when requirement lookup is unavailable: "cannot verify the target" must
+    // never mean "write it anyway" — an unvalidated reference is precisely the orphan this
+    // guard exists to prevent.
+    if (!this.requirementService) {
+      throw new Error(
+        'Cannot re-link a task: requirement lookup is unavailable in this process, so the target ' +
+          'cannot be verified. Refusing rather than writing an unvalidated requirement reference.'
+      );
+    }
     const req = this.requirementService.getRequirement(requirementId);
     if (!req) {
       throw new Error(
@@ -3982,7 +4003,7 @@ export class TaskService implements ApprovalTargetPort {
           `requirement_get before re-linking.`
       );
     }
-    if (req.status === 'pending' || req.status === 'rejected' || req.status === 'cancelled') {
+    if (!TaskService.REBINDABLE_REQUIREMENT_STATUSES.has(req.status)) {
       throw new Error(
         `Cannot re-link a task to requirement "${req.title}" (${req.id}) — its status is "${req.status}", ` +
           `not an approved/active requirement. Get the requirement approved first, or pick the active requirement.`

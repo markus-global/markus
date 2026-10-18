@@ -1996,13 +1996,16 @@ describe('TaskService', () => {
 describe('TaskService requirement linkage guards', () => {
   type ReqStub = { id: string; title: string; status: string; projectId?: string };
   const ACTIVE: ReqStub = { id: 'req_active', title: 'Active req', status: 'in_progress', projectId: 'proj_inherited' };
-  const ACTIVE2: ReqStub = { id: 'req_active2', title: 'Second active req', status: 'approved' };
+  const ACTIVE2: ReqStub = { id: 'req_active2', title: 'Second active req', status: 'review' };
   const PENDING: ReqStub = { id: 'req_pending', title: 'Unapproved req', status: 'pending' };
   const CANCELLED: ReqStub = { id: 'req_cancelled', title: 'Cancelled req', status: 'cancelled' };
+  // Real statuses from RequirementService.VALID_STATUSES that a denylist used to let through.
+  const ARCHIVED: ReqStub = { id: 'req_archived', title: 'Archived req', status: 'archived' };
+  const FAILED: ReqStub = { id: 'req_failed', title: 'Failed req', status: 'failed' };
 
   function withRequirements(extra: ReqStub[] = []) {
     const { svc, agentManager } = createService();
-    const reqs = [ACTIVE, ACTIVE2, PENDING, CANCELLED, ...extra];
+    const reqs = [ACTIVE, ACTIVE2, PENDING, CANCELLED, ARCHIVED, FAILED, ...extra];
     svc.setRequirementService({
       getRequirement: (id: string) => reqs.find(r => r.id === id),
       linkTask: vi.fn(),
@@ -2053,6 +2056,26 @@ describe('TaskService requirement linkage guards', () => {
       .toThrow(/not an approved\/active requirement/);
     expect(() => ts.updateTask(task.id, { requirementId: 'req_cancelled' } as never, 'agent-a'))
       .toThrow(/not an approved\/active requirement/);
+  });
+
+  it('updateTask refuses archived/failed requirements — a status denylist let them through', () => {
+    ({ svc: ts } = withRequirements());
+    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    // Re-linking back onto the ARCHIVED (old) requirement is the reverse of the boss's
+    // reorganization and mints exactly the invisible card this guard exists to stop.
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_archived' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_failed' } as never, 'agent-a'))
+      .toThrow(/not an approved\/active requirement/);
+    expect(ts.getTask(task.id)!.requirementId).toBe('req_active');
+  });
+
+  it('updateTask fails closed when requirement lookup is unavailable', () => {
+    ({ svc: ts } = createService()); // deliberately NOT wiring setRequirementService
+    const task = ts.createTask(createDefaults() as never);
+    expect(() => ts.updateTask(task.id, { requirementId: 'req_unverifiable' } as never, 'agent-a'))
+      .toThrow(/requirement lookup is unavailable/);
+    expect(ts.getTask(task.id)!.requirementId).toBeUndefined();
   });
 
   it('updateTask refuses to detach a card from its requirement (that is what makes it invisible)', () => {
