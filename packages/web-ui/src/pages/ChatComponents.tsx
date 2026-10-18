@@ -600,24 +600,81 @@ export function lastTextBlockIndex(blocks: ChatTimelineBlock[]): number {
 }
 
 /**
- * 完成后要折进顶部一行的块数（= 最终结果之前的全部块）。0 = 没什么可折，
- * 此时不显示顶部行 —— 一条纯正文的简单回复不该平白多出一行。
+ * 气泡里**真正渲染哪些块** —— 「一个气泡最多一行过程」的唯一执行点。
  *
- * 只在**这轮已经结束**时才折：流式期间逐段展开正是「生成中与生成完气泡等高」的
- * 前提；中途把已经产出的内容收走，会让用户正在盯的东西突然消失。
+ * ── 旧实现错在哪（2026-10-18 老板截图报的「一串工具调用排成一列」）──────
+ *
+ * `groupProcessRuns` 是按「**连续**过程段」分块的：思考→工具→思考→工具……
+ * 会产出 **N 个 process 块**。而旧的 `collapsibleBlockCount` 在流式期间一律返回 0
+ * （理由是「正在产出的内容不能被收走」），于是这一轮里**每一段过程都各自渲染成一行
+ * 折叠行**，在气泡里排成一列 —— 102 步工具调用就是 102 段，看起来像一张列表。
+ * 收尾后又有第二个分叉：若这一轮结尾没有正文（纯工具回合），`lastTextBlockIndex`
+ * = -1 → 同样什么都不折，那一列就**永久留在气泡里**。
+ *
+ * 根因：**「折叠」被写成了一个数字偏移（prefix offset），而 offset 只能表达「前缀折叠」，
+ * 表达不了「只折过程、保留正文」这种形状**。于是只能靠两个布尔特例（流式不折 /
+ * 中断不折）撑着，两个特例各自又打开一个洞。
+ *
+ * 现在改成直接回答「渲染哪些块」，形状写在一个地方：
+ *
+ *   • 展开（用户点开顶部那一行） → 全部块，原样、逐段各自折叠
+ *   • 中断 / 异常结束           → 全部块（不是一次正常交付，压成一行会丢上下文）
+ *   • 流式中                    → **一行聚合后的过程** + 所有正文块（一段不收走）
+ *   • 已完成                    → 最后一个正文块及其之后（= 最终结论）
+ *
+ * 流式那一支为何要「聚合」而不只是「把过程块滤掉」：滤掉就等于在工具执行期间
+ * 把「正在执行 shell_execute…」这唯一的活的信号也删了；而一段一行又正是那列列表。
+ * 所以把它们合成**一行**：计数是真数字（跨段合计）、状态取最后一段（还在跑就转圈）。
  */
-export function collapsibleBlockCount(
+export interface VisibleTimeline {
+  blocks: ChatTimelineBlock[];
+  /** 当前**隐藏**的块数（= 被顶行吸收的量）。 */
+  foldedCount: number;
+  /**
+   * 这轮**可折**的块数 —— 与 `expanded` 无关。
+   *
+   * 顶行按它渲染，而不是按 `foldedCount`：展开后 `foldedCount` 就是 0，
+   * 拿它当渲染条件会让顶部那一行**点一下就消失**（用户从此回不到收起态）。
+   */
+  foldableCount: number;
+}
+
+export function visibleTimelineBlocks(
   blocks: ChatTimelineBlock[],
-  isStreaming: boolean,
-  interrupted = false,
-): number {
-  // 流式期间不折（正在产出的内容不能被收走）。
-  // 用户手动中止 / 异常结束时也不折 —— 这不是一次正常交付，把它压成「只剩
-  // 最后一条正文」会丢掉真正的上下文（agent 到底做了哪些步骤）；这类回合应
-  // 该原样展示完整过程（正文常显、过程行各自折叠）。
-  if (isStreaming || interrupted) return 0;
+  opts: { isStreaming: boolean; interrupted?: boolean; expanded?: boolean },
+): VisibleTimeline {
+  if (blocks.length === 0) return { blocks, foldedCount: 0, foldableCount: 0 };
+  if (opts.interrupted) return { blocks, foldedCount: 0, foldableCount: 0 };
+
+  if (opts.isStreaming) {
+    const processEntries = blocks.flatMap(b => (b.kind === 'process' ? b.entries : []));
+    const textBlocks = blocks.filter(b => b.kind === 'text');
+    if (processEntries.length === 0) return { blocks: textBlocks, foldedCount: 0, foldableCount: 0 };
+    const lastBlock = blocks[blocks.length - 1]!;
+    const tailIsProcess = lastBlock.kind === 'process';
+    // 所有过程段合成**一行** —— 正文全部留着，正在读的东西不能因为下一段工具开始就消失。
+    //
+    // key 用「最后一块自己的 key」（当尾巴是过程时）而不是固定值：下游 `ProcessRun`
+    // 判「这是不是仍在收尾的那一段」靠的就是 `key === 最后一块.key`。固定 key 会让
+    // 「只有思考、工具已结束」的回合掉回「已完成」态（转圈变对勾、shimmer 消失）。
+    const live: ChatTimelineBlock = {
+      kind: 'process',
+      key: tailIsProcess ? lastBlock.key : 'proc_live',
+      entries: processEntries,
+      summary: summarizeProcessRun(processEntries),
+    };
+    // 过程行放最上面：它就是「现在在干什么」，放在滚动中会变的位置会让人看丢。
+    // 它自己可展开，所以流式中不需要顶部那一行。
+    return { blocks: [live, ...textBlocks], foldedCount: 0, foldableCount: 0 };
+  }
+
+  // 已完成：只留「最终结果」及其后的块（工具尾部仍然可见）。
   const idx = lastTextBlockIndex(blocks);
-  return idx > 0 ? idx : 0;
+  const foldableCount = idx > 0 ? idx : 0;
+  const collapsed = foldableCount > 0 ? blocks.slice(foldableCount) : blocks;
+  const visible = opts.expanded ? blocks : collapsed;
+  const foldedCount = opts.expanded ? 0 : blocks.length - collapsed.length;
+  return { blocks: visible, foldedCount, foldableCount };
 }
 
 /**
@@ -1118,12 +1175,18 @@ export const AgentMessageBody = memo(function AgentMessageBody({
     // 顺序完全不动（思考 → 正文 → 执行 → 思考），只是每段过程收起。
     const blocks = groupProcessRuns(fullLogEntries);
     const hasTextBlock = blocks.some(b => b.kind === 'text');
-    // 这轮结束后，最终结果（最后一个正文块）之前的全部块整体折进顶部一行，
-    // 气泡只剩「已工作 X 秒」+ 最终结论 —— 这就是「降低气泡高度」的来源。
-    // 中断/异常结束的回合不折叠 —— 见 collapsibleBlockCount 的说明。
+    // 「气泡里渲染哪些块」全在 `visibleTimelineBlocks` 里定（单一执行点）。
+    // 关键不变式：**一个气泡最多一行过程** —— 曾经这里流式期间一块不折，
+    // 于是「思考→工具→思考→工具」把气泡拉成一列折叠行（老板 2026-10-18 截图）。
+    // 中断/异常结束的回合不折叠 —— 见 visibleTimelineBlocks 的说明。
     const interrupted = !!(isStopped || msg.isError);
-    const hideCount = collapsibleBlockCount(blocks, isStreaming, interrupted);
-    const offset = hideCount > 0 && !showFullHistory ? hideCount : 0;
+    const timeline = visibleTimelineBlocks(blocks, {
+      isStreaming,
+      interrupted,
+      expanded: showFullHistory,
+    });
+    const visibleBlocks = timeline.blocks;
+    const showWorkedSummary = timeline.foldableCount > 0;
     const workedLabel = formatWorkedFor(entriesElapsedMs(fullLogEntries), t);
 
     // Collect approval cards once for the bubble footer. The timeline hides its
@@ -1143,7 +1206,7 @@ export const AgentMessageBody = memo(function AgentMessageBody({
             顺序完全不重排，所以「思考 → 正文 → 执行 → 思考」照样看得见。 */}
         {/* 顶部一行：这轮干了多久，点开回到完整时间线。默认收起 ——
             气泡只在「已工作 N 秒」与最终结论之间。 */}
-        {hideCount > 0 && (
+        {showWorkedSummary && (
           <button
             type="button"
             onClick={() => setShowFullHistory(v => !v)}
@@ -1165,10 +1228,8 @@ export const AgentMessageBody = memo(function AgentMessageBody({
           </button>
         )}
 
-        {blocks.slice(offset).map((block, i) => {
-          // isLastBlock 必须按**整条时间线**判：切片之后 index 0 并不是首块。
-          const globalIndex = i + offset;
-          return block.kind === 'text' ? (
+        {visibleBlocks.map(block => (
+          block.kind === 'text' ? (
             <MarkdownMessage
               key={block.key}
               content={block.entry.content}
@@ -1181,13 +1242,15 @@ export const AgentMessageBody = memo(function AgentMessageBody({
               entries={block.entries}
               summary={block.summary}
               isStreaming={isStreaming}
-              isLastBlock={globalIndex === blocks.length - 1}
+              // 按**整条时间线**判「是不是最后一块」：过滤/切片后的下标已经不是全局位置，
+              // 所以用块的 key（`proc_N` / `text_N`，全局唯一）比身份，而不是比下标。
+              isLastBlock={block.key === blocks[blocks.length - 1]?.key}
               hideApprovalCards
               reconnecting={!!msg.reconnecting}
               onExpand={requestDetail}
             />
-          );
-        })}
+          )
+        ))}
 
         {/* 刚开流、还没有任何 segment —— 别留一个空气泡。 */}
         {blocks.length === 0 && isStreaming && (

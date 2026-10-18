@@ -301,7 +301,13 @@ describe('summarizeProcessRun — errorCount', () => {
 describe('lastTextBlockIndex / collapsibleBlockCount — 折叠边界', () => {
   const block = (kind: 'text' | 'process', key: string) => kind === 'text'
     ? { kind, key, entry: { content: 'x' } }
-    : { kind, key, entries: [], summary: {} };
+    : {
+        kind,
+        key,
+        // 非空 entries：流式分支靠它把多段过程聚合成一行（空 entries 会被当成「没有过程」）。
+        entries: [{ type: 'tool_start', content: 'shell_execute', createdAt: '2026-09-11T00:00:01.000Z' }],
+        summary: {},
+      };
 
   it('「最终结果」= 最后一个正文块，不是第一个', async () => {
     const { lastTextBlockIndex } = await import('./ChatComponents.tsx');
@@ -315,33 +321,93 @@ describe('lastTextBlockIndex / collapsibleBlockCount — 折叠边界', () => {
     expect(lastTextBlockIndex([block('process', 'p')] as never)).toBe(-1);
   });
 
-  it('流式期间绝不折叠 —— 正在产出的内容不能被收走', async () => {
-    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
-    expect(collapsibleBlockCount([
-      block('process', 'p'), block('text', 'a'),
-    ] as never, true)).toBe(0);
+  // ── visibleTimelineBlocks：气泡里到底渲染哪些块 ──────────────────────────
+  // 老板 2026-10-18 的原始抱怨：「一串工具调用排成一列」。根因是流式期间一块不折，
+  // 而 groupProcessRuns 是按**连续**过程段分块的 —— 思考/工具交替几轮就有几行。
+  // 下面第一条就是那个回归：流式中 5 段过程 → 只准剩一行过程。
+
+  it('流式期间：多段过程合成**一行**，正文一段不收（老板 2026-10-18 的原始抱怨）', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    // 思考→工具→思考→工具→思考…… 每段都成了一个 process 块。
+    // 旧实现在流式期间一块不折，于是它们一行一行排下来 = 「一串工具调用列表」。
+    const blocks = Array.from({ length: 5 }, (_, i) => block('process', `p${i}`));
+    const { blocks: visible, foldedCount } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
+    expect(visible).toHaveLength(1);
+    expect(visible[0]!.kind).toBe('process');
+    // 合成行的 entries 必须覆盖**全部**过程段（计数不能只剩最后一段的）。
+    expect((visible[0] as never as { entries: unknown[] }).entries).toHaveLength(5);
+    // 没有顶部折叠行：那一行本身就是可展开的过程行。
+    expect(foldedCount).toBe(0);
   });
 
-  it('只有一条正文的简单回复不折叠（不给它平白加一行）', async () => {
-    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
-    expect(collapsibleBlockCount([block('text', 'a')] as never, false)).toBe(0);
-  });
-
-  it('思考/工具 + 最终结论 → 折 1 块，气泡只剩结论', async () => {
-    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
-    expect(collapsibleBlockCount([
-      block('process', 'p'), block('text', 'a'),
-    ] as never, false)).toBe(1);
-  });
-
-  it('中断/异常结束 → 不折叠，完整展示整个过程', async () => {
-    const { collapsibleBlockCount } = await import('./ChatComponents.tsx');
-    // 「过程 + 正文 + 过程 + 正文」正常结束会折前 3 块；中断时一块都不折。
+  it('流式期间：正文一段都不收走，过程合成一行且总量不丢', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
     const blocks = [
       block('process', 'p1'), block('text', 'a'), block('process', 'p2'), block('text', 'b'),
     ];
-    expect(collapsibleBlockCount(blocks as never, false)).toBe(3);
-    expect(collapsibleBlockCount(blocks as never, false, true)).toBe(0);
+    const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
+    // 一行过程（放最上）+ 两段正文，顺序稳定。
+    expect(visible.map(b => b.key)).toEqual(['proc_live', 'a', 'b']);
+  });
+
+  it('流式期间：尾巴是过程时，合成行沿用最后一块的 key（否则转圈会掉成对勾）', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
+    const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
+    expect(visible[0]!.key).toBe('p2');
+  });
+
+  it('已完成：只留最终结论及其后的块', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [
+      block('process', 'p1'), block('text', 'a'), block('process', 'p2'), block('text', 'b'),
+    ];
+    const { blocks: visible, foldedCount } = visibleTimelineBlocks(blocks as never, { isStreaming: false });
+    expect(visible.map(b => b.key)).toEqual(['b']);
+    expect(foldedCount).toBe(3);
+  });
+
+  it('已完成后以工具收尾：最终结论不能被折走', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    // 「正文 → 最后又跑了一个工具」：正文是答案，必须留着，尾部过程行也在。
+    const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
+    expect(visibleTimelineBlocks(blocks as never, { isStreaming: false }).blocks.map(b => b.key))
+      .toEqual(['a', 'p2']);
+  });
+
+  it('只有一条正文的简单回复不折叠（不给它平白加一行）', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [block('text', 'a')];
+    const { blocks: visible, foldedCount } = visibleTimelineBlocks(blocks as never, { isStreaming: false });
+    expect(visible).toHaveLength(1);
+    expect(foldedCount).toBe(0);
+  });
+
+  it('中断/异常结束 → 不折叠，完整展示整个过程', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [
+      block('process', 'p1'), block('text', 'a'), block('process', 'p2'), block('text', 'b'),
+    ];
+    expect(visibleTimelineBlocks(blocks as never, { isStreaming: false, interrupted: true }).blocks)
+      .toHaveLength(4);
+  });
+
+  it('已完成 + 展开 → 原样返回全部块（点开顶行就是完整时间线）', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
+    const expanded = visibleTimelineBlocks(blocks as never, { isStreaming: false, expanded: true });
+    expect(expanded.blocks).toHaveLength(3);
+    expect(expanded.foldedCount).toBe(0);
+    // 关键：展开后顶行不能消失（否则用户回不到收起态）—— 所以 foldableCount 与展开无关。
+    // blocks = [p1, a, p2]，最终正文在 index 1 → 可折的是它之前的 1 块（p1）。
+    expect(expanded.foldableCount).toBe(1);
+  });
+
+  it('流式期间：`expanded` 不会把逐段过程行拉回来（那一行自己就是展开入口）', async () => {
+    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
+    const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true, expanded: true });
+    expect(visible.filter(b => b.kind === 'process')).toHaveLength(1);
   });
 });
 
