@@ -89,6 +89,10 @@ async function createTaskInReview(ts: TaskService) {
 function createService(overrides: { governanceEnabled?: boolean; executionHandler?: Parameters<typeof createMockAgentManager>[0] } = {}) {
   const agentManager = createMockAgentManager(overrides.executionHandler);
   const svc = new TaskService();
+  // Production always wires the project lookup (cli/start.ts), so the default fixture models
+  // that: a projectId write is a REFERENCE validated on write (2026-10-18). Cases that need a
+  // strict project table (ghost-id rejection) override this with `withProjects()`.
+  svc.setProjectService({ getProject: (id: string) => ({ id }) } as never);
   svc.setGovernancePolicy({
     enabled: overrides.governanceEnabled ?? false,
     defaultTier: 'auto',
@@ -2146,8 +2150,12 @@ describe('TaskService requirement linkage guards', () => {
   });
 
   it('re-linking fails closed when project lookup is unavailable', () => {
-    ({ svc: ts } = withRequirements()); // requirement lookup wired, project lookup deliberately not
-    const task = ts.createTask(createDefaults({ requirementId: 'req_active' }) as never);
+    ({ svc: ts } = withRequirements());
+    // Simulate a process that never wired the project service (some CLI paths construct
+    // TaskService standalone). Creating without a requirement stays legal — there is no
+    // project reference to verify — but cascading one onto a re-link must refuse.
+    delete (ts as unknown as { projectService?: unknown }).projectService;
+    const task = ts.createTask(createDefaults() as never);
     expect(() => ts.updateTask(task.id, { requirementId: 'req_active' } as never, 'agent-a'))
       .toThrow(/project lookup is unavailable/);
   });

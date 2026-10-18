@@ -452,6 +452,12 @@ export function createTestServer(): TestContext {
     enabled: false, defaultTier: 'auto', maxPendingTasksPerAgent: 100, maxTotalActiveTasks: 100,
     requireApprovalForPriority: [], requireRequirement: false, rules: [],
   });
+  // Production wires the project lookup into TaskService (cli/start.ts) and a projectId is a
+  // validated REFERENCE on write (2026-10-18). The fixture must model that, or task creation
+  // fails closed for reasons the test never intended to exercise.
+  taskService.setProjectService({
+    getProject: (id: string) => (id === PROJECT_1 ? { id, name: 'Project One', orgId: 'default' } : null),
+  } as never);
   const storage = createMockStorage();
   const server = new APIServer(orgService, taskService, 0);
   server.setStorage(storage);

@@ -53,6 +53,7 @@ import {
   type ReviewReport,
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
+import { assertValidProjectReference } from './project-reference.js';
 import type { TaskRepo, TaskLogRepo, TaskLogRow, TaskLogType, TaskCommentRepo, TaskCommentRow, RequirementCommentRepo } from '@markus/storage';
 import type { HITLService, ApprovalIntent } from './hitl-service.js';
 import type {
@@ -2620,15 +2621,17 @@ export class TaskService implements ApprovalTargetPort {
         );
       }
       if (!request.projectId && req.projectId) {
-        // An inherited project is still a REFERENCE: the same existence check the re-link
-        // path uses applies here, otherwise "create" stays the open door for project
-        // orphans (129 historical rows entered exactly this way). Refusing here forces the
-        // requirement's projectId to be fixed at the source instead of fanning a bogus id
-        // out to every card created under it.
-        this.assertValidProjectReference(req.projectId);
         request.projectId = req.projectId;
       }
     }
+
+    // A project reference is validated at creation, ONCE, after inheritance has resolved it —
+    // this covers both an explicit projectId and one inherited from the requirement. Two
+    // separate checks (one per branch) would be two execution points for one invariant.
+    // Inheriting a bogus id is how the 129 historical project orphans entered; refusing forces
+    // the requirement's projectId to be fixed at the source instead of fanning it out to every
+    // card created under it.
+    if (request.projectId) this.assertValidProjectReference(request.projectId);
 
     const scheduleConfig = request.scheduleConfig
       ? { ...request.scheduleConfig, currentRuns: 0, nextRunAt: computeInitialNextRun(request.scheduleConfig) }
@@ -4044,19 +4047,8 @@ export class TaskService implements ApprovalTargetPort {
    * must be refused, never written.
    */
   private assertValidProjectReference(projectId: string): void {
-    if (!this.projectService) {
-      throw new Error(
-        'Cannot set projectId: project lookup is unavailable in this process, so the target cannot ' +
-          'be verified. Refusing rather than writing an unvalidated project reference.'
-      );
-    }
-    if (!this.projectService.getProject(projectId)) {
-      throw new Error(
-        `Project "${projectId}" does not exist — a task pointing at a non-existent project is a project ` +
-          `orphan (it falls out of every project view and every project-scoped report). ` +
-          `Fix the requirement's projectId first, or pick a real project id.`
-      );
-    }
+    // Shared with RequirementService — one owner for the rule (see project-reference.ts).
+    assertValidProjectReference(this.projectService, projectId, 'task');
   }
 
   private reevaluateBlockedStatus(task: Task): void {    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);

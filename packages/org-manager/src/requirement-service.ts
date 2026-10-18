@@ -8,6 +8,7 @@ import {
 } from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
+import { assertValidProjectReference, type ProjectLookupBridge } from './project-reference.js';
 import type { HITLService, ApprovalIntent } from './hitl-service.js';
 import type {
   ApprovalApplier,
@@ -55,6 +56,8 @@ export type RequirementCommentPoster = (
 export class RequirementService implements ApprovalTargetPort {
   private requirements = new Map<string, Requirement>();
   private requirementRepo?: any;
+  /** Project lookup — a requirement's projectId is a reference, validated on write. */
+  private projectService?: ProjectLookupBridge;
   private statusTransitionRepo?: { record(data: { entityType: 'task' | 'requirement'; entityId: string; fromStatus: string; toStatus: string; changedById?: string | null; changedByType: 'human' | 'agent' | 'system'; changedByName?: string | null; reason?: string | null }): void; getByEntity(entityType: 'task' | 'requirement', entityId: string, limit?: number): unknown[] };
   private userNameLookup?: (userId: string) => string | null;
   private ws?: WSBroadcaster;
@@ -68,6 +71,10 @@ export class RequirementService implements ApprovalTargetPort {
   private static readonly VALID_STATUSES: ReadonlySet<string> = new Set([
     'pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived',
   ]);
+
+  setProjectService(projectService: ProjectLookupBridge): void {
+    this.projectService = projectService;
+  }
 
   setRequirementRepo(repo: any): void {
     this.requirementRepo = repo;
@@ -703,7 +710,12 @@ export class RequirementService implements ApprovalTargetPort {
     if (data.description !== undefined) req.description = data.description;
     if (data.priority !== undefined) req.priority = data.priority;
     if (data.tags !== undefined) req.tags = data.tags;
-    if (data.projectId !== undefined) req.projectId = data.projectId ?? undefined;
+    if (data.projectId !== undefined) {
+      // Fail-closed BEFORE mutation: an unverifiable/absent project is not written at all,
+      // so a rejected call leaves the requirement exactly as it was.
+      if (data.projectId) assertValidProjectReference(this.projectService, data.projectId, 'requirement');
+      req.projectId = data.projectId ?? undefined;
+    }
     req.updatedAt = new Date().toISOString();
 
     if (this.requirementRepo) {

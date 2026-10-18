@@ -1287,6 +1287,7 @@ async function startServerCore(
 
   // Wire ProjectService into TaskService (workspace management is handled by agents)
   taskService.setProjectService(projectService);
+  requirementService.setProjectService(projectService);
   taskService.setRequirementService(requirementService);
 
   // Auto-archive: archive terminal tasks and requirements after configured thresholds

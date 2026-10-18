@@ -166,7 +166,7 @@ export interface AgentTaskContext {
   /** Update a requirement's fields (title, description, priority, tags) */
   updateRequirement?: (
     id: string,
-    data: { title?: string; description?: string; priority?: string; tags?: string[] }
+    data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }
   ) => Promise<{ id: string; title: string; status: string }>;
   /** Resubmit a rejected requirement for review, optionally updating fields */
   resubmitRequirement?: (
@@ -1510,6 +1510,13 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   items: { type: 'string' },
                   description: 'Updated tags (if changing)',
                 },
+                project_id: {
+                  type: 'string',
+                  description:
+                    'Correct the requirement\'s project reference (must be an existing project id). ' +
+                    'This is the repair path for a requirement whose project_id is wrong or missing — ' +
+                    'tasks inherit it, so fixing it here unblocks re-linking cards onto this requirement.',
+                },
               },
               required: ['requirement_id'],
             },
@@ -1530,13 +1537,16 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                   'description',
                   'priority',
                   'tags',
+                  'project_id',
                 ]);
                 if (unknownArgError) return unknownArgError;
-                const data: { title?: string; description?: string; priority?: string; tags?: string[] } = {};
+                const data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null } = {};
                 if (args['title']) data.title = args['title'] as string;
                 if (args['description']) data.description = args['description'] as string;
                 if (args['priority']) data.priority = args['priority'] as string;
                 if (args['tags']) data.tags = args['tags'] as string[];
+                // Empty string clears the reference; a non-empty id is validated by the service.
+                if (args['project_id'] !== undefined) data.projectId = (args['project_id'] as string) || null;
                 const req = await ctx.updateRequirement!(
                   args['requirement_id'] as string,
                   data

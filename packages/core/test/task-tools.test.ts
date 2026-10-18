@@ -1063,3 +1063,34 @@ describe('argument contract — the tool must accept what dispatch delivers (P0,
     expect(ctx.updateTaskFields).not.toHaveBeenCalled();
   });
 });
+
+describe('requirement_update project_id — the repair path for a bad project reference', () => {
+  it('passes project_id through as projectId (dispatch-shaped args)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(
+      await tool.execute({
+        ...expandArgAliases({ requirement_id: 'req_1', project_id: 'proj_real' }),
+        _browserSessionId: 'sess_1',
+        _terminalSessionId: 'sess_1',
+      })
+    );
+    expect(result.status).not.toBe('error');
+    expect(ctx.updateRequirement).toHaveBeenCalledWith('req_1', expect.objectContaining({ projectId: 'proj_real' }));
+  });
+
+  it('treats an empty project_id as an explicit clear', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    await tool.execute({ requirement_id: 'req_1', project_id: '' });
+    expect(ctx.updateRequirement).toHaveBeenCalledWith('req_1', expect.objectContaining({ projectId: null }));
+  });
+
+  it('still refuses status — it only edits fields (BUG-3 contract kept)', async () => {
+    const ctx = createMockContext();
+    const tool = findTool(ctx, 'requirement_update');
+    const result = JSON.parse(await tool.execute({ requirement_id: 'req_1', status: 'completed' }));
+    expect(result.status).toBe('error');
+    expect(ctx.updateRequirement).not.toHaveBeenCalled();
+  });
+});
