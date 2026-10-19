@@ -343,6 +343,18 @@ export class TaskService implements ApprovalTargetPort {
    *  Used to avoid false "did not call task_submit_review" when a fast reviewer
    *  transitions the task back to in_progress before execution_finished fires. */
   private tasksSubmittedForReview = new Set<string>();
+  /**
+   * 「正常收尾但没提交」的独立计数（strike），按 taskId。
+   *
+   * 为什么必须与 `_retryAttempt` 分开：`_retryAttempt` 数的是**执行轮次**
+   * （含 provider 瞬时错误、执行报错、抢占恢复），而这里的 strike 数的是
+   * **agent 该提交却没提交**这一种事实。混用一个计数器会出现「一次网络抖动
+   * 吃掉一次提交机会」，8 次之后把仍在推进的任务判死。
+   *
+   * 重置时机：任务被重新派发（`_retryAttempt === 0`，即人工/评审/自动启动，
+   * 而非内部重试）。
+   */
+  private taskNoSubmitStrikes = new Map<string, number>();
   private webhooks: TaskWebhook[] = [];
   private timeoutCheckInterval?: ReturnType<typeof setInterval>;
   /**
@@ -1851,6 +1863,13 @@ export class TaskService implements ApprovalTargetPort {
     // irrelevant; the agent must call submitForReview again in this new round.
     this.tasksSubmittedForReview.delete(taskId);
 
+    // A *fresh* dispatch (not an internal retry) starts with a clean no-submit
+    // budget: the human/reviewer/platform deliberately asked for another round.
+    // Internal retries keep the accumulated strikes (`_retryAttempt > 0`).
+    if (_retryAttempt === 0) {
+      this.taskNoSubmitStrikes.delete(taskId);
+    }
+
     const agent = this.agentManager.getAgent(task.assignedAgentId);
 
     // Cancel any currently running execution for this task before starting a new one
@@ -1989,14 +2008,27 @@ export class TaskService implements ApprovalTargetPort {
     let retryNotice = '';
     if (_retryAttempt > 0 && prevContext) {
       if (_retryReason === 'no_submit') {
+        // 这次重启的原因是「上一轮正常收尾但没提交」——提示词必须**精确**说这件事，
+        // 并且把「为什么提交会被拒」提前讲清楚（例如还有 pending 子任务），
+        // 否则模型会把「提交被拒」误读为「活还没干完」，继续埋头执行。
+        const noSubmitStrikes = this.taskNoSubmitStrikes.get(taskId) ?? 0;
+        const pendingSubs = (task.subtasks ?? []).filter(s => s.status === 'pending');
         retryNotice = [
           '## ⚠ CRITICAL — YOU FORGOT TO CALL `task_submit_review`',
           '',
           `**Current time:** ${formatLocalTimestamp(new Date())}`,
           `**Retry attempt:** ${_retryAttempt + 1}`,
+          `**No-submit strikes:** ${noSubmitStrikes}/${TaskService.MAX_IN_PROGRESS_RETRIES}`,
           '',
           'Your previous execution finished WITHOUT calling `task_submit_review`. This is MANDATORY to complete a task.',
           'The task is still in_progress and will NOT enter review until you call `task_submit_review`.',
+          ...(pendingSubs.length > 0
+            ? [
+                '',
+                `**REJECTION RISK — ${pendingSubs.length} subtask(s) are still pending; submit will be rejected until each is completed or cancelled:**`,
+                ...pendingSubs.map(s => `- ${s.id} — ${s.title}`),
+              ]
+            : []),
           '',
           '**ACTION REQUIRED — Call `task_submit_review` NOW with:**',
           '- `summary`: A concise description of what you accomplished',
@@ -2245,11 +2277,21 @@ export class TaskService implements ApprovalTargetPort {
               // task is in a terminal/blocked state.
               if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
                 const nextAttempt = _retryAttempt + 1;
-                if (nextAttempt < TaskService.MAX_IN_PROGRESS_RETRIES) {
-                  const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(_retryAttempt, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
-                  log.warn(`Task execution finished without task_submit_review — auto-retrying in ${delayMs / 1000}s (attempt ${nextAttempt})`, { taskId });
+                // ── no-submit 预算：只数「agent 正常收尾却没提交」这件事 ──
+                // 旧实现把这份计数与「provider 瞬时错误 / 执行报错」共用同一个
+                // _retryAttempt：一次网络抖动就等于吃掉一次提交机会，8 次之后
+                // 任务被判 failed —— 计数器把两种不同事实混成一个度量。
+                const budget = nextNoSubmitBudget(
+                  this.taskNoSubmitStrikes.get(taskId) ?? 0,
+                  TaskService.MAX_IN_PROGRESS_RETRIES,
+                );
+                const strikes = budget.strikes;
+                if (!budget.exhausted) {
+                  this.taskNoSubmitStrikes.set(taskId, strikes);
+                  const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[Math.min(budget.delayIndex, TaskService.RETRY_DELAYS_MS.length - 1)] ?? 300_000);
+                  log.warn(`Task execution finished without task_submit_review — auto-retrying in ${delayMs / 1000}s (attempt ${nextAttempt}, no-submit strike ${strikes}/${TaskService.MAX_IN_PROGRESS_RETRIES})`, { taskId });
                   this.addTaskNote(taskId,
-                    `[System] Execution finished but agent did not call task_submit_review. Auto-retrying (attempt ${nextAttempt}).`,
+                    `[System] Execution finished but agent did not call task_submit_review. Auto-retrying (attempt ${nextAttempt}, strike ${strikes}/${TaskService.MAX_IN_PROGRESS_RETRIES}).`,
                     'system'
                   );
                   setTimeout(() => {
@@ -2260,12 +2302,20 @@ export class TaskService implements ApprovalTargetPort {
                     );
                   }, delayMs);
                 } else {
-                  log.error(`Task execution finished without task_submit_review after ${nextAttempt} attempts — marking failed`, { taskId });
+                  const pendingSubtasks = (currentTask.subtasks ?? []).filter(s => s.status === 'pending');
+                  log.error(`Task execution finished without task_submit_review after ${strikes} no-submit strikes — marking failed`, { taskId });
                   this.addTaskNote(taskId,
-                    `[System] Execution finished without task_submit_review after ${nextAttempt} attempts. Task marked as failed.`,
+                    [
+                      `[System] Execution finished without task_submit_review after ${strikes} attempts. Task marked as failed.`,
+                      pendingSubtasks.length > 0
+                        ? `Pending subtasks (${pendingSubtasks.length}) must be completed or cancelled before any submit can succeed: ${pendingSubtasks.map(s => `${s.id} "${s.title}"`).join(', ')}.`
+                        : '',
+                      'The execution session and any workspace changes are preserved — re-dispatching this task resumes from the same history instead of starting over.',
+                    ].filter(Boolean).join('\n'),
                     'system'
                   );
                   this.taskRetryErrors.delete(taskId);
+                  this.taskNoSubmitStrikes.delete(taskId);
                   this.updateTaskStatus(taskId, 'failed', undefined, false, false, 'system', 'No submit_review after max attempts');
                 }
               }
@@ -2392,6 +2442,7 @@ export class TaskService implements ApprovalTargetPort {
         executionRound,
         task.title,
         task.requirementId,
+        retryNotice,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -6210,6 +6261,29 @@ function parseInterval(shorthand: string): number {
  * multi-value fields like "0 9,15,21 * * *" and timezone/DST correctly).
  * Returns undefined for one-shot (`runAt`) or unrecognised configs.
  */
+/**
+ * no-submit strike 预算（纯函数，唯一判定点）。
+ *
+ * 「该提交却没提交」这件事单独计数：`_retryAttempt` 数的是**执行轮次**（含 provider
+ * 瞬时错误、执行报错、抢占恢复），拿它当提交预算会让一次网络抖动吃掉一次提交机会。
+ *
+ * @param currentStrikes 已累计的 no-submit 次数（0 起）
+ * @param maxStrikes     上限（TASK_MAX_NO_SUBMIT_RETRIES）
+ */
+export function nextNoSubmitBudget(currentStrikes: number, maxStrikes: number): {
+  strikes: number;
+  exhausted: boolean;
+  /** 退避档位下标（0 起）；耗尽的档位不进退避表 */
+  delayIndex: number;
+} {
+  const strikes = Math.max(0, Math.floor(currentStrikes)) + 1;
+  return {
+    strikes,
+    exhausted: maxStrikes > 0 && strikes >= maxStrikes,
+    delayIndex: Math.max(0, strikes - 1),
+  };
+}
+
 export function computeNextRunFromConfig(config: ScheduleConfig, from?: Date): string | undefined {
   if (config.runAt) return undefined;
 

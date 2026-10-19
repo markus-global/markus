@@ -117,6 +117,26 @@ interface TaskAsyncContext {
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
   subagentProgress?: SubagentProgressCallback;
+  /**
+   * 本轮执行的提交事实（唯一事实源）。由 `task_submit_review` 的**结果**写入
+   * （成功=已提交；失败=记下错误），由执行收尾处读取。
+   *
+   * 为什么必须是显式状态：旧实现在收尾时扫最近 500 条会话消息里的工具名
+   * （`m.toolCalls?.some(tc => tc.name === 'task_submit_review')`）来推断
+   * 「是否已提交」。那有两处硬伤：
+   *   ① 把**调用**等同于**成功**——被拒的提交（如存在 pending 子任务）也算「已提交」，
+   *      于是既不提醒也不重试，任务永远卡在 in_progress；
+   *   ② 长执行里调用可能落在 500 条窗口之外 → 明明是「已提交」却被判成「未提交」。
+   * 这是「从载荷推断结构」(R3) 的变体，结构事实必须由结构承载。
+   */
+  submission?: TaskSubmissionState;
+}
+
+/** 本轮执行的提交事实 —— 只由 task_submit_review 的结果写，只由收尾判定读。 */
+export interface TaskSubmissionState {
+  submitted: boolean;
+  /** 最近一次提交被拒绝的原因（用于在提醒里原样告知模型，而不是让它猜） */
+  lastError?: string;
 }
 const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 
@@ -367,6 +387,70 @@ export function shouldContinueToolLoop(
  */
 export function needsMaxTokensContinuation(response: ToolLoopResponseShape): boolean {
   return response.finishReason === 'max_tokens' && !response.toolCalls?.length;
+}
+
+/**
+ * 收尾提醒阶段允许的最大回合数。每轮都会把模型请求的工具**执行并把结果回灌**，
+ * 下一轮再判定是否已提交 —— 所以这不是「给它一次机会」，而是「给它有限次机会
+ * 看到自己动手的结果后决定提交」。3 轮足以覆盖「刚跑完测试」「刚补完一个子任务」
+ * 这两类最常见情形，同时保证收尾阶段不会无限占用一个执行槽位。
+ */
+/**
+ * 「本轮为什么重启」的权威送达文本（纯函数，便于回归测试）。
+ *
+ * 契约：`resumeNotice` 由 TaskService 生成（唯一写者）。core 只有在**没有**收到说明时
+ * 才使用中性兜底文本；兜底文本**不得**断言原因（绝不写「被瞬时错误打断」），否则会把
+ * 「你未提交，立刻 task_submit_review」覆盖成「继续干活」——实测 8 连击 → failed 的
+ * 直接成因。
+ */
+export function buildResumeMessage(resumeNotice?: string): string {
+  const notice = resumeNotice?.trim();
+  if (notice) return notice;
+  return [
+    '[SYSTEM: This is a resumed execution round for the task above.',
+    'The conversation history contains ALL your prior work — tool calls, file reads, and results are preserved.',
+    'Do NOT re-read files or redo completed steps. Pick up the work where it stands, then submit the round with `task_submit_review` — unless it is genuinely blocked, in which case say so with `task_update`.',
+  ].join('\n');
+}
+
+export const MAX_SUBMIT_REMINDER_TURNS = 3;
+
+/**
+ * 收尾提醒文本（纯函数，便于回归测试）。
+ *
+ * 关键约束：
+ *  - 必须明确「你已经该提交了」，而不是「继续干活」；
+ *  - 必须原样带上最近一次提交被拒的原因（例如 pending 子任务），否则模型会把
+ *    「提交被拒」误读成「还没做完」，继续埋头干活；
+ *  - 必须给出唯一可接受的替代出口（blocked / failed），避免模型用「沉默」收尾。
+ */
+export function buildSubmitReminder(opts: {
+  taskId: string;
+  turn: number;
+  maxTurns: number;
+  submitError?: string;
+}): string {
+  const { taskId, turn, maxTurns, submitError } = opts;
+  const lines = [
+    `[SYSTEM — CRITICAL REMINDER — Task ${taskId}] (${turn}/${maxTurns})`,
+    'You are about to finish this execution round WITHOUT `task_submit_review`. The round is NOT complete and the platform will re-run it if you stop here.',
+    '',
+    'Do NOT continue working unless it is strictly required to submit. Call `task_submit_review` NOW with:',
+    '- `summary`: what you accomplished',
+    '- `deliverables`: the human-facing deliverables (usually 1–3). Do NOT list each code/config file separately — put code file paths inside one markdown deliverable document.',
+  ];
+  if (submitError) {
+    lines.push(
+      '',
+      `Your last submit attempt was REJECTED: ${submitError}`,
+      'Fix exactly that and submit again — do not treat the rejection as "the work is unfinished".',
+    );
+  }
+  lines.push(
+    '',
+    'If the work genuinely cannot be completed this round, call `task_update` with status "blocked" (or "failed") and a note explaining the blocker — that is the only other accepted ending. Silence is not an ending.',
+  );
+  return lines.join('\n');
 }
 
 /**
@@ -1458,6 +1542,11 @@ export class Agent {
     executionRound?: number,
     taskTitle?: string,
     requirementId?: string,
+    /**
+     * 「本轮为什么重启」的权威说明（TaskService 生成，core 原样送达模型）。
+     * 必须是**唯一写者**：core 内不得再有第二处编造重启原因。
+     */
+    resumeNotice?: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
@@ -1470,6 +1559,7 @@ export class Agent {
         cancelToken,
         taskProjectContext,
         executionRound,
+        resumeNotice,
       },
     };
 
@@ -2325,6 +2415,7 @@ export class Agent {
                 extra.taskProjectContext as TaskProjectContext | undefined,
                 extra.executionRound as number | undefined,
                 item.payload.requirementId,
+                typeof extra.resumeNotice === 'string' ? extra.resumeNotice : undefined,
               );
             } finally {
               // 仅当仍是本条登记时释放（防止陈旧 finally 清掉更新会话的登记）
@@ -6222,8 +6313,18 @@ export class Agent {
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
     requirementId?: string,
+    /**
+     * 本轮的「为什么重启」权威说明（由 org-manager 的 TaskService 生成：
+     * 上一轮未提交 / 被瞬时错误中断 / 被抢跑 / 人工恢复，含重试序号与子任务清单）。
+     *
+     * 只有一个写者：core **不得**自己编造重启原因。旧实现在有历史时无条件追加
+     * 「上一轮被瞬时错误打断，从断点继续」，把 TaskService 写好的
+     * 「你未提交，现在立刻 task_submit_review」直接覆盖成「继续干活」，
+     * 模型于是每轮都埋头干活、每轮都被判未提交（实测 8 连击 → failed）。
+     */
+    resumeNotice?: string,
   ): Promise<void> {
-    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound, requirementId);
+    return this.executeTaskConcurrent(taskId, description, onLog, cancelToken, undefined, taskProjectContext, executionRound, requirementId, resumeNotice);
   }
 
   /**
@@ -6244,6 +6345,7 @@ export class Agent {
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
     requirementId?: string,
+    resumeNotice?: string,
   ): Promise<void> {
     if (!this.taskExecutor) {
       throw new Error('Task executor not initialized');
@@ -6254,8 +6356,8 @@ export class Agent {
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId, requirementId }, () =>
-        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound)
+      () => taskAsyncContext.run({ taskId, requirementId, submission: { submitted: false } }, () =>
+        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound, resumeNotice)
       ),
       {
         priority,
@@ -6293,7 +6395,8 @@ export class Agent {
     }) => void,
     cancelToken?: { cancelled: boolean },
     taskProjectContext?: TaskProjectContext,
-    executionRound?: number
+    executionRound?: number,
+    resumeNotice?: string,
   ): Promise<void> {
     this.currentTaskId = taskId;
     // 防御性闸（统一闸之后仍保留）：拿**实际生效**的任务并发上限对账，而不是原始
@@ -6420,16 +6523,15 @@ export class Agent {
 
     if (hasAssistantWork) {
       // On retry with previous work: the session already has the full conversation
-      // (tool calls, file contents, results). Append a continuation message so
-      // the LLM picks up where it left off without redoing work.
+      // (tool calls, file contents, results). Append the authoritative resume
+      // notice so the LLM picks up without redoing work.
+      //
+      // ⚠ 这里**不得**断言重启原因：原因由 TaskService 生成（唯一写者）并经
+      // `resumeNotice` 传入。没有传入时只说一句中性事实，绝不写
+      // 「被瞬时错误打断」——那会把「你未提交，立刻提交」覆盖成「继续干活」。
       this.memory.appendMessage(sessionId, {
         role: 'user',
-        content: [
-          '[SYSTEM: Your previous execution attempt was interrupted by a transient error (e.g. network timeout).',
-          'The conversation history above contains ALL your prior work — tool calls, file reads, and results are preserved.',
-          'CONTINUE from where you left off. Do NOT re-read files or redo completed steps.',
-          'Pick up exactly at the point where the error occurred and finish the task.]',
-        ].join('\n'),
+        content: buildResumeMessage(resumeNotice),
       });
     } else {
       this.memory.appendMessage(sessionId, { role: 'user', content: taskPrompt });
@@ -6638,6 +6740,7 @@ export class Agent {
                 result,
               });
               this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErr });
+              this.recordSubmissionOutcome(tc.name, result);
               this.memory.appendMessage(sessionId, {
                 role: 'tool',
                 content: result,
@@ -6797,31 +6900,39 @@ export class Agent {
         return;
       }
 
-      // Last-chance check: did the agent call task_submit_review?
-      // Scan session messages for a tool call to task_submit_review.
-      const sessionMsgs = this.memory.getRecentMessages(sessionId, 500);
-      const didSubmitReview = sessionMsgs.some(
-        m => m.role === 'assistant' && m.toolCalls?.some(tc => tc.name === 'task_submit_review')
-      );
-      if (!didSubmitReview && !cancelToken?.cancelled) {
-        log.warn('Task execution ending without task_submit_review — injecting final reminder', { taskId, agentId: this.id });
-        flushText();
+      // ── 收尾裁定：本轮到底提交了没有？ ─────────────────────────────
+      // 事实唯一来源 = `task_submit_review` 的**结果**（TaskAsyncContext.submission）。
+      // 旧实现扫最近 500 条消息里的工具名：把「调用」当「成功」（被拒的提交也算），
+      // 且长会话里调用落在窗口外会被误判为未提交。
+      const submittedNow = () => this.currentSubmissionState()?.submitted === true;
+      if (!submittedNow() && !cancelToken?.cancelled) {
         this.memory.appendMessage(sessionId, { role: 'assistant', content: response.content, reasoningContent: response.reasoningContent });
-        this.memory.appendMessage(sessionId, {
-          role: 'user',
-          content: [
-            `[SYSTEM — CRITICAL REMINDER — Task ${taskId}]`,
-            'You are about to finish without calling `task_submit_review`. This is MANDATORY.',
-            'The task will NOT enter review and will be automatically retried if you do not submit.',
-            '',
-            'Call `task_submit_review` NOW with:',
-            '- `summary`: What you accomplished',
-            '- `deliverables`: The human-facing deliverables (reports/docs/products/data — usually 1–3). Do NOT list each code/config file separately; put code file paths inside one markdown deliverable doc instead',
-            '',
-            'If you were unable to complete the task, call `task_update` with status "blocked" or "failed" and a note explaining why.',
-            'Do NOT just stop — take action NOW.',
-          ].join('\n'),
-        });
+
+        // 提醒阶段是「有限次回合」，不是「一次机会」：每一轮的工具结果必须回灌给
+        // 模型，下一轮才判定是否已提交。旧实现只发一次 LLM 请求、执行完它的工具就
+        // 直接收尾 —— 模型只要把这一次机会用于继续干活（跑测试/改文件），就必然再
+        // 次落空，救济阀等于不存在。
+        for (
+          let reminderTurn = 1;
+          reminderTurn <= MAX_SUBMIT_REMINDER_TURNS && !submittedNow() && !cancelToken?.cancelled;
+          reminderTurn++
+        ) {
+          log.warn('Task execution ending without task_submit_review — injecting final reminder', {
+            taskId,
+            agentId: this.id,
+            reminderTurn,
+            maxTurns: MAX_SUBMIT_REMINDER_TURNS,
+          });
+          flushText();
+          this.memory.appendMessage(sessionId, {
+            role: 'user',
+            content: buildSubmitReminder({
+              taskId,
+              turn: reminderTurn,
+              maxTurns: MAX_SUBMIT_REMINDER_TURNS,
+              submitError: this.currentSubmissionState()?.lastError,
+            }),
+          });
 
         const preparedFinal = await this.contextEngine.prepareMessages({
           systemPrompt,
@@ -6857,45 +6968,23 @@ export class Agent {
         this.updateTokensUsed(taskLlmTokens);
         this.calibrateTokenCounter(response.usage.inputTokens);
 
-        // Process any tool calls from the final reminder turn
-        if (response.toolCalls?.length) {
-          this.memory.appendMessage(sessionId, {
-            role: 'assistant',
-            content: response.content,
-            toolCalls: response.toolCalls,
-            reasoningContent: response.reasoningContent,
-          });
-          for (const tc of response.toolCalls) {
-            if (cancelToken?.cancelled) break;
-            if (this.attentionController.hasInterruptPending()) {
-              this.memory.appendMessage(sessionId, {
-                role: 'tool',
-                content: '[Tool skipped — preempted by higher-priority item]',
-                toolCallId: tc.id,
-              });
-              continue;
-            }
-            emit('tool_start', tc.name, { arguments: tc.arguments });
-            const toolStart = Date.now();
-            try {
-              let result = await this.executeTool(tc, undefined, sessionId);
-              result = this.offloadLargeResult(tc.name, result);
-              const isErr = isErrorResult(result);
-              const durationMs = Date.now() - toolStart;
-              emit('tool_end', tc.name, { success: !isErr, durationMs, arguments: tc.arguments, result });
-              this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
-            } catch (toolErr) {
-              const durationMs = Date.now() - toolStart;
-              emit('tool_end', tc.name, { success: false, durationMs, arguments: tc.arguments, error: String(toolErr) });
-              this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
-            }
-          }
-          // After processing tool calls, only append if there's non-tool-call text
-          flushText();
-        } else {
+        // 模型没有请求工具，却也没提交：它认为自己说完了 → 记下回复并退出提醒循环。
+        if (!response.toolCalls?.length) {
           flushText();
           const finalReply = stripCompletionMarker(sanitizeLLMReply(response.content));
           this.memory.appendMessage(sessionId, { role: 'assistant', content: finalReply, reasoningContent: response.reasoningContent });
+          break;
+        }
+
+        // 有工具调用 → 执行，并把结果回灌给模型；循环继续，下一轮重新判定是否已提交。
+        this.memory.appendMessage(sessionId, {
+          role: 'assistant',
+          content: response.content,
+          toolCalls: response.toolCalls,
+          reasoningContent: response.reasoningContent,
+        });
+        await this.runSubmitPhaseToolCalls(sessionId, response.toolCalls, taskId, cancelToken);
+        flushText();
         }
       } else {
         flushText();
@@ -6963,14 +7052,79 @@ export class Agent {
   }
 
   /**
+   * 本轮执行的提交事实（唯一事实源）。由 task_submit_review 的结果写入。
+   * 没有安装执行上下文时返回 undefined —— 调用方按「未安装 = 不适用」处理。
+   */
+  private currentSubmissionState(): TaskSubmissionState | undefined {
+    return taskAsyncContext.getStore()?.submission;
+  }
+
+  /**
+   * 记录 `task_submit_review` 的**结果**（不是调用）。成功 = 本轮已提交；
+   * 失败 = 记下被拒原因，稍后原样放进提醒里告诉模型（例如「还有 N 个子任务未完成」）。
+   */
+  private recordSubmissionOutcome(toolName: string, result: string): void {
+    if (toolName !== 'task_submit_review') return;
+    const state = this.currentSubmissionState();
+    if (!state) return;
+    try {
+      const parsed = JSON.parse(result) as { status?: string; error?: string };
+      if (parsed.status === 'success') {
+        state.submitted = true;
+        delete state.lastError;
+      } else {
+        state.lastError = parsed.error ?? 'task_submit_review returned an error';
+      }
+    } catch {
+      // 非 JSON 结果：退回「是否被标为错误」这一既有判据（仍以结果为准，不看调用）。
+      if (!isErrorResult(result)) state.submitted = true;
+    }
+  }
+
+  /**
+   * 提醒阶段执行模型请求的工具，并把结果写回会话（下一轮模型才看得到）。
+   *
+   * 与主循环的区别：这里不做抢占竞速 —— 提醒阶段已经过检查点，目的是尽快收束；
+   * 但仍保留取消与待处理中断的跳过语义，避免在收尾阶段吞掉高优先级动作。
+   */
+  private async runSubmitPhaseToolCalls(
+    sessionId: string,
+    toolCalls: LLMToolCall[],
+    taskId: string,
+    cancelToken?: { cancelled: boolean },
+  ): Promise<void> {
+    for (const tc of toolCalls) {
+      if (cancelToken?.cancelled) break;
+      if (this.attentionController.hasInterruptPending()) {
+        this.memory.appendMessage(sessionId, {
+          role: 'tool',
+          content: '[Tool skipped — preempted by higher-priority item]',
+          toolCallId: tc.id,
+        });
+        continue;
+      }
+      const toolStart = Date.now();
+      try {
+        let result = await this.executeTool(tc, undefined, sessionId);
+        result = this.offloadLargeResult(tc.name, result);
+        this.recordSubmissionOutcome(tc.name, result);
+        const durationMs = Date.now() - toolStart;
+        this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: !isErrorResult(result) });
+        this.memory.appendMessage(sessionId, { role: 'tool', content: result, toolCallId: tc.id });
+      } catch (toolErr) {
+        const durationMs = Date.now() - toolStart;
+        this.emitAudit({ type: 'tool_call', action: tc.name, durationMs, success: false });
+        this.memory.appendMessage(sessionId, { role: 'tool', content: `Error: ${String(toolErr)}`, toolCallId: tc.id });
+      }
+    }
+    log.debug('Submit-phase tool calls executed', { taskId, agentId: this.id, count: toolCalls.length });
+  }
+
+  /**
    * Continue an existing session with a new user message, using streamed
    * LLM calls and the same onLog callback as task execution. This gives
-   * callers full visibility (text deltas, tool_start/tool_end events)
-   * without the task lifecycle overhead (no task_submit_review requirement,
-   * no activeTasks tracking, no workspace setup).
-   *
-   * Intended for post-task discussions where the agent should respond
-   * with full context and tools, and the process should be observable.
+   * callers full visibility (text deltas, tool_start/tool_end events) without
+   * the task lifecycle overhead (no task_submit_review requirement).
    */
   async respondInSession(
     sessionId: string,
