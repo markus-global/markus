@@ -899,8 +899,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [showSessions, setShowSessions] = useState(false);
   // Mobile-only overflow menu in the chat header (detail / search / new / history).
   const [showMoreMenu, setShowMoreMenu] = useState(false);
-  // Horizontal swipe on the transcript cycles between the open session tabs.
-  const sessionSwipeRef = useRef<{ x: number; y: number } | null>(null);
+  // NOTE: horizontal swipe deliberately does NOT switch session tabs. The
+  // transcript is full of horizontally-pannable content (code blocks, tables,
+  // images) and sits directly above the swipe-back edge, so a legitimate
+  // sideways gesture kept landing on "next session". Session tabs are switched
+  // only by tapping a tab or with the cycle-session shortcut.
   // Inline rename state: which session is being renamed + the draft value
   const [renamingSessionId, setRenamingSessionId] = useState<string | null>(null);
   const [renamingDraft, setRenamingDraft] = useState('');
@@ -5503,34 +5506,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               </span>
             </div>
           )}
-          <div ref={chatScrollRef} data-swipe-owner className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll} onTouchStart={isMobile ? (e) => {
-            // Swipe left/right = previous/next open session tab (same order as the
-            // cycle-session shortcuts). Requires a deliberate, mostly horizontal
-            // drag so vertical scrolling and taps never switch sessions.
-            if (chatMode !== 'direct' || mainTab !== 'chat' || openSessionTabs.length < 2) return;
-            const touch = e.touches[0];
-            if (touch) sessionSwipeRef.current = { x: touch.clientX, y: touch.clientY };
-          } : undefined} onTouchEnd={isMobile ? (e) => {
-            const start = sessionSwipeRef.current;
-            sessionSwipeRef.current = null;
-            if (!start) return;
-            const touch = e.changedTouches[0];
-            if (!touch) return;
-            const dx = touch.clientX - start.x;
-            const dy = touch.clientY - start.y;
-            if (Math.abs(dx) < 64 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
-            const nextId = cycleSessionTabId(openSessionTabs.map(s => s.id), activeSessionId, dx < 0 ? 1 : -1);
-            if (!nextId) return;
-            const target = openSessionTabs.find(s => s.id === nextId);
-            if (!target) return;
-            if (target.id === NEW_CHAT_PLACEHOLDER_ID) {
-              setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-              resetConv(currentConvKeyRef.current, NEW_CHAT_PLACEHOLDER_ID);
-              setMessages([]);
-            } else {
-              void switchSession(target);
-            }
-          } : undefined}>
+          <div ref={chatScrollRef} data-swipe-owner className={`${isEmptyChat ? 'hidden' : 'flex-1'} overflow-y-auto scrollbar-thin ${isMobile ? 'px-4 py-2' : `p-5 ${chatRightReserve}`}`} onScroll={handleChatScroll}>
 
           {visibleMessages.length > 0 && (
           <div style={{ height: chatVirtualizer.getTotalSize(), width: '100%', position: 'relative' }}>

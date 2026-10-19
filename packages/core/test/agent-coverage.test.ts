@@ -617,7 +617,47 @@ describe('task execution with prior history', () => {
     );
 
     const session = agent.getMemory().getSession(sessionId);
-    expect(session?.messages.some(m => String(m.content).includes('interrupted'))).toBe(true);
+    // Prior work is preserved verbatim (no re-run of the whole prompt)…
+    expect(session?.messages.some(m => String(m.content).includes('Initial task prompt'))).toBe(true);
+    expect(session?.messages.some(m => String(m.content).includes('Partial work done'))).toBe(true);
+
+    // …and a resume marker is appended. It must NOT claim a cause: the reason is
+    // owned by TaskService (`resumeNotice`). The old wording ("interrupted by a
+    // transient error") was the 8-round no-submit loop's direct cause — it told
+    // the model to keep working when it should have been told to submit.
+    const resume = session?.messages.filter(m => String(m.content).includes('resumed execution round')) ?? [];
+    expect(resume.length).toBe(1);
+    expect(String(resume[0].content)).not.toMatch(/interrupt|transient error|network timeout/i);
+  });
+
+  it('delivers the TaskService resume notice verbatim (single writer)', async () => {
+    const router = makeMockRouter({
+      streamFn: async () => makeResponse('Submitted.', 'end_turn'),
+    });
+    const agent = createAgent(router);
+    const sessionId = 'task_task_retry_r2';
+    agent.getMemory().getOrCreateSession(agent.id, sessionId);
+    agent.getMemory().appendMessage(sessionId, { role: 'user', content: 'Initial task prompt' });
+    agent.getMemory().appendMessage(sessionId, { role: 'assistant', content: 'Partial work done' });
+
+    const notice = 'ACTION REQUIRED — call task_submit_review NOW (strike 2/8).';
+    await agent.executeTask(
+      'task_retry',
+      '## Previous Execution Context\nResume work',
+      () => {},
+      undefined,
+      undefined,
+      2, // session id is derived from the round: task_<id>_r2
+      undefined,
+      notice,
+    );
+
+    const session = agent.getMemory().getSession(sessionId);
+    const marker = session?.messages.filter(m => String(m.content).includes('ACTION REQUIRED')) ?? [];
+    expect(marker.length).toBe(1);
+    expect(String(marker[0].content)).toBe(notice);
+    // The authoritative notice must not be diluted by a second, contradictory one.
+    expect(session?.messages.some(m => String(m.content).includes('resumed execution round'))).toBe(false);
   });
 
   it('runs tool loop during task execution via chatStream', async () => {
