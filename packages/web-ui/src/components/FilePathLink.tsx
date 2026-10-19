@@ -5,6 +5,12 @@ import type { DirectoryEntry } from '../api.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { DirectoryPreview } from './DirectoryPreview.tsx';
 import { OfficePreviewer } from './OfficePreviewer.tsx';
+import {
+  closeFilePreview,
+  getFilePreviewPath,
+  openFilePreview,
+  subscribeFilePreview,
+} from './filePreviewStore.ts';
 
 const LazyMarkdownMessage = lazy(() => import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 const LazyContentRenderer = lazy(() => import('./ContentRenderer.tsx').then(m => ({ default: m.ContentRenderer })));
@@ -331,7 +337,6 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 
 export function FilePathLink({ path: filePath }: { path: string }) {
   const info = useFileInfo(filePath);
-  const [previewPath, setPreviewPath] = useState<string | null>(null);
   const layout = useLayout();
 
   const exists = info?.exists ?? false;
@@ -345,8 +350,10 @@ export function FilePathLink({ path: filePath }: { path: string }) {
     if (!exists) return;
     if (isPreviewable) {
       // Prefer the right-side panel when the active page hosts one; else modal.
+      // The modal is app state (see filePreviewStore) — never this row's state,
+      // because the virtualizer recycles rows out from under the reader.
       if (layout?.hostAvailable) { layout.openRightPanel({ kind: 'file', path: filePath }); return; }
-      setPreviewPath(filePath);
+      openFilePreview(filePath);
     } else {
       api.files.reveal(filePath);
     }
@@ -374,16 +381,29 @@ export function FilePathLink({ path: filePath }: { path: string }) {
   }
 
   return (
-    <>
-      <code
-        data-file-path-link="ready"
+    <code
+      data-file-path-link="ready"
         className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
         title={isPreviewable ? 'Click to preview' : 'Click to reveal in file explorer'}
         role="button"
         tabIndex={0}
-      ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>
-      {previewPath && <FilePreviewModal filePath={previewPath} onClose={() => setPreviewPath(null)} />}
-    </>
+    ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>
   );
+}
+
+/**
+ * The single owner of the file preview modal. Mount once, at the app root.
+ *
+ * It must NOT live inside a message row: rows are recycled by the chat
+ * virtualizer, and a modal owned by a recycled row disappears while the user is
+ * still reading the document (mobile-only symptom, because on desktop the same
+ * click goes to the right panel instead).
+ */
+export function FilePreviewHost() {
+  const path = useSyncExternalStore(subscribeFilePreview, getFilePreviewPath, getFilePreviewPath);
+  if (!path) return null;
+  // `key` = the path: the modal owns a browsing cursor (`activePath`) starting at
+  // the link's path, so a different document must be a different instance.
+  return <FilePreviewModal key={path} filePath={path} onClose={closeFilePreview} />;
 }

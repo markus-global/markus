@@ -33,6 +33,7 @@ import { useTranslation } from 'react-i18next';
 import { SearchModal } from './components/SearchModal.tsx';
 import { ShortcutsHelpModal } from './components/ShortcutsHelpModal.tsx';
 import { EditProfileModal } from './components/EditProfileModal.tsx';
+import { FilePreviewHost } from './components/FilePathLink.tsx';
 import { isEditableTarget, isXtermTarget } from './lib/keyboard-shortcuts.ts';
 import { applyLessonKeyPress, type LessonKeyEvent } from './lib/shortcut-lessons.ts';
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
@@ -1002,6 +1003,10 @@ export function App() {
       {!isMobile && (
         <ShortcutsHelpModal open={showShortcutsHelp} onClose={() => setShowShortcutsHelp(false)} page={page} />
       )}
+
+      {/* File preview — one owner at the app root, never inside a recycled
+          message row (see components/filePreviewStore.ts). */}
+      <FilePreviewHost />
 
       {/* Edit profile — available from sidebar account menu without leaving the page */}
       {showEditProfile && currentUser && (
