@@ -187,3 +187,66 @@ describe('SqliteChatSessionRepo.listMessagesPaginated', () => {
     expect(m.createdAt).toBeInstanceOf(Date);
   });
 });
+
+describe('last_message_at 派生自最新消息（单一执行点，回归）', () => {
+  // 缺陷现场：用户消息落库路径不更新 last_message_at，只有「带 title 的路径 / cli」
+  // 会补，导致会话排序与「新消息」标记比消息本身滞后（实测滞后 87 秒）。
+  it('appendMessage 写用户消息后 last_message_at 必须等于该消息时间', () => {
+    const agent = seedAgent('LM1');
+    const sid = repo.createSession(agent, 'u-lm1').id;
+    // 人为把会话时间退到很久以前，模拟「消息已写入但会话时间未推进」
+    setSessionTime(sid, '2020-01-01T00:00:00.000Z');
+
+    const msg = repo.appendMessage(sid, agent, 'user', 'hello from user');
+
+    const s = repo.getSession(sid);
+    expect(s).not.toBeNull();
+    expect(s!.lastMessageAt.getTime()).toBe(msg.createdAt.getTime());
+  });
+
+  it('appendMessage 写 assistant 消息同样推进（不依赖调用方记得补）', () => {
+    const agent = seedAgent('LM2');
+    const sid = repo.createSession(agent, 'u-lm2').id;
+    setSessionTime(sid, '2020-01-01T00:00:00.000Z');
+
+    const msg = repo.appendMessage(sid, agent, 'assistant', 'reply text');
+
+    expect(repo.getSession(sid)!.lastMessageAt.getTime()).toBe(msg.createdAt.getTime());
+  });
+
+  it('连续两条消息：会话时间跟随最新一条，不回退', () => {
+    const agent = seedAgent('LM3');
+    const sid = repo.createSession(agent, 'u-lm3').id;
+    const first = repo.appendMessage(sid, agent, 'user', 'm1');
+    const second = repo.appendMessage(sid, agent, 'assistant', 'm2');
+
+    const last = repo.getSession(sid)!.lastMessageAt.getTime();
+    expect(last).toBe(second.createdAt.getTime());
+    expect(last).toBeGreaterThanOrEqual(first.createdAt.getTime());
+  });
+
+  it('会话活动时间只前进：写入更早的消息（回填/时钟回拨）不得把 last_message_at 拉回过去', () => {
+    const agent = seedAgent('LM4');
+    const sid = repo.createSession(agent, 'u-lm4').id;
+    // 会话已被推到「未来」（模拟回填顺序错乱 / 后续导入历史消息）
+    const future = '2099-01-01T00:00:00.000Z';
+    setSessionTime(sid, future);
+
+    repo.appendMessage(sid, agent, 'user', 'backfilled older message');
+
+    expect(repo.getSession(sid)!.lastMessageAt.toISOString()).toBe(future);
+  });
+
+  it('updateLastMessage 与 appendMessage 共用同一个写入点，同样不回退', () => {
+    const agent = seedAgent('LM5');
+    const sid = repo.createSession(agent, 'u-lm5').id;
+    const future = '2099-01-01T00:00:00.000Z';
+    setSessionTime(sid, future);
+
+    repo.updateLastMessage(sid, 'retitled');
+
+    const s = repo.getSession(sid)!;
+    expect(s.title).toBe('retitled');
+    expect(s.lastMessageAt.toISOString()).toBe(future);
+  });
+});
