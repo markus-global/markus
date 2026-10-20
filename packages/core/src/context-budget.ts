@@ -160,3 +160,33 @@ export function viewBudgetMarkerText(dropped: number, viewTokens: number): strin
     `task_get / recall_activity / session if you need a specific earlier detail.]`
   );
 }
+
+/**
+ * Actionable companion to the `[CONTEXT n% used …]` banner.
+ *
+ * The banner alone reports a number the agent cannot act on — the platform's own
+ * rule is that an always-lit warning with no lever is worse than none, because
+ * it trains agents to ignore banners. This function only speaks when the agent
+ * has a real lever (session compact / session pin) and names the call.
+ *
+ * Thresholds: advisory at 70%, directive at 85%. Below that, stay silent.
+ */
+export function contextActionHint(opts: { usedPct: number; canCompact: boolean }): string | undefined {
+  if (!opts.canCompact) return undefined;
+  if (opts.usedPct >= 85) {
+    return (
+      'ACT NOW: context is nearly full. Before your next big step, call the `session` tool with ' +
+      "operation:'compact' (optionally goal/done/next) to collapse stale history into an anchor " +
+      "summary; use operation:'pin' for the one fact you must not lose. This costs one call now " +
+      'and makes every later call cheaper.'
+    );
+  }
+  if (opts.usedPct >= 70) {
+    return (
+      'Context is getting heavy. If the earlier part of this session is no longer needed ' +
+      "(finished sub-tasks, stale tool output), consider `session` operation:'compact' — " +
+      'it pages out old history and keeps an anchor summary.'
+    );
+  }
+  return undefined;
+}

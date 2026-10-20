@@ -3002,6 +3002,7 @@ export class Agent {
     modelMaxOutput: number | undefined;
     promptAffordTokens: number | null;
     viewBudget: ViewBudgetPolicy | undefined;
+    scenario: AgentScenario | undefined;
   } {
     const provider = this.getEffectiveProvider();
     const effectiveModel = this.getEffectiveModel();
@@ -3019,6 +3020,7 @@ export class Agent {
       // `undefined` for scenarios that must see everything (memory_consolidation,
       // distillation) restores the legacy window-based behaviour.
       viewBudget: viewBudgetForScenario(this.activeScenario),
+      scenario: this.activeScenario,
     };
   }
 

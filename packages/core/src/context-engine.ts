@@ -53,6 +53,7 @@ import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
 import {
   applyViewBudget,
+  contextActionHint,
   viewBudgetMarkerText,
   type ViewBudgetPolicy,
 } from './context-budget.js';
@@ -2112,6 +2113,11 @@ export class ContextEngine {
      * window-based packing. See context-budget.ts.
      */
     viewBudget?: ViewBudgetPolicy;
+    /**
+     * The turn's scenario. Used only to decide whether the context banner may
+     * name a lever (compaction) — scenarios that must read everything get none.
+     */
+    scenario?: AgentScenario;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -2366,6 +2372,13 @@ export class ContextEngine {
     const usedPct = Math.round((hintTotalUsed / effectiveBudget) * 1000) / 10;
     const src = reportedInputTokens !== undefined ? 'reported' : 'est';
     let hintLines = `[CONTEXT ${usedPct}% used — src=${src} · window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
+
+    // Make the banner actionable: name the lever (`session` compact/pin) when the
+    // agent can actually use it. Scenarios that must read everything
+    // (memory_consolidation / distillation) have no lever, so they get silence.
+    const canCompact = opts.scenario !== 'memory_consolidation' && opts.scenario !== 'distillation';
+    const actionHint = contextActionHint({ usedPct, canCompact });
+    if (actionHint) hintLines += `\n${actionHint}`;
     if (usedPct >= CONTEXT_CRIT_RATIO * 100) {
       hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: system will hard-trim oldest turns. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
     } else if (usedPct >= CONTEXT_WARN_RATIO * 100) {
