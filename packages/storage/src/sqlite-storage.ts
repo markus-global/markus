@@ -2429,6 +2429,14 @@ export class SqliteChatSessionRepo {
         tokensUsed ?? 0,
         ts
       );
+    // A session's last activity is DERIVED from its newest message, so recompute it here
+    // at the single write point, using the message's own timestamp. Previously only some
+    // callers remembered to do it (title-setting paths, cli), so a plain user message
+    // left `last_message_at` minutes behind — session ordering / "new message" flags
+    // lagged even though the message was already stored.
+    this.db
+      .prepare('UPDATE chat_sessions SET last_message_at = ? WHERE id = ?')
+      .run(ts, sessionId);
     return {
       id,
       sessionId,

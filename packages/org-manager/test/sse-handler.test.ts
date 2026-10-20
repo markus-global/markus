@@ -77,6 +77,54 @@ describe('SSEHandler', () => {
     expect(res.body).toContain('Hello');
   });
 
+  // 不变量（CTO 2026-10-19 指派）：`content` 非空 ⇒ `emptyReply` 必须 falsy。
+  // 依据：早期缺陷报告称「正文 700–2100 字却被标 emptyReply」，实测为否（全库该标记
+  // 7 行、正文长度全 0），代码上 isEmptyTerminal 与 donePayload.content 同源于
+  // persistReply，结构上也不可能。此断言把「将来真出现」锁死：不再依赖读码复核。
+  // 形态无关：递归搜索 done 事件任意层级，出现 emptyReply:true 即失败。
+  it('invariant: non-empty content is never flagged emptyReply', async () => {
+    const persistAssistant = vi.fn(async () => {});
+    const handler = new SSEHandler({
+      agentId: 'agent-1',
+      agent: createAgent() as never,
+      userText: 'Hi there',
+      senderId: 'user-1',
+      senderInfo: { name: 'User', role: 'owner' },
+      persistUserMessage: vi.fn(async () => 'sess-1'),
+      persistAssistantMessage: persistAssistant,
+      wsBroadcaster: { broadcastChat: vi.fn(), broadcastAgentUpdate: vi.fn() },
+      onComplete: vi.fn(),
+      executionStreamRepo: { append: vi.fn() },
+    });
+
+    const res = new MockResponse() as unknown as ServerResponse;
+    await handler.handle(res);
+    await vi.advanceTimersByTimeAsync(150);
+
+    const events = res.body
+      .split('\n')
+      .filter(l => l.startsWith('data:'))
+      .map(l => { try { return JSON.parse(l.slice(5).trim()) as Record<string, unknown>; } catch { return null; } })
+      .filter((e): e is Record<string, unknown> => e !== null);
+    const done = events.find(e => e['type'] === 'done');
+    expect(done).toBeTruthy();
+
+    const content = typeof done!['content'] === 'string' ? (done!['content'] as string) : '';
+    expect(content.trim().length).toBeGreaterThan(0);
+
+    // 判据：正文非空时，done 事件里任何层级都不得出现 emptyReply: true
+    const flagsTrue: string[] = [];
+    const walk = (node: unknown, path: string): void => {
+      if (!node || typeof node !== 'object') return;
+      for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+        if (k === 'emptyReply' && v === true) flagsTrue.push(`${path}.${k}`);
+        walk(v, `${path}.${k}`);
+      }
+    };
+    walk(done, 'done');
+    expect(flagsTrue, `content 非空却标记 emptyReply:true（${flagsTrue.join(',')}）`).toEqual([]);
+  });
+
   it('handles stream errors via onError callback', async () => {
     const agent = createAgent({
       sendMessageStream: vi.fn(async () => { throw new Error('stream failed'); }),
