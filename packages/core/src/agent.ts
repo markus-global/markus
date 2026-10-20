@@ -67,6 +67,7 @@ import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
+import { viewBudgetForScenario, type ViewBudgetPolicy } from './context-budget.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import {
@@ -2995,11 +2996,12 @@ export class Agent {
     return slice;
   }
 
-  /** Shared packing budget fields for prepareMessages (window + OR afford). */
+  /** Shared packing budget fields for prepareMessages (window + OR afford + view). */
   private getPrepareBudgetOpts(): {
     modelContextWindow: number;
     modelMaxOutput: number | undefined;
     promptAffordTokens: number | null;
+    viewBudget: ViewBudgetPolicy | undefined;
   } {
     const provider = this.getEffectiveProvider();
     const effectiveModel = this.getEffectiveModel();
@@ -3012,6 +3014,11 @@ export class Agent {
       modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
       modelMaxOutput: this.getModelMaxOutputForBudget(),
       promptAffordTokens: afford ?? null,
+      // Per-scenario VIEW cap — how much history this turn may see. Derived here
+      // (one execution point) so no call site can forget it or invent a number.
+      // `undefined` for scenarios that must see everything (memory_consolidation,
+      // distillation) restores the legacy window-based behaviour.
+      viewBudget: viewBudgetForScenario(this.activeScenario),
     };
   }
 

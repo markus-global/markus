@@ -51,6 +51,11 @@ import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
+import {
+  applyViewBudget,
+  viewBudgetMarkerText,
+  type ViewBudgetPolicy,
+} from './context-budget.js';
 import type { ConcurrentHandoffLite } from './concurrent-handoff.js';
 
 const log = createLogger('context-engine');
@@ -2101,6 +2106,12 @@ export class ContextEngine {
      * water level. Used for the `[CONTEXT …]` hint's `src=reported` reading.
      */
     reportedInputTokens?: number;
+    /**
+     * Per-scenario cap on the variable (history) segment — "what the model sees
+     * this call", independent of what the session stores. Omit for legacy
+     * window-based packing. See context-budget.ts.
+     */
+    viewBudget?: ViewBudgetPolicy;
   }): Promise<PreparedContext> {
     // No silent defaults: a missing/zero context window is exactly what
     // silently drove the message budget negative and made the agent return
@@ -2201,6 +2212,32 @@ export class ContextEngine {
 
     let messages = opts.sessionMessages;
     let compactStage: CompactStage = 'none';
+
+    // ── Stage 0: scenario VIEW budget ───────────────────────────────────
+    // How much history the model may SEE is a per-scenario decision, not a
+    // function of the model window (see context-budget.ts for the measurement
+    // and the industry precedent). Applied first and cheaply: tail-trim at
+    // message boundaries, no LLM call. Everything stays stored — this only
+    // changes the presented view. `undefined` = legacy window-based behaviour.
+    let viewDropped: number | undefined;
+    if (opts.viewBudget) {
+      const view = applyViewBudget(messages, opts.viewBudget, {
+        estimateTokens: (m) => estimateMessageTokens(m, this.tokenCounter),
+        makeMarker: (dropped) => ({
+          role: 'user',
+          content: viewBudgetMarkerText(dropped, opts.viewBudget!.viewTokens),
+        }) as LLMMessage,
+      });
+      messages = view.messages;
+      if (view.dropped > 0) {
+        viewDropped = view.dropped;
+        log.info('Applied scenario view budget', {
+          sessionId: opts.sessionId,
+          scenarioViewTokens: opts.viewBudget.viewTokens,
+          droppedMessages: view.dropped,
+        });
+      }
+    }
 
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
