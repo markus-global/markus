@@ -224,4 +224,29 @@ describe('last_message_at 派生自最新消息（单一执行点，回归）', 
     expect(last).toBe(second.createdAt.getTime());
     expect(last).toBeGreaterThanOrEqual(first.createdAt.getTime());
   });
+
+  it('会话活动时间只前进：写入更早的消息（回填/时钟回拨）不得把 last_message_at 拉回过去', () => {
+    const agent = seedAgent('LM4');
+    const sid = repo.createSession(agent, 'u-lm4').id;
+    // 会话已被推到「未来」（模拟回填顺序错乱 / 后续导入历史消息）
+    const future = '2099-01-01T00:00:00.000Z';
+    setSessionTime(sid, future);
+
+    repo.appendMessage(sid, agent, 'user', 'backfilled older message');
+
+    expect(repo.getSession(sid)!.lastMessageAt.toISOString()).toBe(future);
+  });
+
+  it('updateLastMessage 与 appendMessage 共用同一个写入点，同样不回退', () => {
+    const agent = seedAgent('LM5');
+    const sid = repo.createSession(agent, 'u-lm5').id;
+    const future = '2099-01-01T00:00:00.000Z';
+    setSessionTime(sid, future);
+
+    repo.updateLastMessage(sid, 'retitled');
+
+    const s = repo.getSession(sid)!;
+    expect(s.title).toBe('retitled');
+    expect(s.lastMessageAt.toISOString()).toBe(future);
+  });
 });

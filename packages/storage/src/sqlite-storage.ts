@@ -2391,14 +2391,24 @@ export class SqliteChatSessionRepo {
 
   updateLastMessage(sessionId: string, title?: string) {
     if (title) {
-      this.db
-        .prepare('UPDATE chat_sessions SET last_message_at = ?, title = ? WHERE id = ?')
-        .run(now(), title, sessionId);
-    } else {
-      this.db
-        .prepare('UPDATE chat_sessions SET last_message_at = ? WHERE id = ?')
-        .run(now(), sessionId);
+      this.db.prepare('UPDATE chat_sessions SET title = ? WHERE id = ?').run(title, sessionId);
     }
+    this._advanceLastMessage(sessionId, now());
+  }
+
+  /**
+   * The ONLY point that writes `chat_sessions.last_message_at`.
+   *
+   * The value is DERIVED from a session's newest message, so it may only move
+   * forward: a late or backfilled write must never drag a session's activity
+   * backwards (that would silently reorder the session list and resurrect
+   * "new message" flags). Values are ISO-8601 UTC strings from now(), so `<`
+   * on TEXT is chronological.
+   */
+  private _advanceLastMessage(sessionId: string, ts: string) {
+    this.db
+      .prepare('UPDATE chat_sessions SET last_message_at = ? WHERE id = ? AND last_message_at < ?')
+      .run(ts, sessionId, ts);
   }
 
   deleteSession(sessionId: string) {
@@ -2434,9 +2444,7 @@ export class SqliteChatSessionRepo {
     // callers remembered to do it (title-setting paths, cli), so a plain user message
     // left `last_message_at` minutes behind — session ordering / "new message" flags
     // lagged even though the message was already stored.
-    this.db
-      .prepare('UPDATE chat_sessions SET last_message_at = ? WHERE id = ?')
-      .run(ts, sessionId);
+    this._advanceLastMessage(sessionId, ts);
     return {
       id,
       sessionId,
