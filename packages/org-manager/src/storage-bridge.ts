@@ -85,6 +85,24 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
   try {
     const storage = await import('@markus/storage');
     const dbPath = resolveSqlitePath(url);
+    // 开库前自愈：探测 → 备份 → 修复 → 校验 → 原子替换（备份永不删除）。
+    // 健康库上这是一次子进程探测的 no-op；损坏库则在这里被修好，用户无感。
+    try {
+      const repair = await storage.prepareDatabaseFile(dbPath, {
+        log: (message: string, data?: Record<string, unknown>) => log.warn(message, data),
+      });
+      if (repair.action === 'repaired') {
+        log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
+      } else if (repair.action === 'aborted') {
+        log.error('Database repair aborted — original left untouched', repair as unknown as Record<string, unknown>);
+      } else if (repair.reason && repair.reason !== 'healthy' && repair.reason !== 'no-database') {
+        log.warn('Database repair skipped', { reason: repair.reason });
+      }
+    } catch (err) {
+      // 自愈本身失败绝不能让应用起不来：原库未动，照常打开
+      log.error('Pre-open repair check failed (continuing with original database)', { error: String(err) });
+    }
+
     const db = storage.openSqlite(dbPath);
 
     // 附件 + 后台迁移：blob 根目录与数据库同级，可用 MARKUS_BLOB_DIR 覆盖（测试/多实例）。

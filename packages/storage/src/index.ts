@@ -94,3 +94,7 @@ export type { Migration, MigrationProgress, MigrationRunnerOptions } from './mig
 // 子进程健康探针：大库上 quick_check 是分钟级同步操作，绝不能跑在主进程里。
 export { probeDatabaseHealthInChild } from './health-probe.js';
 export type { HealthProbeResult, HealthProbeStatus } from './health-probe.js';
+// 开库前自愈：通用能力（所有用户、所有平台），不依赖 sqlite3 CLI。
+export { prepareDatabaseFile } from './repair.js';
+export type { RepairOptions, RepairResult, RepairTableReport } from './repair.js';
+export { rebuildInto, verifyRecovered } from './repair-rebuild.js';
