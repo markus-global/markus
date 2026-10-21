@@ -13,8 +13,42 @@ import {
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
+import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
 
 type SqlParams = SQLInputValue[];
+
+/**
+ * 大字段外置阈值（字节）。
+ *
+ * 超过这个大小的 JSON 载荷写到内容寻址的文件里，行里只留
+ * `{"$blob":"<sha256>","$bytes":N}`；读取时透明还原，所以上层与前端看到的
+ * 数据形状完全不变。实测依据：metadata 占 `agent_activity_logs` 的 84%、
+ * `task_logs` 的 86%、`chat_messages` 的 97%（含 base64 图片）。
+ */
+const BLOB_THRESHOLD_BYTES = 8 * 1024;
+
+let _blobStore: BlobStore | null = null;
+
+/** 唯一实例入口 —— 别在别处 new BlobStore() 指向别的根。 */
+function blobStore(): BlobStore {
+  if (!_blobStore) _blobStore = new BlobStore();
+  return _blobStore;
+}
+
+/** 测试钩子：替换 blob 根目录（传 null 复位）。 */
+export function setBlobStoreForTests(store: BlobStore | null): void {
+  _blobStore = store;
+}
+
+/** 写方向：大 JSON 投影成指针。 */
+function projectJson(json: string): string {
+  return projectJsonForStorage(json, blobStore(), BLOB_THRESHOLD_BYTES);
+}
+
+/** 读方向：指针透明还原成原始 JSON。 */
+function resolveJson(json: unknown): string {
+  return resolveJsonFromStorage(json as string | null | undefined, blobStore());
+}
 
 const log = createLogger('sqlite-storage');
 
@@ -30,7 +64,10 @@ function toJson(v: unknown): string {
   return JSON.stringify(v ?? null);
 }
 function fromJson<T = unknown>(v: string | null): T {
-  return v ? (JSON.parse(v) as T) : (null as T);
+  if (!v) return null as T;
+  // 透明还原：大字段外置后行里只留 {"$blob":...} 指针（见 blob-store.ts）。
+  // 收口在唯一的解析入口，所以没有任何读路径需要知道"外置"这件事存在。
+  return JSON.parse(resolveJson(v)) as T;
 }
 function toDate(v: string | null): Date | null {
   return v ? new Date(v) : null;
@@ -2047,7 +2084,7 @@ export class SqliteTaskLogRepo {
         data.seq,
         data.type,
         data.content,
-        toJson(data.metadata ?? {}),
+        projectJson(toJson(data.metadata ?? {})),
         data.executionRound ?? 1,
         ts
       );
@@ -2467,7 +2504,7 @@ export class SqliteChatSessionRepo {
         agentId,
         role,
         content,
-        metadata ? toJson(metadata) : null,
+        metadata ? projectJson(toJson(metadata)) : null,
         tokensUsed ?? 0,
         ts
       );
@@ -4407,7 +4444,7 @@ export class SqliteActivityRepo {
       .prepare(
         'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
       )
-      .run(data.activityId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), now());
+      .run(data.activityId, data.seq, data.type, data.content, projectJson(toJson(data.metadata ?? {})), now());
   }
 
   queryActivities(
@@ -4751,7 +4788,7 @@ export class SqliteMailboxRepo {
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
-        item.status, toJson(item.payload), toJson(item.metadata ?? {}),
+        item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
