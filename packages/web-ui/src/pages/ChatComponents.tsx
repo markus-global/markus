@@ -647,25 +647,16 @@ export function visibleTimelineBlocks(
   if (opts.interrupted) return { blocks, foldedCount: 0, foldableCount: 0 };
 
   if (opts.isStreaming) {
-    const processEntries = blocks.flatMap(b => (b.kind === 'process' ? b.entries : []));
-    const textBlocks = blocks.filter(b => b.kind === 'text');
-    if (processEntries.length === 0) return { blocks: textBlocks, foldedCount: 0, foldableCount: 0 };
-    const lastBlock = blocks[blocks.length - 1]!;
-    const tailIsProcess = lastBlock.kind === 'process';
-    // 所有过程段合成**一行** —— 正文全部留着，正在读的东西不能因为下一段工具开始就消失。
+    // 流式中：保留时间线**原顺序**，过程块与正文块交替可见。
     //
-    // key 用「最后一块自己的 key」（当尾巴是过程时）而不是固定值：下游 `ProcessRun`
-    // 判「这是不是仍在收尾的那一段」靠的就是 `key === 最后一块.key`。固定 key 会让
-    // 「只有思考、工具已结束」的回合掉回「已完成」态（转圈变对勾、shimmer 消失）。
-    const live: ChatTimelineBlock = {
-      kind: 'process',
-      key: tailIsProcess ? lastBlock.key : 'proc_live',
-      entries: processEntries,
-      summary: summarizeProcessRun(processEntries),
-    };
-    // 过程行放最上面：它就是「现在在干什么」，放在滚动中会变的位置会让人看丢。
-    // 它自己可展开，所以流式中不需要顶部那一行。
-    return { blocks: [live, ...textBlocks], foldedCount: 0, foldableCount: 0 };
+    // 这里曾经把所有 process 块 flatMap 成一行放最上面，理由是「避免一列折叠行」
+    // （2026-10-18 的截图）。那个症状的真实成因是**折叠**，不是**顺序**：
+    // 每个过程块都默认收起，于是只剩一排灰标签堆在顶上，与正文的因果关系
+    // （先想了什么 → 然后调了什么 → 所以说了什么）被完全压平。
+    // Owner 2026-10-21 明确指出「思考和工具调用要呈现在正文与正文之间」，
+    // 且「输出中」与「输出结束」应当不同 —— 所以这里不改顺序，只让流式期间可见；
+    // 折叠与否交给 ProcessRun 按 isStreaming 决定。
+    return { blocks, foldedCount: 0, foldableCount: 0 };
   }
 
   // 已完成：只留「最终结果」及其后的块（工具尾部仍然可见）。
@@ -770,6 +761,17 @@ export function ProcessRun({
 }) {
   const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
+  /**
+   * 用户手动点过展开/收起之后，以用户的意图为准，不再受流式状态改写。
+   * 没有这个标记的话，「流式中默认展开」会在用户收起的下一帧又把它撑开。
+   */
+  const [userToggled, setUserToggled] = useState(false);
+  /**
+   * 「输出中」与「输出结束」必须不同（Owner 2026-10-21）：
+   * 流式期间过程块**默认展开**，让思考与工具调用真正呈现在正文之间；
+   * 流结束后回到默认收起，气泡只剩正文。
+   */
+  const effectiveOpen = userToggled ? open : (open || isStreaming);
 
   const rows = useMemo(
     () => filterCompletedStarts(
@@ -827,8 +829,8 @@ const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconne
     <div className="min-w-0">
       <button
         type="button"
-        onClick={() => { setOpen(v => !v); if (!open) onExpand?.(); }}
-        aria-expanded={open}
+        onClick={() => { setUserToggled(true); setOpen(!effectiveOpen); if (!effectiveOpen) onExpand?.(); }}
+        aria-expanded={effectiveOpen}
         data-process-state={state}
         title={labelText}
         className="group relative w-full flex items-center gap-2 px-2 py-1 rounded-lg text-left text-[11px] leading-tight text-fg-tertiary bg-surface-elevated/25 hover:bg-surface-elevated/45 border border-border-default/40 hover:border-border-default/70 overflow-hidden transition-colors cursor-pointer select-none"
@@ -853,13 +855,13 @@ const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconne
               )))}
         </span>
         <svg
-          className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
+          className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${effectiveOpen ? 'rotate-180' : ''}`}
           viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
         >
           <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
         </svg>
       </button>
-      {open && (
+      {effectiveOpen && (
         <div className="mt-1 ml-[7px] pl-3 border-l-2 border-border-default/50 space-y-2 min-w-0 overflow-hidden">
           {rows.length > 0 ? rows.map((row, i) => (
             <MemoExecEntryRow key={i} entry={row} showTime={false} hideApprovalCards={hideApprovalCards} />
