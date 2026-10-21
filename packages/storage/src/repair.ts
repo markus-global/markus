@@ -190,11 +190,42 @@ export function tryApplyPendingRepair(
 }
 
 /** 派后台工人（大库专用）。工人只重建 + 校验，不动原库。 */
+export interface RepairWorkerSpawnSpec {
+  command: string;
+  args: string[];
+  options: { detached: true; stdio: 'ignore'; env: NodeJS.ProcessEnv };
+}
+
+/**
+ * 后台修复工人的启动参数 —— **纯函数，可测**。
+ *
+ * 见 `health-probe.ts` 里的同款说明：打包后的 Electron 中 `process.execPath`
+ * 是主程序，必须是 `ELECTRON_RUN_AS_NODE=1` 才执行脚本，否则会静默启动第二个
+ * GUI 实例（detached + stdio:'ignore' 让这个错误完全不可见）。
+ */
+export function buildRepairWorkerSpawnSpec(
+  dbPath: string,
+  workerPath: string,
+  execPath: string = process.execPath,
+  baseEnv: NodeJS.ProcessEnv = process.env,
+): RepairWorkerSpawnSpec {
+  return {
+    command: execPath,
+    args: [workerPath, dbPath],
+    options: {
+      detached: true,
+      stdio: 'ignore',
+      env: { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' },
+    },
+  };
+}
+
 function scheduleBackgroundRepair(dbPath: string, log: (m: string, d?: Record<string, unknown>) => void): void {
   const workerPath = new URL('./repair-worker.js', import.meta.url).pathname;
   writeJson(`${dbPath}${PENDING_SUFFIX}`, { pid: process.pid, startedAt: new Date().toISOString() });
   try {
-    const child = spawn(process.execPath, [workerPath, dbPath], { detached: true, stdio: 'ignore' });
+    const spec = buildRepairWorkerSpawnSpec(dbPath, workerPath);
+    const child = spawn(spec.command, spec.args, spec.options);
     child.unref();
     log('Background repair scheduled (applies on next start)', { workerPath });
   } catch (err) {

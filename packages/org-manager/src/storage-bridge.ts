@@ -137,12 +137,19 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
         const pending = (migrationRunner.status() as Array<{ id: string; status: string }>)
           .find(p => p.id === bulk);
         if (!pending || pending.status !== 'done') {
-          const probe = await storage.probeDatabaseHealthInChild(dbPath, 20_000);
+          // 探针是后台任务，不在启动路径上 —— 所以超时按库大小给，而不是固定 20 s。
+          // 实测健康的 16.7 GB 库整表扫描要 155 s；固定 20 s 会让**大库永远拿到
+          // unknown → 永远不做出库**，静默退化成「什么也没省」。
+          let dbMb = 0;
+          try { dbMb = Math.round(statSync(dbPath).size / 1048576); } catch { /* 拿不到按最小值 */ }
+          const probeTimeoutMs = Math.min(15 * 60_000, Math.max(20_000, dbMb * 12));
+          const probe = await storage.probeDatabaseHealthInChild(dbPath, probeTimeoutMs);
           if (probe.status !== 'ok') {
             log.warn('Skipping bulk payload offload — database not confirmed healthy', {
               status: probe.status,
               detail: probe.detail,
               elapsedMs: probe.elapsedMs,
+              probeTimeoutMs,
               why: 'offloading without VACUUM would double disk usage',
             });
             return migrationRunner.run({ skip: [bulk] });

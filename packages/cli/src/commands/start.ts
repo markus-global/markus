@@ -89,6 +89,7 @@ import { setupOutboundDispatch } from './outbound.js';
 import { buildApprovalCardResolution, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
+import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
@@ -2926,6 +2927,11 @@ async function startServerCore(
     shutdown,
   };
 
+  // 后台自维护（完整性自检 + 旧库数据迁移）必须在这里排期。
+  // 它在 headless 分支**之前**，因为桌面端走的就是 headless：把这段放到
+  // 后面的「非 headless 尾段」，等于对所有桌面用户关掉自动迁移（实测踩过）。
+  scheduleBackgroundMaintenance(storage, log);
+
   // In headless mode (Electron), return without blocking
   if (headless) {
     // Still start restored agents in background
@@ -2961,63 +2967,6 @@ async function startServerCore(
       log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
     }
   });
-
-  // M0: integrity probe — auto-runs only on small databases.
-  // Measured on a real 17.9 GB ledger: `PRAGMA quick_check(1)` takes 8.3 s and
-  // blocks the event loop for the whole scan (the scan is synchronous inside
-  // SQLite). Freezing streaming/API for 8 s at startup is not an acceptable
-  // trade, so the automatic check is gated by size; large databases get an
-  // on-demand check instead of a silent one.
-  const AUTO_CHECK_MAX_BYTES = 512 * 1024 * 1024;
-  if (!process.env.VITEST && storage) {
-    const dbSize = storage.databaseSizeBytes();
-    if (dbSize > AUTO_CHECK_MAX_BYTES) {
-      log.info('Database integrity auto-check skipped (large database) — run on demand', {
-        sizeMb: Math.round(dbSize / 1048576),
-      });
-    } else {
-      const t = setTimeout(() => {
-        try {
-          const health = storage.quickCheck();
-          if (health.ok) {
-            log.info('Database integrity check passed', { elapsedMs: health.elapsedMs });
-          } else {
-            log.error('Database integrity check FAILED — some tables cannot be scanned', {
-              errors: health.errors,
-              elapsedMs: health.elapsedMs,
-            });
-          }
-        } catch (err) {
-          log.warn('Database integrity check could not run', { error: String(err) });
-        }
-      }, 30_000);
-      const unref = (t as unknown as { unref?: () => void }).unref;
-      if (typeof unref === 'function') (t as unknown as { unref: () => void }).unref();
-    }
-  }
-
-  // 升级零感知：旧库的数据迁移在后台自己跑 —— 不挡启动、不需要用户执行任何脚本。
-  // 进度落 data_migrations 表，进程随时被杀都能从 cursor 续跑（见 migration-runner.ts）。
-  if (!process.env.VITEST && storage) {
-    const mt = setTimeout(() => {
-      try {
-        storage.runMigrations()
-          .then((s: unknown) => {
-            log.info('Data migrations finished', { status: s });
-            // 迁移只把行变短，页进了 freelist，文件大小不变。不 VACUUM 的话
-            // 用户会看到磁盘反而多占（旧页 + 新 blob）—— 必须真正还盘。
-            const r = storage.reclaimSpace();
-            if (r.reclaimed) log.info('Reclaimed disk space (VACUUM)', { freedMb: Math.round(r.freeBytes / 1048576), ms: r.durationMs });
-            else log.info('Space reclaim skipped', { reason: r.reason, candidateMb: Math.round(r.freeBytes / 1048576) });
-          })
-          .catch((err: unknown) => log.warn('Data migration interrupted — will resume on next start', { error: String(err) }));
-      } catch (err) {
-        log.warn('Data migration could not start', { error: String(err) });
-      }
-    }, 5_000);
-    const unrefM = (mt as unknown as { unref?: () => void }).unref;
-    if (typeof unrefM === 'function') (mt as unknown as { unref: () => void }).unref();
-  }
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');
