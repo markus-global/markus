@@ -20,6 +20,7 @@
  */
 
 import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
+import { DatabaseSync } from 'node:sqlite';
 import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
 import { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES } from './health-probe.js';
@@ -55,6 +56,22 @@ export interface RepairOptions {
   /** 超过这个大小的库走两段式（后台重建 + 下次启动换库）。默认 512 MB。 */
   deferAboveBytes?: number;
   /**
+   * 大库损坏时是否允许在**启动路径上**重建（默认允许）。
+   *
+   * 默认允许是安全选择：重建必须在一个没有任何写者的窗口里做完，
+   * 否则快照必然陈旧，而陈旧快照换库 = 吃掉那段时间的写入。
+   * 代价是一次性启动等待（普通用户秒级，17 GB 约 5 分钟）。
+   * 置 true 则退回旧的两段式 —— 现在有指纹保护，陈旧快照会被拒绝而非吞数据。
+   */
+  deferLargeRepairToBackground?: boolean;
+  /**
+   * 只探测、不重建：探测到损坏时只写「需要重建」标记，重建留给**下一次启动**在
+   * 独占状态下做。
+   *
+   * 这是大库在应用已运行时唯一安全的选项：此刻库正被写入，任何快照都会陈旧。
+   */
+  probeOnly?: boolean;
+  /**
    * 是否允许在启动路径上同步探测。
    *
    * 大库**必须**置 false：健康的大库整库扫描是分钟级，压在启动路径上等于
@@ -67,6 +84,15 @@ export interface RepairOptions {
 const READY_SUFFIX = '.repair-ready.json';
 const PENDING_SUFFIX = '.repair-pending.json';
 const FAILED_SUFFIX = '.repair-failed.json';
+/**
+ * 「这个库需要重建」的持久标记。
+ *
+ * 为何需要它：大库的完整性扫描是分钟级（实测 16.7 GB → 155 s），不能每次启动都跑。
+ * 所以大库只在**后台**探一次，探到损坏就把结论写在这里；下一次启动读到该标记，
+ * 就跳过探测、直接在**独占状态**（还没有任何进程打开它）下重建并替换。
+ * 独占是这里的关键：只有在没有并发写入的窗口里做的快照，才允许被换进活库。
+ */
+const NEEDED_SUFFIX = '.repair-needed.json';
 
 function timestamp(): string {
   return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -154,20 +180,113 @@ function buildRepairedCopy(
 }
 
 /**
+ * 源库指纹：用来证明「这份重建快照与当前活库是同一个状态」。
+ *
+ * 为何必须有：两段式（先重建、下次启动换库）在**有并发写入**的系统上必然陈旧 ——
+ * 实测一台多 agent 常驻的机器，重建完成后 15 分钟内库里新增了 45 行。
+ * 无条件 rename 会把这段写入直接删掉（旧库随后被 rm），那是真实的数据丢失。
+ *
+ * 判据只对「有没有变」负责，不对「变了多少」负责 —— 变了就拒绝，不猜。
+ */
+export interface SourceFingerprint {
+  size: number;
+  mtimeMs: number;
+  walSize: number;
+  walMtimeMs: number;
+  /** 每张表的最大 rowid：新增行一定让这个数变大（廉价且不被缓存干扰） */
+  maxRowIds: Record<string, number>;
+}
+
+/** 读取源库当前指纹。只读打开，任何异常都退化为「读不到」，绝不修改源库。 */
+export function fingerprintSource(dbPath: string): SourceFingerprint {
+  const st = statSync(dbPath);
+  let walSize = 0;
+  let walMtimeMs = 0;
+  try {
+    const w = statSync(`${dbPath}-wal`);
+    walSize = w.size;
+    walMtimeMs = w.mtimeMs;
+  } catch { /* 没有 WAL 文件（已 checkpoint） */ }
+
+  const maxRowIds: Record<string, number> = {};
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const tables = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'")
+        .all() as Array<{ name: string }>;
+      for (const t of tables) {
+        try {
+          const row = db.prepare(`SELECT MAX(rowid) AS hi FROM "${t.name.replace(/"/g, '""')}"`).get() as { hi?: number } | undefined;
+          maxRowIds[t.name] = Number(row?.hi ?? 0);
+        } catch {
+          maxRowIds[t.name] = -1; // 读不动（坏页）：记成哨兵，比较时不会误判「没变」
+        }
+      }
+    } finally {
+      db.close();
+    }
+  } catch { /* 整库都打不开：留空，比较时判为不可信 */ }
+
+  return { size: st.size, mtimeMs: st.mtimeMs, walSize, walMtimeMs, maxRowIds };
+}
+
+/** 两个指纹是否代表同一个库状态。字段缺失（旧格式/读不到）一律判为「不同」。 */
+function sameSource(a: SourceFingerprint | undefined, b: SourceFingerprint | undefined): boolean {
+  if (!a || !b) return false;
+  if (a.size !== b.size || a.mtimeMs !== b.mtimeMs) return false;
+  if (a.walSize !== b.walSize || a.walMtimeMs !== b.walMtimeMs) return false;
+  const ka = Object.keys(a.maxRowIds);
+  const kb = Object.keys(b.maxRowIds);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (a.maxRowIds[k] !== b.maxRowIds[k]) return false;
+  }
+  return true;
+}
+
+/**
  * 下次启动时应用上一次排期的修复。整个过程只有两个 rename，毫秒级。
+ *
+ * **换库前必须证明源库没变过**（见 SourceFingerprint）。变了 → 丢弃这份快照、
+ * 排期为本次启动在独占状态下重建。宁可多花一次重建，也不吃掉那段时间的写入。
  */
 export function tryApplyPendingRepair(
   dbPath: string,
   log: (m: string, d?: Record<string, unknown>) => void = () => {},
 ): RepairResult {
   const started = Date.now();
-  const ready = readJson<{ workPath?: string; tables?: RepairTableReport[]; applied?: boolean }>(`${dbPath}${READY_SUFFIX}`);
+  const ready = readJson<{ workPath?: string; tables?: RepairTableReport[]; applied?: boolean; source?: SourceFingerprint; backupPath?: string }>(`${dbPath}${READY_SUFFIX}`);
   if (!ready || ready.applied) return { action: 'none', reason: 'no-pending-repair', durationMs: 0 };
 
   const workPath = ready.workPath;
   if (!workPath || !existsSync(workPath)) {
     try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
     return { action: 'none', reason: 'pending-work-missing', durationMs: Date.now() - started };
+  }
+
+  // ── 陈旧保护：快照必须与当前活库是同一状态，否则绝不能替换 ──────────────
+  const discardStale = (reason: string): RepairResult => {
+    try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    try { rmSync(workPath, { force: true }); } catch { /* ignore */ }
+    // 已确认损坏（否则不会有就绪文件）→ 让本次启动在独占状态下重建
+    writeJson(`${dbPath}${NEEDED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    log('Pending repair snapshot is stale — refused to swap, will rebuild before open', { reason });
+    return { action: 'aborted', reason, durationMs: Date.now() - started };
+  };
+
+  if (!ready.source) {
+    // 旧版本写下的就绪文件没有指纹 —— 不能假定它是对的
+    return discardStale('no-source-fingerprint');
+  }
+  let current: SourceFingerprint | undefined;
+  try {
+    current = fingerprintSource(dbPath);
+  } catch {
+    return discardStale('source-unreadable');
+  }
+  if (!sameSource(ready.source, current)) {
+    return discardStale('stale-source: database changed after the snapshot was taken');
   }
 
   // 换库前再验一次：工作文件可能被中途杀进程写坏
@@ -180,7 +299,7 @@ export function tryApplyPendingRepair(
   }
 
   // 备份必须在：否则拒绝换库
-  const backupPath = readJson<{ backupPath?: string }>(`${dbPath}${READY_SUFFIX}`)?.backupPath;
+  const backupPath = ready.backupPath;
   if (!backupPath || !existsSync(backupPath)) {
     log('Refusing to swap — backup missing', { backupPath });
     return { action: 'aborted', reason: 'backup-missing', durationMs: Date.now() - started };
@@ -193,6 +312,7 @@ export function tryApplyPendingRepair(
   }
 
   try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+  try { rmSync(`${dbPath}${NEEDED_SUFFIX}`, { force: true }); } catch { /* ignore */ }
   log('Pending repair applied — original preserved as backup', { backupPath });
   return { action: 'applied', backupPath, tables: ready.tables, durationMs: Date.now() - started };
 }
@@ -384,12 +504,21 @@ export async function runBackgroundRepair(
   }
   log('Background repair: backup written', { backupPath });
 
+  // 指纹必须在**重建开始前**取：它就是"快照对应的库状态"。换库前会重算并比对。
+  let sourceFingerprint: SourceFingerprint | undefined;
+  try {
+    sourceFingerprint = fingerprintSource(dbPath);
+  } catch (err) {
+    log('WARN: could not fingerprint source — swap will be refused later', { error: String(err).slice(0, 120) });
+  }
+
   try {
     const built = buildRepairedCopy(dbPath, log);
     writeJson(`${dbPath}${READY_SUFFIX}`, {
       workPath: built.workPath,
       tables: built.tables,
       backupPath,
+      source: sourceFingerprint,
       readyAt: new Date().toISOString(),
       durationMs: Date.now() - started,
     });
@@ -413,6 +542,17 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
 
   const sizeOnEntry = existsSync(dbPath) ? statSync(dbPath).size : 0;
   const deferAbove = opts.deferAboveBytes ?? LARGE_DATABASE_BYTES;
+  const needsRepairMarker = existsSync(`${dbPath}${NEEDED_SUFFIX}`);
+
+  // ── ① 已有「需要重建」标记（由上一轮完整性探测或陈旧快照拦下时写下）──────────
+  // 跳过探测直接重建：此时是启动早期、还没有任何进程打开这个库 ——
+  // 这是唯一能保证「快照 == 活库」的窗口。
+  if (!opts.forceCorrupt && needsRepairMarker) {
+    log('Repair required (marked earlier) — rebuilding before open, under exclusive access', {
+      sizeMb: Math.round(sizeOnEntry / 1048576),
+    });
+    return repairInline(dbPath, opts, sizeOnEntry, log, started);
+  }
 
   // 大库 + 不允许阻塞 → 不在这里探测（一行都不能等）。返回 none，让调用方把它丢到后台：
   // 结论要靠后台那一轮拿到，启动路径不能被分钟级的整库扫描占住。
@@ -436,10 +576,20 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
 
   const dbSize = sizeOnEntry;
 
-  // 大库：排期到后台，下次启动换库（本次启动不受影响）
-  if (dbSize > deferAbove) {
+  // 只探测：库正被写入，此处**绝不能**重建（快照必然陈旧）—— 只写标记
+  if (opts.probeOnly === true) {
+    writeJson(`${dbPath}${NEEDED_SUFFIX}`, { reason: `corrupt: ${String(probe.detail ?? '').slice(0, 160)}`, at: new Date().toISOString() });
+    log('Database is corrupt — marked for repair, will rebuild before the next open', {
+      sizeMb: Math.round(dbSize / 1048576),
+    });
+    return { action: 'scheduled', reason: 'marked-for-repair', durationMs: Date.now() - started };
+  }
+
+  // 大库：默认在启动路径上重建（独占窗口才安全）。
+  // 仅在调用方**显式**要求非阻塞时退回两段式；那条路上陈旧快照会被指纹拦下来。
+  if (dbSize > deferAbove && opts.deferLargeRepairToBackground === true) {
     const scheduled = await scheduleBackgroundRepair(dbPath, log);
-    log('Database is corrupt — repair deferred to background (too large to block startup)', {
+    log('Database is corrupt — repair deferred to background (explicitly requested)', {
       sizeMb: Math.round(dbSize / 1048576),
     });
     return scheduled.ok
@@ -447,8 +597,23 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
       : { action: 'aborted', reason: scheduled.reason ?? 'schedule-failed', durationMs: Date.now() - started };
   }
 
-  log('Database is corrupt — repairing inline', { detail: probe.detail });
+  log('Database is corrupt — repairing before open, under exclusive access', { detail: probe.detail });
+  return repairInline(dbPath, opts, dbSize, log, started);
+}
 
+/**
+ * 在**本进程、开库之前**完成备份 → 重建 → 校验 → 替换。
+ *
+ * 前置条件（由调用方保证）：此刻没有人写这个库。整个流程都是同步阻塞的，
+ * 因为一旦中途交回事件循环，就有机会被重启/崩溃打断，留下半成品。
+ */
+async function repairInline(
+  dbPath: string,
+  opts: RepairOptions,
+  dbSize: number,
+  log: (m: string, d?: Record<string, unknown>) => void,
+  started: number,
+): Promise<RepairResult> {
   const need = dbSize * (opts.diskSafetyFactor ?? 2.3);
   const free = freeDiskBytes(dbPath);
   if (free > 0 && free < need) {
@@ -481,6 +646,7 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
     return { action: 'aborted', reason: `swap-failed: ${String(err).slice(0, 160)}`, backupPath, durationMs: Date.now() - started };
   }
 
+  try { rmSync(`${dbPath}${NEEDED_SUFFIX}`, { force: true }); } catch { /* ignore */ }
   log('Repair complete — original preserved as backup', { backupPath });
   return { action: 'repaired', backupPath, workPath: built.workPath, tables: built.tables, durationMs: Date.now() - started };
 }

@@ -99,8 +99,9 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       // 大库不在启动路径上探测：健康的大库整库扫描是分钟级（实测 16.7 GB 要 155 s），
       // 等它等于每次启动都冻住两分半 —— 那比"库坏了"更糟。所以大库一律丢到后台，
       // 探测结论照样能排期重建，只是换库要等到下一次启动。
-      const preOpenRepair = (dbPath2: string) => storage.prepareDatabaseFile(dbPath2, {
+      const preOpenRepair = (dbPath2: string, extra?: { probeOnly?: boolean }) => storage.prepareDatabaseFile(dbPath2, {
         log: (message: string, data?: Record<string, unknown>) => log.warn(message, data),
+        ...(extra ?? {}),
       });
 
       let dbBytes = 0;
@@ -112,7 +113,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
         if (repair.action === 'repaired') {
           log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
         } else if (repair.action === 'scheduled') {
-          log.warn('Database is corrupt — repair scheduled in background, applies on next start', repair as unknown as Record<string, unknown>);
+          log.warn('Database is corrupt — marked for repair, will rebuild before the next open', repair as unknown as Record<string, unknown>);
         } else if (repair.action === 'aborted') {
           log.error('Database repair aborted — original left untouched', repair as unknown as Record<string, unknown>);
         } else if (repair.reason && repair.reason !== 'healthy' && repair.reason !== 'no-database' && repair.reason !== 'probe-deferred-background') {
@@ -121,8 +122,12 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       };
 
       if (isLarge) {
-        // 不 await：启动立刻继续。结论（含排期重建）由后台那一轮产生。
-        void preOpenRepair(dbPath)
+        // 不 await：启动立刻继续。
+        //
+        // 关键：这里只能 **probeOnly** —— 此刻库正被写入，任何重建快照都会陈旧，
+        // 而陈旧快照换库 = 吃掉那段时间的写入。探到损坏只写一个“需要重建”标记，
+        // 真正的重建放在下一次启动、库还没被任何进程打开的独占窗口里做。
+        void preOpenRepair(dbPath, { probeOnly: true })
           .then(reportRepair)
           .catch(err => log.error('Background pre-open repair check failed (original database untouched)', { error: String(err) }));
         log.info('Large database — integrity probe deferred to background', { sizeMb: Math.round(dbBytes / 1048576) });
