@@ -81,6 +81,49 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
   return initSqliteStorage(url);
 }
 
+/** 开库前自愈的返回形状（只取这里用到的字段）。 */
+export interface PreOpenRepairResult {
+  action: string;
+  reason?: string;
+}
+
+/**
+ * 开库前自愈的**排程决策**。
+ *
+ * 之所以抽成独立函数：这里曾经有一条只有真实桌面启动才会走到的死路 ——
+ * 大库一律传 `probeOnly: true`，而 `prepareDatabaseFile` 在「已有需要重建标记」时
+ * 对 `probeOnly` 是**直接返回**的（不重建）。于是「标记 → 就地重建」这条分支
+ * 对桌面端的大库**永远不可达**：每次重启都只是把标记重写一遍，无限推迟。
+ * storage 层的单测是绿的，因为它直接调 `prepareDatabaseFile`，不经过 `probeOnly`。
+ *
+ * 正确排程：
+ *   - 启动早期 = 独占窗口（还没有任何进程打开库）——这是唯一能保证
+ *     「快照 == 活库」的时刻，所以有标记就**在这里重建**；
+ *   - 没有标记的大库**不在启动路径上探测**（健康库整表扫描是分钟级，实测
+ *     16.7 GB 要 155 s，等它等于每次启动都冻住两分半）→ 交给后台 probeOnly，
+ *     它只写标记，下一次启动再重建。
+ * 小库两级都不需要：直接同步探测，健康 → no-op，损坏 → 当场修好。
+ */
+export async function runPreOpenRepair(params: {
+  isLarge: boolean;
+  prepare: (opts?: { probeOnly?: boolean; allowBlockingProbe?: boolean }) => Promise<PreOpenRepairResult>;
+  report: (result: PreOpenRepairResult) => void;
+  onBackgroundProbeError?: (err: unknown) => void;
+}): Promise<{ first: PreOpenRepairResult; backgroundProbeStarted: boolean }> {
+  // 注意顺序：`allowBlockingProbe: false` 只挡住「探测」，不挡「已标记 → 重建」。
+  const first = await params.prepare(params.isLarge ? { allowBlockingProbe: false } : undefined);
+  params.report(first);
+
+  if (!params.isLarge) return { first, backgroundProbeStarted: false };
+  if (first.reason !== 'probe-deferred-background') return { first, backgroundProbeStarted: false };
+
+  void params
+    .prepare({ probeOnly: true })
+    .then(params.report)
+    .catch(err => params.onBackgroundProbeError?.(err));
+  return { first, backgroundProbeStarted: true };
+}
+
 async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
   try {
     const storage = await import('@markus/storage');
@@ -109,7 +152,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
 
       const isLarge = dbBytes > storage.LARGE_DATABASE_BYTES;
 
-      const reportRepair = (repair: Awaited<ReturnType<typeof storage.prepareDatabaseFile>>) => {
+      const reportRepair = (repair: PreOpenRepairResult) => {
         if (repair.action === 'repaired') {
           log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
         } else if (repair.action === 'scheduled') {
@@ -121,18 +164,16 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
         }
       };
 
-      if (isLarge) {
-        // 不 await：启动立刻继续。
-        //
-        // 关键：这里只能 **probeOnly** —— 此刻库正被写入，任何重建快照都会陈旧，
-        // 而陈旧快照换库 = 吃掉那段时间的写入。探到损坏只写一个“需要重建”标记，
-        // 真正的重建放在下一次启动、库还没被任何进程打开的独占窗口里做。
-        void preOpenRepair(dbPath, { probeOnly: true })
-          .then(reportRepair)
-          .catch(err => log.error('Background pre-open repair check failed (original database untouched)', { error: String(err) }));
+      // 排程规则见 runPreOpenRepair：有「需要重建」标记就在**本次独占窗口**里重建；
+      // 没有标记的大库才退到后台探测（探测结果只写标记，下一次启动再重建）。
+      const { backgroundProbeStarted } = await runPreOpenRepair({
+        isLarge,
+        prepare: opts => preOpenRepair(dbPath, opts),
+        report: reportRepair,
+        onBackgroundProbeError: err => log.error('Background pre-open repair check failed (original database untouched)', { error: String(err) }),
+      });
+      if (backgroundProbeStarted) {
         log.info('Large database — integrity probe deferred to background', { sizeMb: Math.round(dbBytes / 1048576) });
-      } else {
-        reportRepair(await preOpenRepair(dbPath));
       }
     } catch (err) {
       // 自愈本身失败绝不能让应用起不来：原库未动，照常打开
