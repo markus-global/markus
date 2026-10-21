@@ -706,6 +706,25 @@ export class Agent {
    */
   private endTurnCount = 0;
   /**
+   * Captured at the END of `handleMessage` from authoritative signals (the turn's
+   * scenario + the `endTurnCount` delta), kept until the next turn starts.
+   *
+   * Why: the post-turn safety net (`ensureTurnCompleted`) runs AFTER
+   * `handleMessage` has executed its `finally`, which resets `activeScenario` to
+   * undefined and (in the reply assembly) `endTurnRequested` to false. Reading
+   * those mutable fields there produced two real defects measured 2026-10-21:
+   *   1. A turn that HAD ended via the `end_turn` tool was re-judged as "no
+   *      end_turn signal" → an extra continuation LLM call (202k tokens).
+   *   2. `viewBudgetForScenario(undefined)` returned undefined → the scenario
+   *      view budget was silently skipped → that continuation replayed 182k of
+   *      history instead of the a2a 30k cap.
+   * Both are one shape: a fact read from a field that had already been mutated.
+   * The counter and the scenario are captured at the single point that knows
+   * them, before the reset.
+   */
+  private lastTurnScenario: AgentScenario | undefined;
+  private lastTurnEndedViaEndTurn = false;
+  /**
    * Task ids this turn actually MUTATED (task_update / task_submit_review /
    * request_revision / task_note). Used by the review path to judge a review turn by
    * what it CHANGED rather than by what it SAID.
@@ -1877,8 +1896,13 @@ export class Agent {
       return { text: reply, completed: true };
     }
     // Typed completion signal. `endTurnRequested` is reset at the START of the next
-    // turn, so immediately after a turn returns it still describes THAT turn.
-    if (this.endTurnRequested) return { text: reply, completed: true };
+    // turn, so immediately after a turn returns it still describes THAT turn —
+    // EXCEPT when the reply assembly already consumed and cleared it (it does, on
+    // the end_turn fast path). That is why the authoritative signal here is
+    // `lastTurnEndedViaEndTurn`, captured from the monotonic counter before the
+    // reset. Reading only the mutable flag re-triggered a continuation for turns
+    // that had already ended (2026-10-21: one 202k-token call per such turn).
+    if (this.endTurnRequested || this.lastTurnEndedViaEndTurn) return { text: reply, completed: true };
     // The safety net cannot run without a session. Nothing happened after `reply` either,
     // so the turn's own text stands — do NOT report the turn as unfinished just because
     // the continuation was unavailable (that would turn a good answer into a retry loop).
@@ -3019,8 +3043,14 @@ export class Agent {
       // (one execution point) so no call site can forget it or invent a number.
       // `undefined` for scenarios that must see everything (memory_consolidation,
       // distillation) restores the legacy window-based behaviour.
-      viewBudget: viewBudgetForScenario(this.activeScenario),
-      scenario: this.activeScenario,
+      //
+      // `?? this.lastTurnScenario`: post-turn continuations (ensureTurnCompleted)
+      // run after handleMessage's finally cleared `activeScenario`; without this
+      // fallback the scenario resolved to undefined and the view budget was
+      // silently skipped (measured 2026-10-21: 182k replayed on an a2a turn whose
+      // cap is 30k).
+      viewBudget: viewBudgetForScenario(this.activeScenario ?? this.lastTurnScenario),
+      scenario: this.activeScenario ?? this.lastTurnScenario,
     };
   }
 
@@ -4901,6 +4931,10 @@ export class Agent {
 
     this.transitionStatus({ to: 'working' });
 
+    // Snapshot BEFORE any tool runs, so the finally block can attribute an
+    // end_turn to THIS turn even under concurrent workers.
+    const endTurnCountSnapshot = this.endTurnCount;
+
     // Per-turn reset: the end_turn signal never carries over between turns.
     this.endTurnRequested = false;
     // Peer-query depth is per turn: 0 = free agent, >0 = answering another agent.
@@ -5659,6 +5693,10 @@ export class Agent {
       log.error('Failed to handle message', { error: String(error) });
       throw error;
     } finally {
+      // Capture the two facts the post-turn safety net still needs BEFORE the
+      // reset below wipes them. `ensureTurnCompleted` runs after this finally.
+      this.lastTurnScenario = scenario;
+      this.lastTurnEndedViaEndTurn = this.endTurnCount > endTurnCountSnapshot;
       this.activeScenario = undefined;
       await this.finalizeBrowserSession(sessionId);
     }
