@@ -128,11 +128,20 @@ if (cmd === 'recover') {
   console.log(`源库: ${dbPath} (${mb(size)})`);
   console.log(`输出: ${outPath}`);
 
-  const probe = spawnSync('sqlite3', ['--version'], { encoding: 'utf8' });
-  if (probe.status !== 0) {
-    console.error('找不到 sqlite3 命令行工具 —— .recover 只能由官方 CLI 提供，请先安装。');
+  // 选一个**真的支持 .recover** 的 sqlite3。
+  // 实测坑：这台机器 PATH 首位是 Android SDK 自带的 sqlite3 3.42，它没有 .recover，
+  // 会报 "unknown command or invalid arguments: recover"；/usr/bin/sqlite3 3.51 才有。
+  const candidates = ['/usr/bin/sqlite3', '/opt/homebrew/bin/sqlite3', 'sqlite3'];
+  let sqliteBin = null;
+  for (const bin of candidates) {
+    const probe = spawnSync(bin, [':memory:', '.help'], { encoding: 'utf8' });
+    if (probe.status === 0 && (probe.stdout ?? '').includes('.recover')) { sqliteBin = bin; break; }
+  }
+  if (!sqliteBin) {
+    console.error('找不到支持 `.recover` 的 sqlite3 命令行工具（需要 3.42+ 的官方 CLI）。');
     process.exit(1);
   }
+  console.log(`使用: ${sqliteBin}`);
 
   if (!args.apply) {
     console.log('\n干跑：将执行 `sqlite3 <db> .recover > <out>`，逐表比对行数，原库不改名、不删除。');
@@ -141,9 +150,12 @@ if (cmd === 'recover') {
   }
 
   console.log('正在恢复（17 GB 量级可能需要几分钟）…');
-  const run = spawnSync('sqlite3', [dbPath, '.recover'], { encoding: 'buffer', maxBuffer: 1024 * 1024 * 1024 });
-  if (run.status !== 0 && !run.stdout?.length) {
-    console.error(`恢复失败: ${run.stderr?.toString() ?? 'unknown'}`);
+  // 注意：encoding 必须是 null/buffer —— 传 'buffer' 会让 node 在 argv 处理阶段
+  // 出错，sqlite3 收到残缺参数后报 "unknown command: recover"（我踩过）。
+  const run = spawnSync(sqliteBin, [dbPath], { input: '.recover\n', maxBuffer: 4 * 1024 * 1024 * 1024 });
+  const stderr = run.stderr ? run.stderr.toString() : '';
+  if (run.status !== 0 || !run.stdout || run.stdout.length === 0) {
+    console.error(`恢复失败(status=${run.status}): ${stderr || 'no output'}`);
     process.exit(1);
   }
   writeFileSync(outPath, run.stdout);
