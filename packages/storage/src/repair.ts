@@ -205,40 +205,145 @@ export interface RepairWorkerSpawnSpec {
 }
 
 /**
+ * 工人源码在打包时内联进来（见 `packages/desktop/build.mjs`）。纯 node / CLI 下没有这个标识符。
+ *
+ * 为什么不用独立入口文件：desktop 的打包只产出 `main.js` / `preload.js` 两个 entry，
+ * `@markus/storage` 是**内联**进 main 的 —— `repair-worker.js` 从来没有作为文件存在过。
+ * 于是 `spawn(execPath, ['<app.asar>/dist/repair-worker.js'])` 得到 MODULE_NOT_FOUND，
+ * 而 `detached + stdio:'ignore'` 把这个错误完全吞掉：日志写着「scheduled」，实际什么都没发生。
+ * （实测：同一台机器、同一个二进制直接跑该路径 → `Cannot find module`, exit=1。）
+ *
+ * 内联成源码字符串后走 `-e`，这条路径已由健康探针在打包后的 Electron 里实测可用。
+ */
+declare const __REPAIR_WORKER_SOURCE__: string | undefined;
+
+/** 打包时注入的工人源码；未注入（CLI / dev / 测试）返回 null。 */
+export function resolveRepairWorkerSource(): string | null {
+  try {
+    if (typeof __REPAIR_WORKER_SOURCE__ === 'string' && __REPAIR_WORKER_SOURCE__.length > 0) {
+      return __REPAIR_WORKER_SOURCE__;
+    }
+  } catch { /* 标识符不存在 */ }
+  return null;
+}
+
+/**
  * 后台修复工人的启动参数 —— **纯函数，可测**。
  *
- * 见 `health-probe.ts` 里的同款说明：打包后的 Electron 中 `process.execPath`
- * 是主程序，必须是 `ELECTRON_RUN_AS_NODE=1` 才执行脚本，否则会静默启动第二个
- * GUI 实例（detached + stdio:'ignore' 让这个错误完全不可见）。
+ * 两条必须同时成立：
+ *  ① `ELECTRON_RUN_AS_NODE=1` —— 打包后的 Electron 中 `process.execPath` 是主程序，
+ *     否则会静默启动第二个 GUI 实例（detached + stdio:'ignore' 让这个错误完全不可见）。
+ *  ② 脚本必须**真的存在** —— 走文件路径时在这里校验，缺失就抛错，不再假装成功。
+ *
+ * dbPath 走环境变量而不是 argv：`-e` 模式下 argv 位移与普通脚本不同，用环境变量两边一致。
  */
 export function buildRepairWorkerSpawnSpec(
   dbPath: string,
-  workerPath: string,
+  workerPath: string | null,
   execPath: string = process.execPath,
   baseEnv: NodeJS.ProcessEnv = process.env,
+  inlineSource: string | null = resolveRepairWorkerSource(),
 ): RepairWorkerSpawnSpec {
-  return {
-    command: execPath,
-    args: [workerPath, dbPath],
-    options: {
-      detached: true,
-      stdio: 'ignore',
-      env: { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' },
-    },
-  };
+  const env = { ...baseEnv, ELECTRON_RUN_AS_NODE: '1', MARKUS_REPAIR_DB: dbPath };
+  if (inlineSource) {
+    return { command: execPath, args: ['-e', inlineSource], options: { detached: true, stdio: 'ignore', env } };
+  }
+  if (!workerPath || !existsSync(workerPath)) {
+    throw new Error(`repair-worker-missing: ${workerPath ?? '(no inline source)'}`);
+  }
+  return { command: execPath, args: [workerPath], options: { detached: true, stdio: 'ignore', env } };
 }
 
-function scheduleBackgroundRepair(dbPath: string, log: (m: string, d?: Record<string, unknown>) => void): void {
-  const workerPath = new URL('./repair-worker.js', import.meta.url).pathname;
-  writeJson(`${dbPath}${PENDING_SUFFIX}`, { pid: process.pid, startedAt: new Date().toISOString() });
+/** pending 标记的版本：v2 = 记录**工人自己的 pid**，且只在 spawn 成功后写。 */
+const PENDING_VERSION = 2;
+/** 标记最长有效时间（pid 存活是主判据，这里只防 pid 复用）。 */
+const PENDING_MAX_AGE_MS = 2 * 60 * 60_000;
+/** spawn 后的存活窗口：秒死的工人必须在日志里可见。 */
+const WORKER_LIVENESS_WINDOW_MS = 1200;
+
+function pidAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
   try {
-    const spec = buildRepairWorkerSpawnSpec(dbPath, workerPath);
-    const child = spawn(spec.command, spec.args, spec.options);
-    child.unref();
-    log('Background repair scheduled (applies on next start)', { workerPath });
+    process.kill(pid, 0);
+    return true;
   } catch (err) {
-    log('Failed to spawn repair worker', { error: String(err) });
+    return (err as NodeJS.ErrnoException).code === 'EPERM'; // 存在但无权限
   }
+}
+
+/**
+ * pending 标记的语义：**有一个活着的工人在干这件事**。
+ *
+ * 旧实现把「调度者自己的 pid」写进去（那正是 app 进程，永远 alive），
+ * 于是失败一次就会抑制后续 30 分钟的重排 —— 失败被记成了「正在进行」。
+ */
+function readPendingWorker(dbPath: string): { pid: number } | null {
+  const p = readJson<{ pid?: number; startedAt?: string; v?: number }>(`${dbPath}${PENDING_SUFFIX}`);
+  if (!p || p.v !== PENDING_VERSION) return null;
+  if (!p.pid || p.pid === process.pid || !pidAlive(p.pid)) return null;
+  const age = Date.now() - Date.parse(String(p.startedAt ?? ''));
+  if (!Number.isFinite(age) || age > PENDING_MAX_AGE_MS) return null;
+  return { pid: p.pid };
+}
+
+async function scheduleBackgroundRepair(
+  dbPath: string,
+  log: (m: string, d?: Record<string, unknown>) => void,
+): Promise<{ ok: boolean; reason?: string }> {
+  if (readPendingWorker(dbPath)) {
+    log('Background repair already running — not rescheduling');
+    return { ok: true };
+  }
+
+  const filePath = new URL('./repair-worker.js', import.meta.url).pathname;
+  const inline = resolveRepairWorkerSource();
+  let spec: RepairWorkerSpawnSpec;
+  try {
+    spec = buildRepairWorkerSpawnSpec(dbPath, inline ? null : filePath, process.execPath, process.env, inline);
+  } catch (err) {
+    const reason = String(err).slice(0, 300);
+    log('ERROR: repair worker unavailable — database will NOT be repaired', { error: reason });
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    return { ok: false, reason };
+  }
+
+  let child: ReturnType<typeof spawn>;
+  try {
+    child = spawn(spec.command, spec.args, spec.options);
+    child.unref();
+  } catch (err) {
+    const reason = `spawn-failed: ${String(err).slice(0, 200)}`;
+    log('ERROR: failed to spawn repair worker', { error: reason });
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    return { ok: false, reason };
+  }
+
+  const pid = child.pid ?? 0;
+  // spawn 成功 ≠ 工人活着。路径不存在 / 权限 / 语法错都在毫秒级退出，
+  // 而 detached + stdio:'ignore' 会把这件事藏起来（本轮事故就是这样）。
+  const exitedEarly = await new Promise<number | null>((resolve) => {
+    const timer = setTimeout(() => resolve(null), WORKER_LIVENESS_WINDOW_MS);
+    child.once('exit', (code) => { clearTimeout(timer); resolve(code ?? -1); });
+    child.once('error', () => { clearTimeout(timer); resolve(-1); });
+  });
+  if (exitedEarly !== null) {
+    const reason = `worker-exited-immediately: code=${exitedEarly}`;
+    try { rmSync(`${dbPath}${PENDING_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    log('ERROR: repair worker exited immediately — repair will be retried next start', {
+      reason, inline: Boolean(inline), workerPath: inline ? '(inline)' : filePath,
+    });
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    return { ok: false, reason };
+  }
+
+  writeJson(`${dbPath}${PENDING_SUFFIX}`, {
+    v: PENDING_VERSION,
+    pid,
+    startedAt: new Date().toISOString(),
+    inline: Boolean(inline),
+  });
+  log('Background repair scheduled (applies on next start)', { pid, inline: Boolean(inline) });
+  return { ok: true };
 }
 
 /**
@@ -333,13 +438,13 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
 
   // 大库：排期到后台，下次启动换库（本次启动不受影响）
   if (dbSize > deferAbove) {
-    const pending = readJson<{ startedAt?: string }>(`${dbPath}${PENDING_SUFFIX}`);
-    const fresh = pending?.startedAt ? Date.now() - Date.parse(pending.startedAt) < 30 * 60_000 : false;
-    if (!fresh) scheduleBackgroundRepair(dbPath, log);
+    const scheduled = await scheduleBackgroundRepair(dbPath, log);
     log('Database is corrupt — repair deferred to background (too large to block startup)', {
       sizeMb: Math.round(dbSize / 1048576),
     });
-    return { action: 'scheduled', reason: 'deferred-large-database', durationMs: Date.now() - started };
+    return scheduled.ok
+      ? { action: 'scheduled', reason: 'deferred-large-database', durationMs: Date.now() - started }
+      : { action: 'aborted', reason: scheduled.reason ?? 'schedule-failed', durationMs: Date.now() - started };
   }
 
   log('Database is corrupt — repairing inline', { detail: probe.detail });

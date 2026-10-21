@@ -12,7 +12,13 @@
 import { writeFileSync } from 'node:fs';
 import { runBackgroundRepair } from './repair.js';
 
-const dbPath = process.argv[2];
+/**
+ * 库路径来源：环境变量优先。
+ *
+ * 打包后的桌面端走 `-e <内联源码>`，此时 `process.argv` 的位移与普通脚本不同；
+ * 用环境变量让两种启动方式（`-e` 内联 / 文件入口）读同一个位置。
+ */
+const dbPath = process.env['MARKUS_REPAIR_DB'] ?? process.argv[2];
 
 function logLine(message: string, data?: Record<string, unknown>): void {
   if (!dbPath) return;

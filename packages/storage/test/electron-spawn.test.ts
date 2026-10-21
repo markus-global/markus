@@ -18,11 +18,34 @@ describe('every execPath spawn is Electron-safe', () => {
     expect(spec.options.env['PATH']).toBe('/usr/bin');
   });
 
-  it('repair worker', () => {
-    const spec = buildRepairWorkerSpawnSpec('/tmp/x.db', '/w/repair-worker.js', '/App/Markus', { PATH: '/usr/bin' });
+  it('repair worker — inline source goes through -e', () => {
+    const spec = buildRepairWorkerSpawnSpec('/tmp/x.db', null, '/App/Markus', { PATH: '/usr/bin' }, 'console.log(1)');
     expect(spec.options.env['ELECTRON_RUN_AS_NODE']).toBe('1');
     expect(spec.options.env['PATH']).toBe('/usr/bin');
-    expect(spec.args).toEqual(['/w/repair-worker.js', '/tmp/x.db']);
+    expect(spec.options.env['MARKUS_REPAIR_DB']).toBe('/tmp/x.db');
+    // 内联源码走 -e：没有可能丢失的第二个文件。
+    expect(spec.args).toEqual(['-e', 'console.log(1)']);
     expect(spec.options.detached).toBe(true);
+  });
+
+  it('repair worker — file fallback keeps dbPath in env, not argv', () => {
+    // `-e` 模式下 argv 位移与普通脚本不同，所以库路径统一走环境变量。
+    const self = new URL(import.meta.url).pathname;
+    const spec = buildRepairWorkerSpawnSpec('/tmp/x.db', self, '/App/Markus', { PATH: '/usr/bin' }, null);
+    expect(spec.args).toEqual([self]);
+    expect(spec.options.env['MARKUS_REPAIR_DB']).toBe('/tmp/x.db');
+    expect(spec.options.env['ELECTRON_RUN_AS_NODE']).toBe('1');
+  });
+
+  it('repair worker — missing worker file throws instead of pretending to work', () => {
+    // 这就是本轮事故的形态：路径不存在时 spawn 依然「成功」，工人毫秒级退出，
+    // 而 stdio:'ignore' 让一切不可见。现在缺失必须在派单时抛错。
+    expect(() => buildRepairWorkerSpawnSpec('/tmp/x.db', '/nope/repair-worker.js', '/App/Markus', {}, null))
+      .toThrow(/repair-worker-missing/);
+  });
+
+  it('repair worker — no inline source and no path is an error, not a silent no-op', () => {
+    expect(() => buildRepairWorkerSpawnSpec('/tmp/x.db', null, '/App/Markus', {}, null))
+      .toThrow(/repair-worker-missing/);
   });
 });
