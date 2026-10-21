@@ -19,6 +19,7 @@ export type {
 export {
   openSqlite,
   closeSqlite,
+  quickCheckDatabase,
   runInTransaction,
   SqliteOrgRepo,
   SqliteAgentRepo,

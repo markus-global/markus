@@ -1,4 +1,5 @@
 import { createLogger, markusDbPath } from '@markus/shared';
+import { statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +16,14 @@ const log = createLogger('storage-bridge');
 export interface StorageBridge {
   /** Run a synchronous function inside a SQLite transaction (auto-rollback on throw). */
   runInTransaction<T>(fn: () => T): T;
+  /** M0: integrity probe (`PRAGMA quick_check`). Never throws. Blocks the
+   *  event loop for ~file-size-dependent time — call it on demand or gate it. */
+  quickCheck(): { ok: boolean; errors: string[]; elapsedMs: number };
+  /** Size of the SQLite file in bytes (0 when unavailable) — used to decide
+   *  whether an automatic integrity check is affordable. */
+  databaseSizeBytes(): number;
+  /** Flush the buffered execution-stream rows (clean shutdown). */
+  disposeStreams(): void;
   orgRepo: any;
   taskRepo: any;
   taskLogRepo: any;
@@ -73,6 +82,9 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
 
     const bridge: StorageBridge = {
       runInTransaction: <T>(fn: () => T) => storage.runInTransaction(db, fn),
+      quickCheck: () => storage.quickCheckDatabase(db),
+      databaseSizeBytes: () => { try { return statSync(dbPath).size; } catch { return 0; } },
+      disposeStreams: () => { try { bridge.executionStreamRepo?.dispose?.(); } catch { /* already closed */ } },
       orgRepo: new storage.SqliteOrgRepo(db) as any,
       taskRepo: new storage.SqliteTaskRepo(db) as any,
       taskLogRepo: new storage.SqliteTaskLogRepo(db) as any,

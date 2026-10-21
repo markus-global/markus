@@ -947,6 +947,37 @@ export function closeSqlite(): void {
 }
 
 /**
+ * Database integrity probe (M0 of the storage plan).
+ *
+ * `PRAGMA quick_check` walks every b-tree and reports pages that cannot be
+ * initialised. It is the only cheap way to find out that a table is damaged —
+ * point lookups keep working on a corrupt database, so the app looks healthy
+ * until something does a full scan (export, aggregate, retention) and throws
+ * SQLITE_CORRUPT.
+ *
+ * Never throws: the whole point is to report the error instead of letting it
+ * surface as an unexplained failure somewhere else.
+ */
+export interface DatabaseHealth {
+  ok: boolean;
+  errors: string[];
+  elapsedMs: number;
+}
+
+export function quickCheckDatabase(db: DatabaseSync, maxErrors = 3): DatabaseHealth {
+  const started = Date.now();
+  try {
+    const rows = db.prepare('PRAGMA quick_check').all() as Array<Record<string, unknown>>;
+    const errors = rows
+      .map(r => String(Object.values(r)[0] ?? ''))
+      .filter(v => v && v !== 'ok');
+    return { ok: errors.length === 0, errors: errors.slice(0, maxErrors), elapsedMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, errors: [String(err)], elapsedMs: Date.now() - started };
+  }
+}
+
+/**
  * One-time purge of leaked text-emitted tool markup from historical rows.
  *
  * DeepSeek(compat) providers once streamed `anthropic`-style `<invoke name=...>`
