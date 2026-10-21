@@ -12,6 +12,7 @@ import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
+import { StreamWriteBatcher } from './stream-write-batcher.js';
 
 type SqlParams = SQLInputValue[];
 
@@ -4509,8 +4510,65 @@ export interface ExecutionStreamRow {
   createdAt: string;
 }
 
+interface BufferedStreamRow {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: string;
+  content: string;
+  metadataJson: string;
+  executionRound: number | null;
+  createdAt: string;
+}
+
 export class SqliteExecutionStreamRepo {
-  constructor(private db: DatabaseSync) {}
+  /**
+   * Events are buffered and written one transaction per batch instead of one
+   * commit per event — see stream-write-batcher.ts for the measurements.
+   */
+  private readonly batcher: StreamWriteBatcher<BufferedStreamRow>;
+
+  constructor(private db: DatabaseSync) {
+    this.batcher = new StreamWriteBatcher<BufferedStreamRow>({
+      writer: rows => this.writeBatch(rows),
+    });
+  }
+
+  private writeBatch(rows: BufferedStreamRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(
+      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    let began = false;
+    try {
+      // Join an already-open outer transaction instead of nesting into it.
+      try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
+      for (const r of rows) {
+        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.executionRound, r.createdAt);
+      }
+      if (began) this.db.exec('COMMIT');
+    } catch (err) {
+      if (began) { try { this.db.exec('ROLLBACK'); } catch { /* already unwound */ } }
+      throw err;
+    }
+  }
+
+  /** Force buffered events to disk. Every read path calls this first (I1). */
+  flush(): void {
+    this.batcher.flush();
+  }
+
+  /** Flush and stop the flush timer (clean shutdown). */
+  dispose(): void {
+    this.batcher.dispose();
+  }
+
+  /** Diagnostic surface: rows actually written / batches used / still buffered. */
+  stats(): { written: number; batches: number; pending: number } {
+    return this.batcher.stats();
+  }
 
   append(data: {
     sourceType: string;
@@ -4524,11 +4582,20 @@ export class SqliteExecutionStreamRepo {
   }): ExecutionStreamRow {
     const id = generateId('esl');
     const ts = now();
-    this.db
-      .prepare(
-        'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run(id, data.sourceType, data.sourceId, data.agentId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), data.executionRound ?? null, ts);
+    // Row construction stays synchronous (callers use id/createdAt immediately);
+    // only the write is deferred.
+    this.batcher.push({
+      id,
+      sourceType: data.sourceType,
+      sourceId: data.sourceId,
+      agentId: data.agentId,
+      seq: data.seq,
+      type: data.type,
+      content: data.content,
+      metadataJson: toJson(data.metadata ?? {}),
+      executionRound: data.executionRound ?? null,
+      createdAt: ts,
+    });
     return {
       id,
       sourceType: data.sourceType,
@@ -4544,6 +4611,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getBySource(sourceType: string, sourceId: string): ExecutionStreamRow[] {
+    this.flush();
     const rows = this.db
       .prepare('SELECT * FROM execution_stream_logs WHERE source_type = ? AND source_id = ? ORDER BY seq ASC')
       .all(sourceType, sourceId) as Record<string, unknown>[];
@@ -4551,6 +4619,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getMaxSeq(sourceType: string, sourceId: string): number {
+    this.flush();
     const row = this.db
       .prepare('SELECT MAX(seq) as maxSeq FROM execution_stream_logs WHERE source_type = ? AND source_id = ?')
       .get(sourceType, sourceId) as { maxSeq: number | null } | undefined;
@@ -4558,6 +4627,9 @@ export class SqliteExecutionStreamRepo {
   }
 
   deleteBySource(sourceType: string, sourceId: string): void {
+    // I1: flush first — otherwise buffered rows land AFTER the delete and the
+    // deleted source comes back from the dead.
+    this.flush();
     this.db.prepare('DELETE FROM execution_stream_logs WHERE source_type = ? AND source_id = ?').run(sourceType, sourceId);
   }
 
