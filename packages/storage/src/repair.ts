@@ -19,9 +19,9 @@
  * 指向阉割版），所以重建用 node:sqlite 自己实现（见 repair-rebuild.ts）。
  */
 
-import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
+import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { dirname } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { spawn } from 'node:child_process';
 import { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES } from './health-probe.js';
 import { rebuildInto, verifyRecovered } from './repair-rebuild.js';
@@ -121,6 +121,108 @@ function writeJson(path: string, data: unknown): void {
 
 function readJson<T>(path: string): T | null {
   try { return JSON.parse(readFileSync(path, 'utf8')) as T; } catch { return null; }
+}
+
+/**
+ * 自动备份的生命周期。
+ *
+ * 规则一句话：**自动备份只在它所保护的升级被证明完成之前存在。**
+ *
+ * 为何必须有这条：每次修复都留一份与库等大的副本。实测一台 17 GB 的机器两次修复
+ * 就堆了 33 GB；`auto_vacuum=0` 且永不清理 = 磁盘只增不减。但删早了更糟 ——
+ * 备份是换库失败时唯一的回退物。所以「完成」的判据只能是**结构性事实**：
+ *
+ *     库能只读打开  ∧  `data_migrations` 里没有非终态的行
+ *
+ * 满足即视为升级走完；此后再启动（还没有进程打开库的窗口）就删掉自己生成的那份。
+ *
+ * 五条「不删」，每条都对应一条真实的误删路径：
+ *   ① 迁移还在跑 → 升级没完成
+ *   ② 有「需要重建」/「上次失败」标记 → 当前状态不健康，备份还要用
+ *   ③ 备份比活库还新 → 可能正是本轮正在写的那一份
+ *   ④ 不是自己生成的命名 → 用户手备份（`data.db.bak-*`）一个都不碰
+ *   ⑤ 库连只读都打不开 → 无法证明任何事，不动
+ */
+export interface BackupPruneResult {
+  deleted: string[];
+  bytesFreed: number;
+  skipped?: string;
+}
+
+/** 自己生成的备份：`<basename>.backup-<14 位时间戳>`（可带 -wal/-shm 同伴）。 */
+function ownedBackupMatcher(dbPath: string): (name: string) => boolean {
+  const base = basename(dbPath).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const main = new RegExp(`^${base}\\.backup-\\d{14}$`);
+  const companion = new RegExp(`^${base}\\.backup-\\d{14}-(wal|shm)$`);
+  return (name: string) => main.test(name) || companion.test(name);
+}
+
+/**
+ * 删除已被证明多余的自动备份。由 `prepareDatabaseFile` 在开库前调用，用户无感。
+ *
+ * 只处理 main 文件及其 -wal/-shm 同伴；**不递归、不 glob**，命名边界之外的东西
+ * 一律不碰。
+ */
+export function pruneSupersededBackups(dbPath: string): BackupPruneResult {
+  const skip = (skipped: string): BackupPruneResult => ({ deleted: [], bytesFreed: 0, skipped });
+  if (!existsSync(dbPath)) return skip('no-database');
+  if (existsSync(`${dbPath}${NEEDED_SUFFIX}`)) return skip('repair-needed');
+  if (existsSync(`${dbPath}${FAILED_SUFFIX}`)) return skip('repair-failed');
+
+  let upgraded = false;
+  try {
+    const db = new DatabaseSync(dbPath, { readOnly: true });
+    try {
+      const hasTable = db
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='data_migrations'")
+        .get() as { name?: string } | undefined;
+      if (!hasTable) {
+        upgraded = true; // 没有迁移机制 = 没有未完成的升级
+      } else {
+        const row = db
+          .prepare("SELECT COUNT(*) AS n FROM data_migrations WHERE status NOT IN ('done','skipped')")
+          .get() as { n?: number } | undefined;
+        upgraded = Number(row?.n ?? 0) === 0;
+      }
+    } finally {
+      db.close();
+    }
+  } catch {
+    return skip('database-unreadable');
+  }
+  if (!upgraded) return skip('migration-incomplete');
+
+  let dbMtime: number;
+  try { dbMtime = statSync(dbPath).mtimeMs; } catch { return skip('no-database'); }
+
+  const dir = dirname(dbPath);
+  let names: string[];
+  try { names = readdirSync(dir); } catch { return skip('readdir-failed'); }
+
+  const isOwned = ownedBackupMatcher(dbPath);
+  const mains = names.filter(n => isOwned(n) && !/-(wal|shm)$/.test(n));
+  const deleted: string[] = [];
+  let bytesFreed = 0;
+
+  for (const name of mains) {
+    const mainPath = join(dir, name);
+    try {
+      const st = statSync(mainPath);
+      if (!st.isFile()) continue;
+      if (st.mtimeMs >= dbMtime) continue; // ③ 比活库新：可能正在写
+      for (const p of [mainPath, `${mainPath}-wal`, `${mainPath}-shm`]) {
+        try {
+          if (!existsSync(p)) continue;
+          const size = statSync(p).size;
+          rmSync(p, { force: true });
+          bytesFreed += size;
+          deleted.push(p);
+        } catch { /* 单个文件删不掉不影响其它 */ }
+      }
+    } catch { /* 单个备份读不到就跳过 */ }
+  }
+
+  return { deleted, bytesFreed };
 }
 
 /** 备份（原库 + WAL/SHM）。失败则抛错 —— 调用方必须因此放弃修复。 */
@@ -539,6 +641,21 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
   const log = opts.log ?? (() => {});
 
   if (!existsSync(dbPath)) return { action: 'none', reason: 'no-database', durationMs: 0 };
+
+  // ── ⓪ 升级已完成的，清理它自己留下的备份 ────────────────────────────────
+  // 必须在任何重建分支之前：此刻还没有进程打开这个库，是唯一安全的窗口。
+  // 只在启动路径做（probeOnly = 应用已在运行，没有必要动文件）。
+  if (opts.probeOnly !== true) {
+    const pruned = pruneSupersededBackups(dbPath);
+    if (pruned.deleted.length > 0) {
+      log('Pruned superseded database backups — upgrade already verified', {
+        files: pruned.deleted.length,
+        freedMb: Math.round(pruned.bytesFreed / 1048576),
+      });
+    } else if (pruned.skipped && pruned.skipped !== 'no-database') {
+      log('Backup pruning skipped', { reason: pruned.skipped });
+    }
+  }
 
   const sizeOnEntry = existsSync(dbPath) ? statSync(dbPath).size : 0;
   const deferAbove = opts.deferAboveBytes ?? LARGE_DATABASE_BYTES;

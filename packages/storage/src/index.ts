@@ -95,6 +95,6 @@ export type { Migration, MigrationProgress, MigrationRunnerOptions } from './mig
 export { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES, PROBE_TIMEOUT_CEILING_MS } from './health-probe.js';
 export type { HealthProbeResult, HealthProbeStatus } from './health-probe.js';
 // 开库前自愈：通用能力（所有用户、所有平台），不依赖 sqlite3 CLI。
-export { prepareDatabaseFile, tryApplyPendingRepair, runBackgroundRepair } from './repair.js';
-export type { RepairOptions, RepairResult, RepairTableReport } from './repair.js';
+export { prepareDatabaseFile, tryApplyPendingRepair, runBackgroundRepair, pruneSupersededBackups } from './repair.js';
+export type { RepairOptions, RepairResult, RepairTableReport, BackupPruneResult } from './repair.js';
 export { rebuildInto, verifyRecovered } from './repair-rebuild.js';
