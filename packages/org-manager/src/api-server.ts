@@ -2875,6 +2875,32 @@ export class APIServer {
     }
   }
 
+  /**
+   * 把前端传来的 data URL 图片转成附件引用（字节落文件，行里只留 imageRefs）。
+   *
+   * 禁止再把 base64 写进消息行：实测单行最大 2.39 MB，`chat_messages.metadata`
+   * 97% 的字节都是它。解析失败的条目原样保留 —— 宁可留一份大载荷，也不丢用户的图。
+   */
+  private imageMeta(images?: string[]): Record<string, unknown> {
+    const out: Record<string, unknown> = {};
+    if (!images?.length) return out;
+    const store = this.storage?.attachmentStore;
+    const refs: Array<Record<string, unknown>> = [];
+    const keep: string[] = [];
+    for (const img of images) {
+      if (typeof img !== 'string' || !img) continue;
+      if (img.startsWith('data:')) {
+        const ref = store ? store.putDataUrl(img) : null;
+        if (ref) refs.push(ref); else keep.push(img);
+      } else {
+        keep.push(img); // 已经是 URL / 本地路径，原样保留
+      }
+    }
+    if (refs.length) out['imageRefs'] = refs;
+    if (keep.length) out['images'] = keep;
+    return out;
+  }
+
   private async persistUserMessage(
     agentId: string,
     userMessage: string,
@@ -2896,7 +2922,8 @@ export class APIServer {
       }
       const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
-      if (images?.length) meta.images = images;
+      // base64 不再进库：字节落附件存储，行里只留 imageRefs。
+      Object.assign(meta, this.imageMeta(images));
       if (replyTo) {
         meta.replyToId = replyTo.id;
         meta.replyToSender = replyTo.sender;
@@ -4241,8 +4268,7 @@ export class APIServer {
       // Persist user message (notes/DM may be image-only — store in metadata)
       let userMsg: ChannelMsg | undefined;
       if (this.storage) {
-        const meta: Record<string, unknown> = {};
-        if (images?.length) meta.images = images;
+        const meta: Record<string, unknown> = this.imageMeta(images);
         userMsg = await this.storage.channelMessageRepo.append({
           orgId,
           channel,
@@ -4528,6 +4554,23 @@ export class APIServer {
           createdAt: new Date(),
         },
       });
+      return;
+    }
+
+    // Attachments — 内容寻址的图片/文件字节（base64 已从消息行里出库）。
+    // 前端拿到的是 `/api/attachments/<sha>`，<img src> 直接可用，所以 UI 无需改动。
+    if (path.startsWith('/api/attachments/') && req.method === 'GET') {
+      const sha = path.slice('/api/attachments/'.length);
+      if (!/^[a-f0-9]{64}$/.test(sha)) { this.json(res, 400, { error: 'Invalid attachment id' }); return; }
+      const got = this.storage?.attachmentStore?.get?.(sha);
+      if (!got) { this.json(res, 404, { error: 'Attachment not found' }); return; }
+      res.writeHead(200, {
+        'Content-Type': got.mime,
+        'Content-Length': String(got.buf.length),
+        // 内容寻址 ⇒ 同一 sha 的字节永不改变，可永久缓存
+        'Cache-Control': 'public, max-age=31536000, immutable',
+      });
+      res.end(got.buf);
       return;
     }
 
@@ -13932,6 +13975,8 @@ EXPLANATION_END`;
       // ── Uploads ───────────────────────────────────────────────────────────
       exact('/api/uploads', 'POST'),
       startsWith('/api/uploads/', 'GET'),
+      // 附件字节（内容寻址）。前端 <img src> 直接命中，需要登录态之外的可访问性。
+      startsWith('/api/attachments/', 'GET'),
 
       // ── Agents ───────────────────────────────────────────────────────────
       exact('/api/agents', 'GET', 'POST'),
