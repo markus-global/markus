@@ -88,6 +88,13 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
     // 开库前自愈：探测 → 备份 → 修复 → 校验 → 原子替换（备份永不删除）。
     // 健康库上这是一次子进程探测的 no-op；损坏库则在这里被修好，用户无感。
     try {
+      // ① 上一轮排期的修复若已就绪，现在换库（两个 rename，毫秒级）
+      const applied = storage.tryApplyPendingRepair(dbPath, (message: string, data?: Record<string, unknown>) => log.warn(message, data));
+      if (applied.action === 'applied') {
+        log.warn('Applied pending database repair from previous run', applied as unknown as Record<string, unknown>);
+      }
+
+      // ② 探测：健康 → 什么都不做；小库损坏 → 当场修；大库损坏 → 派后台工人，下次启动换库
       const repair = await storage.prepareDatabaseFile(dbPath, {
         log: (message: string, data?: Record<string, unknown>) => log.warn(message, data),
       });

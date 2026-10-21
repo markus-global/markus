@@ -1,30 +1,29 @@
 /**
- * 开库前的自愈流程：探测 → 备份 → 修复 → 校验 → 原子替换（备份永不删除）。
+ * 开库前自愈：探测 → 备份 → 修复 → 校验 → 原子替换（备份永不删除）。
  *
- * 为什么必须有这个文件
- * ────────────────────
- * 数据库损坏不是某一台机器的偶发事故：断电、强杀进程、磁盘写满、WAL 未落盘崩溃，
- * 都会留下坏页。所以修复必须是**通用能力**，而不是给某个人跑的一次性脚本。
+ * 两条执行路径
+ * ────────────
+ *  · **内联**（小库，默认 ≤512 MB）：启动时直接修完，用户感知不到；
+ *  · **两段式**（大库）：本次启动派后台工人重建，**下次启动**用两个 rename 换库。
+ *    大库重建是分钟级，绝不能压在启动路径上 —— 那就不是"无感知"了。
  *
  * 三条不可让步的安全约束
  * ─────────────────────
- *  S1 **先备份，且永不删**：备份是唯一的回滚路径。备份没写成功，绝不动原库。
- *  S2 **校验通过才替换**：恢复库必须自身通过完整性检查，且每张表的行数与
- *     "原库能读出来的行数"一致；任何一项不满足 → 放弃，原库原样保留。
- *  S3 **原子替换**：同目录 rename（同一文件系统，原子）；连同 `-wal`/`-shm`
- *     一起处理，否则旧 WAL 会被套用到新库上，等于制造新损坏。
+ *  S1 **先备份，且永不删**：备份没写成功，绝不动原库。
+ *  S2 **校验通过才替换**：可读的行必须全部写入（自己弄丢的不行），重建库自身
+ *     必须通过完整性检查。任何一项不满足 → 放弃，原库原样保留。
+ *  S3 **原子替换**：同目录 rename，连同 `-wal`/`-shm` 一起处理（否则旧 WAL 会被
+ *     套用到新库上，等于制造新损坏）。
  *
- * 为什么不用 sqlite3 CLI
- * ─────────────────────
- * `.recover` 只有官方 CLI 有，Windows 上没有、Linux 发行版版本参差、PATH 还可能
- * 指向 Android SDK 的阉割版（我实测踩过）。所以这里用 node:sqlite 自己实现：
- * 重放 schema → 按 rowid 窗口搬行 → 读不动的窗口二分到最小再跳过 → 校验。
+ * 无外部依赖：`.recover` 只有官方 CLI 有（Windows 没有、Linux 版本参差、PATH 可能
+ * 指向阉割版），所以重建用 node:sqlite 自己实现（见 repair-rebuild.ts）。
  */
 
-import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync } from 'node:fs';
-import { dirname, join } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { spawn } from 'node:child_process';
 import { probeDatabaseHealthInChild } from './health-probe.js';
+import { rebuildInto, verifyRecovered } from './repair-rebuild.js';
 
 export interface RepairTableReport {
   name: string;
@@ -40,23 +39,26 @@ export interface RepairTableReport {
 }
 
 export interface RepairResult {
-  action: 'none' | 'repaired' | 'aborted';
+  action: 'none' | 'repaired' | 'scheduled' | 'applied' | 'aborted';
   reason?: string;
   backupPath?: string;
+  workPath?: string;
   tables?: RepairTableReport[];
-  skippedRows?: number;
   durationMs: number;
 }
 
 export interface RepairOptions {
-  /** 探测超时（子进程），默认 20 秒。 */
   probeTimeoutMs?: number;
-  /** 需要预留的磁盘倍数（备份 + 恢复库），默认 2.3。 */
   diskSafetyFactor?: number;
   log?: (message: string, data?: Record<string, unknown>) => void;
-  /** 测试用：强制认为库损坏（跳过探针）。 */
   forceCorrupt?: boolean;
+  /** 超过这个大小的库走两段式（后台重建 + 下次启动换库）。默认 512 MB。 */
+  deferAboveBytes?: number;
 }
+
+const READY_SUFFIX = '.repair-ready.json';
+const PENDING_SUFFIX = '.repair-pending.json';
+const FAILED_SUFFIX = '.repair-failed.json';
 
 function timestamp(): string {
   return new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
@@ -69,7 +71,7 @@ function freeDiskBytes(path: string): number {
   } catch { return 0; }
 }
 
-/** 同目录 copy + fsync，确保备份真的落盘（不是只在 page cache 里）。 */
+/** 同目录 copy + fsync：备份必须真的落盘，不能只停在 page cache。 */
 function durableCopy(from: string, to: string): void {
   copyFileSync(from, to);
   try {
@@ -79,9 +81,170 @@ function durableCopy(from: string, to: string): void {
   } catch { /* fsync 不可用时退化为普通 copy */ }
 }
 
+function writeJson(path: string, data: unknown): void {
+  try { writeFileSync(path, JSON.stringify(data, null, 2), 'utf8'); } catch { /* ignore */ }
+}
+
+function readJson<T>(path: string): T | null {
+  try { return JSON.parse(readFileSync(path, 'utf8')) as T; } catch { return null; }
+}
+
+/** 备份（原库 + WAL/SHM）。失败则抛错 —— 调用方必须因此放弃修复。 */
+function backupDatabase(dbPath: string): string {
+  const size = statSync(dbPath).size;
+  const backupPath = `${dbPath}.backup-${timestamp()}`;
+  durableCopy(dbPath, backupPath);
+  if (statSync(backupPath).size !== size) throw new Error('backup size mismatch');
+  for (const suffix of ['-wal', '-shm']) {
+    if (existsSync(`${dbPath}${suffix}`)) durableCopy(`${dbPath}${suffix}`, `${backupPath}${suffix}`);
+  }
+  return backupPath;
+}
+
+/** 无损检查：读出来的行必须全部写进新库。 */
+function assertNotLossy(tables: RepairTableReport[]): string | null {
+  const lossy = tables.filter(t => t.recovered < t.readRows);
+  if (lossy.length === 0) return null;
+  return `lossy-copy: ${lossy.map(t => `${t.name} read ${t.readRows} wrote ${t.recovered}`).join('; ')}`;
+}
+
+/** 原子替换：原库挪开 → 新库就位；备份确认存在后才删掉挪开的那份。 */
+function swapInPlace(dbPath: string, workPath: string, backupPath: string): void {
+  const replacedPath = `${dbPath}.replaced-${timestamp()}`;
+  renameSync(dbPath, replacedPath);
+  for (const suffix of ['-wal', '-shm']) {
+    if (existsSync(`${dbPath}${suffix}`)) renameSync(`${dbPath}${suffix}`, `${replacedPath}${suffix}`);
+  }
+  renameSync(workPath, dbPath);
+
+  if (existsSync(backupPath)) {
+    try { rmSync(replacedPath, { force: true }); } catch { /* ignore */ }
+    for (const suffix of ['-wal', '-shm']) {
+      try { rmSync(`${replacedPath}${suffix}`, { force: true }); } catch { /* ignore */ }
+    }
+  }
+}
+
+/** 重建 + 校验到一个工作文件（不含替换）。 */
+function buildRepairedCopy(
+  dbPath: string,
+  log: (m: string, d?: Record<string, unknown>) => void,
+): { workPath: string; tables: RepairTableReport[] } {
+  const workPath = `${dbPath}.repairing-${timestamp()}`;
+  const report = rebuildInto(dbPath, workPath, log);
+  const lossy = assertNotLossy(report.tables);
+  if (lossy) {
+    try { rmSync(workPath, { force: true }); } catch { /* ignore */ }
+    throw new Error(lossy);
+  }
+  const verified = verifyRecovered(workPath, report.tables);
+  if (!verified.ok) {
+    try { rmSync(workPath, { force: true }); } catch { /* ignore */ }
+    throw new Error(`verify-failed: ${verified.reason}`);
+  }
+  return { workPath, tables: report.tables };
+}
+
 /**
- * 开库前自愈。默认在库健康时是**零成本 no-op**（一次子进程探测）。
+ * 下次启动时应用上一次排期的修复。整个过程只有两个 rename，毫秒级。
  */
+export function tryApplyPendingRepair(
+  dbPath: string,
+  log: (m: string, d?: Record<string, unknown>) => void = () => {},
+): RepairResult {
+  const started = Date.now();
+  const ready = readJson<{ workPath?: string; tables?: RepairTableReport[]; applied?: boolean }>(`${dbPath}${READY_SUFFIX}`);
+  if (!ready || ready.applied) return { action: 'none', reason: 'no-pending-repair', durationMs: 0 };
+
+  const workPath = ready.workPath;
+  if (!workPath || !existsSync(workPath)) {
+    try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    return { action: 'none', reason: 'pending-work-missing', durationMs: Date.now() - started };
+  }
+
+  // 换库前再验一次：工作文件可能被中途杀进程写坏
+  const verified = verifyRecovered(workPath, ready.tables ?? []);
+  if (!verified.ok) {
+    try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    try { rmSync(workPath, { force: true }); } catch { /* ignore */ }
+    log('Pending repair failed verification — discarded', { reason: verified.reason });
+    return { action: 'aborted', reason: `pending-verify-failed: ${verified.reason}`, durationMs: Date.now() - started };
+  }
+
+  // 备份必须在：否则拒绝换库
+  const backupPath = readJson<{ backupPath?: string }>(`${dbPath}${READY_SUFFIX}`)?.backupPath;
+  if (!backupPath || !existsSync(backupPath)) {
+    log('Refusing to swap — backup missing', { backupPath });
+    return { action: 'aborted', reason: 'backup-missing', durationMs: Date.now() - started };
+  }
+
+  try {
+    swapInPlace(dbPath, workPath, backupPath);
+  } catch (err) {
+    return { action: 'aborted', reason: `swap-failed: ${String(err).slice(0, 160)}`, durationMs: Date.now() - started };
+  }
+
+  try { rmSync(`${dbPath}${READY_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+  log('Pending repair applied — original preserved as backup', { backupPath });
+  return { action: 'applied', backupPath, tables: ready.tables, durationMs: Date.now() - started };
+}
+
+/** 派后台工人（大库专用）。工人只重建 + 校验，不动原库。 */
+function scheduleBackgroundRepair(dbPath: string, log: (m: string, d?: Record<string, unknown>) => void): void {
+  const workerPath = new URL('./repair-worker.js', import.meta.url).pathname;
+  writeJson(`${dbPath}${PENDING_SUFFIX}`, { pid: process.pid, startedAt: new Date().toISOString() });
+  try {
+    const child = spawn(process.execPath, [workerPath, dbPath], { detached: true, stdio: 'ignore' });
+    child.unref();
+    log('Background repair scheduled (applies on next start)', { workerPath });
+  } catch (err) {
+    log('Failed to spawn repair worker', { error: String(err) });
+  }
+}
+
+/**
+ * 后台工人的入口：只重建 + 校验 + 写就绪标记，**不动原库**。
+ * 真正换库留到下次启动（那时原库没有被任何进程占用，rename 才安全）。
+ */
+export async function runBackgroundRepair(
+  dbPath: string,
+  log: (m: string, d?: Record<string, unknown>) => void = () => {},
+): Promise<RepairResult> {
+  const started = Date.now();
+  if (!existsSync(dbPath)) return { action: 'aborted', reason: 'database-missing', durationMs: 0 };
+
+  let backupPath: string;
+  try {
+    backupPath = backupDatabase(dbPath);
+  } catch (err) {
+    const reason = `backup-failed: ${String(err).slice(0, 160)}`;
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    try { rmSync(`${dbPath}${PENDING_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    return { action: 'aborted', reason, durationMs: Date.now() - started };
+  }
+  log('Background repair: backup written', { backupPath });
+
+  try {
+    const built = buildRepairedCopy(dbPath, log);
+    writeJson(`${dbPath}${READY_SUFFIX}`, {
+      workPath: built.workPath,
+      tables: built.tables,
+      backupPath,
+      readyAt: new Date().toISOString(),
+      durationMs: Date.now() - started,
+    });
+    try { rmSync(`${dbPath}${PENDING_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    log('Background repair ready — will be applied on next start', { workPath: built.workPath });
+    return { action: 'scheduled', backupPath, workPath: built.workPath, tables: built.tables, durationMs: Date.now() - started };
+  } catch (err) {
+    const reason = String(err).slice(0, 240);
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    try { rmSync(`${dbPath}${PENDING_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    log('Background repair failed — original untouched', { reason });
+    return { action: 'aborted', reason, backupPath, durationMs: Date.now() - started };
+  }
+}
+
 export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = {}): Promise<RepairResult> {
   const started = Date.now();
   const log = opts.log ?? (() => {});
@@ -94,13 +257,26 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
 
   if (probe.status === 'ok') return { action: 'none', reason: 'healthy', durationMs: Date.now() - started };
   if (probe.status === 'unknown') {
-    // 拿不到结论（超时/无 node 子进程）→ 绝不能猜。修错了比不修更糟。
+    // 拿不到结论（超时）→ 绝不猜。错修比不修更糟。
     return { action: 'none', reason: `probe-unknown: ${probe.detail ?? ''}`.slice(0, 200), durationMs: Date.now() - started };
   }
 
-  log('Database is corrupt — starting backup + repair', { detail: probe.detail });
-
   const dbSize = statSync(dbPath).size;
+  const deferAbove = opts.deferAboveBytes ?? 512 * 1024 * 1024;
+
+  // 大库：排期到后台，下次启动换库（本次启动不受影响）
+  if (dbSize > deferAbove) {
+    const pending = readJson<{ startedAt?: string }>(`${dbPath}${PENDING_SUFFIX}`);
+    const fresh = pending?.startedAt ? Date.now() - Date.parse(pending.startedAt) < 30 * 60_000 : false;
+    if (!fresh) scheduleBackgroundRepair(dbPath, log);
+    log('Database is corrupt — repair deferred to background (too large to block startup)', {
+      sizeMb: Math.round(dbSize / 1048576),
+    });
+    return { action: 'scheduled', reason: 'deferred-large-database', durationMs: Date.now() - started };
+  }
+
+  log('Database is corrupt — repairing inline', { detail: probe.detail });
+
   const need = dbSize * (opts.diskSafetyFactor ?? 2.3);
   const free = freeDiskBytes(dbPath);
   if (free > 0 && free < need) {
@@ -111,85 +287,28 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
     };
   }
 
-  // ── S1 备份（永不删除） ──────────────────────────────────────────────
-  const stamp = timestamp();
-  const backupPath = `${dbPath}.backup-${stamp}`;
+  let backupPath: string;
   try {
-    durableCopy(dbPath, backupPath);
-    if (statSync(backupPath).size !== dbSize) throw new Error('backup size mismatch');
-    // WAL 也要一起备份，否则"原库"其实不完整
-    for (const suffix of ['-wal', '-shm']) {
-      if (existsSync(`${dbPath}${suffix}`)) durableCopy(`${dbPath}${suffix}`, `${backupPath}${suffix}`);
-    }
+    backupPath = backupDatabase(dbPath); // S1
   } catch (err) {
-    try { if (existsSync(backupPath)) rmSync(backupPath); } catch { /* ignore */ }
     return { action: 'aborted', reason: `backup-failed: ${String(err).slice(0, 160)}`, durationMs: Date.now() - started };
   }
   log('Backup written (kept forever)', { backupPath, sizeMb: Math.round(dbSize / 1048576) });
 
-  // ── 修复到临时文件 ──────────────────────────────────────────────────
-  const workPath = `${dbPath}.repairing-${stamp}`;
-  let report: { tables: RepairTableReport[]; skippedRows: number };
+  let built: { workPath: string; tables: RepairTableReport[] };
   try {
-    report = rebuildInto(dbPath, workPath, log);
+    built = buildRepairedCopy(dbPath, log); // 重建 + 无损检查 + 校验（S2）
   } catch (err) {
-    try { if (existsSync(workPath)) rmSync(workPath); } catch { /* ignore */ }
-    return { action: 'aborted', reason: `rebuild-failed: ${String(err).slice(0, 160)}`, backupPath, durationMs: Date.now() - started };
+    return { action: 'aborted', reason: String(err).slice(0, 200), backupPath, durationMs: Date.now() - started };
   }
 
-  // ── S2a 无损检查：读到的行必须全部写进去 ────────────────────────
-  // 比"行数看起来差不多"严格得多：可以容忍"坏页里的行读不出来"（备份里同样救不回），
-  // 绝不能容忍"读出来了但没写进去"（那才是我们自己弄丢的）。
-  const lossy = report.tables.filter(t => t.recovered < t.readRows);
-  if (lossy.length > 0) {
-    try { if (existsSync(workPath)) rmSync(workPath); } catch { /* ignore */ }
-    return {
-      action: 'aborted',
-      reason: `lossy-copy: ${lossy.map(t => `${t.name} read ${t.readRows} wrote ${t.recovered}`).join('; ')}`,
-      backupPath,
-      tables: report.tables,
-      durationMs: Date.now() - started,
-    };
-  }
-
-  // ── S2 校验 ─────────────────────────────────────────────────────────
-  const verified = verifyRecovered(workPath, report.tables);
-  if (!verified.ok) {
-    try { if (existsSync(workPath)) rmSync(workPath); } catch { /* ignore */ }
-    return { action: 'aborted', reason: `verify-failed: ${verified.reason}`, backupPath, tables: report.tables, durationMs: Date.now() - started };
-  }
-
-  // ── S3 原子替换（原库移到 .replaced-*，仅在备份确认存在后清理） ──────
-  const replacedPath = `${dbPath}.replaced-${stamp}`;
   try {
-    renameSync(dbPath, replacedPath);
-    for (const suffix of ['-wal', '-shm']) {
-      if (existsSync(`${dbPath}${suffix}`)) renameSync(`${dbPath}${suffix}`, `${replacedPath}${suffix}`);
-    }
-    renameSync(workPath, dbPath);
+    swapInPlace(dbPath, built.workPath, backupPath); // S3
   } catch (err) {
-    // 尽力回滚：把原库放回去
-    try { if (existsSync(replacedPath) && !existsSync(dbPath)) renameSync(replacedPath, dbPath); } catch { /* ignore */ }
+    try { rmSync(built.workPath, { force: true }); } catch { /* ignore */ }
     return { action: 'aborted', reason: `swap-failed: ${String(err).slice(0, 160)}`, backupPath, durationMs: Date.now() - started };
   }
 
-  // 备份已确认存在 → 删掉 .replaced 这份重复拷贝（省一份库大小的磁盘）
-  if (existsSync(backupPath)) {
-    try { rmSync(replacedPath); } catch { /* ignore */ }
-    for (const suffix of ['-wal', '-shm']) {
-      try { if (existsSync(`${replacedPath}${suffix}`)) rmSync(`${replacedPath}${suffix}`); } catch { /* ignore */ }
-    }
-  }
-
-  log('Repair complete — original preserved as backup', { backupPath, skippedRows: report.skippedRows });
-  return {
-    action: 'repaired',
-    backupPath,
-    tables: report.tables,
-    skippedRows: report.skippedRows,
-    durationMs: Date.now() - started,
-  };
+  log('Repair complete — original preserved as backup', { backupPath });
+  return { action: 'repaired', backupPath, workPath: built.workPath, tables: built.tables, durationMs: Date.now() - started };
 }
-
-// 恢复引擎在 repair-rebuild.ts（搬行 + 校验），此处只做编排。
-import { rebuildInto, verifyRecovered } from './repair-rebuild.js';
