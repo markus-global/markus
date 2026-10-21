@@ -8,12 +8,13 @@
  *   3. 校验不通过：放弃替换，原库保持原样
  *   4. 自增序列被保留（否则新插入会撞主键 —— 这是"能用"和"坏了"的区别）
  */
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, openSync, closeSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync, statSync, openSync, closeSync, truncateSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { prepareDatabaseFile, verifyRecovered, type RepairTableReport } from '../src/index.js';
+import { LARGE_DATABASE_BYTES } from '../src/health-probe.js';
 
 let dir: string;
 
@@ -110,6 +111,25 @@ describe('prepareDatabaseFile', () => {
     const res = verifyRecovered(work, lying);
     expect(res.ok).toBe(false);
     expect(String(res.reason)).toContain('row count mismatch');
+  });
+
+  it('大库 + 禁止阻塞探测：启动路径一行都不等，交给后台', async () => {
+    // 用稀疏文件造一个 >512 MB 的"大库"：瞬间创建、不占磁盘。
+    const dbPath = join(dir, 'large.db');
+    const fd = openSync(dbPath, 'w');
+    closeSync(fd);
+    truncateSync(dbPath, LARGE_DATABASE_BYTES + 64 * 1024 * 1024);
+
+    const started = Date.now();
+    const res = await prepareDatabaseFile(dbPath, { allowBlockingProbe: false });
+    const elapsed = Date.now() - started;
+
+    expect(res.action).toBe('none');
+    expect(res.reason).toBe('probe-deferred-background');
+    // 关键：没有把分钟级的整库扫描压在启动路径上。
+    expect(elapsed).toBeLessThan(2_000);
+    // 也没有偷偷排期/写备份 —— 那要等后台探测拿到结论之后。
+    expect(readdirSyncSafe(dir).filter(f => f.includes('.repair'))).toEqual([]);
   });
 
   it('不存在的库：视为全新安装，不做任何事', async () => {

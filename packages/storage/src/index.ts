@@ -92,7 +92,7 @@ export {
 } from './migration-runner.js';
 export type { Migration, MigrationProgress, MigrationRunnerOptions } from './migration-runner.js';
 // 子进程健康探针：大库上 quick_check 是分钟级同步操作，绝不能跑在主进程里。
-export { probeDatabaseHealthInChild } from './health-probe.js';
+export { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES, PROBE_TIMEOUT_CEILING_MS } from './health-probe.js';
 export type { HealthProbeResult, HealthProbeStatus } from './health-probe.js';
 // 开库前自愈：通用能力（所有用户、所有平台），不依赖 sqlite3 CLI。
 export { prepareDatabaseFile, tryApplyPendingRepair, runBackgroundRepair } from './repair.js';

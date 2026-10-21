@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { buildProbeSpawnSpec, probeDatabaseHealthInChild } from '../src/health-probe.js';
+import { buildProbeSpawnSpec, probeDatabaseHealthInChild, deriveProbeTimeoutMs, PROBE_TIMEOUT_CEILING_MS } from '../src/health-probe.js';
 
 const dirs: string[] = [];
 function tmpDb(name = 'p.db'): string {
@@ -31,6 +31,26 @@ describe('probe spawn spec', () => {
     expect(spec.options.env['PATH']).toBe('/usr/bin');
     expect(spec.options.env['FOO']).toBe('bar');
     expect(spec.options.env['ELECTRON_RUN_AS_NODE']).toBe('1');
+  });
+});
+
+describe('probe timeout derivation', () => {
+  it('small databases keep the 20 s floor', () => {
+    expect(deriveProbeTimeoutMs(0)).toBe(20_000);
+    expect(deriveProbeTimeoutMs(1 * 1024 * 1024)).toBe(20_000);
+  });
+
+  it('scales with database size — 17 GB must exceed the measured 155 s scan', () => {
+    const seventeenGb = 17 * 1024 * 1024 * 1024;
+    const ms = deriveProbeTimeoutMs(seventeenGb);
+    // 实测 16.7 GB 整库 quick_check = 155 s。固定 20 s 会让大库永远 unknown → 永久跳过修复。
+    expect(ms).toBeGreaterThan(155_000);
+    expect(ms).toBeLessThanOrEqual(PROBE_TIMEOUT_CEILING_MS);
+  });
+
+  it('never exceeds the ceiling and never goes below the floor', () => {
+    expect(deriveProbeTimeoutMs(10 * 1024 * 1024 * 1024 * 1024)).toBe(PROBE_TIMEOUT_CEILING_MS);
+    expect(deriveProbeTimeoutMs(-1)).toBe(20_000);
   });
 });
 

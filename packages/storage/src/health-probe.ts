@@ -14,6 +14,33 @@ import { spawn } from 'node:child_process';
 
 export type HealthProbeStatus = 'ok' | 'corrupt' | 'unknown';
 
+/**
+ * 大库阈值：超过它就不能在启动路径上同步做整库扫描。
+ *
+ * 单一常量，两处语义共用：
+ *  ① 开库前的探测（超过就搬到后台，否则启动会冻住）；
+ *  ② 损坏后的重建方式（超过就走两段式：后台重建 → 下次启动换库）。
+ * 分开写两份数值迟早会漂移，所以只留一个来源。
+ */
+export const LARGE_DATABASE_BYTES = 512 * 1024 * 1024;
+
+/** 探针超时上限：再慢也不无限等。 */
+export const PROBE_TIMEOUT_CEILING_MS = 15 * 60_000;
+
+/**
+ * 探针超时必须是库大小的函数 —— 这原来是一处真实的静默失效。
+ *
+ * 实测：16.7 GB 的库整库 `quick_check` 要 **155 秒**。原来这个超时写死 20 秒，
+ * 结果大库**永远拿不到结论**（unknown）→ 修复逻辑永远跳过 → 库永远是坏的，
+ * 而日志只有一行 "skipped"，看起来像"没事"。
+ *
+ * 12 ms/MB 覆盖到约 1 GB ≈ 12 s、17 GB ≈ 205 s，留了约 30% 余量。
+ */
+export function deriveProbeTimeoutMs(dbSizeBytes: number): number {
+  const mb = Math.max(0, Math.round(dbSizeBytes / 1048576));
+  return Math.min(PROBE_TIMEOUT_CEILING_MS, Math.max(20_000, mb * 12));
+}
+
 export interface HealthProbeResult {
   status: HealthProbeStatus;
   detail?: string;

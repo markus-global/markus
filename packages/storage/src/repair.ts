@@ -22,7 +22,7 @@
 import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { spawn } from 'node:child_process';
-import { probeDatabaseHealthInChild } from './health-probe.js';
+import { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES } from './health-probe.js';
 import { rebuildInto, verifyRecovered } from './repair-rebuild.js';
 
 export interface RepairTableReport {
@@ -54,6 +54,14 @@ export interface RepairOptions {
   forceCorrupt?: boolean;
   /** 超过这个大小的库走两段式（后台重建 + 下次启动换库）。默认 512 MB。 */
   deferAboveBytes?: number;
+  /**
+   * 是否允许在启动路径上同步探测。
+   *
+   * 大库**必须**置 false：健康的大库整库扫描是分钟级，压在启动路径上等于
+   * 用一个更糟的问题（启动冻住两分半）去换修复。此时调用方应把它放到后台跑，
+   * 探测结论照样能排期重建，只是换库要等到下一次启动。
+   */
+  allowBlockingProbe?: boolean;
 }
 
 const READY_SUFFIX = '.repair-ready.json';
@@ -244,6 +252,22 @@ export async function runBackgroundRepair(
   const started = Date.now();
   if (!existsSync(dbPath)) return { action: 'aborted', reason: 'database-missing', durationMs: 0 };
 
+  // 磁盘闸门必须和"内联 repair"用同一条规则：备份 1 份 + 重建 1 份 ≈ 2.3 倍库大小。
+  // 后台工人跑在没有人的时候 —— 空间不够时会先写满磁盘、再留下半个工作文件，
+  // 那比"不修"更糟。所以先算清楚，不够就干脆不动。
+  const sizeBytes = statSync(dbPath).size;
+  const need = sizeBytes * 2.3;
+  const free = freeDiskBytes(dbPath);
+  if (free > 0 && free < need) {
+    const reason = `not-enough-disk: need ${Math.round(need / 1048576)}MB, have ${Math.round(free / 1048576)}MB`;
+    writeJson(`${dbPath}${FAILED_SUFFIX}`, { reason, at: new Date().toISOString() });
+    try { rmSync(`${dbPath}${PENDING_SUFFIX}`, { force: true }); } catch { /* ignore */ }
+    log('Background repair aborted — not enough disk for backup + rebuild', {
+      sizeMb: Math.round(sizeBytes / 1048576), needMb: Math.round(need / 1048576), freeMb: Math.round(free / 1048576),
+    });
+    return { action: 'aborted', reason, durationMs: Date.now() - started };
+  }
+
   let backupPath: string;
   try {
     backupPath = backupDatabase(dbPath);
@@ -282,9 +306,22 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
 
   if (!existsSync(dbPath)) return { action: 'none', reason: 'no-database', durationMs: 0 };
 
+  const sizeOnEntry = existsSync(dbPath) ? statSync(dbPath).size : 0;
+  const deferAbove = opts.deferAboveBytes ?? LARGE_DATABASE_BYTES;
+
+  // 大库 + 不允许阻塞 → 不在这里探测（一行都不能等）。返回 none，让调用方把它丢到后台：
+  // 结论要靠后台那一轮拿到，启动路径不能被分钟级的整库扫描占住。
+  if (!opts.forceCorrupt && opts.allowBlockingProbe === false && sizeOnEntry > deferAbove) {
+    return { action: 'none', reason: 'probe-deferred-background', durationMs: Date.now() - started };
+  }
+
+  // 超时按库大小推导，**不再依赖调用方记得传**。
+  // 原来默认写死 20 s：17 GB 的库探不完 → unknown → 修复永久跳过（静默失效）。
+  const probeTimeoutMs = opts.probeTimeoutMs ?? deriveProbeTimeoutMs(sizeOnEntry);
+
   const probe = opts.forceCorrupt
     ? { status: 'corrupt' as const, detail: 'forced' }
-    : await probeDatabaseHealthInChild(dbPath, opts.probeTimeoutMs ?? 20_000);
+    : await probeDatabaseHealthInChild(dbPath, probeTimeoutMs);
 
   if (probe.status === 'ok') return { action: 'none', reason: 'healthy', durationMs: Date.now() - started };
   if (probe.status === 'unknown') {
@@ -292,8 +329,7 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
     return { action: 'none', reason: `probe-unknown: ${probe.detail ?? ''}`.slice(0, 200), durationMs: Date.now() - started };
   }
 
-  const dbSize = statSync(dbPath).size;
-  const deferAbove = opts.deferAboveBytes ?? 512 * 1024 * 1024;
+  const dbSize = sizeOnEntry;
 
   // 大库：排期到后台，下次启动换库（本次启动不受影响）
   if (dbSize > deferAbove) {

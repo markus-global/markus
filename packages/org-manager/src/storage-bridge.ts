@@ -95,15 +95,39 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       }
 
       // ② 探测：健康 → 什么都不做；小库损坏 → 当场修；大库损坏 → 派后台工人，下次启动换库
-      const repair = await storage.prepareDatabaseFile(dbPath, {
+      //
+      // 大库不在启动路径上探测：健康的大库整库扫描是分钟级（实测 16.7 GB 要 155 s），
+      // 等它等于每次启动都冻住两分半 —— 那比"库坏了"更糟。所以大库一律丢到后台，
+      // 探测结论照样能排期重建，只是换库要等到下一次启动。
+      const preOpenRepair = (dbPath2: string) => storage.prepareDatabaseFile(dbPath2, {
         log: (message: string, data?: Record<string, unknown>) => log.warn(message, data),
       });
-      if (repair.action === 'repaired') {
-        log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
-      } else if (repair.action === 'aborted') {
-        log.error('Database repair aborted — original left untouched', repair as unknown as Record<string, unknown>);
-      } else if (repair.reason && repair.reason !== 'healthy' && repair.reason !== 'no-database') {
-        log.warn('Database repair skipped', { reason: repair.reason });
+
+      let dbBytes = 0;
+      try { dbBytes = statSync(dbPath).size; } catch { /* 拿不到按 0 处理 → 走同步探测 */ }
+
+      const isLarge = dbBytes > storage.LARGE_DATABASE_BYTES;
+
+      const reportRepair = (repair: Awaited<ReturnType<typeof storage.prepareDatabaseFile>>) => {
+        if (repair.action === 'repaired') {
+          log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
+        } else if (repair.action === 'scheduled') {
+          log.warn('Database is corrupt — repair scheduled in background, applies on next start', repair as unknown as Record<string, unknown>);
+        } else if (repair.action === 'aborted') {
+          log.error('Database repair aborted — original left untouched', repair as unknown as Record<string, unknown>);
+        } else if (repair.reason && repair.reason !== 'healthy' && repair.reason !== 'no-database' && repair.reason !== 'probe-deferred-background') {
+          log.warn('Database repair skipped', { reason: repair.reason });
+        }
+      };
+
+      if (isLarge) {
+        // 不 await：启动立刻继续。结论（含排期重建）由后台那一轮产生。
+        void preOpenRepair(dbPath)
+          .then(reportRepair)
+          .catch(err => log.error('Background pre-open repair check failed (original database untouched)', { error: String(err) }));
+        log.info('Large database — integrity probe deferred to background', { sizeMb: Math.round(dbBytes / 1048576) });
+      } else {
+        reportRepair(await preOpenRepair(dbPath));
       }
     } catch (err) {
       // 自愈本身失败绝不能让应用起不来：原库未动，照常打开
