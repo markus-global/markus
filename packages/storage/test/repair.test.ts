@@ -233,6 +233,17 @@ describe('prepareDatabaseFile', () => {
     expect(existsSync(`${dbPath}.repair-needed.json`)).toBe(false);
   });
 
+  it('已有标记 + probeOnly（应用正在运行）：仍然绝不重建', async () => {
+    const dbPath = join(dir, 'marked-live.db');
+    makeHealthyDb(dbPath);
+    corruptTail(dbPath);
+    writeFileSync(`${dbPath}.repair-needed.json`, JSON.stringify({ reason: 'corrupt', at: new Date().toISOString() }), 'utf8');
+
+    const res = await prepareDatabaseFile(dbPath, { probeOnly: true });
+    expect(res.action).toBe('scheduled');
+    expect(readdirSyncSafe(dir).filter(f => f.includes('.repairing-'))).toEqual([]);
+  });
+
   it('不存在的库：视为全新安装，不做任何事', async () => {
     const res = await prepareDatabaseFile(join(dir, 'nope.db'));
     expect(res.action).toBe('none');

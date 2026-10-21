@@ -547,7 +547,13 @@ export async function prepareDatabaseFile(dbPath: string, opts: RepairOptions = 
   // ── ① 已有「需要重建」标记（由上一轮完整性探测或陈旧快照拦下时写下）──────────
   // 跳过探测直接重建：此时是启动早期、还没有任何进程打开这个库 ——
   // 这是唯一能保证「快照 == 活库」的窗口。
+  //
+  // probeOnly（应用已在运行）绝不能走这条路：那会在库被写入时重建，
+  // 产出的正是本提交要禁止的陈旧快照。
   if (!opts.forceCorrupt && needsRepairMarker) {
+    if (opts.probeOnly === true) {
+      return { action: 'scheduled', reason: 'marked-for-repair', durationMs: Date.now() - started };
+    }
     log('Repair required (marked earlier) — rebuilding before open, under exclusive access', {
       sizeMb: Math.round(sizeOnEntry / 1048576),
     });
