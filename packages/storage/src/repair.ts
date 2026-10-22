@@ -22,6 +22,7 @@
 import { copyFileSync, existsSync, renameSync, rmSync, statSync, statfsSync, openSync, fsyncSync, closeSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
 import { basename, dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES } from './health-probe.js';
 import { rebuildInto, verifyRecovered } from './repair-rebuild.js';
@@ -519,7 +520,10 @@ async function scheduleBackgroundRepair(
     return { ok: true };
   }
 
-  const filePath = new URL('./repair-worker.js', import.meta.url).pathname;
+  // 必须用 fileURLToPath，不能用 `.pathname`：Windows 上 `new URL(...).pathname`
+  // 返回 `/C:/Users/...`（前导斜杠），拿去做 existsSync 永远 false —— 于是 CLI/dev
+  // 的工人文件回退路径在 Windows 上被判为「缺失」，修复会被直接拒绝派单。
+  const filePath = fileURLToPath(new URL('./repair-worker.js', import.meta.url));
   const inline = resolveRepairWorkerSource();
   let spec: RepairWorkerSpawnSpec;
   try {

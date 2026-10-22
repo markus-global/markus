@@ -160,3 +160,47 @@ jobs:
       # run 整体仍然是绿的（job 级 continue-on-error 还在）—— 有信号、不拦合并。
       - name: Backend coverage ratchet (floor must not drop)
         run: pnpm coverage:ratchet:node
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 跨平台：storage 测试套件必须在 Linux + Windows 上真跑一遍
+#
+# 为什么单独一个 job：这套代码**碰文件系统** —— 原子换库（两步 rename）、fsync、
+# 剩余空间探测、spawn 子进程跑修复工人与健康探针。在 macOS 上绿过不代表在别的
+# 平台绿，实测已经栽过四处：
+#   · Windows 不允许 rename 覆盖已存在的文件 → 所以换库必须是两步 rename；
+#   · 目录 fsync 是 POSIX 专有 → 所以 fsync 落在**文件描述符**上；
+#   · `new URL(...).pathname` 在 Windows 返回 `/C:/...`（前导斜杠）→ 工人文件
+#     被判为缺失、修复被拒绝派单（已改用 fileURLToPath —— 这条正是本 job 要守的）；
+#   · `windowsHide` 不设 → 每次派工弹一个黑框。
+# 这些都属于「只在打包产物 + 某个平台才发作」的类型：人工记着去查一定会漏。
+#
+# Windows 先以 continue-on-error 起步，观察一次真实结果再转阻塞。
+# 一个从第一天就长期红着的门禁 = 没人看 = 迟早被删（与文件顶部同一条教训）。
+# 转阻塞的条件只有一个：看到 windows-latest 绿过一次，就删掉下面那行
+# `continue-on-error: ${{ matrix.os == 'windows-latest' }}`。
+# ─────────────────────────────────────────────────────────────────────────────
+  storage-cross-platform:
+    name: storage tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    continue-on-error: ${{ matrix.os == 'windows-latest' }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 与 backend-coverage 同理：包间按包名互相引用，package.json main 指向 dist，
+      # 没有构建产物时模块解析会直接失败。
+      - name: Build TypeScript
+        run: pnpm build:ts
+      - name: Storage test suite
+        run: pnpm vitest run packages/storage/test
