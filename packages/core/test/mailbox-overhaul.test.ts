@@ -17,6 +17,7 @@ import {
 } from '../src/attention.js';
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
+import { displayLabelOf, mergeCountOf } from '../src/mailbox-summary.js';
 import {
   type MailboxItem,
   type DeliberationResult,
@@ -71,7 +72,13 @@ describe('Channel-Level A2A Message Coalescing', () => {
     expect(item2.id).toBe(item1.id);
     expect(item1.payload.content).toContain('Hello everyone!');
     expect(item1.payload.content).toContain('[Bob]: Hey there!');
-    expect(item1.payload.summary).toContain('(+1)');
+    // The fold count is structure, so it lives in metadata — NOT as a `(+1)`
+    // suffix glued onto the display string (a reader then has to parse prose
+    // to recover structure).
+    expect(mergeCountOf(item1)).toBe(1);
+    expect(item1.payload.summary).not.toContain('(+1)');
+    // ...while the display label still surfaces it, derived by the single writer.
+    expect(displayLabelOf(item1)).toContain('(+1)');
   });
 
   it('builds structured messages array for channel merges', () => {

@@ -62,3 +62,96 @@ export function summarizeForMailbox(content: string, max = 100): string {
 export function isLossySummary(summary: string): boolean {
   return /…\[\+\d+ chars omitted\]$/.test(summary ?? '');
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Accessors: the ONLY sanctioned way to read a mailbox item's text.
+//
+// `payload.content` is authoritative. `payload.summary` is a display excerpt —
+// and on rows persisted before 2026-10-22 it is a *bare* prefix with no marker,
+// which is exactly the shape that made a truncated message read as complete.
+// Readers must therefore never touch `payload.summary` directly: they call
+// `turnContentOf` (to feed the model) or `displayLabelOf` (to show/log).
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PayloadLike {
+  content?: string;
+  summary?: string;
+}
+
+export interface ItemLike {
+  id?: string;
+  sourceType: string;
+  payload: PayloadLike;
+  /**
+   * Structural, NOT `Record<string, unknown>`: the real `MailboxItemMetadata`
+   * declares named optional fields and no index signature, so a record type
+   * would make every `MailboxItem` unassignable at the call sites.
+   */
+  metadata?: { mergeCount?: number };
+}
+
+/** Source types whose turn MUST carry the authoritative body. */
+const AUTHORITATIVE_TURN_TYPES = new Set(['human_chat', 'a2a_message']);
+
+function isItemLike(target: PayloadLike | ItemLike): target is ItemLike {
+  return typeof (target as ItemLike).sourceType === 'string' && !!(target as ItemLike).payload;
+}
+
+/**
+ * The text a turn is built from. This is the single reader for model input.
+ *
+ * Throws for human/agent messages that lost their body: a turn must never be
+ * assembled from a display excerpt — answering a truncated question silently is
+ * worse than failing loudly. System events legitimately carry only a summary,
+ * so they fall back.
+ */
+export function turnContentOf(item: ItemLike): string {
+  const content = item.payload?.content;
+  if (typeof content === 'string' && content.trim().length > 0) return content;
+  if (AUTHORITATIVE_TURN_TYPES.has(item.sourceType)) {
+    throw new Error(
+      `mailbox item ${item.id ?? '(no id)'} of type ${item.sourceType} has no payload.content — ` +
+        `refusing to build the turn from a display excerpt ` +
+        `(summary="${item.payload?.summary ?? ''}"). Fix the enqueue site; do not degrade here.`,
+    );
+  }
+  return item.payload?.summary ?? '';
+}
+
+/**
+ * Number of items folded into this one (dedup/consolidation).
+ *
+ * Lives in `metadata.mergeCount`; legacy rows encoded it as a `(+N)` suffix on
+ * the display summary, which is read as a fallback so existing persisted items
+ * keep working without a migration.
+ */
+export function mergeCountOf(item: ItemLike): number {
+  const fromMeta = Number(item.metadata?.mergeCount);
+  if (Number.isFinite(fromMeta) && fromMeta > 0) return Math.trunc(fromMeta);
+  const legacy = /\(\+(\d+)\)$/.exec(item.payload?.summary ?? '');
+  return legacy ? Number(legacy[1]) : 0;
+}
+
+/** Record one more folded item, in metadata (never as structure in a string). */
+export function bumpMergeCount(item: ItemLike): void {
+  const next = mergeCountOf(item) + 1;
+  item.metadata = { ...(item.metadata ?? {}), mergeCount: next };
+}
+
+/**
+ * Display/log label for an item or bare payload.
+ *
+ * Derived from `content` at read time — never from the stored `summary` — so a
+ * legacy prefix can no longer travel to a human or a log as "the message".
+ * The folded-item count is appended so the label stays informative.
+ */
+export function displayLabelOf(target: PayloadLike | ItemLike, max = 100): string {
+  const item = isItemLike(target) ? target : undefined;
+  const payload: PayloadLike = item ? item.payload : (target as PayloadLike);
+  const body = typeof payload.content === 'string' && payload.content.trim().length > 0
+    ? payload.content
+    : (payload.summary ?? '');
+  const label = summarizeForMailbox(body, max);
+  const merged = item ? mergeCountOf(item) : 0;
+  return merged > 0 ? `${label} (+${merged})` : label;
+}

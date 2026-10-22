@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { summarizeForMailbox, isLossySummary } from '../src/mailbox-summary.js';
+import { summarizeForMailbox, isLossySummary, mergeCountOf, bumpMergeCount, displayLabelOf } from '../src/mailbox-summary.js';
 
 /**
  * Regression suite for the 2026-10-22 incident: a 383-char owner message was
@@ -109,6 +109,37 @@ describe('summarizeForMailbox — truncation must be self-evident', () => {
       expect(identical || isLossySummary(summary)).toBe(true);
       if (!identical) expect(isLossySummary(summary)).toBe(true);
     }
+  });
+});
+
+describe('merge count — structure lives in metadata, never in the display string', () => {
+  it('counts folded items from metadata', () => {
+    const item = { sourceType: 'a2a_message', payload: { content: 'a' }, metadata: { mergeCount: 3 } };
+    expect(mergeCountOf(item)).toBe(3);
+    expect(displayLabelOf(item)).toContain('(+3)');
+  });
+
+  it('still recovers the count from rows persisted before metadata.mergeCount existed', () => {
+    // No migration: legacy rows carry the fold count as a `(+N)` suffix. Reading
+    // it as a fallback keeps stored data usable; writing it that way is banned.
+    const legacy = { sourceType: 'a2a_message', payload: { content: 'Msg', summary: 'Msg (+2)' } };
+    expect(mergeCountOf(legacy)).toBe(2);
+  });
+
+  it('prefers metadata over a stale legacy suffix', () => {
+    const item = { sourceType: 'a2a_message', payload: { content: 'Msg', summary: 'Msg (+1)' }, metadata: { mergeCount: 5 } };
+    expect(mergeCountOf(item)).toBe(5);
+  });
+
+  it('bumpMergeCount writes metadata and leaves the display string untouched', () => {
+    const item: { sourceType: string; payload: { content: string; summary: string }; metadata?: { mergeCount?: number } } = {
+      sourceType: 'a2a_message',
+      payload: { content: 'Msg', summary: 'Msg' },
+    };
+    bumpMergeCount(item);
+    bumpMergeCount(item);
+    expect(item.metadata?.mergeCount).toBe(2);
+    expect(item.payload.summary).toBe('Msg');
   });
 });
 

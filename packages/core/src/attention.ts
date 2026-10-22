@@ -28,6 +28,7 @@ import {
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
+import { displayLabelOf } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -790,7 +791,7 @@ export class AttentionController {
    */
   private describeItem(item: MailboxItem): string {
     const task = item.payload.taskId ?? item.metadata?.taskId;
-    const label = `${item.sourceType}: "${item.payload.summary}"`;
+    const label = `${item.sourceType}: "${displayLabelOf(item)}"`;
     return task ? `${label} [task ${task}]` : label;
   }
 
@@ -843,7 +844,7 @@ export class AttentionController {
               holder,
               itemId: item.id,
               workerId,
-              summary: item.payload.summary.slice(0, 200),
+              summary: displayLabelOf(item, 200),
             });
           }
           // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
@@ -1728,7 +1729,7 @@ export class AttentionController {
 
     const queuedItems = this.mailbox.getQueuedItems();
     const queueSection = queuedItems.length > 0
-      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary}"`).join('\n')
+      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${displayLabelOf(i)}"`).join('\n')
       : '  (empty)';
 
     const currentContent = currentItem.payload.content?.slice(0, 500) ?? '';
@@ -1747,12 +1748,12 @@ export class AttentionController {
       '5. If the new message is lower priority and unrelated, continue current work.',
       '',
       `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
-      `  Summary: "${currentItem.payload.summary}"`,
+      `  Summary: "${displayLabelOf(currentItem)}"`,
       `  Task: ${currentItem.payload.taskId ?? 'none'}`,
       currentContent ? `  Content preview: ${currentContent}` : '',
       '',
       `NEW ITEM: [${newItem.sourceType}] priority=${newItem.priority}`,
-      `  Summary: "${newItem.payload.summary}"`,
+      `  Summary: "${displayLabelOf(newItem)}"`,
       `  Task: ${newItem.payload.taskId ?? 'none'}`,
       newContent ? `  Content: ${newContent}` : '',
       '',
@@ -1946,7 +1947,7 @@ export class AttentionController {
         ? {
             mailboxItemId: this.currentFocus.id,
             type: this.currentFocus.sourceType,
-            label: this.currentFocus.payload.summary,
+            label: displayLabelOf(this.currentFocus),
             startedAt: this.currentFocus.startedAt ?? this.currentFocus.queuedAt,
             taskId: this.currentFocus.payload.taskId,
           }
@@ -1956,7 +1957,7 @@ export class AttentionController {
         id: i.id,
         sourceType: i.sourceType,
         priority: i.priority,
-        summary: i.payload.summary,
+        summary: displayLabelOf(i),
         queuedAt: i.queuedAt,
         isStrictState: isStrictStateItem(i),
       })),
@@ -2058,7 +2059,7 @@ export class AttentionController {
       mailboxItemId: item.id,
       context: {
         currentFocusType: this.currentFocus?.sourceType,
-        currentFocusLabel: this.currentFocus?.payload.summary,
+        currentFocusLabel: this.currentFocus ? displayLabelOf(this.currentFocus) : undefined,
         currentFocusItemId: this.currentFocus?.id,
         mailboxDepth: this.mailbox.depth,
         queuedItemTypes: this.mailbox
@@ -2085,8 +2086,8 @@ export class AttentionController {
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): string {
-    const newLabel = `${newItem.sourceType}: "${newItem.payload.summary}"`;
-    const currentLabel = `${currentItem.sourceType}: "${currentItem.payload.summary}"`;
+    const newLabel = `${newItem.sourceType}: "${displayLabelOf(newItem)}"`;
+    const currentLabel = `${currentItem.sourceType}: "${displayLabelOf(currentItem)}"`;
 
     switch (type) {
       case 'continue':

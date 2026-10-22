@@ -53,7 +53,7 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
-import { summarizeForMailbox } from './mailbox-summary.js';
+import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -1733,7 +1733,7 @@ export class Agent {
           focus: item ? {
             mailboxItemId: item.id,
             type: item.sourceType,
-            label: item.payload.summary,
+            label: displayLabelOf(item),
             taskId: item.payload.taskId,
           } : undefined,
           mailboxDepth: this.mailbox.depth,
@@ -2181,9 +2181,9 @@ export class Agent {
         ? `[BATCH PROCESSING — ${batchItems.length + 1} items]\n${batchContext}\n\n---\n\n`
         : `[BATCH PROCESSING — ${batchItems.length + 1} items]\nProcess the following items together and respond comprehensively.\n\n---\n\n`;
       const batchSuffix = batchItems.map((bi, idx) =>
-        `\n\n---\n[Item ${idx + 2}] (${bi.sourceType}) ${bi.payload.summary}:\n${bi.payload.content}`,
+        `\n\n---\n[Item ${idx + 2}] (${bi.sourceType}) ${displayLabelOf(bi, 80)}:\n${turnContentOf(bi)}`,
       ).join('');
-      item.payload.content = batchHeader + `[Item 1] (${item.sourceType}) ${item.payload.summary}:\n${item.payload.content}` + batchSuffix;
+      item.payload.content = batchHeader + `[Item 1] (${item.sourceType}) ${displayLabelOf(item, 80)}:\n${turnContentOf(item)}` + batchSuffix;
     }
     if (item.sourceType === 'human_chat' && item.metadata?.senderId) {
       this.currentInteractingUserId = item.metadata.senderId;
@@ -2462,7 +2462,7 @@ export class Agent {
             return;
           }
           log.info('Task status update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2498,7 +2498,7 @@ export class Agent {
             return reply;
           }
           log.info('Requirement update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2537,7 +2537,7 @@ export class Agent {
             return reply;
           }
           log.info('Workflow update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2712,7 +2712,7 @@ export class Agent {
           if (outcome) {
             this.injectActivityToMainSession({
               type: item.sourceType,
-              summary: item.payload.summary?.slice(0, 120) ?? item.sourceType,
+              summary: displayLabelOf(item, 120),
               outcome,
               mailboxItemId: item.id,
               taskId: item.payload.taskId ?? item.metadata?.taskId as string | undefined,
@@ -4034,7 +4034,7 @@ export class Agent {
       return [
         `[${idx + 1}] id="${item.id}"`,
         `    type=${item.sourceType}  priority=${pri}  age=${formatAge(ageMs)}`,
-        `    summary: "${item.payload.summary}"`,
+        `    summary: "${displayLabelOf(item, 120)}"`,
         item.payload.taskId ? `    taskId: ${item.payload.taskId}` : null,
         item.metadata?.senderName ? `    from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
         contentPreview || null,
@@ -4100,7 +4100,7 @@ export class Agent {
           const completedItem = allItems.find(i => i.id === completedId);
           if (!completedItem) continue;
           const inlineActId = this.startActivity('inline_deliberation',
-            `Handled inline: ${completedItem.payload.summary.slice(0, 80)}`,
+            `Handled inline: ${displayLabelOf(completedItem, 80)}`,
             { mailboxItemId: completedId },
           );
           this.emitActivityLog(inlineActId, 'text',
@@ -4245,7 +4245,7 @@ export class Agent {
     return {
       currentFocus: focus ? {
         type: focus.sourceType,
-        label: focus.payload.summary,
+        label: displayLabelOf(focus),
         elapsedMs: focus.startedAt
           ? Date.now() - new Date(focus.startedAt).getTime()
           : Date.now() - new Date(focus.queuedAt).getTime(),
@@ -5365,7 +5365,7 @@ export class Agent {
           return '[cancelled]';
         }
         if (chatYield.decision === 'merge' && chatYield.item) {
-          const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
+          const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(chatYield.item)}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
           if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
             chatYield.item.metadata.responsePromise.resolve('[merged]');
@@ -6138,7 +6138,7 @@ export class Agent {
         // (e.g. a comment on the current topic) can be injected into context.
         const streamYield = await this.checkAttentionYieldPoint();
         if (streamYield.decision === 'merge' && streamYield.item) {
-          const mergeMsg = `[LIVE UPDATE] ${streamYield.item.payload.summary}\n\n${streamYield.item.payload.content}`;
+          const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(streamYield.item)}`;
           this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
           if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
             streamYield.item.metadata.responsePromise.resolve('[merged]');
@@ -6857,7 +6857,7 @@ export class Agent {
         if (yieldResult.decision === 'merge' && yieldResult.item) {
           this.memory.appendMessage(sessionId, {
             role: 'user',
-            content: `[LIVE UPDATE] ${yieldResult.item.payload.summary}\n\n${yieldResult.item.payload.content}`,
+            content: `[LIVE UPDATE]\n\n${turnContentOf(yieldResult.item)}`,
           });
           if (typeof yieldResult.item.metadata?.responsePromise?.resolve === 'function') {
             yieldResult.item.metadata.responsePromise.resolve('[merged]');
@@ -7378,7 +7378,7 @@ export class Agent {
         if (risYield.decision === 'merge' && risYield.item) {
           this.memory.appendMessage(sessionId, {
             role: 'user',
-            content: `[LIVE UPDATE] ${risYield.item.payload.summary}\n\n${risYield.item.payload.content}`,
+            content: `[LIVE UPDATE]\n\n${turnContentOf(risYield.item)}`,
           });
           if (typeof risYield.item.metadata?.responsePromise?.resolve === 'function') {
             risYield.item.metadata.responsePromise.resolve('[merged]');
