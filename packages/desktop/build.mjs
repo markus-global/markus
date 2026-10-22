@@ -26,6 +26,10 @@ const external = [
 ];
 
 async function main() {
+  // `-e` 的源码走**一个命令行参数**，上限由最紧的平台决定，而最紧的是 Windows：
+  // CreateProcess 整条命令行 32767 字符（Linux 单参数 128 KB、macOS 1 MB）。
+  // 留 15% 余量给可执行文件路径与环境变量的拼接。
+  const WINDOWS_ARGV_BUDGET = 28_000;
   // 后台修复工人：单独打一份 CJS 文本，**内联进主包**。
   //
   // 为什么不用独立入口文件：这里的 electron-builder 只 `files: dist/**`，而 esbuild
@@ -53,9 +57,16 @@ async function main() {
   if (repairWorkerSource.length < 2000) {
     throw new Error(`repair worker bundle too small (${repairWorkerSource.length} B) — worker would be a no-op`);
   }
-  // Linux 单参数上限 128 KB（MAX_ARG_STRLEN），留一半余量。
-  if (repairWorkerSource.length > 100_000) {
-    throw new Error(`repair worker bundle too large for -e (${repairWorkerSource.length} B) — ship it as a file instead`);
+  // `-e` 的源码是**一个命令行参数**，所以真正的上限由最紧的那个平台决定：
+  //   Windows CreateProcess 整条命令行 32767 字符 ← 最紧
+  //   Linux 单参数 128 KB（MAX_ARG_STRLEN）· macOS 1 MB
+  // 原来按 Linux 的 128 KB 留余量写成 100 KB，那等于**在 Windows 上必炸**却不会有
+  // 任何构建期提示。现在按 Windows 定预算并留 15% 余量。
+  if (repairWorkerSource.length > WINDOWS_ARGV_BUDGET) {
+    throw new Error(
+      `repair worker bundle too large for -e (${repairWorkerSource.length} B > ${WINDOWS_ARGV_BUDGET} B): `
+      + 'Windows caps the whole command line at 32767 chars — ship it as a file instead',
+    );
   }
   if (/require\(["']@markus\//.test(repairWorkerSource)) {
     throw new Error('repair worker bundle has unresolved workspace imports — it would crash in the packaged app');

@@ -16,6 +16,8 @@ describe('every execPath spawn is Electron-safe', () => {
     const spec = buildProbeSpawnSpec('/tmp/x.db', '/App/Markus', { PATH: '/usr/bin' });
     expect(spec.options.env['ELECTRON_RUN_AS_NODE']).toBe('1');
     expect(spec.options.env['PATH']).toBe('/usr/bin');
+    // Windows：没有控制台的父进程 spawn 子进程会新开一个黑框。
+    expect(spec.options.windowsHide).toBe(true);
   });
 
   it('repair worker — inline source goes through -e', () => {
@@ -26,6 +28,7 @@ describe('every execPath spawn is Electron-safe', () => {
     // 内联源码走 -e：没有可能丢失的第二个文件。
     expect(spec.args).toEqual(['-e', 'console.log(1)']);
     expect(spec.options.detached).toBe(true);
+    expect(spec.options.windowsHide).toBe(true);
   });
 
   it('repair worker — file fallback keeps dbPath in env, not argv', () => {

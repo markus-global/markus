@@ -423,7 +423,7 @@ export function tryApplyPendingRepair(
 export interface RepairWorkerSpawnSpec {
   command: string;
   args: string[];
-  options: { detached: true; stdio: 'ignore'; env: NodeJS.ProcessEnv };
+  options: { detached: true; stdio: 'ignore'; windowsHide: true; env: NodeJS.ProcessEnv };
 }
 
 /**
@@ -467,13 +467,15 @@ export function buildRepairWorkerSpawnSpec(
   inlineSource: string | null = resolveRepairWorkerSource(),
 ): RepairWorkerSpawnSpec {
   const env = { ...baseEnv, ELECTRON_RUN_AS_NODE: '1', MARKUS_REPAIR_DB: dbPath };
+  // `windowsHide`：Windows 上 detached 子进程没有控制台时，系统会**新开一个黑框**。
+  // 一个后台数据修复工具突然弹窗，用户会当成故障；其他平台该选项无副作用。
   if (inlineSource) {
-    return { command: execPath, args: ['-e', inlineSource], options: { detached: true, stdio: 'ignore', env } };
+    return { command: execPath, args: ['-e', inlineSource], options: { detached: true, stdio: 'ignore', windowsHide: true, env } };
   }
   if (!workerPath || !existsSync(workerPath)) {
     throw new Error(`repair-worker-missing: ${workerPath ?? '(no inline source)'}`);
   }
-  return { command: execPath, args: [workerPath], options: { detached: true, stdio: 'ignore', env } };
+  return { command: execPath, args: [workerPath], options: { detached: true, stdio: 'ignore', windowsHide: true, env } };
 }
 
 /** pending 标记的版本：v2 = 记录**工人自己的 pid**，且只在 spawn 成功后写。 */

@@ -66,6 +66,7 @@ export interface ProbeSpawnSpec {
   args: string[];
   options: {
     stdio: ['ignore', 'pipe', 'pipe'];
+    windowsHide: true;
     env: NodeJS.ProcessEnv;
   };
 }
@@ -95,6 +96,8 @@ export function buildProbeSpawnSpec(
     args: ['-e', PROBE_SOURCE, dbPath],
     options: {
       stdio: ['ignore', 'pipe', 'pipe'],
+      // Windows 上没有控制台时子进程会新开一个黑框 —— 一次启动探测弹一次窗。
+      windowsHide: true,
       env: { ...baseEnv, ELECTRON_RUN_AS_NODE: '1' },
     },
   };
