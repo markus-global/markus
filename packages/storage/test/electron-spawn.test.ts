@@ -8,6 +8,7 @@
  * 都用一个纯函数产出参数，并在这里钉死。
  */
 import { describe, it, expect } from 'vitest';
+import { fileURLToPath } from 'node:url';
 import { buildProbeSpawnSpec } from '../src/health-probe.js';
 import { buildRepairWorkerSpawnSpec } from '../src/repair.js';
 
@@ -33,7 +34,10 @@ describe('every execPath spawn is Electron-safe', () => {
 
   it('repair worker — file fallback keeps dbPath in env, not argv', () => {
     // `-e` 模式下 argv 位移与普通脚本不同，所以库路径统一走环境变量。
-    const self = new URL(import.meta.url).pathname;
+    // 这里同样不能用 `.pathname`：Windows 上它返回 `/D:/a/...`（前导斜杠），
+    // 被测函数用它做 existsSync → false → 抛 repair-worker-missing，
+    // 于是这个用例在 Windows 上永远红。CI（windows-latest）实测抓到过一次。
+    const self = fileURLToPath(import.meta.url);
     const spec = buildRepairWorkerSpawnSpec('/tmp/x.db', self, '/App/Markus', { PATH: '/usr/bin' }, null);
     expect(spec.args).toEqual([self]);
     expect(spec.options.env['MARKUS_REPAIR_DB']).toBe('/tmp/x.db');

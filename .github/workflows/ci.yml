@@ -203,4 +203,7 @@ jobs:
       - name: Build TypeScript
         run: pnpm build:ts
       - name: Storage test suite
-        run: pnpm vitest run packages/storage/test
+        # 显式给用例级超时：Windows 上真出现过「整个 job 挂到 20 分钟被杀、日志里
+        # 连卡在哪个文件都没有」的情况 —— 一次挂死等于零信息。有了这个上限，挂死
+        # 会变成一个指名道姓的失败。
+        run: pnpm vitest run packages/storage/test --testTimeout=30000 --hookTimeout=30000
