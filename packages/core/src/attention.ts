@@ -863,7 +863,13 @@ export class AttentionController {
         }
 
         // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
-        const entityKeys = this.lockKeysFor(item);
+        //
+        // 锁键必须**在本 worker 的会话上下文里**求值：`delegate.sessionLockKey` 要回答
+        // 「我这一轮会跑进哪个会话」，而 agent 的 `currentSessionId` 是 per-workspace
+        // 的（AsyncLocalStorage）。在 ALS 之外求值会读到 rootWorkspace 的指针 —— 所有
+        // 没有会话身份的 item（心跳、系统事件）于是共用同一把键，退化成互相排队。
+        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
+        const entityKeys = sessionWorkspaceStore.run(workspace, () => this.lockKeysFor(item));
         const entityKey = entityKeys[0];
         const holder = item.id;
         if (!this.mailbox.lockEntities(entityKeys, holder)) {
@@ -887,7 +893,6 @@ export class AttentionController {
           continue;
         }
 
-        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
         this.delegate?.onConcurrentHandoff?.('declared', workerId, item, this.describeItem(item));
         let handoffWritten = false;
         try {
