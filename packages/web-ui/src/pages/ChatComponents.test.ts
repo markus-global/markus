@@ -107,7 +107,7 @@ describe('AgentMessageBody live streaming bubble', () => {
     expect(html).not.toContain('内心独白内容');
   });
 
-  it('streaming keeps process detail OPEN and in place, between prose blocks', async () => {
+  it('streaming keeps the process row COLLAPSED (in place, between prose blocks)', async () => {
     const html = await render(
       {
         text: '答案',
@@ -119,18 +119,57 @@ describe('AgentMessageBody live streaming bubble', () => {
       },
       true,
     );
-    // 契约变更（Owner 2026-10-21）：
-    //   「输出中」→ 思考/工具明细默认**展开**，且按原顺序穿插在正文之间；
-    //   「输出结束」→ 才收回折叠、只留正文。
-    // 旧契约（一律合成一行并默认收起）让用户只看到正文，这正是被明确否掉的形态。
+    // 契约变更（Owner 2026-10-22）：
+    //   折叠框的展开状态**只有一个写者：用户**。流式期间不再自动展开。
+    //   「输出中」的活性由收起行自己承担（转圈 + 「正在执行 …」文字），
+    //   不需要拿「撑开明细」当进度信号。
+    //   位置契约不变（Owner 2026-10-21）：过程行仍按原顺序穿插在正文之间。
     expect(html).toContain('data-process-state="running"');
     expect(html).toContain('execution.processRun.runningTool');
-    expect(html).toContain('aria-expanded="true"');
-    // 流式中过程块已展开，思考行本身可见（它自己仍可再点开看正文，那是第二层，
-    // 不是「折叠」—— 第一层的「有哪些思考/工具、跑到哪了」已经铺在正文之间）。
-    expect(html).toContain('execution.thinking');
+    expect(html).toContain('aria-expanded="false"');
+    // 明细（思考正文 / 工具行）默认不在 DOM 里。
+    expect(html).not.toContain('内心独白内容');
     // 正文照常显示。
     expect(html).toContain('答案');
+  });
+
+  it('streaming process row expands and collapses on user click', async () => {
+    const React = await import('react');
+    const { render: rtlRender, fireEvent } = await import('@testing-library/react');
+    const { AgentMessageBody } = await import('./ChatComponents.tsx');
+    const { container } = rtlRender(
+      React.createElement(AgentMessageBody, {
+        msg: {
+          id: 'm', sender: 'agent', time: '',
+          rawCreatedAt: '2026-09-11T00:00:00.000Z',
+          isStreaming: true,
+          text: '答案',
+          segments: [
+            { type: 'text', content: '', thinking: '内心独白内容' },
+            { type: 'tool', key: 't1', tool: 'shell_execute', status: 'running' },
+            { type: 'text', content: '答案' },
+          ],
+        },
+        isStreaming: true,
+        liveActivities: [],
+      } as never),
+    );
+    const row = () => container.querySelector('[data-process-state]') as HTMLElement;
+    // 明细行 = 这段过程里的「思考 / 工具」条目；收起时根本不在 DOM 里。
+    const detailRows = () => container.querySelector('[data-process-state] + div');
+
+    expect(row().getAttribute('aria-expanded')).toBe('false');
+    expect(detailRows()).toBeNull();
+
+    fireEvent.click(row());
+    expect(row().getAttribute('aria-expanded')).toBe('true');
+    expect(container.textContent).toContain('execution.thinking');
+    expect(detailRows()).toBeTruthy();
+
+    fireEvent.click(row());
+    expect(row().getAttribute('aria-expanded')).toBe('false');
+    expect(container.textContent).not.toContain('execution.thinking');
+    expect(detailRows()).toBeNull();
   });
 
   it('a finished turn folds the process detail back to prose only', async () => {
