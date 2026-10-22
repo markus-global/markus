@@ -760,18 +760,19 @@ export function ProcessRun({
   reconnecting?: boolean;
 }) {
   const { t } = useTranslation('common');
+  /**
+   * 展开状态**只有一个写者：用户**（Owner 2026-10-22）。
+   *
+   * 这里曾经是 `userToggled ? open : (open || isStreaming)` —— 即流式期间
+   * 过程块被 `isStreaming` 强制撑开。那等于给同一个状态配了两个写者：
+   * 组件的 `open`，和从 props 派生的 `isStreaming`，结果由「谁后跑」决定。
+   * 用户收起后还得用 `userToggled` 这种补丁去挡回派生写者（挡住的是症状）。
+   *
+   * 现在的规则：折叠框默认收起，**始终**收起；用户点一次才展开，再点收起。
+   * 流式期间的「还活着」不需要靠展开表达 —— 收起态的标签本来就在转圈 +
+   * 显示「正在执行 shell_execute…」（见下面的 running / liveLabel）。
+   */
   const [open, setOpen] = useState(false);
-  /**
-   * 用户手动点过展开/收起之后，以用户的意图为准，不再受流式状态改写。
-   * 没有这个标记的话，「流式中默认展开」会在用户收起的下一帧又把它撑开。
-   */
-  const [userToggled, setUserToggled] = useState(false);
-  /**
-   * 「输出中」与「输出结束」必须不同（Owner 2026-10-21）：
-   * 流式期间过程块**默认展开**，让思考与工具调用真正呈现在正文之间；
-   * 流结束后回到默认收起，气泡只剩正文。
-   */
-  const effectiveOpen = userToggled ? open : (open || isStreaming);
 
   const rows = useMemo(
     () => filterCompletedStarts(
@@ -829,8 +830,8 @@ const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconne
     <div className="min-w-0">
       <button
         type="button"
-        onClick={() => { setUserToggled(true); setOpen(!effectiveOpen); if (!effectiveOpen) onExpand?.(); }}
-        aria-expanded={effectiveOpen}
+        onClick={() => { setOpen(!open); if (!open) onExpand?.(); }}
+        aria-expanded={open}
         data-process-state={state}
         title={labelText}
         className="group relative w-full flex items-center gap-2 px-2 py-1 rounded-lg text-left text-[11px] leading-tight text-fg-tertiary bg-surface-elevated/25 hover:bg-surface-elevated/45 border border-border-default/40 hover:border-border-default/70 overflow-hidden transition-colors cursor-pointer select-none"
@@ -855,13 +856,13 @@ const running = !!(isStreaming && (isLastBlock || summary.running)) || !!reconne
               )))}
         </span>
         <svg
-          className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${effectiveOpen ? 'rotate-180' : ''}`}
+          className={`relative ml-auto w-3 h-3 shrink-0 transition-transform ${open ? 'rotate-180' : ''}`}
           viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"
         >
           <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
         </svg>
       </button>
-      {effectiveOpen && (
+      {open && (
         <div className="mt-1 ml-[7px] pl-3 border-l-2 border-border-default/50 space-y-2 min-w-0 overflow-hidden">
           {rows.length > 0 ? rows.map((row, i) => (
             <MemoExecEntryRow key={i} entry={row} showTime={false} hideApprovalCards={hideApprovalCards} />
