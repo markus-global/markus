@@ -107,7 +107,7 @@ describe('AgentMessageBody live streaming bubble', () => {
     expect(html).not.toContain('内心独白内容');
   });
 
-  it('reasoning + tools collapse into one process row; details are behind a click', async () => {
+  it('streaming keeps process detail OPEN and in place, between prose blocks', async () => {
     const html = await render(
       {
         text: '答案',
@@ -119,17 +119,34 @@ describe('AgentMessageBody live streaming bubble', () => {
       },
       true,
     );
-    // 折叠行在，而且是个可展开的按钮（默认 aria-expanded=false）。
-    // 这个夹具里工具还在跑（status: 'running'），所以收起行显示的是活标签
-    // 「正在运行 shell_execute…」，不是「思考 · N 个工具调用」的计数摘要 ——
-    // 跑着的工具必须显示成正在进行，哪怕它不在时间线的最后一块。
+    // 契约变更（Owner 2026-10-21）：
+    //   「输出中」→ 思考/工具明细默认**展开**，且按原顺序穿插在正文之间；
+    //   「输出结束」→ 才收回折叠、只留正文。
+    // 旧契约（一律合成一行并默认收起）让用户只看到正文，这正是被明确否掉的形态。
     expect(html).toContain('data-process-state="running"');
     expect(html).toContain('execution.processRun.runningTool');
-    expect(html).toContain('aria-expanded="false"');
-    // 默认收起：思考/工具明细不铺在气泡里，想看的人点开 —— 这正是「生成中与生成完
-    // 气泡一样长」的前提。明细本身由 groupProcessRuns 的单测保证不丢。
-    expect(html).not.toContain('内心独白内容');
+    expect(html).toContain('aria-expanded="true"');
+    // 流式中过程块已展开，思考行本身可见（它自己仍可再点开看正文，那是第二层，
+    // 不是「折叠」—— 第一层的「有哪些思考/工具、跑到哪了」已经铺在正文之间）。
+    expect(html).toContain('execution.thinking');
     // 正文照常显示。
+    expect(html).toContain('答案');
+  });
+
+  it('a finished turn folds the process detail back to prose only', async () => {
+    const html = await render(
+      {
+        text: '答案',
+        segments: [
+          { type: 'text', content: '', thinking: '内心独白内容' },
+          { type: 'tool', key: 't1', tool: 'shell_execute', status: 'success' },
+          { type: 'text', content: '答案' },
+        ],
+      },
+      false,
+    );
+    // 输出结束 = 只显示正文（过程明细收回去，需要时再点开）。
+    expect(html).not.toContain('内心独白内容');
     expect(html).toContain('答案');
   });
 });
@@ -326,35 +343,35 @@ describe('lastTextBlockIndex / collapsibleBlockCount — 折叠边界', () => {
   // 而 groupProcessRuns 是按**连续**过程段分块的 —— 思考/工具交替几轮就有几行。
   // 下面第一条就是那个回归：流式中 5 段过程 → 只准剩一行过程。
 
-  it('流式期间：多段过程合成**一行**，正文一段不收（老板 2026-10-18 的原始抱怨）', async () => {
-    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
-    // 思考→工具→思考→工具→思考…… 每段都成了一个 process 块。
-    // 旧实现在流式期间一块不折，于是它们一行一行排下来 = 「一串工具调用列表」。
-    const blocks = Array.from({ length: 5 }, (_, i) => block('process', `p${i}`));
-    const { blocks: visible, foldedCount } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
-    expect(visible).toHaveLength(1);
-    expect(visible[0]!.kind).toBe('process');
-    // 合成行的 entries 必须覆盖**全部**过程段（计数不能只剩最后一段的）。
-    expect((visible[0] as never as { entries: unknown[] }).entries).toHaveLength(5);
-    // 没有顶部折叠行：那一行本身就是可展开的过程行。
-    expect(foldedCount).toBe(0);
+  // 契约变更（Owner 2026-10-21）：「输出中」保持时间线**原顺序** + ProcessRun 层默认展开；
+  // 「输出结束」才收回折叠、只留正文。旧契约把所有过程段 flatMap 成一行顶在最上面，
+  // 用户因此只看到正文，思考和工具的因果关系被压平。
+  //
+  // 至于 2026-10-18 的「一串工具调用排成一列」：真实数据里**连续**的过程 entries
+  // 已由 `groupProcessRuns` 合成同一个 process 块，只有被正文打断才分块。
+  // 所以保留原顺序不会把没有正文穿插的工具链拉成一列 —— 下面第 1 条用真实形态度钉。
+  it('流式期间：连续过程段在真实数据里本就是一个块，不会被拉成一列', async () => {
+    const { groupProcessRuns, visibleTimelineBlocks } = await import('./ChatComponents.tsx');
+    const entries = ['reasoning', 'tool_start', 'reasoning', 'tool_end'].map((t, i) => ({
+      type: t, key: `e${i}`, content: '', tool: 'shell_execute', status: 'success',
+    }));
+    const grouped = groupProcessRuns(entries as never);
+    const { blocks: visible } = visibleTimelineBlocks(grouped as never, { isStreaming: true });
+    expect(visible.filter(b => b.kind === 'process')).toHaveLength(1);
   });
 
-  it('流式期间：正文一段都不收走，过程合成一行且总量不丢', async () => {
+  it('流式期间：过程与正文交替时保持原顺序（不重排、不合并到顶部）', async () => {
     const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
     const blocks = [
       block('process', 'p1'), block('text', 'a'), block('process', 'p2'), block('text', 'b'),
     ];
-    const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
-    // 一行过程（放最上）+ 两段正文，顺序稳定。
-    expect(visible.map(b => b.key)).toEqual(['proc_live', 'a', 'b']);
-  });
-
-  it('流式期间：尾巴是过程时，合成行沿用最后一块的 key（否则转圈会掉成对勾）', async () => {
-    const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
-    const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
-    const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
-    expect(visible[0]!.key).toBe('p2');
+    const { blocks: visible, foldedCount } = visibleTimelineBlocks(blocks as never, { isStreaming: true });
+    // 原顺序原样返回 —— 这正是「思考/工具呈现在正文与正文之间」。
+    expect(visible.map(b => b.key)).toEqual(['p1', 'a', 'p2', 'b']);
+    expect(visible.filter(b => b.kind === 'text')).toHaveLength(2);
+    expect(visible.filter(b => b.kind === 'process')).toHaveLength(2);
+    // 流式中没有顶部折叠行 —— 不接受把正在发生的内容收走。
+    expect(foldedCount).toBe(0);
   });
 
   it('已完成：只留最终结论及其后的块', async () => {
@@ -403,11 +420,12 @@ describe('lastTextBlockIndex / collapsibleBlockCount — 折叠边界', () => {
     expect(expanded.foldableCount).toBe(1);
   });
 
-  it('流式期间：`expanded` 不会把逐段过程行拉回来（那一行自己就是展开入口）', async () => {
+  it('流式期间：`expanded` 不影响流式视图（流式已是原顺序，无需展开入口）', async () => {
     const { visibleTimelineBlocks } = await import('./ChatComponents.tsx');
     const blocks = [block('process', 'p1'), block('text', 'a'), block('process', 'p2')];
     const { blocks: visible } = visibleTimelineBlocks(blocks as never, { isStreaming: true, expanded: true });
-    expect(visible.filter(b => b.kind === 'process')).toHaveLength(1);
+    // 流式中永远是原顺序（expanded 只对 completed 分支生效）。
+    expect(visible.map(b => b.key)).toEqual(['p1', 'a', 'p2']);
   });
 });
 

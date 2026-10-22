@@ -12,8 +12,44 @@ import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
+import { StreamWriteBatcher } from './stream-write-batcher.js';
+import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
+import { expandImageRefs } from './attachments-store.js';
 
 type SqlParams = SQLInputValue[];
+
+/**
+ * 大字段外置阈值（字节）。
+ *
+ * 超过这个大小的 JSON 载荷写到内容寻址的文件里，行里只留
+ * `{"$blob":"<sha256>","$bytes":N}`；读取时透明还原，所以上层与前端看到的
+ * 数据形状完全不变。实测依据：metadata 占 `agent_activity_logs` 的 84%、
+ * `task_logs` 的 86%、`chat_messages` 的 97%（含 base64 图片）。
+ */
+const BLOB_THRESHOLD_BYTES = 8 * 1024;
+
+let _blobStore: BlobStore | null = null;
+
+/** 唯一实例入口 —— 别在别处 new BlobStore() 指向别的根。 */
+function blobStore(): BlobStore {
+  if (!_blobStore) _blobStore = new BlobStore();
+  return _blobStore;
+}
+
+/** 测试钩子：替换 blob 根目录（传 null 复位）。 */
+export function setBlobStoreForTests(store: BlobStore | null): void {
+  _blobStore = store;
+}
+
+/** 写方向：大 JSON 投影成指针。 */
+function projectJson(json: string): string {
+  return projectJsonForStorage(json, blobStore(), BLOB_THRESHOLD_BYTES);
+}
+
+/** 读方向：指针透明还原成原始 JSON。 */
+function resolveJson(json: unknown): string {
+  return resolveJsonFromStorage(json as string | null | undefined, blobStore());
+}
 
 const log = createLogger('sqlite-storage');
 
@@ -29,7 +65,10 @@ function toJson(v: unknown): string {
   return JSON.stringify(v ?? null);
 }
 function fromJson<T = unknown>(v: string | null): T {
-  return v ? (JSON.parse(v) as T) : (null as T);
+  if (!v) return null as T;
+  // 透明还原：大字段外置后行里只留 {"$blob":...} 指针（见 blob-store.ts）。
+  // 收口在唯一的解析入口，所以没有任何读路径需要知道"外置"这件事存在。
+  return JSON.parse(resolveJson(v)) as T;
 }
 function toDate(v: string | null): Date | null {
   return v ? new Date(v) : null;
@@ -504,6 +543,28 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   dedup_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
+
+-- 附件元数据：图片/文件字节存在 ~/.markus/blobs/<sha>（内容寻址），这里只存索引。
+-- 存在的意义：把 base64 从消息行里彻底赶出去，同时让读取侧能按 sha 找回 mime。
+CREATE TABLE IF NOT EXISTS attachments (
+  sha256 TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  name TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 后台数据迁移的进度表：断点续跑的唯一事实源。
+-- 与 PRAGMA user_version（结构版本）分工：结构版本是"建表加列"，这张表是"搬数据"。
+CREATE TABLE IF NOT EXISTS data_migrations (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'pending',
+  cursor INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  total INTEGER,
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
 
@@ -733,11 +794,20 @@ export function openSqlite(dbPath: string): DatabaseSync {
   _db.exec('PRAGMA foreign_keys = ON');
   _db.exec('PRAGMA busy_timeout = 5000');
 
-  for (const stmt of SCHEMA_SQL.split(';')
-    .map(s => s.trim())
-    .filter(Boolean)) {
-    _db.exec(stmt);
-  }
+  // ── schema 自举：建表 / 加列 / 建索引全部包在**一个事务**里 ────────────────
+  // 原先这三段每条 DDL 都是独立提交 = 每条一次 fsync。WAL + synchronous=FULL
+  // 下 Windows 实测 20–25 ms/条，schema 有 100+ 条 → 每次打开**新库**要 2.5 s。
+  // 这笔钱每个首次启动的用户都要付（APFS 上只有 ~90 ms，所以在 mac 上从未暴露）；
+  // CI 里每个用例都新建库，于是整套 271 个用例在 Windows 上要跑 20 分钟。
+  // 一个事务 = 一次提交 = 一次 fsync。附带好处：schema 初始化变成原子的 ——
+  // 中途崩溃不会再留下半个库（原先也没有事务，这个洞一直开着）。
+  _db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const stmt of SCHEMA_SQL.split(';')
+      .map(s => s.trim())
+      .filter(Boolean)) {
+      _db.exec(stmt);
+    }
 
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
@@ -814,26 +884,33 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
   ];
-  for (const m of migrations) {
-    const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
-    if (!cols.some(c => c.name === m.column)) {
-      _db.exec(m.sql);
-      log.info(`Migration: added column ${m.column} to ${m.table}`);
+    for (const m of migrations) {
+      const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === m.column)) {
+        _db.exec(m.sql);
+        log.info(`Migration: added column ${m.column} to ${m.table}`);
+      }
     }
-  }
 
-  // Indexes that depend on migrated columns (must run AFTER column migrations)
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
-  // P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
-  // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
-  // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
-  // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
-  // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
-  _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+    // Indexes that depend on migrated columns (must run AFTER column migrations)
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
+    // P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
+    // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
+    // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
+    // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
+    // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
+    _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+
+    _db.exec('COMMIT');
+  } catch (err) {
+    // 回滚失败不能再掩盖原始错误：SQLite 可能已经自行回滚（例如 RAISE(ROLLBACK)）。
+    try { _db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
+  }
 
   migrateToExecutionStreamLogs(_db);
 
@@ -942,6 +1019,37 @@ export function closeSqlite(): void {
   if (_db) {
     _db.close();
     _db = null;
+  }
+}
+
+/**
+ * Database integrity probe (M0 of the storage plan).
+ *
+ * `PRAGMA quick_check` walks every b-tree and reports pages that cannot be
+ * initialised. It is the only cheap way to find out that a table is damaged —
+ * point lookups keep working on a corrupt database, so the app looks healthy
+ * until something does a full scan (export, aggregate, retention) and throws
+ * SQLITE_CORRUPT.
+ *
+ * Never throws: the whole point is to report the error instead of letting it
+ * surface as an unexplained failure somewhere else.
+ */
+export interface DatabaseHealth {
+  ok: boolean;
+  errors: string[];
+  elapsedMs: number;
+}
+
+export function quickCheckDatabase(db: DatabaseSync, maxErrors = 3): DatabaseHealth {
+  const started = Date.now();
+  try {
+    const rows = db.prepare('PRAGMA quick_check').all() as Array<Record<string, unknown>>;
+    const errors = rows
+      .map(r => String(Object.values(r)[0] ?? ''))
+      .filter(v => v && v !== 'ok');
+    return { ok: errors.length === 0, errors: errors.slice(0, maxErrors), elapsedMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, errors: [String(err)], elapsedMs: Date.now() - started };
   }
 }
 
@@ -2015,7 +2123,7 @@ export class SqliteTaskLogRepo {
         data.seq,
         data.type,
         data.content,
-        toJson(data.metadata ?? {}),
+        projectJson(toJson(data.metadata ?? {})),
         data.executionRound ?? 1,
         ts
       );
@@ -2435,7 +2543,7 @@ export class SqliteChatSessionRepo {
         agentId,
         role,
         content,
-        metadata ? toJson(metadata) : null,
+        metadata ? projectJson(toJson(metadata)) : null,
         tokensUsed ?? 0,
         ts
       );
@@ -2942,7 +3050,8 @@ export class SqliteChatSessionRepo {
       agentId: r['agent_id'],
       role: r['role'],
       content: r['content'],
-      metadata: fromJson(r['metadata'] as string),
+      // imageRefs → images(URL)：前端始终看到 `images: string[]`，无需知道背后是文件。
+      metadata: expandImageRefs(fromJson(r['metadata'] as string) as Record<string, unknown> | null),
       tokensUsed: r['tokens_used'],
       createdAt: toDate(r['created_at'] as string)!,
     };
@@ -3017,7 +3126,7 @@ export class SqliteChannelMessageRepo {
       senderName: r['sender_name'],
       text: r['text'],
       mentions: fromJson<string[]>(r['mentions'] as string),
-      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
+      metadata: expandImageRefs(fromJson<Record<string, unknown>>(r['metadata'] as string)),
       replyToId: (r['reply_to_id'] as string) ?? undefined,
       replyToSender: (r['reply_to_sender'] as string) ?? undefined,
       replyToText: (r['reply_to_text'] as string) ?? undefined,
@@ -4375,7 +4484,7 @@ export class SqliteActivityRepo {
       .prepare(
         'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
       )
-      .run(data.activityId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), now());
+      .run(data.activityId, data.seq, data.type, data.content, projectJson(toJson(data.metadata ?? {})), now());
   }
 
   queryActivities(
@@ -4509,8 +4618,65 @@ export interface ExecutionStreamRow {
   createdAt: string;
 }
 
+interface BufferedStreamRow {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: string;
+  content: string;
+  metadataJson: string;
+  executionRound: number | null;
+  createdAt: string;
+}
+
 export class SqliteExecutionStreamRepo {
-  constructor(private db: DatabaseSync) {}
+  /**
+   * Events are buffered and written one transaction per batch instead of one
+   * commit per event — see stream-write-batcher.ts for the measurements.
+   */
+  private readonly batcher: StreamWriteBatcher<BufferedStreamRow>;
+
+  constructor(private db: DatabaseSync) {
+    this.batcher = new StreamWriteBatcher<BufferedStreamRow>({
+      writer: rows => this.writeBatch(rows),
+    });
+  }
+
+  private writeBatch(rows: BufferedStreamRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(
+      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    let began = false;
+    try {
+      // Join an already-open outer transaction instead of nesting into it.
+      try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
+      for (const r of rows) {
+        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.executionRound, r.createdAt);
+      }
+      if (began) this.db.exec('COMMIT');
+    } catch (err) {
+      if (began) { try { this.db.exec('ROLLBACK'); } catch { /* already unwound */ } }
+      throw err;
+    }
+  }
+
+  /** Force buffered events to disk. Every read path calls this first (I1). */
+  flush(): void {
+    this.batcher.flush();
+  }
+
+  /** Flush and stop the flush timer (clean shutdown). */
+  dispose(): void {
+    this.batcher.dispose();
+  }
+
+  /** Diagnostic surface: rows actually written / batches used / still buffered. */
+  stats(): { written: number; batches: number; pending: number } {
+    return this.batcher.stats();
+  }
 
   append(data: {
     sourceType: string;
@@ -4524,11 +4690,20 @@ export class SqliteExecutionStreamRepo {
   }): ExecutionStreamRow {
     const id = generateId('esl');
     const ts = now();
-    this.db
-      .prepare(
-        'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run(id, data.sourceType, data.sourceId, data.agentId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), data.executionRound ?? null, ts);
+    // Row construction stays synchronous (callers use id/createdAt immediately);
+    // only the write is deferred.
+    this.batcher.push({
+      id,
+      sourceType: data.sourceType,
+      sourceId: data.sourceId,
+      agentId: data.agentId,
+      seq: data.seq,
+      type: data.type,
+      content: data.content,
+      metadataJson: toJson(data.metadata ?? {}),
+      executionRound: data.executionRound ?? null,
+      createdAt: ts,
+    });
     return {
       id,
       sourceType: data.sourceType,
@@ -4544,6 +4719,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getBySource(sourceType: string, sourceId: string): ExecutionStreamRow[] {
+    this.flush();
     const rows = this.db
       .prepare('SELECT * FROM execution_stream_logs WHERE source_type = ? AND source_id = ? ORDER BY seq ASC')
       .all(sourceType, sourceId) as Record<string, unknown>[];
@@ -4551,6 +4727,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getMaxSeq(sourceType: string, sourceId: string): number {
+    this.flush();
     const row = this.db
       .prepare('SELECT MAX(seq) as maxSeq FROM execution_stream_logs WHERE source_type = ? AND source_id = ?')
       .get(sourceType, sourceId) as { maxSeq: number | null } | undefined;
@@ -4558,6 +4735,9 @@ export class SqliteExecutionStreamRepo {
   }
 
   deleteBySource(sourceType: string, sourceId: string): void {
+    // I1: flush first — otherwise buffered rows land AFTER the delete and the
+    // deleted source comes back from the dead.
+    this.flush();
     this.db.prepare('DELETE FROM execution_stream_logs WHERE source_type = ? AND source_id = ?').run(sourceType, sourceId);
   }
 
@@ -4648,7 +4828,7 @@ export class SqliteMailboxRepo {
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
-        item.status, toJson(item.payload), toJson(item.metadata ?? {}),
+        item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;

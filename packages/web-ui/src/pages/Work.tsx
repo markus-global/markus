@@ -2209,7 +2209,12 @@ function TaskDetailPanel({
   const assignedAgent = agents.find(a => a.id === task.assignedAgentId);
 
   return (
-    <div className="flex flex-col w-full h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
+    // Height must be DEFINITE. `h-full` here resolves against an auto-height ancestor chain
+    // (mobile doc-scroll mode: root is min-h-dvh and every level is flex-1), so 100% becomes
+    // circular — the panel grows to its own content height (measured 2154px in an 894px
+    // viewport), the inner scroller never overflows (scrollHeight === clientHeight), and the
+    // panel inherits whatever window scroll the board had (header at y=-1259, tabs unreachable).
+    <div className={`flex flex-col w-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20 ${isMobile ? 'h-dvh' : 'h-full'}`}>
       {/* Header – status, title & close */}
       <div className="flex items-start justify-between gap-4 px-6 pt-5 pb-3 border-b border-border-default shrink-0">
         <div className="flex items-center gap-2 flex-1 min-w-0">
@@ -7309,7 +7314,7 @@ function RequirementDetailPanel({
   };
 
   return (
-    <div className="flex flex-col w-full h-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20">
+    <div className={`flex flex-col w-full overflow-hidden bg-surface-primary shadow-xl shadow-black/8 ring-1 ring-border-default/20 ${isMobile ? 'h-dvh' : 'h-full'}`}>
       {/* Header */}
       <div className="flex items-start justify-between gap-4 p-5 pb-0 border-b border-border-default">
         <div className="flex items-center gap-2 flex-1 min-w-0">

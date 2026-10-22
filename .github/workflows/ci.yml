@@ -160,3 +160,50 @@ jobs:
       # run 整体仍然是绿的（job 级 continue-on-error 还在）—— 有信号、不拦合并。
       - name: Backend coverage ratchet (floor must not drop)
         run: pnpm coverage:ratchet:node
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 跨平台：storage 测试套件必须在 Linux + Windows 上真跑一遍
+#
+# 为什么单独一个 job：这套代码**碰文件系统** —— 原子换库（两步 rename）、fsync、
+# 剩余空间探测、spawn 子进程跑修复工人与健康探针。在 macOS 上绿过不代表在别的
+# 平台绿，实测已经栽过四处：
+#   · Windows 不允许 rename 覆盖已存在的文件 → 所以换库必须是两步 rename；
+#   · 目录 fsync 是 POSIX 专有 → 所以 fsync 落在**文件描述符**上；
+#   · `new URL(...).pathname` 在 Windows 返回 `/C:/...`（前导斜杠）→ 工人文件
+#     被判为缺失、修复被拒绝派单（已改用 fileURLToPath —— 这条正是本 job 要守的）；
+#   · `windowsHide` 不设 → 每次派工弹一个黑框。
+# 另外两次「整套 20 分钟跑不完」都是同一个根因：**每条语句一次隐式提交**。
+# schema 自举 100+ 条 DDL、测试夹具 6300 条 INSERT —— NTFS 上一次提交 ~20 ms，
+# APFS 上 0.13 ms。同一个 bug 在 mac 上只是慢一点，在 Windows 上直接超时。
+#
+# Windows 曾经以 continue-on-error 起步（理由：从第一天就长期红着的门禁没人看，
+# 迟早被删）。2026-10-22 首次全绿 2m06s（此前跑满 20 分钟被杀），已按既定条件
+# 转为**阻塞**：上面 6 处平台缺陷都已被它挡住过一次，现在它守得住就不会再退化。
+# ─────────────────────────────────────────────────────────────────────────────
+  storage-cross-platform:
+    name: storage tests (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # 与 backend-coverage 同理：包间按包名互相引用，package.json main 指向 dist，
+      # 没有构建产物时模块解析会直接失败。
+      - name: Build TypeScript
+        run: pnpm build:ts
+      - name: Storage test suite
+        # 显式给用例级超时：Windows 上真出现过「整个 job 挂到 20 分钟被杀、日志里
+        # 连卡在哪个文件都没有」的情况 —— 一次挂死等于零信息。有了这个上限，挂死
+        # 会变成一个指名道姓的失败。
+        run: pnpm vitest run packages/storage/test --testTimeout=30000 --hookTimeout=30000

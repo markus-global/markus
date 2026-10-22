@@ -89,6 +89,7 @@ import { setupOutboundDispatch } from './outbound.js';
 import { buildApprovalCardResolution, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
+import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
@@ -2926,6 +2927,11 @@ async function startServerCore(
     shutdown,
   };
 
+  // 后台自维护（完整性自检 + 旧库数据迁移）必须在这里排期。
+  // 它在 headless 分支**之前**，因为桌面端走的就是 headless：把这段放到
+  // 后面的「非 headless 尾段」，等于对所有桌面用户关掉自动迁移（实测踩过）。
+  scheduleBackgroundMaintenance(storage, log);
+
   // In headless mode (Electron), return without blocking
   if (headless) {
     // Still start restored agents in background
@@ -2964,6 +2970,8 @@ async function startServerCore(
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');
+    // Flush buffered stream events before the process goes away.
+    try { storage?.disposeStreams(); } catch { /* storage already torn down */ }
     shutdown().then(() => process.exit(0)).catch(() => process.exit(1));
   });
 

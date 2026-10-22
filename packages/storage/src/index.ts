@@ -19,6 +19,8 @@ export type {
 export {
   openSqlite,
   closeSqlite,
+  quickCheckDatabase,
+  setBlobStoreForTests,
   runInTransaction,
   SqliteOrgRepo,
   SqliteAgentRepo,
@@ -74,3 +76,25 @@ export {
   type WorkflowRunRow,
   type WorkflowScheduleRow,
 } from './sqlite-storage.js';
+
+// 大字段外置 + 数据库维护（M1/M2/M4/M5）。唯一机制见 blob-store.ts。
+export { BlobStore, defaultBlobRoot, isBlobRef, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
+export { externalizeLargeFields, pruneTerminalMailboxItems, reclaimSpace, EXTERNALIZE_TARGETS } from './db-maintenance.js';
+export type { ExternalizeOptions, ExternalizeResult, PruneOptions, PruneResult } from './db-maintenance.js';
+
+// 附件（base64 出库）+ 后台数据迁移（升级零感知）
+export {
+  AttachmentStore, attachmentUrl, expandImageRefs, isAttachmentRef, isDataUrl,
+} from './attachments-store.js';
+export type { AttachmentRef } from './attachments-store.js';
+export {
+  MigrationRunner, DEFAULT_MIGRATIONS, migrateImagesToAttachments, migrateLargePayloadsToBlobs,
+} from './migration-runner.js';
+export type { Migration, MigrationProgress, MigrationRunnerOptions } from './migration-runner.js';
+// 子进程健康探针：大库上 quick_check 是分钟级同步操作，绝不能跑在主进程里。
+export { probeDatabaseHealthInChild, deriveProbeTimeoutMs, LARGE_DATABASE_BYTES, PROBE_TIMEOUT_CEILING_MS } from './health-probe.js';
+export type { HealthProbeResult, HealthProbeStatus } from './health-probe.js';
+// 开库前自愈：通用能力（所有用户、所有平台），不依赖 sqlite3 CLI。
+export { prepareDatabaseFile, tryApplyPendingRepair, runBackgroundRepair, pruneSupersededBackups } from './repair.js';
+export type { RepairOptions, RepairResult, RepairTableReport, BackupPruneResult } from './repair.js';
+export { rebuildInto, verifyRecovered } from './repair-rebuild.js';

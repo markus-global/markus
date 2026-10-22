@@ -1,4 +1,5 @@
 import { createLogger, markusDbPath } from '@markus/shared';
+import { statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -15,6 +16,21 @@ const log = createLogger('storage-bridge');
 export interface StorageBridge {
   /** Run a synchronous function inside a SQLite transaction (auto-rollback on throw). */
   runInTransaction<T>(fn: () => T): T;
+  /** M0: integrity probe (`PRAGMA quick_check`). Never throws. Blocks the
+   *  event loop for ~file-size-dependent time — call it on demand or gate it. */
+  quickCheck(): { ok: boolean; errors: string[]; elapsedMs: number };
+  /** Size of the SQLite file in bytes (0 when unavailable) — used to decide
+   *  whether an automatic integrity check is affordable. */
+  databaseSizeBytes(): number;
+  /** Flush the buffered execution-stream rows (clean shutdown). */
+  disposeStreams(): void;
+  /** 附件存储（图片 base64 出库后的读写入口）。 */
+  attachmentStore: any;
+  /** 后台数据迁移：启动后自动跑，断点续跑，幂等。 */
+  runMigrations(): Promise<unknown>;
+  migrationStatus(): unknown;
+  /** 把迁移释放的页真正还给文件系统（VACUUM；不满足条件时是 no-op）。 */
+  reclaimSpace(): { reclaimed: boolean; freeBytes: number; reason?: string; durationMs?: number };
   orgRepo: any;
   taskRepo: any;
   taskLogRepo: any;
@@ -65,14 +81,161 @@ export async function initStorage(databaseUrl?: string): Promise<StorageBridge |
   return initSqliteStorage(url);
 }
 
+/** 开库前自愈的返回形状（只取这里用到的字段）。 */
+export interface PreOpenRepairResult {
+  action: string;
+  reason?: string;
+}
+
+/**
+ * 开库前自愈的**排程决策**。
+ *
+ * 之所以抽成独立函数：这里曾经有一条只有真实桌面启动才会走到的死路 ——
+ * 大库一律传 `probeOnly: true`，而 `prepareDatabaseFile` 在「已有需要重建标记」时
+ * 对 `probeOnly` 是**直接返回**的（不重建）。于是「标记 → 就地重建」这条分支
+ * 对桌面端的大库**永远不可达**：每次重启都只是把标记重写一遍，无限推迟。
+ * storage 层的单测是绿的，因为它直接调 `prepareDatabaseFile`，不经过 `probeOnly`。
+ *
+ * 正确排程：
+ *   - 启动早期 = 独占窗口（还没有任何进程打开库）——这是唯一能保证
+ *     「快照 == 活库」的时刻，所以有标记就**在这里重建**；
+ *   - 没有标记的大库**不在启动路径上探测**（健康库整表扫描是分钟级，实测
+ *     16.7 GB 要 155 s，等它等于每次启动都冻住两分半）→ 交给后台 probeOnly，
+ *     它只写标记，下一次启动再重建。
+ * 小库两级都不需要：直接同步探测，健康 → no-op，损坏 → 当场修好。
+ */
+export async function runPreOpenRepair(params: {
+  isLarge: boolean;
+  prepare: (opts?: { probeOnly?: boolean; allowBlockingProbe?: boolean }) => Promise<PreOpenRepairResult>;
+  report: (result: PreOpenRepairResult) => void;
+  onBackgroundProbeError?: (err: unknown) => void;
+}): Promise<{ first: PreOpenRepairResult; backgroundProbeStarted: boolean }> {
+  // 注意顺序：`allowBlockingProbe: false` 只挡住「探测」，不挡「已标记 → 重建」。
+  const first = await params.prepare(params.isLarge ? { allowBlockingProbe: false } : undefined);
+  params.report(first);
+
+  if (!params.isLarge) return { first, backgroundProbeStarted: false };
+  if (first.reason !== 'probe-deferred-background') return { first, backgroundProbeStarted: false };
+
+  void params
+    .prepare({ probeOnly: true })
+    .then(params.report)
+    .catch(err => params.onBackgroundProbeError?.(err));
+  return { first, backgroundProbeStarted: true };
+}
+
 async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
   try {
     const storage = await import('@markus/storage');
     const dbPath = resolveSqlitePath(url);
+    // 开库前自愈：探测 → 备份 → 修复 → 校验 → 原子替换（备份永不删除）。
+    // 健康库上这是一次子进程探测的 no-op；损坏库则在这里被修好，用户无感。
+    try {
+      // ① 上一轮排期的修复若已就绪，现在换库（两个 rename，毫秒级）
+      const applied = storage.tryApplyPendingRepair(dbPath, (message: string, data?: Record<string, unknown>) => log.warn(message, data));
+      if (applied.action === 'applied') {
+        log.warn('Applied pending database repair from previous run', applied as unknown as Record<string, unknown>);
+      }
+
+      // ② 探测：健康 → 什么都不做；小库损坏 → 当场修；大库损坏 → 派后台工人，下次启动换库
+      //
+      // 大库不在启动路径上探测：健康的大库整库扫描是分钟级（实测 16.7 GB 要 155 s），
+      // 等它等于每次启动都冻住两分半 —— 那比"库坏了"更糟。所以大库一律丢到后台，
+      // 探测结论照样能排期重建，只是换库要等到下一次启动。
+      const preOpenRepair = (dbPath2: string, extra?: { probeOnly?: boolean }) => storage.prepareDatabaseFile(dbPath2, {
+        log: (message: string, data?: Record<string, unknown>) => log.warn(message, data),
+        ...(extra ?? {}),
+      });
+
+      let dbBytes = 0;
+      try { dbBytes = statSync(dbPath).size; } catch { /* 拿不到按 0 处理 → 走同步探测 */ }
+
+      const isLarge = dbBytes > storage.LARGE_DATABASE_BYTES;
+
+      const reportRepair = (repair: PreOpenRepairResult) => {
+        if (repair.action === 'repaired') {
+          log.warn('Database repaired before open — original preserved as backup', repair as unknown as Record<string, unknown>);
+        } else if (repair.action === 'scheduled') {
+          log.warn('Database is corrupt — marked for repair, will rebuild before the next open', repair as unknown as Record<string, unknown>);
+        } else if (repair.action === 'aborted') {
+          log.error('Database repair aborted — original left untouched', repair as unknown as Record<string, unknown>);
+        } else if (repair.reason && repair.reason !== 'healthy' && repair.reason !== 'no-database' && repair.reason !== 'probe-deferred-background') {
+          log.warn('Database repair skipped', { reason: repair.reason });
+        }
+      };
+
+      // 排程规则见 runPreOpenRepair：有「需要重建」标记就在**本次独占窗口**里重建；
+      // 没有标记的大库才退到后台探测（探测结果只写标记，下一次启动再重建）。
+      const { backgroundProbeStarted } = await runPreOpenRepair({
+        isLarge,
+        prepare: opts => preOpenRepair(dbPath, opts),
+        report: reportRepair,
+        onBackgroundProbeError: err => log.error('Background pre-open repair check failed (original database untouched)', { error: String(err) }),
+      });
+      if (backgroundProbeStarted) {
+        log.info('Large database — integrity probe deferred to background', { sizeMb: Math.round(dbBytes / 1048576) });
+      }
+    } catch (err) {
+      // 自愈本身失败绝不能让应用起不来：原库未动，照常打开
+      log.error('Pre-open repair check failed (continuing with original database)', { error: String(err) });
+    }
+
     const db = storage.openSqlite(dbPath);
+
+    // 附件 + 后台迁移：blob 根目录与数据库同级，可用 MARKUS_BLOB_DIR 覆盖（测试/多实例）。
+    const blobs = process.env['MARKUS_BLOB_DIR']
+      ? new storage.BlobStore(process.env['MARKUS_BLOB_DIR'])
+      : new storage.BlobStore();
+    const attachmentStore = new storage.AttachmentStore(db, blobs);
+    const migrationRunner = new storage.MigrationRunner(db, attachmentStore, blobs, {
+      batchSize: 50,
+      delayMs: 25,
+    });
 
     const bridge: StorageBridge = {
       runInTransaction: <T>(fn: () => T) => storage.runInTransaction(db, fn),
+      quickCheck: () => storage.quickCheckDatabase(db),
+      databaseSizeBytes: () => { try { return statSync(dbPath).size; } catch { return 0; } },
+      disposeStreams: () => { try { bridge.executionStreamRepo?.dispose?.(); } catch { /* already closed */ } },
+      attachmentStore: attachmentStore,
+      runMigrations: async () => {
+        // 损坏的库无法 VACUUM —— 搬出去的数据不会还盘，只会让磁盘多占一份。
+        // 所以"大载荷出库"要先过完整性闸门：库不健康就只做安全的图片迁移。
+        // 闸门必须在**子进程**里跑：实测 16.7 GB 的库 quick_check 要 155 秒，
+        // 跑在主进程会把服务（含所有 SSE）冻住两分半。
+        const bulk = '002-large-payloads-to-blobs';
+        const pending = (migrationRunner.status() as Array<{ id: string; status: string }>)
+          .find(p => p.id === bulk);
+        if (!pending || pending.status !== 'done') {
+          // 探针是后台任务，不在启动路径上 —— 所以超时按库大小给，而不是固定 20 s。
+          // 实测健康的 16.7 GB 库整表扫描要 155 s；固定 20 s 会让**大库永远拿到
+          // unknown → 永远不做出库**，静默退化成「什么也没省」。
+          let dbMb = 0;
+          try { dbMb = Math.round(statSync(dbPath).size / 1048576); } catch { /* 拿不到按最小值 */ }
+          const probeTimeoutMs = Math.min(15 * 60_000, Math.max(20_000, dbMb * 12));
+          const probe = await storage.probeDatabaseHealthInChild(dbPath, probeTimeoutMs);
+          if (probe.status !== 'ok') {
+            log.warn('Skipping bulk payload offload — database not confirmed healthy', {
+              status: probe.status,
+              detail: probe.detail,
+              elapsedMs: probe.elapsedMs,
+              probeTimeoutMs,
+              why: 'offloading without VACUUM would double disk usage',
+            });
+            return migrationRunner.run({ skip: [bulk] });
+          }
+        }
+        return migrationRunner.run();
+      },
+      migrationStatus: () => migrationRunner.status(),
+      reclaimSpace: () => storage.reclaimSpace(db, {
+        freeDiskBytes: () => {
+          try {
+            const s = statfsSync(dbPath) as unknown as { bsize?: number; bavail?: number };
+            return Number(s.bsize ?? 0) * Number(s.bavail ?? 0);
+          } catch { return 0; }
+        },
+      }),
       orgRepo: new storage.SqliteOrgRepo(db) as any,
       taskRepo: new storage.SqliteTaskRepo(db) as any,
       taskLogRepo: new storage.SqliteTaskLogRepo(db) as any,

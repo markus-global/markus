@@ -26,6 +26,53 @@ const external = [
 ];
 
 async function main() {
+  // `-e` 的源码走**一个命令行参数**，上限由最紧的平台决定，而最紧的是 Windows：
+  // CreateProcess 整条命令行 32767 字符（Linux 单参数 128 KB、macOS 1 MB）。
+  // 留 15% 余量给可执行文件路径与环境变量的拼接。
+  const WINDOWS_ARGV_BUDGET = 28_000;
+  // 后台修复工人：单独打一份 CJS 文本，**内联进主包**。
+  //
+  // 为什么不用独立入口文件：这里的 electron-builder 只 `files: dist/**`，而 esbuild
+  // 只有 main/preload 两个 entry —— `@markus/storage` 是内联进 main 的，
+  // 所以 `dist/repair-worker.js` 从来不存在。运行时 `new URL('./repair-worker.js',
+  // import.meta.url)` 会解析到 `app.asar/dist/repair-worker.js`，
+  // spawn 得到 MODULE_NOT_FOUND；detached + stdio:'ignore' 让它在三次重启里完全不可见
+  // （实测：`ELECTRON_RUN_AS_NODE=1 Markus <asar>/dist/repair-worker.js` → Cannot find module, exit=1）。
+  //
+  // 内联成源码字符串后走 `-e`，这条路径已由健康探针在打包后的 Electron 里实测可用。
+  console.log('  Bundling repair worker (inline)...');
+  const workerBuild = await build({
+    entryPoints: [resolve(__dirname, '../storage/src/repair-worker.ts')],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    target: 'node22',
+    format: 'cjs',
+    external: ['node:sqlite', 'electron'],
+    conditions: ['node', 'import'],
+    resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
+    logLevel: 'silent',
+  });
+  const repairWorkerSource = workerBuild.outputFiles?.[0]?.text ?? '';
+  if (repairWorkerSource.length < 2000) {
+    throw new Error(`repair worker bundle too small (${repairWorkerSource.length} B) — worker would be a no-op`);
+  }
+  // `-e` 的源码是**一个命令行参数**，所以真正的上限由最紧的那个平台决定：
+  //   Windows CreateProcess 整条命令行 32767 字符 ← 最紧
+  //   Linux 单参数 128 KB（MAX_ARG_STRLEN）· macOS 1 MB
+  // 原来按 Linux 的 128 KB 留余量写成 100 KB，那等于**在 Windows 上必炸**却不会有
+  // 任何构建期提示。现在按 Windows 定预算并留 15% 余量。
+  if (repairWorkerSource.length > WINDOWS_ARGV_BUDGET) {
+    throw new Error(
+      `repair worker bundle too large for -e (${repairWorkerSource.length} B > ${WINDOWS_ARGV_BUDGET} B): `
+      + 'Windows caps the whole command line at 32767 chars — ship it as a file instead',
+    );
+  }
+  if (/require\(["']@markus\//.test(repairWorkerSource)) {
+    throw new Error('repair worker bundle has unresolved workspace imports — it would crash in the packaged app');
+  }
+  console.log(`  Repair worker inlined (${Math.round(repairWorkerSource.length / 1024)} KB)`);
+
   console.log('  Building Electron main process...');
   await build({
     entryPoints: [resolve(__dirname, 'src/main.ts')],
@@ -49,6 +96,8 @@ async function main() {
     resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
     define: {
       'process.env.MARKUS_MAS': JSON.stringify(process.env.MARKUS_MAS || 'false'),
+      // 后台修复工人的源码（见文件开头的说明）。缺失时 storage 会抛 repair-worker-missing。
+      __REPAIR_WORKER_SOURCE__: JSON.stringify(repairWorkerSource),
     },
   });
 

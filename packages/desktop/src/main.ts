@@ -189,7 +189,7 @@ app.whenReady().then(async () => {
   const t = (en: string, zh: string) => isZh ? zh : en;
 
   const updateSplash = (msg: string) => {
-    win.webContents.executeJavaScript(
+    return win.webContents.executeJavaScript(
       `document.getElementById('status')&&(document.getElementById('status').textContent=${JSON.stringify(msg)})`,
     ).catch(() => {});
   };
@@ -209,6 +209,13 @@ app.whenReady().then(async () => {
         updateSplash(t('Restarting server (upgrading)...', '正在重启服务（升级中）...'));
         await stopPortProcess(port);
       }
+      // 开库前的自愈（探测 → 备份 → 重建 → 校验 → 替换）全部发生在 startMarkusBackend 里。
+      // 大库重建会阻塞主进程数分钟 —— 先把话说明白，别让用户对着不动的界面猜。
+      await updateSplash(t(
+        'Checking database… (a large database may take a few minutes on first upgrade)',
+        '正在检查数据库…（大库首次升级可能需要几分钟，请勿关闭）',
+      ));
+      await new Promise(resolve => setTimeout(resolve, 150));
       const instance = await startMarkusBackend({
         onProgress: (_step, message) => updateSplash(message),
       });
