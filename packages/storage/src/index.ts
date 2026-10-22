@@ -19,6 +19,8 @@ export type {
 export {
   openSqlite,
   closeSqlite,
+  quickCheckDatabase,
+  setBlobStoreForTests,
   runInTransaction,
   SqliteOrgRepo,
   SqliteAgentRepo,
@@ -74,3 +76,8 @@ export {
   type WorkflowRunRow,
   type WorkflowScheduleRow,
 } from './sqlite-storage.js';
+
+// 大字段外置 + 数据库维护（M1/M2/M4/M5）。唯一机制见 blob-store.ts。
+export { BlobStore, defaultBlobRoot, isBlobRef, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
+export { externalizeLargeFields, pruneTerminalMailboxItems, EXTERNALIZE_TARGETS } from './db-maintenance.js';
+export type { ExternalizeOptions, ExternalizeResult, PruneOptions, PruneResult } from './db-maintenance.js';

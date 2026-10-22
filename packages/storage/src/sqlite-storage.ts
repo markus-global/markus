@@ -12,8 +12,43 @@ import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
+import { StreamWriteBatcher } from './stream-write-batcher.js';
+import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
 
 type SqlParams = SQLInputValue[];
+
+/**
+ * 大字段外置阈值（字节）。
+ *
+ * 超过这个大小的 JSON 载荷写到内容寻址的文件里，行里只留
+ * `{"$blob":"<sha256>","$bytes":N}`；读取时透明还原，所以上层与前端看到的
+ * 数据形状完全不变。实测依据：metadata 占 `agent_activity_logs` 的 84%、
+ * `task_logs` 的 86%、`chat_messages` 的 97%（含 base64 图片）。
+ */
+const BLOB_THRESHOLD_BYTES = 8 * 1024;
+
+let _blobStore: BlobStore | null = null;
+
+/** 唯一实例入口 —— 别在别处 new BlobStore() 指向别的根。 */
+function blobStore(): BlobStore {
+  if (!_blobStore) _blobStore = new BlobStore();
+  return _blobStore;
+}
+
+/** 测试钩子：替换 blob 根目录（传 null 复位）。 */
+export function setBlobStoreForTests(store: BlobStore | null): void {
+  _blobStore = store;
+}
+
+/** 写方向：大 JSON 投影成指针。 */
+function projectJson(json: string): string {
+  return projectJsonForStorage(json, blobStore(), BLOB_THRESHOLD_BYTES);
+}
+
+/** 读方向：指针透明还原成原始 JSON。 */
+function resolveJson(json: unknown): string {
+  return resolveJsonFromStorage(json as string | null | undefined, blobStore());
+}
 
 const log = createLogger('sqlite-storage');
 
@@ -29,7 +64,10 @@ function toJson(v: unknown): string {
   return JSON.stringify(v ?? null);
 }
 function fromJson<T = unknown>(v: string | null): T {
-  return v ? (JSON.parse(v) as T) : (null as T);
+  if (!v) return null as T;
+  // 透明还原：大字段外置后行里只留 {"$blob":...} 指针（见 blob-store.ts）。
+  // 收口在唯一的解析入口，所以没有任何读路径需要知道"外置"这件事存在。
+  return JSON.parse(resolveJson(v)) as T;
 }
 function toDate(v: string | null): Date | null {
   return v ? new Date(v) : null;
@@ -942,6 +980,37 @@ export function closeSqlite(): void {
   if (_db) {
     _db.close();
     _db = null;
+  }
+}
+
+/**
+ * Database integrity probe (M0 of the storage plan).
+ *
+ * `PRAGMA quick_check` walks every b-tree and reports pages that cannot be
+ * initialised. It is the only cheap way to find out that a table is damaged —
+ * point lookups keep working on a corrupt database, so the app looks healthy
+ * until something does a full scan (export, aggregate, retention) and throws
+ * SQLITE_CORRUPT.
+ *
+ * Never throws: the whole point is to report the error instead of letting it
+ * surface as an unexplained failure somewhere else.
+ */
+export interface DatabaseHealth {
+  ok: boolean;
+  errors: string[];
+  elapsedMs: number;
+}
+
+export function quickCheckDatabase(db: DatabaseSync, maxErrors = 3): DatabaseHealth {
+  const started = Date.now();
+  try {
+    const rows = db.prepare('PRAGMA quick_check').all() as Array<Record<string, unknown>>;
+    const errors = rows
+      .map(r => String(Object.values(r)[0] ?? ''))
+      .filter(v => v && v !== 'ok');
+    return { ok: errors.length === 0, errors: errors.slice(0, maxErrors), elapsedMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, errors: [String(err)], elapsedMs: Date.now() - started };
   }
 }
 
@@ -2015,7 +2084,7 @@ export class SqliteTaskLogRepo {
         data.seq,
         data.type,
         data.content,
-        toJson(data.metadata ?? {}),
+        projectJson(toJson(data.metadata ?? {})),
         data.executionRound ?? 1,
         ts
       );
@@ -2435,7 +2504,7 @@ export class SqliteChatSessionRepo {
         agentId,
         role,
         content,
-        metadata ? toJson(metadata) : null,
+        metadata ? projectJson(toJson(metadata)) : null,
         tokensUsed ?? 0,
         ts
       );
@@ -4375,7 +4444,7 @@ export class SqliteActivityRepo {
       .prepare(
         'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
       )
-      .run(data.activityId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), now());
+      .run(data.activityId, data.seq, data.type, data.content, projectJson(toJson(data.metadata ?? {})), now());
   }
 
   queryActivities(
@@ -4509,8 +4578,65 @@ export interface ExecutionStreamRow {
   createdAt: string;
 }
 
+interface BufferedStreamRow {
+  id: string;
+  sourceType: string;
+  sourceId: string;
+  agentId: string;
+  seq: number;
+  type: string;
+  content: string;
+  metadataJson: string;
+  executionRound: number | null;
+  createdAt: string;
+}
+
 export class SqliteExecutionStreamRepo {
-  constructor(private db: DatabaseSync) {}
+  /**
+   * Events are buffered and written one transaction per batch instead of one
+   * commit per event — see stream-write-batcher.ts for the measurements.
+   */
+  private readonly batcher: StreamWriteBatcher<BufferedStreamRow>;
+
+  constructor(private db: DatabaseSync) {
+    this.batcher = new StreamWriteBatcher<BufferedStreamRow>({
+      writer: rows => this.writeBatch(rows),
+    });
+  }
+
+  private writeBatch(rows: BufferedStreamRow[]): void {
+    if (rows.length === 0) return;
+    const stmt = this.db.prepare(
+      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+    );
+    let began = false;
+    try {
+      // Join an already-open outer transaction instead of nesting into it.
+      try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
+      for (const r of rows) {
+        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.executionRound, r.createdAt);
+      }
+      if (began) this.db.exec('COMMIT');
+    } catch (err) {
+      if (began) { try { this.db.exec('ROLLBACK'); } catch { /* already unwound */ } }
+      throw err;
+    }
+  }
+
+  /** Force buffered events to disk. Every read path calls this first (I1). */
+  flush(): void {
+    this.batcher.flush();
+  }
+
+  /** Flush and stop the flush timer (clean shutdown). */
+  dispose(): void {
+    this.batcher.dispose();
+  }
+
+  /** Diagnostic surface: rows actually written / batches used / still buffered. */
+  stats(): { written: number; batches: number; pending: number } {
+    return this.batcher.stats();
+  }
 
   append(data: {
     sourceType: string;
@@ -4524,11 +4650,20 @@ export class SqliteExecutionStreamRepo {
   }): ExecutionStreamRow {
     const id = generateId('esl');
     const ts = now();
-    this.db
-      .prepare(
-        'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
-      )
-      .run(id, data.sourceType, data.sourceId, data.agentId, data.seq, data.type, data.content, toJson(data.metadata ?? {}), data.executionRound ?? null, ts);
+    // Row construction stays synchronous (callers use id/createdAt immediately);
+    // only the write is deferred.
+    this.batcher.push({
+      id,
+      sourceType: data.sourceType,
+      sourceId: data.sourceId,
+      agentId: data.agentId,
+      seq: data.seq,
+      type: data.type,
+      content: data.content,
+      metadataJson: toJson(data.metadata ?? {}),
+      executionRound: data.executionRound ?? null,
+      createdAt: ts,
+    });
     return {
       id,
       sourceType: data.sourceType,
@@ -4544,6 +4679,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getBySource(sourceType: string, sourceId: string): ExecutionStreamRow[] {
+    this.flush();
     const rows = this.db
       .prepare('SELECT * FROM execution_stream_logs WHERE source_type = ? AND source_id = ? ORDER BY seq ASC')
       .all(sourceType, sourceId) as Record<string, unknown>[];
@@ -4551,6 +4687,7 @@ export class SqliteExecutionStreamRepo {
   }
 
   getMaxSeq(sourceType: string, sourceId: string): number {
+    this.flush();
     const row = this.db
       .prepare('SELECT MAX(seq) as maxSeq FROM execution_stream_logs WHERE source_type = ? AND source_id = ?')
       .get(sourceType, sourceId) as { maxSeq: number | null } | undefined;
@@ -4558,6 +4695,9 @@ export class SqliteExecutionStreamRepo {
   }
 
   deleteBySource(sourceType: string, sourceId: string): void {
+    // I1: flush first — otherwise buffered rows land AFTER the delete and the
+    // deleted source comes back from the dead.
+    this.flush();
     this.db.prepare('DELETE FROM execution_stream_logs WHERE source_type = ? AND source_id = ?').run(sourceType, sourceId);
   }
 
@@ -4648,7 +4788,7 @@ export class SqliteMailboxRepo {
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
-        item.status, toJson(item.payload), toJson(item.metadata ?? {}),
+        item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
