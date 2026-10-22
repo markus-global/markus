@@ -117,6 +117,8 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
+import { shouldChainDmReply } from './dm-chaining.js';
+import { AgentWakeBudget } from './wake-budget.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -2206,6 +2208,13 @@ export class APIServer {
   private static readonly A2A_COOLDOWN_MS = 30_000;
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
   private a2aCooldowns = new Map<string, Map<string, number>>();
+  /**
+   * Global (per-agent) wake ceiling. The per-channel cooldown above is not a
+   * control on its own: N channels = N allowances. Measured 2026-10-19/20, one
+   * agent logged 43 turns in 35 minutes across 10 DM channels. Exhausted budget
+   * means "deliver, don't wake" — the peer sees it on its next turn.
+   */
+  private wakeBudget = new AgentWakeBudget();
 
   private cleanStaleCooldowns(): void {
     const now = Date.now();
@@ -2601,8 +2610,17 @@ export class APIServer {
       const isDmChannel = channel.startsWith('dm:a2a:');
 
       if (isDmChannel) {
-        // DM: auto-trigger the other party to respond (IM-style back-and-forth).
-        // No @mention required — every DM reply triggers the peer.
+        // DM: chain to the peer ONLY when this reply actually asks them for
+        // something. MCP's notification semantics are one-way ("receiver MUST
+        // NOT send a response"); auto-replying to every DM is what produced the
+        // measured reply storm (43 turns / 35 min, 103 DMs to 10 peers).
+        const chainDecision = shouldChainDmReply(cleanReply, 'agent');
+        if (!chainDecision.chain) {
+          log.info('DM chain skipped — reply asks nothing', {
+            channel, reason: chainDecision.reason,
+          });
+          return;
+        }
         const depth = (chainCtx?.depth ?? 0) + 1;
         if (depth <= APIServer.DM_MAX_DEPTH) {
           const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
@@ -2621,6 +2639,17 @@ export class APIServer {
               return;
             }
             channelCooldowns.set(peerAgentId, now);
+
+            // Global per-agent ceiling: the channel cooldown above cannot bound
+            // an agent that is active in many channels. Exhausted budget =
+            // "deliver, don't wake" (the message is already persisted).
+            const budget = this.wakeBudget.tryConsume(peerAgentId);
+            if (!budget.allowed) {
+              log.info('DM chain suppressed by global wake budget', {
+                channel, peerAgentId, depth, remaining: budget.remaining,
+              });
+              return;
+            }
 
             // Load fresh channel context including the just-persisted reply
             let freshContext: Array<{ role: string; content: string }> = [];
