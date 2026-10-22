@@ -202,11 +202,10 @@ jobs:
       # 没有构建产物时模块解析会直接失败。
       - name: Build TypeScript
         run: pnpm build:ts
-      # 临时诊断步骤（定位完立刻删）：repair.test.ts 是唯一一个在 Windows 上
-      # 从头到尾一个结果都没报的文件。单独跑它 + verbose，日志就会指出**哪个用例**
-      # 没跑完。**必须排在全量套件之前** —— 放后面的话，全量一挂死它就永远轮不到。
-      - name: 'Diagnostic — repair.test.ts only'
-        run: pnpm vitest run packages/storage/test/repair.test.ts --reporter=verbose --testTimeout=60000
+      # 临时诊断步骤（定位完立刻删）：直接给探针计时，把「慢」和「不返回」分开。
+      # 放在全量套件之前 —— 放后面的话，全量一挂死它就永远轮不到。
+      - name: 'Diagnostic — probe timing'
+        run: node scripts/diag-probe.mjs
 
       - name: Storage test suite
         # 显式给用例级超时：Windows 上真出现过「整个 job 挂到 20 分钟被杀、日志里
