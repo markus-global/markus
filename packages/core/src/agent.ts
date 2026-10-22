@@ -2286,7 +2286,17 @@ export class Agent {
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
-              if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+              // 聊天回合：**只在它一个字的答案都没有时**才收口。
+              // 旧实现无条件把 human_chat 排除在收口之外，理由是「prompt 纪律会结束
+              // 回合，省一次 LLM」——2026-10-22 实测反例：一个聊天回合只调了工具
+              // （discover_tools + background_exec）就结束了，既没调 end_turn、也没
+              // 产出任何文字 → SSE 把空串落库，用户看到一条 0 字回复，而真正的答案
+              // 被另一个回合（后台回调）产出、且没有任何投递通道。
+              // 判据只用「有没有文字」：已经答完的回合不该再烧一次 LLM（那是旧例外的
+              // 合理性），一个字都没有的回合必须自己收口（那是它的漏洞）。
+              const owesAnswer =
+                item.sourceType !== 'human_chat' || reply.trim().length === 0;
+              if (needsTurnCompletion && owesAnswer) {
                 reply = this.acceptTurnReply(
                   await this.ensureTurnCompleted(
                     reply,
@@ -2347,7 +2357,10 @@ export class Agent {
             senderInfo,
             opts,
           );
-          if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+          // 同上：聊天回合只在「没有任何文字」时才收口（见流式分支的说明）。
+          const owesAnswer =
+            item.sourceType !== 'human_chat' || reply.trim().length === 0;
+          if (needsTurnCompletion && owesAnswer) {
             reply = this.acceptTurnReply(
               await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId),
               item,
@@ -2828,6 +2841,65 @@ export class Agent {
    * 另外：只要 hint 带 DB 身份，就顺手在**处理该 item 的工作区**里写 DB→内存绑定。
    * （HTTP 线程读不到 worker 的指针，写在那里只会得到陈旧/空绑定。）
    */
+  /**
+   * 并发锁键：**这个 item 实际将要跑进去的记忆会话**（`session:<sess_*>`）。
+   *
+   * 见 `AttentionDelegate.sessionLockKey` 的说明（2026-10-22 事故）。要点：实体键来自
+   * payload 声明，而回合真正改写的资源是「它跑进去的那个会话」——两者可以不重合
+   * （`callback_result` 实体键退化成 `system:<agentId>`，却跑在别人的会话里）。
+   *
+   * 这里的解析**必须与 `resolveTurnSession` 同源**（同一个 `normalizeTurnSessionHint`
+   * 归一 + 同一套 db→memory 绑定查询），否则又是两把量不同资源的尺子。区别只有一点：
+   * 本方法是**只读窥视**——不切换 `currentSessionId`、不建会话、不写绑定。
+   */
+  sessionLockKey(item: MailboxItem): string | undefined {
+    const sessionId = this.peekTurnSessionId(item);
+    return sessionId ? `session:${sessionId}` : undefined;
+  }
+
+  /**
+   * 只读地回答「这一轮会跑进哪个记忆会话」。推不出来时返回 undefined：
+   * - `new`：会开一个全新会话，独占，无可争夺；
+   * - `existing` 且无任何存活绑定：`restoreSessionFromHistory` 会新建内存会话，同上。
+   */
+  private peekTurnSessionId(item: MailboxItem): string | undefined {
+    const extra = item.payload.extra ?? {};
+    const hint = (extra.sessionHint as TurnSessionHint | undefined)
+      ?? normalizeTurnSessionHint({
+        sessionRestore: extra.sessionRestore as TurnSessionRestorePayload | null | undefined,
+        dbSessionId: extra.dbSessionId as string | undefined,
+        sessionId: extra.sessionId as string | undefined,
+        channelKey: extra.channelKey as string | undefined,
+        sourceType: item.sourceType,
+      });
+
+    switch (hint.kind) {
+      case 'memory':
+        // 回调回到发起轮（background_exec / a2a_reply 的 originSessionId）——正是
+        // 2026-10-22 那次「回调与聊天回合并发写同一会话」的入口。
+        return this.memory.getSession(hint.memorySessionId)
+          ? hint.memorySessionId
+          : this.currentSessionId;
+      case 'existing': {
+        const preferred = hint.preferredMemorySessionId
+          ? this.memory.getSession(hint.preferredMemorySessionId)
+          : undefined;
+        if (preferred && preferred.agentId === this.id && preferred.messages.length > 0) {
+          return preferred.id;
+        }
+        const bound = this.dbSessionMap.get(hint.dbSessionId);
+        return bound && this.memory.getSession(bound) ? bound : undefined;
+      }
+      case 'new':
+        return undefined;
+      case 'system':
+      case 'unknown':
+      default:
+        // 没有会话身份 → `resolveTurnSession` 保持当前会话，这一轮就跑在它里面。
+        return this.currentSessionId;
+    }
+  }
+
   private resolveTurnSession(hint: TurnSessionHint, item: MailboxItem): void {
     switch (hint.kind) {
       case 'existing':

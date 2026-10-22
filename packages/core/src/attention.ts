@@ -114,6 +114,26 @@ export interface AttentionDelegate {
    */
   getWorkerWorkspace?(workerId: number): SessionWorkspace | undefined;
   /**
+   * 该 item **实际将要运行的记忆会话**，形如 `session:<sess_*>`；无法确定时返回
+   * undefined（例如「新会话」——它将独占一个全新会话，无可争夺）。
+   *
+   * ## 为什么锁键必须来自这里，而不是 item 的 payload（2026-10-22 事故）
+   *
+   * 实体键由 `resolveEntityKeys` 从 payload **声明**的信息推出。但一个回合真正改写
+   * 的资源是「它将要跑进去的那个记忆会话」，这两者可以不重合：
+   * `callback_result` 不带任何会话字段 → 退化成 `system:<agentId>` 这把全局键，可它
+   * 实际运行在 `this.currentSessionId`（即某个正在跑的聊天会话）里。实测：
+   * worker 1 持有 `conv:cs_9809eb…` 跑聊天回合，worker 2 拿到 `system:agt_…` 就在
+   * **同一个记忆会话**里并发跑起了后台回调回合 —— 两个回合同时写一份会话记忆，
+   * 回调回合还吃掉了聊天回合的收口续跑，产出的话没有任何投递通道（它没有
+   * onEvent / responsePromise），用户看到的是一条 0 字回复。
+   *
+   * 所以锁的**键必须由「回合会跑进哪个会话」决定**，而不是由「消息自称属于谁」
+   * 决定。实现必须与 `resolveTurnSession` 用同一套解析（同一个事实、同一个解析点），
+   * 否则又是两把量不同资源的尺子。
+   */
+  sessionLockKey?(item: MailboxItem): string | undefined;
+  /**
    * 并发交接钩子（P2c）：worker 处理 item 的关键生命周期事件。
    * - 'declared'：worker 开始处理 item（声明意图，防重复动作）
    * - 'done'：worker 处理完成（沉淀结论 + 遗留）
@@ -804,6 +824,20 @@ export class AttentionController {
    * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
    * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
    */
+  /**
+   * 一个 item 的全部并发锁键 = 实体亲和键 ∪ 「它将跑进去的会话」键。
+   *
+   * 两者缺一不可：实体键防同一任务/需求/会话被两个 worker 同时改；会话键防两个
+   * **不同类型的 item**（如人类消息与后台回调）在同一份记忆会话里并发跑回合。
+   * 声明式的实体维度永远推不出后者的存在（payload 里没有这个事实），所以由
+   * delegate 用与 `resolveTurnSession` 同一套解析来表态。
+   */
+  private lockKeysFor(item: MailboxItem): string[] {
+    const keys = this.mailbox.entityKeysOf(item);
+    const sessionKey = this.delegate?.sessionLockKey?.(item);
+    return sessionKey && !keys.includes(sessionKey) ? [...keys, sessionKey] : keys;
+  }
+
   private async concurrentWorkerLoop(workerId: number, gen: number): Promise<void> {
     this.activeWorkerIds.add(workerId);
     const wsState = this.workerState(workerId);
@@ -829,7 +863,7 @@ export class AttentionController {
         }
 
         // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
-        const entityKeys = this.mailbox.entityKeysOf(item);
+        const entityKeys = this.lockKeysFor(item);
         const entityKey = entityKeys[0];
         const holder = item.id;
         if (!this.mailbox.lockEntities(entityKeys, holder)) {

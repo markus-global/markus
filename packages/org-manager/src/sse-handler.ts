@@ -373,7 +373,8 @@ export class SSEHandler {
         if (treatAsStopped) msgMeta.isStopped = true;
         if (isEmptyTerminal && !treatAsStopped) msgMeta.isError = true;
         if (isEmptyTerminal) msgMeta.emptyReply = true;
-        const storedContent = persistReply || (isEmptyTerminal ? '' : persistReply);
+        // 空终态就是真的没有文字可写（既无回复也无任何文本/工具段落）。
+        const storedContent = persistReply;
         try {
           await this.options.persistAssistantMessage(
             this.sessionId,
