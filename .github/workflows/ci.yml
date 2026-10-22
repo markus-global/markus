@@ -172,17 +172,17 @@ jobs:
 #   · `new URL(...).pathname` 在 Windows 返回 `/C:/...`（前导斜杠）→ 工人文件
 #     被判为缺失、修复被拒绝派单（已改用 fileURLToPath —— 这条正是本 job 要守的）；
 #   · `windowsHide` 不设 → 每次派工弹一个黑框。
-# 这些都属于「只在打包产物 + 某个平台才发作」的类型：人工记着去查一定会漏。
+# 另外两次「整套 20 分钟跑不完」都是同一个根因：**每条语句一次隐式提交**。
+# schema 自举 100+ 条 DDL、测试夹具 6300 条 INSERT —— NTFS 上一次提交 ~20 ms，
+# APFS 上 0.13 ms。同一个 bug 在 mac 上只是慢一点，在 Windows 上直接超时。
 #
-# Windows 先以 continue-on-error 起步，观察一次真实结果再转阻塞。
-# 一个从第一天就长期红着的门禁 = 没人看 = 迟早被删（与文件顶部同一条教训）。
-# 转阻塞的条件只有一个：看到 windows-latest 绿过一次，就删掉下面那行
-# `continue-on-error: ${{ matrix.os == 'windows-latest' }}`。
+# Windows 曾经以 continue-on-error 起步（理由：从第一天就长期红着的门禁没人看，
+# 迟早被删）。2026-10-22 首次全绿 2m06s（此前跑满 20 分钟被杀），已按既定条件
+# 转为**阻塞**：上面 6 处平台缺陷都已被它挡住过一次，现在它守得住就不会再退化。
 # ─────────────────────────────────────────────────────────────────────────────
   storage-cross-platform:
     name: storage tests (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'windows-latest' }}
     timeout-minutes: 20
     strategy:
       fail-fast: false
