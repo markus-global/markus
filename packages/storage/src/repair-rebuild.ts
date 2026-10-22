@@ -181,11 +181,10 @@ function copyRange(
 }
 
 /** 重放 schema + 搬数据。返回逐表报告。 */
-export function rebuildInto(srcPath: string, workPath: string, log: Log): { tables: RepairTableReport[]; skippedRows: number } {
+export function rebuildInto(srcPath: string, workPath: string, log: Log): { tables: RepairTableReport[] } {
   const src = openReadOnly(srcPath);
   const dst = new DatabaseSync(workPath);
   const tables: RepairTableReport[] = [];
-  let skippedRows = 0;
 
   try {
     // 目标文件是**一次性**的：校验通过才替换，失败就丢弃。所以不需要 WAL/fsync，
@@ -247,7 +246,7 @@ export function rebuildInto(srcPath: string, workPath: string, log: Log): { tabl
     try { dst.close(); } catch { /* ignore */ }
   }
 
-  return { tables, skippedRows };
+  return { tables };
 }
 
 /** 校验恢复库：自身完整 + 每张表行数与报告一致。 */

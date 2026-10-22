@@ -17,10 +17,8 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
-import type { AttachmentStore } from './attachments-store.js';
-import { isDataUrl, isAttachmentRef, type AttachmentRef } from './attachments-store.js';
-import { BlobStore } from './blob-store.js';
-import { projectJsonForStorage, isBlobRef } from './blob-store.js';
+import { isDataUrl, isAttachmentRef, type AttachmentStore, type AttachmentRef } from './attachments-store.js';
+import { projectJsonForStorage, isBlobRef, type BlobStore } from './blob-store.js';
 
 export interface MigrationContext {
   db: DatabaseSync;
