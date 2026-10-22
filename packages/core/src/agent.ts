@@ -53,6 +53,7 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
+import { summarizeForMailbox } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -1394,7 +1395,9 @@ export class Agent {
     }
 
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      // Single writer for the display excerpt (mailbox-summary.ts). A bare
+      // `slice(0, 100)` looks like a complete short message and hides the loss.
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       taskId: options?.taskId,
       requirementId: options?.requirementId,
@@ -1459,7 +1462,7 @@ export class Agent {
     images?: string[],
   ): void {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: { images },
     };
@@ -1490,7 +1493,7 @@ export class Agent {
     options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: {
         images,
@@ -1606,7 +1609,7 @@ export class Agent {
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: {
         sessionId,
