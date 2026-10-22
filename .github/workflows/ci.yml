@@ -202,11 +202,6 @@ jobs:
       # 没有构建产物时模块解析会直接失败。
       - name: Build TypeScript
         run: pnpm build:ts
-      # 临时诊断步骤（定位完立刻删）：直接给探针计时，把「慢」和「不返回」分开。
-      # 放在全量套件之前 —— 放后面的话，全量一挂死它就永远轮不到。
-      - name: 'Diagnostic — probe timing'
-        run: node scripts/diag-probe.mjs
-
       - name: Storage test suite
         # 显式给用例级超时：Windows 上真出现过「整个 job 挂到 20 分钟被杀、日志里
         # 连卡在哪个文件都没有」的情况 —— 一次挂死等于零信息。有了这个上限，挂死

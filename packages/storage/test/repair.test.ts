@@ -25,6 +25,13 @@ function makeHealthyDb(path: string): void {
   const db = new DatabaseSync(path);
   db.exec('CREATE TABLE keep (id INTEGER PRIMARY KEY, v TEXT)');
   db.exec('CREATE TABLE seq_t (id INTEGER PRIMARY KEY AUTOINCREMENT, v TEXT)');
+  // 6300 条逐条 INSERT = 6300 次隐式提交 = 6300 次 fsync。WAL + synchronous=FULL
+  // 下 Windows 实测 ~20 ms/次 → 这个夹具要跑约 2 分钟，而 vitest 的用例超时是 60 秒，
+  // 于是 repair.test.ts 在 CI 上 8/11 个用例直接超时（macOS 上 fsync 只要 0.13 ms，
+  // 整套夹具 0.8 秒，所以本地永远是绿的）。
+  // 修法是「批量写放进一个事务」—— 真实客户端批量导入本来也该这么写，
+  // 不是为了让测试变快而放宽断言。
+  db.exec('BEGIN');
   const ins = db.prepare('INSERT INTO keep (v) VALUES (?)');
   for (let i = 0; i < 300; i += 1) ins.run(`row-${i}-${'x'.repeat(120)}`);
   const ins2 = db.prepare('INSERT INTO seq_t (v) VALUES (?)');
@@ -33,6 +40,7 @@ function makeHealthyDb(path: string): void {
   db.exec('CREATE TABLE doomed (id INTEGER PRIMARY KEY, v TEXT)');
   const ins3 = db.prepare('INSERT INTO doomed (v) VALUES (?)');
   for (let i = 0; i < 6000; i += 1) ins3.run(`d-${i}-${'y'.repeat(200)}`);
+  db.exec('COMMIT');
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
   db.close();
 }
