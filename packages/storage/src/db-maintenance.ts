@@ -135,6 +135,53 @@ export function externalizeLargeFields(db: DatabaseSync, opts: ExternalizeOption
   return result;
 }
 
+/**
+ * 把已释放的页真正还回文件系统。
+ *
+ * 为什么必须做：SQLite 的 `auto_vacuum` 默认是 OFF，删掉/搬走的行只是进了 freelist，
+ * **文件大小一点不变**。实测这个库搬走 4.4 GB 后 `du` 还是 17 GB —— 如果不 VACUUM，
+ * 用户会看到磁盘反而多占了 5 GB（旧页 + 新 blob），这是不可接受的"升级体验"。
+ *
+ * 判据用 `freelist_count`（真正可回收页数），不是"跑过迁移没"。
+ * 大库 VACUUM 需要与库等量的临时空间，所以先预检空闲磁盘。
+ */
+export function reclaimSpace(
+  db: DatabaseSync,
+  opts: { minFreeBytes?: number; freeDiskBytes?: () => number } = {},
+): { reclaimed: boolean; freeBytes: number; reason?: string; durationMs?: number } {
+  const minFree = opts.minFreeBytes ?? 200 * 1024 * 1024;
+  let pageSize = 4096;
+  let freePages = 0;
+  let pageCount = 0;
+  try {
+    pageSize = Number((db.prepare('PRAGMA page_size').get() as { page_size?: number })?.page_size ?? 4096);
+    freePages = Number((db.prepare('PRAGMA freelist_count').get() as { freelist_count?: number })?.freelist_count ?? 0);
+    pageCount = Number((db.prepare('PRAGMA page_count').get() as { page_count?: number })?.page_count ?? 0);
+  } catch {
+    return { reclaimed: false, freeBytes: 0, reason: 'pragma-failed' };
+  }
+
+  const freeBytes = pageSize * freePages;
+  if (freeBytes < minFree) return { reclaimed: false, freeBytes, reason: 'below-threshold' };
+
+  if (opts.freeDiskBytes) {
+    const disk = opts.freeDiskBytes();
+    const need = pageSize * pageCount * 1.15;
+    if (disk > 0 && disk < need) {
+      return { reclaimed: false, freeBytes, reason: `not-enough-disk (${Math.round(disk / 1048576)}MB < ${Math.round(need / 1048576)}MB)` };
+    }
+  }
+
+  const t0 = Date.now();
+  try {
+    db.exec('PRAGMA busy_timeout = 30000');
+    db.exec('VACUUM');
+    return { reclaimed: true, freeBytes, durationMs: Date.now() - t0 };
+  } catch (err) {
+    return { reclaimed: false, freeBytes, reason: `vacuum-failed: ${String(err).slice(0, 120)}` };
+  }
+}
+
 export interface PruneOptions {
   olderThanDays?: number;
   dryRun?: boolean;

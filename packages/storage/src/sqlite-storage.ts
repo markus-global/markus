@@ -14,6 +14,7 @@ import {
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
+import { expandImageRefs } from './attachments-store.js';
 
 type SqlParams = SQLInputValue[];
 
@@ -542,6 +543,28 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   dedup_key TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
+
+-- 附件元数据：图片/文件字节存在 ~/.markus/blobs/<sha>（内容寻址），这里只存索引。
+-- 存在的意义：把 base64 从消息行里彻底赶出去，同时让读取侧能按 sha 找回 mime。
+CREATE TABLE IF NOT EXISTS attachments (
+  sha256 TEXT PRIMARY KEY,
+  mime TEXT NOT NULL,
+  bytes INTEGER NOT NULL,
+  name TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 后台数据迁移的进度表：断点续跑的唯一事实源。
+-- 与 PRAGMA user_version（结构版本）分工：结构版本是"建表加列"，这张表是"搬数据"。
+CREATE TABLE IF NOT EXISTS data_migrations (
+  id TEXT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'pending',
+  cursor INTEGER NOT NULL DEFAULT 0,
+  processed INTEGER NOT NULL DEFAULT 0,
+  total INTEGER,
+  last_error TEXT,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
 
@@ -3011,7 +3034,8 @@ export class SqliteChatSessionRepo {
       agentId: r['agent_id'],
       role: r['role'],
       content: r['content'],
-      metadata: fromJson(r['metadata'] as string),
+      // imageRefs → images(URL)：前端始终看到 `images: string[]`，无需知道背后是文件。
+      metadata: expandImageRefs(fromJson(r['metadata'] as string) as Record<string, unknown> | null),
       tokensUsed: r['tokens_used'],
       createdAt: toDate(r['created_at'] as string)!,
     };
@@ -3086,7 +3110,7 @@ export class SqliteChannelMessageRepo {
       senderName: r['sender_name'],
       text: r['text'],
       mentions: fromJson<string[]>(r['mentions'] as string),
-      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
+      metadata: expandImageRefs(fromJson<Record<string, unknown>>(r['metadata'] as string)),
       replyToId: (r['reply_to_id'] as string) ?? undefined,
       replyToSender: (r['reply_to_sender'] as string) ?? undefined,
       replyToText: (r['reply_to_text'] as string) ?? undefined,

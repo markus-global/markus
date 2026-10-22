@@ -89,6 +89,7 @@ import { setupOutboundDispatch } from './outbound.js';
 import { buildApprovalCardResolution, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
+import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
@@ -2926,6 +2927,11 @@ async function startServerCore(
     shutdown,
   };
 
+  // 后台自维护（完整性自检 + 旧库数据迁移）必须在这里排期。
+  // 它在 headless 分支**之前**，因为桌面端走的就是 headless：把这段放到
+  // 后面的「非 headless 尾段」，等于对所有桌面用户关掉自动迁移（实测踩过）。
+  scheduleBackgroundMaintenance(storage, log);
+
   // In headless mode (Electron), return without blocking
   if (headless) {
     // Still start restored agents in background
@@ -2961,40 +2967,6 @@ async function startServerCore(
       log.warn('Failed to auto-resume in_progress tasks', { error: String(err) });
     }
   });
-
-  // M0: integrity probe — auto-runs only on small databases.
-  // Measured on a real 17.9 GB ledger: `PRAGMA quick_check(1)` takes 8.3 s and
-  // blocks the event loop for the whole scan (the scan is synchronous inside
-  // SQLite). Freezing streaming/API for 8 s at startup is not an acceptable
-  // trade, so the automatic check is gated by size; large databases get an
-  // on-demand check instead of a silent one.
-  const AUTO_CHECK_MAX_BYTES = 512 * 1024 * 1024;
-  if (!process.env.VITEST && storage) {
-    const dbSize = storage.databaseSizeBytes();
-    if (dbSize > AUTO_CHECK_MAX_BYTES) {
-      log.info('Database integrity auto-check skipped (large database) — run on demand', {
-        sizeMb: Math.round(dbSize / 1048576),
-      });
-    } else {
-      const t = setTimeout(() => {
-        try {
-          const health = storage.quickCheck();
-          if (health.ok) {
-            log.info('Database integrity check passed', { elapsedMs: health.elapsedMs });
-          } else {
-            log.error('Database integrity check FAILED — some tables cannot be scanned', {
-              errors: health.errors,
-              elapsedMs: health.elapsedMs,
-            });
-          }
-        } catch (err) {
-          log.warn('Database integrity check could not run', { error: String(err) });
-        }
-      }, 30_000);
-      const unref = (t as unknown as { unref?: () => void }).unref;
-      if (typeof unref === 'function') (t as unknown as { unref: () => void }).unref();
-    }
-  }
 
   process.on('SIGINT', () => {
     console.error('\nShutting down...');

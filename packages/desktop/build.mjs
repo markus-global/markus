@@ -26,6 +26,42 @@ const external = [
 ];
 
 async function main() {
+  // 后台修复工人：单独打一份 CJS 文本，**内联进主包**。
+  //
+  // 为什么不用独立入口文件：这里的 electron-builder 只 `files: dist/**`，而 esbuild
+  // 只有 main/preload 两个 entry —— `@markus/storage` 是内联进 main 的，
+  // 所以 `dist/repair-worker.js` 从来不存在。运行时 `new URL('./repair-worker.js',
+  // import.meta.url)` 会解析到 `app.asar/dist/repair-worker.js`，
+  // spawn 得到 MODULE_NOT_FOUND；detached + stdio:'ignore' 让它在三次重启里完全不可见
+  // （实测：`ELECTRON_RUN_AS_NODE=1 Markus <asar>/dist/repair-worker.js` → Cannot find module, exit=1）。
+  //
+  // 内联成源码字符串后走 `-e`，这条路径已由健康探针在打包后的 Electron 里实测可用。
+  console.log('  Bundling repair worker (inline)...');
+  const workerBuild = await build({
+    entryPoints: [resolve(__dirname, '../storage/src/repair-worker.ts')],
+    bundle: true,
+    write: false,
+    platform: 'node',
+    target: 'node22',
+    format: 'cjs',
+    external: ['node:sqlite', 'electron'],
+    conditions: ['node', 'import'],
+    resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
+    logLevel: 'silent',
+  });
+  const repairWorkerSource = workerBuild.outputFiles?.[0]?.text ?? '';
+  if (repairWorkerSource.length < 2000) {
+    throw new Error(`repair worker bundle too small (${repairWorkerSource.length} B) — worker would be a no-op`);
+  }
+  // Linux 单参数上限 128 KB（MAX_ARG_STRLEN），留一半余量。
+  if (repairWorkerSource.length > 100_000) {
+    throw new Error(`repair worker bundle too large for -e (${repairWorkerSource.length} B) — ship it as a file instead`);
+  }
+  if (/require\(["']@markus\//.test(repairWorkerSource)) {
+    throw new Error('repair worker bundle has unresolved workspace imports — it would crash in the packaged app');
+  }
+  console.log(`  Repair worker inlined (${Math.round(repairWorkerSource.length / 1024)} KB)`);
+
   console.log('  Building Electron main process...');
   await build({
     entryPoints: [resolve(__dirname, 'src/main.ts')],
@@ -49,6 +85,8 @@ async function main() {
     resolveExtensions: ['.ts', '.js', '.mjs', '.json'],
     define: {
       'process.env.MARKUS_MAS': JSON.stringify(process.env.MARKUS_MAS || 'false'),
+      // 后台修复工人的源码（见文件开头的说明）。缺失时 storage 会抛 repair-worker-missing。
+      __REPAIR_WORKER_SOURCE__: JSON.stringify(repairWorkerSource),
     },
   });
 
