@@ -794,11 +794,20 @@ export function openSqlite(dbPath: string): DatabaseSync {
   _db.exec('PRAGMA foreign_keys = ON');
   _db.exec('PRAGMA busy_timeout = 5000');
 
-  for (const stmt of SCHEMA_SQL.split(';')
-    .map(s => s.trim())
-    .filter(Boolean)) {
-    _db.exec(stmt);
-  }
+  // ── schema 自举：建表 / 加列 / 建索引全部包在**一个事务**里 ────────────────
+  // 原先这三段每条 DDL 都是独立提交 = 每条一次 fsync。WAL + synchronous=FULL
+  // 下 Windows 实测 20–25 ms/条，schema 有 100+ 条 → 每次打开**新库**要 2.5 s。
+  // 这笔钱每个首次启动的用户都要付（APFS 上只有 ~90 ms，所以在 mac 上从未暴露）；
+  // CI 里每个用例都新建库，于是整套 271 个用例在 Windows 上要跑 20 分钟。
+  // 一个事务 = 一次提交 = 一次 fsync。附带好处：schema 初始化变成原子的 ——
+  // 中途崩溃不会再留下半个库（原先也没有事务，这个洞一直开着）。
+  _db.exec('BEGIN IMMEDIATE');
+  try {
+    for (const stmt of SCHEMA_SQL.split(';')
+      .map(s => s.trim())
+      .filter(Boolean)) {
+      _db.exec(stmt);
+    }
 
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
@@ -875,26 +884,33 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
   ];
-  for (const m of migrations) {
-    const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
-    if (!cols.some(c => c.name === m.column)) {
-      _db.exec(m.sql);
-      log.info(`Migration: added column ${m.column} to ${m.table}`);
+    for (const m of migrations) {
+      const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
+      if (!cols.some(c => c.name === m.column)) {
+        _db.exec(m.sql);
+        log.info(`Migration: added column ${m.column} to ${m.table}`);
+      }
     }
-  }
 
-  // Indexes that depend on migrated columns (must run AFTER column migrations)
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
-  // P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
-  // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
-  // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
-  _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
-  // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
-  // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
-  _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+    // Indexes that depend on migrated columns (must run AFTER column migrations)
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
+    // P0 原子认领：按 (agent_id, status, lease_until) 定位可回收的过期租约。
+    // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
+    // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
+    // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
+    // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
+    _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+
+    _db.exec('COMMIT');
+  } catch (err) {
+    // 回滚失败不能再掩盖原始错误：SQLite 可能已经自行回滚（例如 RAISE(ROLLBACK)）。
+    try { _db.exec('ROLLBACK'); } catch { /* already rolled back */ }
+    throw err;
+  }
 
   migrateToExecutionStreamLogs(_db);
 
