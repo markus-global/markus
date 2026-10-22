@@ -20,6 +20,7 @@ import { getToolMeta } from '../components/execution-utils.ts';
 import { categorizeTools } from '../lib/toolCategories.ts';
 import { canCancelMailboxItem } from '../lib/mailboxCancelable.ts';
 import { deriveMailboxRowDisplayStatus } from '../lib/mailboxRowDisplay.ts';
+import { parseCommentSummary } from '../lib/mailboxCommentSummary.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
 import { sliceNotebookForDisplay, formatNotebookAge, NOTEBOOK_DISPLAY_LIMIT } from '../lib/notebookDisplay.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -2277,13 +2278,13 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
     }
 
     case 'task_comment': {
-      const m = summary.match(/^Comment on task "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const m = parseCommentSummary(summary);
       const commentText = extractCommentText(content);
       if (m) {
         const sub = commentText
-          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m[2], text: commentText })
-          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m[2] });
-        return { title: m[1], subtitle: sub };
+          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m.author, text: commentText })
+          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m.author });
+        return { title: m.subject, subtitle: sub };
       }
       return { title: summary };
     }
@@ -2295,13 +2296,13 @@ function getMailboxItemDisplay(item: import('../api.ts').EnrichedMailboxItem, t:
     }
 
     case 'requirement_comment': {
-      const m = summary.match(/^Comment on requirement "(.+?)" from (.+?)(\s*\(\+\d+\))?$/);
+      const m = parseCommentSummary(summary);
       const commentText = extractCommentText(content);
       if (m) {
         const sub = commentText
-          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m[2], text: commentText })
-          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m[2] });
-        return { title: m[1], subtitle: sub };
+          ? t('agent:profilePage.mind.mailbox.commentFromAuthor', { author: m.author, text: commentText })
+          : t('agent:profilePage.mind.mailbox.commentFrom', { name: m.author });
+        return { title: m.subject, subtitle: sub };
       }
       return { title: summary };
     }
