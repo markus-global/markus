@@ -15,6 +15,7 @@ import {
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
+import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
 
 const log = createLogger('mailbox');
 
@@ -461,7 +462,7 @@ export class AgentMailbox {
       // Merge into survivor
       const survivor = this.queue[survivorIdx];
       survivor.payload.content += `\n\n---\n\n${item.payload.content}`;
-      survivor.payload.summary += ` (+1)`;
+      bumpMergeCount(survivor);
       // Elevate priority if the new item is higher priority
       if (item.priority < survivor.priority) {
         survivor.priority = item.priority;
@@ -568,13 +569,7 @@ export class AgentMailbox {
       const typeLabel = item.sourceType !== survivor.sourceType
         ? `[${item.sourceType}] ` : '';
       survivor.payload.content += `\n\n---\n\n${typeLabel}${item.payload.content}`;
-      const countMatch = survivor.payload.summary.match(/\((\+\d+)\)$/);
-      if (countMatch) {
-        const prev = parseInt(countMatch[1].slice(1), 10);
-        survivor.payload.summary = survivor.payload.summary.replace(/\(\+\d+\)$/, `(+${prev + 1})`);
-      } else {
-        survivor.payload.summary += ' (+1)';
-      }
+      bumpMergeCount(survivor);
       if (item.priority < survivor.priority) {
         survivor.priority = item.priority;
       }
@@ -738,7 +733,7 @@ export class AgentMailbox {
       itemId: item.id,
       type: sourceType,
       priority: item.priority,
-      summary: payload.summary.slice(0, 80),
+      summary: displayLabelOf(payload, 80),
       depth: this.queue.length,
     });
 
@@ -1667,7 +1662,7 @@ export class AgentMailbox {
     } else {
       existing.payload.content += `\n\n---\n\n${payload.content}`;
     }
-    existing.payload.summary += ` (+1)`;
+    bumpMergeCount(existing);
     this.persistence?.updateStatus(existing.id, 'queued', existing);
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {
       agentId: this.agentId,

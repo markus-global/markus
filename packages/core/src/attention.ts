@@ -28,6 +28,7 @@ import {
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
+import { displayLabelOf } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -112,6 +113,26 @@ export interface AttentionDelegate {
    * back to a fresh default workspace for that worker.
    */
   getWorkerWorkspace?(workerId: number): SessionWorkspace | undefined;
+  /**
+   * 该 item **实际将要运行的记忆会话**，形如 `session:<sess_*>`；无法确定时返回
+   * undefined（例如「新会话」——它将独占一个全新会话，无可争夺）。
+   *
+   * ## 为什么锁键必须来自这里，而不是 item 的 payload（2026-10-22 事故）
+   *
+   * 实体键由 `resolveEntityKeys` 从 payload **声明**的信息推出。但一个回合真正改写
+   * 的资源是「它将要跑进去的那个记忆会话」，这两者可以不重合：
+   * `callback_result` 不带任何会话字段 → 退化成 `system:<agentId>` 这把全局键，可它
+   * 实际运行在 `this.currentSessionId`（即某个正在跑的聊天会话）里。实测：
+   * worker 1 持有 `conv:cs_9809eb…` 跑聊天回合，worker 2 拿到 `system:agt_…` 就在
+   * **同一个记忆会话**里并发跑起了后台回调回合 —— 两个回合同时写一份会话记忆，
+   * 回调回合还吃掉了聊天回合的收口续跑，产出的话没有任何投递通道（它没有
+   * onEvent / responsePromise），用户看到的是一条 0 字回复。
+   *
+   * 所以锁的**键必须由「回合会跑进哪个会话」决定**，而不是由「消息自称属于谁」
+   * 决定。实现必须与 `resolveTurnSession` 用同一套解析（同一个事实、同一个解析点），
+   * 否则又是两把量不同资源的尺子。
+   */
+  sessionLockKey?(item: MailboxItem): string | undefined;
   /**
    * 并发交接钩子（P2c）：worker 处理 item 的关键生命周期事件。
    * - 'declared'：worker 开始处理 item（声明意图，防重复动作）
@@ -790,7 +811,7 @@ export class AttentionController {
    */
   private describeItem(item: MailboxItem): string {
     const task = item.payload.taskId ?? item.metadata?.taskId;
-    const label = `${item.sourceType}: "${item.payload.summary}"`;
+    const label = `${item.sourceType}: "${displayLabelOf(item)}"`;
     return task ? `${label} [task ${task}]` : label;
   }
 
@@ -803,6 +824,20 @@ export class AttentionController {
    * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
    * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
    */
+  /**
+   * 一个 item 的全部并发锁键 = 实体亲和键 ∪ 「它将跑进去的会话」键。
+   *
+   * 两者缺一不可：实体键防同一任务/需求/会话被两个 worker 同时改；会话键防两个
+   * **不同类型的 item**（如人类消息与后台回调）在同一份记忆会话里并发跑回合。
+   * 声明式的实体维度永远推不出后者的存在（payload 里没有这个事实），所以由
+   * delegate 用与 `resolveTurnSession` 同一套解析来表态。
+   */
+  private lockKeysFor(item: MailboxItem): string[] {
+    const keys = this.mailbox.entityKeysOf(item);
+    const sessionKey = this.delegate?.sessionLockKey?.(item);
+    return sessionKey && !keys.includes(sessionKey) ? [...keys, sessionKey] : keys;
+  }
+
   private async concurrentWorkerLoop(workerId: number, gen: number): Promise<void> {
     this.activeWorkerIds.add(workerId);
     const wsState = this.workerState(workerId);
@@ -828,7 +863,13 @@ export class AttentionController {
         }
 
         // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
-        const entityKeys = this.mailbox.entityKeysOf(item);
+        //
+        // 锁键必须**在本 worker 的会话上下文里**求值：`delegate.sessionLockKey` 要回答
+        // 「我这一轮会跑进哪个会话」，而 agent 的 `currentSessionId` 是 per-workspace
+        // 的（AsyncLocalStorage）。在 ALS 之外求值会读到 rootWorkspace 的指针 —— 所有
+        // 没有会话身份的 item（心跳、系统事件）于是共用同一把键，退化成互相排队。
+        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
+        const entityKeys = sessionWorkspaceStore.run(workspace, () => this.lockKeysFor(item));
         const entityKey = entityKeys[0];
         const holder = item.id;
         if (!this.mailbox.lockEntities(entityKeys, holder)) {
@@ -843,7 +884,7 @@ export class AttentionController {
               holder,
               itemId: item.id,
               workerId,
-              summary: item.payload.summary.slice(0, 200),
+              summary: displayLabelOf(item, 200),
             });
           }
           // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
@@ -852,7 +893,6 @@ export class AttentionController {
           continue;
         }
 
-        const workspace = this.delegate?.getWorkerWorkspace?.(workerId) ?? createSessionWorkspace(workerId);
         this.delegate?.onConcurrentHandoff?.('declared', workerId, item, this.describeItem(item));
         let handoffWritten = false;
         try {
@@ -1728,7 +1768,7 @@ export class AttentionController {
 
     const queuedItems = this.mailbox.getQueuedItems();
     const queueSection = queuedItems.length > 0
-      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${i.payload.summary}"`).join('\n')
+      ? queuedItems.map(i => `  - [${i.sourceType}] p${i.priority}: "${displayLabelOf(i)}"`).join('\n')
       : '  (empty)';
 
     const currentContent = currentItem.payload.content?.slice(0, 500) ?? '';
@@ -1747,12 +1787,12 @@ export class AttentionController {
       '5. If the new message is lower priority and unrelated, continue current work.',
       '',
       `CURRENT FOCUS: [${currentItem.sourceType}] priority=${currentItem.priority}`,
-      `  Summary: "${currentItem.payload.summary}"`,
+      `  Summary: "${displayLabelOf(currentItem)}"`,
       `  Task: ${currentItem.payload.taskId ?? 'none'}`,
       currentContent ? `  Content preview: ${currentContent}` : '',
       '',
       `NEW ITEM: [${newItem.sourceType}] priority=${newItem.priority}`,
-      `  Summary: "${newItem.payload.summary}"`,
+      `  Summary: "${displayLabelOf(newItem)}"`,
       `  Task: ${newItem.payload.taskId ?? 'none'}`,
       newContent ? `  Content: ${newContent}` : '',
       '',
@@ -1946,7 +1986,7 @@ export class AttentionController {
         ? {
             mailboxItemId: this.currentFocus.id,
             type: this.currentFocus.sourceType,
-            label: this.currentFocus.payload.summary,
+            label: displayLabelOf(this.currentFocus),
             startedAt: this.currentFocus.startedAt ?? this.currentFocus.queuedAt,
             taskId: this.currentFocus.payload.taskId,
           }
@@ -1956,7 +1996,7 @@ export class AttentionController {
         id: i.id,
         sourceType: i.sourceType,
         priority: i.priority,
-        summary: i.payload.summary,
+        summary: displayLabelOf(i),
         queuedAt: i.queuedAt,
         isStrictState: isStrictStateItem(i),
       })),
@@ -2058,7 +2098,7 @@ export class AttentionController {
       mailboxItemId: item.id,
       context: {
         currentFocusType: this.currentFocus?.sourceType,
-        currentFocusLabel: this.currentFocus?.payload.summary,
+        currentFocusLabel: this.currentFocus ? displayLabelOf(this.currentFocus) : undefined,
         currentFocusItemId: this.currentFocus?.id,
         mailboxDepth: this.mailbox.depth,
         queuedItemTypes: this.mailbox
@@ -2085,8 +2125,8 @@ export class AttentionController {
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): string {
-    const newLabel = `${newItem.sourceType}: "${newItem.payload.summary}"`;
-    const currentLabel = `${currentItem.sourceType}: "${currentItem.payload.summary}"`;
+    const newLabel = `${newItem.sourceType}: "${displayLabelOf(newItem)}"`;
+    const currentLabel = `${currentItem.sourceType}: "${displayLabelOf(currentItem)}"`;
 
     switch (type) {
       case 'continue':

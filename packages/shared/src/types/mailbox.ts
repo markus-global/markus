@@ -299,6 +299,15 @@ export interface MailboxItemMetadata {
   dbSessionId?: string;
   taskId?: string;
   channelContext?: string;
+  /**
+   * How many items were folded into this one by dedup/consolidation.
+   *
+   * Lives here (a structured field) rather than as a `(+N)` suffix on the
+   * display summary — structure must not be recoverable only by parsing a
+   * human-readable string. Legacy items that predate this field still carry the
+   * suffix, so readers fall back to parsing it (see `mergeCountOf`).
+   */
+  mergeCount?: number;
   /** When true, this item is a continuation of a previous conversation — not a new request. */
   isResume?: boolean;
   /** For streaming: a promise resolver the caller can await */

@@ -53,6 +53,7 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
+import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
@@ -1394,7 +1395,9 @@ export class Agent {
     }
 
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      // Single writer for the display excerpt (mailbox-summary.ts). A bare
+      // `slice(0, 100)` looks like a complete short message and hides the loss.
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       taskId: options?.taskId,
       requirementId: options?.requirementId,
@@ -1459,7 +1462,7 @@ export class Agent {
     images?: string[],
   ): void {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: { images },
     };
@@ -1490,7 +1493,7 @@ export class Agent {
     options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: {
         images,
@@ -1606,7 +1609,7 @@ export class Agent {
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
   ): Promise<string> {
     const payload: MailboxPayload = {
-      summary: userMessage.slice(0, 100),
+      summary: summarizeForMailbox(userMessage),
       content: userMessage,
       extra: {
         sessionId,
@@ -1730,7 +1733,7 @@ export class Agent {
           focus: item ? {
             mailboxItemId: item.id,
             type: item.sourceType,
-            label: item.payload.summary,
+            label: displayLabelOf(item),
             taskId: item.payload.taskId,
           } : undefined,
           mailboxDepth: this.mailbox.depth,
@@ -2178,9 +2181,9 @@ export class Agent {
         ? `[BATCH PROCESSING — ${batchItems.length + 1} items]\n${batchContext}\n\n---\n\n`
         : `[BATCH PROCESSING — ${batchItems.length + 1} items]\nProcess the following items together and respond comprehensively.\n\n---\n\n`;
       const batchSuffix = batchItems.map((bi, idx) =>
-        `\n\n---\n[Item ${idx + 2}] (${bi.sourceType}) ${bi.payload.summary}:\n${bi.payload.content}`,
+        `\n\n---\n[Item ${idx + 2}] (${bi.sourceType}) ${displayLabelOf(bi, 80)}:\n${turnContentOf(bi)}`,
       ).join('');
-      item.payload.content = batchHeader + `[Item 1] (${item.sourceType}) ${item.payload.summary}:\n${item.payload.content}` + batchSuffix;
+      item.payload.content = batchHeader + `[Item 1] (${item.sourceType}) ${displayLabelOf(item, 80)}:\n${turnContentOf(item)}` + batchSuffix;
     }
     if (item.sourceType === 'human_chat' && item.metadata?.senderId) {
       this.currentInteractingUserId = item.metadata.senderId;
@@ -2283,7 +2286,17 @@ export class Agent {
               );
               // Team Chat: do not burn an extra LLM round just to obtain <<HANDLE_COMPLETE>>.
               // Prompt discipline ends the turn; attention already completes chat without retry.
-              if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+              // 聊天回合：**只在它一个字的答案都没有时**才收口。
+              // 旧实现无条件把 human_chat 排除在收口之外，理由是「prompt 纪律会结束
+              // 回合，省一次 LLM」——2026-10-22 实测反例：一个聊天回合只调了工具
+              // （discover_tools + background_exec）就结束了，既没调 end_turn、也没
+              // 产出任何文字 → SSE 把空串落库，用户看到一条 0 字回复，而真正的答案
+              // 被另一个回合（后台回调）产出、且没有任何投递通道。
+              // 判据只用「有没有文字」：已经答完的回合不该再烧一次 LLM（那是旧例外的
+              // 合理性），一个字都没有的回合必须自己收口（那是它的漏洞）。
+              const owesAnswer =
+                item.sourceType !== 'human_chat' || reply.trim().length === 0;
+              if (needsTurnCompletion && owesAnswer) {
                 reply = this.acceptTurnReply(
                   await this.ensureTurnCompleted(
                     reply,
@@ -2344,7 +2357,10 @@ export class Agent {
             senderInfo,
             opts,
           );
-          if (needsTurnCompletion && item.sourceType !== 'human_chat') {
+          // 同上：聊天回合只在「没有任何文字」时才收口（见流式分支的说明）。
+          const owesAnswer =
+            item.sourceType !== 'human_chat' || reply.trim().length === 0;
+          if (needsTurnCompletion && owesAnswer) {
             reply = this.acceptTurnReply(
               await this.ensureTurnCompleted(reply, opts.sessionId ?? this.currentSessionId),
               item,
@@ -2459,7 +2475,7 @@ export class Agent {
             return;
           }
           log.info('Task status update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2495,7 +2511,7 @@ export class Agent {
             return reply;
           }
           log.info('Requirement update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2534,7 +2550,7 @@ export class Agent {
             return reply;
           }
           log.info('Workflow update (informational, no LLM)', {
-            agentId: this.id, summary: item.payload.summary,
+            agentId: this.id, summary: displayLabelOf(item, 80),
           });
           resolveResponse('');
           return;
@@ -2709,7 +2725,7 @@ export class Agent {
           if (outcome) {
             this.injectActivityToMainSession({
               type: item.sourceType,
-              summary: item.payload.summary?.slice(0, 120) ?? item.sourceType,
+              summary: displayLabelOf(item, 120),
               outcome,
               mailboxItemId: item.id,
               taskId: item.payload.taskId ?? item.metadata?.taskId as string | undefined,
@@ -2825,6 +2841,65 @@ export class Agent {
    * 另外：只要 hint 带 DB 身份，就顺手在**处理该 item 的工作区**里写 DB→内存绑定。
    * （HTTP 线程读不到 worker 的指针，写在那里只会得到陈旧/空绑定。）
    */
+  /**
+   * 并发锁键：**这个 item 实际将要跑进去的记忆会话**（`session:<sess_*>`）。
+   *
+   * 见 `AttentionDelegate.sessionLockKey` 的说明（2026-10-22 事故）。要点：实体键来自
+   * payload 声明，而回合真正改写的资源是「它跑进去的那个会话」——两者可以不重合
+   * （`callback_result` 实体键退化成 `system:<agentId>`，却跑在别人的会话里）。
+   *
+   * 这里的解析**必须与 `resolveTurnSession` 同源**（同一个 `normalizeTurnSessionHint`
+   * 归一 + 同一套 db→memory 绑定查询），否则又是两把量不同资源的尺子。区别只有一点：
+   * 本方法是**只读窥视**——不切换 `currentSessionId`、不建会话、不写绑定。
+   */
+  sessionLockKey(item: MailboxItem): string | undefined {
+    const sessionId = this.peekTurnSessionId(item);
+    return sessionId ? `session:${sessionId}` : undefined;
+  }
+
+  /**
+   * 只读地回答「这一轮会跑进哪个记忆会话」。推不出来时返回 undefined：
+   * - `new`：会开一个全新会话，独占，无可争夺；
+   * - `existing` 且无任何存活绑定：`restoreSessionFromHistory` 会新建内存会话，同上。
+   */
+  private peekTurnSessionId(item: MailboxItem): string | undefined {
+    const extra = item.payload.extra ?? {};
+    const hint = (extra.sessionHint as TurnSessionHint | undefined)
+      ?? normalizeTurnSessionHint({
+        sessionRestore: extra.sessionRestore as TurnSessionRestorePayload | null | undefined,
+        dbSessionId: extra.dbSessionId as string | undefined,
+        sessionId: extra.sessionId as string | undefined,
+        channelKey: extra.channelKey as string | undefined,
+        sourceType: item.sourceType,
+      });
+
+    switch (hint.kind) {
+      case 'memory':
+        // 回调回到发起轮（background_exec / a2a_reply 的 originSessionId）——正是
+        // 2026-10-22 那次「回调与聊天回合并发写同一会话」的入口。
+        return this.memory.getSession(hint.memorySessionId)
+          ? hint.memorySessionId
+          : this.currentSessionId;
+      case 'existing': {
+        const preferred = hint.preferredMemorySessionId
+          ? this.memory.getSession(hint.preferredMemorySessionId)
+          : undefined;
+        if (preferred && preferred.agentId === this.id && preferred.messages.length > 0) {
+          return preferred.id;
+        }
+        const bound = this.dbSessionMap.get(hint.dbSessionId);
+        return bound && this.memory.getSession(bound) ? bound : undefined;
+      }
+      case 'new':
+        return undefined;
+      case 'system':
+      case 'unknown':
+      default:
+        // 没有会话身份 → `resolveTurnSession` 保持当前会话，这一轮就跑在它里面。
+        return this.currentSessionId;
+    }
+  }
+
   private resolveTurnSession(hint: TurnSessionHint, item: MailboxItem): void {
     switch (hint.kind) {
       case 'existing':
@@ -4031,7 +4106,7 @@ export class Agent {
       return [
         `[${idx + 1}] id="${item.id}"`,
         `    type=${item.sourceType}  priority=${pri}  age=${formatAge(ageMs)}`,
-        `    summary: "${item.payload.summary}"`,
+        `    summary: "${displayLabelOf(item, 120)}"`,
         item.payload.taskId ? `    taskId: ${item.payload.taskId}` : null,
         item.metadata?.senderName ? `    from: ${item.metadata.senderName} (${item.metadata?.senderRole ?? 'unknown'})` : null,
         contentPreview || null,
@@ -4097,7 +4172,7 @@ export class Agent {
           const completedItem = allItems.find(i => i.id === completedId);
           if (!completedItem) continue;
           const inlineActId = this.startActivity('inline_deliberation',
-            `Handled inline: ${completedItem.payload.summary.slice(0, 80)}`,
+            `Handled inline: ${displayLabelOf(completedItem, 80)}`,
             { mailboxItemId: completedId },
           );
           this.emitActivityLog(inlineActId, 'text',
@@ -4242,7 +4317,7 @@ export class Agent {
     return {
       currentFocus: focus ? {
         type: focus.sourceType,
-        label: focus.payload.summary,
+        label: displayLabelOf(focus),
         elapsedMs: focus.startedAt
           ? Date.now() - new Date(focus.startedAt).getTime()
           : Date.now() - new Date(focus.queuedAt).getTime(),
@@ -5362,7 +5437,7 @@ export class Agent {
           return '[cancelled]';
         }
         if (chatYield.decision === 'merge' && chatYield.item) {
-          const mergeMsg = `[LIVE UPDATE] ${chatYield.item.payload.summary}\n\n${chatYield.item.payload.content}`;
+          const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(chatYield.item)}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
           if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
             chatYield.item.metadata.responsePromise.resolve('[merged]');
@@ -6135,7 +6210,7 @@ export class Agent {
         // (e.g. a comment on the current topic) can be injected into context.
         const streamYield = await this.checkAttentionYieldPoint();
         if (streamYield.decision === 'merge' && streamYield.item) {
-          const mergeMsg = `[LIVE UPDATE] ${streamYield.item.payload.summary}\n\n${streamYield.item.payload.content}`;
+          const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(streamYield.item)}`;
           this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
           if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
             streamYield.item.metadata.responsePromise.resolve('[merged]');
@@ -6854,7 +6929,7 @@ export class Agent {
         if (yieldResult.decision === 'merge' && yieldResult.item) {
           this.memory.appendMessage(sessionId, {
             role: 'user',
-            content: `[LIVE UPDATE] ${yieldResult.item.payload.summary}\n\n${yieldResult.item.payload.content}`,
+            content: `[LIVE UPDATE]\n\n${turnContentOf(yieldResult.item)}`,
           });
           if (typeof yieldResult.item.metadata?.responsePromise?.resolve === 'function') {
             yieldResult.item.metadata.responsePromise.resolve('[merged]');
@@ -7375,7 +7450,7 @@ export class Agent {
         if (risYield.decision === 'merge' && risYield.item) {
           this.memory.appendMessage(sessionId, {
             role: 'user',
-            content: `[LIVE UPDATE] ${risYield.item.payload.summary}\n\n${risYield.item.payload.content}`,
+            content: `[LIVE UPDATE]\n\n${turnContentOf(risYield.item)}`,
           });
           if (typeof risYield.item.metadata?.responsePromise?.resolve === 'function') {
             risYield.item.metadata.responsePromise.resolve('[merged]');

@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { AgentMailbox, type MailboxPersistence } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
+import { displayLabelOf, mergeCountOf } from '../src/mailbox-summary.js';
 
 // ─── Minimal inline types mirroring @markus/shared (avoids resolution issue) ─
 
@@ -228,7 +229,9 @@ describe('Mailbox Deduplication — enqueue-time', () => {
     const item = mailbox.peek()!;
     expect(item.payload.content).toContain('body-1');
     expect(item.payload.content).toContain('body-2');
-    expect(item.payload.summary).toContain('(+1)');
+    // Fold count is structure → metadata, not a `(+1)` suffix on the display string.
+    expect(mergeCountOf(item)).toBe(1);
+    expect(displayLabelOf(item)).toContain('(+1)');
   });
 
   it('does NOT merge items with different taskIds', () => {
