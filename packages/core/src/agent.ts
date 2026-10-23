@@ -105,6 +105,7 @@ import {
   type TurnSessionHint,
   type TurnSessionRestorePayload,
 } from './session-hint.js';
+import { SessionBindingStore } from './session-bindings.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -586,7 +587,43 @@ export class Agent {
   private set activeScenario(v: AgentScenario | undefined) { this.workspace().activeScenario = v; }
   private get pendingDeliberationResult(): DeliberationResult | undefined { return this.workspace().pendingDeliberationResult; }
   private set pendingDeliberationResult(v: DeliberationResult | undefined) { this.workspace().pendingDeliberationResult = v; }
-  private dbSessionMap = new Map<string, string>();
+  /**
+   * `cs_…` → `sess_…` alias table, for LEGACY conversations only.
+   *
+   * Single-write made the DB chat session id the memory primary key, so a new
+   * conversation needs no binding at all: one id, one store entry. This table
+   * survives for the historical case — the rich context (tool calls included)
+   * lives in an old `sess_*.json`, and that fact must outlive a process restart.
+   * The previous in-process `Map` did not, which is why every restart silently
+   * rebuilt from `chat_messages` and gutted the context (57 messages → 3).
+   */
+  private sessionBindingsStore?: SessionBindingStore;
+
+  /** Lazily created: needs `dataDir`, which is assigned in the constructor. */
+  private get sessionBindings(): SessionBindingStore {
+    if (!this.sessionBindingsStore) {
+      this.sessionBindingsStore = new SessionBindingStore(join(this.dataDir, 'sessions', '_bindings.json'));
+    }
+    return this.sessionBindingsStore;
+  }
+
+  /**
+   * Resolve a DB session id (`cs_…`) to a LIVE memory session, covering both eras:
+   *
+   *   · legacy — the rich context sits in an old `sess_*.json`, found via the
+   *     persisted alias table (this is what the in-process Map failed to do
+   *     across a restart);
+   *   · single-write — the memory session's primary key IS the `cs_…` id, so no
+   *     alias is needed at all.
+   *
+   * Returns undefined when neither exists, which callers must treat as "rebuild
+   * from DB" — never as "start an unrelated session".
+   */
+  private resolveBoundMemorySession(dbSessionId: string): string | undefined {
+    const bound = this.sessionBindings.resolve(dbSessionId);
+    if (bound && this.memory.getSession(bound)) return bound;
+    return this.memory.getSession(dbSessionId) ? dbSessionId : undefined;
+  }
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private handbookPath?: string;
@@ -2897,8 +2934,8 @@ export class Agent {
         if (preferred && preferred.agentId === this.id && preferred.messages.length > 0) {
           return preferred.id;
         }
-        const bound = this.dbSessionMap.get(hint.dbSessionId);
-        return bound && this.memory.getSession(bound) ? bound : undefined;
+        const bound = this.resolveBoundMemorySession(hint.dbSessionId);
+        return bound;
       }
       case 'new':
         return undefined;
@@ -2951,7 +2988,7 @@ export class Agent {
     }
 
     if (hintCarriesDbIdentity(hint) && this.currentSessionId) {
-      this.dbSessionMap.set(hint.dbSessionId, this.currentSessionId);
+      this.sessionBindings.bind(hint.dbSessionId, this.currentSessionId);
     }
   }
 
@@ -2968,7 +3005,7 @@ export class Agent {
    */
   bindDbSession(dbSessionId: string): void {
     if (this.currentSessionId) {
-      this.dbSessionMap.set(dbSessionId, this.currentSessionId);
+      this.sessionBindings.bind(dbSessionId, this.currentSessionId);
       log.debug(`Bound DB session ${dbSessionId} → memory session ${this.currentSessionId}`);
     }
   }
@@ -3006,7 +3043,7 @@ export class Agent {
         && preferred.messages.length >= dbMessages.length
       ) {
         this.currentSessionId = preferred.id;
-        this.dbSessionMap.set(dbSessionId, preferred.id);
+        this.sessionBindings.bind(dbSessionId, preferred.id);
         log.info(
           `Reattached DB session ${dbSessionId} → persisted memory session ${preferred.id} (${preferred.messages.length} messages)`,
         );
@@ -3014,7 +3051,7 @@ export class Agent {
       }
     }
 
-    const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
+    const existingMemorySessionId = this.resolveBoundMemorySession(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
       if (session) {
@@ -3026,7 +3063,7 @@ export class Agent {
             memoryMessages: session.messages.length,
             dbMessages: dbMessages.length,
           });
-          this.dbSessionMap.delete(dbSessionId);
+          this.sessionBindings.unbind(dbSessionId);
           // Fall through to create a fresh in-memory session from DB
         } else {
           this.currentSessionId = existingMemorySessionId;
@@ -3043,12 +3080,15 @@ export class Agent {
           return;
         }
       } else {
-        this.dbSessionMap.delete(dbSessionId);
+        this.sessionBindings.unbind(dbSessionId);
       }
     }
 
-    const session = this.memory.createSession(this.id);
-    this.dbSessionMap.set(dbSessionId, session.id);
+    // ── Single-write ────────────────────────────────────────────────────────
+    // The DB chat session id IS the memory primary key. No new `sess_*` is
+    // minted for a conversation that already has a `cs_*`, so the same dialogue
+    // can never end up split across two store entries again.
+    const session = this.memory.createSession(this.id, dbSessionId);
 
     // Trim before loading into memory — don't wait for the first LLM pack.
     const trimmed = Agent.trimMessagesForRestore(dbMessages);
@@ -3159,16 +3199,16 @@ export class Agent {
    * spaces so an agent can introspect "which conversation am I in".
    */
   getMemorySessionIdForDbSession(dbSessionId: string): string | null {
-    return this.dbSessionMap.get(dbSessionId) ?? null;
+    return this.resolveBoundMemorySession(dbSessionId) ?? null;
   }
 
   /** Returns the DB session ID currently bound to the active memory session, if any. */
   getDbSessionId(): string | null {
     if (!this.currentSessionId) return null;
-    for (const [dbId, memId] of this.dbSessionMap) {
-      if (memId === this.currentSessionId) return dbId;
-    }
-    return null;
+    // Single-write: the common case is that the memory key IS the DB id.
+    if (looksLikeDbSessionId(this.currentSessionId)) return this.currentSessionId;
+    // Legacy: an old `sess_*` context serving a `cs_*` conversation.
+    return this.sessionBindings.resolveReverse(this.currentSessionId) ?? null;
   }
 
   /**
@@ -5853,32 +5893,26 @@ export class Agent {
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
     // Resolve the session identity for THIS turn:
-    //   1) the memory session bound to the request's DB session (the binding is
-    //      written when the restore runs — in this worker's workspace), else
-    //   2) the workspace pointer, else
-    //   3) a brand-new session.
-    // The DB id is NEVER used as a memory key directly: the two id spaces must
-    // not be conflated, or one conversation ends up split across two stores.
+    //   1) the memory session serving this DB session — the legacy alias (a
+    //      `sess_*` context with a persisted binding) or, after single-write,
+    //      the `cs_*`-keyed session itself, else
+    //   2) a `cs_*`-keyed session adopted right here — never a fresh `sess_*`
+    //      for a conversation that already has a DB identity, else
+    //   3) the workspace pointer, else
+    //   4) a brand-new internal session.
     // Relying on the pointer alone was the bug: it is per-worker, so a later
     // message picked up by another worker (or by one that has since served a
     // different conversation) silently started an empty session and
     // `requestHistory()` returned [] — the agent "forgot" its conversation.
-    const boundMemorySessionId = explicitDbSessionId
-      ? this.dbSessionMap.get(explicitDbSessionId)
+    let resolvedSessionId = explicitDbSessionId
+      ? (this.resolveBoundMemorySession(explicitDbSessionId)
+        ?? this.memory.createSession(this.id, explicitDbSessionId).id)
       : undefined;
-    if (explicitDbSessionId && !boundMemorySessionId) {
-      log.warn('Streaming turn has no memory session bound to its DB session — falling back to the workspace session', {
-        agentId: this.id,
-        dbSessionId: explicitDbSessionId,
-        workspaceSessionId: this.currentSessionId,
-      });
-    }
-    const resolvedSessionId = boundMemorySessionId ?? this.currentSessionId;
+    resolvedSessionId ??= this.currentSessionId;
     if (resolvedSessionId) {
       this.currentSessionId = resolvedSessionId;
     } else {
-      const session = this.memory.createSession(this.id);
-      this.currentSessionId = session.id;
+      this.currentSessionId = this.memory.createSession(this.id).id;
     }
     this.memory.getOrCreateSession(this.id, this.currentSessionId);
 
