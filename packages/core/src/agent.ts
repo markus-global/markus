@@ -263,6 +263,16 @@ export type ApprovalCallback = (request: {
   taskId?: string;
   /** In-memory chat session the tool call belongs to (for in-chat approval cards). */
   sessionId?: string;
+  /**
+   * The DB chat session (`cs_…`) that in-memory session is bound to, when known.
+   *
+   * Two id spaces exist for one conversation: `sessionId` is the in-memory
+   * (`sess_…`) identity, `chatSessionId` is the DB one every UI surface keys on.
+   * Carrying both lets the consumer place the card in the right tab WITHOUT
+   * knowing how the other space is derived — and without ever having to decide
+   * "this id looks foreign, so hide the approval".
+   */
+  chatSessionId?: string;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskProjectContext {
@@ -4489,6 +4499,7 @@ export class Agent {
       reason,
       taskId: this.getCurrentTaskId(),
       sessionId: this.currentSessionId,
+      chatSessionId: this.getDbSessionId() ?? undefined,
     });
   }
 
@@ -9333,6 +9344,7 @@ export class Agent {
           reason: `Agent wants to execute '${toolCall.name}'`,
           taskId: this.getCurrentTaskId(),
           sessionId: this.currentSessionId,
+          chatSessionId: this.getDbSessionId() ?? undefined,
         });
         if (!result.approved) {
           const reason = result.comment ? `: ${result.comment}` : '';

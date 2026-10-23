@@ -59,11 +59,40 @@ describe('selectToolApprovals', () => {
     expect(got.map((a) => a.id)).toEqual(['mine']);
   });
 
-  it('会话归属：带 sessionId 且与当前会话不符 → 排除', () => {
+  /**
+   * 这条用例原来断言「sessionId 不符 → 排除」。夹具用 `sess_1` 对 `sess_1`，
+   * 即**同一个 id 空间**，所以它一直绿；生产里载荷写的是 `sess_…`（内存会话）、
+   * UI 传的是 `cs_…`（DB 会话），永远不相等 → 2026-10-11 起所有工具审批都被
+   * 过滤掉，只剩通知铃铛（事故复盘见 src/lib/toolApproval.ts 头注释）。
+   *
+   * 正确的不变量：**工具审批阻塞 Agent 回合，作用域只能决定顺序，不能决定可见性**。
+   */
+  it('会话归属：不同会话的审批仍然可见，只影响排序', () => {
     const here = toolApproval({ id: 'here', details: { toolName: 'shell_execute', agentId: 'agt_a', sessionId: 'sess_1' } });
     const elsewhere = toolApproval({ id: 'elsewhere', details: { toolName: 'shell_execute', agentId: 'agt_a', sessionId: 'sess_2' } });
-    const got = selectToolApprovals([here, elsewhere], { agentId: 'agt_a', sessionId: 'sess_1' });
-    expect(got.map((a) => a.id)).toEqual(['here']);
+    const got = selectToolApprovals([elsewhere, here], { agentId: 'agt_a', sessionId: 'sess_1' });
+    expect(got.map((a) => a.id)).toEqual(['here', 'elsewhere']);
+  });
+
+  it('跨 id 命名空间：载荷 sess_… 在 cs_… 会话视图里依然可见（本次事故的形态）', () => {
+    const real = toolApproval({
+      id: 'real',
+      details: { toolName: 'shell_execute', agentId: 'agt_a', sessionId: 'sess_1792327845728_p0getw' },
+    });
+    const got = selectToolApprovals([real], { agentId: 'agt_a', sessionId: 'cs_9809eb465fec4577' });
+    expect(got.map((a) => a.id)).toEqual(['real']);
+  });
+
+  it('本地优先：chatSessionId（cs_…）命中的排到最前，其余不丢', () => {
+    const foreign = toolApproval({ id: 'foreign', details: { toolName: 'shell_execute', agentId: 'agt_a', chatSessionId: 'cs_other' } });
+    const local = toolApproval({ id: 'local', details: { toolName: 'shell_execute', agentId: 'agt_a', chatSessionId: 'cs_9809eb465fec4577' } });
+    const got = selectToolApprovals([foreign, local], { agentId: 'agt_a', sessionId: 'cs_9809eb465fec4577' });
+    expect(got.map((a) => a.id)).toEqual(['local', 'foreign']);
+  });
+
+  it('别的 Agent 的审批不冒到这条聊天里（可见性的唯一硬边界）', () => {
+    const other = toolApproval({ id: 'other', agentId: 'agt_b', details: { toolName: 'shell_execute', agentId: 'agt_b', sessionId: 'sess_1' } });
+    expect(selectToolApprovals([other], { agentId: 'agt_a', sessionId: 'sess_1' })).toHaveLength(0);
   });
 
   it('会话归属：旧数据无 sessionId → 退回按 agentId 匹配（仍显示）', () => {
