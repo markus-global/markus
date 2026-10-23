@@ -114,7 +114,10 @@ describe('O2 — [CONTEXT] 水位标的数字来源', () => {
     const session = 'sess_d';
     engine.noteReportedInputTokens(session, 7_900); // 小窗口下必然触发压缩
     const p1 = await pack(engine, store, session, { history: bigHistory(60), window: 8_000 });
-    expect(p1.usage.compressed).toBe(true);
+    // Maintenance compaction is gone; what invalidates the reading now is the
+    // physical-bound trim, which also describes a bigger (pre-trim) request.
+    expect(p1.usage.compactStage).toBe('trim');
+    expect(p1.usage.compressed).toBe(false);
     // 本次仍按读数标注（诚实反映打包前状态），但必须已清空
     const p2 = await pack(engine, store, session, { history: [{ role: 'user', content: 'hi' }], window: 8_000 });
     expect(p2.contextHint).toContain('src=est');

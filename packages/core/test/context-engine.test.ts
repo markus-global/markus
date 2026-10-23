@@ -638,10 +638,13 @@ describe('context budget overhaul', () => {
     expect(result.text).toMatch(/8 more teammates/);
   });
 
-  it('proactively compresses when history exceeds 55% of message budget', async () => {
+  it('does NOT compress a history that is over 55% but still fits the window', async () => {
     const memory = new MemoryStore(tempDir);
     const session = memory.createSession('agt_ctx');
-    // ~60 turns × ~2.8k chars ≈ well above 55% of a 32k-window message budget
+    // ~42k tokens of history against a ~180k budget: the old code compacted at
+    // 55% of the budget and folded again at an absolute 120k ceiling. Both are
+    // deleted (Owner 2026-10-23): trimming inside a live turn costs more than it
+    // saves, because the agent re-derives the state it was just shown.
     for (let i = 0; i < 60; i++) {
       memory.appendMessage(session.id, {
         role: i % 2 === 0 ? 'user' : 'assistant',
@@ -656,13 +659,14 @@ describe('context budget overhaul', () => {
       sessionMessages: memory.getRecentMessages(session.id, 200),
       memory,
       sessionId: session.id,
-      modelContextWindow: 32_000,
+      modelContextWindow: 200_000,
       modelMaxOutput: 4_000,
     });
 
-    expect(prepared.usage.compressed).toBe(true);
-    expect(['proactive', 'over_budget', 'summarize', 'trim']).toContain(prepared.usage.compactStage);
-    expect(prepared.usage.compactStage).not.toBe('none');
+    expect(prepared.usage.compressed).toBe(false);
+    expect(prepared.usage.compactStage).toBe('none');
+    // The summarizer must not be called for maintenance compression.
+    expect(summarizer).not.toHaveBeenCalled();
   });
 
   it('clamps packing budget when promptAffordTokens is set', async () => {
@@ -688,7 +692,10 @@ describe('context budget overhaul', () => {
 
     expect(prepared.usage.promptAffordTokens).toBe(20_000);
     expect(prepared.usage.totalUsed).toBeLessThan(20_000);
-    expect(prepared.usage.compressed).toBe(true);
+    // The afford clamp is a physical bound, so the history is trimmed — not
+    // "compressed" (maintenance compaction no longer exists).
+    expect(prepared.usage.compressed).toBe(false);
+    expect(prepared.usage.compactStage).toBe('trim');
     expect(prepared.usage.packingBudget).toBeLessThan(40_000);
   });
 });
