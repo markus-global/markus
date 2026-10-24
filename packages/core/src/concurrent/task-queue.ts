@@ -2,6 +2,7 @@
  * 并发任务队列系统
  * 支持优先级队列、并发控制、任务隔离
  */
+import { cancelExecutionToken } from '@markus/shared';
 
 export enum TaskPriority {
   HIGH = 0,    // 用户交互、紧急任务
@@ -320,7 +321,7 @@ export class TaskQueue {
     const runningTask = this.runningTasks.get(taskId);
     if (runningTask) {
       if (runningTask.cancelToken) {
-        runningTask.cancelToken.cancelled = true;
+        cancelExecutionToken(runningTask.cancelToken, 'user_cancel');
         return true;
       }
     }
@@ -410,7 +411,7 @@ export class TaskQueue {
         new Promise<never>((_, reject) => {
           timer = setTimeout(() => {
             // 通知协作式取消（若 execute 内部检查 cancelToken）
-            if (task.cancelToken) task.cancelToken.cancelled = true;
+            if (task.cancelToken) cancelExecutionToken(task.cancelToken, 'timeout');
             reject(new Error(`Task ${task.id} timed out after ${timeoutMs}ms`));
           }, timeoutMs);
         }),
