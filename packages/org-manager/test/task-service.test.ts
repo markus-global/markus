@@ -1430,7 +1430,11 @@ describe('TaskService', () => {
       await new Promise<void>((resolve) => setImmediate(resolve));
 
       expect(preemptAgentManager.getAgent(AGENT_A).sendTaskExecution).toHaveBeenCalled();
-      expect(svc.getTask(task.id)!.notes?.some(n => n.includes('preempted'))).toBe(true);
+      // 注记文案已本地化（旧英文 'Task preempted by higher-priority item' 已随
+      // 执行停止原因的单一事实源重构下线）——断言语义而非字面量。
+      const notes = (svc.getTask(task.id)!.notes ?? []).join('\n');
+      expect(notes).toContain('抢占');
+      expect(notes).toContain('自动恢复');
     });
 
     it('injects human feedback on retry when comments exist', async () => {
