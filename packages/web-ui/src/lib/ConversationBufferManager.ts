@@ -82,8 +82,11 @@ export function makeConvKey(mode: ChatMode, agent: string, channel: string, dmUs
     (agent || '_direct');
 }
 
-/** 会话态视图（`direct`）才按 session 分 buffer；channel/dm 没有会话概念。 */
-const isSessionScopedKey = (key: string): boolean =>
+/** 会话态视图（`direct`）才按 session 分 buffer；channel/dm 没有会话概念。
+ *
+ * 导出：这是「一个 key 有没有会话概念」的**唯一判据**，调用方（视图切换时保存指针、
+ * 单测）必须用同一个函数，不得各自写一遍前缀判断。 */
+export const isSessionScopedConvKey = (key: string): boolean =>
   !!key && !key.startsWith('ch:') && !key.startsWith('dm:') && key !== '_direct';
 
 export class ConversationBufferManager {
@@ -381,6 +384,18 @@ export class ConversationBufferManager {
    * announcing its id must not yank the tab the user is reading.
    */
   setActiveSession(key: string, sessionId: string): void {
+    // 没有会话概念的对话（`ch:*` / `dm:*` / `_direct`）**不允许**把指针移到某个会话上。
+    //
+    // 为什么必须在**唯一写者**这里拦，而不是靠调用方自律：一旦频道的 buffer id 变成
+    // 某个 agent 的会话 id，之后每一条群聊写入（乐观气泡、WS 群回复、频道历史刷新）都会
+    // 落进那个会话的 buffer —— 用户在「与 agent 的主会话」里看到自己发到群里的消息，
+    // 而 DB 里从来没有这条（刷新即消失）。
+    //
+    // 实测（2026-10-24，localhost:8057）：群发两条消息后，它们作为用户气泡出现在
+    // Secretary 的主会话末尾；`chat_messages` 零行。调用现场是视图切换时那句
+    // `setActiveSession(prevKey, activeSessionId)` —— 切离群聊时 `activeSessionId` 还是
+    // 上一个 direct 会话的 id，于是 `ch:group:…` 被钉到了 `cs_…` 上。
+    if (!isSessionScopedConvKey(key)) return;
     const cur = this.view.get(key);
     if (cur === sessionId) return;
     if (cur === undefined || cur === ConversationBufferManager.NEW_CHAT_ID) {
@@ -424,7 +439,7 @@ export class ConversationBufferManager {
    * so switching back never renders an old duplicate bubble at the tail.
    */
   restoreFromCache(key: string, sessionId: string): ChatMsg[] | undefined {
-    if (isSessionScopedKey(key)) this.view.set(key, sessionId);
+    if (isSessionScopedConvKey(key)) this.view.set(key, sessionId);
     const buffered = this.buffers.get(sessionId);
     if (!buffered || buffered.length === 0) return undefined;
     const live = this.isStreamLiveForSession(key, sessionId);

@@ -15,7 +15,7 @@ import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 // (chatStore 已删除：agent 存活性统一由 lib/sessionStreamState.ts 的服务端权威决定)
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
-export { makeConvKey } from '../lib/ConversationBufferManager.ts';
+export { makeConvKey, isSessionScopedConvKey } from '../lib/ConversationBufferManager.ts';
 export const NEW_CHAT_PLACEHOLDER_ID = ConversationBufferManager.NEW_CHAT_ID;
 
 // isAgentKey 已删除：它唯一的用途是决定「要不要写 chatStore 的 agent-busy 标记」，

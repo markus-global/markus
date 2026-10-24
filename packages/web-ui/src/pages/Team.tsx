@@ -99,7 +99,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
-import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { useConversationBuffers, makeConvKey, isSessionScopedConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 // (chatStore 的客户端 agent-busy 近似已整体删除 —— 见 lib/sessionStreamState.ts)
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
@@ -2967,7 +2967,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       sessionTabsBuffer.set(prevKey, openSessionTabs);
       // 记下"离开时看的是哪个会话"。必须走 setActiveSession（而非直写指针）——
       // 指针的写入路径只有一条，见 ConversationBufferManager 的模型说明。
-      if (activeSessionId) setActiveSession(prevKey, activeSessionId);
+      // 只有「会话态视图」（direct 的某个 session tab）才谈得上「离开时在看哪个会话」。
+      // `ch:*` / `dm:*` 没有会话概念：切离群聊时 `activeSessionId` 还是上一个 direct 会话的
+      // id，把它钉到频道 key 上会让之后每一条群聊写入落进那个 agent 的私聊 buffer ——
+      // 也就是「我发到群里的消息出现在与 agent 的主会话里」（且刷新即消失）。
+      if (activeSessionId && isSessionScopedConvKey(prevKey)) setActiveSession(prevKey, activeSessionId);
       // …and where the user actually was in it, per session tab. The transcript
       // of the outgoing view is still on screen at this point, so the anchor is
       // exact (see lib/chatScrollRestore.ts).
