@@ -62,13 +62,13 @@ import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler, heartbeatStateFingerprint } from './heartbeat.js';
 import type { LLMRouter } from './llm/router.js';
-import { stripToolNoise } from './llm/provider-helpers.js';
+import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
+import { stabilizeToolOrder } from './tool-order.js';
 import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
 import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
-import { viewBudgetForScenario, type ViewBudgetPolicy } from './context-budget.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import {
@@ -80,7 +80,6 @@ import {
   SCHEMA_INJECTED_TOOLS,
   type CapabilityPack,
 } from './capability-packs.js';
-import { ensureAffordablePromptPack } from './afford-guard.js';
 import { shouldEnterDeepSleep, nextDeepSleepIntervalMs, resetIdleOnWake } from './deep-sleep.js';
 import { recordSkillActivation } from './learning-loop.js';
 import type { SkillRegistry } from './skills/types.js';
@@ -89,6 +88,7 @@ import { join, resolve as resolvePath } from 'node:path';
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
+import { resolveOutputReserve } from './context-budgets.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
@@ -105,6 +105,7 @@ import {
   type TurnSessionHint,
   type TurnSessionRestorePayload,
 } from './session-hint.js';
+import { SessionBindingStore } from './session-bindings.js';
 
 /**
  * Per-task async context — propagates the executing taskId and task-local
@@ -263,6 +264,16 @@ export type ApprovalCallback = (request: {
   taskId?: string;
   /** In-memory chat session the tool call belongs to (for in-chat approval cards). */
   sessionId?: string;
+  /**
+   * The DB chat session (`cs_…`) that in-memory session is bound to, when known.
+   *
+   * Two id spaces exist for one conversation: `sessionId` is the in-memory
+   * (`sess_…`) identity, `chatSessionId` is the DB one every UI surface keys on.
+   * Carrying both lets the consumer place the card in the right tab WITHOUT
+   * knowing how the other space is derived — and without ever having to decide
+   * "this id looks foreign, so hide the approval".
+   */
+  chatSessionId?: string;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskProjectContext {
@@ -576,7 +587,43 @@ export class Agent {
   private set activeScenario(v: AgentScenario | undefined) { this.workspace().activeScenario = v; }
   private get pendingDeliberationResult(): DeliberationResult | undefined { return this.workspace().pendingDeliberationResult; }
   private set pendingDeliberationResult(v: DeliberationResult | undefined) { this.workspace().pendingDeliberationResult = v; }
-  private dbSessionMap = new Map<string, string>();
+  /**
+   * `cs_…` → `sess_…` alias table, for LEGACY conversations only.
+   *
+   * Single-write made the DB chat session id the memory primary key, so a new
+   * conversation needs no binding at all: one id, one store entry. This table
+   * survives for the historical case — the rich context (tool calls included)
+   * lives in an old `sess_*.json`, and that fact must outlive a process restart.
+   * The previous in-process `Map` did not, which is why every restart silently
+   * rebuilt from `chat_messages` and gutted the context (57 messages → 3).
+   */
+  private sessionBindingsStore?: SessionBindingStore;
+
+  /** Lazily created: needs `dataDir`, which is assigned in the constructor. */
+  private get sessionBindings(): SessionBindingStore {
+    if (!this.sessionBindingsStore) {
+      this.sessionBindingsStore = new SessionBindingStore(join(this.dataDir, 'sessions', '_bindings.json'));
+    }
+    return this.sessionBindingsStore;
+  }
+
+  /**
+   * Resolve a DB session id (`cs_…`) to a LIVE memory session, covering both eras:
+   *
+   *   · legacy — the rich context sits in an old `sess_*.json`, found via the
+   *     persisted alias table (this is what the in-process Map failed to do
+   *     across a restart);
+   *   · single-write — the memory session's primary key IS the `cs_…` id, so no
+   *     alias is needed at all.
+   *
+   * Returns undefined when neither exists, which callers must treat as "rebuild
+   * from DB" — never as "start an unrelated session".
+   */
+  private resolveBoundMemorySession(dbSessionId: string): string | undefined {
+    const bound = this.sessionBindings.resolve(dbSessionId);
+    if (bound && this.memory.getSession(bound)) return bound;
+    return this.memory.getSession(dbSessionId) ? dbSessionId : undefined;
+  }
   private orgContext?: OrgContext;
   private contextMdPath?: string;
   private handbookPath?: string;
@@ -668,7 +715,6 @@ export class Agent {
   /** A2: sessions that have already run a memory-flush preflight (dedup). */
   private flushedSessions = new Set<string>();
   /** A2: last observed context-usage percent per session, used by the flush preflight. */
-  private lastUsageBySession = new Map<string, number>();
   /** In-memory activity log buffer (keyed by activity ID, write-through cache) */
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
@@ -716,9 +762,8 @@ export class Agent {
    * those mutable fields there produced two real defects measured 2026-10-21:
    *   1. A turn that HAD ended via the `end_turn` tool was re-judged as "no
    *      end_turn signal" → an extra continuation LLM call (202k tokens).
-   *   2. `viewBudgetForScenario(undefined)` returned undefined → the scenario
-   *      view budget was silently skipped → that continuation replayed 182k of
-   *      history instead of the a2a 30k cap.
+   *   2. `lastTurnScenario` was undefined → the [CONTEXT] banner could not name
+   *      a lever, so the agent was told the water level with no way to act on it.
    * Both are one shape: a fact read from a field that had already been mutated.
    * The counter and the scenario are captured at the single point that knows
    * them, before the reset.
@@ -1955,7 +2000,11 @@ export class Agent {
 
       const prepare = async () => this.contextEngine.prepareMessages({
         systemPrompt,
-        sessionMessages: this.memory.getRecentMessages(sessionId, 80),
+        // NOT `getRecentMessages(id, 80)`: this is the post-turn completion check.
+        // Capping it at 80 messages hid the task prompt from the agent that has to
+        // decide whether to call task_submit_review — which is how runs ended in
+        // "did not call task_submit_review — auto-retrying" loops.
+        sessionMessages: this.requestHistory(sessionId),
         memory: this.memory,
         sessionId,
         agentId: this.id,
@@ -2030,7 +2079,23 @@ export class Agent {
               });
             }
           }
+          const toolCountBefore = llmTools.length;
           llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, markerToolSelectOpts);
+          // The tool array is serialized BEFORE the messages in every provider's
+          // request, so growing it mid-turn invalidates the provider's prefix
+          // cache for the rest of the turn — a cost we cannot remove (the model
+          // must be told about a tool before it can call it) but must be able to
+          // SEE before deciding whether the deferred-discovery design is worth
+          // it. Without this line the price of discovery is invisible.
+          if (llmTools.length !== toolCountBefore) {
+            log.info('tool set changed mid-turn — provider prefix cache invalidated', {
+              added: llmTools.length - toolCountBefore,
+              toolCount: llmTools.length,
+              discovered: (response.toolCalls ?? [])
+                .filter(tc => tc.name.includes('discover_tools') || tc.name.includes('hub_'))
+                .map(tc => tc.name),
+            });
+          }
         }
 
         prepared = await prepare();
@@ -2109,7 +2174,7 @@ export class Agent {
         systemPrompt:
           'You are closing out a turn that ran out of budget. Answer the message you were ' +
           'processing. Do not call tools and do not start new work.',
-        sessionMessages: this.memory.getRecentMessages(sessionId, 80),
+        sessionMessages: this.requestHistory(sessionId),
         memory: this.memory,
         sessionId,
         agentId: this.id,
@@ -2887,8 +2952,8 @@ export class Agent {
         if (preferred && preferred.agentId === this.id && preferred.messages.length > 0) {
           return preferred.id;
         }
-        const bound = this.dbSessionMap.get(hint.dbSessionId);
-        return bound && this.memory.getSession(bound) ? bound : undefined;
+        const bound = this.resolveBoundMemorySession(hint.dbSessionId);
+        return bound;
       }
       case 'new':
         return undefined;
@@ -2941,7 +3006,7 @@ export class Agent {
     }
 
     if (hintCarriesDbIdentity(hint) && this.currentSessionId) {
-      this.dbSessionMap.set(hint.dbSessionId, this.currentSessionId);
+      this.sessionBindings.bind(hint.dbSessionId, this.currentSessionId);
     }
   }
 
@@ -2958,7 +3023,7 @@ export class Agent {
    */
   bindDbSession(dbSessionId: string): void {
     if (this.currentSessionId) {
-      this.dbSessionMap.set(dbSessionId, this.currentSessionId);
+      this.sessionBindings.bind(dbSessionId, this.currentSessionId);
       log.debug(`Bound DB session ${dbSessionId} → memory session ${this.currentSessionId}`);
     }
   }
@@ -2996,7 +3061,7 @@ export class Agent {
         && preferred.messages.length >= dbMessages.length
       ) {
         this.currentSessionId = preferred.id;
-        this.dbSessionMap.set(dbSessionId, preferred.id);
+        this.sessionBindings.bind(dbSessionId, preferred.id);
         log.info(
           `Reattached DB session ${dbSessionId} → persisted memory session ${preferred.id} (${preferred.messages.length} messages)`,
         );
@@ -3004,7 +3069,7 @@ export class Agent {
       }
     }
 
-    const existingMemorySessionId = this.dbSessionMap.get(dbSessionId);
+    const existingMemorySessionId = this.resolveBoundMemorySession(dbSessionId);
     if (existingMemorySessionId) {
       const session = this.memory.getSession(existingMemorySessionId);
       if (session) {
@@ -3016,7 +3081,7 @@ export class Agent {
             memoryMessages: session.messages.length,
             dbMessages: dbMessages.length,
           });
-          this.dbSessionMap.delete(dbSessionId);
+          this.sessionBindings.unbind(dbSessionId);
           // Fall through to create a fresh in-memory session from DB
         } else {
           this.currentSessionId = existingMemorySessionId;
@@ -3033,12 +3098,15 @@ export class Agent {
           return;
         }
       } else {
-        this.dbSessionMap.delete(dbSessionId);
+        this.sessionBindings.unbind(dbSessionId);
       }
     }
 
-    const session = this.memory.createSession(this.id);
-    this.dbSessionMap.set(dbSessionId, session.id);
+    // ── Single-write ────────────────────────────────────────────────────────
+    // The DB chat session id IS the memory primary key. No new `sess_*` is
+    // minted for a conversation that already has a `cs_*`, so the same dialogue
+    // can never end up split across two store entries again.
+    const session = this.memory.createSession(this.id, dbSessionId);
 
     // Trim before loading into memory — don't wait for the first LLM pack.
     const trimmed = Agent.trimMessagesForRestore(dbMessages);
@@ -3095,36 +3163,33 @@ export class Agent {
     return slice;
   }
 
-  /** Shared packing budget fields for prepareMessages (window + OR afford + view). */
+  /** Shared packing budget fields for prepareMessages (window + OR afford). */
   private getPrepareBudgetOpts(): {
     modelContextWindow: number;
     modelMaxOutput: number | undefined;
-    promptAffordTokens: number | null;
-    viewBudget: ViewBudgetPolicy | undefined;
     scenario: AgentScenario | undefined;
   } {
     const provider = this.getEffectiveProvider();
     const effectiveModel = this.getEffectiveModel();
-    const afford = typeof this.llmRouter.getPromptAffordTokens === 'function'
-      ? this.llmRouter.getPromptAffordTokens(provider)
-      : null;
     return {
       // P1-8: window must be resolved for the model actually used this request,
       // not the provider's configured default (which the session may override).
       modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
-      modelMaxOutput: this.getModelMaxOutputForBudget(),
-      promptAffordTokens: afford ?? null,
-      // Per-scenario VIEW cap — how much history this turn may see. Derived here
-      // (one execution point) so no call site can forget it or invent a number.
-      // `undefined` for scenarios that must see everything (memory_consolidation,
-      // distillation) restores the legacy window-based behaviour.
+      // RESERVE IS DERIVED, not the catalog ceiling.
       //
-      // `?? this.lastTurnScenario`: post-turn continuations (ensureTurnCompleted)
-      // run after handleMessage's finally cleared `activeScenario`; without this
-      // fallback the scenario resolved to undefined and the view budget was
-      // silently skipped (measured 2026-10-21: 182k replayed on an a2a turn whose
-      // cap is 30k).
-      viewBudget: viewBudgetForScenario(this.activeScenario ?? this.lastTurnScenario),
+      // This used to be `this.getModelMaxOutputForBudget()` — the provider's
+      // maximum output (384,000 here) — which was subtracted from the window
+      // before any input was packed. The wire carries at most 32,768 and real
+      // outputs measured 31..2,607 over 26 sampled calls, so 37% of a 1,000k
+      // window was reserved for a reply that never arrives, and every water-level
+      // reading was measured against the shrunken budget.
+      //
+      // See `context-budgets.ts#resolveOutputReserve`: the reserve can never be
+      // smaller than what we send (or the provider may reject the request) and
+      // never larger than the catalog ceiling.
+      modelMaxOutput: resolveOutputReserve({
+        catalogMaxOutput: this.getModelMaxOutputForBudget(),
+      }),
       scenario: this.activeScenario ?? this.lastTurnScenario,
     };
   }
@@ -3149,16 +3214,16 @@ export class Agent {
    * spaces so an agent can introspect "which conversation am I in".
    */
   getMemorySessionIdForDbSession(dbSessionId: string): string | null {
-    return this.dbSessionMap.get(dbSessionId) ?? null;
+    return this.resolveBoundMemorySession(dbSessionId) ?? null;
   }
 
   /** Returns the DB session ID currently bound to the active memory session, if any. */
   getDbSessionId(): string | null {
     if (!this.currentSessionId) return null;
-    for (const [dbId, memId] of this.dbSessionMap) {
-      if (memId === this.currentSessionId) return dbId;
-    }
-    return null;
+    // Single-write: the common case is that the memory key IS the DB id.
+    if (looksLikeDbSessionId(this.currentSessionId)) return this.currentSessionId;
+    // Legacy: an old `sess_*` context serving a `cs_*` conversation.
+    return this.sessionBindings.resolveReverse(this.currentSessionId) ?? null;
   }
 
   /**
@@ -3777,19 +3842,23 @@ export class Agent {
     return total;
   }
 
-  private calibrateTokenCounter(actualInputTokens: number): void {
-    if (this.lastEstimatedInputTokens > 0 && actualInputTokens > 0) {
-      try {
-        const counter = this.tokenCounter;
-        if ('calibrate' in counter) {
-          (counter as { calibrate: (e: number, a: number) => void }).calibrate(this.lastEstimatedInputTokens, actualInputTokens);
-        }
-      } catch (err) { log.debug('Token counter calibration failed', { error: String(err) }); }
+  private calibrateTokenCounter(actualInputTokens: number, sessionId: string | undefined): void {
+    // O2: the reported count is the authoritative water-level input.
+    //
+    // It is recorded against the session the CALLER was working on, which is the
+    // session that was packed. It used to read `this.currentSessionId` — a field
+    // shared by every concurrent worker — so a response could be credited to a
+    // session it never belonged to (observed: 574,880 reported against a 316,070
+    // pack; 98,657 against 503,814), and the water level swung 10%..61%.
+    // The parameter is REQUIRED so no call site can silently fall back to the
+    // shared field again.
+    // `sessionId` is the one carried by the pack itself (`prepared.sessionId`), so
+    // the key written here is by construction the key that will be read back for
+    // the same session. When the pack had no session there is nothing to
+    // attribute: record nothing rather than guess from shared state.
+    if (sessionId) {
+      this.contextEngine.noteReportedInputTokens(sessionId, actualInputTokens);
     }
-    // O2: the reported count is ALSO the authoritative water-level input. Every
-    // LLM response already funnels through here (9 call sites), so hooking it here
-    // covers chat / stream / task / review / reflection without touching them.
-    this.contextEngine.noteReportedInputTokens(this.currentSessionId, actualInputTokens);
     this.lastEstimatedInputTokens = 0;
   }
 
@@ -4453,12 +4522,42 @@ export class Agent {
       const parts: string[] = [event.action];
       if (event.durationMs) parts.push(`${(event.durationMs / 1000).toFixed(1)}s`);
       if (event.tokensUsed) parts.push(`${event.tokensUsed} tokens`);
+      // Cache visibility, folded into the line that already exists so it costs
+      // no extra log volume. Without it there is no way to tell a cache MISS
+      // from a cold start — and "we cannot measure it" is how a broken cache
+      // stays invisible behind a plausible-looking bill.
+      const cacheHit = event.type === 'llm_request'
+        ? computeCacheHitRate({
+            provider: event.provider,
+            promptTokens: event.inputTokens ?? 0,
+            cacheReadTokens: event.cacheReadTokens,
+            cacheWriteTokens: event.cacheWriteTokens,
+          })
+        : null;
+      if (cacheHit !== null) parts.push(`cache ${Math.round(cacheHit * 100)}%`);
       if (!event.success) parts.push('FAILED');
       this.emitActivityLog(actId, logType, parts.join(' · '), {
         tokensUsed: event.tokensUsed,
         durationMs: event.durationMs,
         action: event.action,
         success: event.success,
+        // Persisted for SQL: SELECT json_extract(metadata,'$.cacheHitRate') …
+        ...(event.type === 'llm_request'
+          ? {
+              promptTokens: event.inputTokens,
+              // Output length is what decides how much of the window must be
+              // RESERVED for the reply. The reserve is currently the model's
+              // catalog ceiling (393k) while the wire value is 32k or omitted,
+              // so we overstate usage by ~1.6x and give away ~360k of usable
+              // input. Recording the real output length is step 0 of fixing
+              // that: the reserve must be sized from P99, not from the ceiling.
+              outputTokens: event.outputTokens,
+              cacheReadTokens: event.cacheReadTokens ?? 0,
+              cacheWriteTokens: event.cacheWriteTokens ?? 0,
+              cacheHitRate: cacheHit,
+              provider: event.provider,
+            }
+          : {}),
       });
     }
   }
@@ -4489,6 +4588,7 @@ export class Agent {
       reason,
       taskId: this.getCurrentTaskId(),
       sessionId: this.currentSessionId,
+      chatSessionId: this.getDbSessionId() ?? undefined,
     });
   }
 
@@ -4633,7 +4733,7 @@ export class Agent {
       const prepareFollowUpMessages = () =>
         this.contextEngine.prepareMessages({
           systemPrompt,
-          sessionMessages: this.memory.getRecentMessages(sessionId, 50),
+          sessionMessages: this.requestHistory(sessionId),
           memory: this.memory,
           sessionId,
           agentId: this.id,
@@ -5140,7 +5240,7 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
-    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
+    const { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     const toolSelectCtx = this.buildSessionAwareToolSelectContext(sessionId, effectiveMessage);
     const toolSelectOpts = {
@@ -5194,7 +5294,7 @@ export class Agent {
 
     const sessionMessages = this.requestHistory(sessionId);
     this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
-    let prepared = await this.contextEngine.prepareMessages({
+    const prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
@@ -5208,29 +5308,12 @@ export class Agent {
       volatileState: this.volatileState,
     });
 
-    // Afford fail-closed (Afford.S1): shared helper for stream + non-stream.
-    ({ prepared, llmTools, systemPrompt, systemCacheSegments } = await this.applyAffordGuard({
-      prepared,
-      llmTools,
-      systemPrompt,
-      systemCacheSegments,
-      sessionMessages,
-      sessionId,
-      scenario,
-      rebuildReflex: () => this.buildReflexAffordPack(effectiveMessage),
-    }));
-
     const messages = prepared.messages;
-    this.recordContextUsage(sessionId, prepared.usage.usagePercent);
-    if (prepared.usage.compressed) this.metricsCollector.recordCompression(); // C2
-    log.info('Prompt token metrics (chat)', {
-      systemTokens: prepared.usage.systemTokens,
-      historyTokens: prepared.usage.messageTokens,
-      toolDefTokens: prepared.usage.toolDefTokens,
-      totalPromptTokens: prepared.usage.totalUsed,
-      compactStage: prepared.usage.compactStage,
-      packingBudget: prepared.usage.packingBudget,
-      promptAffordTokens: prepared.usage.promptAffordTokens,
+    log.info('Context pack (chat)', {
+      messageCount: prepared.usage.messageCount,
+      variableChars: prepared.usage.variableChars,
+      pctReported: prepared.usage.pctReported ?? null,
+      usageSource: prepared.usage.usageSource,
     });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
@@ -5252,7 +5335,7 @@ export class Agent {
 
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.calibrateTokenCounter(response.usage.inputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens, prepared.sessionId);
       this.emitLlmRequestAudit('chat', response, Date.now() - llmStart);
 
       let toolIterations = 0;
@@ -5484,7 +5567,7 @@ export class Agent {
 
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.calibrateTokenCounter(response.usage.inputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens, prepared2.sessionId);
         this.emitLlmRequestAudit('chat', response, Date.now() - llmStart2, tokens2);
       }
 
@@ -5842,32 +5925,26 @@ export class Agent {
     const effectiveMessage = inputCheck.transformedInput ?? userMessage;
 
     // Resolve the session identity for THIS turn:
-    //   1) the memory session bound to the request's DB session (the binding is
-    //      written when the restore runs — in this worker's workspace), else
-    //   2) the workspace pointer, else
-    //   3) a brand-new session.
-    // The DB id is NEVER used as a memory key directly: the two id spaces must
-    // not be conflated, or one conversation ends up split across two stores.
+    //   1) the memory session serving this DB session — the legacy alias (a
+    //      `sess_*` context with a persisted binding) or, after single-write,
+    //      the `cs_*`-keyed session itself, else
+    //   2) a `cs_*`-keyed session adopted right here — never a fresh `sess_*`
+    //      for a conversation that already has a DB identity, else
+    //   3) the workspace pointer, else
+    //   4) a brand-new internal session.
     // Relying on the pointer alone was the bug: it is per-worker, so a later
     // message picked up by another worker (or by one that has since served a
     // different conversation) silently started an empty session and
     // `requestHistory()` returned [] — the agent "forgot" its conversation.
-    const boundMemorySessionId = explicitDbSessionId
-      ? this.dbSessionMap.get(explicitDbSessionId)
+    let resolvedSessionId = explicitDbSessionId
+      ? (this.resolveBoundMemorySession(explicitDbSessionId)
+        ?? this.memory.createSession(this.id, explicitDbSessionId).id)
       : undefined;
-    if (explicitDbSessionId && !boundMemorySessionId) {
-      log.warn('Streaming turn has no memory session bound to its DB session — falling back to the workspace session', {
-        agentId: this.id,
-        dbSessionId: explicitDbSessionId,
-        workspaceSessionId: this.currentSessionId,
-      });
-    }
-    const resolvedSessionId = boundMemorySessionId ?? this.currentSessionId;
+    resolvedSessionId ??= this.currentSessionId;
     if (resolvedSessionId) {
       this.currentSessionId = resolvedSessionId;
     } else {
-      const session = this.memory.createSession(this.id);
-      this.currentSessionId = session.id;
+      this.currentSessionId = this.memory.createSession(this.id).id;
     }
     this.memory.getOrCreateSession(this.id, this.currentSessionId);
 
@@ -5914,7 +5991,7 @@ export class Agent {
       ...this.getTeamContextParams(),
     });
     const { volatile: volatileState } = systemPromptBuild;
-    let { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
+    const { text: systemPrompt, segments: systemCacheSegments } = systemPromptBuild;
 
     this.activeScenario = 'chat';
     const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, scenario: 'chat' as const };
@@ -5927,7 +6004,7 @@ export class Agent {
 
     const sessionMessages = this.requestHistory(this.currentSessionId);
     this.volatileState = this.mergeVolatile(volatileState, streamDeferredCatalog);
-    let preparedStream = await this.contextEngine.prepareMessages({
+    const preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
       memory: this.memory,
@@ -5938,32 +6015,12 @@ export class Agent {
       systemCacheSegments,
       volatileState: this.volatileState,
     });
-    ({
-      prepared: preparedStream,
-      llmTools,
-      systemPrompt,
-      systemCacheSegments,
-    } = await this.applyAffordGuard({
-      prepared: preparedStream,
-      llmTools,
-      systemPrompt,
-      systemCacheSegments,
-      sessionMessages,
-      sessionId: this.currentSessionId,
-      scenario: 'chat',
-      rebuildReflex: () => this.buildReflexAffordPack(effectiveMessage),
-    }));
     const messages = preparedStream.messages;
-    this.recordContextUsage(this.currentSessionId, preparedStream.usage.usagePercent);
-    if (preparedStream.usage.compressed) this.metricsCollector.recordCompression(); // C2
-    log.info('Context usage for stream', {
-      systemTokens: preparedStream.usage.systemTokens,
-      historyTokens: preparedStream.usage.messageTokens,
-      toolDefTokens: preparedStream.usage.toolDefTokens,
-      totalPromptTokens: preparedStream.usage.totalUsed,
-      compactStage: preparedStream.usage.compactStage,
-      promptAffordTokens: preparedStream.usage.promptAffordTokens,
-      usagePercent: preparedStream.usage.usagePercent,
+    log.info('Context pack (stream)', {
+      messageCount: preparedStream.usage.messageCount,
+      variableChars: preparedStream.usage.variableChars,
+      pctReported: preparedStream.usage.pctReported ?? null,
+      usageSource: preparedStream.usage.usageSource,
     });
 
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
@@ -6041,7 +6098,7 @@ export class Agent {
       streamMarkerDelta.flush();
       const tokensThisCall = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(tokensThisCall);
-      this.calibrateTokenCounter(response.usage.inputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens, preparedStream.sessionId);
       lastResponseContent = response.content || '';
       this.emitLlmRequestAudit('chat_stream', response, Date.now() - llmStart, tokensThisCall);
       if (response.creditWarning) {
@@ -6294,7 +6351,7 @@ export class Agent {
         streamMarkerDelta.flush();
         const tokens2 = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(tokens2);
-        this.calibrateTokenCounter(response.usage.inputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens, preparedCont.sessionId);
         lastResponseContent = response.content || lastResponseContent;
         this.emitLlmRequestAudit('chat_stream', response, Date.now() - llmStart2, tokens2);
       }
@@ -6756,17 +6813,12 @@ export class Agent {
         currentQuery: taskPrompt,
       }));
       const messages = preparedTask.messages;
-      this.recordContextUsage(sessionId, preparedTask.usage.usagePercent);
-      if (preparedTask.usage.compressed) this.metricsCollector.recordCompression(); // C2
-      log.info('Context usage for task execution', {
+      log.info('Context pack (task)', {
         taskId,
-        systemTokens: preparedTask.usage.systemTokens,
-        historyTokens: preparedTask.usage.messageTokens,
-        toolDefTokens: preparedTask.usage.toolDefTokens,
-        totalPromptTokens: preparedTask.usage.totalUsed,
-        compactStage: preparedTask.usage.compactStage,
-        promptAffordTokens: preparedTask.usage.promptAffordTokens,
-        usagePercent: preparedTask.usage.usagePercent,
+        messageCount: preparedTask.usage.messageCount,
+        variableChars: preparedTask.usage.variableChars,
+        pctReported: preparedTask.usage.pctReported ?? null,
+        usageSource: preparedTask.usage.usageSource,
       });
 
       let taskLlmStart = Date.now();
@@ -6783,7 +6835,7 @@ export class Agent {
       );
       let taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(taskLlmTokens);
-      this.calibrateTokenCounter(response.usage.inputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens, preparedTask.sessionId);
       this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
 
       while (
@@ -7010,7 +7062,7 @@ export class Agent {
         );
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
-        this.calibrateTokenCounter(response.usage.inputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens, preparedTaskCont.sessionId);
         this.emitLlmRequestAudit('task_execution', response, Date.now() - taskLlmStart, taskLlmTokens);
       }
 
@@ -7088,7 +7140,7 @@ export class Agent {
         );
         taskLlmTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(taskLlmTokens);
-        this.calibrateTokenCounter(response.usage.inputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens, preparedFinal.sessionId);
 
         // 模型没有请求工具，却也没提交：它认为自己说完了 → 记下回复并退出提醒循环。
         if (!response.toolCalls?.length) {
@@ -7373,7 +7425,7 @@ export class Agent {
       );
       let risTokens = response.usage.inputTokens + response.usage.outputTokens;
       this.updateTokensUsed(risTokens);
-      this.calibrateTokenCounter(response.usage.inputTokens);
+      this.calibrateTokenCounter(response.usage.inputTokens, prepared.sessionId);
       this.emitLlmRequestAudit('respond_in_session', response, Date.now() - risLlmStart, risTokens);
 
       let toolIter = 0;
@@ -7483,7 +7535,7 @@ export class Agent {
         );
         risTokens = response.usage.inputTokens + response.usage.outputTokens;
         this.updateTokensUsed(risTokens);
-        this.calibrateTokenCounter(response.usage.inputTokens);
+        this.calibrateTokenCounter(response.usage.inputTokens, preparedCont.sessionId);
         this.emitLlmRequestAudit('respond_in_session', response, Date.now() - risLlmStart, risTokens);
       }
 
@@ -8142,7 +8194,23 @@ export class Agent {
     block: number = SESSION_REQUEST_HISTORY_BLOCK,
   ): LLMMessage[] {
     const all = this.memory.getRecentMessages(sessionId, Number.MAX_SAFE_INTEGER);
-    return requestHistoryWindow(all, minMessages, block);
+    // ── Replay the WHOLE history ────────────────────────────────────────────
+    //
+    // This used to be `requestHistoryWindow(all, 400, 100)`: a COUNT-based cut
+    // that dropped everything before the last ~400 messages whether or not the
+    // request needed it. Measured on a 713-message session sitting at 53% of a
+    // 1000k window: ~300 messages (~116k tokens) were silently withheld from
+    // every call. That is the exact trimming the Owner banned — it does not save
+    // money, it makes the agent re-derive what it already established.
+    //
+    // The prefix-cache motivation is real but belongs where a cut is actually
+    // unavoidable: `trimToFitBudget` now drops in BLOCKS, so when the physical
+    // limit forces a cut the head still stays stable for many calls. When there
+    // is room, there is no cut.
+    void requestHistoryWindow;
+    void minMessages;
+    void block;
+    return all;
   }
 
   /** Slim reflex pack used when afford guard must downgrade fixed prefix. */
@@ -8230,107 +8298,13 @@ export class Agent {
       systemCacheSegments,
       volatileState: this.volatileState,
     });
-    return this.applyAffordGuard({
-      prepared,
-      llmTools: opts.llmTools,
-      systemPrompt,
-      systemCacheSegments,
-      sessionMessages,
-      sessionId: opts.sessionId,
-      scenario: opts.scenario,
-      rebuildReflex: () => this.buildReflexAffordPack(opts.currentQuery),
-    });
+    return { prepared, llmTools: opts.llmTools, systemPrompt, systemCacheSegments };
   }
 
   /**
    * Afford.S1: shared afford gate for all prepareMessages entry points.
    * Downgrades once to reflex (rebuild system + tools); rejects with prompt_pack_rejected.
    */
-  private async applyAffordGuard(opts: {
-    prepared: Awaited<ReturnType<ContextEngine['prepareMessages']>>;
-    llmTools: LLMTool[];
-    systemPrompt: string;
-    systemCacheSegments: SystemPromptSegment[];
-    sessionMessages: LLMMessage[];
-    sessionId: string;
-    scenario: string;
-    /** Rebuild slim reflex system+tools (MUST refresh both — tools-only made fixed worse). */
-    rebuildReflex: () => Promise<{
-      systemPrompt: string;
-      systemCacheSegments: SystemPromptSegment[];
-      llmTools: LLMTool[];
-    }>;
-  }): Promise<{
-    prepared: Awaited<ReturnType<ContextEngine['prepareMessages']>>;
-    llmTools: LLMTool[];
-    systemPrompt: string;
-    systemCacheSegments: SystemPromptSegment[];
-  }> {
-    const afford = this.getPrepareBudgetOpts().promptAffordTokens;
-    let prepared = opts.prepared;
-    let llmTools = opts.llmTools;
-    let systemPrompt = opts.systemPrompt;
-    let systemCacheSegments = opts.systemCacheSegments;
-    let alreadyDowngraded = scenarioToPack(opts.scenario) === 'reflex';
-
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const decision = ensureAffordablePromptPack({
-        systemTokens: prepared.usage.systemTokens,
-        toolDefTokens: prepared.usage.toolDefTokens,
-        afford,
-        alreadyDowngraded,
-      });
-      if (decision.status === 'ok') {
-        return { prepared, llmTools, systemPrompt, systemCacheSegments };
-      }
-      if (decision.status === 'downgrade_needed') {
-        log.warn('Prompt fixed prefix over afford — downgrading to reflex pack', {
-          agentId: this.id,
-          fixed: decision.fixed,
-          afford: decision.afford,
-          systemTokens: prepared.usage.systemTokens,
-          toolDefTokens: prepared.usage.toolDefTokens,
-        });
-        const rebuilt = await opts.rebuildReflex();
-        systemPrompt = rebuilt.systemPrompt;
-        systemCacheSegments = rebuilt.systemCacheSegments;
-        llmTools = rebuilt.llmTools;
-        this.toolSelector.consumeDeferredCatalog();
-        prepared = await this.contextEngine.prepareMessages({
-          systemPrompt,
-          sessionMessages: opts.sessionMessages,
-          memory: this.memory,
-          sessionId: opts.sessionId,
-          agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
-          toolDefinitions: llmTools,
-          systemCacheSegments,
-          volatileState: this.volatileState,
-        });
-        log.info('Reflex afford downgrade rebuilt', {
-          agentId: this.id,
-          systemTokens: prepared.usage.systemTokens,
-          toolDefTokens: prepared.usage.toolDefTokens,
-          fixed: prepared.usage.systemTokens + prepared.usage.toolDefTokens,
-          toolCount: llmTools.length,
-        });
-        alreadyDowngraded = true;
-        continue;
-      }
-      log.error('prompt_pack_rejected — fixed prefix exceeds provider afford', {
-        agentId: this.id,
-        fixed: decision.fixed,
-        afford: decision.afford,
-        needed: decision.needed,
-      });
-      throw new Error(
-        `prompt_pack_rejected: system+tools (${decision.fixed}) exceed provider afford (${decision.afford}). `
-        + 'Reduce skills/tools, lower model, or top up credits.',
-      );
-    }
-    return { prepared, llmTools, systemPrompt, systemCacheSegments };
-  }
-
   private buildToolDefinitions(context?: {
     userMessage?: string;
     isTaskExecution?: boolean;
@@ -8413,13 +8387,20 @@ export class Agent {
     if (!toolCalls?.some((tc) => tc.name === 'discover_tools')) return current;
     const activatedNow = this.stickyTools().activated;
     if (activatedNow.size === 0) return current;
-    const next = this.buildToolDefinitions(selectOpts);
+    // The selector re-ranks, which can reshuffle tools the model already saw.
+    // The tools field is serialized BEFORE the messages, so it is a prefix of
+    // the whole request: a reorder there invalidates the cache for the system
+    // prompt and the entire history. Stabilizing the order keeps the already
+    // cached part of the block byte-identical and appends only what is new.
+    const rebuilt = this.buildToolDefinitions(selectOpts);
+    const next = stabilizeToolOrder(current, rebuilt);
     log.info('Refreshed LLM tool schemas after discover_tools', {
       agentId: this.id,
       before: current.length,
       after: next.length,
       activated: [...activatedNow],
       newlyPresent: [...activatedNow].filter((n) => next.some((t) => t.name === n)),
+      appended: next.filter((t) => !current.some((c) => c.name === t.name)).map((t) => t.name),
     });
     return next;
   }
@@ -9333,6 +9314,7 @@ export class Agent {
           reason: `Agent wants to execute '${toolCall.name}'`,
           taskId: this.getCurrentTaskId(),
           sessionId: this.currentSessionId,
+          chatSessionId: this.getDbSessionId() ?? undefined,
         });
         if (!result.approved) {
           const reason = result.comment ? `: ${result.comment}` : '';
@@ -9902,11 +9884,6 @@ export class Agent {
    * Inspired by OpenClaw's pre-compaction memory flush pattern.
    */
   /** A2: record the context usage of a just-packed turn so the next turn's preflight can react. */
-  private recordContextUsage(sessionId: string | undefined, usagePercent: number): void {
-    if (!sessionId) return;
-    this.lastUsageBySession.set(sessionId, usagePercent);
-  }
-
   /**
    * A2: turn-level memory-flush preflight. Runs before a turn packs context: if the
    * previous turn's usage crossed the threshold and this session has not flushed yet,
@@ -9915,7 +9892,8 @@ export class Agent {
   private async maybeMemoryFlushPreflight(sessionId: string | undefined): Promise<void> {
     if (!shouldMemoryFlushPreflight({
       sessionId,
-      lastUsagePercent: sessionId ? this.lastUsageBySession.get(sessionId) : undefined,
+      // Measured, not estimated — see ContextEngine.getMeasuredUsagePercent.
+      lastUsagePercent: this.contextEngine.getMeasuredUsagePercent(sessionId),
       alreadyFlushed: sessionId ? this.flushedSessions.has(sessionId) : false,
     })) {
       return;

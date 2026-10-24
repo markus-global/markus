@@ -39,12 +39,37 @@ import { applyLessonKeyPress, type LessonKeyEvent } from './lib/shortcut-lessons
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
 import { isUserOnboarded, markUserOnboarded, clearUserOnboarded } from './lib/onboarding.ts';
 
+/**
+ * Inactive page slot = NOT LAYOUT, NOT PAINT, NOT STYLE.
+ *
+ * `visibility: hidden` looked cheap and was not: a hidden-but-laid-out subtree
+ * still participates in style recalc and layout on every frame of the whole
+ * document. Since every visited page stays mounted for the life of the app
+ * (that is the point — chat streams and scroll state survive a page switch),
+ * the cost grew with the number of pages the user had opened:
+ *
+ *   measured (renderer, 120Hz, real app):
+ *     2 slots mounted   (~1.8k nodes)  → page switch: 0 long tasks, max frame 15ms
+ *     7 slots mounted   (~15k nodes)   → page switch: 3–4 long tasks, ~200ms blocked,
+ *                                        max frame 66–84ms (visible stutter)
+ *     …same 7 slots, hidden with `display:none` instead:
+ *                                      → 0 long tasks, max frame 15–18ms, idle 8.3ms
+ *
+ * Same DOM, same React state, same node count — only the hidden slots stopped
+ * being laid out. That is why the desktop app (long-lived document) degraded
+ * while a fresh web tab / the right-panel view stayed fast.
+ *
+ * `display: none` keeps React state (the component stays mounted) and drops the
+ * subtree from layout/paint/style; it also removes it from the a11y tree, which
+ * `visibility: hidden` did not.
+ *
+ * Cost of the change: a page that measures itself once on mount now measures
+ * 0×0 while inactive, so anything size-dependent (charts, virtualized lists)
+ * must re-measure on reveal — pages get `data-page-active="true"` plus a
+ * `markus:page-shown` event on the slot (see PageSlot).
+ */
 const HIDDEN_STYLE: React.CSSProperties = {
-  visibility: 'hidden',
-  position: 'absolute',
-  inset: 0,
-  pointerEvents: 'none',
-  zIndex: -1,
+  display: 'none',
 };
 
 /**
@@ -80,9 +105,23 @@ const PageSlot = memo(function PageSlot({
   children: React.ReactNode;
 }) {
   const active = id === activePage;
+  const ref = useRef<HTMLDivElement | null>(null);
+  const wasActive = useRef(active);
+  // A page hidden with `display: none` measures 0×0, so size-dependent work done
+  // on mount (charts, virtualized lists, editors) has to be re-measured when the
+  // page comes back. Signal it once per reveal — only on an actual transition, so
+  // the first mount does not get a spurious extra pass.
+  useEffect(() => {
+    if (active && !wasActive.current && ref.current) {
+      ref.current.dispatchEvent(new CustomEvent('markus:page-shown', { bubbles: true }));
+    }
+    wasActive.current = active;
+  }, [active]);
   return (
     <div
+      ref={ref}
       data-page-slot
+      data-page-active={active ? 'true' : 'false'}
       className={docScroll ? 'block overflow-hidden' : 'flex-1 overflow-hidden flex flex-col'}
       style={active ? undefined : HIDDEN_STYLE}
     >

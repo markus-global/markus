@@ -141,7 +141,7 @@ describe('post-turn signals are captured before the reset', () => {
     expect(append).toHaveBeenCalled();
   });
 
-  it('view budget survives activeScenario being cleared by the finally', () => {
+  it('the scenario survives activeScenario being cleared by the finally', () => {
     const router = makeRouter();
     const agent = createAgent(router);
     const inner = agent as unknown as Internals;
@@ -152,9 +152,10 @@ describe('post-turn signals are captured before the reset', () => {
 
     const budget = inner.getPrepareBudgetOpts();
 
+    // The scenario drives whether the [CONTEXT] banner may name a lever
+    // (session compact / pin). View budgets themselves were deleted on
+    // 2026-10-23 — history is no longer trimmed per call.
     expect(budget.scenario).toBe('a2a');
-    expect(budget.viewBudget).toBeDefined();
-    expect(budget.viewBudget?.viewTokens).toBe(30_000);
   });
 
   it('exempt scenarios keep the no-cap behaviour', () => {

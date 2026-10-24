@@ -18,7 +18,9 @@ import {
   SHELL_SESSION_IDLE_TIMEOUT_MS,
   SHELL_SESSION_MAX_OUTPUT_BYTES,
 } from '@markus/shared';
-import { existsSync } from 'node:fs';
+import { existsSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { killProcessTree } from './process-group.js';
 
 /**
@@ -65,8 +67,42 @@ export interface ShellSession {
 interface PendingCommand {
   sentinel: string;
   output: string;
+  /** Total chars the command has produced, including what was discarded. */
+  seenChars: number;
+  /** Full-output log on disk, once the output grew past the spool threshold. */
+  spoolPath: string | null;
   resolve: (result: { stdout: string; exitCode: number }) => void;
   timer: ReturnType<typeof setTimeout>;
+}
+
+/** Spool to disk only past this much output — small commands stay in memory. */
+const SHELL_SPOOL_THRESHOLD_CHARS = 64_000;
+/** Head of the spooled log echoed back in-band: usually the interesting part. */
+const SHELL_SPOOL_HEAD_CHARS = 4_000;
+
+/**
+ * Replace a silently shortened output with head + pointer + tail.
+ *
+ * The old behaviour kept the tail and dropped the head with a bare
+ * `[... truncated ...]`, so the error message / diff header / first rows were
+ * gone FOREVER and the only way to see them was re-running the command — the
+ * most expensive thing an agent can do inside a tool loop. The pointer makes the
+ * recovery cost one cheap read instead.
+ */
+export function withSpoolPointer(tail: string, spoolPath: string | null, totalChars: number): string {
+  if (!spoolPath) return tail;
+  let head = '';
+  try {
+    head = readFileSync(spoolPath, 'utf8').slice(0, SHELL_SPOOL_HEAD_CHARS);
+  } catch {
+    // The pointer is still useful even when the head cannot be re-read.
+  }
+  const omitted = Math.max(0, totalChars - head.length - tail.length);
+  const pointer =
+    `[... ${totalChars.toLocaleString()} chars total · ${omitted.toLocaleString()} chars omitted here · ` +
+    `FULL LOG: ${spoolPath} — read that file (file_read, or \`sed -n '1,200p' ${spoolPath}\`) ` +
+    `instead of re-running this command]`;
+  return head ? `${head}\n${pointer}\n…(tail)…\n${tail}` : `${pointer}\n${tail}`;
 }
 
 const SENTINEL_PREFIX = '__MARKUS_DONE_';
@@ -119,12 +155,31 @@ class ManagedSession {
   private onData(data: string) {
     if (!this.pending) return;
 
-    this.pending.output += data;
+    const p = this.pending;
+    p.seenChars += data.length;
+
+    // ── Spool to disk so truncation never destroys information ──────────────
+    // The in-memory buffer keeps only a tail to protect the process, but the HEAD
+    // is usually the interesting part. Once the output is big enough to be
+    // truncated, mirror it to a log file so the agent can READ the full output
+    // rather than re-running the command.
+    if (p.seenChars > SHELL_SPOOL_THRESHOLD_CHARS) {
+      if (!p.spoolPath) p.spoolPath = this.startSpool(p.output);
+      if (p.spoolPath) {
+        try {
+          appendFileSync(p.spoolPath, data);
+        } catch {
+          // Best-effort: a read-only tmpdir must not break the shell.
+          p.spoolPath = null;
+        }
+      }
+    }
+
+    p.output += data;
     // Cap buffer to prevent memory issues
-    if (this.pending.output.length > SHELL_SESSION_MAX_OUTPUT_BYTES) {
+    if (p.output.length > SHELL_SESSION_MAX_OUTPUT_BYTES) {
       const keep = SHELL_SESSION_MAX_OUTPUT_BYTES - 1000;
-      this.pending.output =
-        '[... truncated ...]\n' + this.pending.output.slice(-keep);
+      p.output = p.output.slice(-keep);
     }
 
     const sentinelRe = new RegExp(
@@ -136,11 +191,13 @@ class ManagedSession {
       const output = this.pending.output
         .slice(0, match.index)
         .replace(/^\n/, '');
+      const spoolPath = this.pending.spoolPath;
+      const totalChars = this.pending.seenChars;
       clearTimeout(this.pending.timer);
       const p = this.pending;
       this.pending = null;
       this.resetIdleTimer();
-      p.resolve({ stdout: output, exitCode });
+      p.resolve({ stdout: withSpoolPointer(output, spoolPath, totalChars), exitCode });
     }
   }
 
@@ -156,6 +213,22 @@ class ManagedSession {
   private resetIdleTimer() {
     if (this.idleTimer) clearTimeout(this.idleTimer);
     this.idleTimer = setTimeout(() => this.kill(), SHELL_SESSION_IDLE_TIMEOUT_MS);
+  }
+
+  /** Create the full-output log for this command. Returns null when unwritable. */
+  private startSpool(soFar: string): string | null {
+    try {
+      const dir = join(tmpdir(), 'markus-tool-output');
+      mkdirSync(dir, { recursive: true });
+      const file = join(
+        dir,
+        `${this.agentId}-${this.id}-${Date.now()}-${randomBytes(4).toString('hex')}.log`,
+      );
+      writeFileSync(file, soFar);
+      return file;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -208,7 +281,7 @@ class ManagedSession {
         });
       }, timeoutMs);
 
-      this.pending = { sentinel, output: '', resolve, timer };
+      this.pending = { sentinel, output: '', seenChars: 0, spoolPath: null, resolve, timer };
 
       if (onOutput) {
         const origOnData = this.onData.bind(this);

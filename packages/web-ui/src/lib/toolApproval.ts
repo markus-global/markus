@@ -1,5 +1,5 @@
 /**
- * toolApproval — 判定 / 筛选「工具执行审批」。
+ * toolApproval — 判定 / 排序「工具执行审批」。
  *
  * 背景：Agent 执行受审批保护的工具（Git 写操作等）时，整个回合会被挂起。这类审批
  * 此前只出现在通知铃铛里，用户没打开浮窗就完全不知道 Agent 在等什么。它应当和
@@ -10,6 +10,22 @@
  *   - 带 `questions` 的 request_user_input（那是另一条 UI 通道）；
  *   - task / requirement 等**结构化审批**（它们有 options、应由工作台处理，
  *     不该冒到聊天输入框上方）。
+ *
+ * ── 会话归属：只决定顺序，绝不决定可见性（2026-10-23 修复）─────────────────
+ *
+ * 这里曾经按「`details.sessionId` 必须等于当前会话」过滤。两个 id 来自**不同的
+ * 命名空间**，永远不可能相等：
+ *
+ *   details.sessionId → `sess_…`（内存会话，core/agent.ts 写入）
+ *   activeSessionId   → `cs_…`  （DB 聊天会话，UI 所有表面都以它为键）
+ *
+ * 于是从 2026-10-11（第一条带 sessionId 的审批）起，**所有工具审批都不再渲染**：
+ * 横幅与弹窗被过滤掉，只剩通知铃铛里那一行。回归正好随「弹窗」这个功能一起上线
+ * （61a30284），且没有测试——因为没有测试能发现它。
+ *
+ * 不变量：**工具审批会阻塞 Agent 回合。作用域可以决定排序，绝不能决定可见性。**
+ * 认不出的 / 外来的 id 空间一律降级为「显示」，而不是「隐藏」。理由很直接：
+ * 按会话隐藏会让「切个 tab 就看不见 Agent 正在等你」成为一种合法状态。
  *
  * 纯函数、无 React —— 可单测，避免「看起来像审批」的东西混进聊天横幅。
  */
@@ -36,26 +52,46 @@ export function isToolExecutionApproval(a: ApprovalLike | null | undefined): boo
 
 export interface ToolApprovalScope {
   agentId: string;
-  /** 当前打开的 session；缺省表示「不确定」，此时不做会话过滤。 */
+  /** 当前打开的会话（`cs_…`）；缺省表示「不确定」，此时不做本地优先排序。 */
   sessionId?: string | null;
 }
 
+/** 审批归属的 Agent：载荷里的显式声明优先，退回行上的 agentId。 */
+function ownerOf(a: ApprovalLike): string {
+  return (a.details?.agentId as string | undefined) ?? a.agentId;
+}
+
 /**
- * 从 pending 审批列表里挑出属于指定 Agent（以及可能的话，指定 session）的工具审批。
+ * 载荷可能携带的会话 id，按**两个命名空间**显式列出。
  *
- * 会话归属：新数据带 `details.sessionId`（本次由 core→cli 透传）；旧数据没有，
- * 此时退回按 agentId 匹配（可能在同 Agent 的多个 tab 重复出现，属可接受的降级）。
+ * 两个都看，是因为历史行只有 `sessionId`（旧语义里可能是 `sess_`，也曾被塞过
+ * `cs_`），新行则把 `chatSessionId`（`cs_`）与 `sessionId`（`sess_`）分开写清。
+ * 这里只用于「是不是当前这一栏」，认不出就当作不是——但见上文：那只是排序上的
+ * 降级，不是隐藏。
+ */
+function conversationIdsOf(a: ApprovalLike): string[] {
+  const d = a.details ?? {};
+  return [d.chatSessionId, d.sessionId]
+    .filter((v): v is string => typeof v === 'string' && v.length > 0);
+}
+
+/**
+ * 挑出属于指定 Agent 的工具审批：**全部**返回，按「属于当前会话」优先排序。
+ *
+ * 唯一被过滤掉的是**别的 Agent** 的审批——那是别人的活，冒到这条聊天里只会误导。
  */
 export function selectToolApprovals<T extends ApprovalLike>(
   approvals: readonly T[],
   scope: ToolApprovalScope,
 ): T[] {
-  return approvals.filter((a) => {
-    if (!isToolExecutionApproval(a)) return false;
-    const owner = (a.details?.agentId as string | undefined) ?? a.agentId;
-    if (owner !== scope.agentId) return false;
-    const sid = a.details?.sessionId as string | undefined;
-    if (sid && scope.sessionId && sid !== scope.sessionId) return false;
-    return true;
-  });
+  const mine = approvals.filter((a) => isToolExecutionApproval(a) && ownerOf(a) === scope.agentId);
+  if (!scope.sessionId) return mine;
+
+  const local: T[] = [];
+  const rest: T[] = [];
+  for (const a of mine) {
+    (conversationIdsOf(a).includes(scope.sessionId) ? local : rest).push(a);
+  }
+  // 稳定：同组内保持服务端顺序（按 requestedAt DESC）。
+  return [...local, ...rest];
 }

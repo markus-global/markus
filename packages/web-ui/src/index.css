@@ -864,3 +864,36 @@ html.light .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
   html:not(.dark):not(.cyberpunk):not(.mono) .hljs-addition { color: #22863a; background-color: #f0fff4; }
   html:not(.dark):not(.cyberpunk):not(.mono) .hljs-deletion { color: #b31d28; background-color: #ffeef0; }
 }
+
+/* ── Off-screen content skipping (page-switch jank) ──────────────────────────
+ *
+ * Every visited page stays mounted for the life of the document (by design:
+ * chat streams, scroll position and form state survive a page switch), and a
+ * single page can accumulate a lot of nodes — the Deliverables tree measured
+ * 28,892 nodes, 33.8× the scroller viewport. Revealing such a page meant one
+ * frame did style + layout + paint for all of it.
+ *
+ * Measured on the packaged desktop app via CDP, real data, same DOM, only this
+ * CSS applied at runtime:
+ *   Deliverables, 28,892 nodes : 337/334/344 ms painted, 6 long tasks (~650 ms)
+ *                             → 141/186/182 ms painted, 1–3 long tasks (55–218 ms)
+ *   Artifact cards,  8,168 nodes: ~125 ms painted, 50–57 ms long task → 0 long task
+ *
+ * `content-visibility: auto` lets the engine skip everything outside the
+ * viewport; `contain-intrinsic-size` keeps the scrollbar honest before the first
+ * paint, and its `auto` keyword makes the engine remember each element's real
+ * size once measured, so a revealed row does not jump twice.
+ */
+.cv-row {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 48px;
+}
+.cv-card {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}
+/* The container's children are each individually skippable (card grids / masonry). */
+.cv-stack > * {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 180px;
+}

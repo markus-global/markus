@@ -807,6 +807,25 @@ export const SESSION_REQUEST_HISTORY_BLOCK = 100;
  *  budget checks (pathological payloads). Normal history is left intact. */
 export const CONTEXT_ABSURD_MESSAGE_CHARS = 200_000;
 
+/**
+ * Tool results kept verbatim, counted back from the newest, when the request no
+ * longer fits the window. Older ones are elided to a stub (toolCallId preserved,
+ * size stated, how-to-recover stated).
+ *
+ * WHY 8: it comfortably covers a working set of a few files plus the last few
+ * command outputs. Beyond that the agent is not reading them — the measured
+ * failure mode was 223 shell calls re-reading the same files, where the older
+ * dumps were pure ballast.
+ */
+export const CONTEXT_TOOL_RESULT_KEEP_RECENT = 8;
+
+/**
+ * A tool result shorter than this is not worth replacing with a stub: the stub
+ * itself costs tokens, and small results are usually the interesting ones
+ * (status lines, exit codes, short diffs).
+ */
+export const CONTEXT_TOOL_RESULT_ELIDE_MIN_CHARS = 2_000;
+
 /** When message history exceeds this fraction of the packing budget, run
  *  compact/summarize even if still under the hard window.
  *

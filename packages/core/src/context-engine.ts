@@ -22,9 +22,9 @@ import {
   SYSTEM_CONTEXT_MD_CHARS,
   SYSTEM_TEAM_PROJECT_DESC_CHARS,
   CONTEXT_ABSURD_MESSAGE_CHARS,
-  CONTEXT_PROACTIVE_COMPACT_RATIO,
-  CONTEXT_ABS_HISTORY_TARGET_TOKENS,
-  CONTEXT_ABS_HISTORY_TOKENS,
+  SESSION_REQUEST_HISTORY_BLOCK,
+  CONTEXT_TOOL_RESULT_KEEP_RECENT,
+  CONTEXT_TOOL_RESULT_ELIDE_MIN_CHARS,
   CONTEXT_VOLATILE_REARM_CALLS,
   CONTEXT_WARN_RATIO,
   CONTEXT_CRIT_RATIO,
@@ -49,14 +49,12 @@ import {
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
+import { summarizeComposition, formatComposition } from './context-composition.js';
+import { elideStaleToolResults } from './tool-result-elision.js';
+import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
-import {
-  applyViewBudget,
-  contextActionHint,
-  viewBudgetMarkerText,
-  type ViewBudgetPolicy,
-} from './context-budget.js';
+import { contextActionHint } from './context-budget.js';
 import type { ConcurrentHandoffLite } from './concurrent-handoff.js';
 
 const log = createLogger('context-engine');
@@ -195,21 +193,14 @@ export type CompactStage = 'none' | 'proactive' | 'over_budget' | 'summarize' | 
 
 export interface ContextUsageStats {
   contextWindow: number;
-  systemTokens: number;
-  toolDefTokens: number;
-  messageTokens: number;
-  maxOutputReserved: number;
-  safetyMargin: number;
-  totalUsed: number;
-  available: number;
-  usagePercent: number;
-  /** C2: true when this pack had to run token-budget compression (was over budget). */
-  compressed: boolean;
-  /** Highest compression stage reached while packing this request. */
-  compactStage: CompactStage;
-  /** Effective packing budget after OR-afford clamp (if any). */
-  packingBudget: number;
-  promptAffordTokens?: number;
+  /** Output tokens reserved for the response. */
+  outputReserve: number;
+  /** Exact message count in the packed request (a fact, not an estimate). */
+  messageCount: number;
+  /** Exact character volume of the history segment (a fact, not an estimate). */
+  variableChars: number;
+  /** Measured fill percentage: reported prompt tokens / usable window. */
+  pctReported?: number;
   /**
    * O2: provider-reported prompt tokens for the **most recent** call in this
    * session, when that number is still a valid proxy for the request being
@@ -229,12 +220,22 @@ export interface ContextUsageStats {
    * mis-sized reported value can never make packing *less* conservative — the
    * hint is the reporting surface, not the trigger.
    */
-  usageSource: 'reported' | 'estimated';
+  usageSource: 'reported' | 'pending';
 }
 
 export interface PreparedContext {
   messages: LLMMessage[];
   usage: ContextUsageStats;
+  /**
+   * The session this pack was built for, echoed back.
+   *
+   * The caller records the provider's reported prompt tokens against THIS value,
+   * so the key written is by construction the key that will be read back for the
+   * same session. It replaces re-deriving the session at response time from a
+   * field shared by every concurrent worker — which is how a report ended up
+   * describing a request it never belonged to.
+   */
+  sessionId?: string;
   systemCacheSegments?: SystemPromptSegment[];
   /** ContextOS: agent-visible context water-level hint, e.g. `[CONTEXT 68% used …]`. */
   contextHint?: string;
@@ -304,7 +305,19 @@ export class ContextEngine {
    * count describes a larger request that no longer exists and would overstate the
    * water level).
    */
-  private reportedInputBySession = new Map<string, number>();
+  private reportedInputBySession = new Map<string, { tokens: number; messageCount: number; pct?: number }>();
+  /**
+   * Estimated prompt size of the PREVIOUS pack for each session.
+   *
+   * `reportedInputBySession` holds the provider's count for the call that just
+   * finished, which is the pack BEFORE the one being assembled now. Comparing it
+   * against the current estimate is an off-by-one that produced three wrong
+   * conclusions about the tokenizer. Pairing it with the estimate recorded here
+   * makes both numbers describe the same request.
+   */
+  /** Message count of the pack the current reading measured. History is
+   *  append-only, so a DECREASE means the history was rewritten (compaction). */
+  private lastPackMessageCountBySession = new Map<string, number>();
 
   constructor(config?: Partial<ContextConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };
@@ -319,13 +332,32 @@ export class ContextEngine {
   noteReportedInputTokens(sessionId: string | undefined, tokens: number | undefined): void {
     if (!sessionId) return;
     if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return;
-    this.reportedInputBySession.set(sessionId, tokens);
+    this.reportedInputBySession.set(sessionId, {
+      tokens,
+      messageCount: this.lastPackMessageCountBySession.get(sessionId) ?? 0,
+    });
+  }
+
+  /**
+   * Measured context fill for a session (provider-reported), or `undefined` when
+   * no valid measurement exists yet.
+   *
+   * The engine no longer estimates prompt size at all (Owner rule: post-hoc only),
+   * so this measurement is the ONLY water-level number in the system. The previous
+   * local estimate ran ~2x low on real sessions (40.3% estimated vs 75.8% actual),
+   * which made every threshold gated on it fire roughly twice as late as designed
+   * — for the memory-flush preflight (threshold 75) that meant never.
+   */
+  getMeasuredUsagePercent(sessionId?: string): number | undefined {
+    if (!sessionId) return undefined;
+    return this.reportedInputBySession.get(sessionId)?.pct;
   }
 
   /** Drop a session's reported reading (compaction, session reset, tests). */
   clearReportedInputTokens(sessionId: string | undefined): void {
     if (!sessionId) return;
     this.reportedInputBySession.delete(sessionId);
+    this.lastPackMessageCountBySession.delete(sessionId);
   }
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
@@ -911,9 +943,18 @@ export class ContextEngine {
             const staleness = staleDays !== null && staleDays >= 14
               ? ` · 上次整理 ${staleDays} 天前`
               : '';
+            const overBy = Math.max(0, h.curatedChars - h.curatedCap);
             volatile.push(
               `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（注入段 ${h.curatedChars}/${h.curatedCap} 字符 · ${h.curatedSections} 个知识段${staleness}）。`
-              + '注入段超预算时，最大的段落正文会被**无损归档**（移出每轮注入，仍可用 `memory_search` 检索）。建议用 `memory_organize` 合并段落、或 `memory_update`（mode:"delete"）删除过时条目。',
+              + (overBy > 0
+                ? `**已超预算 ${overBy} 字符**——最大段落的正文正被无损归档（移出每轮注入，仍可 \`memory_search\` 检索）。`
+                  + `**现在就自己瘦身，别等下个周期**：\`memory_organize\` 合并同类段落（${h.curatedSections} 段）、`
+                  + '`memory_update`（mode:"delete"）删掉已被新结论取代的条目；只留可复用的结论，过程和流水移出去。'
+                  + '注入段是你的判断带宽，不是存档。'
+                  + (isDream
+                    ? ' **本轮就是记忆维护会话——瘦身是这一轮的主任务，不是顺带。做完再 end_turn。**'
+                    : '')
+                : '接近预算：合并或删除过时段落（`memory_organize` / `memory_update` mode:"delete"）。'),
             );
           }
           // Signal 2 — the OBSERVATION buffer. A SEPARATE budget of its own and it is
@@ -948,7 +989,11 @@ export class ContextEngine {
       const { project, repositories, governanceRules, teamRole } = opts.projectContext;
       dynamic.push('\n## Current Project');
       dynamic.push(`- Project: **${project.name}** (${project.status})`);
-      if (project.description) dynamic.push(`- ${project.description.slice(0, SYSTEM_PROJECT_DESC_CHARS)}`);
+      if (project.description) {
+        dynamic.push(
+          `- ${truncateWithNotice(project.description, SYSTEM_PROJECT_DESC_CHARS, 'use the project record for the full description').text}`,
+        );
+      }
       if (repositories?.length) {
         for (const repo of repositories) {
           dynamic.push(
@@ -1065,7 +1110,15 @@ export class ContextEngine {
               );
             }
             if (otherActive.length > TEAM_TASK_LIMIT) {
-              dynamic.push(`_(${otherActive.length - TEAM_TASK_LIMIT} more team tasks not shown)_`);
+              // Announce the truncation AND the way out. A hidden count turns a
+              // partial view into a false whole: the agent plans against a board
+              // it believes is complete.
+              const notice = omittedNotice(
+                shown.length,
+                otherActive.length,
+                'use `task_list` with project_id for the full board',
+              );
+              if (notice) dynamic.push(`_(${notice})_`);
             }
           }
         }
@@ -1092,7 +1145,7 @@ export class ContextEngine {
           : wc.availableWorkflows;
         for (const w of list) {
           const desc = isConverse
-            ? w.description.slice(0, SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE)
+            ? truncateWithNotice(w.description, SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE, 'use workflow_status for the full description').text
             : w.description;
           dynamic.push(`- **${w.name}** (${w.stepCount} steps): ${desc}`);
         }
@@ -2084,7 +2137,6 @@ export class ContextEngine {
     modelContextWindow?: number;
     modelMaxOutput?: number;
     /** OpenRouter (or similar) prompt-token afford ceiling from a prior 402. */
-    promptAffordTokens?: number | null;
     toolDefinitions?: Array<{
       name: string;
       description: string;
@@ -2108,12 +2160,6 @@ export class ContextEngine {
      */
     reportedInputTokens?: number;
     /**
-     * Per-scenario cap on the variable (history) segment — "what the model sees
-     * this call", independent of what the session stores. Omit for legacy
-     * window-based packing. See context-budget.ts.
-     */
-    viewBudget?: ViewBudgetPolicy;
-    /**
      * The turn's scenario. Used only to decide whether the context banner may
      * name a lever (compaction) — scenarios that must read everything get none.
      */
@@ -2130,120 +2176,28 @@ export class ContextEngine {
     const rawMaxOutput = (opts.modelMaxOutput && opts.modelMaxOutput > 0)
       ? opts.modelMaxOutput
       : Math.floor(contextWindow * 0.4);
-    let maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
+    const maxOutput = Math.min(rawMaxOutput, Math.floor(contextWindow * 0.4));
 
-    const systemTokens = estimateTokens(opts.systemPrompt, this.tokenCounter);
+    // ContextOS: pinned slots + the durable compaction summary are fixed segments.
+    // Read here (never from the caller) so no call site can silently drop them.
+    const slotsSegment = opts.slotsSegment ?? opts.memory?.serializeSlots?.(opts.sessionId) ?? '';
+    const summarySegment = opts.summarySegment ?? opts.memory?.serializeSummary?.(opts.sessionId) ?? '';
     const volatileState = opts.volatileState ?? '';
-    const volatileTokens = volatileState ? estimateTokens(volatileState, this.tokenCounter) : 0;
-    const toolDefTokens = opts.toolDefinitions
-      ? estimateTokens(JSON.stringify(opts.toolDefinitions), this.tokenCounter)
-      : 0;
-    // ContextOS: pinned slots are part of the fixed segment — reserve budget for
-    // them and never let them enter the variable-segment compression path.
+    const outputReserve = maxOutput;
+
+    // ── NO PRE-FLIGHT TOKEN MATH (Owner rule, 2026-10-24) ────────────────────
+    // Post-hoc only. Every response carries the exact prompt size, so "how big was
+    // the last request" is never a guess. "Will the next one fit" is not answerable
+    // by a heuristic: ours measured 2x low (1,206,024 chars -> 678k real tokens vs
+    // 332k estimated), i.e. it authorised requests that did not fit while reporting
+    // plenty of room. A wrong number guarding a hard boundary is worse than none.
     //
-    // Default from (memory, sessionId) rather than relying on the caller: only
-    // the NON-STREAM chat path passed these explicitly, so the streaming path,
-    // every tool-loop continuation, and the task/review/session scenarios
-    // silently dropped session_pin anchors AND the [CONTEXT SUMMARY] compaction
-    // anchor. Deriving them here is the single source of truth — a new call site
-    // cannot forget them.
-    const slotsSegment = opts.slotsSegment
-      ?? opts.memory?.serializeSlots?.(opts.sessionId)
-      ?? '';
-    const slotsTokens = slotsSegment ? estimateTokens(slotsSegment, this.tokenCounter) : 0;
-    // ContextOS: durable compaction summary is a separate fixed segment block.
-    const summarySegment = opts.summarySegment
-      ?? opts.memory?.serializeSummary?.(opts.sessionId)
-      ?? '';
-    const summaryTokens = summarySegment ? estimateTokens(summarySegment, this.tokenCounter) : 0;
-    let safetyMargin = Math.ceil(Math.min(contextWindow * 0.08, 16_000));
-    let messageBudget = contextWindow - systemTokens - volatileTokens - toolDefTokens - slotsTokens - summaryTokens - maxOutput - safetyMargin;
-
-    // ── Defensive budget reclamation ────────────────────────────────────
-    const MIN_MESSAGE_BUDGET = 1500;
-    const MIN_OUTPUT_RESERVE = 2048;
-    const staticOverhead = systemTokens + volatileTokens + toolDefTokens + slotsTokens + summaryTokens;
-    if (messageBudget < MIN_MESSAGE_BUDGET) {
-      safetyMargin = Math.min(safetyMargin, 4000);
-      const roomForOutput = contextWindow - staticOverhead - safetyMargin - MIN_MESSAGE_BUDGET;
-      maxOutput = Math.max(MIN_OUTPUT_RESERVE, Math.min(maxOutput, roomForOutput));
-      messageBudget = contextWindow - staticOverhead - maxOutput - safetyMargin;
-
-      if (messageBudget < MIN_MESSAGE_BUDGET) {
-        log.error('Context overhead exceeds model window — request will likely overflow. Increase the model context window or reduce enabled tools/MCP servers.', {
-          contextWindow,
-          systemTokens,
-          toolDefTokens,
-          staticOverhead,
-          maxOutput,
-          safetyMargin,
-          messageBudget,
-          toolCount: opts.toolDefinitions?.length ?? 0,
-        });
-      } else {
-        log.warn('Reclaimed context budget by shrinking output/safety reservations', {
-          contextWindow,
-          systemTokens,
-          toolDefTokens,
-          maxOutput,
-          safetyMargin,
-          messageBudget,
-        });
-      }
-    }
-
-    // ── OR / provider prompt-afford clamp ───────────────────────────────
-    // Key credit ceilings (e.g. 37k) are far below large model windows.
-    // Pack against the tighter of window budget vs afford − output reserve.
-    const promptAfford = opts.promptAffordTokens && opts.promptAffordTokens > 0
-      ? opts.promptAffordTokens
-      : undefined;
-    if (promptAfford !== undefined) {
-      const affordForPrompt = Math.max(
-        MIN_MESSAGE_BUDGET + staticOverhead,
-        promptAfford - PROMPT_AFFORD_OUTPUT_RESERVE,
-      );
-      const affordMessageBudget = affordForPrompt - staticOverhead;
-      if (affordMessageBudget < messageBudget) {
-        log.info('Clamping message budget to OpenRouter prompt afford', {
-          windowMessageBudget: messageBudget,
-          affordMessageBudget,
-          promptAfford,
-          systemTokens,
-          toolDefTokens,
-        });
-        messageBudget = Math.max(MIN_MESSAGE_BUDGET, affordMessageBudget);
-      }
-    }
+    // What remains is structural, not numerical: a single absurd message is shrunk
+    // (payload bound), the sequence is sanitised, transient prompts are deduped.
+    // A request that does not fit fails at the provider; that failure is translated
+    // into an actionable remedy (llm/context-overflow.ts) and the agent compacts.
 
     let messages = opts.sessionMessages;
-    let compactStage: CompactStage = 'none';
-
-    // ── Stage 0: scenario VIEW budget ───────────────────────────────────
-    // How much history the model may SEE is a per-scenario decision, not a
-    // function of the model window (see context-budget.ts for the measurement
-    // and the industry precedent). Applied first and cheaply: tail-trim at
-    // message boundaries, no LLM call. Everything stays stored — this only
-    // changes the presented view. `undefined` = legacy window-based behaviour.
-    let viewDropped: number | undefined;
-    if (opts.viewBudget) {
-      const view = applyViewBudget(messages, opts.viewBudget, {
-        estimateTokens: (m) => estimateMessageTokens(m, this.tokenCounter),
-        makeMarker: (dropped) => ({
-          role: 'user',
-          content: viewBudgetMarkerText(dropped, opts.viewBudget!.viewTokens),
-        }) as LLMMessage,
-      });
-      messages = view.messages;
-      if (view.dropped > 0) {
-        viewDropped = view.dropped;
-        log.info('Applied scenario view budget', {
-          sessionId: opts.sessionId,
-          scenarioViewTokens: opts.viewBudget.viewTokens,
-          droppedMessages: view.dropped,
-        });
-      }
-    }
 
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
@@ -2252,162 +2206,105 @@ export class ContextEngine {
     // (see dedupeTransientPrompts).
     messages = this.dedupeTransientPrompts(messages);
 
-    const currentTurnStart = this.findCurrentTurnStart(messages);
-    let totalTokens = this.sumTokens(messages);
+    // Facts, not estimates.
+    const variableChars = messages.reduce(
+      (n, m) => n + getTextContent(m.content).length + (m.toolCalls?.length ? JSON.stringify(m.toolCalls).length : 0),
+      0,
+    );
 
-    const packingCeiling = systemTokens + volatileTokens + toolDefTokens + slotsTokens + messageBudget;
-    const preCompressionUsed = systemTokens + volatileTokens + toolDefTokens + slotsTokens + totalTokens;
-    const effectiveBudget = Math.min(contextWindow - maxOutput, packingCeiling);
-    const preCompressionPct = effectiveBudget > 0 ? (preCompressionUsed / effectiveBudget) * 100 : 0;
-    const perMessageCap = Math.max(8_000, Math.floor(messageBudget / 4));
-    const proactiveThreshold = Math.floor(messageBudget * CONTEXT_PROACTIVE_COMPACT_RATIO);
-
-    // ── Stage 2: Proactive + over-budget compression ────────────────────
-    let didCompress = false;
-    // ContextOS v2.1: also fire on an ABSOLUTE history ceiling.
+    // ── NO PRE-FLIGHT ESTIMATE. Post-hoc only. ─────────────────────────────
     //
-    // The percentage watermarks are relative to the MODEL WINDOW, so on very
-    // large windows they never fire: the observed session finished a single turn
-    // at 269k input tokens — ~12 % of a 1311k window — with
-    // compactStage === 'none' the whole way, i.e. no maintenance compression ever
-    // ran and the turn's own early iterations kept piling up.
+    // The provider returns the exact prompt size with EVERY response, so "how big
+    // was the last request" is never a guess. The only thing an estimate could add
+    // is "will the NEXT request fit" — and ours measured 2x low on real sessions
+    // (1,206,024 chars -> 678k provider tokens vs 332k estimated), i.e. it would
+    // have authorised requests that do not fit while reporting plenty of room.
     //
-    // Note this also fixes the "one gigantic turn" case without needing a
-    // separate intra-turn code path: when the absolute ceiling trips, the fold
-    // boundary is the END of history rather than the current turn start, so the
-    // same block-wise fold reaches inside the current turn.
-    const overAbsCeiling = totalTokens > CONTEXT_ABS_HISTORY_TOKENS;
-    const needsCompress =
-      totalTokens > messageBudget || totalTokens > proactiveThreshold || overAbsCeiling;
-    if (needsCompress) {
-      didCompress = true;
-      compactStage = totalTokens > messageBudget ? 'over_budget' : 'proactive';
-      // When the absolute ceiling is what tripped, `messageBudget` is the window
-      // budget (~800k) and would authorise keeping everything — a silent no-op.
-      // Compress against a real target instead.
-      const historyTarget = overAbsCeiling
-        ? Math.max(MIN_MESSAGE_BUDGET, CONTEXT_ABS_HISTORY_TARGET_TOKENS)
-        : messageBudget;
-      log.info('Triggering context compression', {
-        stage: compactStage,
-        totalTokens,
-        messageBudget,
-        proactiveThreshold,
-        overAbsCeiling,
-        historyTarget,
-        promptAfford,
-      });
-      messages = this.shrinkOversizedMessages(messages, perMessageCap);
-      messages = this.sanitizeMessageSequence(messages);
-      const compactBoundary = preCompressionPct > 80 || overAbsCeiling ? messages.length : currentTurnStart;
-      messages = this.compactOldTurns(messages, compactBoundary, historyTarget);
-      messages = this.sanitizeMessageSequence(messages);
-      totalTokens = this.sumTokens(messages);
-    }
-
-    if (totalTokens > messageBudget && messages.length > 15) {
-      compactStage = 'summarize';
-      const keepCount = Math.max(24, Math.floor(messages.length * 0.55));
-      log.info('Triggering generic compression (token budget exceeded)', {
-        usagePercent: preCompressionPct.toFixed(1),
-        messageCount: messages.length,
-        keepLast: keepCount,
-      });
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount, opts.agentId);
-      messages = this.sanitizeMessageSequence(messages);
-      totalTokens = this.sumTokens(messages);
-    }
-
-    if (totalTokens > messageBudget && messages.length > 10) {
-      compactStage = 'summarize';
-      const keepCount = Math.max(16, Math.floor(messages.length * 0.4));
-      log.warn('Context still over budget, stronger summarization', {
-        totalTokens,
-        messageBudget,
-        messageCount: messages.length,
-        keepLast: keepCount,
-      });
-      messages = await this.smartSummarizeAndTruncate(opts.memory, opts.sessionId, messages, keepCount, opts.agentId);
-      messages = this.sanitizeMessageSequence(messages);
-      messages = this.shrinkOversizedMessages(messages, perMessageCap);
-      totalTokens = this.sumTokens(messages);
-    }
-
-    // ── Stage 3: Last-resort trimming (drop oldest until it fits) ───────
-    if (totalTokens > messageBudget) {
-      compactStage = 'trim';
-      messages = this.trimToFitBudget(messages, messageBudget);
-      messages = this.sanitizeMessageSequence(messages);
-      totalTokens = this.sumTokens(messages);
-      log.info('Trimmed oldest messages to fit budget', {
-        remaining: messages.length,
-        tokens: totalTokens,
-        budget: messageBudget,
-      });
-    }
-
-    const totalUsed = systemTokens + toolDefTokens + slotsTokens + totalTokens;
-    const available = Math.max(0, messageBudget - totalTokens);
-    const usagePercent = effectiveBudget > 0 ? (totalUsed / effectiveBudget) * 100 : 0;
+    // A wrong number guarding a hard boundary is worse than no guard: it produces
+    // false confidence, then trims the wrong thing when it finally reacts. So the
+    // platform no longer predicts. The agent is told the measured water level and
+    // owns compaction; a request that does not fit fails loudly at the provider
+    // and is surfaced, not silently pre-shrunk by guesswork.
+    //
+    // What remains is a PAYLOAD bound, not a token guess: a single absurd message
+    // is still shrunk above (`shrinkOversizedMessages`) because one 5MB tool
+    // result can break a request on its own.
 
     // ── ContextOS: build the agent-visible [CONTEXT] water-level hint ──
     // Three segments: fixed (system + tools + slots) vs variable (history).
     // Rendered as a compact one-liner + a WARN/CRIT escalation line.
-    const fixedTokens = systemTokens + toolDefTokens + slotsTokens;
-    // O2: the water level prefers the provider's own count when one is available
-    // and still valid. `usage.totalUsed` keeps the estimate so every existing
-    // consumer (logs, calibration, memory-flush preflight) is unchanged.
-    //
-    // Derived from `(opts.reportedInputTokens ?? remembered)` rather than requiring
-    // the caller to pass it — the same rule as slots/summary above: there are 15
-    // `prepareMessages` call sites (stream, tool-loop continuations, task/review
-    // scenarios, reminders) and a new one must not be able to silently drop it.
-    const rememberedReported = opts.reportedInputTokens ?? this.reportedInputBySession.get(opts.sessionId);
+    // Measured water level only. A reading describes ONE pack, so it carries the
+    // message count it measured; history is append-only, so a DECREASE can only
+    // mean a rewrite (compaction) and invalidates it.
+    const remembered = this.reportedInputBySession.get(opts.sessionId);
+    let rememberedTokens: number | undefined;
+    if (remembered) {
+      if (opts.sessionMessages.length < remembered.messageCount) {
+        this.reportedInputBySession.delete(opts.sessionId);
+      } else {
+        rememberedTokens = remembered.tokens;
+      }
+    }
+    const rememberedReported = opts.reportedInputTokens ?? rememberedTokens;
     const reportedInputTokens = rememberedReported && rememberedReported > 0 ? rememberedReported : undefined;
-    // Compaction invalidates the reading: the reported count described a bigger
-    // request than the one being packed now. Drop it *after* reading, so this
-    // pack still labels its (pre-invalidation) state honestly next turn is clean.
-    if (compactStage !== 'none') this.reportedInputBySession.delete(opts.sessionId);
-    const hintTotalUsed = reportedInputTokens ?? (systemTokens + toolDefTokens + slotsTokens + totalTokens);
-    const usedPct = Math.round((hintTotalUsed / effectiveBudget) * 1000) / 10;
-    const src = reportedInputTokens !== undefined ? 'reported' : 'est';
-    let hintLines = `[CONTEXT ${usedPct}% used — src=${src} · window ${Math.round(contextWindow / 1000)}k · fixed ${fixedTokens} (system ${systemTokens} + tools ${toolDefTokens}${slotsTokens ? ` + slots ${slotsTokens}` : ''}) · variable ${totalTokens} · output reserve ${maxOutput}]`;
+    const usableBudget = contextWindow - outputReserve;
+    const usedPct = reportedInputTokens !== undefined && usableBudget > 0
+      ? Math.round((reportedInputTokens / usableBudget) * 1000) / 10
+      : undefined;
+    if (usedPct !== undefined && remembered) {
+      this.reportedInputBySession.set(opts.sessionId, { ...remembered, pct: usedPct });
+    }
+    const metrics = `window ${Math.round(contextWindow / 1000)}k · messages ${messages.length} · chars ${variableChars} · output reserve ${outputReserve}`;
+    let hintLines = usedPct === undefined
+      ? `[CONTEXT pending — no provider measurement for this session yet · ${metrics}]`
+      : `[CONTEXT ${usedPct}% used — src=reported · ${metrics}]`;
 
     // Make the banner actionable: name the lever (`session` compact/pin) when the
     // agent can actually use it. Scenarios that must read everything
     // (memory_consolidation / distillation) have no lever, so they get silence.
     const canCompact = opts.scenario !== 'memory_consolidation' && opts.scenario !== 'distillation';
-    const actionHint = contextActionHint({ usedPct, canCompact });
+    const actionHint = contextActionHint({ usedPct: usedPct ?? 0, canCompact });
     if (actionHint) hintLines += `\n${actionHint}`;
-    if (usedPct >= CONTEXT_CRIT_RATIO * 100) {
-      hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: system will hard-trim oldest turns. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
-    } else if (usedPct >= CONTEXT_WARN_RATIO * 100) {
+    if (usedPct !== undefined && usedPct >= CONTEXT_CRIT_RATIO * 100) {
+      hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: the next request may not fit. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
+    } else if (usedPct !== undefined && usedPct >= CONTEXT_WARN_RATIO * 100) {
       hintLines += `\n[CONTEXT WARN] at ${usedPct}% → compress now (session_compact) or pin an anchor (session_pin).`;
     }
     const contextHint = hintLines;
 
     log.info('Context assembled', {
       contextWindow,
-      messageBudget,
-      packingBudget: packingCeiling,
-      messageTokens: totalTokens,
-      historyTokens: totalTokens,
-      systemTokens,
-      toolDefTokens,
-      totalPromptTokens: totalUsed,
+      outputReserve,
       messageCount: messages.length,
-      usagePercent: usagePercent.toFixed(1),
-      compactStage,
-      promptAffordTokens: promptAfford,
+      variableChars,
+      pctReported: usedPct ?? null,
+      reportedPromptTokens: reportedInputTokens ?? null,
     });
-
-    if (usagePercent > 80) {
-      log.warn('Context usage above 80%', { usagePercent: usagePercent.toFixed(1), totalUsed, effectiveBudget });
-    }
+    this.lastPackMessageCountBySession.set(opts.sessionId, opts.sessionMessages.length);
 
     const turnStart = this.findCurrentTurnStart(messages);
     if (turnStart > 0) {
       messages[turnStart - 1] = { ...messages[turnStart - 1], cacheBreakpoint: true };
+    }
+
+    // ── Rolling cache breakpoint at the end of history ──────────────────────
+    //
+    // The breakpoint above is the *start* of the current turn, which on an
+    // explicit-caching provider (Anthropic) means everything the agent produces
+    // inside the turn — every tool result — is re-billed on every subsequent
+    // call. A single task turn measured 251 calls; that is the majority of the
+    // request, cached zero times.
+    //
+    // Moving the second breakpoint to the last message makes the cache follow
+    // the turn: each call writes only the delta it just appended and reads the
+    // rest. The volatile tail is appended AFTER this point (it changes on every
+    // call, so it must stay out of the cached prefix).
+    //
+    // Only added mid-turn (`last > turnStart`): at the very start of a turn
+    // there is no delta worth writing, and a write costs 1.25× on Anthropic.
+    const last = messages.length - 1;
+    if (last > turnStart && last !== turnStart - 1) {
+      messages[last] = { ...messages[last]!, cacheBreakpoint: true };
     }
 
     // ── Scheme A + ContextOS v2: change-gated volatile tail ────────────
@@ -2445,6 +2342,8 @@ export class ContextEngine {
       isFirstCallOfTurn || !prevSnapshot || callsSinceFull >= CONTEXT_VOLATILE_REARM_CALLS;
 
     const freshBodies: string[] = [];
+    /** Only the sections that actually changed on THIS call (see the checkpoint below). */
+    const changedBodies: string[] = [];
     const omitted: string[] = [];
     const nextHashes = new Map<string, string>();
     let anyChanged = false;
@@ -2455,7 +2354,10 @@ export class ContextEngine {
       // CONTEXT_VOLATILE_SNAPSHOT_MAX_SESSIONS other sessions) counts as "changed"
       // so the first delivery is also checkpointed.
       const changed = !prevSnapshot || prevSnapshot.hashes.get(sec.key) !== h;
-      if (changed) anyChanged = true;
+      if (changed) {
+        anyChanged = true;
+        changedBodies.push(sec.body);
+      }
       // `forceFull` short-circuits, so `prevSnapshot!` is only dereferenced when
       // a previous snapshot actually exists.
       if (forceFull || changed) freshBodies.push(sec.body);
@@ -2490,8 +2392,21 @@ export class ContextEngine {
     // Written here rather than at the ~8 `prepareMessages` call sites on purpose:
     // single choke point, so a new call site cannot forget it (same rationale as
     // the slots/summary derivation above).
-    if (anyChanged && opts.sessionId && sections.length > 0) {
-      const checkpoint = sections.map((s) => s.body).join('\n\n');
+    if (anyChanged && opts.sessionId && changedBodies.length > 0) {
+      // ── Write ONLY the sections that changed ────────────────────────────
+      //
+      // This used to write EVERY section whenever ANY one of them changed, so a
+      // 200-char change (an attention-state line, a task status) appended a full
+      // multi-KB snapshot to durable history. Measured damage: a task session's
+      // history was 74% state snapshots — 82 checkpoints / 1,417k chars out of
+      // 1,902k — and another session carried 108 checkpoints. That is one fact
+      // with many copies: the exact shape that makes a long run expensive while
+      // telling the agent nothing new.
+      //
+      // A delta is LOSSLESS here because each section body is always the complete
+      // current body of that section: the newest occurrence is authoritative, and
+      // the tail's "unchanged this turn" line already names what was not resent.
+      const checkpoint = changedBodies.join('\n\n');
       try {
         opts.memory.appendMessage(opts.sessionId, {
           role: 'user',
@@ -2564,207 +2479,23 @@ export class ContextEngine {
       ],
       usage: {
         contextWindow,
-        systemTokens,
-        toolDefTokens,
-        messageTokens: totalTokens,
-        maxOutputReserved: maxOutput,
-        safetyMargin,
-        totalUsed,
-        available,
-        usagePercent: Math.round(usagePercent * 10) / 10,
-        compressed: didCompress,
-        compactStage,
-        packingBudget: packingCeiling,
-        promptAffordTokens: promptAfford,
+        outputReserve,
+        messageCount: messages.length,
+        variableChars,
+        pctReported: usedPct,
         reportedInputTokens,
-        usageSource: reportedInputTokens !== undefined ? 'reported' : 'estimated',
+        usageSource: reportedInputTokens !== undefined ? 'reported' : 'pending',
       },
       systemCacheSegments: opts.systemCacheSegments,
+      // Echo of the session this pack was built for. The caller records the
+      // provider's report against THIS value, so the key written is by
+      // construction the key that will be read back for the same session —
+      // no shared mutable field, no re-derivation at response time.
+      sessionId: opts.sessionId,
       contextHint,
       slotsSegment,
       summarySegment,
     };
-  }
-
-  /**
-   * Attempt LLM-powered summarization, falling back to heuristic truncation.
-   * When an LLM summarizer is available, the older messages are summarized
-   * by the model into a concise summary that preserves key decisions and context.
-   *
-   * The first user message is protected if it contains task instructions
-   * (TASK EXECUTION marker) — it gets preserved verbatim before the summary.
-   */
-  private async smartSummarizeAndTruncate(
-    memory: IMemoryStore,
-    sessionId: string,
-    messages: LLMMessage[],
-    keepLast: number,
-    _agentId?: string,
-  ): Promise<LLMMessage[]> {
-    if (messages.length <= keepLast) return messages;
-
-    // Protect the first message if it's a task prompt
-    const firstMsg = messages[0];
-    const isTaskPrompt = firstMsg?.role === 'user' &&
-      (getTextContent(firstMsg.content).includes('TASK EXECUTION') ||
-       getTextContent(firstMsg.content).includes('task_submit_review'));
-    const protectedPrefix: LLMMessage[] = isTaskPrompt ? [firstMsg] : [];
-    const compactableMessages = isTaskPrompt ? messages.slice(1) : messages;
-
-    if (compactableMessages.length <= keepLast) {
-      return [...protectedPrefix, ...compactableMessages];
-    }
-
-    // Score messages by information density — high-priority messages are retained longer
-    const scored = compactableMessages.map((msg, idx) => ({
-      msg,
-      idx,
-      priority: this.scoreMessageDensity(msg),
-    }));
-
-    // Partition: messages that should be compacted first (low priority) vs retained
-    // Keep the most recent `keepLast` messages + any high-priority older messages
-    const recentBoundary = compactableMessages.length - keepLast;
-    const olderScored = scored.slice(0, recentBoundary);
-    olderScored.sort((a, b) => a.priority - b.priority);
-
-    // Low-priority messages get compacted first, high-priority stay in retained
-    const highPriorityThreshold = 3;
-    const promotedToRetain = olderScored.filter(s => s.priority >= highPriorityThreshold);
-    const toCompact = olderScored.filter(s => s.priority < highPriorityThreshold);
-
-    // Rebuild: compact low-priority old messages, keep high-priority + recent
-    // Restore chronological order. `olderScored` was sorted by PRIORITY above, so
-    // mapping it straight into `retained` reordered history: the summarizer
-    // received a priority-shuffled transcript, and the retained older messages
-    // were replayed in importance order rather than time order — corrupting the
-    // conversation sequence (and its determinism, which the prefix cache
-    // depends on).
-    const older = [...toCompact].sort((a, b) => a.idx - b.idx).map(s => s.msg);
-    const promoted = [...promotedToRetain].sort((a, b) => a.idx - b.idx).map(s => s.msg);
-    const recent = compactableMessages.slice(-keepLast);
-    const retained = [...promoted, ...recent];
-
-    if (this.llmSummarizer && older.length > 0) {
-      try {
-        const summary = await this.llmSummarizer(older);
-        if (summary && summary.length > 0) {
-          log.info('LLM-powered summarization succeeded', {
-            sessionId,
-            compactedMessages: older.length,
-            summaryLength: summary.length,
-            taskPromptPreserved: isTaskPrompt,
-          });
-          const summaryMessage: LLMMessage = {
-            role: 'user',
-            content: `[SYSTEM] [Conversation history summary — ${older.length} earlier messages were compacted by LLM]\n${summary}\n[End of summary. The conversation continues below.]`,
-          };
-          // No side-effects: prepareMessages must be pure (no writeDailyLog here)
-          return [...protectedPrefix, summaryMessage, ...retained];
-        }
-      } catch (err) {
-        log.warn('LLM summarization failed, falling back to heuristic', { error: String(err) });
-      }
-    }
-
-    // Heuristic fallback: use the same density-scored older/retained
-    const heuristicOlder = older.length > 0 ? older : compactableMessages.slice(0, -keepLast);
-    const heuristicRetained = older.length > 0 ? retained : compactableMessages.slice(-keepLast);
-    const heuristicSummary = this.buildHeuristicSummary(heuristicOlder);
-    if (heuristicSummary) {
-      const summaryMessage: LLMMessage = {
-        role: 'user',
-        content: `[SYSTEM] [Conversation history summary — ${heuristicOlder.length} earlier messages were compacted]\n${heuristicSummary}\n[End of summary.]`,
-      };
-      return [...protectedPrefix, summaryMessage, ...heuristicRetained];
-    }
-
-    // Last resort: try memory store's summarizeAndTruncate (may not preserve task prompt)
-    if (!isTaskPrompt) {
-      return memory.summarizeAndTruncate(sessionId, keepLast);
-    }
-    return [...protectedPrefix, ...heuristicRetained];
-  }
-
-  /** Score a message's information density (0=low priority, 5=highest) */
-  private scoreMessageDensity(msg: LLMMessage): number {
-    const text = getTextContent(msg.content);
-
-    // User messages are always high priority
-    if (msg.role === 'user') return 4;
-
-    // Error messages are critical
-    if (text.includes('Error') || text.includes('error') || text.includes('FAILED')) return 5;
-
-    // Messages with decision/conclusion markers
-    if (text.includes('DECISION:') || text.includes('CONCLUSION:') || text.includes('IMPORTANT:')) return 4;
-
-    // Tool results: short successful ones are low priority
-    if (msg.role === 'tool') {
-      if (text.length < 200) return 1;
-      if (text.length > 5000) return 1;
-      return 2;
-    }
-
-    // Activity log injections
-    if (text.includes('[heartbeat]') || text.includes('[HEARTBEAT')) return 0;
-    if (text.includes('activityLog')) return 1;
-
-    // Default: medium priority
-    return 2;
-  }
-
-  /**
-   * Build a heuristic summary from a list of messages.
-   * Extracts key information without requiring an LLM call.
-   */
-  private buildHeuristicSummary(messages: LLMMessage[]): string | null {
-    if (messages.length === 0) return null;
-
-    const parts: string[] = [];
-    let toolCallCount = 0;
-    const toolNames = new Set<string>();
-    const errors: string[] = [];
-    const keyDecisions: string[] = [];
-
-    for (const msg of messages) {
-      const text = getTextContent(msg.content);
-      if (msg.role === 'assistant') {
-        if (msg.toolCalls?.length) {
-          for (const tc of msg.toolCalls) {
-            toolCallCount++;
-            toolNames.add(tc.name);
-          }
-        }
-        // Extract short assistant reasoning (non-tool-call text)
-        const trimmed = text.trim();
-        if (trimmed.length > 20 && trimmed.length < 500 && !msg.toolCalls?.length) {
-          keyDecisions.push(trimmed.slice(0, 200));
-        }
-      } else if (msg.role === 'tool') {
-        if (text.startsWith('Error:') || text.includes('"status":"error"')) {
-          errors.push(text.slice(0, 150));
-        }
-      }
-    }
-
-    if (toolCallCount > 0) {
-      parts.push(`Executed ${toolCallCount} tool calls: ${[...toolNames].join(', ')}`);
-    }
-    if (errors.length > 0) {
-      parts.push(`Errors encountered (${errors.length}):`);
-      for (const e of errors.slice(0, 3)) {
-        parts.push(`  - ${e}`);
-      }
-    }
-    if (keyDecisions.length > 0) {
-      parts.push('Key points:');
-      for (const d of keyDecisions.slice(0, 5)) {
-        parts.push(`  - ${d}`);
-      }
-    }
-
-    return parts.length > 0 ? parts.join('\n') : null;
   }
 
   /**
@@ -2989,227 +2720,6 @@ export class ContextEngine {
     return 0;
   }
 
-  /**
-   * Compact historical tool-call blocks (before currentTurnStart) into summaries.
-   * Each block = assistant(toolCalls) + tool results → replaced with a single
-   * assistant message summarizing what happened.
-   * The first block is protected if it's a task prompt (user message with
-   * TASK EXECUTION marker) — it's always kept verbatim.
-   */
-  private compactOldTurns(
-    messages: LLMMessage[],
-    currentTurnStart: number,
-    budget: number
-  ): LLMMessage[] {
-    const history = messages.slice(0, currentTurnStart);
-    const currentTurn = messages.slice(currentTurnStart);
-
-    const currentTurnTokens = this.sumTokens(currentTurn);
-    const historyBudget = budget - currentTurnTokens;
-
-    const blocks = this.parseIntoBlocks(history);
-
-    // Keep the NEWEST blocks verbatim and fold the OLDER ones.
-    //
-    // The previous implementation walked the blocks oldest→newest, keeping each
-    // one verbatim while the budget allowed and then summarizing — or outright
-    // dropping — the remainder. That preserves the OLDEST conversation and
-    // summarises/discards the most RECENT past turns: the exact opposite of every
-    // published compaction design (keep the recent window verbatim, summarise the
-    // distant past), and it threw away the context the model still needed.
-    const blockTokens = blocks.map((b) => this.sumTokens(b));
-    const keepVerbatim = new Set<number>();
-    for (let i = blocks.length - 1, acc = 0; i >= 0; i--) {
-      const t = blockTokens[i]!;
-      if (acc + t > historyBudget) break;
-      keepVerbatim.add(i);
-      acc += t;
-    }
-
-    // Task-prompt protection: the very first block carries the task instructions
-    // and is also the OLDEST, so the recency walk above would otherwise fold it
-    // away first.
-    if (blocks.length > 0 && blocks[0]!.length === 1 && blocks[0]![0]!.role === 'user') {
-      const text = getTextContent(blocks[0]![0]!.content);
-      if (text.includes('TASK EXECUTION') || text.includes('task_submit_review')) {
-        keepVerbatim.add(0);
-      }
-    }
-
-    const compactedBlocks: LLMMessage[][] = [];
-    for (let i = 0; i < blocks.length; i++) {
-      const block = blocks[i]!;
-      if (keepVerbatim.has(i)) {
-        compactedBlocks.push(block);
-        continue;
-      }
-      // Only a tool block can collapse into a tool-block summary; a standalone
-      // user/assistant turn is kept as-is rather than silently dropped.
-      const isToolBlock = block[0]!.role === 'assistant' && (block[0]!.toolCalls?.length ?? 0) > 0;
-      compactedBlocks.push(isToolBlock ? [this.summarizeToolBlock(block)] : block);
-    }
-
-    return [...compactedBlocks.flat(), ...currentTurn];
-  }
-
-  /**
-   * Parse messages into logical blocks:
-   * - A tool-call block: [assistant(with toolCalls), tool, tool, ...]
-   * - A standalone message: [user] or [assistant(no toolCalls)]
-   */
-  private parseIntoBlocks(messages: LLMMessage[]): LLMMessage[][] {
-    const blocks: LLMMessage[][] = [];
-    let i = 0;
-    while (i < messages.length) {
-      const msg = messages[i]!;
-      if (msg.role === 'assistant' && msg.toolCalls?.length) {
-        // Collect the entire tool-call block
-        const block: LLMMessage[] = [msg];
-        i++;
-        while (i < messages.length && messages[i]!.role === 'tool') {
-          block.push(messages[i]!);
-          i++;
-        }
-        blocks.push(block);
-      } else {
-        blocks.push([msg]);
-        i++;
-      }
-    }
-    return blocks;
-  }
-
-  /**
-   * Compress a tool-call block into a single assistant summary message.
-   * Preserves the intent (what tool was called and why) without the raw output.
-   *
-   * Manus insight: uses template variation to break few-shot repetition patterns.
-   * The model mimics patterns from context — uniform summaries cause behavioral drift.
-   */
-  private summarizeToolBlock(block: LLMMessage[]): LLMMessage {
-    const assistant = block[0]!;
-    const toolCalls = assistant.toolCalls ?? [];
-    const toolResults = block.slice(1);
-
-    const summaryParts: string[] = [];
-    const assistantText = getTextContent(assistant.content);
-    if (assistantText.trim()) {
-      summaryParts.push(assistantText.trim());
-    }
-
-    const RESEARCH_TOOLS = new Set([
-      'web_search', 'web_fetch',
-      'navigate_page', 'take_snapshot', 'take_screenshot',
-      'click', 'fill', 'type_text',
-      'list_network_requests', 'evaluate_script',
-      'file_read',
-    ]);
-
-    // Manus: serialization diversity — vary summary templates to avoid few-shot ruts
-    const templates = [
-      (name: string, args: string, res: string) => `[Called ${name}(${args})${res}]`,
-      (name: string, args: string, res: string) => `[Tool: ${name} | args: ${args}${res}]`,
-      (name: string, args: string, res: string) => `[${name}(${args})${res}]`,
-      (name: string, args: string, res: string) => `[Action: ${name}, input: ${args}${res}]`,
-    ];
-
-    // Manus: keep error details in summaries — they help the model learn from failures
-    for (let i = 0; i < toolCalls.length; i++) {
-      const tc = toolCalls[i]!;
-      const result = toolResults[i];
-      const baseName = tc.name.includes('__') ? tc.name.split('__').pop()! : tc.name;
-      const isResearch = RESEARCH_TOOLS.has(baseName);
-      // Deterministic serialization: sorted keys prevent cache-busting from key order differences
-      const argsStr = JSON.stringify(tc.arguments, Object.keys(tc.arguments ?? {}).sort()).slice(
-        0,
-        isResearch ? 200 : 100
-      );
-      let resultSummary = '';
-      if (result) {
-        const content = getTextContent(result.content);
-        if (
-          content.startsWith('Error:') ||
-          (content.startsWith('{') && content.includes('"status":"error"'))
-        ) {
-          const errorPreview = content.slice(0, 200);
-          resultSummary = ` → ERROR: ${errorPreview}`;
-        } else if (isResearch) {
-          // Research tools: preserve key findings so the agent retains knowledge
-          const previewLen = Math.min(content.length, 500);
-          resultSummary = ` → ${content.slice(0, previewLen)}${content.length > previewLen ? '...' : ''}`;
-        } else if (content.length <= 120) {
-          resultSummary = ` → ${content}`;
-        } else {
-          resultSummary = ` → (${content.length} chars)`;
-        }
-      }
-      const template = templates[(i + block.length) % templates.length]!;
-      summaryParts.push(template(tc.name, argsStr, resultSummary));
-    }
-
-    const prefixes = ['[Previous step]', '[Earlier action]', '[History]', '[Past step]'];
-    const prefix = prefixes[block.length % prefixes.length]!;
-
-    return {
-      role: 'assistant',
-      content: `${prefix} ${summaryParts.join(' ')}`,
-    };
-  }
-
-  /**
-   * Last-resort trimming: drop old messages to fit the budget.
-   * Protects index 0 (often the task description with critical instructions like
-   * task_submit_review) and keeps at least 4 recent messages.
-   * When index 0 is a user message (task prompt), it is preserved and a
-   * compacted version is used if the original is too large.
-   */
-  private trimToFitBudget(messages: LLMMessage[], budget: number): LLMMessage[] {
-    if (messages.length <= 4 || this.sumTokens(messages) <= budget) return messages;
-
-    // Preserve the first message if it looks like a task prompt (user role)
-    const firstMsg = messages[0]!;
-    const protectFirst = firstMsg.role === 'user' &&
-      (getTextContent(firstMsg.content).includes('TASK EXECUTION') ||
-       getTextContent(firstMsg.content).includes('task_submit_review'));
-
-    if (protectFirst) {
-      // Keep first message + trim from position 1 onward
-      let middle = messages.slice(1);
-      while (middle.length > 3 && this.sumTokens([firstMsg, ...middle]) > budget) {
-        middle = middle.slice(1);
-      }
-      const result = [firstMsg, ...middle];
-      // If still over budget, compact the first message itself
-      if (this.sumTokens(result) > budget) {
-        const text = getTextContent(firstMsg.content);
-        const maxFirstChars = Math.max(800, Math.floor(budget * 2));
-        const compactedFirst: LLMMessage = {
-          ...firstMsg,
-          content: text.slice(0, maxFirstChars) + '\n\n[... task description trimmed. REMEMBER: Call `task_submit_review` when done.]',
-        };
-        return [compactedFirst, ...middle];
-      }
-      return result;
-    }
-
-    // Default: drop from the oldest end
-    let result = messages;
-    while (result.length > 4 && this.sumTokens(result) > budget) {
-      result = result.slice(1);
-    }
-    return result;
-  }
-
-  private sumTokens(messages: LLMMessage[]): number {
-    let total = 0;
-    for (const m of messages) total += estimateMessageTokens(m, this.tokenCounter);
-    return total;
-  }
-
-  /**
-   * Ensures every assistant+toolCalls message is followed by ALL its tool_result messages.
-   * Orphaned or incomplete blocks are dropped to prevent LLM API errors.
-   */
   private sanitizeMessageSequence(messages: LLMMessage[]): LLMMessage[] {
     const result: LLMMessage[] = [];
 

@@ -1,4 +1,5 @@
 import { createLogger, getTextContent, LLM_CIRCUIT_RESET_RATE_LIMIT_MS, LLM_MAX_CONCURRENT_PER_PROVIDER, LLM_CONCURRENCY_JITTER_BASE_MS, type LLMRequest, type LLMResponse, type LLMStreamEvent, type LLMProviderConfig, type ModelDefinition, type ModelCostConfig, type EnhancedProviderSettings, type EnhancedLLMSettings, type AuthProfile, type ModelTier, type ModelCapabilityType, type CostTier, type CapabilityRoutingConfig, type CapabilityModelAssignment, type ProviderCapabilities, getProviderBootstrapModel, MODEL_CAPABILITY_TYPES } from '@markus/shared';
+import { asActionableContextOverflow } from './context-overflow.js';
 import { startSpan } from '../tracing.js';
 import { DEFAULT_REQUEST_MAX_TOKENS, type LLMProviderInterface, type MultiModalProviderInterface } from './provider.js';
 import { AnthropicProvider } from './anthropic.js';
@@ -340,20 +341,30 @@ export class LLMRouter {
   /** Attach provider:model context to an error so upstream loggers can identify the source. */
   private static enrichError(error: unknown, provider: string, model: string): Error {
     const prefix = `[${provider}:${model}]`;
+    let enriched: Error;
     if (error instanceof Error) {
       if (!error.message.startsWith(prefix)) {
         try {
           error.message = `${prefix} ${error.message}`;
+          enriched = error;
         } catch {
           const wrapped = new Error(`${prefix} ${error.message}`);
           wrapped.stack = error.stack;
           wrapped.cause = error;
-          return wrapped;
+          enriched = wrapped;
         }
+      } else {
+        enriched = error;
       }
-      return error;
+    } else {
+      enriched = new Error(`${prefix} ${String(error)}`);
     }
-    return new Error(`${prefix} ${String(error)}`);
+    // Single execution point for every provider failure (chat + stream both land
+    // here). A context overflow is the one failure whose text must name the
+    // remedy: the platform no longer predicts prompt size, so this replaced the
+    // old pre-flight trim — "报错就行" only works if the error says what to do.
+    // Non-overflow failures pass through untouched.
+    return asActionableContextOverflow(enriched) ?? enriched;
   }
 
   /**

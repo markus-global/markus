@@ -2094,7 +2094,7 @@ async function startServerCore(
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId },
+      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId, chatSessionId: request.chatSessionId },
       targetUserId: ownerUserId,
     });
     auditService.record({

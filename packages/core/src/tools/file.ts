@@ -48,8 +48,45 @@ function resolveAndCheckAccess(
 }
 
 
+interface FileReadRecord {
+  mtimeMs: number;
+  size: number;
+  from: number;
+  to: number;
+  totalLines: number;
+  readAt: number;
+}
+
+/**
+ * Every file_read instance's dedupe cache, so a compaction can clear them all.
+ *
+ * The dedupe is only honest while the earlier content is still in the agent's
+ * context. A compaction can drop it, so the caller must be able to reset —
+ * otherwise "you already have it" becomes a lie the agent cannot escape without
+ * knowing to pass `force`.
+ */
+const FILE_READ_CACHES = new Set<Map<string, FileReadRecord>>();
+
+/** Drop all dedupe memory (call after a compaction rewrote history). */
+export function resetAllFileReadCaches(): void {
+  for (const cache of FILE_READ_CACHES) cache.clear();
+}
+
 export function createFileReadTool(security?: SecurityGuard, workspacePath?: string, policy?: PathAccessPolicy): AgentToolHandler {
   const guard = security ?? defaultSecurityGuard;
+
+  // Per-tool-instance record of what this agent has ALREADY been shown.
+  //
+  // Measured failure: one task turn made 223 shell calls and repeatedly re-read
+  // the same files. Re-emitting a file the agent still holds is pure cost — and
+  // worse, it *feeds the loop*: the agent keeps "confirming" because asking is
+  // free. Returning a cheap stub breaks that habit at the source.
+  //
+  // Registered so a compaction can clear it: after a compaction the earlier copy
+  // may no longer be in the agent's context, and then "unchanged, you already
+  // have it" would be a lie. See `resetAllFileReadCaches`.
+  const readCache = new Map<string, FileReadRecord>();
+  FILE_READ_CACHES.add(readCache);
 
   return {
     name: 'file_read',
@@ -60,6 +97,7 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
         path: { type: 'string', description: 'Absolute path to the file (e.g. /data/shared/report.md). Always use absolute paths.' },
         offset: { type: 'number', description: 'Line number to start reading from (1-based, optional)' },
         limit: { type: 'number', description: 'Max number of lines to read (optional, default: all)' },
+        force: { type: 'boolean', description: 'Re-read even if this exact file and range were already returned in this session. Use after a compaction, when the earlier copy may no longer be visible.' },
       },
       required: ['path'],
     },
@@ -119,6 +157,53 @@ export function createFileReadTool(security?: SecurityGuard, workspacePath?: str
           endIdx = startIdx + trimmedLines.length;
           autoLimited = true;
         }
+
+        // ── Don't send the same bytes twice ────────────────────────────────
+        // Same path, same line window, file untouched since → the agent already
+        // has this verbatim. Answer with a stub instead of the payload, and say
+        // exactly how to force a full re-read (a compaction may have dropped the
+        // earlier copy).
+        const force = args['force'] === true;
+        const prior = readCache.get(path);
+        if (
+          !force &&
+          prior &&
+          prior.mtimeMs === stat.mtimeMs &&
+          prior.size === stat.size &&
+          prior.from === startIdx + 1 &&
+          prior.to === endIdx &&
+          prior.totalLines === totalLines
+        ) {
+          const preview = selectedLines
+            .slice(0, 5)
+            .map((line, i) => `${startIdx + i + 1}|${line}`)
+            .join('\n');
+          return JSON.stringify({
+            status: 'success',
+            path,
+            unchanged: true,
+            totalLines,
+            shownLines: `${startIdx + 1}-${endIdx}`,
+            size: stat.size,
+            readAt: new Date(prior.readAt).toISOString(),
+            note:
+              'Identical to the read you already did this session — content not re-sent, to keep your context for work. ' +
+              'First lines are repeated below only for orientation.',
+            preview,
+            hint:
+              'Use the copy you already have. If it is no longer visible (e.g. after session_compact), ' +
+              'call file_read again with force: true.',
+          });
+        }
+
+        readCache.set(path, {
+          mtimeMs: stat.mtimeMs,
+          size: stat.size,
+          from: startIdx + 1,
+          to: endIdx,
+          totalLines,
+          readAt: Date.now(),
+        });
 
         const result: Record<string, unknown> = {
           status: 'success',

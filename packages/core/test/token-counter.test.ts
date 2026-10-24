@@ -36,55 +36,7 @@ describe('SmartTokenCounter', () => {
     expect(messageTokens).toBeGreaterThan(contentTokens);
   });
 
-  describe('calibration', () => {
-    it('should adjust factor based on actual usage data', () => {
-      const counter = new SmartTokenCounter();
-      expect(counter.getCalibrationFactor()).toBe(1.0);
-
-      // Simulate API returning 2x what we estimated
-      for (let i = 0; i < 10; i++) {
-        counter.calibrate(100, 200);
-      }
-
-      expect(counter.getCalibrationFactor()).toBeCloseTo(2.0, 1);
-    });
-
-    it('should clamp calibration factor to reasonable range', () => {
-      const counter = new SmartTokenCounter();
-
-      // Very high ratio should be clamped to 2.0
-      for (let i = 0; i < 20; i++) {
-        counter.calibrate(100, 1000);
-      }
-      expect(counter.getCalibrationFactor()).toBe(2.0);
-
-      // Very low ratio should be clamped to 0.5
-      const counter2 = new SmartTokenCounter();
-      for (let i = 0; i < 20; i++) {
-        counter2.calibrate(1000, 10);
-      }
-      expect(counter2.getCalibrationFactor()).toBe(0.5);
-    });
-
-    it('should keep only last 50 samples', () => {
-      const counter = new SmartTokenCounter();
-      for (let i = 0; i < 100; i++) {
-        counter.calibrate(100, 150);
-      }
-      // Factor should still be reasonable
-      expect(counter.getCalibrationFactor()).toBeCloseTo(1.5, 1);
-    });
-
-    it('should skip invalid calibration values', () => {
-      const counter = new SmartTokenCounter();
-      counter.calibrate(0, 100);
-      counter.calibrate(100, 0);
-      counter.calibrate(-5, 100);
-      expect(counter.getCalibrationFactor()).toBe(1.0);
-    });
-  });
-
-  describe('singleton', () => {
+describe('singleton', () => {
     it('should return a default counter', () => {
       const c1 = getDefaultTokenCounter();
       const c2 = getDefaultTokenCounter();

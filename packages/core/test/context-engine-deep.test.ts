@@ -393,8 +393,8 @@ describe('ContextEngine prepareMessages compaction paths', () => {
 
     const toolMsg = prepared.messages.find(m => m.role === 'tool');
     expect(toolMsg).toBeDefined();
-    expect(String(toolMsg!.content).length).toBeLessThan(12000);
-    expect(prepared.usage.messageTokens).toBeLessThan(80000);
+    // No pre-flight shrinking: the recorded result is delivered as-is.
+    expect(String(toolMsg!.content).length).toBe(12000);
   });
 
   it('summarizer failure falls back without throwing', async () => {

@@ -42,7 +42,6 @@ import {
   NOTEBOOK_MAX_AGENT_ENTRIES,
   NOTEBOOK_TTL_MS_AGENT,
   NOTEBOOK_TTL_MS_SYSTEM,
-  SESSION_STORAGE_COMPACT_KEEP,
   SESSION_STORAGE_COMPACT_TRIGGER,
   CONTEXT_SLOT_MAX_CHARS,
 } from '@markus/shared';
@@ -930,9 +929,32 @@ export class MemoryStore implements IMemoryStore {
     )[0];
   }
 
-  createSession(agentId: string): ConversationSession {
+  /**
+   * Create (or adopt) a session.
+   *
+   * ── The single write point for a session id ────────────────────────────────
+   * When the caller already owns an authoritative id (`cs_…`, the DB chat
+   * session every UI surface keys on), that id BECOMES the memory primary key.
+   * One conversation = one id = one store entry; nothing downstream has to
+   * translate between id spaces.
+   *
+   * Passing an id that already exists is idempotent: the live/on-disk session is
+   * adopted as-is. It never forks a second file for the same conversation.
+   *
+   * Omitting the id keeps the historical `sess_…` generation for purely internal
+   * turns (heartbeat / a2a / channel / task) that have no DB identity at all.
+   */
+  createSession(agentId: string, id?: string): ConversationSession {
+    if (id) {
+      const existing = this.sessions.get(id) ?? this.tryLoadSessionFromDisk(id);
+      if (existing) {
+        this.sessions.set(id, existing);
+        this.touchSession(id);
+        return existing;
+      }
+    }
     const session: ConversationSession = {
-      id: `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
+      id: id ?? `sess_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
       agentId,
       messages: [],
       startedAt: new Date().toISOString(),
@@ -942,6 +964,22 @@ export class MemoryStore implements IMemoryStore {
     this.touchSession(session.id);
     this.debouncedSaveSession(session);
     return session;
+  }
+
+  /**
+   * Write a session to disk immediately, bypassing the 1s debounce.
+   *
+   * Needed by paths whose correctness depends on *another instance* (or a later
+   * process) reading the bytes right away — e.g. rebinding after a restart.
+   */
+  flushSession(sessionId: string): void {
+    const pending = this.saveDebounce.get(sessionId);
+    if (pending) {
+      clearTimeout(pending);
+      this.saveDebounce.delete(sessionId);
+    }
+    const session = this.sessions.get(sessionId) ?? this.tryLoadSessionFromDisk(sessionId);
+    if (session) this.saveSessionToDisk(session);
   }
 
   getOrCreateSession(agentId: string, sessionId: string): ConversationSession {
@@ -1568,13 +1606,17 @@ export class MemoryStore implements IMemoryStore {
     // the deliberate safety compact below (which archives with a summary).
     if (session.messages.length <= SESSION_STORAGE_COMPACT_TRIGGER) return;
 
+    // Keep half the trigger, DERIVED rather than a second constant: two
+    // independent numbers made it possible to set keep >= trigger, which would
+    // compact forever without shrinking. One number cannot disagree with itself.
+    const keepLast = Math.floor(SESSION_STORAGE_COMPACT_TRIGGER / 2);
     log.info('Auto-compacting session by safety count threshold', {
       sessionId: session.id,
       messageCount: session.messages.length,
-      keepLast: SESSION_STORAGE_COMPACT_KEEP,
+      keepLast,
       trigger: SESSION_STORAGE_COMPACT_TRIGGER,
     });
-    this.compactSession(session.id, SESSION_STORAGE_COMPACT_KEEP);
+    this.compactSession(session.id, keepLast);
   }
 
   private static readonly MAX_MEMORY_ENTRIES = 500;

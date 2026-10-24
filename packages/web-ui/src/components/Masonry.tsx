@@ -49,7 +49,7 @@ export function Masonry({
   return (
     <div ref={ref} className={`flex items-start ${className}`} style={{ gap }}>
       {cols.map((col, i) => (
-        <div key={i} className="flex flex-col flex-1 min-w-0" style={{ gap, maxWidth: maxCardWidth }}>
+        <div key={i} className="cv-stack flex flex-col flex-1 min-w-0" style={{ gap, maxWidth: maxCardWidth }}>
           {col}
         </div>
       ))}
