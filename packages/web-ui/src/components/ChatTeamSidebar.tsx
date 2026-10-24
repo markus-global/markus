@@ -430,13 +430,19 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
       const p = event.payload;
       updateLastMsg((p['agentId'] as string) ?? '', (p['message'] as string) ?? '');
     });
-    const unsubMsg = wsClient.on('chat:message', (event) => {
-      const p = event.payload;
-      const senderId = (p['senderId'] as string) ?? (p['agentId'] as string) ?? '';
-      const text = (p['text'] as string) ?? (p['message'] as string) ?? '';
-      updateLastMsg(senderId, text);
-    });
-    return () => { cancelled = true; unsubProactive(); unsubMsg(); };
+    // NO `chat:message` subscription here — deliberately.
+    //
+    // That event is **channel** traffic (group / team / a2a-DM / notes). Its
+    // `senderId` happens to be an agent id, so the old handler accepted it and
+    // painted a GROUP reply as the agent's “latest message” in L1 — i.e. channel
+    // content showing up on an agent's 1:1 entry (reproduced live 2026-10-24:
+    // a group message + the agent's group answer both surfaced under the agent's
+    // row). The agent's 1:1 preview has exactly two legitimate sources: its own
+    // session transcript (fetchInitial above) and `chat:proactive_message`
+    // (session traffic pushed by the server). Channel broadcasts are neither, so
+    // the correct fix is to not subscribe at all rather than to filter one field
+    // — there is no channel message that could ever belong in this preview.
+    return () => { cancelled = true; unsubProactive(); };
   }, [agentIdsKey, isActive]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // ── Data loading ──────────────────────────────────────────────────────────
