@@ -500,7 +500,7 @@ export class AgentManager {
   private escalationHandler?: (agentId: string, reason: string) => void;
   private approvalHandler?: (
     agentId: string,
-    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string }
+    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
   ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
@@ -2315,7 +2315,7 @@ export class AgentManager {
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }) =>
           ah(id, req)
       );
     }
@@ -3233,7 +3233,7 @@ export class AgentManager {
     if (this.approvalHandler) {
       const ah = this.approvalHandler;
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }) =>
           ah(id, req)
       );
     }
@@ -3452,13 +3452,13 @@ export class AgentManager {
   setApprovalHandler(
     handler: (
       agentId: string,
-      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }
+      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
     ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;
     for (const [id, agent] of this.agents) {
       agent.setApprovalCallback(
-        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string }) =>
+        async (req: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }) =>
           handler(id, req)
       );
     }

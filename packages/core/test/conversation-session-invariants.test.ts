@@ -23,7 +23,7 @@
  * 统计、不靠人肉复现。
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, readdirSync, existsSync } from 'node:fs';
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, readdirSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { EventBus } from '../src/events.js';
@@ -146,7 +146,13 @@ function createManager(llmRouter: LLMRouter) {
 
 /** 触碰 Agent 的非公开字段（测试专用，只读/取证，绝不改产品行为）。 */
 interface AgentInternals {
-  dbSessionMap: Map<string, string>;
+  /**
+   * Persisted alias table (`cs_ → sess_`) for LEGACY conversations only.
+   * After single-write (2026-10-23) a new conversation needs no alias at all:
+   * the DB id IS the memory primary key. Kept here so the guard can prove that
+   * losing the alias no longer loses history.
+   */
+  sessionBindings?: { resolve(id: string): string | undefined; unbind(id: string): void };
   memory: {
     listSessions(agentId?: string): Array<{ id: string }>;
     getSession(id: string): { id: string; messages: Array<{ role: string; content: string }> } | undefined;
@@ -263,9 +269,9 @@ describe('会话不变量：DB session id 贯通（按 DB id 解析内存会话�
 
       // 消息 1 实际用的内存会话 id，及其 DB→memory 绑定。
       const memSession1 = agent.getMemorySessionIdForDbSession(DB_ID);
-      expect(memSession1, '首条消息后必须存在 cs_* → sess_* 绑定').toBeTruthy();
-      expect(memSession1!.startsWith('sess_'), '内存会话 id 必须是 sess_* 空间').toBe(true);
-      expect(internals.dbSessionMap.get(DB_ID)).toBe(memSession1);
+      expect(memSession1, '首条消息后必须能按 DB id 解析到内存会话').toBeTruthy();
+      // 单写（2026-10-23）：DB 会话 id 就是内存会话主键，不再另造 sess_*。
+      expect(memSession1, '单写：DB id 即内存会话 key').toBe(DB_ID);
 
       // 消息 1 确实进了模型，且绑定指向的内存会话确实有历史。
       const call1 = probe.streamCalls.find(c => c.text.includes('TOKEN_HIST_FIRST'));
@@ -305,9 +311,14 @@ describe('会话不变量：DB session id 贯通（按 DB id 解析内存会话�
   });
 
   // =========================================================================
-  // 用例 2 —— DB id 绝不能被当作内存会话 key（无 split-brain）
+  // 用例 2 —— 单写：一个对话只有一个会话（无 split-brain）
+  //
+  // 这条用例原来断言「DB id 绝不能当作内存会话 key」。2026-10-23 起相反：
+  // DB id 就是内存主键，两个 id 空间合并。它要守的核心不变量没变 ——
+  // **同一个对话不得被拆到两个会话条目**。旧实现靠「两个 id + 一张易失绑定」
+  // 维持这个性质，绑定一丢就分裂；单写后它由结构保证。
   // =========================================================================
-  it('DB id 不得被当作内存会话 key：跑完两轮后没有以 cs_* 为 id 的 memory session', { timeout: 30000 }, async () => {
+  it('单写：DB id 就是内存会话 key，且同一对话只有一个会话（无 split-brain）', { timeout: 30000 }, async () => {
     const probe = makeRecordingRouter();
     const manager = createManager(probe.router);
     const agent = await manager.createAgent({ name: 'Session Invariants B', roleName: 'developer', tools: [] });
@@ -319,26 +330,26 @@ describe('会话不变量：DB session id 贯通（按 DB id 解析内存会话�
       await sendFirstStreamTurn(agent, DB_ID, 'TOKEN_NOSPLIT_FIRST 第一条');
       await runWorkerTurn(agent, 2, DB_ID, 'TOKEN_NOSPLIT_SECOND 第二条');
 
-      // 内存侧：不存在以 DB id 为 key 的会话。
-      expect(internals.memory.getSession(DB_ID), 'DB id 不得成为内存会话').toBeUndefined();
-      for (const s of internals.memory.listSessions()) {
-        expect(s.id.startsWith('cs_'), `内存会话 id 不得来自 DB 空间: ${s.id}`).toBe(false);
-      }
-      // 绑定必须是 sess_*，且与内存里真实存在的会话一致（不是悬空指针）。
-      const bound = agent.getMemorySessionIdForDbSession(DB_ID);
-      expect(bound).toBeTruthy();
-      expect(bound!.startsWith('sess_')).toBe(true);
-      expect(internals.memory.getSession(bound!)).toBeDefined();
+      // 内存侧：以 DB id 为 key 的会话必须存在，且解析结果就是它。
+      expect(internals.memory.getSession(DB_ID), '单写后 DB id 就是内存会话 key').toBeDefined();
+      expect(agent.getMemorySessionIdForDbSession(DB_ID)).toBe(DB_ID);
 
-      // 磁盘侧：等待去抖落盘后扫描 —— agent 落盘目录里不得出现任何 cs_*.json
-      // （split-brain 的落盘证据），且绑定指向的内存会话确实已落盘。
+      // split-brain 护栏：承载这段对话的会话只能有一个。
+      const carriesFirst = (id: string) =>
+        internals.memory.getRecentMessages(id, 500).some(m => m.content.includes('TOKEN_NOSPLIT_FIRST'));
+      const memoryCarriers = internals.memory.listSessions().filter(s => carriesFirst(s.id)).map(s => s.id);
+      expect(memoryCarriers, '同一个对话不得被拆到多个内存会话').toEqual([DB_ID]);
+
+      // 磁盘侧：落盘目录里也只能有一个承载该对话的文件。
       await new Promise(r => setTimeout(r, 1200));
       const dir = sessionsDirOf(agent);
       expect(existsSync(dir)).toBe(true);
       const files = readdirSync(dir);
-      expect(files.length, '至少应有会话落盘，否则「无 cs_*.json」是空断言').toBeGreaterThan(0);
-      expect(files.filter(f => f.startsWith('cs_')), '落盘目录不得出现 cs_*.json 会话文件').toEqual([]);
-      expect(files).toContain(`${bound}.json`);
+      expect(files).toContain(`${DB_ID}.json`);
+      const diskCarriers = files.filter(f => {
+        try { return readFileSync(join(dir, f), 'utf-8').includes('TOKEN_NOSPLIT_FIRST'); } catch { return false; }
+      });
+      expect(diskCarriers, '落盘侧也不得出现第二个承载同一对话的会话文件').toEqual([`${DB_ID}.json`]);
     } finally {
       await manager.stopAgent(agent.id);
     }
@@ -350,7 +361,7 @@ describe('会话不变量：DB session id 贯通（按 DB id 解析内存会话�
   // =========================================================================
   // 用例 6 —— 反向护栏：绑定被破坏时必须「显式告警 + 行为退化」，不得静默空历史
   // =========================================================================
-  it('无绑定时必须告警且不再静默续用旧历史（护栏：不得静默空历史）', { timeout: 30000 }, async () => {
+  it('绑定丢失也不丢历史：同一 cs_ 直接按主键续用，不新建、不空历史', { timeout: 30000 }, async () => {
     const probe = makeRecordingRouter();
     const manager = createManager(probe.router);
     const agent = await manager.createAgent({ name: 'Session Invariants Guard', roleName: 'developer', tools: [] });
@@ -360,34 +371,30 @@ describe('会话不变量：DB session id 贯通（按 DB id 解析内存会话�
 
     try {
       await sendFirstStreamTurn(agent, DB_ID, 'TOKEN_GUARD_FIRST 第一条');
-      expect(agent.getMemorySessionIdForDbSession(DB_ID)).toBeTruthy();
+      const memSession1 = agent.getMemorySessionIdForDbSession(DB_ID);
+      expect(memSession1).toBe(DB_ID);
 
-      // 人为破坏绑定，模拟「worker 拿到请求 DB id 但绑定丢失」。
-      internals.dbSessionMap.delete(DB_ID);
+      // 人为清空别名绑定：模拟重启后绑定丢失（旧 Map 时代这是永久损失）。
+      internals.sessionBindings?.unbind(DB_ID);
+      expect(internals.sessionBindings?.resolve(DB_ID), '前提：别名表里确实没有它').toBeUndefined();
       const sessionsBefore = internals.memory.listSessions().length;
-
-      const warn = vi.spyOn(Logger.prototype, 'warn').mockImplementation(() => {});
-      warn.mockClear();
 
       const before = probe.streamCalls.length;
       const reply = await runWorkerTurn(agent, 3, DB_ID, 'TOKEN_GUARD_SECOND 第二条');
       expect(reply).toBeTruthy();
 
-      // 1) 必须告警（可观测），而不是静默返回空历史。
-      const boundWarn = warn.mock.calls.find(
-        ([msg]) => typeof msg === 'string' && msg.includes('no memory session bound to its DB session'),
-      );
-      expect(boundWarn, '有 DB id 但无绑定时必须 log.warn').toBeDefined();
-      expect(boundWarn![1]).toMatchObject({ dbSessionId: DB_ID });
-
-      // 2) 行为证据：无绑定 → 无法解析到原会话 → 走新建会话（而非静默假装有历史）。
-      expect(internals.memory.listSessions().length).toBeGreaterThan(sessionsBefore);
       const call2 = probe.streamCalls.slice(before).find(c => c.text.includes('TOKEN_GUARD_SECOND'));
       expect(call2).toBeDefined();
+
+      // 1) 历史仍在 —— 这正是旧实现丢掉的那部分（tool calls 一起保住）。
       expect(
         realUserMessages(call2!).some(m => m.text.includes('TOKEN_GUARD_FIRST')),
-        '绑定缺失时确实无法续用旧历史 —— 正是这条护栏让「静默空历史」不复存在',
-      ).toBe(false);
+        '别名缺失也不得丢历史：解析走的是主键相等，不是绑定表',
+      ).toBe(true);
+
+      // 2) 没有新建会话，指向仍是同一个。
+      expect(internals.memory.listSessions().length).toBe(sessionsBefore);
+      expect(agent.getMemorySessionIdForDbSession(DB_ID)).toBe(memSession1);
     } finally {
       await manager.stopAgent(agent.id);
     }

@@ -1327,7 +1327,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           ) : grouped.map(([key, group]) => {
             const isCollapsed = isGroupCollapsed(key);
             return (
-              <div key={key} className="mb-1">
+              // `cv-row`: a collapsed/off-screen group costs no layout until it is
+              // in view — this list reached 28,892 nodes (33.8× the viewport), and
+              // laying all of it out in the frame that reveals the page cost ~340ms.
+              <div key={key} className="mb-1 cv-row">
                 <button
                   onClick={() => toggleGroup(key)}
                   className="w-full flex items-center gap-1.5 px-2 py-2 rounded-md hover:bg-surface-elevated/50 transition-colors group/header border-b border-border-subtle/50"
@@ -1344,7 +1347,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <div className={`overflow-hidden transition-all duration-200 ${isCollapsed ? 'max-h-0 opacity-0' : 'max-h-[5000px] opacity-100'}`}>
                   {group.items.map(item => (
                   <button key={item.id} data-deliverable-id={item.id} onClick={() => handleSelectItem(item)}
-                    className={`w-full text-left px-3 py-2 rounded-lg transition-all duration-150 ${selected?.id === item.id ? (keyboardPane === 'l1' ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20' : 'bg-brand-600/15 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20') : 'hover:bg-surface-elevated/60 border-l-2 border-l-transparent border-y border-r border-transparent'}`}>
+                    className={`cv-row w-full text-left px-3 py-2 rounded-lg transition-all duration-150 ${selected?.id === item.id ? (keyboardPane === 'l1' ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20' : 'bg-brand-600/15 border-l-2 border-l-brand-500 border-y border-r border-y-brand-500/20 border-r-brand-500/20') : 'hover:bg-surface-elevated/60 border-l-2 border-l-transparent border-y border-r border-transparent'}`}>
                     <div className="flex items-center gap-1.5 min-w-0">
                       {item.artifactType && ARTIFACT_META[item.artifactType] ? (
                         <span className={`text-[10px] px-1 py-0.5 rounded font-medium shrink-0 ${ARTIFACT_META[item.artifactType].color}`}>

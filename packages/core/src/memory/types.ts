@@ -147,7 +147,15 @@ export interface IMemoryStore {
   countSessionsOnDisk?(): number;
   getLatestSession(agentId: string): ConversationSession | undefined;
   getLatestMainSession(agentId: string): ConversationSession | undefined;
-  createSession(agentId: string): ConversationSession;
+  /**
+   * Create or adopt a session. Passing `id` (an authoritative `cs_…` DB chat
+   * session id) makes it the memory primary key — one conversation, one id, one
+   * store entry. Idempotent: an existing session with that id is adopted, never
+   * forked. Omitting `id` keeps generating `sess_…` for internal turns.
+   */
+  createSession(agentId: string, id?: string): ConversationSession;
+  /** Force a session to disk now (bypasses the write debounce). */
+  flushSession?(sessionId: string): void;
   getOrCreateSession(agentId: string, sessionId: string): ConversationSession;
   /** Rename a session (used by the agent session_rename tool). */
   renameSession?(sessionId: string, title: string): void;

@@ -388,6 +388,52 @@ export function extractCacheReadTokens(raw: Record<string, unknown> | undefined)
   return Math.max(openaiCached, deepseekHit);
 }
 
+export interface CacheHitRateInput {
+  /** Provider id as the router knows it (`anthropic`, `openai`, `deepseek`, …). */
+  provider?: string;
+  /** Provider-REPORTED prompt/input tokens for this call. */
+  promptTokens: number;
+  cacheReadTokens?: number;
+  cacheWriteTokens?: number;
+}
+
+/**
+ * The ONE definition of "how big was the prompt, for cache purposes".
+ *
+ * Providers disagree about what `prompt_tokens` contains:
+ *  - OpenAI-compatible (OpenAI / OpenRouter / DeepSeek / Markus gateway):
+ *    `prompt_tokens` ALREADY includes the cached portion — cached reads are a
+ *    subset of it, so the denominator is the number as reported.
+ *  - Anthropic: `input_tokens` EXCLUDES the cached portion, and cache reads /
+ *    writes are reported separately — so the real prompt is
+ *    inputTokens + cache_read + cache_creation.
+ *
+ * An unknown provider is treated as OpenAI-shaped. That choice can only
+ * UNDERSTATE the hit rate, never inflate it — a metric we cannot verify must
+ * not be allowed to look good.
+ */
+export function cacheDenominator(input: CacheHitRateInput): number {
+  const p = (input.provider ?? '').toLowerCase();
+  const anthropicLike = p.includes('anthropic') || p.includes('claude');
+  const denom = anthropicLike
+    ? input.promptTokens + (input.cacheReadTokens ?? 0) + (input.cacheWriteTokens ?? 0)
+    : input.promptTokens;
+  return denom > 0 ? denom : 0;
+}
+
+/**
+ * Cache-hit rate for one call, or `null` when the provider reported nothing.
+ *
+ * `null` rather than 0 on purpose: "we have no measurement" and "we measured a
+ * 0% hit rate" are different facts, and collapsing them is how a broken cache
+ * stays invisible behind a plausible-looking number.
+ */
+export function computeCacheHitRate(input: CacheHitRateInput): number | null {
+  const denom = cacheDenominator(input);
+  if (denom <= 0) return null;
+  return Math.min(1, (input.cacheReadTokens ?? 0) / denom);
+}
+
 export function normalizeOpenAIUsage(raw: Record<string, number> | undefined): LLMResponse['usage'] {
   const usage: LLMResponse['usage'] = {
     inputTokens: raw?.prompt_tokens ?? 0,

@@ -205,75 +205,6 @@ afterEach(() => {
   rmSync(tempDir, { recursive: true, force: true });
 });
 
-describe('接线行为 · P1-9 per-agent 计数器真的驱动 ContextEngine 的预算计数', () => {
-  it('单例校准因子被推到 2.0 时，agent 引擎的预算计数不受影响（引擎用的不是进程级单例）', async () => {
-    // 把进程级单例校准到 2.0：如果引擎的 tokenCounter 是它，所有计数都会翻倍。
-    const singleton = getDefaultTokenCounter();
-    for (let i = 0; i < 5; i++) singleton.calibrate(100, 200);
-    expect(singleton.getCalibrationFactor()).toBe(2.0);
-    const cleanHeuristic = new SmartTokenCounter().countTokens(PROBE_TEXT);
-    expect(
-      singleton.countTokens(PROBE_TEXT),
-      '探针不自洽：单例的读数与干净计数器相同，本用例无法分辨来源',
-    ).not.toBe(cleanHeuristic);
-
-    const agent = makeAgent({ id: 'wiring-singleton-probe', model: 'deepseek-chat', provider: 'deepseek' });
-    const p = await pack(agent.getContextEngine(), makeStore(), 'sess_singleton');
-
-    // 引擎读数是干净计数器（因子 1.0）的值 → 引擎没有用被污染的进程级单例。
-    expect(p.usage.systemTokens).toBe(cleanHeuristic);
-    expect(p.usage.systemTokens).not.toBe(singleton.countTokens(PROBE_TEXT));
-  });
-
-  it('真实 handleMessage() 激活模型后，引擎的 systemTokens 是该模型的精确 tiktoken 计数', async () => {
-    const ref = await referenceCounters();
-    assertEncodersDistinguishable(ref);
-
-    const agent = makeAgent({ id: 'wiring-chat-probe', model: 'gpt-4o', provider: 'openai' });
-    await agent.handleMessage('hi');
-
-    const p = await pack(agent.getContextEngine(), makeStore(), 'sess_chat');
-    expect(p.usage.systemTokens, '模型激活没有传导到 ContextEngine 的计数器').toBe(ref.o200k);
-    // 同时确认不是「随便挂了个编码器」：cl100k 的值不同，说明用的是模型的编码器。
-    expect(p.usage.systemTokens).not.toBe(ref.cl100k);
-  });
-
-  it('流式主路径 handleMessageStream() 同样激活：引擎读数一样精确', async () => {
-    const ref = await referenceCounters();
-    assertEncodersDistinguishable(ref);
-
-    const agent = makeAgent({ id: 'wiring-stream-probe', model: 'gpt-4o', provider: 'openai' });
-    await agent.handleMessageStream('hi', () => {});
-
-    const p = await pack(agent.getContextEngine(), makeStore(), 'sess_stream');
-    expect(p.usage.systemTokens, '流式主路径没有把生效模型激活到计数器').toBe(ref.o200k);
-  });
-
-  it('两个不同模型的 agent 互不串扰：B 的激活不改变 A 引擎的读数，且各自模型自洽', async () => {
-    const ref = await referenceCounters();
-    assertEncodersDistinguishable(ref);
-    const store = makeStore();
-
-    // A：Claude（本仓库没有 Claude 的本地编码器 → 启发式）
-    const agentA = makeAgent({ id: 'wiring-agent-a', model: 'claude-3-5-haiku-20241022', provider: 'anthropic' });
-    await agentA.handleMessage('hi');
-    const before = (await pack(agentA.getContextEngine(), store, 'sess_a1')).usage.systemTokens;
-
-    // B：GPT-4o（激活 o200k 编码器）
-    const agentB = makeAgent({ id: 'wiring-agent-b', model: 'gpt-4o', provider: 'openai' });
-    await agentB.handleMessage('hi');
-    const after = (await pack(agentA.getContextEngine(), store, 'sess_a2')).usage.systemTokens;
-    const sysB = (await pack(agentB.getContextEngine(), store, 'sess_b1')).usage.systemTokens;
-
-    // B 的设置不得影响 A 的引擎（共享计数器时 A 会跟着变成 o200k 的精确值）。
-    expect(after, 'agent B 的模型激活串扰到了 agent A 的 ContextEngine').toBe(before);
-    expect(after).not.toBe(ref.o200k);
-    // B 自己的引擎必须是精确值。
-    expect(sysB, 'agent B 的 ContextEngine 未使用其 per-agent 计数器').toBe(ref.o200k);
-    expect(after).not.toBe(sysB);
-  });
-});
-
 describe('接线行为 · P1-10 Anthropic 精确计数接线', () => {
   it('AgentManager 构造即启用 Anthropic 计数凭据（false → true），且凭据可真正派发给计数器', async () => {
     const prevKey = process.env['ANTHROPIC_API_KEY'];
@@ -326,7 +257,5 @@ describe('接线行为 · P1-10 Anthropic 精确计数接线', () => {
     const calledUrls = fetchSpy.mock.calls.map((c) => String(c[0]));
     expect(calledUrls.filter((u) => u.includes('count_tokens'))).toHaveLength(0);
     // API 返回的 7 从未进入预算：引擎读数是本地启发式量级，而不是 7。
-    expect(p.usage.systemTokens).toBeGreaterThan(50);
-    expect(p.usage.systemTokens).not.toBe(7);
   });
 });

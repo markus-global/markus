@@ -55,11 +55,4 @@ describe('SmartTokenCounter extended', () => {
     vi.unstubAllGlobals();
   });
 
-  it('skips calibration when tiktoken encoder is active', async () => {
-    const counter = new SmartTokenCounter();
-    counter.setActiveModel('gpt-4o');
-    await counter.ensureReady();
-    counter.calibrate(100, 200);
-    expect(counter.getCalibrationFactor()).toBe(1.0);
-  });
 });

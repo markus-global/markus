@@ -5,6 +5,14 @@ const log = createLogger('token-counter');
 export interface TokenCounter {
   countTokens(text: string): number;
   countMessageTokens(content: string, role?: string): number;
+  /**
+   * Which path produced the most recent number.
+   *
+   * Diagnostic, not behaviour: the budget math is only as good as the counter,
+   * and "the estimate moved between restarts" is otherwise indistinguishable
+   * from "the content changed". Recording the path turns a guess into a fact.
+   */
+  mode?(): 'tiktoken' | 'heuristic';
 }
 
 const CJK_RANGE = /[\u4e00-\u9fff\u3400-\u4dbf\u3000-\u303f\uff00-\uffef\u2e80-\u2eff\u3100-\u312f\u31a0-\u31bf\ufe30-\ufe4f]/g;
@@ -49,8 +57,13 @@ function getTiktokenEncodingName(model: string): string | null {
  * 3. Calibrated heuristic fallback for all others
  */
 export class SmartTokenCounter implements TokenCounter {
-  private calibrationSamples: Array<{ estimated: number; actual: number }> = [];
-  private calibrationFactor = 1.0;
+
+  /** Path used by the most recent count (see `mode()`). */
+  private lastMode: 'tiktoken' | 'heuristic' = 'heuristic';
+
+  mode(): 'tiktoken' | 'heuristic' {
+    return this.lastMode;
+  }
   private anthropicApiKey?: string;
   private anthropicBaseUrl: string;
   private activeModel = '';
@@ -129,7 +142,9 @@ export class SmartTokenCounter implements TokenCounter {
     const enc = this.resolveEncoder();
     if (enc) {
       try {
-        return enc.encode(text).length;
+        const n = enc.encode(text).length;
+        this.lastMode = 'tiktoken';
+        return n;
       } catch {
         // fall through to heuristic
       }
@@ -142,24 +157,28 @@ export class SmartTokenCounter implements TokenCounter {
     const enc = this.resolveEncoder();
     if (enc) {
       try {
-        return enc.encode(content).length + overhead;
+        const n = enc.encode(content).length + overhead;
+        this.lastMode = 'tiktoken';
+        return n;
       } catch {
         // fall through
       }
     }
+    this.lastMode = 'heuristic';
     let chars = content.length + overhead;
     if (role === 'assistant') chars += 5;
     const ratio = cjkRatio(content);
     const charsPerToken = 4 - ratio * 2.5;
     const raw = Math.ceil(chars / charsPerToken);
-    return Math.ceil(raw * this.calibrationFactor);
+    return raw;
   }
 
   private heuristicCount(text: string): number {
+    this.lastMode = 'heuristic';
     const ratio = cjkRatio(text);
     const charsPerToken = 4 - ratio * 2.5;
     const raw = Math.ceil(text.length / charsPerToken);
-    return Math.ceil(raw * this.calibrationFactor);
+    return raw;
   }
 
   /**
@@ -195,37 +214,7 @@ export class SmartTokenCounter implements TokenCounter {
    * Feed actual API-returned token counts to calibrate the heuristic.
    * Call this after every LLM response with the estimated vs actual values.
    */
-  calibrate(estimated: number, actual: number): void {
-    if (estimated <= 0 || actual <= 0) return;
-    // Skip calibration when using tiktoken (already exact)
-    if (this.tiktokenEncoder) return;
 
-    this.calibrationSamples.push({ estimated, actual });
-    if (this.calibrationSamples.length > 50) {
-      this.calibrationSamples.shift();
-    }
-
-    let sumRatio = 0;
-    for (const s of this.calibrationSamples) {
-      sumRatio += s.actual / s.estimated;
-    }
-    this.calibrationFactor = sumRatio / this.calibrationSamples.length;
-
-    if (this.calibrationFactor < 0.5) this.calibrationFactor = 0.5;
-    if (this.calibrationFactor > 2.0) this.calibrationFactor = 2.0;
-
-    if (this.calibrationSamples.length % 10 === 0) {
-      log.debug('Token counter calibration updated', {
-        factor: this.calibrationFactor.toFixed(3),
-        samples: this.calibrationSamples.length,
-        model: this.activeModel,
-      });
-    }
-  }
-
-  getCalibrationFactor(): number {
-    return this.calibrationFactor;
-  }
 
   getActiveModel(): string {
     return this.activeModel;

@@ -345,7 +345,6 @@ export {
   type CapabilityPack,
   type PromptProfile,
 } from './capability-packs.js';
-export { evaluatePromptAfford, ensureAffordablePromptPack } from './afford-guard.js';
 export { shouldEnterDeepSleep, nextDeepSleepIntervalMs } from './deep-sleep.js';
 export {
   shouldDistillTask,

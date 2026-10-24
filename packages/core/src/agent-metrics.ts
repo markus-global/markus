@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createLogger } from '@markus/shared';
+import { cacheDenominator } from './llm/provider-helpers.js';
 
 const log = createLogger('agent-metrics');
 
@@ -110,6 +111,10 @@ interface AuditCounters {
   compressionCount: number;
   cacheReadTokens: number;
   cacheWriteTokens: number;
+  /** Provider-aware prompt-side total over REPORTED samples only. */
+  cacheDenominatorTotal: number;
+  /** Cache reads over REPORTED samples only (matches the denominator above). */
+  cacheReadReported: number;
   turnsCompleted: number;
   nonChatTurns: number;
   emptyTurns: number;
@@ -134,6 +139,7 @@ function freshCounters(): AuditCounters {
     todayCutoffDate: new Date().toISOString().slice(0, 10),
     compressionCount: 0,
     cacheReadTokens: 0, cacheWriteTokens: 0,
+    cacheDenominatorTotal: 0, cacheReadReported: 0,
     turnsCompleted: 0, nonChatTurns: 0, emptyTurns: 0, endTurnTurns: 0,
     promptTokensReported: 0,
   };
@@ -241,7 +247,19 @@ export class AgentMetricsCollector {
       // locally-derived compatibility value. Only the former counts as a
       // sample; the cache-hit denominator below uses reported values only.
       const reported = event.inputTokens !== undefined;
-      if (reported) c.promptTokensReported++;
+      if (reported) {
+        c.promptTokensReported++;
+        // Same denominator as the per-call metric and the sliding window — one
+        // definition of "prompt side", so the cumulative number cannot drift
+        // away from the windowed one.
+        c.cacheReadReported += event.cacheReadTokens ?? 0;
+        c.cacheDenominatorTotal += cacheDenominator({
+          provider: event.provider,
+          promptTokens: event.inputTokens ?? 0,
+          cacheReadTokens: event.cacheReadTokens,
+          cacheWriteTokens: event.cacheWriteTokens,
+        });
+      }
 
       // Per-session sliding window (only when a session id is supplied).
       if (event.sessionId) {
@@ -360,7 +378,9 @@ export class AgentMetricsCollector {
     // The cumulative field below keeps the historical OpenAI-shaped formula to
     // avoid changing existing numbers; the windowed metric applies the
     // provider-aware denominator.
-    const cacheHitRate = c.promptTokens > 0 ? Math.min(1, c.cacheReadTokens / c.promptTokens) : 0;
+    const cacheHitRate = c.cacheDenominatorTotal > 0
+      ? Math.min(1, c.cacheReadReported / c.cacheDenominatorTotal)
+      : 0;
     const window = this.computeWindowStats();
     const perTurnCostUsd = c.turnsCompleted > 0 ? c.estimatedCost / c.turnsCompleted : 0;
     return {
@@ -405,11 +425,9 @@ export class AgentMetricsCollector {
    * hit-rate look lower, never artificially higher.
    */
   private promptDenominator(sample: UsageWindowSample): number {
-    const p = (sample.provider ?? '').toLowerCase();
-    const anthropicLike = p.includes('anthropic') || p.includes('claude');
-    return anthropicLike
-      ? sample.promptTokens + sample.cacheReadTokens + sample.cacheWriteTokens
-      : sample.promptTokens;
+    // Delegates to the ONE shared definition (provider-helpers) so the windowed
+    // and per-call metrics can never disagree about what a prompt is.
+    return cacheDenominator(sample);
   }
 
   /**
@@ -454,7 +472,7 @@ export class AgentMetricsCollector {
     completionTokens: number;
     cacheReadTokens: number;
     cacheWriteTokens: number;
-    cacheHitRate: number; // 0..1 (legacy: uses 70/30 fallback denominator)
+    cacheHitRate: number; // 0..1 (provider-aware, reported samples only)
     /** Reported-only windowed cache-hit rate; null when no reported samples. */
     cacheHitRateWindow: number | null;
     /** Reported samples backing `cacheHitRateWindow`; 0 ⇒ provider reported nothing. */
@@ -473,7 +491,14 @@ export class AgentMetricsCollector {
   } {
     const c = this.counters;
     const promptTokens = c.promptTokens || Math.round(c.totalTokens * 0.7);
-    const cacheHitRate = promptTokens > 0 ? Math.min(1, c.cacheReadTokens / promptTokens) : 0;
+    // Same denominator as `getMetrics` and the windowed metric: provider-aware,
+    // reported samples only. The previous formula divided cumulative reads by a
+    // 70/30-ESTIMATED prompt — a third definition of one invariant, which is why
+    // an Anthropic call could read 80% / 100% / 400% depending on which accessor
+    // you asked. One invariant, one formula.
+    const cacheHitRate = c.cacheDenominatorTotal > 0
+      ? Math.min(1, c.cacheReadReported / c.cacheDenominatorTotal)
+      : 0;
     const window = this.computeWindowStats();
 
     return {

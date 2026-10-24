@@ -1,6 +1,7 @@
 import type { AgentToolHandler } from '../agent.js';
 import { createLogger, getTextContent } from '@markus/shared';
 import type { IMemoryStore } from '../memory/types.js';
+import { resetAllFileReadCaches } from './file.js';
 
 const log = createLogger('session-tools');
 
@@ -469,6 +470,13 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
         });
       }
       const noop = res.flushedCount === 0;
+
+      // A real compaction rewrote history, so the agent's earlier file reads may
+      // no longer be in its context. `file_read` dedupe answers "unchanged, you
+      // already have it" — which becomes a LIE the moment history is rewritten.
+      // Reset it here, at the one place that knows compaction actually happened.
+      if (!noop) resetAllFileReadCaches();
+
       return JSON.stringify({
         status: 'ok',
         flushedCount: res.flushedCount,
