@@ -260,6 +260,33 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
   const [loadingApprovalsMore, setLoadingApprovalsMore] = useState(false);
   const [responding, setResponding] = useState<string | null>(null);
   const [modalApproval, setModalApproval] = useState<ApprovalInfo | null>(null);
+  /**
+   * request_user_input 的弹窗 —— **必须自己弹**，不能只落到铃铛里。
+   *
+   * 为什么：它是一道阻断题（agent 的回合就停在那里等你）。铃铛里的列表要求用户
+   * 主动点开铃铛才能发现 —— 等于把“agent 卡死”藏在一个没人看的入口里。
+   * 工具审批的同类阻断题在 Team Chat 里有 banner + 自动弹窗（见 Team.tsx），而
+   * request_user_input 之前只剩通知条目 → 用户看到的就是“以前有弹窗，现在只进通知”。
+   *
+   * 两个纪律：
+   *  ① **每个审批 id 只自动弹一次**（用户关掉后不再骚扰，铃铛条目与聊天内横幅仍是入口）；
+   *  ② **页面加载时不弹存量的旧请求**：首帧只把已有 pending 登记为“已见过”，只有
+   *     本次会话中新到达的才弹 —— 否则每次刷新都会凭空截图一堆陈年问题。
+   */
+  const seenInputApprovalIds = useRef<Set<string> | null>(null);
+  useEffect(() => {
+    if (embeddedMode) return; // 通知页本身就是列表，不抢焦点
+    const pendingInputs = approvals.filter(a => a.status === 'pending' && isUserInputApproval(a));
+    if (seenInputApprovalIds.current === null) {
+      // 首帧只登记，不弹：存量 pending 不是“刚刚发生的请求”。
+      seenInputApprovalIds.current = new Set(pendingInputs.map(a => a.id));
+      return;
+    }
+    const fresh = pendingInputs.find(a => !seenInputApprovalIds.current!.has(a.id));
+    for (const a of pendingInputs) seenInputApprovalIds.current.add(a.id);
+    if (!fresh || modalApproval) return; // 已经在读一条，不叠弹窗
+    setModalApproval(fresh);
+  }, [approvals, modalApproval, embeddedMode]);
   const [adjustingId, setAdjustingId] = useState<string | null>(null);
   const [freeformTexts, setFreeformTexts] = useState<Record<string, string>>({});
   const [unreadCount, setUnreadCount] = useState(0);
