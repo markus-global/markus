@@ -99,7 +99,7 @@ import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useUnreadCounts, useAgentUnread } from '../hooks/useUnreadCounts.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
-import { useConversationBuffers, makeConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
+import { useConversationBuffers, makeConvKey, isSessionScopedConvKey, NEW_CHAT_PLACEHOLDER_ID } from '../hooks/useConversationBuffers.ts';
 import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStream.ts';
 // (chatStore 的客户端 agent-busy 近似已整体删除 —— 见 lib/sessionStreamState.ts)
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
@@ -715,8 +715,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   // Selections sent from the right-side resource panel, prepended to the next message.
   const [chatContext, setChatContext] = useState<Array<{ id: string; label: string; content: string }>>([]);
-  const [thinkingAgents, setThinkingAgents] = useState<Array<{ id: string; name: string; avatarUrl?: string }>>([]);
-  const thinkingTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 400;
@@ -2740,10 +2738,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
-    thinkingTimeoutRef, sessionSwitchSeqRef,
+    sessionSwitchSeqRef,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
     setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
-    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds: writeWindowBounds, setThinkingAgents,
+    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds: writeWindowBounds,
     makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
     t,
   });
@@ -2969,7 +2967,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       sessionTabsBuffer.set(prevKey, openSessionTabs);
       // 记下"离开时看的是哪个会话"。必须走 setActiveSession（而非直写指针）——
       // 指针的写入路径只有一条，见 ConversationBufferManager 的模型说明。
-      if (activeSessionId) setActiveSession(prevKey, activeSessionId);
+      // 只有「会话态视图」（direct 的某个 session tab）才谈得上「离开时在看哪个会话」。
+      // `ch:*` / `dm:*` 没有会话概念：切离群聊时 `activeSessionId` 还是上一个 direct 会话的
+      // id，把它钉到频道 key 上会让之后每一条群聊写入落进那个 agent 的私聊 buffer ——
+      // 也就是「我发到群里的消息出现在与 agent 的主会话里」（且刷新即消失）。
+      if (activeSessionId && isSessionScopedConvKey(prevKey)) setActiveSession(prevKey, activeSessionId);
       // …and where the user actually was in it, per session tab. The transcript
       // of the outgoing view is still on screen at this point, so the anchor is
       // exact (see lib/chatScrollRestore.ts).
@@ -3226,16 +3228,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         setShowScrollBtn(true);
       }
 
-      if (senderType === 'agent' && key === `ch:${activeChannel}`) {
-        setThinkingAgents(prev => {
-          const next = prev.filter(a => a.id !== wsSenderId);
-          if (next.length === 0 && thinkingTimeoutRef.current) {
-            clearTimeout(thinkingTimeoutRef.current);
-            thinkingTimeoutRef.current = null;
-          }
-          return next;
-        });
-      }
     });
     return unsub;
   }, [previewMode, updateConvMsgs, authUser?.id, activeChannel]);
@@ -3260,27 +3252,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     });
     return unsub;
   }, [previewMode, chatMode, activeChannel, loadChannelMessages]);
-
-  // Remove agent from thinkingAgents when it decides not to respond
-  useEffect(() => {
-    if (previewMode) return;
-    const unsub = wsClient.on('chat:agent_no_response', (event) => {
-      const p = event.payload;
-      const msgChannel = (p['channel'] as string) ?? '';
-      const agentId = (p['agentId'] as string) ?? '';
-      if (msgChannel && agentId && `ch:${activeChannel}` === `ch:${msgChannel}`) {
-        setThinkingAgents(prev => {
-          const next = prev.filter(a => a.id !== agentId);
-          if (next.length === 0 && thinkingTimeoutRef.current) {
-            clearTimeout(thinkingTimeoutRef.current);
-            thinkingTimeoutRef.current = null;
-          }
-          return next;
-        });
-      }
-    });
-    return unsub;
-  }, [previewMode, activeChannel]);
 
   // Session title renamed (agent session_rename tool or another tab) — keep the
   // History panel list + open session tabs in sync without a full reload.
@@ -5699,32 +5670,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               );
             })}
           </div>
-          )}
-          {chatMode === 'channel' && thinkingAgents.length > 0 && (
-            <div className="flex flex-col gap-1.5 py-2">
-              {thinkingAgents.map(ta => (
-                <div
-                  key={ta.id}
-                  className="flex items-center gap-2.5 px-3 py-1.5 rounded-lg cursor-pointer hover:bg-surface-elevated/60 transition-colors group/think"
-                  onClick={() => { setChatMode('direct'); setSelectedAgent(ta.id); setMainTab('chat'); }}
-                >
-                  <div className="relative shrink-0">
-                    <Avatar name={ta.name} avatarUrl={ta.avatarUrl} size={28} bgClass="bg-brand-500/15 text-brand-600" />
-                    <span className="absolute -bottom-0.5 -right-0.5 w-2.5 h-2.5 rounded-full bg-blue-500 animate-pulse ring-2 ring-surface-primary" />
-                  </div>
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="text-sm font-medium text-fg-secondary truncate">{ta.name}</span>
-                    <span className="flex items-center gap-0.5">
-                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" />
-                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.15s' }} />
-                      <span className="w-1 h-1 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: '0.3s' }} />
-                    </span>
-                    <span className="text-xs text-fg-tertiary">{t('page.agentThinking')}</span>
-                  </div>
-                  <span className="ml-auto text-[10px] text-fg-tertiary opacity-0 group-hover/think:opacity-100 transition-opacity">→</span>
-                </div>
-              ))}
-            </div>
           )}
           <div ref={messagesEnd} />
 

@@ -100,6 +100,7 @@ import { requestHistoryWindow } from './history-window.js';
 import {
   normalizeTurnSessionHint,
   describeTurnSessionHint,
+  channelMemorySessionId,
   hintCarriesDbIdentity,
   looksLikeDbSessionId,
   type TurnSessionHint,
@@ -1458,6 +1459,10 @@ export class Agent {
           dbSessionId: options?.dbSessionId,
           sessionId: options?.sessionId,
           sourceType,
+          // 频道/群聊轮次只有这一个能表明身份的东西。漏传它 → hint 退化成 `unknown`
+          // （日志里毎条群消息都告警一次），会话只能靠下游分支兜底，一旦某条分支不兜
+          // 就落到用户 1:1 私聊里。
+          channelKey: options?.channelKey,
         }),
         channelContext: options?.channelContext,
         channelKey: options?.channelKey,
@@ -2376,7 +2381,7 @@ export class Agent {
             }
           }
           const msgChannelKey = extra.channelKey as string | undefined;
-          const channelSessionId = msgChannelKey ? `channel_${msgChannelKey}_${this.id}` : undefined;
+          const channelSessionId = msgChannelKey ? channelMemorySessionId(this.id, msgChannelKey) : undefined;
           // In-session A2A delegation: if this message replies to a conversation the
           // agent is awaiting inline (registered via agent_send_message reply_in_session),
           // route the reply into the ORIGIN session so the delegating thread continues
@@ -2958,6 +2963,11 @@ export class Agent {
       case 'new':
         return undefined;
       case 'system':
+        // 频道/群聊轮次跑在它自己的会话里（与 `resolveTurnSession` 同源）。
+        if (hint.role === 'channel' && hint.key) {
+          return channelMemorySessionId(this.id, hint.key);
+        }
+        return this.currentSessionId;
       case 'unknown':
       default:
         // 没有会话身份 → `resolveTurnSession` 保持当前会话，这一轮就跑在它里面。
@@ -2978,6 +2988,16 @@ export class Agent {
         break;
       case 'system':
         // 系统/内部会话由各自分支决定 sessionId，这里不干预当前会话。
+        // 例外：**频道/群聊**（role: 'channel'）有确定身份，必须在这里就切到它自己的
+        // 记忆会话。交给下游分支兜底的后果是：那一轮其实已经跑在 agent 当前的会话里
+        // （用户 1:1 私聊）——私聊上下文进群聊回复、群消息落进私聊 transcript，
+        // 刷新后消失（DB 里从来没有这条），这就是“群里说的话莫名出现在主会话”。
+        if (hint.role === 'channel' && hint.key) {
+          this.currentSessionId = this.memory.getOrCreateSession(
+            this.id,
+            channelMemorySessionId(this.id, hint.key),
+          ).id;
+        }
         break;
       case 'memory':
         // 继续指定的内存会话（`sess_*`）——异步回调回到发起它的那一轮。

@@ -127,6 +127,20 @@ export function normalizeTurnSessionHint(input: TurnSessionHintInput): TurnSessi
   };
 }
 
+/**
+ * 频道/群聊轮次的**记忆会话 id**——唯一命名规则。
+ *
+ * 为什么必须有这条规则：频道轮次既没有 DB 会话（`cs_*`），也没有用户点选的 session id，
+ * 早前只有 `processMailboxItem` 的下游分支临时拼出这个 id；一旦上游解析（`resolveTurnSession`）
+ * 没认出频道身份，这一轮就会**落到 agent 当前的会话里**——也就是用户与它的 1:1 私聊
+ * （实测：群里发一句话，agent 侧“主会话”立刻多出这条消息的痕迹）。
+ *
+ * 所以：命名只在这里定义，上游解析与下游默认值共用它 —— 一个事实一个写者。
+ */
+export function channelMemorySessionId(agentId: string, channelKey: string): string {
+  return `channel_${channelKey}_${agentId}`;
+}
+
 /** 人类可读的一句话描述（用于日志/告警，便于定位是哪个入口漏表态）。 */
 export function describeTurnSessionHint(hint: TurnSessionHint): string {
   switch (hint.kind) {

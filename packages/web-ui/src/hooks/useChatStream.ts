@@ -99,7 +99,6 @@ export interface ChatStreamContext {
   decrementSending: (k: string) => number;
   loadAndDisplay: (s: string, k: string, f: () => Promise<{ messages: ChatMsg[]; hasMore: boolean; oldestCursor: string | null }>) => Promise<{ count: number; hasMore: boolean; oldestCursor: string | null }>;
   // Team-owned refs shared with non-stream code
-  thinkingTimeoutRef: RefObject<ReturnType<typeof setTimeout> | null>;
   sessionSwitchSeqRef: RefObject<number>;
   // Setters (stable)
   setSending: (b: boolean) => void;
@@ -115,7 +114,6 @@ export interface ChatStreamContext {
   setSessions: (s: ChatSessionInfo[] | ((p: ChatSessionInfo[]) => ChatSessionInfo[])) => void;
   setLoadingChat: (b: boolean) => void;
   setWindowBounds: (bufferId: string, bounds: WindowBounds) => void;
-  setThinkingAgents: (a: Array<{ id: string; name: string; avatarUrl?: string }> | ((p: Array<{ id: string; name: string; avatarUrl?: string }>) => Array<{ id: string; name: string; avatarUrl?: string }>)) => void;
   // Helpers
   makeConvKey: (m: ChatMode, a: string, c: string, d?: string) => string;
   makeDmChannel: (userId: string, dmUserId: string) => string;
@@ -186,10 +184,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     beginStream, endStream, abortStream,
     clearStreamSession, setStreamSession, getStreamSession, setActiveSession,
     incrementSending, decrementSending, loadAndDisplay,
-    thinkingTimeoutRef, sessionSwitchSeqRef,
+    sessionSwitchSeqRef,
     setSending, setActivities, setInput, setChatContext, setPendingImages,
     setMentionDropdown, setChatReplyTo, setActiveSessionId, setStoredActiveSession,
-    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds, setThinkingAgents,
+    setOpenSessionTabs, setSessions, setLoadingChat, setWindowBounds,
     makeConvKey, makeDmChannel, addRecentMsgId, resumeChatScrollFollow, loadSessions,
   } = ctx;
   const { t } = ctx;
@@ -952,23 +950,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // Mentioned agents are instructed to respond; others may stay silent.
       const mentions = parseMentionNames(text);
       const gc = volatile.groupChats.find(g => g.channelKey === volatile.activeChannel);
-      if (volatile.activeChannel!.startsWith('group:')) {
-        const allGroupAgents: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-        if (gc?.members) {
-          for (const m of gc.members) {
-            if (m.type === 'agent') {
-              const a = volatile.agents.find(ag => ag.id === m.id);
-              if (a) allGroupAgents.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
-            }
-          }
-        }
-        if (allGroupAgents.length > 0) {
-          if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
-          setThinkingAgents(allGroupAgents);
-          thinkingTimeoutRef.current = setTimeout(() => setThinkingAgents([]), 120_000);
-        }
-      }
-
       try {
         // Persist/send only the user's text. Reply context is carried via replyToId
         // (server prefixes [REPLY] for the agent; UI shows the quote header from metadata).
@@ -996,8 +977,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           id: `err_${Date.now()}`, sender: 'agent', text: friendly,
           time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
         }]);
-        if (thinkingTimeoutRef.current) { clearTimeout(thinkingTimeoutRef.current); thinkingTimeoutRef.current = null; }
-        setThinkingAgents([]);
       }
       decrementSending(sendKey);
       if (currentConvKeyRef.current === sendKey) setSending(false);
