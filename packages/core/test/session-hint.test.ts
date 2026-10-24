@@ -21,9 +21,38 @@ import {
   normalizeTurnSessionHint,
   looksLikeDbSessionId,
   describeTurnSessionHint,
+  channelMemorySessionId,
   hintCarriesDbIdentity,
   type TurnSessionHint,
 } from '../src/session-hint.js';
+
+describe('channelMemorySessionId — 频道轮次的会话命名（唯一规则）', () => {
+  it('同一 (agent, channel) 恒定得到同一个 id（多轮群聊不得失忆）', () => {
+    const a = channelMemorySessionId('agt_a', 'group:custom:gc_1');
+    const b = channelMemorySessionId('agt_a', 'group:custom:gc_1');
+    expect(a).toBe(b);
+  });
+
+  it('不同 agent / 不同频道互不相同（不串台）', () => {
+    const base = channelMemorySessionId('agt_a', 'group:custom:gc_1');
+    expect(channelMemorySessionId('agt_b', 'group:custom:gc_1')).not.toBe(base);
+    expect(channelMemorySessionId('agt_a', 'group:custom:gc_2')).not.toBe(base);
+  });
+
+  it('不会被当成分会话态视图的 key（不是 ch:* / dm:*，也不是 cs_*）', () => {
+    const id = channelMemorySessionId('agt_a', 'group:custom:gc_1');
+    expect(id.startsWith('ch:')).toBe(false);
+    expect(id.startsWith('dm:')).toBe(false);
+    expect(looksLikeDbSessionId(id)).toBe(false);
+  });
+
+  it('channelKey 在 sendMessage 入口参与归一 —— 不再退化成 unknown', () => {
+    // 这就是 2026-10-24 的事故形态：群消息带着 channelKey，但入口没把它交给归一函数，
+    // 于是 hint=unknown（“未提供任何会话身份”），会话只能靠下游兜底。
+    const hint = normalizeTurnSessionHint({ channelKey: 'group:custom:gc_1', sourceType: 'human_chat' });
+    expect(hint).toEqual({ kind: 'system', role: 'channel', key: 'group:custom:gc_1' });
+  });
+});
 
 describe('normalizeTurnSessionHint — 优先级链', () => {
   it('显式 sessionHint 最优先，完全覆盖所有旧字段', () => {
