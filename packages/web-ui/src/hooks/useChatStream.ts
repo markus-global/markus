@@ -401,7 +401,15 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         ? msgs.findIndex(m => m.id === last.id)
         : -1;
       const reuseBubble = reuseIdx >= 0 ? msgs[reuseIdx] : undefined;
-      const agentMsgId = reuseBubble ? reuseBubble.id : `reattach_${Date.now()}`;
+      // 新建气泡的身份必须**确定性**：同一轮的多帧渲染要落在同一个 React key 上。
+      //
+      // 用 `Date.now()` 会让每一次加载 / 重连都铸一个新 id：React 视作「旧节点删除 +
+      // 新节点插入」，整条气泡的 DOM 被重建（滚动、图片、代码块全部重排），用户看到
+      // 的就是「内容变了又变回来」的闪烁——刷新时尤其明显。
+      // 服务端的 `status.messageId`（cm_stream_*）在**同一轮内恒定**、跨轮不同，
+      // 正是这条气泡该用的稳定身份。
+      const stableTurnId = status.messageId || status.streamId || sessionId;
+      const agentMsgId = reuseBubble ? reuseBubble.id : `reattach_${stableTurnId}`;
       if (!reuseBubble) {
         updateConvMsgs(convKey, prev => [
           ...prev,
