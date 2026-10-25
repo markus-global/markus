@@ -3742,16 +3742,12 @@ export class APIServer {
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
-      const agentIdForStream = this.storage.chatSessionRepo.getSession(sessionId)?.agentId;
-      const live = agentIdForStream
-        ? this.activeStreams.getByAgentSession(agentIdForStream, sessionId)
-        : null;
-      const liveStreamId = live?.status === 'streaming' ? live.streamId : null;
-      // Heal orphan streaming bubbles when this session has no live generation
-      // (covers the SSE error race and any path that left isStreaming:true).
-      try {
-        this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
-      } catch { /* best-effort */ }
+      // 读路径**不做**任何「清理幽灵标志」的猜测：存活权威在 ActiveStreamRegistry，
+      // 读历史就只读历史。旧实现在这里按 `metadata.isStreaming` 推断哪些行是孤儿
+      // 并就地改写 —— 两个方向都错过：metadata 被外置成 blob 指针时 SQL 的
+      // json_extract 静默失效（长期侥幸没出事），而它一旦生效，又会把正在流式的
+      // 那一行误清成 isStopped，前端随即失去重连目标。机制已整个删除，
+      // 历史遗留标志由启动时的 clearOrphanStreamingFlags() 一次性收敛。
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
       // History pages ship a LEAN view of the execution trace: full tool
       // arguments/results and intermediate text are 44x the prose and are only

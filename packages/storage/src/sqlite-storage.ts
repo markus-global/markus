@@ -2567,8 +2567,17 @@ export class SqliteChatSessionRepo {
 
   /**
    * Upsert the in-flight assistant bubble for a streaming turn.
-   * If the latest assistant message is marked `isStreaming`, update it in place
-   * so refresh/partial/final persist does not stack duplicate rows.
+   * Continues the SAME turn in place so refresh / partial / final persist does not
+   * stack duplicate rows.
+   *
+   * 身份判据是 `streamId`，不是 `isStreaming`。
+   *
+   * `isStreaming` 是**存活声明**，权威在 ActiveStreamRegistry，DB 里的值恒为
+   * false（断连快照不再写 true）。拿它兼做身份用，一旦存活语义被收走，upsert
+   * 就退化成 append —— 一个回合长出多条 assistant 行（这正是历史上「重连一次
+   * 多一个气泡」的根源）。身份必须用身份字段回答。
+   *
+   * 兼容旧行：历史数据里可能仍带 isStreaming:true，同样按同一轮续写处理。
    */
   upsertStreamingAssistantMessage(
     sessionId: string,
@@ -2585,17 +2594,20 @@ export class SqliteChatSessionRepo {
       )
       .get(sessionId) as { id: string; metadata: string | null } | undefined;
 
-    let existingStreaming = false;
+    let sameTurn = false;
     if (row?.metadata) {
       try {
-        const meta = JSON.parse(row.metadata) as { isStreaming?: boolean };
-        existingStreaming = !!meta.isStreaming;
+        const prev = JSON.parse(row.metadata) as { isStreaming?: boolean; streamId?: string };
+        const incomingStreamId = (metadata as { streamId?: string } | undefined)?.streamId;
+        sameTurn = !!incomingStreamId && prev.streamId === incomingStreamId;
+        // 旧行兼容：曾经用 isStreaming 当身份，别让它退化成 append。
+        if (!sameTurn && prev.isStreaming === true) sameTurn = true;
       } catch {
-        existingStreaming = false;
+        sameTurn = false;
       }
     }
 
-    if (row && existingStreaming) {
+    if (row && sameTurn) {
       const ts = now();
       this.db
         .prepare(
@@ -2887,40 +2899,6 @@ export class SqliteChatSessionRepo {
   }
 
   /**
-   * Clear `isStreaming` on assistant rows for a session that are not the
-   * currently live stream (used when loading history while agent is idle).
-   */
-  clearOrphanStreamingFlagsForSession(sessionId: string, liveStreamId?: string | null): number {
-    const rows = this.db
-      .prepare(
-        `SELECT id, metadata FROM chat_messages
-         WHERE session_id = ? AND role = 'assistant'
-           AND metadata IS NOT NULL
-           AND json_extract(metadata, '$.isStreaming') = 1`,
-      )
-      .all(sessionId) as Array<{ id: string; metadata: string }>;
-
-    if (rows.length === 0) return 0;
-
-    const update = this.db.prepare('UPDATE chat_messages SET metadata = ? WHERE id = ?');
-    let cleared = 0;
-    for (const row of rows) {
-      try {
-        const meta = JSON.parse(row.metadata) as Record<string, unknown>;
-        if (meta.isStreaming !== true) continue;
-        if (liveStreamId && meta.streamId === liveStreamId) continue;
-        meta.isStreaming = false;
-        if (meta.isError !== true) meta.isStopped = true;
-        update.run(JSON.stringify(meta), row.id);
-        cleared++;
-      } catch {
-        /* skip malformed metadata */
-      }
-    }
-    return cleared;
-  }
-
-  /**
    * Migrate legacy assistant messages that lack segments metadata.
    * Parses raw text content to extract tool calls and clean text into proper segments.
    * Should be called once at startup.
@@ -2931,7 +2909,12 @@ export class SqliteChatSessionRepo {
         `SELECT id, content, metadata, created_at FROM chat_messages
          WHERE role = 'assistant'
            AND (metadata IS NULL OR metadata = 'null' OR json_extract(metadata, '$.segments') IS NULL)
-           AND content IS NOT NULL AND content != ''`
+           AND content IS NOT NULL AND content != ''
+           -- 外置指针的行走 JS 还原层，不在这里拿 content 重建。
+           -- 必须显式挡 NULL：instr(NULL, x) 结果是 NULL，而 NULL = 0 也是 NULL
+           -- 而非 true —— 只写 AND instr(metadata, '"$blob"') = 0 会把
+           -- **metadata 为 NULL 的行全部排除**，而那正是最需要迁移的一批。
+           AND (metadata IS NULL OR instr(metadata, '"$blob"') = 0)`
       ).all() as Array<Record<string, unknown>>;
 
       if (rows.length === 0) return 0;
@@ -2952,7 +2935,7 @@ export class SqliteChatSessionRepo {
         if (segments.length === 0) continue;
 
         existingMeta.segments = segments;
-        update.run(JSON.stringify(existingMeta), id);
+        update.run(projectJson(JSON.stringify(existingMeta)), id);
         migrated++;
       }
 
@@ -4724,6 +4707,45 @@ export class SqliteExecutionStreamRepo {
       .prepare('SELECT * FROM execution_stream_logs WHERE source_type = ? AND source_id = ? ORDER BY seq ASC')
       .all(sourceType, sourceId) as Record<string, unknown>[];
     return rows.map(r => this.mapRow(r));
+  }
+
+  /**
+   * 一次取多个 sourceId 的日志，按 sourceId 分组。
+   *
+   * 存在的理由：消息列表要在一次请求里为 N 条消息取过程，逐条 `getBySource`
+   * 就是 N 次 `flush()` + N 次索引查找（实测单次 11ms，36 条就 400ms+，
+   * 把首屏拖慢）。批量版本只 flush 一次、一条 SQL 拿完。
+   */
+  getBySources(
+    sourceType: string,
+    sourceIds: readonly string[],
+    opts?: { flush?: boolean },
+  ): Map<string, ExecutionStreamRow[]> {
+    const out = new Map<string, ExecutionStreamRow[]>();
+    if (sourceIds.length === 0) return out;
+    // 读**已结束**回合的历史日志不需要看到最新缓冲：反而会去抢正在写日志的
+    // 流式写路径。调用方明确传 flush:false 时就跳过（hydrate 走的就是这条）。
+    if (opts?.flush !== false) this.flush();
+    // SQLite 的参数上限是 999；分块避免越界。
+    const CHUNK = 400;
+    for (let i = 0; i < sourceIds.length; i += CHUNK) {
+      const chunk = sourceIds.slice(i, i + CHUNK);
+      const placeholders = chunk.map(() => '?').join(',');
+      const rows = this.db
+        .prepare(
+          `SELECT * FROM execution_stream_logs
+            WHERE source_type = ? AND source_id IN (${placeholders})
+            ORDER BY source_id ASC, seq ASC`,
+        )
+        .all(sourceType, ...chunk) as Record<string, unknown>[];
+      for (const r of rows) {
+        const row = this.mapRow(r);
+        const list = out.get(row.sourceId);
+        if (list) list.push(row);
+        else out.set(row.sourceId, [row]);
+      }
+    }
+    return out;
   }
 
   getMaxSeq(sourceType: string, sourceId: string): number {
