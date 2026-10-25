@@ -133,6 +133,15 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
         }
         return JSON.stringify({
           status: 'dispatched',
+          /**
+           * 投递状态（机器可读）。`queued` = 消息已作为 mailbox item 进入对方队列。
+           *
+           * 不再承诺"对方已被唤醒并会逐条处理"：同一 channelKey 的突发会在 enqueue
+           * 时合并成一个 item（mailbox-system.md §14），`coalesced` 表示这一条被并入了
+           * 对方下一次会处理的那一项。旧实现对自己是否真的唤醒对方无从判断，却仍然
+           * 回答 dispatched —— 那正是 2026-10-25 重复通知事故里发送方被误导的原因。
+           */
+          deliveryState: 'queued' as const,
           conversation_id: conversationId,
           channel_key: channelKey,
           recipient: {

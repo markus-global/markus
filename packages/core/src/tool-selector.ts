@@ -372,7 +372,14 @@ export class ToolSelector {
 
     pushUnique({
       name: 'notify_user',
-      description: 'Send a notification to a human team member. The message appears in the agent chat and as a notification. Write a comprehensive body — the user sees the full content and may reply. Use for status updates, reports, alerts, and findings.',
+      description:
+        'Send a ONE-WAY notification to a human team member (appears in the agent chat + notification bell). '
+        + 'SEMANTICS: notify = inform, do NOT expect a reply. Use it for status updates, reports, alerts and findings — '
+        + 'the user reads it whenever they get to it, and you must NOT wait for it.\n'
+        + 'If you need an answer or a decision before you can continue (an authorization, a scope call, a choice, '
+        + '"I am blocked until someone signs off"), do NOT use this tool — use `request_user_input`, which blocks and returns the answer.\n'
+        + 'Do NOT repeat a notification you already sent: a second copy of the same message adds no information and does not make '
+        + 'an answer arrive sooner. If you are waiting on a reply, the right move is `request_user_input`, not another notification.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -490,7 +497,15 @@ export class ToolSelector {
 
     pushUnique({
       name: 'request_user_input',
-      description: 'Request input or a decision from a human that is NOT already covered by a built-in UI. BLOCKS until they respond. Use for preferences, ambiguous choices, collecting facts, quizzes, or irreversible actions outside entity cards. Supports MULTIPLE questions via questions[], and Markdown in prompts/option labels. If neither questions nor options are provided, defaults to Approve/Reject (reject requires a reason). Do NOT use to approve requirements or tasks — those already have system Approve/Reject buttons (and creation already notifies the human). Do NOT use for routine status updates (use notify_user, or nothing if the system already notified).',
+      description:
+        'Request input or a decision from a human and BLOCK until they respond. '
+        + 'USE THIS WHENEVER YOU CANNOT CONTINUE WITHOUT AN ANSWER / AUTHORIZATION — e.g. "I am blocked, I need one line of approval", '
+        + 'a scope call, an ambiguous choice, a fact only the human has. This is the ONLY correct tool for a question you need answered: '
+        + '`notify_user` does not block and will not bring an answer back, so asking through it leaves you permanently blocked and invites repeated pings. '
+        + 'Supports MULTIPLE questions via questions[], and Markdown in prompts/option labels. '
+        + 'If neither questions nor options are provided, defaults to Approve/Reject (reject requires a reason). '
+        + 'Do NOT use it for routine status updates — those are `notify_user` (or nothing if the system already notified). '
+        + 'Do NOT use it to approve requirements or tasks — those already have system Approve/Reject buttons (and creation already notifies the human).',
       inputSchema: userInputSchema,
     });
 

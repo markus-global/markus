@@ -1056,7 +1056,11 @@ describe('APIServer route handlers', () => {
       const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/a2a`, {
         fromAgentId: AGENT_B, message: 'hello',
       });
+      // A2A 永远异步（mailbox-system.md §11.2）：投递即返回 deliveryId，
+      // 不等对端回复。否则「对端不回」与「对端在思考」在调用方看来无法区分。
       expect(res.status).toBe(200);
+      expect(res.json.state).toBe('queued');
+      expect(res.json.deliveryId).toBeDefined();
     });
 
     it('POST /api/agents/:id/message non-stream', async () => {

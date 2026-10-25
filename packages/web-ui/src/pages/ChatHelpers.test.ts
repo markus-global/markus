@@ -3,6 +3,8 @@ import {
   appendTextToSegments,
   appendThinkingToSegments,
   alignStreamedAgentId,
+  inFlightAgentIdx,
+  resolveTurnBubbleIdx,
   dedupeAdjacentUserMessages,
   dbMsgToChat,
   finalizeAgentMessage,
@@ -795,6 +797,42 @@ describe('alignStreamedAgentId', () => {
     expect(alignStreamedAgentId(msgs, 'a_1', undefined)).toBe(msgs);      // no persisted id
     expect(alignStreamedAgentId(msgs, 'a_1', 'a_1')).toBe(msgs);          // already converged
     expect(alignStreamedAgentId(msgs, undefined, 'cm_1')).toBe(msgs);     // no synthetic row
+  });
+});
+
+/**
+ * 气泡身份 = 回合（2026-10-25 根因修复的负控）。
+ *
+ * 事故：一个回合在界面上长出 3~4 个气泡（思考中 / 执行命令·4 步 / 两条重复的
+ * 20 步·2 失败），而 DB 只有 1 行 assistant —— send-resume 与 reattach 各自
+ * mint 新气泡所致。`inFlightAgentIdx` 是「本回合唯一在飞气泡」的判定点：
+ * 只要它返回 >= 0，任何路径都**必须复用**，不得再创建。
+ */
+describe('inFlightAgentIdx — 一个回合只允许一个在飞气泡', () => {
+  const agent = (id: string, isStreaming = false) =>
+    ({ id, sender: 'agent', text: '', time: '', isStreaming } as never);
+
+  it('返回最后一条在飞 agent 气泡', () => {
+    const msgs = [agent('a_1'), agent('a_2', true), agent('a_3', true)];
+    expect(inFlightAgentIdx(msgs as never)).toBe(2);
+  });
+
+  it('已完结的回复不算在飞（不会把上一轮当成当前回合）', () => {
+    const msgs = [agent('a_1', true), agent('cm_done'), agent('u_1')];
+    expect(inFlightAgentIdx(msgs as never)).toBe(0);
+  });
+
+  it('没有在飞气泡时返回 -1 —— 这是唯一允许创建新气泡的时刻', () => {
+    expect(inFlightAgentIdx([agent('cm_1'), agent('cm_2')] as never)).toBe(-1);
+    expect(inFlightAgentIdx([] as never)).toBe(-1);
+  });
+
+  it('resolveTurnBubbleIdx 在 id 失配时回退到在飞气泡（事件不静默丢失）', () => {
+    const msgs = [agent('cm_old'), agent('a_live', true)];
+    expect(resolveTurnBubbleIdx(msgs as never, 'a_live')).toBe(1);
+    // id 已被 DB heal 换过 → 旧实现 findIndex 未命中就 return prev，事件全丢
+    expect(resolveTurnBubbleIdx(msgs as never, 'a_stale')).toBe(1);
+    expect(resolveTurnBubbleIdx(msgs as never)).toBe(1);
   });
 });
 

@@ -281,19 +281,11 @@ export function clearGhostStreaming(msgs: ChatMsg[]): ChatMsg[] {
 
 /**
  * Converge a locally-streamed agent bubble's SYNTHETIC id to the server-persisted
- * `messageId`, so any later DB load can deduplicate it BY ID (the cache merge
- * keys on identity equality).
+ * `messageId`, so any later DB load can deduplicate it BY ID.
  *
- * A streamed turn has TWO identities until this runs: the client mints an
- * optimistic id (`a_…` / `reattach_…`) at send time while the DB row uses the
- * persisted messageId. If the two never converge, the next DB load keeps BOTH —
- * the local synthetic row and the authoritative DB row — and the reply renders
- * twice. This is the ONE place that bridging happens; every terminal path
- * (done, reattach terminal, poll recovery) routes through it.
- *
- * If the DB version is already present under the persisted id, the local copy is
- * DROPPED instead of renamed (renaming would produce two rows sharing one id).
- * Returns the same array ref when nothing changed, so React can skip a re-render.
+ * 保留理由（2026-10-25 复核）：它解决的是**身份收敛**（合成 id → 持久化 id），
+ * 不是气泡创建。气泡重复的根因在创建侧（send-resume 与 reattach 各自 mint 新泡），
+ * 已由 `inFlightAgentIdx` 收口；把这条也删掉会重新打开「同一回复渲染两次」。
  */
 export function alignStreamedAgentId(
   msgs: ChatMsg[],
@@ -303,6 +295,43 @@ export function alignStreamedAgentId(
   if (!syntheticId || !persistedId || syntheticId === persistedId) return msgs;
   if (msgs.some(m => m.id === persistedId)) return msgs.filter(m => m.id !== syntheticId);
   return msgs.map(m => (m.id === syntheticId ? { ...m, id: persistedId } : m));
+}
+
+/**
+ * 本回合**在飞**的 agent 气泡下标 —— 气泡身份 = 回合，不是合成 id。
+ *
+ * ── 为什么需要它（2026-10-25 根因修复）──────────────────────────────────
+ * 旧实现让每条代码路径自己 mint 一个合成 id（发送 `a_<nonce>`、重连
+ * `reattach_<ts>`），然后所有事件处理器用 `findIndex(m => m.id === agentMsgId)`
+ * 找气泡，**找不到就 `return prev`**（事件静默丢失）；而重连路径在
+ * `!last || last.isError` 时会**再造一个**气泡。于是同一个回合在界面上长出
+ * 2~4 个气泡（老板 2026-10-25 截图：思考中 / 执行命令·4 步 / 两条重复的
+ * 执行命令·20 步·2 失败），而 DB 里只有 1 行 assistant —— 纯粹是前端身份错乱。
+ *
+ * 不变量：**一个回合，最多一个在飞气泡**。谁要往里写，先问它。
+ */
+export function inFlightAgentIdx(msgs: ChatMsg[]): number {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i]!;
+    if (m.sender === 'agent' && m.isStreaming) return i;
+  }
+  return -1;
+}
+
+/**
+ * 事件落点解析：优先按 id，找不到时回退到「本回合最后一个在飞气泡」。
+ *
+ * 只用于**读**（把事件写进哪条气泡），永远不创建气泡 —— 创建只有
+ * `inFlightAgentIdx` 判定后的那一处。旧实现直接 `findIndex(id)` 并在未命中时
+ * `return prev`，事件被静默丢弃；在气泡 id 被 DB heal 换过之后，那之后的每一次
+ * 文本/工具事件都会落空（气泡看起来卡死）。
+ */
+export function resolveTurnBubbleIdx(msgs: ChatMsg[], id?: string): number {
+  if (id) {
+    const i = msgs.findIndex(m => m.id === id);
+    if (i >= 0) return i;
+  }
+  return inFlightAgentIdx(msgs);
 }
 
 // `shouldSweepGhostStreaming` 已删除（2026-10-08）。

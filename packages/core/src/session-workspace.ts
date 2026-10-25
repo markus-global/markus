@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { DeliberationResult, AgentActivity } from '@markus/shared';
+import type { DeliberationResult, AgentActivity, AgentActivityType } from '@markus/shared';
 
 /**
  * AgentScenario：一次 handleMessage / stream turn 的场景标签。
@@ -41,6 +41,39 @@ export const AGENT_SCENARIOS: readonly AgentScenario[] = [
   'peer_query',
 ];
 
+/**
+ * Which activity type a turn produces — the **single** mapping.
+ *
+ * Why it lives here and is keyed by scenario, not by mailbox type: the activity
+ * row describes *what the agent was doing*, and "what it was doing" is the turn's
+ * scenario. Mailbox type is a proxy for it and a lossy one — `review_request`
+ * arrives as scenario `review` (internal work), while the same type listed under
+ * the mailbox registry used to claim `chat`. Two tables saying different things
+ * about one fact is how a report ends up disagreeing with itself.
+ *
+ * `Record<AgentScenario, …>` is deliberate: adding a scenario to the union fails
+ * the build until someone decides what activity it produces. Silence is not an
+ * option, and there is no `default` bucket to fall into by accident.
+ */
+export const SCENARIO_ACTIVITY_TYPE: Record<AgentScenario, AgentActivityType> = {
+  chat: 'chat',
+  // Task executions create their own `task` activity before entering
+  // handleMessage, so this entry only matters for the rare path where they
+  // arrive without one. It preserves the pre-refactor behaviour exactly.
+  task_execution: 'chat',
+  heartbeat: 'internal',
+  a2a: 'a2a',
+  group_chat: 'chat',
+  comment_response: 'chat',
+  memory_consolidation: 'internal',
+  distillation: 'internal',
+  review: 'internal',
+  requirement_action: 'internal',
+  workflow_action: 'internal',
+  deliberation: 'chat',
+  peer_query: 'chat',
+};
+
 /** Narrow an untrusted value to an `AgentScenario`, or `undefined`.
  *  Unknown/legacy values must never silently become a scenario. */
 export function asAgentScenario(v: unknown): AgentScenario | undefined {
@@ -67,6 +100,17 @@ export interface SessionWorkspace {
   currentInteractingUserId?: string;
   /** Scenario of the in-flight handleMessage / stream turn (for chat-only tools). */
   activeScenario?: AgentScenario;
+  /**
+   * Correlation id of the exchange this turn belongs to (A2A chain).
+   *
+   * Set from the inbound item's `extra.chainId` when processing starts, cleared
+   * when it ends. Anything this turn sends inherits it — the standard trace-id
+   * rule (an outbound span's parent is the current span). Per-workspace, so two
+   * concurrent workers never share a chain.
+   */
+  chainId?: string;
+  /** Hops already taken in that chain (0/undefined = this turn is the initiator). */
+  chainDepth?: number;
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) */
   volatileState?: string;
   pendingDeliberationResult?: DeliberationResult;

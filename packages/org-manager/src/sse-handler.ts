@@ -13,7 +13,7 @@
 import type { ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { Agent, TurnSessionHint } from '@markus/core';
-import { createLogger, stripLegacyCompletionToken, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
+import { createLogger, stripLegacyCompletionToken, SSE_DISCONNECT_FORCE_STOP_MS, cancelExecutionToken, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 import type { ActiveStreamRegistry, ActiveStreamSession } from './active-stream-registry.js';
 
@@ -154,8 +154,7 @@ export class SSEHandler {
                 inactiveMs: silentFor,
                 windowMs: disconnectWindowMs,
               });
-              this.cancelToken.cancelled = true;
-              this.cancelToken.userStopped = true;
+              cancelExecutionToken(this.cancelToken, 'disconnect', { userStopped: true });
               this.activeStream?.cancel({
                 type: 'done',
                 content: '',
@@ -802,8 +801,7 @@ export class SSEHandler {
    * 取消处理 (user Stop)
    */
   cancel(): void {
-    this.cancelToken.cancelled = true;
-    this.cancelToken.userStopped = true;
+    cancelExecutionToken(this.cancelToken, 'user_stop', { userStopped: true });
     this.activeStream?.cancel({
       type: 'done',
       content: '',

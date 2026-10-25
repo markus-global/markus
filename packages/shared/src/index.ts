@@ -5,6 +5,7 @@ export * from './notification-labels.js';
 export * from './types/agent.js';
 export * from './types/org.js';
 export * from './types/task.js';
+export * from './types/execution.js';
 export * from './types/message.js';
 export * from './types/llm.js';
 export * from './types/governance.js';

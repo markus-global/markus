@@ -9,6 +9,7 @@
   },
   "no-empty-catch": {},
   "session-identity": {
+    "packages/org-manager/src/agent-delivery.ts": "A2A 唯一投递点：会话身份由 payload.extra.channelKey 唯一确定（dm:a2a:… / group:…），与 a2a.ts / a2a-structured.ts / api-server.ts 同属 system(role:channel) 契约；投递在目标侧按 channelKey 归一为频道会话。",
     "packages/org-manager/src/task-service.ts": "任务系统消息：会话身份由 core 按 sourceType 归一为 system 契约（task_* 会话），按设计不需要 DB 绑定。",
     "packages/org-manager/src/api-server.ts": "系统/频道类转发入口（群聊广播、限流去重、工作流触发等）：走 system/channel 契约，已人工确认；带 DB 身份的两个主入口（/api/agents/:id/message、/api/message、Feishu 入站）已显式传 dbSessionId/sessionHint。",
     "packages/org-manager/src/requirement-service.ts": "需求评论/状态更新的系统会话（system 契约）。",
