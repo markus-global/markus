@@ -387,12 +387,19 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       //
       // 现在：本回合已有在飞气泡 → 一律复用它；只有真的没有任何在飞气泡时才创建。
       // `last` 只用来决定「复用哪一条」，不再有权力凭空造第二条。
-      const reuseIdx = (() => {
-        const inFlight = inFlightAgentIdx(msgs);
-        if (inFlight >= 0) return inFlight;
-        if (last && !last.isError && last.sender === 'agent') return msgs.findIndex(m => m.id === last.id);
-        return -1;
-      })();
+      // 气泡身份只认**服务端权威**，不用本地 `isStreaming` 标志。
+      //
+      // 本地标志是陈旧派生量：流式进行中服务端不落库（`isStreaming: true` 只在
+      // 断连快照时写），页面加载后的 buffer 里出现的 true 只可能来自历史残留。
+      // 一旦拿它当「本回合在飞气泡」，`handleSnapshot` 就会把**整份权威快照**
+      // 写进页面中间那条历史回复（实测：11960 字 / 178 段全部落进第 13 条），
+      // 而末尾什么都不长 —— 用户看到的就是「新窗口打开没有正在输出的内容」。
+      //
+      // 判据：只有服务端点名了重连目标（`pickStreamReattachTarget` 基于
+      // `status.messageId` 命中）才复用；否则本轮回复尚未落库，必须在末尾另起。
+      const reuseIdx = (last && !last.isError && last.sender === 'agent')
+        ? msgs.findIndex(m => m.id === last.id)
+        : -1;
       const reuseBubble = reuseIdx >= 0 ? msgs[reuseIdx] : undefined;
       const agentMsgId = reuseBubble ? reuseBubble.id : `reattach_${Date.now()}`;
       if (!reuseBubble) {
