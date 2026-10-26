@@ -56,6 +56,7 @@ import {
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
+import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
@@ -8945,6 +8946,16 @@ export class Agent {
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    // Hard context gate first, before the write lock: a refused call must not
+    // queue behind a lock it is never going to use. This is the single
+    // enforcement point — every tool call in every loop funnels through here,
+    // including the a2a/mailbox turns that actually overflowed.
+    const gated = contextGateRefusal(
+      toolCall.name,
+      this.contextEngine.getMeasuredUsagePercent(sessionId),
+    );
+    if (gated) return gated;
+
     // 写语义工具跨 worker 互斥（所有外部调用走这里）：
     //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
     //   读工具 → 直接执行，不互斥
