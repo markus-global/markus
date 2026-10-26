@@ -117,8 +117,7 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
-import { shouldChainDmReply } from './dm-chaining.js';
-import { AgentWakeBudget } from './wake-budget.js';
+import { AgentDelivery, newChainId } from './agent-delivery.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -333,6 +332,42 @@ const EMPTY_REMOTE_STATUS = {
 };
 
 export class APIServer {
+  /**
+   * A2A 投递/回复的**唯一**执行点（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）。
+   *
+   * 惰性构造：依赖 storage / ws / agentManager，而这些在构造期未必都已就绪。
+   * 所有"把消息交给另一个 agent"的路径都必须经它；所有"agent 在频道里说了一句"
+   * 都必须经它的 postReply —— 任何地方自己 persist + broadcast 都是第二写者。
+   */
+  private get delivery(): AgentDelivery {
+    if (!this._delivery) {
+      this._delivery = new AgentDelivery({
+        getAgent: (id) => {
+          try { return this.orgService.getAgentManager().getAgent(id) as never; } catch { return undefined; }
+        },
+        persistReply: async ({ orgId, channelKey, senderId, senderName, text, replyToId }) => {
+          if (!this.storage) return undefined;
+          const saved = await this.storage.channelMessageRepo.append({
+            orgId, channel: channelKey, senderId, senderType: 'agent', senderName, text, replyToId,
+          });
+          return saved.id;
+        },
+        broadcastReply: ({ channelKey, senderId, senderName, text, messageId }) => {
+          const payload = {
+            channel: channelKey, senderId, senderType: 'agent', senderName, text,
+            ...(messageId ? { id: messageId } : {}),
+          };
+          const event = { type: 'chat:message' as const, payload, timestamp: new Date().toISOString() };
+          const participants = channelKey.startsWith('dm:') ? channelKey.slice(3).split(':') : [];
+          if (participants.length > 0) this.ws.sendToUsers(participants, event);
+          else this.ws.broadcast(event);
+        },
+      });
+    }
+    return this._delivery;
+  }
+  private _delivery?: AgentDelivery;
+
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   /** Per-provider live key/model validation budget when a routing-candidates
    *  cache miss is served. The total cold path is capped at this value so a
@@ -1079,8 +1114,15 @@ export class APIServer {
         message: string,
         senderId: string,
         senderName: string,
-        replyToId?: string
+        replyToId?: string,
+        chain?: { chainId?: string; depth?: number },
       ) => {
+        // Trace-style propagation: a message sent while answering an exchange
+        // inherits that exchange's chainId and increments the hop count. A new
+        // chainId is minted only when this delivery actually starts a
+        // conversation — otherwise a "chain" would never hold more than one hop.
+        const chainId = chain?.chainId ?? newChainId();
+        const chainDepth = (chain?.depth ?? 0) + 1;
         let cleanText = stripInternalBlocks(message);
 
         // Reject NO_RESPONSE variants — agent should simply not call this tool.
@@ -1179,39 +1221,37 @@ export class APIServer {
             //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
-                // Storm guard: a proactive agent_send_message on a hot channel
-                // starts a fresh depth-1 chain; the per-channel cooldown keeps
-                // rapid mutual sends from looping forever.
-                this.cleanStaleCooldowns();
-                const now = Date.now();
-                if (!this.a2aCooldowns.has(channelKey)) this.a2aCooldowns.set(channelKey, new Map());
-                const channelCooldowns = this.a2aCooldowns.get(channelKey)!;
-                const last = channelCooldowns.get(peerId) ?? 0;
-                if (now - last < APIServer.A2A_COOLDOWN_MS) {
-                  log.info('DM send suppressed by cooldown', { channelKey, peerId, msSince: now - last });
-                  continue;
-                }
-                channelCooldowns.set(peerId, now);
+                // ── 投递 = mailbox item（唯一机制，见 docs/architecture/mailbox-system.md §11.1.1）
+                //
+                // 旧实现在这里用 30 秒墙钟冷却 `continue` 掉「唤醒」：消息留在了
+                // channel_messages 里，但对方永远不会被唤醒，而 agent_send_message
+                // 仍返回 "dispatched"。实测（2026-10-25）：12 条 DM → 12 行记录、
+                // **1 次唤醒**、11 次静默丢弃 → 发送方以为已送达，重复发送。
+                //
+                // 现在：每条消息都作为 a2a_message 进对方 mailbox；同一 channelKey
+                // 的突发会在 enqueue 时合并成一个 item（§14），风暴控制交给合并，
+                // 不再有任何"丢弃但不告知"的分支。
+                // 投递经唯一执行点（AgentDelivery.deliver，§11.1.1）。
+                // 合并由 mailbox 负责，这里不做任何时间窗/配额判断。
+                const outcome = this.delivery.deliver({
+                  orgId, channelKey,
+                  fromAgentId: senderId, fromAgentName: senderName,
+                  content: cleanText,
+                  targetAgentIds: [peerId],
+                  addressedTargetIds: [peerId],
+                  replyToMsgId: persistedMsgId,
+                  chainId,
+                  depth: chainDepth,
+                  collectReply: true,
+                });
 
-                let dmChannelContext: Array<{ role: string; content: string }> = [];
-                if (this.storage) {
-                  try {
-                    const recent = await this.storage.channelMessageRepo.getMessages(channelKey, CHANNEL_CONTEXT_MESSAGES);
-                    dmChannelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
-                      role: m.senderType === 'agent' ? 'assistant' : 'user',
-                      content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
-                    }));
-                  } catch { /* best-effort */ }
+                for (const replyPromise of outcome.replies ?? []) {
+                  void replyPromise
+                    .then(reply => this.delivery.postReply({
+                      orgId, channelKey, agentId: peerId, text: reply, replyToMsgId: persistedMsgId,
+                    }))
+                    .catch(() => { /* 回复写回尽力而为；消息本身已投递 */ });
                 }
-
-                void this.processGroupChatReply(
-                  peerId, cleanText, senderId,
-                  { name: senderName, role: 'agent' },
-                  channelKey, orgId, dmChannelContext, agentManager,
-                  2,
-                  { replyToAgentName: senderName, replyToText: cleanText.slice(0, 200), replyToMsgId: persistedMsgId },
-                  { roundId: `dm_${Date.now()}`, depth: 1, respondedAgents: new Set<string>([senderId]), allAgentIds: [senderId, peerId] },
-                );
               } catch { /* agent may not exist */ }
             }
           } else {
@@ -1234,26 +1274,42 @@ export class APIServer {
                   }));
                 } catch { /* best-effort */ }
               }
-              const roundId = `round_${Date.now()}`;
-              const respondedAgents = new Set<string>([senderId]);
-              void this.triggerAgentToAgentChain(
-                filteredMentions, nameMap, senderName, senderId, cleanText, persistedMsgId,
-                channelKey, orgId, agentManager, allAgentIds.length,
-                { roundId, depth: 1, respondedAgents, allAgentIds },
-              );
+              // @提及：只投递，不替 agent 决定是否回复（所有者 2026-10-25 裁定：
+              // agent 自己决定要不要回、要不要继续下一轮）。
+              const mentionTargets = filteredMentions
+                .map(n => nameMap.get(n))
+                .filter((id): id is string => !!id);
+              const mentionOutcome = this.delivery.deliver({
+                orgId, channelKey,
+                fromAgentId: senderId, fromAgentName: senderName,
+                content: `[From @${senderName}]: ${cleanText}`,
+                targetAgentIds: mentionTargets,
+                mentions: filteredMentions,
+                addressedTargetIds: mentionTargets,
+                replyToMsgId: persistedMsgId,
+                chainId,
+                depth: chainDepth,
+                collectReply: true,
+              });
+              mentionOutcome.deliveredTo.forEach((targetId, i) => {
+                const replyPromise = mentionOutcome.replies?.[i];
+                if (!replyPromise) return;
+                void replyPromise
+                  .then(reply => this.delivery.postReply({
+                    orgId, channelKey, agentId: targetId, text: reply, replyToMsgId: persistedMsgId,
+                  }))
+                  .catch(() => { /* 回复写回尽力而为；消息本身已投递 */ });
+              });
             } else {
-              // No @mentions: deliver as mailbox notification so peers are aware
-              for (const peerId of peerAgentIds) {
-                try {
-                  agentManager.getAgent(peerId).enqueueToMailbox('a2a_message', {
-                    summary: `Group chat message from ${senderName}`,
-                    content: `[Group chat message from ${senderName}]:\n${cleanText}`,
-                    extra: { senderId, senderName, channelKey, waitForReply: false },
-                  }, {
-                    metadata: { senderId, senderName, senderRole: 'agent' },
-                  });
-                } catch { /* agent may not exist */ }
-              }
+              // No @mentions: 投递为 a2a_message（同 channelKey 由 mailbox 合并），不延伸链
+              this.delivery.deliver({
+                orgId, channelKey,
+                fromAgentId: senderId, fromAgentName: senderName,
+                content: `[Group chat message from ${senderName}]:\n${cleanText}`,
+                targetAgentIds: peerAgentIds,
+                chainId,
+                depth: chainDepth,
+              });
             }
           }
         }
@@ -2204,9 +2260,15 @@ export class APIServer {
   // guided by prompt instructions, not by hitting this ceiling.
   private static readonly A2A_MAX_DEPTH = 20;
   /** DM auto-chain is much tighter — ACK loops burn tokens even with prompt guidance. */
-  private static readonly DM_MAX_DEPTH = 6;
   private static readonly A2A_COOLDOWN_MS = 30_000;
   /** Per-channel cooldown tracker: channel → agentId → last reply timestamp */
+  /**
+   * 群聊 @提及链的「是否继续链」判据（**只影响链，不影响投递**）。
+   *
+   * 命中窗口时，消息仍然作为 a2a_message 进对方 mailbox（`throttled: true`），
+   * 只是不再触发自动回复链。这与 DM 侧旧实现有本质区别：那里命中冷却会直接
+   * `continue` 丢弃唤醒，导致消息入库但对方永不被唤醒，而发送方仍收到 dispatched。
+   */
   private a2aCooldowns = new Map<string, Map<string, number>>();
   /**
    * Global (per-agent) wake ceiling. The per-channel cooldown above is not a
@@ -2214,7 +2276,6 @@ export class APIServer {
    * agent logged 43 turns in 35 minutes across 10 DM channels. Exhausted budget
    * means "deliver, don't wake" — the peer sees it on its next turn.
    */
-  private wakeBudget = new AgentWakeBudget();
 
   private cleanStaleCooldowns(): void {
     const now = Date.now();
@@ -2338,499 +2399,17 @@ export class APIServer {
    * Replies are persisted and broadcast via WebSocket.
    * If the agent @mentions other agents, a chain reply is triggered (with storm prevention).
    */
-  private async processGroupChatReply(
-    agentId: string,
-    userMessage: string,
-    senderId: string,
-    senderInfo: { name: string; role: string } | undefined,
-    channel: string,
-    orgId: string,
-    channelContext: Array<{ role: string; content: string }>,
-    agentManager: AgentManager,
-    teamSize: number,
-    opts?: { mentionedNames?: string[]; replyToAgentName?: string; replyToText?: string; replyToMsgId?: string; images?: string[]; fileNames?: string[]; imagePaths?: string[] },
-    chainCtx?: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
-  ): Promise<void> {
-    try {
-      const agent = agentManager.getAgent(agentId);
-      const agentName = agent.config.name;
-
-      const isDmReply = channel.startsWith('dm:a2a:');
-      const isA2A = !!chainCtx && chainCtx.depth > 0;
-      const hasReplyTarget = !!opts?.replyToAgentName;
-      const hasMentions = !!opts?.mentionedNames?.length;
-      const isTargeted = hasReplyTarget || hasMentions;
-
-      const targetNames = new Set<string>();
-      if (opts?.replyToAgentName) targetNames.add(opts.replyToAgentName);
-      if (opts?.mentionedNames) opts.mentionedNames.forEach(n => targetNames.add(n));
-      const thisAgentIsTarget = targetNames.has(agentName);
-
-      let messagePrefix: string;
-
-      if (isDmReply) {
-        // DM channel: minimal prefix — the scenario prompt handles the rest
-        const prefixLines = [
-          `[DM CONVERSATION with ${opts?.replyToAgentName ?? 'a colleague'} | You are: ${agentName}]`,
-          `[CHANNEL] channel_key="${channel}"`,
-        ];
-        if ((chainCtx?.depth ?? 0) >= 2) {
-          prefixLines.push(
-            '[LOOP GUARD] This DM already exchanged replies. If you have no NEW fact, question, or instruction, call the end_turn tool instead of replying.',
-            'Do NOT acknowledge with 收到/保持待命/OK. Do NOT paste "回复说" back into this DM — use notify_user for humans.',
-          );
-        }
-        prefixLines.push('---', '');
-        messagePrefix = prefixLines.join('\n');
-      } else {
-        const prefixLines = [
-          `[GROUP CHAT — ${teamSize} team members | You are: ${agentName}]`,
-          `[CHANNEL] channel_key="${channel}" — You already have the most recent ~${CHANNEL_CONTEXT_MESSAGES} messages in your context.`,
-          '',
-        ];
-
-        if (isA2A) {
-          prefixLines.push(`[AGENT COLLABORATION] This message is from a fellow agent (${opts?.replyToAgentName ?? 'teammate'}), not from the user.`);
-          prefixLines.push('You were @mentioned because your expertise is needed. Respond concisely to the specific request.');
-          prefixLines.push('You may @mention another agent if (and ONLY if) you genuinely need their specific expertise to answer.');
-          prefixLines.push('Do NOT @mention agents just to be polite or to pass the conversation along.');
-          prefixLines.push('');
-        }
-
-        if (isTargeted && !isA2A) {
-          if (hasReplyTarget) {
-            prefixLines.push(`[REPLY] The user is replying to ${opts!.replyToAgentName}'s message: "${(opts!.replyToText ?? '').slice(0, 200)}"`);
-          }
-          if (hasMentions) {
-            prefixLines.push(`[MENTIONED] The user @mentioned: ${opts!.mentionedNames!.join(', ')}`);
-          }
-          prefixLines.push('');
-          if (thisAgentIsTarget) {
-            prefixLines.push('>>> You are the target of this message. You SHOULD respond. <<<');
-          } else {
-            prefixLines.push('>>> STOP. This message is NOT for you. The user is talking to ' + [...targetNames].join(', ') + ', not you.');
-            prefixLines.push('You MUST end your turn by calling the end_turn tool — do not write a reply.');
-            prefixLines.push('The ONLY exception: you are directly contradicted by a factual error. Offering opinions, agreement, "me too", or generic help does NOT count. <<<');
-          }
-        } else if (!isA2A) {
-          prefixLines.push('This is an open group message (no specific @mention or reply target).');
-        }
-
-        if (chainCtx?.allAgentIds) {
-          prefixLines.push('');
-          const rosterLines = ['TEAM MEMBERS (use exact format for @mentions):'];
-          for (const aid of chainCtx.allAgentIds) {
-            try {
-              const a = agentManager.getAgent(aid);
-              const name = a.config.name;
-              const fmt = name.includes(' ') ? `@[${name}]` : `@${name}`;
-              rosterLines.push(`  ${fmt}${aid === agentId ? ' (you)' : ''}`);
-            } catch { /* skip */ }
-          }
-          prefixLines.push(rosterLines.join('\n'));
-        }
-        if (isTargeted && !thisAgentIsTarget && !isA2A) {
-          prefixLines.push('');
-          prefixLines.push('REMINDER: This message is directed at ' + [...targetNames].join(', ') + '. You are ' + agentName + '. End your turn by calling the end_turn tool instead of replying.');
-        }
-
-        prefixLines.push('---', '');
-        messagePrefix = prefixLines.join('\n');
-      }
-
-      // A group channel is ALWAYS 'group_chat', even when the trigger was a
-      // chained reply from a fellow agent (isA2A). The A2A nature of such a
-      // message is already carried by the injected [AGENT COLLABORATION] prefix;
-      // switching the scenario to 'a2a' would emit the A2A section ("humans do
-      // NOT see this conversation", "asynchronous, absorb silently"), which is
-      // false inside a group chat where the reply is auto-broadcast to humans.
-      const effectiveScenario = isDmReply ? 'a2a' as const : 'group_chat' as const;
-      const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
-      const reply = await agent.sendMessage(
-        messagePrefix + userMessage,
-        senderId,
-        senderInfo,
-        {
-          sourceType: isDmReply ? 'a2a_message' : (isA2A ? 'a2a_message' : 'human_chat'),
-          scenario: effectiveScenario,
-          channelContext,
-          channelKey: channel,
-          directMention: isDmReply ? true : thisAgentIsTarget,
-          images: opts?.images,
-          fileNames: opts?.fileNames,
-          imagePaths: opts?.imagePaths,
-          toolEventCollector: toolEvents,
-        }
-      );
-
-      const emitNoResponse = () => {
-        const evt = {
-          type: 'chat:agent_no_response' as const,
-          payload: { channel, agentId },
-          timestamp: new Date().toISOString(),
-        };
-        if (channel.startsWith('dm:') || channel.startsWith('notes:')) {
-          const parts = channel.startsWith('notes:')
-            ? [channel.slice(6)]
-            : channel.slice(3).split(':');
-          this.ws.sendToUsers(parts, evt);
-        } else {
-          const humanIds = this.resolveChannelHumanIds(channel);
-          if (humanIds.length > 0) this.ws.sendToUsers(humanIds, evt);
-          else this.ws.broadcast(evt);
-        }
-      };
-
-      if (!reply || !reply.trim() || /\[NO_RESPONSE\b/i.test(reply)) {
-        emitNoResponse();
-        return;
-      }
-
-      const { thinking, clean: rawClean } = extractThinkBlocks(reply);
-      // Strip [NO_RESPONSE] and its variants: [NO_RESPONSE — ...], [NO_RESPONSE: ...], etc.
-      const noResponseStripped = rawClean.replace(/\[NO_RESPONSE[^\]]*\]/gi, '').trim();
-      // If the entire message was a NO_RESPONSE block (even without closing bracket), suppress
-      if (/^\[NO_RESPONSE\b/i.test(rawClean.trim())) {
-        emitNoResponse();
-        return;
-      }
-      // Catch creative "no response" phrasings the LLM invents instead of [NO_RESPONSE]:
-      // e.g. "[context check — no response needed]", "[no response necessary]", "[silent]"
-      const NO_RESPONSE_CREATIVE_RE = /^\[(?:context check|no response|silent|listening|observing|monitoring|watching|noting|acknowledged?)[^\]]*\]$/i;
-      if (NO_RESPONSE_CREATIVE_RE.test(rawClean.trim())) {
-        log.info('Suppressed creative no-response variant', { agentId, original: rawClean.trim().slice(0, 100) });
-        emitNoResponse();
-        return;
-      }
-      // Strip lines that look like raw tool invocations leaked into the reply.
-      // Two patterns:
-      //   1. Known Markus tool names — slash is optional (agent may write "recall_context" or "/recall_context")
-      //   2. Generic slash commands from other platforms — slash is REQUIRED to avoid false positives
-      //      (e.g. "/history 30" is a command, but "List the points" is normal text)
-      const KNOWN_TOOL_RE = /^\s*\/?(?:recall_context|memory_search|memory_save|memory_update|task_get|task_list|task_comment|requirement_get|requirement_comment|file_read|agent_send_message|agent_send_group_message|check_mailbox|notebook_upsert|notebook_clear|defer_mailbox_item|drop_mailbox_item|prioritize_mailbox_item|notify_user|recall_activity)\b/i;
-      const SLASH_CMD_RE = /^\s*\/(?:history|help|status|list|search|get|set|info|ping|who|whois|me|join|leave|invite|kick|ban|mute|unmute|clear|purge|poll|remind|note|todo|roll|flip|ask)\b/i;
-      const cleanReply = noResponseStripped.split('\n')
-        .filter(line => !KNOWN_TOOL_RE.test(line) && !SLASH_CMD_RE.test(line))
-        .join('\n').trim();
-      if (!cleanReply) {
-        log.warn('Suppressed raw tool command leak', { agentId, original: noResponseStripped.slice(0, 200) });
-        emitNoResponse();
-        return;
-      }
-
-      // DM auto-suppress: catch pure acknowledgments / misdirected relay paste-backs
-      // the LLM sends instead of [NO_RESPONSE]. Compound acks like "收到，保持待命。"
-      // must be suppressed — otherwise DM auto-chain creates infinite ping-pong.
-      if (isDmReply) {
-        if (isDmPureAcknowledgment(cleanReply)) {
-          log.info('DM auto-suppress: pure acknowledgment detected', { agentId, channel, original: cleanReply.slice(0, 80) });
-          emitNoResponse();
-          return;
-        }
-        if (isDmMisdirectedRelay(cleanReply)) {
-          log.info('DM auto-suppress: misdirected peer-relay paste-back', { agentId, channel, original: cleanReply.slice(0, 120) });
-          emitNoResponse();
-          return;
-        }
-      }
-
-      // DM dedup: if the agent already used agent_send_message to reply to the
-      // DM peer during this turn, its message was already persisted to the channel
-      // via sendGroupMessage. Skip auto-persisting the text reply to avoid duplicates.
-      if (isDmReply && toolEvents.length > 0) {
-        const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
-        const alreadySentToPeer = toolEvents.some(
-          e => e.tool === 'agent_send_message' && e.status === 'done'
-            && peerAgentId && JSON.stringify(e.arguments ?? '').includes(peerAgentId),
-        );
-        if (alreadySentToPeer) {
-          log.info('DM dedup: agent already sent message via tool — skipping auto-persist', { agentId, channel });
-          return;
-        }
-      }
-
-      const metadata: Record<string, unknown> = {};
-      if (thinking.length > 0) metadata['thinking'] = thinking;
-      if (toolEvents.length > 0) metadata['toolCalls'] = toolEvents;
-      if ((isA2A || isDmReply) && opts?.replyToAgentName) {
-        metadata['replyToAgent'] = opts.replyToAgentName;
-      }
-
-      // Persist agent reply
-      let persistedMsgId: string | undefined;
-      if (this.storage) {
-        const saved = await this.storage.channelMessageRepo.append({
-          orgId,
-          channel,
-          senderId: agentId,
-          senderType: 'agent',
-          senderName: agentName,
-          text: cleanReply,
-          mentions: [],
-          metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
-          replyToId: isA2A ? opts?.replyToMsgId : undefined,
-        });
-        persistedMsgId = saved.id;
-      }
-
-      // Send via WebSocket (scoped for DM/notes channels)
-      const replyEvent = {
-        type: 'chat:message' as const,
-        payload: {
-          channel,
-          senderId: agentId,
-          senderType: 'agent',
-          senderName: agentName,
-          text: cleanReply,
-          metadata: Object.keys(metadata).length > 0 ? metadata : undefined,
-          // Carry the persisted message id so clients can dedupe against
-          // history fetched on reconnect (group async replies otherwise get
-          // an opaque ws_* temp id and can duplicate after a WS gap).
-          ...(persistedMsgId ? { id: persistedMsgId } : {}),
-          ...(isA2A ? {
-            replyToId: opts?.replyToMsgId,
-            replyToSender: opts?.replyToAgentName,
-            replyToText: (opts?.replyToText ?? '').slice(0, 120),
-          } : {}),
-        },
-        timestamp: new Date().toISOString(),
-      };
-      if (channel.startsWith('dm:') || channel.startsWith('notes:')) {
-        const participants = channel.startsWith('notes:')
-          ? [channel.slice(6)]
-          : channel.slice(3).split(':');
-        this.ws.sendToUsers(participants, replyEvent);
-      } else {
-        const humanIds = this.resolveChannelHumanIds(channel);
-        if (humanIds.length > 0) this.ws.sendToUsers(humanIds, replyEvent);
-        else this.ws.broadcast(replyEvent);
-      }
-
-      // ── Post-reply chaining ──
-      const isDmChannel = channel.startsWith('dm:a2a:');
-
-      if (isDmChannel) {
-        // DM: chain to the peer ONLY when this reply actually asks them for
-        // something. MCP's notification semantics are one-way ("receiver MUST
-        // NOT send a response"); auto-replying to every DM is what produced the
-        // measured reply storm (43 turns / 35 min, 103 DMs to 10 peers).
-        const chainDecision = shouldChainDmReply(cleanReply, 'agent');
-        if (!chainDecision.chain) {
-          log.info('DM chain skipped — reply asks nothing', {
-            channel, reason: chainDecision.reason,
-          });
-          return;
-        }
-        const depth = (chainCtx?.depth ?? 0) + 1;
-        if (depth <= APIServer.DM_MAX_DEPTH) {
-          const peerAgentId = chainCtx?.allAgentIds?.find(id => id !== agentId);
-          if (peerAgentId) {
-            // Storm guard: don't re-trigger a peer on this channel too rapidly.
-            // Mutual proactive agent_send_message can reset depth to 1 on every
-            // hop, so alone it evades DM_MAX_DEPTH — the cooldown is what stops
-            // an unbounded ping-pong. Mirrors the group-chat cooldown layer.
-            this.cleanStaleCooldowns();
-            const now = Date.now();
-            if (!this.a2aCooldowns.has(channel)) this.a2aCooldowns.set(channel, new Map());
-            const channelCooldowns = this.a2aCooldowns.get(channel)!;
-            const last = channelCooldowns.get(peerAgentId) ?? 0;
-            if (now - last < APIServer.A2A_COOLDOWN_MS) {
-              log.info('DM chain suppressed by cooldown', { channel, peerAgentId, depth, msSince: now - last });
-              return;
-            }
-            channelCooldowns.set(peerAgentId, now);
-
-            // Global per-agent ceiling: the channel cooldown above cannot bound
-            // an agent that is active in many channels. Exhausted budget =
-            // "deliver, don't wake" (the message is already persisted).
-            const budget = this.wakeBudget.tryConsume(peerAgentId);
-            if (!budget.allowed) {
-              log.info('DM chain suppressed by global wake budget', {
-                channel, peerAgentId, depth, remaining: budget.remaining,
-              });
-              return;
-            }
-
-            // Load fresh channel context including the just-persisted reply
-            let freshContext: Array<{ role: string; content: string }> = [];
-            if (this.storage) {
-              try {
-                const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
-                freshContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
-                  role: m.senderType === 'agent' ? 'assistant' : 'user',
-                  content: m.senderType === 'agent' ? stripInternalBlocks(m.text) : `[${m.senderName}]: ${m.text}`,
-                }));
-              } catch { /* best-effort */ }
-            }
-
-            void this.processGroupChatReply(
-              peerAgentId, cleanReply, agentId,
-              { name: agentName, role: 'agent' },
-              channel, orgId, freshContext, agentManager,
-              2,
-              { replyToAgentName: agentName, replyToText: cleanReply.slice(0, 200), replyToMsgId: persistedMsgId },
-              { roundId: chainCtx?.roundId ?? `dm_${Date.now()}`, depth, respondedAgents: new Set<string>(), allAgentIds: chainCtx?.allAgentIds ?? [agentId, peerAgentId] },
-            );
-          }
-        } else {
-          log.info('DM chain depth limit reached — conversation paused', { channel, depth, roundId: chainCtx?.roundId });
-        }
-      } else {
-        // Group chat: @mention-based chaining (unchanged)
-        const allAgentIds = chainCtx?.allAgentIds ?? [];
-        if (allAgentIds.length > 0) {
-          const nameMap = this.buildAgentNameMap(allAgentIds, agentManager);
-          const mentionedNames = this.parseAgentMentions(cleanReply, [...nameMap.keys()]);
-          const filteredMentions = mentionedNames.filter(n => n !== agentName);
-          log.info('A2A mention scan', { agentName, mentionedNames, filteredMentions, depth: chainCtx?.depth ?? 0 });
-
-          if (filteredMentions.length > 0) {
-            const depth = (chainCtx?.depth ?? 0) + 1;
-            const roundId = chainCtx?.roundId ?? `round_${Date.now()}`;
-            const responded = chainCtx?.respondedAgents ?? new Set<string>();
-            responded.add(agentId);
-
-            void this.triggerAgentToAgentChain(
-              filteredMentions, nameMap, agentName, agentId, cleanReply, persistedMsgId,
-              channel, orgId, agentManager, teamSize,
-              { roundId, depth, respondedAgents: responded, allAgentIds },
-            );
-          }
-        }
-      }
-    } catch (err) {
-      log.warn('Group chat agent reply failed', { agentId, error: String(err) });
-
-      if (this.storage) {
-        try {
-          const errDetail = String(err).slice(0, 500);
-          await this.storage.channelMessageRepo.append({
-            orgId,
-            channel,
-            senderId: agentId,
-            senderType: 'system',
-            senderName: 'System',
-            text: `⚠ AI service error: ${errDetail}`,
-            mentions: [],
-          });
-        } catch { /* best-effort */ }
-      }
-    }
-  }
-
   /**
-   * Trigger agent-to-agent chain replies for GROUP CHAT with 3-layer storm prevention:
-   * 1. Depth limit (safety net at 20 hops — agents should stop via [NO_RESPONSE])
-   * 2. Per-round dedup (each agent responds at most once per conversation round)
-   * 3. Cooldown window (same agent won't be triggered twice within 30s on same channel)
-   * Note: DM channels use a separate chaining path in processGroupChatReply.
+   * DM 回复的唯一出口：把回合产出写回频道并广播。
+   *
+   * 为什么不在这里链式触发下一次回复：DM 自动回复链正是 2026-10
+   * 「43 回合 / 35 分钟 / 103 条 DM」风暴的来源（互相主动 sendMessage 每跳把
+   * depth 重置为 1，`DM_MAX_DEPTH` 单独挡不住）。投递统一到 mailbox 之后，
+   * 对端若真需要再说一句，由它自己调 `agent_send_message` —— 那是一次**有意的
+   * 动作**，而不是被自动链推着说。这删掉了整个"回复风暴"的可能。
    */
-  private async triggerAgentToAgentChain(
-    mentionedNames: string[],
-    nameMap: Map<string, string>,
-    fromAgentName: string,
-    fromAgentId: string,
-    fromText: string,
-    fromMsgId: string | undefined,
-    channel: string,
-    orgId: string,
-    agentManager: AgentManager,
-    teamSize: number,
-    chainCtx: { roundId: string; depth: number; respondedAgents: Set<string>; allAgentIds: string[] },
-  ): Promise<void> {
-    this.cleanStaleCooldowns();
 
-    // Layer 1: depth limit — deliver to mailbox without chain capability
-    if (chainCtx.depth > APIServer.A2A_MAX_DEPTH) {
-      log.info('A2A chain depth limit — delivering to mailbox without chain', { channel, depth: chainCtx.depth, roundId: chainCtx.roundId });
-      for (const targetName of mentionedNames) {
-        const targetId = nameMap.get(targetName);
-        if (!targetId) continue;
-        try {
-          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
-            summary: `@mention from ${fromAgentName} (chain depth limit)`,
-            content: `[From @${fromAgentName}]: ${fromText}`,
-            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
-          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
-        } catch { /* agent may not exist */ }
-      }
-      return;
-    }
 
-    const now = Date.now();
-    if (!this.a2aCooldowns.has(channel)) {
-      this.a2aCooldowns.set(channel, new Map());
-    }
-    const channelCooldowns = this.a2aCooldowns.get(channel)!;
-
-    // Build fresh channel context — provide ample history for informed replies
-    let channelContext: Array<{ role: string; content: string }> = [];
-    if (this.storage) {
-      try {
-        const recent = await this.storage.channelMessageRepo.getMessages(channel, CHANNEL_CONTEXT_MESSAGES);
-        channelContext = (recent.messages ?? []).map((m: ChannelMsg) => ({
-          role: m.senderType === 'agent' ? 'assistant' : 'user',
-          content: m.senderType === 'agent'
-            ? stripInternalBlocks(m.text)
-            : `[${m.senderName}]: ${m.text}`,
-        }));
-      } catch { /* best-effort */ }
-    }
-
-    for (const targetName of mentionedNames) {
-      const targetId = nameMap.get(targetName);
-      if (!targetId) continue;
-
-      // Layer 2: per-round dedup — deliver to mailbox without chain capability
-      if (chainCtx.respondedAgents.has(targetId)) {
-        log.info('A2A throttled (already responded) — delivering to mailbox', { targetName, roundId: chainCtx.roundId });
-        try {
-          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
-            summary: `@mention from ${fromAgentName} (round dedup)`,
-            content: `[From @${fromAgentName}]: ${fromText}`,
-            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
-          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
-        } catch { /* agent may not exist */ }
-        continue;
-      }
-
-      // Layer 3: cooldown window — deliver to mailbox without chain capability
-      const lastReply = channelCooldowns.get(targetId) ?? 0;
-      if (now - lastReply < APIServer.A2A_COOLDOWN_MS) {
-        log.info('A2A throttled (cooldown) — delivering to mailbox', { targetName, channel, cooldownRemaining: APIServer.A2A_COOLDOWN_MS - (now - lastReply) });
-        try {
-          agentManager.getAgent(targetId).enqueueToMailbox('a2a_message', {
-            summary: `@mention from ${fromAgentName} (cooldown)`,
-            content: `[From @${fromAgentName}]: ${fromText}`,
-            extra: { senderId: fromAgentId, senderName: fromAgentName, channelKey: channel, directMention: true, throttled: true },
-          }, { metadata: { senderId: fromAgentId, senderName: fromAgentName, senderRole: 'agent' } });
-        } catch { /* agent may not exist */ }
-        continue;
-      }
-      channelCooldowns.set(targetId, now);
-
-      const a2aMessage = `[From @${fromAgentName}]: ${fromText}`;
-
-      void this.processGroupChatReply(
-        targetId,
-        a2aMessage,
-        fromAgentId,
-        { name: fromAgentName, role: 'agent' },
-        channel,
-        orgId,
-        channelContext,
-        agentManager,
-        teamSize,
-        {
-          mentionedNames: [targetName],
-          replyToAgentName: fromAgentName,
-          replyToText: fromText.slice(0, 200),
-          replyToMsgId: fromMsgId,
-        },
-        chainCtx,
-      );
-    }
-  }
 
   /** Persist the user message first (before LLM), returns session id for subsequent assistant persistence.
    *  When sessionId is provided, appends to that session; when null/undefined, creates a new session. */
@@ -4163,16 +3742,12 @@ export class APIServer {
       }
       const limit = parseInt(url.searchParams.get('limit') ?? '50');
       const before = url.searchParams.get('before') ?? undefined;
-      const agentIdForStream = this.storage.chatSessionRepo.getSession(sessionId)?.agentId;
-      const live = agentIdForStream
-        ? this.activeStreams.getByAgentSession(agentIdForStream, sessionId)
-        : null;
-      const liveStreamId = live?.status === 'streaming' ? live.streamId : null;
-      // Heal orphan streaming bubbles when this session has no live generation
-      // (covers the SSE error race and any path that left isStreaming:true).
-      try {
-        this.storage.chatSessionRepo.clearOrphanStreamingFlagsForSession(sessionId, liveStreamId);
-      } catch { /* best-effort */ }
+      // 读路径**不做**任何「清理幽灵标志」的猜测：存活权威在 ActiveStreamRegistry，
+      // 读历史就只读历史。旧实现在这里按 `metadata.isStreaming` 推断哪些行是孤儿
+      // 并就地改写 —— 两个方向都错过：metadata 被外置成 blob 指针时 SQL 的
+      // json_extract 静默失效（长期侥幸没出事），而它一旦生效，又会把正在流式的
+      // 那一行误清成 isStopped，前端随即失去重连目标。机制已整个删除，
+      // 历史遗留标志由启动时的 clearOrphanStreamingFlags() 一次性收敛。
       const result = await this.storage.chatSessionRepo.getMessages(sessionId, limit, before);
       // History pages ship a LEAN view of the execution trace: full tool
       // arguments/results and intermediate text are 44x the prose and are only
@@ -4405,30 +3980,36 @@ export class APIServer {
           return;
         }
 
-        const channelContext = await buildChannelContext();
         const senderInfo = this.orgService.resolveHumanIdentity(senderId);
-        const agentManager = this.orgService.getAgentManager();
 
-        const broadcastOpts = {
-          mentionedNames: mentions.length > 0 ? mentions : undefined,
-          replyToAgentName,
-          replyToText,
-          images,
-          fileNames,
-          imagePaths,
-        };
+        // 人类 @ 了谁：名字 → id。只有被 @ 的人收到 [MENTIONED]，
+        // 其余成员收到的是开放式消息（围观者不该以为自己被点名）。
+        const nameMap = this.buildAgentNameMap(allAgentIds, this.orgService.getAgentManager());
+        const mentionIds = mentions
+          .map(n => nameMap.get(n))
+          .filter((id): id is string => !!id && id !== senderId);
 
-        // Prepare chain context so agent replies can trigger agent-to-agent chains
-        const roundId = `round_${Date.now()}`;
-        const respondedAgents = new Set<string>();
-        const chainCtx = { roundId, depth: 0, respondedAgents, allAgentIds };
-
-        // Fire-and-forget: each agent processes the message independently
-        for (const agentId of allAgentIds) {
-          void this.processGroupChatReply(
-            agentId, text, senderId, senderInfo, channel, orgId, channelContext, agentManager, allAgentIds.length, broadcastOpts, chainCtx,
-          );
-        }
+        // 人类消息：投递给每个成员；回复与否由 agent 自己决定
+        // （所有者 2026-10-25 裁定：人类发的 agent 会回，但**也有权不回**）。
+        const outcome = this.delivery.deliver({
+          orgId, channelKey: channel,
+          fromAgentId: senderId, fromAgentName: senderInfo?.name ?? 'Human',
+          content: text,
+          origin: 'human',
+          targetAgentIds: allAgentIds,
+          ...(mentions.length > 0 ? { mentions } : {}),
+          ...(mentionIds.length > 0 ? { addressedTargetIds: mentionIds } : {}),
+          chainId: newChainId(),
+          depth: 1,
+          collectReply: true,
+        });
+        outcome.deliveredTo.forEach((agentId, i) => {
+          const replyPromise = outcome.replies?.[i];
+          if (!replyPromise) return;
+          void replyPromise
+            .then(reply => this.delivery.postReply({ orgId, channelKey: channel, agentId, text: reply }))
+            .catch(() => { /* 回复写回尽力而为；消息本身已投递 */ });
+        });
 
         // Return immediately with only the user message
         this.json(res, 200, { userMessage: enrichedUserMsg, agentMessage: null });
@@ -4884,13 +4465,32 @@ export class APIServer {
         const body = await this.readBody(req);
         const fromAgentId = body['fromAgentId'] as string;
         const messageText = body['message'] as string;
-        const targetAgent = this.orgService.getAgentManager().getAgent(agentId!);
         const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
-        const reply = await targetAgent.sendMessage(messageText, fromAgentId, {
-          name: fromAgent.config.name,
-          role: fromAgent.config.agentRole ?? 'worker',
-        }, { sourceType: 'a2a_message', waitForReply: true });
-        this.json(res, 200, { from: fromAgentId, to: agentId, reply });
+        // 唯一投递点（docs/architecture/mailbox-system.md §11.1.1）。
+        // 这里曾经直接 targetAgent.sendMessage(...)：绕过 deliver() 就成了
+        // 一条「没有来源标记、不走 mailbox 合并、不记统一投递日志」的旁路，
+        // 而文档却声称本层只有一个投递出口。
+        const orgId = (body['orgId'] as string)
+          ?? (authUser as { orgId?: string }).orgId
+          ?? 'default';
+        const outcome = this.delivery.deliver({
+          orgId,
+          channelKey: `dm:a2a:${[fromAgentId, agentId!].sort().join(':')}`,
+          fromAgentId,
+          fromAgentName: fromAgent.config.name,
+          content: messageText,
+          targetAgentIds: [agentId!],
+          addressedTargetIds: [agentId!],
+          chainId: newChainId(),
+          depth: 1,
+        });
+        // 投递即返回，不等回复（mailbox-system.md §11.2：A2A 永远异步）。
+        // 旧实现在这里同步等交对端回答，与异步契约直接矛盾：对端选择不回复时，
+        // 请求就只能靠超时结束，调用方分不清「对方在思考」和「对方不回」。
+        this.json(res, 200, {
+          from: fromAgentId, to: agentId,
+          deliveryId: outcome.deliveryId, state: outcome.state,
+        });
         return;
       }
       if (action === 'message') {

@@ -49,6 +49,10 @@ import {
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
   NOTEBOOK_PERSIST_MAX_WAIT_MS,
+  stopReasonLabel,
+  cancelExecutionToken,
+  type ExecutionStopReason,
+  type ExecutionCancelToken,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -304,7 +308,7 @@ export interface AgentOptions {
   handbookPath?: string;
 }
 
-import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
+import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, SCENARIO_ACTIVITY_TYPE, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 // re-export 保持 agent.js 的既有导出契约（attention.ts 等从 agent.js 引用类型的地方无需改动）。
 export { createSessionWorkspace, sessionWorkspaceStore, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
 
@@ -678,8 +682,8 @@ export class Agent {
    * user messages between tool results (which is invalid message ordering).
    */
   private get pendingInjections(): Map<string, string[]> { return this.workspace().pendingInjections; }
-  private get activeStreamToken(): { cancelled: boolean; userStopped?: boolean } | undefined { return this.workspace().activeStreamToken; }
-  private set activeStreamToken(v: { cancelled: boolean; userStopped?: boolean } | undefined) { this.workspace().activeStreamToken = v; }
+  private get activeStreamToken(): ExecutionCancelToken | undefined { return this.workspace().activeStreamToken; }
+  private set activeStreamToken(v: ExecutionCancelToken | undefined) { this.workspace().activeStreamToken = v; }
   /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
   private get turnModelOverride(): { provider: string; model: string } | undefined { return this.workspace().turnModelOverride; }
   private set turnModelOverride(v: { provider: string; model: string } | undefined) { this.workspace().turnModelOverride = v; }
@@ -1710,6 +1714,19 @@ export class Agent {
     return this.mailbox.dropStatusUpdatesByTaskId(taskId);
   }
 
+  /**
+   * The exchange this turn belongs to, as inherited from the inbound item.
+   *
+   * Outbound A2A traffic uses it as its parent (trace-id rule), so a request and
+   * the answer it provokes share one chainId. Before this existed every delivery
+   * minted a fresh id, which meant a "chain" never contained more than one hop —
+   * the field promised correlation it could not deliver.
+   */
+  currentChain(): { chainId?: string; depth: number } {
+    const ws = this.workspace();
+    return { chainId: ws.chainId, depth: ws.chainDepth ?? 0 };
+  }
+
   /** Get the attention controller (for persistence wiring). */
   getAttentionController(): AttentionController {
     return this.attentionController;
@@ -2244,6 +2261,15 @@ export class Agent {
 
   private async processMailboxItemCore(item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string): Promise<string | void> {
     this.processingMailboxItemId = item.id;
+    // Chain context: this item's chain becomes the parent of anything we send
+    // during this turn. Cleared in the finally block below so a later turn that
+    // starts a fresh conversation does not inherit a stale chain.
+    {
+      const chainExtra = item.payload.extra as { chainId?: string; chainDepth?: number } | undefined;
+      const ws = this.workspace();
+      ws.chainId = typeof chainExtra?.chainId === 'string' ? chainExtra.chainId : undefined;
+      ws.chainDepth = typeof chainExtra?.chainDepth === 'number' ? chainExtra.chainDepth : undefined;
+    }
 
     // Compose batch content into primary item if batch processing
     if (batchItems && batchItems.length > 0) {
@@ -2786,6 +2812,9 @@ export class Agent {
       throw err;
     } finally {
       this.processingMailboxItemId = undefined;
+      // End of turn: the chain context must not leak into the next one.
+      this.workspace().chainId = undefined;
+      this.workspace().chainDepth = undefined;
 
       // Inject concise activity summary into main session for non-chat items
       // so the agent maintains narrative continuity across processing contexts.
@@ -3585,12 +3614,8 @@ export class Agent {
       if (ws) {
         // Durable token so a stop that arrives before handleMessageStream links
         // the SSE cancelToken is not lost.
-        if (!ws.activeStreamToken) {
-          ws.activeStreamToken = { cancelled: true, userStopped: true };
-        } else {
-          ws.activeStreamToken.cancelled = true;
-          ws.activeStreamToken.userStopped = true;
-        }
+        if (!ws.activeStreamToken) ws.activeStreamToken = { cancelled: false };
+        cancelExecutionToken(ws.activeStreamToken, 'user_stop', { userStopped: true });
         // Only the *current* focus of the target worker — never poison queued
         // human_chat waiting next (nor the sibling workers).
         this.markCancelTokenStopped(ws.activeStreamToken, this.attentionController.getWorkerFocus(workerId));
@@ -3605,12 +3630,8 @@ export class Agent {
     // ── 兼容路径：当前 ALS 上下文（串行模式 / 无 target 的旧行为）。
     // Durable token so a stop that arrives before handleMessageStream links
     // the SSE cancelToken is not lost.
-    if (!this.activeStreamToken) {
-      this.activeStreamToken = { cancelled: true, userStopped: true };
-    } else {
-      this.activeStreamToken.cancelled = true;
-      this.activeStreamToken.userStopped = true;
-    }
+    if (!this.activeStreamToken) this.activeStreamToken = { cancelled: false };
+    cancelExecutionToken(this.activeStreamToken, 'user_stop', { userStopped: true });
     // Only the *current* focus — never poison queued human_chat waiting next.
     this.markCurrentFocusCancelTokenStopped();
     // Make non-stream paths (heartbeat / handleMessage) observe cancel at yield.
@@ -3630,9 +3651,7 @@ export class Agent {
   private markCancelTokenStopped(token: unknown, focus: MailboxItem | undefined): void {
     const mark = (ct: unknown) => {
       if (!ct || typeof ct !== 'object') return;
-      const t = ct as { cancelled?: boolean; userStopped?: boolean };
-      t.cancelled = true;
-      t.userStopped = true;
+      cancelExecutionToken(ct as { cancelled?: boolean; userStopped?: boolean }, 'user_stop', { userStopped: true });
     };
     mark(token);
     const focusExtra = focus?.payload?.extra as { cancelToken?: unknown } | undefined;
@@ -5143,42 +5162,37 @@ export class Agent {
     // Track chat activity (only if not already in a heartbeat or other activity)
     let chatActivityId: string | undefined;
     if (!this.workspaceActivity) {
-      let actType: AgentActivity['type'] = 'chat';
+      // Activity type has ONE mapping, exhaustive over scenarios (see
+      // SCENARIO_ACTIVITY_TYPE). Labels stay here because they depend on the
+      // peer's name — i.e. on data, not on the scenario alone.
+      const actType: AgentActivity['type'] = SCENARIO_ACTIVITY_TYPE[scenario];
       let actLabel: string;
       const peerName = senderInfo?.name || senderId || undefined;
       switch (scenario) {
         case 'a2a':
-          actType = 'a2a';
           actLabel = peerName ? `Chat from ${peerName}` : 'Agent Message';
           break;
         case 'heartbeat':
-          actType = 'internal';
           actLabel = userMessage.includes('DAILY REPORT') ? 'Daily Report'
             : userMessage.includes('MEMORY FLUSH') ? 'Memory Flush'
             : 'Internal Operation';
           break;
         case 'comment_response':
-          actType = 'chat';
           actLabel = peerName ? `Comment reply to ${peerName}` : 'Comment Reply';
           break;
         case 'review':
-          actType = 'internal';
           actLabel = peerName ? `Reviewing task from ${peerName}` : 'Task Review';
           break;
         case 'memory_consolidation':
-          actType = 'internal';
           actLabel = 'Memory Consolidation';
           break;
         case 'distillation':
-          actType = 'internal';
           actLabel = 'Post-Task Distillation';
           break;
         case 'requirement_action':
-          actType = 'internal';
           actLabel = peerName ? `Requirement action from ${peerName}` : 'Requirement Action';
           break;
         case 'workflow_action':
-          actType = 'internal';
           actLabel = 'Workflow Action';
           break;
         default:
@@ -5885,7 +5899,7 @@ export class Agent {
     onEvent: (event: LLMStreamEvent & { agentEvent?: string }) => void,
     senderId?: string,
     senderInfo?: { name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string },
-    cancelToken?: { cancelled: boolean; userStopped?: boolean },
+    cancelToken?: ExecutionCancelToken,
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
@@ -5895,10 +5909,10 @@ export class Agent {
     // cancelActiveStream() (called via the cancel-processing API)
     // properly propagates userStopped to this stream.
     if (cancelToken) {
-      // A stop that arrived before this turn started must not be wiped.
+      // A stop that arrived before this turn started must not be wiped — and its
+      // reason travels with it (never re-labelled as "external").
       if (this.activeStreamToken?.userStopped) {
-        cancelToken.cancelled = true;
-        cancelToken.userStopped = true;
+        cancelExecutionToken(cancelToken, this.activeStreamToken.stopReason ?? 'user_stop', { userStopped: true });
       }
       this.activeStreamToken = cancelToken;
     }
@@ -6508,7 +6522,7 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean },
+    cancelToken?: ExecutionCancelToken,
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
     requirementId?: string,
@@ -6592,7 +6606,7 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean },
+    cancelToken?: ExecutionCancelToken,
     taskProjectContext?: TaskProjectContext,
     executionRound?: number,
     resumeNotice?: string,
@@ -6620,6 +6634,21 @@ export class Agent {
     let seq = 0;
     const emit = (type: string, content: string, metadata?: unknown) => {
       onLog({ seq: seq++, type, content, metadata, persist: true });
+    };
+    /**
+     * 任务执行被停的唯一出口。
+     *
+     * 原因**只能**从 token 读（由取消发起方写入，见 `cancelExecutionToken`），
+     * 此处不得编造文案。旧实现把这句写死成
+     * `'Task execution was stopped externally'`，于是平台自身的正常收尾
+     * （agent 提交评审 → 状态离开 in_progress → cleanupOnLeaveStatus 置位 token）
+     * 也被描述成"被外部停止"，下游据此在已完成的任务上写下
+     * 「Task execution cancelled externally … Will auto-resume」的幽灵提示。
+     */
+    const emitCancelled = (phase: string) => {
+      const stopReason: ExecutionStopReason = cancelToken?.stopReason ?? 'unknown';
+      emit('status', 'cancelled', { stopReason, phase, reason: stopReasonLabel(stopReason) });
+      log.info('Task execution stopped', { taskId, agentId: this.id, stopReason, phase });
     };
     const rawEmitDelta = (text: string) => {
       onLog({ seq: -1, type: 'text_delta', content: text, persist: false });
@@ -6811,7 +6840,7 @@ export class Agent {
 
     try {
       if (cancelToken?.cancelled) {
-        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
+        emitCancelled('preflight');
         return;
       }
 
@@ -6864,8 +6893,7 @@ export class Agent {
         taskToolIterations++;
         if (cancelToken?.cancelled) {
           flushText();
-          emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
-          log.info('Task execution cancelled externally', { taskId, agentId: this.id });
+          emitCancelled('tool_loop');
           return;
         }
 
@@ -6970,8 +6998,7 @@ export class Agent {
         }
 
         if (cancelToken?.cancelled) {
-          emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
-          log.info('Task execution cancelled externally after tools', { taskId, agentId: this.id });
+          emitCancelled('after_tools');
           return;
         }
 
@@ -6985,7 +7012,14 @@ export class Agent {
         const yieldResult = await this.checkAttentionYieldPoint();
         if (yieldResult.decision === 'preempt' || yieldResult.decision === 'cancel') {
           const statusLabel = yieldResult.decision === 'cancel' ? 'cancelled' : 'preempted';
+          // 原因回写 token（唯一写者）+ 事件 metadata（唯一分派依据）。
+          // 下游 task-service 只按这个原因决定「写什么注记 / 要不要重放」，
+          // 不再从文本或状态反推。
+          const stopReason: ExecutionStopReason =
+            yieldResult.decision === 'cancel' ? 'user_cancel' : 'preempted';
+          cancelExecutionToken(cancelToken, stopReason);
           emit('status', statusLabel, {
+            stopReason,
             reason: yieldResult.reasoning,
             preemptedBy: yieldResult.item?.sourceType,
           });
@@ -7089,8 +7123,7 @@ export class Agent {
       // Final cancel check after the tool loop exits
       if (cancelToken?.cancelled) {
         flushText();
-        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
-        log.info('Task execution cancelled externally after completion', { taskId, agentId: this.id });
+        emitCancelled('post_loop');
         return;
       }
 
@@ -7194,8 +7227,7 @@ export class Agent {
       // If abort was triggered by cancel, treat as cancellation not error
       if (cancelToken?.cancelled) {
         flushText();
-        emit('status', 'cancelled', { reason: 'Task execution was stopped externally' });
-        log.info('Task execution cancelled (caught abort)', { taskId, agentId: this.id });
+        emitCancelled('caught_abort');
         return;
       }
       // Save any partial assistant text to the session so retries have full context

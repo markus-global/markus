@@ -32,6 +32,7 @@ import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget, alignStreamedAgentId,
+  inFlightAgentIdx,
   appendLiveOutput, appendSubagentLog,
   appendTextToSegments, appendThinkingToSegments,
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
@@ -377,9 +378,39 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // an interim view — server `snapshot` (or live tool events) will replace/
       // update them. Do NOT wipe tools here: ring replay alone can miss early
       // tool events once the text_delta ring overflows.
-      let agentMsgId = last?.id;
-      if (!last || last.isError) {
-        agentMsgId = `reattach_${Date.now()}`;
+      // ── 气泡身份 = 回合（2026-10-25 根因修复）──────────────────────────────
+      // 旧实现按 `!last || last.isError` 决定是否 mint 一个 `reattach_*` 气泡。
+      // 但 `last` 是「重连目标」，不是「本回合的在飞气泡」——它指向用户消息、
+      // 上一轮已完成的回复、或本回合气泡已被 DB heal 换过身份时，这里就**再造一个**。
+      // 重连一次多一个：老板 2026-10-25 截图里一个回合长出 3~4 个气泡
+      //（思考中 / 执行命令·4 步 / 两条重复的 20 步·2 失败），而 DB 只有 1 行 assistant。
+      //
+      // 现在：本回合已有在飞气泡 → 一律复用它；只有真的没有任何在飞气泡时才创建。
+      // `last` 只用来决定「复用哪一条」，不再有权力凭空造第二条。
+      // 气泡身份只认**服务端权威**，不用本地 `isStreaming` 标志。
+      //
+      // 本地标志是陈旧派生量：流式进行中服务端不落库（`isStreaming: true` 只在
+      // 断连快照时写），页面加载后的 buffer 里出现的 true 只可能来自历史残留。
+      // 一旦拿它当「本回合在飞气泡」，`handleSnapshot` 就会把**整份权威快照**
+      // 写进页面中间那条历史回复（实测：11960 字 / 178 段全部落进第 13 条），
+      // 而末尾什么都不长 —— 用户看到的就是「新窗口打开没有正在输出的内容」。
+      //
+      // 判据：只有服务端点名了重连目标（`pickStreamReattachTarget` 基于
+      // `status.messageId` 命中）才复用；否则本轮回复尚未落库，必须在末尾另起。
+      const reuseIdx = (last && !last.isError && last.sender === 'agent')
+        ? msgs.findIndex(m => m.id === last.id)
+        : -1;
+      const reuseBubble = reuseIdx >= 0 ? msgs[reuseIdx] : undefined;
+      // 新建气泡的身份必须**确定性**：同一轮的多帧渲染要落在同一个 React key 上。
+      //
+      // 用 `Date.now()` 会让每一次加载 / 重连都铸一个新 id：React 视作「旧节点删除 +
+      // 新节点插入」，整条气泡的 DOM 被重建（滚动、图片、代码块全部重排），用户看到
+      // 的就是「内容变了又变回来」的闪烁——刷新时尤其明显。
+      // 服务端的 `status.messageId`（cm_stream_*）在**同一轮内恒定**、跨轮不同，
+      // 正是这条气泡该用的稳定身份。
+      const stableTurnId = status.messageId || status.streamId || sessionId;
+      const agentMsgId = reuseBubble ? reuseBubble.id : `reattach_${stableTurnId}`;
+      if (!reuseBubble) {
         updateConvMsgs(convKey, prev => [
           ...prev,
           { id: agentMsgId!, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), isStreaming: true, segments: [] },
@@ -387,7 +418,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       } else {
         // Keep tool cards from soft-disconnect DB persist; drop text segments so
         // ring text_delta fallback (no snapshot) does not duplicate DB text.
-        const revivedTools = (last.segments ?? [])
+        const revivedTools = (reuseBubble.segments ?? [])
           .filter((s): s is Extract<typeof s, { type: 'tool' }> => s.type === 'tool')
           .map(s =>
             s.status === 'stopped' || s.status === 'running'
@@ -395,7 +426,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               : s,
           );
         updateConvMsgs(convKey, prev => prev.map(m =>
-          m.id === last.id
+          m.id === agentMsgId
             ? {
                 ...m,
                 text: '',
@@ -984,19 +1015,37 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // direct — build an interleaved segment stream
       beginStream(sendKey);
       const sendNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
-      const agentMsgId = `a_${sendNonce}`;
+      // ── 气泡身份 = 回合（2026-10-25 根因修复）──────────────────────────────
+      // resume 是**同一个回合**的延续（看门狗重连、断流恢复、半截回复续写）。
+      // 旧实现无条件 append 一个新 agent 气泡，于是每 resume 一次就多一个气泡：
+      // 老板截图里「思考中…」和「执行命令…」上下并排、以及两条完全相同的
+      // 「执行命令… · 20 步 · 2 失败」，都是同一个回合被 resume 分裂出来的。
+      // 现在：本回合已有在飞气泡 → 复用它（id 沿用），只有真的没有才创建。
+      const beforeMsgs = options?.isResume ? (readConvMsgs(sendKey) ?? []) : [];
+      const resumeIdx = options?.isResume ? inFlightAgentIdx(beforeMsgs) : -1;
+      const resumedBubbleId = resumeIdx >= 0 ? beforeMsgs[resumeIdx]!.id : undefined;
+      const agentMsgId = resumedBubbleId ?? `a_${sendNonce}`;
       const optimisticUserId = `u_${sendNonce}`;
       // Mutable session ID that gets resolved when session_start event arrives
       let streamSessionId: string | null = options?.sessionIdOverride
         ?? (volatile.activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : (volatile.activeSessionId ?? null));
       if (options?.isResume) {
-        // Resume: don't add a duplicate user message — just append the
-        // agent continuation placeholder after the existing partial response.
+        // Resume: don't add a duplicate user message — continue in the SAME bubble.
         const agentCreatedAt = new Date().toISOString();
-        updateConvMsgs(sendKey, prev => [
-          ...prev,
-          { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [], isStreaming: true },
-        ], streamSessionId);
+        updateConvMsgs(sendKey, prev => {
+          if (resumedBubbleId) {
+            const idx = prev.findIndex(m => m.id === resumedBubbleId);
+            if (idx >= 0) {
+              return prev.map((m, j) => j === idx
+                ? { ...m, isStreaming: true, isStopped: false, isError: false }
+                : m);
+            }
+          }
+          return [
+            ...prev,
+            { id: agentMsgId, sender: 'agent', text: '', time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt, segments: [], isStreaming: true },
+          ];
+        }, streamSessionId);
       } else {
         const agentCreatedAt = new Date().toISOString();
         const userMsg: ChatMsg = { id: optimisticUserId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };

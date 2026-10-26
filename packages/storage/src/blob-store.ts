@@ -103,14 +103,39 @@ export function projectJsonForStorage(json: string, store: BlobStore, thresholdB
 /** 读取方向的透明还原：指针 → 原始 JSON 字符串。 */
 export function resolveJsonFromStorage(json: string | null | undefined, store: BlobStore): string {
   if (!json) return json ?? '';
-  // 只对形如 {"$blob":...} 的极小字符串做解析，避免给每行付 JSON.parse 的成本
-  if (json.length > 200 || json.charCodeAt(0) !== 123 /* { */) return json;
+  if (json.charCodeAt(0) !== 123 /* { */) return json;
+  // 快速否决：绝大多数字段不含指针，避免为每行付 JSON.parse 的代价。
+  //
+  // 判据必须是**结构**（含 "$blob" 键），不能是长度。用 `length > 200` 当门槛是把
+  // “纯指针很短”这个经验假设当成了不变量：指针一旦与其它字段并存（混合体），
+  // 就会漏判 —— 实测真实事故：某行 metadata 是
+  // `{"$blob":"...","$bytes":119048,"segments":[1 段]}`，119KB 被外层长度
+  // 挡在门外，前端只看到那 1 段残片，完整 63 段（32 次工具调用）明明就在 blob 里。
+  if (!json.includes('"$blob"')) return json;
   try {
     const parsed = JSON.parse(json) as unknown;
-    if (isBlobRef(parsed)) {
-      const text = store.getText(parsed.$blob);
-      return text ?? json; // 文件丢了就保留指针，至少不伪造内容
-    }
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return json;
+    const ref = parsed as Record<string, unknown>;
+    const sha = ref[BLOB_KEY];
+    if (typeof sha !== 'string') return json;
+    const text = store.getText(sha);
+    if (text == null) return json; // 文件丢了就原样返回，至少不伪造内容
+    // 纯指针：blob 正文就是完整答案。
+    if (isBlobRef(parsed) && Object.keys(ref).length === 2) return text;
+    // 混合体：blob 正文是**权威**（它是完整快照），外层非 `$` 字段只补缺不覆盖。
+    // 覆盖会把完整数据又降级回残片（外层那 1 段正是降级产物）。
+    try {
+      const base = JSON.parse(text) as unknown;
+      if (base && typeof base === 'object' && !Array.isArray(base)) {
+        const merged: Record<string, unknown> = { ...(base as Record<string, unknown>) };
+        for (const [k, v] of Object.entries(ref)) {
+          if (k === BLOB_KEY || k === BYTES_KEY) continue;
+          if (!(k in merged)) merged[k] = v;
+        }
+        return JSON.stringify(merged);
+      }
+    } catch { /* blob 不是 JSON 对象 —— 用原文 */ }
+    return text;
   } catch { /* 不是 JSON —— 原样返回 */ }
   return json;
 }

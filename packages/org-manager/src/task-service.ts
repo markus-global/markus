@@ -42,6 +42,10 @@ import {
   PREEMPT_REQUEUE_DELAY_MS,
   tokenizeSearchQuery,
   scoreKeywordHaystack,
+  cancelExecutionToken,
+  isExternalStopReason,
+  stopReasonLabel,
+  type ExecutionStopReason,
 } from '@markus/shared';
 import {
   shouldDistillTask,
@@ -608,7 +612,8 @@ export class TaskService implements ApprovalTargetPort {
     this.markReviewSettled(current, 'revision', reviewerId);
     this.updateTaskStatus(
       current.id, 'in_progress', reviewerId, false, false, 'human',
-      reason ? `Revision requested — ${reason}` : 'Revision requested',
+      // reason 只是状态历史的一行标签；打回正文的唯一载体是上面那条评论。
+      'Revision requested',
     );
   }
 
@@ -1875,7 +1880,8 @@ export class TaskService implements ApprovalTargetPort {
     // Cancel any currently running execution for this task before starting a new one
     //（仅在闸放行、即无在飞纪元时才可能走到这里；此处为取消信号通道的兜底清理）
     const existing = this.taskCancelTokens.get(taskId);
-    if (existing) existing.cancelled = true;
+    // 被新的执行轮次取代 —— 旧纪元作废，不是"外部取消"，不得产生用户可见注记。
+    if (existing) cancelExecutionToken(existing, 'superseded');
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
@@ -2340,44 +2346,28 @@ export class TaskService implements ApprovalTargetPort {
                 },
                 timestamp: new Date().toISOString(),
               });
-            } else if (entry.content === 'preempted') {
-              const preemptedBy = (entry.metadata as Record<string, unknown> | undefined)?.preemptedBy ?? 'unknown';
-              this.addTaskNote(taskId,
-                `[System] Task preempted by higher-priority item (${preemptedBy}). Will auto-resume.`,
-                'system'
-              );
-              setTimeout(() => {
-                const current = this.tasks.get(taskId);
-                if (!current || current.status !== 'in_progress') return;
-                log.info('Re-queuing preempted task', { taskId });
-                // 调度意图：旧执行可能仍在 drain → 交由单飞闸决定「立即启动 / 延后重放」。
-                // 不再用 `!token.cancelled` 本地判据直接丢弃（旧式丢弃 = 静默丢工作）。
-                this.runTask(taskId, 0, undefined, 'preempted').catch(err =>
-                  log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
-                );
-              }, PREEMPT_REQUEUE_DELAY_MS);
-            } else if (entry.content === 'cancelled') {
-              // 外部取消（邮箱项「取消」/ cancel-processing / 注意力 yield 决出 cancel）：
-              // agent 发出 status 'cancelled'，但**并没有**显式取消任务本体（显式取消走
-              // POST /api/tasks/:id/cancel → cancelTask → status='cancelled'）。
-              // 旧行为：无此分支 → 任务停在 in_progress 且不再调度 = 永久卡死（老板反馈
-              // 「执行中显示 cancelled 然后就停了，不合理」）。
-              // 新行为：视同可恢复中断（类 preempted），延后自动重放；若期间任务被显式
-              // 取消（status!=='in_progress'）则不再拉起。给用户一次观察窗口，避免
-              // 无限紧循环：PREEMPT_REQUEUE_DELAY 与抢占一致。
-              const cancelReason = (entry.metadata as Record<string, unknown> | undefined)?.reason ?? 'unknown';
-              this.addTaskNote(taskId,
-                `[System] Task execution cancelled externally (${cancelReason}). Will auto-resume.`,
-                'system'
-              );
-              setTimeout(() => {
-                const current = this.tasks.get(taskId);
-                if (!current || current.status !== 'in_progress') return;
-                log.info('Recovering externally-cancelled task', { taskId });
-                this.runTask(taskId, 0, undefined, 'recover').catch(err =>
-                  log.warn('Failed to recover cancelled task', { taskId, error: String(err) })
-                );
-              }, PREEMPT_REQUEUE_DELAY_MS);
+            } else if (entry.content === 'preempted' || entry.content === 'cancelled') {
+              // 被停的**唯一**处置入口：原因只读事件 metadata 的 `stopReason`
+              // （agent 从 cancelToken 原样透传，唯一写入者是 cancelExecutionToken），
+              // 不从日志文本、也不从任务状态反推。抢占与真外部取消共用同一套
+              // 「写什么注记 / 要不要重放」逻辑，杜绝两条内联分支各说各话。
+              const stopMeta = (entry.metadata ?? {}) as Record<string, unknown>;
+              const isPreempt = entry.content === 'preempted';
+              const stopReason = (stopMeta['stopReason'] as ExecutionStopReason | undefined)
+                ?? (isPreempt ? 'preempted' : 'unknown');
+              this.handleExecutionStopped({
+                taskId,
+                stopReason,
+                detail: isPreempt ? `抢占者 ${String(stopMeta['preemptedBy'] ?? 'unknown')}` : undefined,
+                retryDelayMs: PREEMPT_REQUEUE_DELAY_MS,
+                replay: () => {
+                  // 旧执行可能仍在 drain → 交由单飞闸决定「立即启动 / 延后重放」。
+                  // 不再用 `!token.cancelled` 本地判据直接丢弃（旧式丢弃 = 静默丢工作）。
+                  this.runTask(taskId, 0, undefined, isPreempt ? 'preempted' : 'recover').catch(err =>
+                    log.warn('Failed to re-queue interrupted task', { taskId, stopReason, error: String(err) })
+                  );
+                },
+              });
             }
           } else if (entry.type === 'error') {
             const nextAttempt = _retryAttempt + 1;
@@ -3316,14 +3306,81 @@ export class TaskService implements ApprovalTargetPort {
 
   // ─── Stage 1: Cleanup on leaving a status ────────────────────────────────────
 
+  /**
+   * 执行被停的**唯一**处置点（preempted / cancelled / 任何将来的停止原因都走这里）。
+   *
+   * ── 为什么必须是唯一处置点（2026-10-24 根因修复）─────────────────────────
+   * 旧实现里 `preempted` 与 `cancelled` 各有一个内联分支，都从**日志条目的文本**
+   * 出发写一条"Will auto-resume"的注记，再各写一份 `setTimeout` 重放。而"这个
+   * 取消到底是外部中断还是平台自己的正常收尾"从来没有被表示为数据 —— agent 侧的
+   * 原因是一句写死的文案，task-service 侧只能猜。
+   *
+   * 后果：agent 正常 `task_submit_review` → 状态离开 in_progress → 平台置位
+   * 取消 token（`lifecycle`）→ agent emit `status:'cancelled'` → 这里无条件写成
+   * 「…cancelled externally … Will auto-resume…」——**在已完成的任务
+   * 上留下一条幽灵提示，并且承诺了一件不会发生的事**（重放回调里 `status !==
+   * 'in_progress'` 直接丢弃）。
+   *
+   * 现在：分派依据只有一个 —— `stopReason`（由取消发起方用
+   * `cancelExecutionToken` 写在 token 上，经 agent 的事件透传到这里）。
+   *   · `lifecycle` / `superseded` / `unknown` → 平台自身语义或无法归因：
+   *      不写用户可见注记、不重放（任务生命周期已由状态迁移本身驱动）。
+   *   · 真外部中断（preempted / user_stop / user_cancel / disconnect / timeout）→
+   *      仅在任务**仍**在执行中时写注记并重放；否则注记如实说明"本轮不再恢复"，
+   *      绝不写一句无法兑现的承诺。
+   */
+  private handleExecutionStopped(args: {
+    taskId: string;
+    stopReason: ExecutionStopReason | undefined;
+    /** 附加细节（如抢占者任务 ID），写进用户可见注记 */
+    detail?: string;
+    retryDelayMs: number;
+    replay: () => void;
+  }): void {
+    const { taskId, stopReason, detail, retryDelayMs, replay } = args;
+    const task = this.tasks.get(taskId);
+
+    if (!isExternalStopReason(stopReason)) {
+      log.info('Execution stopped by platform lifecycle — no note, no replay', {
+        event: 'task.execution_stopped', taskId,
+        stopReason: stopReason ?? 'unknown', taskStatus: task?.status,
+      });
+      return;
+    }
+
+    const label = stopReasonLabel(stopReason);
+    const suffix = detail ? `（${detail}）` : '';
+    const willReplay = task?.status === 'in_progress';
+
+    this.addTaskNote(
+      taskId,
+      willReplay
+        ? `[System] ${label}${suffix}，${retryDelayMs > 0 ? `${Math.round(retryDelayMs / 1000)} 秒后` : '即将'}自动恢复执行。`
+        : `[System] ${label}${suffix}。任务当前状态为 ${task?.status ?? 'unknown'}，本轮不再恢复。`,
+      'system',
+    );
+
+    if (!willReplay) return;
+
+    setTimeout(() => {
+      const current = this.tasks.get(taskId);
+      if (!current || current.status !== 'in_progress') return;
+      log.info('Recovering interrupted task execution', { taskId, stopReason });
+      replay();
+    }, retryDelayMs);
+  }
+
   private cleanupOnLeaveStatus(taskId: string, from: TaskStatus, to: TaskStatus): void {
     if (from === 'in_progress' && to !== 'in_progress') {
       this.taskRetryErrors.delete(taskId);
       const token = this.taskCancelTokens.get(taskId);
       if (token) {
-        token.cancelled = true;
+        // 状态迁移导致收尾 —— 这是**平台自身的正常语义**，不是"外部取消"。
+        // 原因写在 token 上，下游（agent 事件 → task-service 日志订阅）据此
+        // 判断"要不要写用户可见注记 / 要不要重放"，不再靠猜状态或猜日志文本。
+        cancelExecutionToken(token, 'lifecycle');
         this.taskCancelTokens.delete(taskId);
-        log.info(`Cancelled running execution for task ${taskId} (status → ${to})`);
+        log.info(`Cancelled running execution for task ${taskId} (status → ${to})`, { stopReason: 'lifecycle' });
       }
       // T2 · 修订轮：任务离开 in_progress → 挂起的重派发已无意义（任务不再需要运行）→ 丢弃，
       // 避免陈旧 pending 在后续无关 settle 上产生一次多余执行。
@@ -5387,31 +5444,49 @@ export class TaskService implements ApprovalTargetPort {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
     }
 
-    const by = author || 'Reviewer';
+    // ── 身份：`author` 是**动作发起者的 id**，不是显示名 ──────────────────────
+    // 历史 bug（2026-10-24）：这个参数被直接当名字写进 notes（`by ${author}`），
+    // 而 agent 路径传的是 agentId → 界面上出现「by agt_41fba4fa…」这种裸 ID；
+    // 同一次打回在评论里又被硬编码成 'Review System'，真名反而丢了。
+    // 现在 id / 类型 / 显示名三者独立，显示名**只从 resolver 取**。
+    const actorId = author ?? 'system';
+    const actorType: 'human' | 'agent' | 'system' = author
+      ? this.resolveActorTypeForGuard(author)
+      : 'system';
+    const actorName = author ? (this.resolveActorName(actorId, actorType) ?? actorId) : 'System';
+
     // P1：登记收口**必须在自增 executionRound 之前**（round = 被评审轮次）。
-    this.markReviewSettled(task, 'revision', by);
-    const now = new Date();
+    this.markReviewSettled(task, 'revision', actorId);
     task.executionRound = (task.executionRound ?? 1) + 1;
-    task.notes = task.notes ?? [];
-    task.notes.push(`[${formatLocalTimestamp(now)} by ${by}] Revision requested (round ${task.executionRound}): ${reason}`);
 
     if (this.taskRepo) {
       (this.taskRepo as any).updateExecutionRound?.(task.id, task.executionRound)
         ?.catch?.((err: Error) => log.warn('Failed to persist execution round', { taskId: task.id, error: String(err) }));
-      this.taskRepo.update(task.id, { notes: task.notes })
-        .catch(err => log.warn('Failed to persist revision notes', { error: String(err) }));
     }
 
-    // Await comment persistence so runTask can read it when building context
+    // ── 单一事实源：打回正文只写进**评论**（带真实评审人身份）────────────────
+    // 旧实现把同一段正文写三份：task.notes 全文、评论全文、statusHistory.reason
+    // 再塞 200 字。前端 Work 时间线把 notes 与 comments 合并渲染 → 同一段打回
+    // 出现两条一模一样的记录（其中 notes 那条还把 agentId 当名字显示）。
+    // 现在：评论是唯一载体；notes 不再写副本；状态历史的 reason 只放短标签。
+    // 下轮执行的上下文从评论读取（runTask 的 prevComments），信息一点不丢。
     if (this.taskCommentRepo) {
       try {
-        await this.taskCommentRepo.add({
-          taskId: task.id,
-          authorId: 'system',
-          authorName: 'Review System',
-          authorType: 'system',
-          content: `**Revision Requested (Round ${task.executionRound})**\n\n${reason}`,
-        });
+        await this.postTaskComment(
+          task.id,
+          actorId,
+          actorName,
+          `**打回（第 ${task.executionRound} 轮）**\n\n${reason}`,
+          // 不 @ 任何人：交付/唤醒由随后的状态迁移负责，评论通道不得为同一
+          // 事实再扇出一次通知（否则每次打回都多一轮 agent 唤醒）。
+          undefined,
+          undefined,
+          {
+            authorType: actorType,
+            // 交付由随后的状态迁移负责 → 评论通道不得为同一事实再扇出一次通知。
+            commentKind: 'decision_record',
+          },
+        );
       } catch (err) {
         log.warn('Failed to persist revision comment', { taskId: task.id, error: String(err) });
       }
@@ -5430,9 +5505,13 @@ export class TaskService implements ApprovalTargetPort {
       metadata: { reason, executionRound: task.executionRound, workerAgentId: task.assignedAgentId },
     });
 
-    // Transition directly to in_progress (auto re-execute)
-    this.updateTaskStatus(task.id, 'in_progress', author, false, false, 'agent', `Revision requested: ${reason.slice(0, 200)}`);
-    log.info(`Revision requested, auto-restarting task: ${task.title}`, { id: task.id, reason, round: task.executionRound });
+    // Transition directly to in_progress (auto re-execute).
+    // reason 只是状态历史的一行标签 —— 正文在评论里，不在这里重复。
+    this.updateTaskStatus(
+      task.id, 'in_progress', author, false, false, actorType,
+      `Revision requested (round ${task.executionRound})`,
+    );
+    log.info(`Revision requested, auto-restarting task: ${task.title}`, { id: task.id, reason, round: task.executionRound, actorId, actorType });
     return task;
   }
 
@@ -5723,7 +5802,7 @@ export class TaskService implements ApprovalTargetPort {
     // retry-fresh 意图走统一派发入口 —— 旧纪元未**实际 settle**则延后重放，
     // settle（CAS）后由 re-arm 再过同一单飞闸触发，峰值并发恒为 1。
     const liveExec = this.getLiveExecution(taskIdStr);
-    if (liveExec) liveExec.cancelToken.cancelled = true;
+    if (liveExec) cancelExecutionToken(liveExec.cancelToken, 'superseded');
 
     // Purge queued informational status updates for this task before the fresh start
     if (task.assignedAgentId && this.agentManager) {
@@ -5997,19 +6076,22 @@ export class TaskService implements ApprovalTargetPort {
                 );
               }, delayMs);
             }
-          } else if (entry.type === 'status' && entry.content === 'preempted') {
-            const preemptedBy = (entry.metadata as Record<string, unknown> | undefined)?.preemptedBy ?? 'unknown';
-            this.addTaskNote(taskId,
-              `[System] Task preempted by higher-priority item (${preemptedBy}). Will auto-resume.`,
-              'system'
-            );
-            setImmediate(() => {
-              const current = this.tasks.get(taskId);
-              if (!current || current.status !== 'in_progress') return;
-              log.info('Re-queuing preempted task (fresh)', { taskId });
-              this.runTask(taskId, 0, undefined, 'preempted').catch(err =>
-                log.warn('Failed to re-queue preempted task', { taskId, error: String(err) })
-              );
+          } else if (entry.type === 'status' && (entry.content === 'preempted' || entry.content === 'cancelled')) {
+            // 与主执行路径同一个处置点（唯一），原因同样只读 metadata.stopReason。
+            const stopMeta = (entry.metadata ?? {}) as Record<string, unknown>;
+            const isPreempt = entry.content === 'preempted';
+            const stopReason = (stopMeta['stopReason'] as ExecutionStopReason | undefined)
+              ?? (isPreempt ? 'preempted' : 'unknown');
+            this.handleExecutionStopped({
+              taskId,
+              stopReason,
+              detail: isPreempt ? `抢占者 ${String(stopMeta['preemptedBy'] ?? 'unknown')}` : undefined,
+              retryDelayMs: 0,
+              replay: () => {
+                this.runTask(taskId, 0, undefined, isPreempt ? 'preempted' : 'recover').catch(err =>
+                  log.warn('Failed to re-queue interrupted task (fresh)', { taskId, stopReason, error: String(err) })
+                );
+              },
             });
           } else if (entry.type === 'error') {
             const retryDecision = this.shouldRetryTask(taskId, entry.content, 0, cancelToken.cancelled);

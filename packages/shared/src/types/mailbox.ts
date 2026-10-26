@@ -89,8 +89,6 @@ export interface MailboxTypeDescriptor {
   defaultPriority: MailboxPriority;
   category: MailboxCategory;
   icon: string;
-  activityType: string | null;
-  createsActivity: boolean;
   invokesLLM: boolean;
   /**
    * 该类型参与实体亲和的维度，**按优先级降序**，最后一项必须是 `'system'`。
@@ -99,23 +97,35 @@ export interface MailboxTypeDescriptor {
   entityScopes: readonly MailboxEntityScope[];
 }
 
+// Two fields were removed here on 2026-10-25 — not renamed, deleted:
+//
+// - `activityType`: the activity row describes what the agent was DOING, which is
+//   the turn's scenario, not the mailbox type. The mailbox type is a lossy proxy:
+//   `review_request` arrives as scenario `review` (internal work), yet this table
+//   claimed `chat`. Two tables disagreed about one fact, and only the scenario
+//   table was ever read. The single mapping now lives in
+//   `SCENARIO_ACTIVITY_TYPE` (@markus/core), exhaustively typed over AgentScenario.
+// - `createsActivity`: a per-type boolean cannot express the actual rule. A
+//   `task_comment` creates no activity when injected into a running turn, but does
+//   when it falls through to handleMessage — the outcome is contextual. Nothing
+//   read the field, so it recorded a rule the runtime never followed.
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   //                                                                                                        ── entity affinity scopes (precedence order; MUST end with 'system')
-  system_event:         { label: 'System Event',         defaultPriority: 1, category: 'system',       icon: '⚙',  activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['system'] },
-  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
-  task_comment:         { label: 'Task Comment',         defaultPriority: 2, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
-  mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'user', 'conversation', 'system'] },
-  session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  activityType: 'respond_in_session', createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
-  task_status_update:   { label: 'Task Status',          defaultPriority: 1, category: 'task',          icon: '📋', activityType: null,                 createsActivity: true,  invokesLLM: false, entityScopes: ['task', 'system'] },
-  a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', activityType: 'a2a',                createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'channel', 'system'] },
-  review_request:       { label: 'Review Request',       defaultPriority: 1, category: 'task',          icon: '👀', activityType: 'chat',               createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
-  requirement_comment:  { label: 'Requirement Comment',  defaultPriority: 2, category: 'task',          icon: '💬', activityType: null,                 createsActivity: false, invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
-  requirement_update:   { label: 'Requirement Update',   defaultPriority: 1, category: 'notification',  icon: '📝', activityType: 'internal',           createsActivity: true,  invokesLLM: false, entityScopes: ['requirement', 'system'] },
-  daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['system'] },
-  heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  activityType: 'heartbeat',          createsActivity: true,  invokesLLM: true,  entityScopes: ['system'] },
-  memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['system'] },
-  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
-  callback_result:      { label: 'Callback Result',      defaultPriority: 1, category: 'system',        icon: '↩',  activityType: 'internal',           createsActivity: true,  invokesLLM: true,  entityScopes: ['conversation', 'system'] },
+  system_event:         { label: 'System Event',         defaultPriority: 1, category: 'system',       icon: '⚙',  invokesLLM: true,  entityScopes: ['system'] },
+  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
+  task_comment:         { label: 'Task Comment',         defaultPriority: 2, category: 'task',          icon: '💬', invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
+  mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  invokesLLM: true,  entityScopes: ['task', 'requirement', 'user', 'conversation', 'system'] },
+  session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
+  task_status_update:   { label: 'Task Status',          defaultPriority: 1, category: 'task',          icon: '📋', invokesLLM: false, entityScopes: ['task', 'system'] },
+  a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', invokesLLM: true,  entityScopes: ['task', 'requirement', 'channel', 'system'] },
+  review_request:       { label: 'Review Request',       defaultPriority: 1, category: 'task',          icon: '👀', invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
+  requirement_comment:  { label: 'Requirement Comment',  defaultPriority: 2, category: 'task',          icon: '💬', invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
+  requirement_update:   { label: 'Requirement Update',   defaultPriority: 1, category: 'notification',  icon: '📝', invokesLLM: false, entityScopes: ['requirement', 'system'] },
+  daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', invokesLLM: true,  entityScopes: ['system'] },
+  heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  invokesLLM: true,  entityScopes: ['system'] },
+  memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', invokesLLM: true,  entityScopes: ['system'] },
+  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
+  callback_result:      { label: 'Callback Result',      defaultPriority: 1, category: 'system',        icon: '↩',  invokesLLM: true,  entityScopes: ['conversation', 'system'] },
 };
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {

@@ -13,7 +13,7 @@
 import type { ServerResponse } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import type { Agent, TurnSessionHint } from '@markus/core';
-import { createLogger, stripLegacyCompletionToken, SSE_DISCONNECT_FORCE_STOP_MS, type LLMStreamEvent } from '@markus/shared';
+import { createLogger, stripLegacyCompletionToken, SSE_DISCONNECT_FORCE_STOP_MS, cancelExecutionToken, type LLMStreamEvent } from '@markus/shared';
 import { SSEBuffer } from './sse-buffer.js';
 import type { ActiveStreamRegistry, ActiveStreamSession } from './active-stream-registry.js';
 
@@ -154,8 +154,7 @@ export class SSEHandler {
                 inactiveMs: silentFor,
                 windowMs: disconnectWindowMs,
               });
-              this.cancelToken.cancelled = true;
-              this.cancelToken.userStopped = true;
+              cancelExecutionToken(this.cancelToken, 'disconnect', { userStopped: true });
               this.activeStream?.cancel({
                 type: 'done',
                 content: '',
@@ -559,7 +558,9 @@ export class SSEHandler {
 
   /**
    * Persist whatever content has been accumulated so far when the SSE
-   * connection drops. Soft disconnect marks isStreaming so refresh can reattach.
+   * connection drops. Soft disconnect marks `interrupted` so the UI can tell a
+   * transport cut from a finished turn — it deliberately does NOT claim the turn
+   * is still streaming (that fact belongs to ActiveStreamRegistry alone).
    */
   private async persistPartialOnDisconnect(): Promise<void> {
     // Turn already finished (success or error) — never re-mark as streaming.
@@ -594,9 +595,23 @@ export class SSEHandler {
 
     if (!partialText && segments.length === 0) return;
 
+    // 断连快照的职责是**保住已产出的内容**，不是**声明这轮还在跑**。
+    //
+    // 存活状态的唯一权威是服务端的 ActiveStreamRegistry（`/stream/status`）。
+    // 这里写 `isStreaming: true` 等于让一条 DB 记录冒充存活声明：进程重启后
+    // registry 归零，而 DB 里那个 true 会永久留存，前端据它画出「思考中」的
+    // 幽灵气泡。早期为补救，又在读路径加了 `clearOrphanStreamingFlagsForSession`
+    // 去猜——猜错就把正在流式的那一行清掉（metadata 被外置成 blob 指针后，
+    // SQL 的 json_extract 静默失效，这个 bug 长期被侥幸掩盖）。
+    //
+    // 现在：只留身份（streamId，供 upsert 判定「同一轮的续写」）与明确的中断
+    // 语义，存活声明交还 registry。前端也不再依赖它——重连目标由 turn-aware
+    // 判定（pickStreamReattachTarget 的 allowCurrentTurnPartial）认出「本轮尚未
+    // 落库的部分回复」。
     const meta: Record<string, unknown> = {
-      isStreaming: true,
       streamId: this.streamId,
+      interrupted: true,
+      isStreaming: false,
     };
     if (segments.length > 0) meta.segments = segments;
 
@@ -802,8 +817,7 @@ export class SSEHandler {
    * 取消处理 (user Stop)
    */
   cancel(): void {
-    this.cancelToken.cancelled = true;
-    this.cancelToken.userStopped = true;
+    cancelExecutionToken(this.cancelToken, 'user_stop', { userStopped: true });
     this.activeStream?.cancel({
       type: 'done',
       content: '',

@@ -564,11 +564,30 @@ describe('SqliteChatSessionRepo', () => {
     expect((healed?.metadata as { isStreaming?: boolean })?.isStreaming).toBe(false);
 
     repo.upsertStreamingAssistantMessage(session.id, 'agent-1', 'partial…', 0, {
-      isStreaming: true,
       streamId: 'live-keep',
+      interrupted: true,
+      isStreaming: false,
     });
-    expect(repo.clearOrphanStreamingFlagsForSession(session.id, 'live-keep')).toBe(0);
-    expect(repo.clearOrphanStreamingFlagsForSession(session.id, null)).toBeGreaterThanOrEqual(1);
+    // 同一轮续写按 `streamId` 判身份（不再靠 isStreaming —— 那是存活声明）：
+    // 断连快照现在写 isStreaming:false，但重连后的二次快照仍必须原地续写，
+    // 不能长出第二条 assistant 行。
+    const snap1 = repo.upsertStreamingAssistantMessage(session.id, 'agent-1', 'partial…', 0, {
+      streamId: 'turn-xyz',
+      interrupted: true,
+      isStreaming: false,
+    });
+    const snap2 = repo.upsertStreamingAssistantMessage(session.id, 'agent-1', 'partial… more', 0, {
+      streamId: 'turn-xyz',
+      interrupted: true,
+      isStreaming: false,
+    });
+    expect(snap2.id).toBe(snap1.id);
+    // 换了一个 streamId = 新的一轮，必须另起一行。
+    const nextTurn = repo.upsertStreamingAssistantMessage(session.id, 'agent-1', 'next turn', 0, {
+      streamId: 'turn-abc',
+      isStreaming: false,
+    });
+    expect(nextTurn.id).not.toBe(snap1.id);
 
     repo.deleteSession('legacy-session');
     expect(repo.getSession('legacy-session')).toBeNull();

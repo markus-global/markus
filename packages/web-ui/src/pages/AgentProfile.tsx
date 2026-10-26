@@ -4,6 +4,7 @@ import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
@@ -2187,21 +2188,11 @@ const ATTENTION_COLORS: Record<string, string> = {
   deciding: 'bg-amber-500/20 text-amber-500',
 };
 
-const MAILBOX_TYPE_ICONS: Record<string, string> = {
-  system_event: '⚙', human_chat: '💬', task_comment: '💬',
-  mention: '@', session_reply: '↩', task_status_update: '📋', a2a_message: '🔗',
-  review_request: '👀', requirement_update: '📝', requirement_comment: '💬', daily_report: '📊',
-  heartbeat: '♡', memory_consolidation: '🧠',
-};
-
+// Icons and category membership come from the registry projection
+// (lib/mailboxTypeMeta.ts) and are kept honest by
+// packages/shared/test/mailbox-type-mirror.test.ts. The local map that used to
+// live here had silently lost `workflow_update` and `callback_result`.
 const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'system'] as const;
-
-const CATEGORY_SOURCE_TYPES: Record<string, string[]> = {
-  interaction: ['human_chat', 'a2a_message', 'mention'],
-  task: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply'],
-  notification: ['requirement_update'],
-  system: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation'],
-};
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
@@ -2545,7 +2536,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             return (
               <span className="text-sm text-fg-secondary inline-flex items-center gap-2">
                 <span>
-                  {MAILBOX_TYPE_ICONS[mind.currentFocus.type] ?? '●'}{' '}
+                  {mailboxTypeIcon(mind.currentFocus.type)}{' '}
                   <span className="text-fg-primary font-medium">{focusDisplay.title}</span>
                   {focusDisplay.subtitle && <span className="text-fg-tertiary ml-1.5 text-xs">{focusDisplay.subtitle}</span>}
                   <span className="text-fg-tertiary ml-2 text-xs">{t('agent:profilePage.mind.since', { time: new Date(mind.currentFocus.startedAt).toLocaleTimeString() })}</span>
@@ -2605,7 +2596,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 <div className="flex gap-1.5 flex-wrap">
                   {Object.entries(typeCounts).map(([type, count]) => (
                     <span key={type} className="text-[10px] text-fg-tertiary bg-amber-500/10 px-1.5 py-0.5 rounded">
-                      {MAILBOX_TYPE_ICONS[type] ?? '●'} {count}
+                      {mailboxTypeIcon(type)} {count}
                     </span>
                   ))}
                 </div>
@@ -2614,7 +2605,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 {visibleItems.map((item, i) => (
                   <div key={item.id} className="flex items-center gap-2 px-3 py-1.5 rounded bg-amber-500/5 border border-amber-500/20 text-sm">
                     <span className="text-fg-tertiary w-4 text-right text-xs">{i + 1}</span>
-                    <span className="text-sm">{MAILBOX_TYPE_ICONS[item.sourceType] ?? '●'}</span>
+                    <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
                     <span className={`text-[10px] ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: `P${item.priority}` })}</span>
                     <span className="text-fg-secondary truncate flex-1 text-xs">{item.summary}</span>
                     <span className="text-[10px] text-fg-tertiary">{new Date(item.queuedAt).toLocaleTimeString()}</span>
@@ -2740,7 +2731,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               const stc = mailbox?.sourceTypeCounts;
               const catCount = key === 'all'
                 ? (stc ? Object.values(stc).reduce((a, b) => a + b, 0) : undefined)
-                : (stc ? (CATEGORY_SOURCE_TYPES[key] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
+                : (stc ? (MAILBOX_CATEGORY_TYPES[key as keyof typeof MAILBOX_CATEGORY_TYPES] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
               return (
                 <button key={key} onClick={() => setCatFilter(key)}
                   className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
@@ -2786,7 +2777,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         <div className="space-y-1">
           {mailbox?.history?.map(item => {
             const isExpanded = expandedId === item.id;
-            const icon = MAILBOX_TYPE_ICONS[item.sourceType] ?? '●';
+            const icon = mailboxTypeIcon(item.sourceType);
             const display = getMailboxItemDisplay(item, t);
             // 【2d 收敛】行状态点的"处理中"以在途流为权威：DB processing 但
             // 不是当前 focus / agent 已停止 → stale（不再蓝色脉冲谎称在处理）。

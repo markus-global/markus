@@ -1481,8 +1481,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // 跑，一次批量请求覆盖全部（抬绝 per-tab 轮询 —— 本仓库被「轮询打满 CPU」坑过）；
     // 页面隐藏即暂停，恢复可见时先立刻对账一次再继续。
     const reconcile = () => {
-      const agentId = currentConvKeyRef.current;
+      // agentId 必须是**真实 agent id**，不能是 `currentConvKeyRef.current` ——
+      // 后者存的是视图键（direct 下碰巧形如 agent id，channel / dm 下则是组合键），
+      // 拿它去问「该 agent 名下这些会话在不在跑」只会查空。
+      const agentId = selectedAgent;
       const ids = openSessionTabs.map((t) => t.id).filter((id) => id !== NEW_CHAT_PLACEHOLDER_ID);
+      // 兜底对账不能因为「tab 集合为空」就整条失效：新窗口 / 新标签页的 tabs 尚未
+      // 恢复，而当前正在看的那个会话恰恰是最需要确认存活性的。
+      if (activeSessionId && activeSessionId !== NEW_CHAT_PLACEHOLDER_ID && !ids.includes(activeSessionId)) {
+        ids.push(activeSessionId);
+      }
       if (agentId && ids.length > 0) void reconcileOpenSessions(agentId, ids);
     };
     let timer: ReturnType<typeof setInterval> | null = null;
@@ -1508,7 +1516,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       stop();
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [previewMode, isActive, openSessionTabs]);
+    // selectedAgent / activeSessionId 是 reconcile 的**输入**：不列入依赖，
+    // 恢复会话身份的那一帧兜底对账仍会拿旧闭包（空 agent / placeholder id）去问，
+    // 等于修了输入却没修调用。
+  }, [previewMode, isActive, openSessionTabs, selectedAgent, activeSessionId]);
 
   useEffect(() => {
     if (previewMode) return;
@@ -2775,12 +2786,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // change, 100%+ CPU) exactly while the UI was idle. Depend only on real keys.
   const reattachRef = useRef(tryReattachActiveStream);
   reattachRef.current = tryReattachActiveStream;
+  // 存活性权威的 revision：写入本依赖后，任何「这个会话在跑」的权威变化都会
+  // 重新触发下面的接管 —— 这是「权威 → 内容恢复」的那条边。
+  //
+  // 没有它时，reattach 只在 `activeSessionId` 等**视图 key** 变化时尝试一次；
+  // 而新接入的客户端恰恰是「视图 key 先恢复、权威后到」，那一次性尝试会在
+  // isStreaming 仍为 false 时白跑，之后权威到货也无人在听 → 内容始终不出现。
+  const streamRevision = useSessionStreamRevision();
   useEffect(() => {
     if (!isActive || previewMode || chatMode !== 'direct' || !selectedAgent) return;
     const sid = activeSessionId;
     if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
+    // 只在权威明确说「这个会话正在输出」时接管。未在输出就什么都不做
+    // （不引入任何本地派生量）；tryReattachActiveStream 自身已带冷却节流，
+    // 且本地已在该会话上消费时会直接早退，所以这里是幂等的。
+    if (!sessionStreamState.isStreaming(sid)) return;
     void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
-  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId]);
+  }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, streamRevision]);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
@@ -2994,7 +3016,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const bufferedMsgs = readConvMsgs(newKey);
     // Restore or reset session tabs for the new agent
     const savedTabs = sessionTabsBuffer.get(newKey);
-    const savedActiveSession = activeSessionBuffer.get(newKey);
+    // 会话身份必须能从**持久化**来源恢复，不能只靠内存 buffer。
+    //
+    // 内存 buffer 在新窗口 / 新标签页里天然是空的，而 `savedActiveSession` 是下面
+    // 三条恢复路径共同的守卫（`changeActiveSession` / 软刷新 / reattach）。它一旦为
+    // undefined，三条路径会**同时静默跳过**：会话身份不恢复、`openSessionTabs` 被置空、
+    // 兜底对账因此也早退 —— 新接入的客户端于是只剩 localStorage 缓存可画，
+    // 表现为「看得到历史，看不到正在输出的那一轮」。
+    // `markus_active_session_<agent>` 本来就是为此持久化的，这里把它接成兜底。
+    const savedActiveSession = activeSessionBuffer.get(newKey)
+      ?? (selectedAgent ? getStoredActiveSession(selectedAgent) ?? undefined : undefined);
     // For direct mode, sending state is only relevant if the stream belongs
     // to the session we're switching TO. Otherwise a stream in session A
     // would incorrectly cause session B to appear as "streaming".

@@ -1735,12 +1735,12 @@ export class ContextEngine {
           lines.push('- To message a **different** agent (not in this DM), use `agent_send_message`.');
           lines.push('- To reach a **human**, use `notify_user`.');
           lines.push('');
-          lines.push('**Conversation flow**: After you reply, the other agent will be automatically triggered to respond. This creates a natural back-and-forth conversation — like texting a colleague.');
+          lines.push('**Conversation flow**: Your reply does **NOT** trigger the other agent. Whether the exchange continues is each side\'s own decision — if the peer has something to add, it will message you itself.');
           lines.push('');
-          lines.push('**CRITICAL — How to STOP the conversation**:');
-          lines.push('Your reply auto-triggers the other agent, so a reply that carries no new information keeps the exchange alive forever. To end your side, **call the `end_turn` tool** and write no reply text. That is the only correct stop signal: it ends your turn without sending anything to the peer.');
-          lines.push('Do NOT write a message explaining that you will not reply. Text like "no response needed", "无待办", "已收到，不重复回复", "该消息为重复，我不再回复" is **itself a reply**: it gets delivered, re-triggers the peer, and restarts the exact loop it was meant to stop. Silence is the *absence* of a message — never a message about being silent.');
-          lines.push('(Writing no reply text at all also stops the exchange, and a bare `[NO_RESPONSE]` is still accepted as a legacy shorthand — but **`end_turn` is preferred**: it cannot be paraphrased by mistake.)');
+          lines.push('**CRITICAL — Default to writing nothing**:');
+          lines.push('Replying is optional and the exception, not the rule. There is no loop to feed, because nothing auto-triggers the peer. Reply only when you have genuinely new information, a question that needs an answer, or a correction.');
+          lines.push('Do NOT write a message explaining that you will not reply. Text like "no response needed", "无待办", "已收到，不重复回复" is **itself a message** the peer reads; when nothing is needed, call `end_turn` and write nothing. Silence is the *absence* of a message — never a message about being silent.');
+          lines.push('(`end_turn` is the only correct stop signal: it ends your turn without sending anything.)');
           lines.push('');
           lines.push('Stop and write nothing when:');
           lines.push('- The conversation has reached a natural conclusion (agreement reached, question answered, info exchanged)');

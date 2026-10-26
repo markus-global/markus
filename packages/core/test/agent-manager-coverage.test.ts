@@ -377,6 +377,35 @@ describe('AgentManager workflow, delegation, and A2A paths', () => {
     expect(agent.getTools().has('agent_send_group_message')).toBe(true);
     expect(agent.getTools().has('agent_create_group_chat')).toBe(true);
   });
+
+  it('outbound A2A inherits the sender\'s current chain (trace-style propagation)', async () => {
+    const manager = createManager();
+    const groupSend = vi.fn(async () => 'msg_1');
+    manager.setGroupChatHandlers({
+      ensureDmChannel: vi.fn(async () => undefined),
+      sendGroupMessage: groupSend,
+      createGroupChat: vi.fn(async () => ({ id: 'gc_1', name: 'Team Chat' })),
+      listGroupChats: vi.fn(async () => []),
+      getChannelMessages: vi.fn(async () => ({ messages: [], hasMore: false })),
+    } as never);
+
+    const sender = await manager.createAgent({ name: 'Sender', roleName: 'custom', orgId: 'org_chain', tools: [] });
+    const receiver = await manager.createAgent({ name: 'Receiver', roleName: 'custom', orgId: 'org_chain', tools: [] });
+
+    // This send happens while answering the 3rd hop of an existing exchange.
+    vi.spyOn(sender, 'currentChain').mockReturnValue({ chainId: 'chain_x', depth: 2 });
+
+    const tool = sender.getTools().get('agent_send_message')!;
+    await tool.execute({ agent_id: receiver.id, message: 'status please' });
+    // The tool dispatches fire-and-forget; let the microtask queue drain.
+    await new Promise<void>(resolve => setImmediate(resolve));
+
+    expect(groupSend).toHaveBeenCalled();
+    const args = groupSend.mock.calls[0] as unknown as unknown[];
+    // 6th argument = parent exchange. If this is undefined, the delivery layer
+    // mints a fresh chainId and the "chain" can never exceed one hop.
+    expect(args[5]).toEqual({ chainId: 'chain_x', depth: 2 });
+  });
 });
 
 describe('AgentManager lifecycle and role utilities', () => {

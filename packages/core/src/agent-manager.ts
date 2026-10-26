@@ -536,7 +536,10 @@ export class AgentManager {
       message: string,
       senderId: string,
       senderName: string,
-      replyToId?: string
+      replyToId?: string,
+      /** Parent exchange (trace-style): outbound inherits it so a request and
+       *  the answer it provokes share one chainId. Absent = new conversation. */
+      chain?: { chainId?: string; depth?: number },
     ) => Promise<string>;
     createGroupChat: (
       name: string,
@@ -1335,6 +1338,81 @@ export class AgentManager {
    */
   private static readonly BUILDER_ROLES = new Set(['agent-father', 'team-factory', 'skill-architect']);
 
+  /**
+   * Deliver an A2A message (status-broadcast shortcut + DM channel routing).
+   *
+   * This logic used to be duplicated verbatim in two tool-context factories in
+   * this file, and only one copy forwarded the parent `chainId`. The effect was
+   * that trace propagation worked or silently did nothing depending on which
+   * context object a caller happened to receive — a bug that cannot be seen by
+   * reading either copy alone. One implementation, one behaviour.
+   */
+  private async deliverA2AMessage(args: {
+    targetId: string;
+    message: string;
+    fromId: string;
+    fromName: string;
+    priority?: number;
+    waitForReply?: boolean;
+  }): Promise<string> {
+    const { targetId, message, fromId, fromName, priority, waitForReply } = args;
+
+    // Lightweight path: informational broadcasts go to the daily log instead of
+    // paying for a full LLM turn.
+    try {
+      const parsed = JSON.parse(message) as {
+        type?: string;
+        sender?: { name?: string };
+        payload?: { status?: string; currentTask?: { title?: string } };
+      };
+      if (parsed.type === 'status_broadcast') {
+        const target = this.getAgent(targetId);
+        const senderName = parsed.sender?.name ?? fromName;
+        const payload = parsed.payload ?? {};
+        target.getMemory().writeDailyLog(
+          targetId,
+          `[Status] ${senderName}: ${payload.status ?? 'unknown'}${payload.currentTask?.title ? ' — ' + payload.currentTask.title : ''}`
+        );
+        return `Status from ${senderName} noted.`;
+      }
+    } catch { /* not JSON — expected for normal messages, fall through */ }
+
+    // Route through a deterministic DM channel for persistent history and a
+    // stable session: dm:a2a:{sorted_id_1}:{sorted_id_2}
+    const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
+    if (this.groupChatHandlers?.ensureDmChannel) {
+      const target = this.getAgent(targetId);
+      await this.groupChatHandlers.ensureDmChannel(
+        dmChannelKey,
+        { id: fromId, name: fromName },
+        { id: targetId, name: target.config.name },
+      );
+      // Parent exchange = the sender's current chain, so a request and the
+      // answer it provokes can be correlated (trace-id rule).
+      await this.groupChatHandlers.sendGroupMessage(
+        dmChannelKey, message, fromId, fromName, undefined, this.getAgent(fromId)?.currentChain(),
+      );
+      return `Message sent via DM channel ${dmChannelKey}`;
+    }
+
+    // Fallback: direct enqueue when group chat handlers are not wired.
+    const target = this.getAgent(targetId);
+    const reply = await target.sendMessage(
+      message,
+      fromId,
+      { name: fromName, role: this.getAgent(fromId)?.config.agentRole ?? 'worker' },
+      {
+        sourceType: 'a2a_message',
+        sessionId: `a2a_${targetId}_${Date.now()}`,
+        scenario: 'a2a',
+        channelKey: dmChannelKey,
+        priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
+        waitForReply,
+      }
+    );
+    return stripInternalBlocks(reply);
+  }
+
   buildPathPolicy(agentId: string, workspacePath: string, roleDir?: string, teamDataDir?: string, builderArtifactsDir?: string): PathAccessPolicy {
     // Block writes to other agents' directories only.
     // The agent's own directory is excluded from the deny list.
@@ -1679,58 +1757,8 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
-        // Lightweight path: informational broadcasts are stored directly,
-        // skipping the expensive LLM call that would cause cascade amplification.
-        try {
-          const parsed = JSON.parse(message);
-          if (parsed.type === 'status_broadcast') {
-            const target = this.getAgent(targetId);
-            const senderName = parsed.sender?.name ?? fromName;
-            const payload = parsed.payload ?? {};
-            target.getMemory().writeDailyLog(
-              targetId,
-              `[Status] ${senderName}: ${payload.status ?? 'unknown'}${payload.currentTask?.title ? ' — ' + payload.currentTask.title : ''}`
-            );
-            return `Status from ${senderName} noted.`;
-          }
-        } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
-
-        // Route A2A messages through a DM channel for persistent history and stable sessions.
-        // The channel key is deterministic: dm:a2a:{sorted_id_1}:{sorted_id_2}
-        const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
-        if (this.groupChatHandlers?.ensureDmChannel) {
-          const target = this.getAgent(targetId);
-          const targetName = target.config.name;
-          await this.groupChatHandlers.ensureDmChannel(
-            dmChannelKey,
-            { id: fromId, name: fromName },
-            { id: targetId, name: targetName },
-          );
-          // Use sendGroupMessage to persist, notify WS, and route to target's mailbox
-          await this.groupChatHandlers.sendGroupMessage(
-            dmChannelKey, message, fromId, fromName,
-          );
-          return `Message sent via DM channel ${dmChannelKey}`;
-        }
-
-        // Fallback: direct enqueue when group chat handlers are not wired
-        const target = this.getAgent(targetId);
-        const reply = await target.sendMessage(
-          message,
-          fromId,
-          { name: fromName, role: config.agentRole ?? 'worker' },
-          {
-            sourceType: 'a2a_message',
-            sessionId: `a2a_${targetId}_${Date.now()}`,
-            scenario: 'a2a',
-            channelKey: dmChannelKey,
-            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
-            waitForReply,
-          }
-        );
-        return stripInternalBlocks(reply);
-      },
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) =>
+        this.deliverA2AMessage({ targetId, message, fromId, fromName, priority, waitForReply }),
       delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
       ...(this.groupChatHandlers
@@ -2654,55 +2682,8 @@ export class AgentManager {
             return { ...a, skills: [] };
           }
         }),
-      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) => {
-        // Lightweight path: informational broadcasts are stored directly,
-        // skipping the expensive LLM call that would cause cascade amplification.
-        try {
-          const parsed = JSON.parse(message);
-          if (parsed.type === 'status_broadcast') {
-            const target = this.getAgent(targetId);
-            const senderName = parsed.sender?.name ?? fromName;
-            const payload = parsed.payload ?? {};
-            target.getMemory().writeDailyLog(
-              targetId,
-              `[Status] ${senderName}: ${payload.status ?? 'unknown'}${payload.currentTask?.title ? ' — ' + payload.currentTask.title : ''}`
-            );
-            return `Status from ${senderName} noted.`;
-          }
-        } catch { /* not JSON — expected for non-broadcast messages, fall through to full LLM handling */ }
-
-        // Route A2A messages through a DM channel for persistent history and stable sessions.
-        const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
-        if (this.groupChatHandlers?.ensureDmChannel) {
-          const target = this.getAgent(targetId);
-          const targetName = target.config.name;
-          await this.groupChatHandlers.ensureDmChannel(
-            dmChannelKey,
-            { id: fromId, name: fromName },
-            { id: targetId, name: targetName },
-          );
-          await this.groupChatHandlers.sendGroupMessage(
-            dmChannelKey, message, fromId, fromName,
-          );
-          return `Message sent via DM channel ${dmChannelKey}`;
-        }
-
-        // Fallback: direct enqueue when group chat handlers are not wired
-        const target = this.getAgent(targetId);
-        return target.sendMessage(
-          message,
-          fromId,
-          { name: fromName, role: config.agentRole ?? 'worker' },
-          {
-            sourceType: 'a2a_message',
-            sessionId: `a2a_${targetId}_${Date.now()}`,
-            scenario: 'a2a',
-            channelKey: dmChannelKey,
-            priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
-            waitForReply,
-          }
-        );
-      },
+      sendMessage: async (targetId: string, message: string, fromId: string, fromName: string, priority?: number, waitForReply?: boolean) =>
+        this.deliverA2AMessage({ targetId, message, fromId, fromName, priority, waitForReply }),
       delegateTask: async (targetId: string, delegation: TaskDelegation) =>
         this.delegationManager.delegateTask(id, delegation, targetId),
       ...(this.groupChatHandlers
