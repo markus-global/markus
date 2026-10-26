@@ -195,28 +195,82 @@ export function unmuteCreditNotifications(): void {
 
 // ─── friendlyAgentError ───────────────────────────────────────────────────────
 
+/**
+ * Pull the human-readable message out of a provider error.
+ *
+ * Provider errors reach us as *nested escaped JSON* — the provider body is
+ * embedded as a string inside the platform's own error object. Parsing the first
+ * `{...}` run therefore usually fails, and the old fallback ("everything after
+ * the last `': '`") produced a mangled tail like
+ * `8c9e6090-…","type":"invalid_request_error"` — the least useful 120 chars of
+ * the whole error, shown to the user as if it were the diagnosis.
+ *
+ * We instead pull every `"message"` occurrence out of the raw string (escaped
+ * sequences included) and keep the last one, which is the innermost — i.e. the
+ * provider's actual explanation.
+ */
+function extractErrorDetail(raw: string): string {
+  const messages = [...raw.matchAll(/"message"\s*:\s*"((?:[^"\\]|\\.)*)"/g)]
+    .map((m) => {
+      try {
+        return JSON.parse(`"${m[1]}"`) as string;
+      } catch {
+        return m[1];
+      }
+    })
+    .map((s) => s.replace(/\s*\(request_id:[^)]*\)/gi, '').trim())
+    .filter(Boolean);
+  if (messages.length) return messages[messages.length - 1];
+
+  // No `message` field: a bare JSON payload or a plain-text error.
+  const jsonMatch = raw.match(/\{[\s\S]*\}/);
+  if (jsonMatch) {
+    try {
+      const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
+      const fromJson = parsed.error?.message ?? parsed.message;
+      if (fromJson) return fromJson;
+    } catch { /* ignore */ }
+  }
+  return '';
+}
+
+/**
+ * The provider's HTTP status, read **structurally**.
+ *
+ * Never ask `raw.includes('401')`: the raw string also carries token counts and
+ * request ids, and `1040163 in the messages` contains the substring `401`. That
+ * exact collision is why a context-overflow (HTTP 400) was reported to the owner
+ * as "认证失败" — a wrong diagnosis that sends everyone hunting for a broken API
+ * key that is in fact fine.
+ */
+function providerStatus(raw: string): number | null {
+  const word = raw.match(/\b(?:API error|HTTP|status(?: code)?)\s*:?\s*(\d{3})\b/i);
+  if (word) return Number(word[1]);
+  const named = raw.match(/\b(\d{3})\s+(Unauthorized|Forbidden|Too Many Requests|Bad Gateway|Service Unavailable|Conflict)\b/i);
+  if (named) return Number(named[1]);
+  return null;
+}
+
 export function friendlyAgentError(err: unknown, t: TFunction): string {
   const raw = String(err);
 
   if (raw.includes('AbortError') || raw.includes('abort'))
     return '';
 
-  let detail = '';
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (jsonMatch) {
-    try {
-      const parsed = JSON.parse(jsonMatch[0]) as { error?: { message?: string }; message?: string };
-      detail = parsed.error?.message ?? parsed.message ?? '';
-    } catch { /* ignore */ }
-  }
-  if (!detail) {
-    const colonIdx = raw.lastIndexOf(': ');
-    if (colonIdx >= 0) detail = raw.slice(colonIdx + 2).trim();
-  }
+  const detail = extractErrorDetail(raw);
 
   // All error keys live in the 'team' namespace — use explicit prefix so
   // this function works regardless of the caller's default namespace.
   const e = (key: string, opts?: Record<string, unknown>) => t(`team:errors.${key}`, opts);
+
+  // Context overflow first: it is the one error with an action the user can take
+  // (compact the session), and it must never be mistaken for a credential issue.
+  if (/CONTEXT OVERFLOW|maximum context length/i.test(raw)) {
+    const asked = raw.match(/requested (\d+)\s*tokens/i)?.[1];
+    const limit = raw.match(/maximum context length is (\d+)\s*tokens/i)?.[1];
+    const fmt = (n?: string) => (n ? `${Math.round(Number(n) / 1000).toLocaleString()}k` : '—');
+    return e('aiContextOverflow', { asked: fmt(asked), limit: fmt(limit) });
+  }
 
   if (raw.includes('MARKUS_UPSTREAM_ERROR'))
     return e('aiUpstreamBillingMismatch', { detail: detail || e('defaultUpstreamBillingMismatch') });
@@ -229,15 +283,19 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
 
   if (/not available in your region/i.test(raw))
     return e('aiRegionBlocked', { model: (raw.match(/\[(?:markus|openrouter):([^\]]+)\]/i)?.[1] || '').trim() || '—' });
-  if (raw.includes('401') || /unauthorized|invalid.?api.?key/i.test(raw))
+
+  const status = providerStatus(raw);
+  if (status === 401 || /unauthorized|invalid.?api.?key/i.test(raw))
     return e('ai401', { detail: detail || e('defaultInvalidApiKey') });
-  if (raw.includes('429') || /rate.?limit/i.test(raw))
+  if (status === 402)
+    return e('ai402', { detail: detail || e('defaultInsufficientCredits') });
+  if (status === 429 || /rate.?limit/i.test(raw))
     return e('ai429', { detail: detail || e('defaultTooManyRequests') });
-  if (/\b409\b/.test(raw) || /conflict/i.test(raw))
+  if (status === 409 || /conflict/i.test(raw))
     return e('ai409', { detail: detail || e('defaultConflict') });
-  if (raw.includes('502') || /bad.?gateway/i.test(raw))
+  if (status === 502 || /bad.?gateway/i.test(raw))
     return e('ai502', { detail: detail || e('defaultUpstreamDown') });
-  if (raw.includes('503') || /service.?unavailable/i.test(raw))
+  if (status === 503 || /service.?unavailable/i.test(raw))
     return e('ai503', { detail: detail || e('defaultServiceDown') });
 
   // Strip vendor billing URLs if anything slipped through.

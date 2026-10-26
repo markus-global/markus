@@ -303,6 +303,7 @@
     "creditModalDismiss": "Más tarde",
     "creditModalUpgrade": "Arriba / Actualización",
     "ai402": "⚠ Error de servicio AI: {{detail}}. Por favor, coloque el saldo de API o contacte con su administrador.",
+    "aiContextOverflow": "⚠ El contexto supera el límite del modelo (esta petición: {{asked}} tokens, límite: {{limit}}). Pida al agente que compacte su sesión y reintente; es la longitud del prompt, no un problema de clave API ni de configuración.",
     "ai401": "⚠ La autenticación del servicio AI falló: {{detail}}. Por favor revise la configuración.",
     "ai429": "⚠ Tasa límite excedida: {{detail}}. Por favor, espere un momento y vuelva a intentarlo..",
     "ai409": "⚠ Solicitud de conflicto: {{detail}}. Por favor, reingrese..",
