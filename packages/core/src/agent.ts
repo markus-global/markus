@@ -57,7 +57,6 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { contextGateRefusal } from './context-gate.js';
-import { FileContextReadingStore } from './context-reading-store.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
@@ -956,10 +955,15 @@ export class Agent {
     // 的模型对 ContextEngine 同样生效。
     this.contextEngine = new ContextEngine({ tokenCounter: this.tokenCounter });
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
-    // Durable cache of provider readings. Without it the reading dies with the
+    // Durable source for the provider's last reading: the session record the
+    // memory store already persists. Without it the reading dies with the
     // process and every session's first turn after a restart reports `pending`,
-    // which leaves the 90% gate open on the very turn most likely to overflow.
-    this.contextEngine.setReadingStore(new FileContextReadingStore(options.dataDir));
+    // leaving the 90% gate open on the very turn most likely to overflow.
+    this.contextEngine.setReadingStore({
+      load: (sessionId) => this.memory.getReportedInputTokens?.(sessionId),
+      save: (sessionId, reading) => this.memory.recordReportedInputTokens?.(sessionId, reading),
+      clear: (sessionId) => this.memory.clearReportedInputTokens?.(sessionId),
+    });
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);

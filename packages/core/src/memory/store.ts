@@ -1039,6 +1039,33 @@ export class MemoryStore implements IMemoryStore {
    *     conversation has no history yet", which is exactly what let a session
    *     identity bug masquerade as an empty conversation.
    */
+  /**
+   * Last provider-reported prompt measurement for a session.
+   *
+   * Stored on the session record (which this store already owns and persists),
+   * not in a store of its own: one fact, one home, one writer.
+   */
+  recordReportedInputTokens(sessionId: string, reading: { tokens: number; messageCount: number }): void {
+    const session = this.sessions.get(sessionId) ?? this.getSession(sessionId);
+    if (!session) return;
+    session.lastReportedInput = reading;
+    this.debouncedSaveSession(session);
+  }
+
+  getReportedInputTokens(sessionId: string): { tokens: number; messageCount: number } | undefined {
+    const session = this.sessions.get(sessionId) ?? this.getSession(sessionId);
+    const reading = session?.lastReportedInput;
+    if (!reading || !Number.isFinite(reading.tokens) || reading.tokens <= 0) return undefined;
+    return reading;
+  }
+
+  clearReportedInputTokens(sessionId: string): void {
+    const session = this.sessions.get(sessionId) ?? this.getSession(sessionId);
+    if (!session || !session.lastReportedInput) return;
+    delete session.lastReportedInput;
+    this.debouncedSaveSession(session);
+  }
+
   getRecentMessages(sessionId: string, limit: number): LLMMessage[] {
     if (!sessionId) {
       log.warn('getRecentMessages called without a session id — returning empty history');
