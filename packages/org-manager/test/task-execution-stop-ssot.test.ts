@@ -28,7 +28,7 @@ import { fileURLToPath } from 'node:url';
 import {
   cancelExecutionToken,
   createCancelToken,
-  isExternalStopReason,
+  stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
 } from '@markus/shared';
@@ -83,12 +83,30 @@ describe('执行停止原因 helper', () => {
     expect(() => cancelExecutionToken(undefined, 'lifecycle')).not.toThrow();
   });
 
-  it('只有真外部中断才允许写用户可见注记 / 重放', () => {
+  it('告知与恢复是两个正交属性，不得互相蕴含', () => {
+    // 要告知的（用户需要知道发生了什么）
     for (const reason of ['preempted', 'user_stop', 'user_cancel', 'disconnect', 'timeout'] as ExecutionStopReason[]) {
-      expect(isExternalStopReason(reason), reason).toBe(true);
+      expect(stopPolicy(reason).notifyUser, reason).toBe(true);
     }
+    // 静默的（平台自己的正常收尾）
     for (const reason of ['lifecycle', 'superseded', 'unknown', undefined] as Array<ExecutionStopReason | undefined>) {
-      expect(isExternalStopReason(reason), String(reason)).toBe(false);
+      expect(stopPolicy(reason).notifyUser, String(reason)).toBe(false);
+    }
+  });
+
+  it('用户主动停止绝不自动恢复', () => {
+    // 这是「我按了停止，30 秒后它又跑起来了」那个 bug 的长期守卫：
+    // 旧实现的集合把「要告知」误推成「可恢复」。
+    expect(stopPolicy('user_stop').notifyUser).toBe(true);
+    expect(stopPolicy('user_stop').resumable).toBe(false);
+    expect(stopPolicy('user_cancel').resumable).toBe(false);
+    // 真外部中断才允许恢复
+    for (const reason of ['preempted', 'disconnect', 'timeout'] as ExecutionStopReason[]) {
+      expect(stopPolicy(reason).resumable, reason).toBe(true);
+    }
+    // 平台正常收尾：静默且不恢复
+    for (const reason of ['lifecycle', 'superseded', 'unknown'] as ExecutionStopReason[]) {
+      expect(stopPolicy(reason).resumable, reason).toBe(false);
     }
   });
 
@@ -203,6 +221,42 @@ describe('行为回归：执行停止的原因决定注记', () => {
   afterEach(() => {
     svc?.stopTimeoutChecker();
     vi.restoreAllMocks();
+  });
+
+  it('user_stop：告知用户，但绝不承诺、也不执行自动恢复', async () => {
+    // 这就是「我在 UI 点停止，30 秒后它自己又跑起来」那个 bug 的守卫。
+    // 旧实现把 user_stop 归入 EXTERNAL_STOP_REASONS，于是「要告知」被误推成
+    // 「可恢复」——回一句“30 秒后自动恢复”并真的重放。
+    ({ svc } = createService('user_stop'));
+    const task = svc.createTask({
+      orgId: 'org-1', title: 'T', description: 'd',
+      assignedAgentId: AGENT, reviewerId: REVIEWER, creatorRole: 'human',
+    } as never);
+    svc.approveTask(task.id, 'user-1');
+    await sleep(150);
+
+    const notes = (svc.getTask(task.id)!.notes ?? []).join('\n');
+    // 告知：用户做的动作要看得见
+    expect(notes).toContain('用户手动停止');
+    // 但绝不承诺恢复 —— 否则就是替用户推翻了刚才的意图
+    expect(notes).not.toContain('自动恢复');
+  });
+
+  it('timeout：真外部中断，仍然告知（反向守卫：不能变成所有原因都静默）', async () => {
+    // 没有这条，“把用户停止改成不重放”很容易被写成“所有停止都不处理”。
+    ({ svc } = createService('timeout'));
+    const task = svc.createTask({
+      orgId: 'org-1', title: 'T', description: 'd',
+      assignedAgentId: AGENT, reviewerId: REVIEWER, creatorRole: 'human',
+    } as never);
+    svc.approveTask(task.id, 'user-1');
+    await sleep(150);
+
+    const notes = (svc.getTask(task.id)!.notes ?? []).join('\n');
+    expect(notes).toContain('执行超时');
+    // 具体是“自动恢复”还是“本轮不再恢复”取决于任务当时是否还在跑；
+    // 但**必须给出其中一种结论**，不能既不恢复也不告知。
+    expect(notes).toMatch(/自动恢复|本轮不再恢复/);
   });
 
   it('lifecycle 收尾（提交评审 / 状态迁移）不写任何"外部取消/将自动恢复"注记', async () => {

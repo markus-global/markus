@@ -934,6 +934,20 @@ knows it is the target. Open/broadcast messages carry no marker. Single writer:
 addressed) in `AgentDelivery.deliver()`; callers must not construct the marker
 themselves.
 
+The prefix also carries the **count**: `… Others also addressed: N.` Knowing that
+nobody else was addressed ("this is yours to handle") is a different action from
+knowing two others were ("whoever picks it up first"). The count is emitted
+always, including `0`, for two reasons:
+
+- **One template, one stable prefix.** The marker line is a prompt prefix shared by
+every a2a message. Two shapes (with/without the clause) would fork that prefix and
+degrade prompt-cache hits; a fixed template with only the trailing number varying
+keeps the common prefix intact. Put variable content at the **end** of a stable
+template, never by making the template conditional.
+- **It is the decision-relevant part, and only that.** Names are deliberately not
+included: the list would grow the line without bound and would expose unrelated
+agents' identities to a third party. A count answers "must I act" without leaking.
+
 It is an id list, deliberately, not a boolean. One group message can address two
 of ten members: with a boolean a caller can only mark the whole batch (bystanders
 think they were singled out) or none of it (the mentioned agent never learns it

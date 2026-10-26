@@ -38,6 +38,7 @@ import {
   finalizeAgentMessage, finalizeLastInterruptedAgent, finalizeStreamEnd, finalizeLastStreamingBubble, msgHasContent,
   shouldInterruptForSend,
   shouldSettleDetachedSession,
+  resolveTurnBubbleId,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
 import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
@@ -408,8 +409,17 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // 的就是「内容变了又变回来」的闪烁——刷新时尤其明显。
       // 服务端的 `status.messageId`（cm_stream_*）在**同一轮内恒定**、跨轮不同，
       // 正是这条气泡该用的稳定身份。
-      const stableTurnId = status.messageId || status.streamId || sessionId;
-      const agentMsgId = reuseBubble ? reuseBubble.id : `reattach_${stableTurnId}`;
+      const freshBubbleId = resolveTurnBubbleId(status);
+      if (!reuseBubble && !freshBubbleId) {
+        // 服务端说「还在跑」却没给出任何回合身份：我们无法把这条流关联到一条
+        // 消息行。此时造 sessionId 会跨轮撞 key，造时间戳会跨刷新漂——两者都是在
+        // 编造无法验证的身份（见 resolveTurnBubbleId）。所以不建，也不留半截状态：
+        // 前面已经 beginStream + setSending(true)，必须在这里平账，
+        // 否则侧栏会永远钉在「工作中」。
+        finalizeIfDetached();
+        return;
+      }
+      const agentMsgId = reuseBubble ? reuseBubble.id : freshBubbleId!;
       if (!reuseBubble) {
         updateConvMsgs(convKey, prev => [
           ...prev,

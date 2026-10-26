@@ -70,8 +70,16 @@ export interface DeliveryRequest {
 
 export interface DeliveryOutcome {
   deliveryId: string;
-  /** queued = 已进入对方 mailbox；具体是否与既有 item 合并由 mailbox 决定（§14）。 */
-  state: 'queued';
+  /**
+   * · `queued` —— 已至少进入一个收件人的 mailbox（具体是否与既有 item 合并由
+   *   mailbox 决定，§14）。
+   * · `undelivered` —— **一个都没送到**（收件人不在花名册 / 全部被跳过）。
+   *
+   * 这个第三态是给**发送方**看的：旧实现对外只有 queued / 抛错两种口径，而内部
+   * 目标取不到时只 `log.warn + continue`，于是调用方拿到 `queued` 却永远不会有人
+   * 处理。那正是本 PR 要消灭的那类缺陷——**平台在系统性地误导它的调用方**。
+   */
+  state: 'queued' | 'undelivered';
   /** 实际投递到的 agent（不存在的 agent 会被跳过并记录）。 */
   deliveredTo: string[];
   chainId: string;
@@ -143,13 +151,25 @@ export class AgentDelivery {
           const p = new Promise<string>(resolve => { resolveReply = resolve; });
           replies.push(p);
         }
+        // 「还有谁也 @ 了」——收件方据此决定「必须我干」还是「谁先接谁干」。
+        //
+        // 只给**数量**，不给名单：数量是决策相关的部分；名单会让这行无限变长，
+        // 也会把无关 agent 的身份泄露给第三方。
+        //
+        // 缓存友好：模板恒定，只有末尾的数字变化。前缀
+        // `[MENTIONED] This message is addressed to you (` 对所有收件人、所有消息
+        // 都相同，所以 prompt cache 的公共前缀不受影响；只给一个人时也照样输出
+        // `Others also addressed: 0`，**不省略**——两种形状会让前缀分叉，
+        // 那才是缓存最怕的。
+        const addressedCount = req.addressedTargetIds?.length ?? 0;
+        const othersAddressed = Math.max(0, addressedCount - 1);
         agent.enqueueToMailbox('a2a_message', {
           summary: req.mentions?.length
             ? `@mention from ${req.fromAgentName}`
             : `A2A message from ${req.fromAgentName}`,
           content:
             (isAddressed
-              ? `[MENTIONED] This message is addressed to you (${req.fromAgentName} sent it to you directly or @mentioned you).\n\n`
+              ? `[MENTIONED] This message is addressed to you (${req.fromAgentName} sent it to you directly or @mentioned you). Others also addressed: ${othersAddressed}.\n\n`
               : '')
             + (req.origin === 'human'
               ? `[FROM HUMAN] ${req.fromAgentName} is a human user, not an agent — humans can see this channel.\n\n`
@@ -199,7 +219,10 @@ export class AgentDelivery {
     });
 
     return {
-      deliveryId, state: 'queued', deliveredTo, chainId: req.chainId, depth: req.depth,
+      deliveryId,
+      // 一个都没送到就不是 queued —— 让调用方能区分「已入队」与「根本没送到」。
+      state: deliveredTo.length === 0 ? ('undelivered' as const) : ('queued' as const),
+      deliveredTo, chainId: req.chainId, depth: req.depth,
       ...(replies.length > 0 ? { replies } : {}),
     };
   }

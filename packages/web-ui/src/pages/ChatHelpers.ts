@@ -719,6 +719,30 @@ export function pickStreamReattachTarget(
 }
 
 /**
+ * 一条「在飞回合」气泡该用什么 React key。
+ *
+ * 返回 `null` = **服务端没有给出可验证的回合身份，不得凭空发明一个**。
+ *
+ * ## 为什么不允许退到 sessionId / 时间戳
+ *
+ * 身份的职责是「同一轮恒定、跳轮不同」。两个常见兜底各自只满足一半：
+ *   · `sessionId` —— 同一会话恒定 ✓，但**跳轮也恒定** ✗ → 同一会话的两个回合
+ *     拿到同一个 key，React 重复 key → DOM 错乱；
+ *   · `Date.now()` —— 跳轮不同 ✓，但**同一轮每次刷新都变** ✗ → 整条气泡子树
+ *     被当成「删旧节点 + 插新节点」重建 → 滚动/图片/代码块重排，就是用户看到的闪烁。
+ *
+ * 没有第三种选择：任何**客户端生成**的兜底，要么撞、要么漂。所以服务端没点名时，
+ * 正确的做法是**不建泡**——由下一次 status 轮询重新判定（registry 注册流时必定带
+ * streamId），而不是编一个我们自己也无法验证的身份。
+ */
+export function resolveTurnBubbleId(
+  status: { messageId?: string; streamId?: string } | null | undefined,
+): string | null {
+  const id = status?.messageId || status?.streamId;
+  return id ? `reattach_${id}` : null;
+}
+
+/**
  * Collapse accidental adjacent duplicate user bubbles (same text, within a short window).
  * Does not touch intentional repeats that have an assistant turn between them.
  */

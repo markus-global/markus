@@ -5,6 +5,7 @@ import {
   alignStreamedAgentId,
   inFlightAgentIdx,
   resolveTurnBubbleIdx,
+  resolveTurnBubbleId,
   dedupeAdjacentUserMessages,
   dbMsgToChat,
   finalizeAgentMessage,
@@ -833,6 +834,37 @@ describe('inFlightAgentIdx — 一个回合只允许一个在飞气泡', () => {
     // id 已被 DB heal 换过 → 旧实现 findIndex 未命中就 return prev，事件全丢
     expect(resolveTurnBubbleIdx(msgs as never, 'a_stale')).toBe(1);
     expect(resolveTurnBubbleIdx(msgs as never)).toBe(1);
+  });
+});
+
+describe('resolveTurnBubbleId —— 回合气泡的 React key', () => {
+  it('优先用服务端点名的 messageId', () => {
+    expect(resolveTurnBubbleId({ messageId: 'cm_stream_1', streamId: 'st_1' }))
+      .toBe('reattach_cm_stream_1');
+  });
+
+  it('没有 messageId 时退到 streamId（同一轮内同样恒定）', () => {
+    expect(resolveTurnBubbleId({ streamId: 'st_1' })).toBe('reattach_st_1');
+  });
+
+  it('两个都没有时返回 null —— 不发明身份', () => {
+    // F6 的长期守卫。两种“自己造”的兜底各自只满足身份一半的职责：
+    //   · sessionId —— 跳轮也恒定 → 同一会话两轮撞 key（React 重复 key）；
+    //   · 时间戳   —— 同一轮每次刷新都变 → 整条气泡重建（闪烁）。
+    // 所以服务端没点名时宁可当场不建泡，交给下一次 status 轮询。
+    expect(resolveTurnBubbleId({})).toBeNull();
+    expect(resolveTurnBubbleId(null)).toBeNull();
+    expect(resolveTurnBubbleId(undefined)).toBeNull();
+  });
+
+  it('同一轮多次求值结果相同（可作稳定 key）', () => {
+    const status = { messageId: 'cm_stream_1' };
+    expect(resolveTurnBubbleId(status)).toBe(resolveTurnBubbleId(status));
+  });
+
+  it('跳轮不同 ⇒ key 不同', () => {
+    expect(resolveTurnBubbleId({ messageId: 'a' }))
+      .not.toBe(resolveTurnBubbleId({ messageId: 'b' }));
   });
 });
 

@@ -43,7 +43,7 @@ import {
   tokenizeSearchQuery,
   scoreKeywordHaystack,
   cancelExecutionToken,
-  isExternalStopReason,
+  stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
 } from '@markus/shared';
@@ -3340,8 +3340,9 @@ export class TaskService implements ApprovalTargetPort {
     const { taskId, stopReason, detail, retryDelayMs, replay } = args;
     const task = this.tasks.get(taskId);
 
-    if (!isExternalStopReason(stopReason)) {
-      log.info('Execution stopped by platform lifecycle — no note, no replay', {
+    const policy = stopPolicy(stopReason);
+    if (!policy.notifyUser) {
+      log.info('Stop reason is silent by policy — no note, no replay', {
         event: 'task.execution_stopped', taskId,
         stopReason: stopReason ?? 'unknown', taskStatus: task?.status,
       });
@@ -3350,7 +3351,9 @@ export class TaskService implements ApprovalTargetPort {
 
     const label = stopReasonLabel(stopReason);
     const suffix = detail ? `（${detail}）` : '';
-    const willReplay = task?.status === 'in_progress';
+    // 能否重放由**停止原因的策略**决定，不由调用点猜测。
+    // `user_stop` 的 resumable 为 false：用户按了停止，不能替他恢复。
+    const willReplay = policy.resumable && task?.status === 'in_progress';
 
     this.addTaskNote(
       taskId,

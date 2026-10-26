@@ -52,7 +52,8 @@ export type ExecutionStopReason =
 
 /**
  * 协作式取消令牌。**只通过 {@link cancelExecutionToken} 置位** —— 该 helper 是
- * 唯一写者，保证每次取消都带原因（机检见 `scripts/check-cancel-token-writers.mjs`）。
+ * 唯一写者，保证每次取消都带原因（机检见
+ * `packages/org-manager/test/task-execution-stop-ssot.test.ts` 中「全仓扫 .cancelled = true」的用例）。
  */
 export interface ExecutionCancelToken {
   cancelled: boolean;
@@ -87,17 +88,46 @@ export function cancelExecutionToken(
   }
 }
 
-/** 真外部中断 —— 任务的活还没干完就被外力打断，允许写用户可见注记并尝试恢复。 */
-const EXTERNAL_STOP_REASONS: ReadonlySet<ExecutionStopReason> = new Set<ExecutionStopReason>([
-  'preempted',
-  'user_stop',
-  'user_cancel',
-  'disconnect',
-  'timeout',
-]);
+/**
+ * 每个停止原因的**完整策略**——三个正交属性，而不是一个「是否外部中断」布尔。
+ *
+ * 旧抽象是一个 `EXTERNAL_STOP_REASONS` 集合，它把两件无关的事压进同一个判断：
+ * 「要不要告诉用户」和「能不能自动恢复」。于是 `user_stop` 因为「该告知」被误归为
+ * 「可恢复」——用户在 UI 点停止，30 秒后任务自己又跑起来了。
+ *
+ * 这两个问题没有任何蕴含关系：
+ *   · 用户主动停止：**要告知**（他做的），**不恢复**（他的意图就是停下）
+ *   · 连接超时：    **要告知**（异常），  **恢复**（活没干完）
+ *   · 状态迁移：    **不告知**（正常收尾），**不恢复**
+ *
+ * 用 `Record<ExecutionStopReason, …>` 而不是集合：**新增一个停止原因时，
+ * 你必须在这里声明它属于哪一类**，否则编译不过。集合则静默地把新成员归为
+ * 「不是外部中断」，行为由「没人记得改它」决定。
+ */
+export interface StopPolicy {
+  /** 写一条用户可见注记？（异常要告知；平台正常收尾不打扰用户） */
+  readonly notifyUser: boolean;
+  /** 允许自动恢复执行？（仅「活没干完」且「不是用户的终局决定」） */
+  readonly resumable: boolean;
+}
 
-export function isExternalStopReason(reason: ExecutionStopReason | undefined | null): boolean {
-  return reason != null && EXTERNAL_STOP_REASONS.has(reason);
+export const STOP_POLICY: Readonly<Record<ExecutionStopReason, StopPolicy>> = {
+  // 平台自己的正常收尾：静默、不重放
+  lifecycle:   { notifyUser: false, resumable: false },
+  superseded:  { notifyUser: false, resumable: false },
+  unknown:     { notifyUser: false, resumable: false },
+  // 用户的终局决定：告知，但**绝不**替他恢复
+  user_stop:   { notifyUser: true,  resumable: false },
+  user_cancel: { notifyUser: true,  resumable: false },
+  // 真外部中断：活没干完，告知并恢复
+  preempted:   { notifyUser: true,  resumable: true  },
+  disconnect:  { notifyUser: true,  resumable: true  },
+  timeout:     { notifyUser: true,  resumable: true  },
+};
+
+/** 停止原因的单一解释点：调用方不得自行组合布尔。 */
+export function stopPolicy(reason: ExecutionStopReason | undefined | null): StopPolicy {
+  return STOP_POLICY[reason ?? 'unknown'] ?? STOP_POLICY.unknown;
 }
 
 /** 人读文案的唯一映射点（agent 侧日志/事件、task-service 注记共用）。 */

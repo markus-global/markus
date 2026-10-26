@@ -2588,11 +2588,11 @@ export class SqliteChatSessionRepo {
   ) {
     const row = this.db
       .prepare(
-        `SELECT id, metadata FROM chat_messages
+        `SELECT id, metadata, created_at FROM chat_messages
          WHERE session_id = ? AND role = 'assistant'
          ORDER BY created_at DESC LIMIT 1`,
       )
-      .get(sessionId) as { id: string; metadata: string | null } | undefined;
+      .get(sessionId) as { id: string; metadata: string | null; created_at: string } | undefined;
 
     let sameTurn = false;
     if (row?.metadata) {
@@ -2600,8 +2600,17 @@ export class SqliteChatSessionRepo {
         const prev = JSON.parse(row.metadata) as { isStreaming?: boolean; streamId?: string };
         const incomingStreamId = (metadata as { streamId?: string } | undefined)?.streamId;
         sameTurn = !!incomingStreamId && prev.streamId === incomingStreamId;
-        // 旧行兼容：曾经用 isStreaming 当身份，别让它退化成 append。
-        if (!sameTurn && prev.isStreaming === true) sameTurn = true;
+        // 不再用 `isStreaming` 当兼容兼身份。
+        //
+        // 它是一个**存活语义**，不是身份，本层已将它交还 ActiveStreamRegistry
+        // （生产端从 23c69aa4 起不再写 true）。残留的 true 只能是旧数据。
+        //
+        // 旧实现用 `prev.isStreaming === true` 兜底，本意是「别让它退化成 append，
+        // 免得多一个气泡」。但两个错误的代价不对等：
+        //   · 走了这个兜底 → 新回合可能被写进一条**历史行**，覆盖掉它的内容；
+        //   · 不走这个兜底 → 最多多一个气泡。
+        // append 是有损的，但覆盖是不可逆的。所以退回到代价更轻的那侧，
+        // 而不是加一个时间窗口去猜「多旧算旧」。
       } catch {
         sameTurn = false;
       }
