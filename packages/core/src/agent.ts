@@ -8392,6 +8392,9 @@ export class Agent {
 
     const tools = this.toolSelector.selectTools({
       allTools: effectiveTools,
+      // Hard context gate input: the provider's own reading for this session, so
+      // the offered surface and the boundary refusal share one knowledge source.
+      contextPct: this.contextEngine.getMeasuredUsagePercent(this.currentSessionId),
       userMessage: context?.userMessage ?? '',
       recentToolNames: recentPlusActivated,
       isManager,

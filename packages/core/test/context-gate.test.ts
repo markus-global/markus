@@ -15,6 +15,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   CONTEXT_GATE_ALLOWED_TOOLS,
+  applyContextGateToTools,
   contextGateRefusal,
   isContextGateActive,
 } from '../src/context-gate.js';
@@ -87,5 +88,49 @@ describe('contextGateRefusal', () => {
     expect(parsed.message).toContain("operation:'pin'");
     expect(parsed.message).toContain('Nothing was compacted automatically');
     expect(parsed.allowedTools.sort()).toEqual(['end_turn', 'session']);
+  });
+});
+
+/**
+ * The gate has two halves. Refusing a call is the invariant; not *offering* the
+ * tool is what stops the model from planning a call it cannot make and burning a
+ * round trip on the refusal. Shipping only the refusal was the first cut of this
+ * change — these tests pin the second half so it cannot be dropped again.
+ */
+describe('applyContextGateToTools', () => {
+  const TOOLS = [
+    { name: 'shell_execute' },
+    { name: 'task_create' },
+    { name: 'session' },
+    { name: 'end_turn' },
+  ];
+
+  it('offers everything below the gate', () => {
+    expect(applyContextGateToTools(TOOLS, 89.9)).toHaveLength(4);
+  });
+
+  it('offers everything when there is no measurement', () => {
+    expect(applyContextGateToTools(TOOLS, undefined)).toHaveLength(4);
+  });
+
+  it('collapses the surface to the levers at the gate', () => {
+    const offered = applyContextGateToTools(TOOLS, 92).map((tool) => tool.name);
+    expect(offered.sort()).toEqual(['end_turn', 'session']);
+  });
+
+  it('agrees with the refusal check — an offered tool is never refused', () => {
+    // The two halves must never disagree: a tool the model is offered but then
+    // refused would be a dead end, and a tool withheld but callable would be a
+    // hole. Same ratio, same answer, both directions.
+    const pct = 95;
+    for (const tool of TOOLS) {
+      const offered = applyContextGateToTools([tool], pct).length === 1;
+      const refused = contextGateRefusal(tool.name as string, pct) !== undefined;
+      expect(offered).toBe(!refused);
+    }
+  });
+
+  it('drops nameless entries instead of crashing', () => {
+    expect(applyContextGateToTools([{ name: undefined }, { name: 'session' }], 96)).toHaveLength(1);
   });
 });

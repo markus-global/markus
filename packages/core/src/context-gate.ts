@@ -53,6 +53,23 @@ export function isContextGateActive(measuredPct: number | undefined): boolean {
 }
 
 /**
+ * Trim the offered tool surface to the gate allowlist.
+ *
+ * The gate has two halves and both are required: **not offering** a tool stops
+ * the model from planning a call it cannot make, and **refusing** it at the
+ * boundary is the invariant if the model calls one anyway. Shipping only the
+ * refusal still costs a wasted round trip per turn, so this is not a
+ * nice-to-have — it is the other half of the same rule.
+ */
+export function applyContextGateToTools<T extends { name?: string }>(
+  tools: T[],
+  measuredPct: number | undefined,
+): T[] {
+  if (!isContextGateActive(measuredPct)) return tools;
+  return tools.filter((tool) => !!tool.name && CONTEXT_GATE_ALLOWED_TOOLS.has(tool.name));
+}
+
+/**
  * The refusal returned to the model when the gate blocks a call, or `undefined`
  * when the call may proceed.
  *

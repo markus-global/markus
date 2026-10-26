@@ -14,6 +14,7 @@ import {
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
 } from './capability-packs.js';
+import { applyContextGateToTools } from './context-gate.js';
 
 const log = createLogger('tool-selector');
 
@@ -214,6 +215,12 @@ export class ToolSelector {
      * and the model spins on discover_tools forever.
      */
     activatedToolNames?: Iterable<string>;
+    /**
+     * Measured context usage (%) for this session, from the provider's own report.
+     * At/above the hard gate the offered surface collapses to the levers that
+     * shrink or end the turn — see `context-gate.ts`.
+     */
+    contextPct?: number;
   }): LLMTool[] {
     const pack: CapabilityPack = opts.pack
       ?? (opts.isTaskExecution ? 'execute' : opts.isReview ? 'govern' : 'converse');
@@ -726,7 +733,7 @@ export class ToolSelector {
       groups: this.groups.filter(g => g.toolNames.some(n => selected.has(n))).map(g => g.name),
     });
 
-    return capped;
+    return applyContextGateToTools(capped, opts.contextPct);
   }
 
   /**
