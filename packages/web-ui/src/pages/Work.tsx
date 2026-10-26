@@ -5239,7 +5239,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         }
       }).catch(() => { pendingOpenTaskRef.current = null; });
     }
-  }, [board, forceOpenTask, ensureProjectVisible]);
+  }, [board, forceOpenTask, ensureProjectVisible, isActive]);
 
   const pendingOpenReqRef = useRef<string | null>(null);
   useEffect(() => {
@@ -5262,7 +5262,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         }
       }).catch(() => { pendingOpenReqRef.current = null; });
     }
-  }, [allRequirements, forceOpenReq, ensureProjectVisible]);
+  }, [allRequirements, forceOpenReq, ensureProjectVisible, isActive]);
 
   const selectProject = useCallback((projectId: string, opts?: { keepItemDetail?: boolean }) => {
     setProjectFilter(new Set());
