@@ -78,6 +78,7 @@
     "tasks": "Tasks",
     "newTask": "New Task",
     "noTasks": "No tasks yet",
+    "notFound": "Task {{id}} not found — it may have been deleted, or the reference quoted only the first few id characters",
     "assignee": "Assignee",
     "unassigned": "Unassigned",
     "priority": "Priority",

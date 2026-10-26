@@ -4878,7 +4878,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [reqCreating, setReqCreating] = useState(false);
   const [rejectReqError, setRejectReqError] = useState('');
 
-  const msg = (m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); };
+  const msg = useCallback((m: string) => { setFlash(m); setTimeout(() => setFlash(''), 3000); }, []);
 
   // Escape closes the top-most open modal/sheet, then the right detail pane.
   useEffect(() => {
@@ -5237,9 +5237,14 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           ensureProjectVisible(resp.task.projectId);
           forceOpenTask(resp.task);
         }
-      }).catch(() => { pendingOpenTaskRef.current = null; });
+      }).catch(() => {
+        pendingOpenTaskRef.current = null;
+        // Never swallow this: a click that lands the user on Work with nothing
+        // open looks broken. Say what happened (shortened id, or deleted task).
+        msg(t('work:task.notFound', { id: navTaskId }));
+      });
     }
-  }, [board, forceOpenTask, ensureProjectVisible, isActive]);
+  }, [board, forceOpenTask, ensureProjectVisible, isActive, msg, t]);
 
   const pendingOpenReqRef = useRef<string | null>(null);
   useEffect(() => {
@@ -5369,6 +5374,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           if (task) {
             ensureProjectVisible(task.projectId);
             forceOpenTask(task, { scrollToComments: wantComments });
+          } else {
+            // A reference that does not resolve must say so — silently landing on
+            // Work with nothing open reads as a broken button, not as "not found".
+            msg(t('work:task.notFound', { id: taskId }));
           }
         }
         if (detail.params?.openRequirement) {

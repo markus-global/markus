@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { api, wsClient, type DeliverableInfo } from '../api.ts';
 
 import { navBus } from '../navBus.ts';
+import { resolveEntityId } from '../entityResolve.ts';
 import { PAGE } from '../routes.ts';
 import { DeliverableDetailModal } from './DeliverableDetailModal.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -42,14 +43,26 @@ export function entityTypeFromId(id: string): EntityType | undefined {
   return prefix ? PREFIX_TO_TYPE[prefix] : undefined;
 }
 
-/** Navigate to the in-app page for a given entity id (hash routing via navBus). */
-export function navigateToEntity(id: string): void {
-  if (id.startsWith('tsk_')) navBus.navigate(PAGE.WORK, { openTask: id });
-  else if (id.startsWith('req_')) navBus.navigate(PAGE.WORK, { openRequirement: id });
-  else if (id.startsWith('proj_')) navBus.navigate(PAGE.WORK, { projectId: id });
-  else if (id.startsWith('dlv_')) navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: id });
-  else if (id.startsWith('agt_')) navBus.navigate(PAGE.TEAM, { agentId: id });
-  else if (id.startsWith('team_')) navBus.navigate(PAGE.TEAM, { selectTeam: id });
+/**
+ * Navigate to the in-app page for a given entity id (hash routing via navBus).
+ *
+ * The id can be a *shortened* prefix (`tsk_42810f44`) when it was quoted from
+ * chat prose — see `entityResolve.ts` for why that happens and why an id's shape
+ * cannot tell us whether it resolves. Every consumer downstream (the nav event,
+ * the `markus_nav_*` handoff, the Work page effects) looks the entity up by
+ * exact id, so a shortened id would 404 into a silent no-op. Resolve it here,
+ * once, at the click boundary.
+ */
+export async function navigateToEntity(id: string): Promise<void> {
+  // Unresolvable ids fall back to the raw id instead of being swallowed here:
+  // the owning page then reports "not found" to the user instead of nothing.
+  const target = (await resolveEntityId(id)) ?? id;
+  if (target.startsWith('tsk_')) navBus.navigate(PAGE.WORK, { openTask: target });
+  else if (target.startsWith('req_')) navBus.navigate(PAGE.WORK, { openRequirement: target });
+  else if (target.startsWith('proj_')) navBus.navigate(PAGE.WORK, { projectId: target });
+  else if (target.startsWith('dlv_')) navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: target });
+  else if (target.startsWith('agt_')) navBus.navigate(PAGE.TEAM, { agentId: target });
+  else if (target.startsWith('team_')) navBus.navigate(PAGE.TEAM, { selectTeam: target });
 }
 
 // ─── Async resolution (cached) ───────────────────────────────────────────────
