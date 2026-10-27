@@ -25,6 +25,7 @@ import {
   readExpandedWorkflows,
   writeExpandedWorkflows,
   shouldClampPrompt,
+  prepareDuplicateYaml,
   PROMPT_CLAMP_CHARS,
   EXPANDED_WORKFLOWS_STORAGE_KEY,
   isRunActive,
@@ -209,5 +210,38 @@ describe('prompt clamping', () => {
     expect(shouldClampPrompt('x'.repeat(PROMPT_CLAMP_CHARS))).toBe(false);
     expect(shouldClampPrompt('x'.repeat(PROMPT_CLAMP_CHARS + 1))).toBe(true);
     expect(shouldClampPrompt(undefined)).toBe(false);
+  });
+});
+
+describe('prepareDuplicateYaml', () => {
+  // tiny stand-ins for the `yaml` package: enough structure to prove the fields
+  // we rewrite, without depending on formatting in a unit test.
+  const parse = (text: string) => JSON.parse(text) as Record<string, unknown>;
+  const stringify = (doc: unknown) => JSON.stringify(doc);
+
+  it('rewrites the template name so a copy cannot claim to be the original', () => {
+    const src = JSON.stringify({ name: 'feature-dev', displayName: '功能开发', steps: [{ id: 's1' }] });
+    const out = parse(prepareDuplicateYaml(src, 'feature-dev-copy', parse, stringify));
+
+    expect(out['name']).toBe('feature-dev-copy');
+    // the rest of the template is preserved
+    expect(out['steps']).toEqual([{ id: 's1' }]);
+  });
+
+  it('marks the copy in the display name so the list is not two identical cards', () => {
+    const src = JSON.stringify({ name: 'feature-dev', displayName: '功能开发' });
+    const out = parse(prepareDuplicateYaml(src, 'feature-dev-copy', parse, stringify));
+    expect(out['displayName']).toBe('功能开发（副本）');
+  });
+
+  it('tolerates a template without a display name', () => {
+    const src = JSON.stringify({ name: 'feature-dev' });
+    const out = parse(prepareDuplicateYaml(src, 'feature-dev-copy', parse, stringify));
+    expect(out['name']).toBe('feature-dev-copy');
+    expect(out['displayName']).toBeUndefined();
+  });
+
+  it('refuses to build a copy from unparsable YAML', () => {
+    expect(() => prepareDuplicateYaml('not json', 'x', parse, stringify)).toThrow();
   });
 });

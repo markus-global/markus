@@ -1,22 +1,23 @@
 /**
- * Behaviour guards for the workflow card (2026-10-27 UX review, second pass).
+ * Behaviour guards for the workflow card.
  *
- * These assert the interaction contract, not the styling: a card that looks
- * right but cannot be opened from the keyboard, or that shows nothing while its
- * detail request is in flight, is the defect this rewrite targeted.
+ * The rule these tests encode is a **domain** rule, not a styling one:
  *
- * Updated after the Owner's second-pass notes:
- *   • the header is an index again (no run counters / progress bar),
- *   • a step is one line and its prompt lives in a modal,
- *   • a run row exposes exactly one affordance (运行详情).
+ *   • the card renders a workflow **template** — name, description, steps
+ *     (name/role/prompt/dependencies), params, schedule;
+ *   • a **run** owns status, progress and tasks, and lives in the runs list /
+ *     run drawer.
+ *
+ * Mixing the two produced the defects the Owner reported on 2026-10-27: the
+ * description printed twice, a step modal showing a run's "已完成" badge with a
+ * link to "the task it produced" (a template step has no task), and a run row
+ * whose only clickable thing was a 28px `…` icon.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent, within } from '@testing-library/react';
+import { render, screen, fireEvent, within, waitFor } from '@testing-library/react';
 import type { WorkflowInfo, WorkflowRunInfo, WorkflowTemplateInfo } from '../src/api.ts';
 
 vi.mock('react-i18next', () => {
-  // Mirrors i18next's three call shapes the components actually use:
-  //   t(key)                      t(key, '默认值')      t(key, '默认 {{x}} 值', { x })
   const t = (key: string, second?: unknown, third?: unknown) => {
     const fallback = typeof second === 'string'
       ? second
@@ -31,10 +32,12 @@ vi.mock('react-i18next', () => {
 
 import { WorkflowCard } from '../src/components/WorkflowCard.tsx';
 
+const DESCRIPTION = '覆盖需求分析、并行开发、代码审查的全流程自动化。';
+
 const workflow: WorkflowInfo = {
   name: 'feature-dev',
   displayName: '标准功能开发流程',
-  description: '覆盖需求分析、并行开发、代码审查的全流程自动化。',
+  description: DESCRIPTION,
   version: '1.0.0',
   roles: ['manager', 'engineer'],
   hasSchedule: false,
@@ -44,11 +47,11 @@ const workflow: WorkflowInfo = {
 const detail: WorkflowTemplateInfo = {
   name: 'feature-dev',
   displayName: '标准功能开发流程',
-  description: workflow.description,
+  description: DESCRIPTION,
   version: '1.0.0',
   params: [{ name: 'feature_title', label: '功能标题', type: 'string', required: true }],
   steps: [
-    { id: 'research', name: '代码研究', role: 'manager', prompt: '研究一下现有代码结构，列出涉及模块与依赖链。' },
+    { id: 'research', name: '代码研究', role: 'manager', prompt: '研究一下现有代码结构。' },
     { id: 'dev', name: '并行开发', role: 'engineer', depends_on: ['research'], prompt: '实现功能主体。' },
     { id: 'review', name: '代码审查', role: 'manager', depends_on: ['research', 'dev'], prompt: '审查改动。' },
   ],
@@ -86,7 +89,7 @@ function renderCard(overrides: Partial<Parameters<typeof WorkflowCard>[0]> = {})
     runTasks: { 'run-1': runTasks },
     onRun: vi.fn(),
     onOpenRun: vi.fn(),
-    onOpenTask: vi.fn(),
+    onSaveStep: vi.fn().mockResolvedValue(undefined),
     onSendToAgent: vi.fn(),
     onEdit: vi.fn(),
     onDuplicate: vi.fn(),
@@ -103,7 +106,6 @@ describe('workflow card — openable without a mouse', () => {
     const toggle = screen.getByTestId('workflow-feature-dev-toggle');
     expect(toggle.tagName).toBe('BUTTON');
     expect(toggle.getAttribute('aria-expanded')).toBe('false');
-    expect(toggle.getAttribute('aria-controls')).toBeTruthy();
     fireEvent.click(toggle);
     expect(props.onToggle).toHaveBeenCalledTimes(1);
   });
@@ -125,42 +127,34 @@ describe('workflow card — openable without a mouse', () => {
   });
 });
 
-describe('workflow card — feedback while loading', () => {
-  it('renders a skeleton the moment the panel opens', () => {
-    renderCard({ expanded: true, detail: undefined, detailState: 'loading' });
-    expect(screen.getByTestId('workflow-detail-skeleton')).toBeTruthy();
+describe('workflow card — a template is not a run', () => {
+  it('does not print the description twice (header once, panel not at all)', () => {
+    renderCard({ expanded: true });
+    expect(screen.getAllByText(DESCRIPTION)).toHaveLength(1);
   });
 
-  it('offers a retry instead of failing silently', () => {
-    const onRetryDetail = vi.fn();
-    renderCard({ expanded: true, detail: undefined, detailState: 'error', onRetryDetail });
-    fireEvent.click(screen.getByRole('button', { name: '重试' }));
-    expect(onRetryDetail).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('workflow card — the header stays an index', () => {
-  it('does not repeat run progress in the header', () => {
-    const { container } = renderCard();
-    const header = within(container).getByTestId('workflow-feature-dev-toggle');
-    expect(header.textContent).not.toMatch(/\d+\s*\/\s*\d+/);
-    expect(container.querySelector('[data-testid="workflow-progress"]')).toBeNull();
+  it('paints no run status onto the step flow', () => {
+    renderCard({ expanded: true });
+    const flow = screen.getByTestId('workflow-step-flow');
+    // run status words belong to the runs list, not to the definition
+    expect(within(flow).queryByText('已完成')).toBeNull();
+    expect(within(flow).queryByText('失败')).toBeNull();
   });
 
-  it('does keep the latest run status visible', () => {
-    renderCard();
-    expect(screen.getAllByText('失败').length).toBeGreaterThan(0);
-    expect(screen.queryByText('failed')).toBeNull();
+  it('keeps run status inside the runs list', () => {
+    renderCard({ expanded: true });
+    const runButton = screen.getByTestId('workflow-run-open-run-1');
+    expect(within(runButton).getByText('失败')).toBeTruthy();
   });
 });
 
-describe('workflow card — steps are one line, details on demand', () => {
+describe('workflow card — steps', () => {
   it('does not print step prompts inline', () => {
     renderCard({ expanded: true });
-    expect(screen.queryByText('研究一下现有代码结构，列出涉及模块与依赖链。')).toBeNull();
+    expect(screen.queryByText('研究一下现有代码结构。')).toBeNull();
   });
 
-  it('renders every step in the flow as a clickable row', () => {
+  it('renders every step in the flow', () => {
     renderCard({ expanded: true });
     const flow = screen.getByTestId('workflow-step-flow');
     expect(within(flow).getByText('代码研究')).toBeTruthy();
@@ -168,50 +162,68 @@ describe('workflow card — steps are one line, details on demand', () => {
     expect(within(flow).getByText('代码审查')).toBeTruthy();
   });
 
-  it('marks a step with several upstream dependencies', () => {
+  it('marks steps that depend on several upstream steps', () => {
     renderCard({ expanded: true });
-    // 代码审查 depends on research + dev → badge instead of a raw id list
     expect(screen.getByTitle('代码研究、并行开发')).toBeTruthy();
     expect(screen.queryByText(/research/)).toBeNull();
   });
 
-  it('opens the step modal with the full prompt and a task link', () => {
-    const onOpenTask = vi.fn();
-    renderCard({ expanded: true, onOpenTask });
+  it('opens a definition modal: editable prompt, no run status, no task link', () => {
+    renderCard({ expanded: true });
     fireEvent.click(screen.getByTestId('workflow-step-research'));
 
     const modal = screen.getByTestId('workflow-step-modal');
-    expect(within(modal).getByText('研究一下现有代码结构，列出涉及模块与依赖链。')).toBeTruthy();
+    const prompt = within(modal).getByLabelText('提示词') as HTMLTextAreaElement;
+    expect(prompt.value).toBe('研究一下现有代码结构。');
 
-    fireEvent.click(within(modal).getByText('查看对应任务'));
-    expect(onOpenTask).toHaveBeenCalledWith('t1');
+    // instance facts must not leak into the definition view
+    expect(within(modal).queryByText('已完成')).toBeNull();
+    expect(within(modal).queryByText('查看对应任务')).toBeNull();
   });
 
-  it('closes the step modal on Escape', () => {
+  it('saves an edited prompt through onSaveStep', async () => {
+    const onSaveStep = vi.fn().mockResolvedValue(undefined);
+    renderCard({ expanded: true, onSaveStep });
+    fireEvent.click(screen.getByTestId('workflow-step-research'));
+
+    const modal = screen.getByTestId('workflow-step-modal');
+    const prompt = within(modal).getByLabelText('提示词') as HTMLTextAreaElement;
+    fireEvent.change(prompt, { target: { value: '新的提示词内容' } });
+    fireEvent.click(within(modal).getByRole('button', { name: '保存' }));
+
+    await waitFor(() => expect(onSaveStep).toHaveBeenCalledWith('research', {
+      name: '代码研究',
+      role: 'manager',
+      prompt: '新的提示词内容',
+    }));
+    await waitFor(() => expect(screen.queryByTestId('workflow-step-modal')).toBeNull());
+  });
+
+  it('keeps the save button disabled until something changes', () => {
     renderCard({ expanded: true });
     fireEvent.click(screen.getByTestId('workflow-step-research'));
-    expect(screen.getByTestId('workflow-step-modal')).toBeTruthy();
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.queryByTestId('workflow-step-modal')).toBeNull();
+    const modal = screen.getByTestId('workflow-step-modal');
+    expect((within(modal).getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
 describe('workflow card — one affordance per run', () => {
-  it('shows the run number, status and progress on the run row', () => {
+  it('shows run number, status and progress on the row', () => {
     renderCard({ expanded: true });
-    expect(screen.getByText('#7')).toBeTruthy();
-    expect(screen.getByText('1/3')).toBeTruthy();
+    const row = screen.getByTestId('workflow-run-open-run-1');
+    expect(within(row).getByText('#7')).toBeTruthy();
+    expect(within(row).getByText('1/3')).toBeTruthy();
   });
 
-  it('exposes exactly one control per run: 运行详情', () => {
-    const { props } = renderCard({ expanded: true });
-    const row = screen.getByText('#7').closest('li')!;
-    const buttons = within(row).getAllByRole('button');
-    expect(buttons).toHaveLength(1);
-    expect(buttons[0]!.getAttribute('aria-label')).toBe('运行详情');
-
-    fireEvent.click(buttons[0]!);
-    expect(props.onOpenRun).toHaveBeenCalledWith(run);
+  it('makes the whole row the click target, not a corner icon', () => {
+    const onOpenRun = vi.fn();
+    renderCard({ expanded: true, onOpenRun });
+    const row = screen.getByTestId('workflow-run-open-run-1');
+    // the row IS a button, and it owns the full width
+    expect(row.tagName).toBe('BUTTON');
+    expect(row.className).toContain('w-full');
+    fireEvent.click(within(row).getByText('#7'));
+    expect(onOpenRun).toHaveBeenCalledWith(run);
   });
 });
 

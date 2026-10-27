@@ -124,6 +124,16 @@ export class WorkflowService {
     }
 
     const template = parsed as WorkflowTemplate;
+    // A template's identity is its `name:` field, but it is addressed by file
+    // name. Letting the two disagree creates two workflows that answer to the
+    // same name (duplicate cards, and `resolveWorkflowFile` can hit the wrong
+    // file). Refuse rather than silently pick one.
+    if (template.name !== name) {
+      throw new Error(
+        `Workflow name mismatch: file name "${name}" but the YAML says name: "${template.name}". ` +
+          `Set the template's \`name\` field to "${name}" (or change the requested name) so the file and the template agree.`,
+      );
+    }
     const dir = this.ensureWorkflowsDir(teamId);
     const fileName = `${name}.yaml`;
     const filePath = join(dir, fileName);
@@ -149,6 +159,15 @@ export class WorkflowService {
     const filePath = this.resolveWorkflowFile(dir, name);
     if (!filePath) {
       throw new Error(`Workflow "${name}" not found`);
+    }
+    // Same identity invariant as `addWorkflow` (checked after existence, so a
+    // missing workflow still reports "not found"): editing a template must not
+    // rename it out from under its file — that is a copy, not an edit.
+    if (template.name !== name) {
+      throw new Error(
+        `Workflow name mismatch: file name "${name}" but the YAML says name: "${template.name}". ` +
+          `Rename the file with a copy instead of editing \`name\` here.`,
+      );
     }
 
     writeFileSync(filePath, yamlContent, 'utf-8');

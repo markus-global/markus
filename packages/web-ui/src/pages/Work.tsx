@@ -35,6 +35,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
 import { WorkflowManageModal, type WorkflowManageMode } from '../components/WorkflowManageModal.tsx';
@@ -42,6 +43,7 @@ import {
   isRunActive,
   readExpandedWorkflows,
   writeExpandedWorkflows,
+  prepareDuplicateYaml,
   type WorkflowTaskLike,
 } from '../lib/workflow-view.ts';
 
@@ -4420,8 +4422,14 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
     setManage((prev) => (prev ? { ...prev, busy: true, error: null } : prev));
     try {
       if (manage.mode === 'edit') await api.workflows.update(tid, manage.workflow.name, yaml ?? '');
-      else if (manage.mode === 'duplicate') await api.workflows.create(tid, name ?? '', yaml ?? '');
-      else await api.workflows.remove(tid, manage.workflow.name);
+      else if (manage.mode === 'duplicate') {
+        // The file name and the template's `name:` field are two identities —
+        // rewriting both here is what stops a copy from claiming to be the
+        // original.
+        const copyName = name ?? '';
+        const copyYaml = prepareDuplicateYaml(yaml ?? '', copyName, parseYaml, stringifyYaml);
+        await api.workflows.create(tid, copyName, copyYaml);
+      } else await api.workflows.remove(tid, manage.workflow.name);
 
       const name0 = manage.workflow.name;
       setManage(null);
@@ -4544,6 +4552,46 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
     navBus.navigate(PAGE.WORK, { openTask: taskId });
   };
 
+  /**
+   * Edit one step of a workflow *template*.
+   *
+   * Writes the whole YAML back through the existing `PUT .../workflows/:name`,
+   * so the server's parser stays the only validator and there is no second
+   * serialiser to drift. Re-serialising reformats the file (comments and key
+   * order are not preserved) — acceptable for agent-generated templates, and far
+   * better than a step-level side table.
+   */
+  const saveWorkflowStep = async (
+    wfName: string,
+    stepId: string,
+    patch: { name?: string; role?: string; prompt?: string },
+  ) => {
+    const tid = resolveTeam(wfName);
+    if (!tid) throw new Error(t('work:task.workflowNoTeam', '无法确定此工作流所属的团队'));
+
+    let yamlText = templateDetails[wfName]?.yaml;
+    if (!yamlText) {
+      const fetched = await api.workflows.get(tid, wfName);
+      yamlText = fetched.yaml;
+      if (!yamlText) throw new Error(t('work:task.workflowNoYaml', '模板缺少原始 YAML，无法编辑'));
+    }
+
+    const doc = parseYaml(yamlText) as { steps?: Array<Record<string, unknown>> } | null;
+    const step = doc?.steps?.find((entry) => entry?.['id'] === stepId);
+    if (!doc || !step) throw new Error(`找不到步骤 ${stepId}`);
+
+    if (patch.name !== undefined) step['name'] = patch.name;
+    if (patch.role !== undefined) step['role'] = patch.role;
+    if (patch.prompt !== undefined) step['prompt'] = patch.prompt;
+
+    await api.workflows.update(tid, wfName, stringifyYaml(doc));
+    invalidateApiCache();
+
+    const { template, yaml } = await api.workflows.get(tid, wfName);
+    setTemplateDetails((prev) => ({ ...prev, [wfName]: { ...template, yaml } }));
+    setDetailState((prev) => ({ ...prev, [wfName]: 'ready' }));
+  };
+
   const sendWorkflowToAgent = (wf: WorkflowInfo) => {    const wfTeamId = resolveTeam(wf.name);
     const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
     const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
@@ -4602,7 +4650,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
                   setDrawerRun(run);
                   void loadRunTasks(run);
                 }}
-                onOpenTask={openTaskById}
+                onSaveStep={(stepId, patch) => saveWorkflowStep(wf.name, stepId, patch)}
                 roleAgentName={roleNameFor}
                 onSendToAgent={() => sendWorkflowToAgent(wf)}
                 onEdit={() => void openManage('edit', wf)}

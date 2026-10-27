@@ -30,8 +30,6 @@ import {
   layeredDag,
   matchTasksToSteps,
   runStatusMeta,
-  stepDisplayStatus,
-  stepStatusMeta,
   isRunActive,
   type WorkflowStepLike,
   type WorkflowTaskLike,
@@ -50,8 +48,8 @@ export interface WorkflowCardProps {
   runTasks: Record<string, WorkflowTaskLike[] | undefined>;
   onRun: () => void;
   onOpenRun: (run: WorkflowRunInfo) => void;
-  /** Open the task a step produced (task board deep-link). */
-  onOpenTask?: (taskId: string) => void;
+  /** Save an edit to a template step (definition, not run state). */
+  onSaveStep?: (stepId: string, patch: { name?: string; role?: string; prompt?: string }) => Promise<void>;
   /** Role label → assigned agent display name (undefined when unknown). */
   roleAgentName?: (role: string) => string | undefined;
   onSendToAgent: () => void;
@@ -164,12 +162,10 @@ function DetailSkeleton() {
  */
 function StepFlow({
   steps,
-  mapped,
   roleAgentName,
   onOpenStep,
 }: {
   steps: WorkflowStepLike[];
-  mapped: Record<string, WorkflowTaskLike | undefined>;
   roleAgentName?: (role: string) => string | undefined;
   onOpenStep: (step: WorkflowStepLike, index: number) => void;
 }) {
@@ -194,9 +190,6 @@ function StepFlow({
               {layer.map((stepId) => {
                 const step = stepIndex.get(stepId);
                 if (!step) return null;
-                const task = mapped[stepId];
-                const status = stepDisplayStatus(task);
-                const meta = stepStatusMeta(status);
                 const deps = dependsOnNames(step, stepIndex);
                 const roleName = roleAgentName?.(step.role);
                 const displayIndex = (order.get(stepId) ?? 0) + 1;
@@ -209,7 +202,6 @@ function StepFlow({
                       data-testid={`workflow-step-${stepId}`}
                       className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
                     >
-                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${TONE_CLASS[meta.tone].dot}`} aria-hidden="true" />
                       <span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-fg-quaternary">
                         {displayIndex}
                       </span>
@@ -261,7 +253,7 @@ export function WorkflowCard({
   runTasks,
   onRun,
   onOpenRun,
-  onOpenTask,
+  onSaveStep,
   roleAgentName,
   onSendToAgent,
   onEdit,
@@ -274,7 +266,6 @@ export function WorkflowCard({
   const latestRun = runs[0];
   const anyActive = runs.some((run) => isRunActive(run.status));
   const steps = detail?.steps ?? [];
-  const mapped = latestRun ? matchTasksToSteps(steps, runTasks[latestRun.id] ?? []) : {};
 
   const summary = (
     <span className="block">
@@ -357,14 +348,9 @@ export function WorkflowCard({
           <DetailSkeleton />
         ) : (
           <div className="space-y-4">
-            {workflow.description ? (
-              <p className="text-xs leading-relaxed text-fg-secondary">{workflow.description}</p>
-            ) : null}
-
             {steps.length > 0 ? (
               <StepFlow
                 steps={steps}
-                mapped={mapped}
                 roleAgentName={roleAgentName}
                 onOpenStep={(step, index) => setOpenStep({ step, index })}
               />
@@ -411,39 +397,46 @@ export function WorkflowCard({
                     const runMapped = matchTasksToSteps(steps, runTasks[run.id] ?? []);
                     const runProgress = computeProgress(steps, runMapped);
                     return (
-                      <li
-                        key={run.id}
-                        className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors hover:bg-surface-elevated/50"
-                      >
-                        <span className="shrink-0 font-medium tabular-nums text-fg-secondary">
-                          #{run.runNumber}
-                        </span>
-                        <StatusChip status={run.status} />
-                        <span className="shrink-0 text-[11px] tabular-nums text-fg-tertiary">
-                          {runProgress.total > 0
-                            ? `${runProgress.done}/${runProgress.total}`
-                            : t('work:task.workflowStepCountShort', '{{count}} 个任务', {
-                                count: run.taskIds.length,
-                              })}
-                        </span>
-                        <span className="shrink-0 text-[11px] text-fg-quaternary">
-                          {timeAgo(run.startedAt, t)}
-                        </span>
-                        {run.triggeredBy === 'schedule' ? (
-                          <span className="shrink-0 text-[10px] text-purple-500">
-                            {t('work:task.workflowScheduled', '定时')}
-                          </span>
-                        ) : null}
-                        <span className="flex-1" />
+                      <li key={run.id}>
+                        {/* The whole row is the affordance — a 28px icon as the only
+                            way in was a hit target, not a row. */}
                         <button
                           type="button"
                           onClick={() => onOpenRun(run)}
                           aria-label={t('work:task.workflowRunDetails', '运行详情')}
-                          title={t('work:task.workflowRunDetails', '运行详情')}
                           data-testid={`workflow-run-open-${run.id}`}
-                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-fg-tertiary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                          className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
                         >
-                          <EllipsisIcon className="h-3.5 w-3.5" />
+                          <span className="shrink-0 font-medium tabular-nums text-fg-secondary">
+                            #{run.runNumber}
+                          </span>
+                          <StatusChip status={run.status} />
+                          <span className="shrink-0 text-[11px] tabular-nums text-fg-tertiary">
+                            {runProgress.total > 0
+                              ? `${runProgress.done}/${runProgress.total}`
+                              : t('work:task.workflowStepCountShort', '{{count}} 个任务', {
+                                  count: run.taskIds.length,
+                                })}
+                          </span>
+                          <span className="shrink-0 text-[11px] text-fg-quaternary">
+                            {timeAgo(run.startedAt, t)}
+                          </span>
+                          {run.triggeredBy === 'schedule' ? (
+                            <span className="shrink-0 text-[10px] text-purple-500">
+                              {t('work:task.workflowScheduled', '定时')}
+                            </span>
+                          ) : null}
+                          <span className="flex-1" />
+                          <svg
+                            className="h-3.5 w-3.5 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                            viewBox="0 0 24 24"
+                            fill="none"
+                            stroke="currentColor"
+                            strokeWidth={2}
+                            aria-hidden="true"
+                          >
+                            <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                          </svg>
                         </button>
                       </li>
                     );
@@ -461,10 +454,8 @@ export function WorkflowCard({
           index={openStep.index}
           total={steps.length}
           dependsOnNames={dependsOnNames(openStep.step, buildStepIndex(steps))}
-          roleName={roleAgentName?.(openStep.step.role)}
-          task={mapped[openStep.step.id]}
           onClose={() => setOpenStep(null)}
-          onOpenTask={onOpenTask}
+          onSave={(patch) => onSaveStep?.(openStep.step.id, patch) ?? Promise.resolve()}
         />
       ) : null}
     </div>

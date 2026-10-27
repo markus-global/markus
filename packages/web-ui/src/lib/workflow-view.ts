@@ -328,3 +328,33 @@ export const PROMPT_CLAMP_CHARS = 160;
 export function shouldClampPrompt(prompt: string | undefined): boolean {
   return (prompt ?? '').length > PROMPT_CLAMP_CHARS;
 }
+
+/**
+ * Rewrite a template's identity when it is copied.
+ *
+ * A workflow has **two** identities that are easy to let drift: the file name
+ * (`<name>.yaml`, which is what the API uses to address it) and the `name:`
+ * field inside the YAML (which is what the parsed template — and therefore the
+ * UI — reports). Copying a template without renaming the inner field produces
+ * two workflows that both claim to be the original: the list shows duplicate
+ * cards and `resolveWorkflowFile` can address the wrong file.
+ *
+ * This returns the new YAML with `name` set and `（副本）` appended to
+ * `displayName`, so the platform never guesses which identity to trust — the
+ * caller writes them consistently.
+ */
+export function prepareDuplicateYaml(
+  yaml: string,
+  newName: string,
+  parse: (text: string) => unknown,
+  stringify: (doc: unknown) => string,
+): string {
+  const doc = parse(yaml) as Record<string, unknown> | null;
+  if (!doc || typeof doc !== 'object') throw new Error('模板 YAML 无法解析');
+  doc['name'] = newName;
+  const displayName = doc['displayName'];
+  if (typeof displayName === 'string' && displayName.length > 0) {
+    doc['displayName'] = `${displayName}（副本）`;
+  }
+  return stringify(doc);
+}
