@@ -117,6 +117,19 @@ export interface WorkflowRun {
   roleMapping: Record<string, string>;
   stepConfigs?: WorkflowStepConfig[];
 
+  /**
+   * The template *as it was when this run started*.
+   *
+   * A run used to identify itself only by `workflowName`, so editing the YAML
+   * silently changed what a historical run meant and made re-running it
+   * irreproducible. The snapshot makes a run self-contained: the UI renders it
+   * from here, never from the current file. `templateHash` is the content digest
+   * (for caching/dedupe and for spotting "same run, different template").
+   */
+  templateVersion?: string;
+  templateHash?: string;
+  templateSnapshot?: WorkflowTemplate;
+
   status: WorkflowRunStatus;
   triggeredBy: WorkflowRunTrigger;
   projectId?: string;

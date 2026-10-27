@@ -82,7 +82,7 @@ export function WorkflowRunDrawer({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const steps = detail?.steps ?? [];
+  const steps = run.templateSnapshot?.steps ?? detail?.steps ?? [];
   const stepIndex = buildStepIndex(steps);
   const mapped = matchTasksToSteps(steps, tasks ?? []);
   const progress = computeProgress(steps, mapped);

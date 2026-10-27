@@ -12,6 +12,7 @@ import {
   type Task,
   TERMINAL_STATUSES,
 } from '@markus/shared';
+import { createHash } from 'node:crypto';
 import type { RequirementService } from './requirement-service.js';
 import type { TaskService } from './task-service.js';
 import type { OrganizationService } from './org-service.js';
@@ -44,6 +45,10 @@ export interface WorkflowRunRow {
   project_id: string | null;
   started_at: string;
   completed_at: string | null;
+  /** JSON-encoded WorkflowTemplate as of run start (null on pre-2026-10 runs). */
+  template_version?: string | null;
+  template_hash?: string | null;
+  template_snapshot?: string | null;
 }
 
 function rowToRun(row: WorkflowRunRow): WorkflowRun {
@@ -61,6 +66,11 @@ function rowToRun(row: WorkflowRunRow): WorkflowRun {
     projectId: row.project_id ?? undefined,
     startedAt: row.started_at,
     completedAt: row.completed_at ?? undefined,
+    templateVersion: row.template_version ?? undefined,
+    templateHash: row.template_hash ?? undefined,
+    templateSnapshot: row.template_snapshot
+      ? (JSON.parse(row.template_snapshot) as WorkflowTemplate)
+      : undefined,
   };
 }
 
@@ -78,8 +88,36 @@ function runToRow(run: WorkflowRun): WorkflowRunRow {
     triggered_by: run.triggeredBy,
     project_id: run.projectId ?? null,
     started_at: run.startedAt,
+    template_version: run.templateVersion ?? null,
+    template_hash: run.templateHash ?? null,
+    template_snapshot: run.templateSnapshot ? JSON.stringify(run.templateSnapshot) : null,
     completed_at: run.completedAt ?? null,
   };
+}
+
+/** Raised when a team already has its maximum number of running workflows. */
+export class WorkflowConcurrencyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowConcurrencyError';
+  }
+}
+
+/**
+ * Parse a step's `timeout` shorthand (`"30s"`, `"15m"`, `"2h"`, `"1d"`, or raw ms).
+ * Returns `null` for anything unparseable so callers can ignore bad config rather
+ * than silently treating it as "no timeout".
+ */
+export function parseDurationMs(value: string | number | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
+  const match = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$/i.exec(value);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unit = (match[2] ?? 'ms').toLowerCase();
+  const factor = unit === 'd' ? 86_400_000 : unit === 'h' ? 3_600_000 : unit === 'm' ? 60_000 : unit === 's' ? 1_000 : 1;
+  const ms = amount * factor;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
 export class WorkflowRunner {
@@ -88,6 +126,28 @@ export class WorkflowRunner {
   private taskService: TaskService;
   private orgService: OrganizationService;
   private ws?: WSBroadcaster;
+
+  /**
+   * Team-level admission control. Without it a cron glitch (or an eager agent)
+   * could start unlimited runs for one team — every one of them a real
+   * requirement, real tasks and real token spend.
+   *
+   * Source of truth: `MARKUS_WORKFLOW_MAX_CONCURRENT` (process-wide policy), with
+   * a conservative default. `setMaxConcurrentRunsPerTeam` exists for tests and for
+   * a future per-team override; nothing else may write this value.
+   */
+  private maxConcurrentRunsPerTeam = (() => {
+    const raw = Number(process.env['MARKUS_WORKFLOW_MAX_CONCURRENT']);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+  })();
+
+  setMaxConcurrentRunsPerTeam(limit: number): void {
+    if (Number.isFinite(limit) && limit > 0) this.maxConcurrentRunsPerTeam = Math.floor(limit);
+  }
+
+  getMaxConcurrentRunsPerTeam(): number {
+    return this.maxConcurrentRunsPerTeam;
+  }
 
   // In-memory cache for fast lookup
   private runs = new Map<string, WorkflowRun>();
@@ -122,6 +182,27 @@ export class WorkflowRunner {
   ): Promise<WorkflowRun> {
     const team = this.orgService.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
+
+    // ── Admission control ───────────────────────────────────────────────────
+    // The single entry point for starting a run, so the quota lives here rather
+    // than in each caller (API route, scheduler, agent tool). Rejecting *before*
+    // any side effect means a refused run leaves no requirement, no tasks and no
+    // run row behind.
+    const active = this.getActiveRuns(teamId).filter(r => r.status === 'running');
+    if (active.length >= this.maxConcurrentRunsPerTeam) {
+      throw new WorkflowConcurrencyError(
+        `Team already has ${active.length} running workflow(s) (limit ${this.maxConcurrentRunsPerTeam}). ` +
+          `Wait for one to finish, or raise workflow.maxConcurrentRunsPerTeam.`,
+      );
+    }
+
+    // The run id is allocated *before* the tasks are created: a task carries its
+    // (run, step) identity from birth, so nothing downstream has to reconstruct
+    // the relationship from notes or titles.
+    const runId = generateId('wfr');
+    // Snapshot the template so this run renders with the definition it started
+    // with, even if the YAML is edited afterwards.
+    const templateHash = createHash('sha256').update(JSON.stringify(template)).digest('hex').slice(0, 16);
 
     // Validate required params
     for (const p of template.params ?? []) {
@@ -188,7 +269,11 @@ export class WorkflowRunner {
           createdBy: createdBy || team.managerId || 'system',
           creatorRole: 'worker',
           approvedVia: 'workflow',
-          notes: `[Workflow] ${template.name} run #${runNumber}, step: ${step.id}`,
+          // Human-readable provenance only — the machine-readable identity is
+          // `workflowRunId` / `workflowStepId` on the task itself.
+          notes: `[Workflow] ${template.name} run #${runNumber}`,
+          workflowRunId: runId,
+          workflowStepId: step.id,
         });
 
         taskIdMap.set(step.id, task.id);
@@ -216,7 +301,7 @@ export class WorkflowRunner {
 
     // 5. Save run record
     const run: WorkflowRun = {
-      id: generateId('wfr'),
+      id: runId,
       teamId,
       workflowName: template.name,
       runNumber,
@@ -229,6 +314,9 @@ export class WorkflowRunner {
       triggeredBy,
       projectId,
       startedAt: new Date().toISOString(),
+      templateVersion: template.version,
+      templateHash,
+      templateSnapshot: template,
     };
 
     this.runs.set(run.id, run);
@@ -460,6 +548,70 @@ export class WorkflowRunner {
     }
 
     await this.applyRunStatus(run, newStatus, { task });
+  }
+
+  /**
+   * Enforce `steps[].timeout`.
+   *
+   * The template has always *accepted* a timeout and stored it in
+   * `stepConfigs` — nothing ever read it, so a wedged step kept its run
+   * `running` forever and the config was a lie. Sweeping from the scheduler tick
+   * (rather than per-task timers) means the guarantee survives a restart: the
+   * deadline is recomputed from the task's own `startedAt`.
+   *
+   * Failure policy is shared with the normal failure path: retry if the step has
+   * retries left, otherwise fail the task with an explicit reason so the run
+   * status derives to `failed`.
+   */
+  async enforceTimeouts(now: number = Date.now()): Promise<number> {
+    let enforced = 0;
+    for (const run of [...this.runs.values()]) {
+      if (run.status !== 'running') continue; // paused / cancelled / terminal: not ours to judge
+      for (const cfg of run.stepConfigs ?? []) {
+        const limitMs = parseDurationMs(cfg.timeout);
+        if (!limitMs) continue;
+        const task = this.taskService.getTask(cfg.taskId);
+        if (!task || TERMINAL_STATUSES.has(task.status)) continue;
+
+        const startedAtMs = new Date(task.startedAt ?? task.createdAt).getTime();
+        if (!Number.isFinite(startedAtMs)) continue;
+        if (now - startedAtMs < limitMs) continue;
+
+        enforced += 1;
+        const retried = this.attemptStepRetry(run, task);
+        if (!retried) {
+          try {
+            this.taskService.updateTaskStatus(
+              task.id,
+              'failed',
+              'system',
+              false,
+              false,
+              'system',
+              `Step timed out after ${cfg.timeout} (limit ${Math.round(limitMs / 1000)}s)`,
+            );
+          } catch (err) {
+            log.warn('Failed to fail timed-out workflow step', { taskId: task.id, error: String(err) });
+          }
+          this.notifyManager(run.teamId, 'step_failed', {
+            workflowName: run.workflowName,
+            runId: run.id,
+            runNumber: run.runNumber,
+            taskId: task.id,
+            taskTitle: task.title,
+            reason: 'timeout',
+            actionRequired: true,
+          });
+        }
+        log.info('Workflow step timeout enforced', {
+          runId: run.id,
+          taskId: task.id,
+          timeout: cfg.timeout,
+          retried,
+        });
+      }
+    }
+    return enforced;
   }
 
   /**

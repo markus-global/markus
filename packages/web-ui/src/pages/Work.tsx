@@ -4356,7 +4356,8 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
           id: task.id,
           title: task.title,
           status: task.status,
-          notes: Array.isArray(task.notes) ? task.notes.join('\n') : (task.notes ?? undefined),
+          workflowStepId: task.workflowStepId,
+          workflowRunId: task.workflowRunId,
         })),
       }));
     } catch {

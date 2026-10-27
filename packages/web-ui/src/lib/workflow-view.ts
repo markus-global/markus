@@ -31,6 +31,9 @@ export interface WorkflowTaskLike {
   title: string;
   status: string;
   notes?: string;
+  /** Structural identity written by the runner (null on pre-2026-10 rows until backfilled). */
+  workflowStepId?: string;
+  workflowRunId?: string;
 }
 
 export type RunStatusTone = 'info' | 'warning' | 'success' | 'danger' | 'neutral';
@@ -163,24 +166,18 @@ export function layeredDag(steps: WorkflowStepLike[]): {
   return { layers, depth, edges };
 }
 
-/** The runner stamps `step: <id>` into task notes — read it, don't guess. */
-export function stepIdFromNotes(notes: string | undefined): string | null {
-  if (!notes) return null;
-  const match = /step:\s*([A-Za-z0-9_.-]+)/.exec(notes);
-  return match ? match[1]! : null;
-}
-
 /**
- * Map steps → their tasks.
+ * Map steps → their tasks **by structural identity**.
  *
- * Order of trust: the `step: <id>` marker in task notes (exact), then a title
- * suffix match (`[Workflow] Step name`), then positional. Returns only the
- * steps it could actually match — an unmapped step shows as "not started"
- * rather than inheriting a neighbour's status.
+ * Tasks created by a run carry `workflowStepId` from birth, so this is a plain
+ * join. It used to reconstruct the relationship from a `step: <id>` marker in
+ * `notes`, then a `[Workflow] Step name` title suffix, then positional order —
+ * three guesses, all of which break when a human edits a title. The one-time
+ * backfill (`migrateWorkflowTaskIdentity`) already moved historical rows onto
+ * the column, so no runtime reader touches text any more.
  *
- * Residual debt (tracked in the review doc): tasks carry no structural
- * `stepId`. Both strategies above are in-band, so a rename breaks the suffix
- * match. The structural fix is a `step_id` column on tasks.
+ * Unmapped steps stay unmapped (the UI lists the leftovers) instead of
+ * inheriting a neighbouring step's status.
  */
 export function matchTasksToSteps(
   steps: WorkflowStepLike[],
@@ -188,37 +185,16 @@ export function matchTasksToSteps(
 ): Record<string, WorkflowTaskLike | undefined> {
   const byStep: Record<string, WorkflowTaskLike | undefined> = {};
   const used = new Set<string>();
-  const stepIds = new Set(steps.map((s) => s.id));
-
   for (const task of tasks) {
-    const fromNotes = stepIdFromNotes(task.notes);
-    if (fromNotes && stepIds.has(fromNotes) && !byStep[fromNotes]) {
-      byStep[fromNotes] = task;
-      used.add(task.id);
-    }
+    if (!task.workflowStepId) continue;
+    if (byStep[task.workflowStepId]) continue; // first wins; duplicates are surfaced by the caller
+    byStep[task.workflowStepId] = task;
+    used.add(task.id);
   }
-
+  // Steps with no task are simply absent from the map.
   for (const step of steps) {
-    if (byStep[step.id]) continue;
-    const match = tasks.find(
-      (task) =>
-        !used.has(task.id) &&
-        (task.title === step.name || task.title.endsWith(` ${step.name}`)),
-    );
-    if (match) {
-      byStep[step.id] = match;
-      used.add(match.id);
-    }
+    if (!(step.id in byStep)) byStep[step.id] = undefined;
   }
-
-  const leftovers = tasks.filter((task) => !used.has(task.id));
-  const unmatchedSteps = steps.filter((step) => !byStep[step.id]);
-  if (leftovers.length > 0 && leftovers.length === unmatchedSteps.length) {
-    unmatchedSteps.forEach((step, i) => {
-      byStep[step.id] = leftovers[i];
-    });
-  }
-
   return byStep;
 }
 

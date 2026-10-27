@@ -18,7 +18,6 @@ import {
   buildStepIndex,
   dependsOnNames,
   layeredDag,
-  stepIdFromNotes,
   matchTasksToSteps,
   computeProgress,
   stepDisplayStatus,
@@ -111,48 +110,53 @@ describe('layeredDag', () => {
   });
 });
 
-describe('matchTasksToSteps', () => {
-  it('prefers the structural `step: <id>` marker in task notes', () => {
+describe('matchTasksToSteps — structural join only', () => {
+  it('joins by workflowStepId', () => {
     const mapped = matchTasksToSteps(steps, [
-      { id: 't1', title: '随便什么标题', status: 'completed', notes: 'some notes. step: review' },
+      { id: 't1', title: '任意标题', status: 'completed', workflowStepId: 'review' },
     ]);
     expect(mapped['review']?.id).toBe('t1');
   });
 
-  it('falls back to the runner’s title format `[Workflow] Step name`', () => {
+  it('ignores the old in-band hints — a renamed title must not move a task', () => {
+    // title still looks like a step, notes still carry the legacy marker:
+    // neither may be used any more (the backfill already moved them onto the column)
     const mapped = matchTasksToSteps(steps, [
-      { id: 't2', title: '[标准功能开发流程] 代码审查', status: 'failed' },
+      { id: 't2', title: '[标准功能开发流程] 代码审查', status: 'failed', notes: 'step: review' },
     ]);
-    expect(mapped['review']?.id).toBe('t2');
+    expect(Object.values(mapped).filter(Boolean)).toHaveLength(0);
   });
 
-  it('never maps one task onto two steps', () => {
+  it('maps a task onto exactly one step', () => {
     const mapped = matchTasksToSteps(steps, [
-      { id: 'only', title: '[W] 代码审查', status: 'completed', notes: 'step: review' },
+      { id: 'only', title: 'x', status: 'completed', workflowStepId: 'review' },
     ]);
     const ids = Object.values(mapped).filter(Boolean).map((t) => t!.id);
     expect(ids).toEqual(['only']);
   });
 
-  it('maps positionally only when every step and task line up', () => {
+  it('leaves unmapped steps undefined instead of guessing positionally', () => {
     const tasks = steps.map((_, i) => ({ id: `p${i}`, title: `untitled ${i}`, status: 'pending' }));
     const mapped = matchTasksToSteps(steps, tasks);
-    expect(mapped['research']?.id).toBe('p0');
-    expect(mapped['review']?.id).toBe('p4');
+    expect(Object.values(mapped).filter(Boolean)).toHaveLength(0);
+  });
 
-    // partial leftovers must NOT be matched positionally (that would invent statuses)
-    const partial = matchTasksToSteps(steps, [{ id: 'x', title: 'nothing matches', status: 'completed' }]);
-    expect(Object.values(partial).filter(Boolean)).toHaveLength(0);
+  it('keeps the first task when a step has duplicates (never silently halves progress)', () => {
+    const mapped = matchTasksToSteps(steps, [
+      { id: 'a', title: 'a', status: 'completed', workflowStepId: 'dev-a' },
+      { id: 'b', title: 'b', status: 'failed', workflowStepId: 'dev-a' },
+    ]);
+    expect(mapped['dev-a']?.id).toBe('a');
   });
 });
 
 describe('computeProgress', () => {
   it('derives done/failed/active counts from mapped tasks', () => {
     const mapped = matchTasksToSteps(steps, [
-      { id: 't1', title: '[W] 代码研究与依赖分析', status: 'completed' },
-      { id: 't2', title: '[W] 任务分解与分配', status: 'completed' },
-      { id: 't3', title: '[W] 并行开发 A', status: 'failed' },
-      { id: 't4', title: '[W] 并行开发 B', status: 'in_progress' },
+      { id: 't1', title: 'x', status: 'completed', workflowStepId: 'research' },
+      { id: 't2', title: 'x', status: 'completed', workflowStepId: 'plan' },
+      { id: 't3', title: 'x', status: 'failed', workflowStepId: 'dev-a' },
+      { id: 't4', title: 'x', status: 'in_progress', workflowStepId: 'dev-b' },
     ]);
     const progress = computeProgress(steps, mapped);
     expect(progress.total).toBe(4);

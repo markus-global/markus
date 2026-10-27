@@ -117,6 +117,9 @@ export interface CreateTaskRequest {
   planReportId?: string;
   taskType?: TaskType;
   scheduleConfig?: ScheduleConfig;
+  /** Workflow identity (set by WorkflowRunner — never inferred from text). */
+  workflowRunId?: string;
+  workflowStepId?: string;
   notes?: string;
   acceptanceCriteria?: string;
   deadline?: string;
@@ -2758,6 +2761,8 @@ export class TaskService implements ApprovalTargetPort {
       planReportId: request.planReportId,
       taskType: request.taskType ?? 'standard',
       scheduleConfig,
+      workflowRunId: request.workflowRunId,
+      workflowStepId: request.workflowStepId,
     };
 
     this.tasks.set(task.id, task);
@@ -2781,6 +2786,8 @@ export class TaskService implements ApprovalTargetPort {
           dueAt: task.dueAt ? new Date(task.dueAt) : undefined,
           taskType: task.taskType,
           scheduleConfig: task.scheduleConfig as Record<string, unknown> | undefined,
+          workflowRunId: task.workflowRunId,
+          workflowStepId: task.workflowStepId,
         })
         .catch(err => log.warn('Failed to persist task to DB', { error: String(err) }));
     }

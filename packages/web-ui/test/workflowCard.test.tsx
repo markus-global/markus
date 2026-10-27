@@ -72,9 +72,9 @@ const run: WorkflowRunInfo = {
 };
 
 const runTasks = [
-  { id: 't1', title: '[标准功能开发流程] 代码研究', status: 'completed' },
-  { id: 't2', title: '[标准功能开发流程] 并行开发', status: 'failed' },
-  { id: 't3', title: '[标准功能开发流程] 代码审查', status: 'pending' },
+  { id: 't1', title: '[标准功能开发流程] 代码研究', status: 'completed', workflowStepId: 'research' },
+  { id: 't2', title: '[标准功能开发流程] 并行开发', status: 'failed', workflowStepId: 'dev' },
+  { id: 't3', title: '[标准功能开发流程] 代码审查', status: 'pending', workflowStepId: 'review' },
 ];
 
 function renderCard(overrides: Partial<Parameters<typeof WorkflowCard>[0]> = {}) {

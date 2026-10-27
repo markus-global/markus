@@ -193,6 +193,14 @@ export class WorkflowScheduler {
   private async tick(): Promise<void> {
     this.refreshScheduleStates();
 
+    // Enforce per-step timeouts before deciding new triggers: a wedged run must
+    // become terminal instead of blocking its workflow's next scheduled start.
+    try {
+      await this.workflowRunner.enforceTimeouts();
+    } catch (err) {
+      log.warn('Workflow step-timeout sweep failed', { error: String(err) });
+    }
+
     const now = Date.now();
 
     for (const [key, state] of this.scheduleStates) {

@@ -107,6 +107,17 @@ export interface Task {
   // ── Governance fields ──
   /** Requirement that authorized this task */
   requirementId?: string;
+  /**
+   * Workflow identity — structural, not derived.
+   *
+   * A task created by a workflow run belongs to exactly one `(run, step)`. These
+   * two columns are that identity. Before them the relationship was reconstructed
+   * from a `step: <id>` marker inside `notes` and, failing that, from a title
+   * suffix — i.e. structure inferred from payload, which breaks the moment a
+   * human edits a title.
+   */
+  workflowRunId?: string;
+  workflowStepId?: string;
   projectId?: string;
   repositoryPath?: string;
   /** Agent or user who created this task */

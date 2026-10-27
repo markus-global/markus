@@ -138,6 +138,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
   blocked_by TEXT DEFAULT '[]',
+  workflow_run_id TEXT,
+  workflow_step_id TEXT,
   result TEXT,
   deliverables TEXT,
   notes TEXT DEFAULT '[]',
@@ -692,7 +694,11 @@ CREATE TABLE IF NOT EXISTS workflow_runs (
   triggered_by TEXT NOT NULL DEFAULT 'manual',
   project_id TEXT,
   started_at TEXT NOT NULL DEFAULT (datetime('now')),
-  completed_at TEXT
+  completed_at TEXT,
+  -- Template at run start — the run renders from here, never from today's file
+  template_version TEXT,
+  template_hash TEXT,
+  template_snapshot TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_team ON workflow_runs(team_id, workflow_name);
 CREATE INDEX IF NOT EXISTS idx_workflow_runs_req ON workflow_runs(requirement_id);
@@ -821,6 +827,16 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
     { table: 'tasks', column: 'open_question', sql: "ALTER TABLE tasks ADD COLUMN open_question TEXT" },
     { table: 'tasks', column: 'decisions', sql: "ALTER TABLE tasks ADD COLUMN decisions TEXT DEFAULT '[]'" },
+    // Workflow identity (2026-10-27): a workflow task belongs to exactly one
+    // (run, step). Structural columns replace the old `step: <id>` marker in
+    // notes; `migrateWorkflowTaskIdentity` backfills existing rows once.
+    { table: 'tasks', column: 'workflow_run_id', sql: "ALTER TABLE tasks ADD COLUMN workflow_run_id TEXT" },
+    { table: 'tasks', column: 'workflow_step_id', sql: "ALTER TABLE tasks ADD COLUMN workflow_step_id TEXT" },
+    // Run-time template snapshot (2026-10-27): a run must render with the
+    // template it started with, not whatever the file says today.
+    { table: 'workflow_runs', column: 'template_version', sql: "ALTER TABLE workflow_runs ADD COLUMN template_version TEXT" },
+    { table: 'workflow_runs', column: 'template_hash', sql: "ALTER TABLE workflow_runs ADD COLUMN template_hash TEXT" },
+    { table: 'workflow_runs', column: 'template_snapshot', sql: "ALTER TABLE workflow_runs ADD COLUMN template_snapshot TEXT" },
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
@@ -1443,6 +1459,8 @@ export class SqliteTaskRepo {
     blockedBy?: string[];
     projectId?: string;
     createdBy?: string;
+    workflowRunId?: string;
+    workflowStepId?: string;
     dueAt?: Date;
     taskType?: string;
     scheduleConfig?: Record<string, unknown>;
@@ -1451,8 +1469,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, workflow_run_id, workflow_step_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1475,7 +1493,9 @@ export class SqliteTaskRepo {
         data.taskType ?? 'standard',
         data.scheduleConfig ? toJson(data.scheduleConfig) : null,
         ts,
-        ts
+        ts,
+        data.workflowRunId ?? null,
+        data.workflowStepId ?? null
       );
     return this.findById(data.id)!;
   }
@@ -1664,6 +1684,8 @@ export class SqliteTaskRepo {
     projectId?: string;
     createdBy?: string;
     blockedBy?: string[];
+    workflowRunId?: string;
+    workflowStepId?: string;
     dueAt?: Date;
     taskType?: string;
     scheduleConfig?: Record<string, unknown>;
@@ -1672,8 +1694,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, workflow_run_id, workflow_step_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          status = excluded.status,
@@ -1701,7 +1723,9 @@ export class SqliteTaskRepo {
         data.taskType ?? 'standard',
         data.scheduleConfig ? toJson(data.scheduleConfig) : null,
         ts,
-        ts
+        ts,
+        data.workflowRunId ?? null,
+        data.workflowStepId ?? null
       );
   }
 
@@ -1725,6 +1749,8 @@ export class SqliteTaskRepo {
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
       blockedBy: fromJson<string[]>(r['blocked_by'] as string) ?? [],
+      workflowRunId: (r['workflow_run_id'] as string | null) ?? undefined,
+      workflowStepId: (r['workflow_step_id'] as string | null) ?? undefined,
       result: fromJson(r['result'] as string),
       deliverables: fromJson(r['deliverables'] as string),
       notes: fromJson(r['notes'] as string),
@@ -6309,6 +6335,10 @@ export interface WorkflowRunRow {
   project_id: string | null;
   started_at: string;
   completed_at: string | null;
+  /** Template at run start (JSON) + its version and content hash. */
+  template_version?: string | null;
+  template_hash?: string | null;
+  template_snapshot?: string | null;
 }
 
 export class SqliteWorkflowRunRepo {
@@ -6316,13 +6346,14 @@ export class SqliteWorkflowRunRepo {
 
   async create(row: WorkflowRunRow): Promise<void> {
     this.db.prepare(
-      `INSERT INTO workflow_runs (id, team_id, workflow_name, run_number, requirement_id, task_ids, params, role_mapping, status, triggered_by, project_id, started_at, completed_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT INTO workflow_runs (id, team_id, workflow_name, run_number, requirement_id, task_ids, params, role_mapping, status, triggered_by, project_id, started_at, completed_at, template_version, template_hash, template_snapshot)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       row.id, row.team_id, row.workflow_name, row.run_number,
       row.requirement_id, row.task_ids, row.params, row.role_mapping,
       row.status, row.triggered_by, row.project_id,
       row.started_at, row.completed_at,
+      row.template_version ?? null, row.template_hash ?? null, row.template_snapshot ?? null,
     );
   }
 
@@ -6384,6 +6415,9 @@ export class SqliteWorkflowRunRepo {
       project_id: (r['project_id'] as string) ?? null,
       started_at: r['started_at'] as string,
       completed_at: (r['completed_at'] as string) ?? null,
+      template_version: (r['template_version'] as string) ?? null,
+      template_hash: (r['template_hash'] as string) ?? null,
+      template_snapshot: (r['template_snapshot'] as string) ?? null,
     };
   }
 }

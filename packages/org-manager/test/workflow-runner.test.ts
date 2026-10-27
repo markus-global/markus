@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { WorkflowRunner } from '../src/workflow-runner.js';
+import { WorkflowRunner, parseDurationMs } from '../src/workflow-runner.js';
 import type { WorkflowTemplate } from '@markus/shared';
 
 const TEMPLATE: WorkflowTemplate = {
@@ -183,8 +183,138 @@ describe('WorkflowRunner', () => {
     });
   });
 
-  describe('onTaskStatusChange', () => {
-    it('marks run completed when all tasks complete', async () => {
+  /**
+ * P0 (2026-10-27) — the four structural guarantees:
+ *   1. a workflow task carries its (run, step) identity from birth;
+ *   2. a run snapshots the template it started with;
+ *   3. a team cannot exceed its concurrent-run quota;
+ *   4. `steps[].timeout` is actually enforced (it used to be stored and ignored).
+ */
+describe('P0 guards', () => {
+  it('writes structural identity onto every step task', async () => {
+    const run = await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    expect(created).toHaveLength(2);
+    for (const req of created) {
+      expect(req['workflowRunId']).toBe(run.id);
+      expect(typeof req['workflowStepId']).toBe('string');
+      // the legacy in-band marker must be gone from new rows
+      expect(String(req['notes'])).not.toMatch(/step:/);
+    }
+    expect(new Set(created.map(r => r['workflowStepId']))).toEqual(new Set(['s1', 's2']));
+  });
+
+  it('snapshots the template (version + hash + definition) into the run', async () => {
+    const run = await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+    expect(run.templateVersion).toBe(TEMPLATE.version);
+    expect(run.templateHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(run.templateSnapshot?.steps.map(s => s.id)).toEqual(['s1', 's2']);
+
+    // the snapshot is what gets persisted, so history survives a template edit
+    const persisted = mocks.runRepo.create.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(String(persisted['template_snapshot'])).toContain('"s1"');
+  });
+
+  it('refuses a run beyond the team quota, with no side effects', async () => {
+    runner.setMaxConcurrentRunsPerTeam(1);
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const before = mocks.taskService.createTask.mock.calls.length;
+    await expect(
+      runner.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth2' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      ),
+    ).rejects.toThrow(/limit 1/);
+
+    // rejected before creating a requirement/tasks/run row
+    expect(mocks.taskService.createTask.mock.calls.length).toBe(before);
+    expect(mocks.requirementService.createRequirement).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a step that blows its timeout', async () => {
+    const timedTemplate: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [{ id: 's1', name: 'Slow', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task', timeout: '1s' }],
+    };
+    const run = await runner.createRun(
+      'team-1',
+      timedTemplate,
+      { topic: 'auth' },
+      { planner: 'agent-planner' },
+      'proj-1',
+    );
+
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'in_progress';
+    task.startedAt = new Date(Date.now() - 5_000).toISOString();
+
+    const enforced = await runner.enforceTimeouts();
+
+    expect(enforced).toBe(1);
+    expect(mocks.taskService.updateTaskStatus).toHaveBeenCalledWith(
+      taskId, 'failed', 'system', false, false, 'system', expect.stringContaining('timed out'),
+    );
+  });
+
+  it('leaves a step inside its timeout alone', async () => {
+    const timedTemplate: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [{ id: 's1', name: 'Slow', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task', timeout: '1h' }],
+    };
+    const run = await runner.createRun(
+      'team-1',
+      timedTemplate,
+      { topic: 'auth' },
+      { planner: 'agent-planner' },
+      'proj-1',
+    );
+    const task = mocks.taskService._tasks.get(run.taskIds[0]!)!;
+    task.status = 'in_progress';
+    task.startedAt = new Date().toISOString();
+
+    expect(await runner.enforceTimeouts()).toBe(0);
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+  });
+});
+
+describe('parseDurationMs', () => {
+  it('parses the documented shorthand and rejects nonsense', () => {
+    expect(parseDurationMs('30s')).toBe(30_000);
+    expect(parseDurationMs('15m')).toBe(900_000);
+    expect(parseDurationMs('2h')).toBe(7_200_000);
+    expect(parseDurationMs('1d')).toBe(86_400_000);
+    expect(parseDurationMs('250')).toBe(250);
+    expect(parseDurationMs('soon')).toBeNull();
+    expect(parseDurationMs(undefined)).toBeNull();
+    expect(parseDurationMs('0s')).toBeNull();
+  });
+});
+
+describe('onTaskStatusChange', () => {    it('marks run completed when all tasks complete', async () => {
       const run = await runner.createRun(
         'team-1',
         TEMPLATE,

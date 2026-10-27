@@ -343,6 +343,10 @@ export interface WorkflowRunInfo {
   projectId?: string;
   startedAt: string;
   completedAt?: string;
+  /** Template as of run start; null for runs created before 2026-10-27. */
+  templateVersion?: string;
+  templateHash?: string;
+  templateSnapshot?: WorkflowTemplateInfo;
 }
 
 export interface KnowledgeEntryInfo {
@@ -999,6 +1003,9 @@ export interface TaskInfo {
   }>;
   projectId?: string;
   requirementId?: string;
+  /** Workflow identity — structural (run + step), never inferred from text. */
+  workflowRunId?: string;
+  workflowStepId?: string;
   createdBy?: string;
   updatedBy?: string;
   startedAt?: string;
