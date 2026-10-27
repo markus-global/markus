@@ -36,6 +36,8 @@ export interface WorkflowRunDrawerProps {
   onViewTasks: () => void;
   pausing?: boolean;
   roleAgentName?: (role: string) => string | undefined;
+  /** Deep-link to the task a step produced. */
+  onOpenTask?: (taskId: string) => void;
 }
 
 const STEP_DOT: Record<StepDisplayStatus, string> = {
@@ -66,6 +68,7 @@ export function WorkflowRunDrawer({
   onViewTasks,
   pausing,
   roleAgentName,
+  onOpenTask,
 }: WorkflowRunDrawerProps) {
   const { t } = useTranslation(['work', 'common']);
   const closeRef = useRef<HTMLButtonElement>(null);
@@ -168,35 +171,64 @@ export function WorkflowRunDrawer({
             ) : steps.length === 0 ? (
               <p className="text-[11px] text-fg-quaternary">{t('work:task.workflowLoading', '加载中…')}</p>
             ) : (
-              <ol className="space-y-1.5">
+              <ol className="space-y-1">
                 {steps.map((step, idx) => {
                   const task = mapped[step.id];
                   const state = stepDisplayStatus(task);
                   const label = STEP_LABEL_KEY[state];
                   const deps = dependsOnNames(step, stepIndex);
                   const roleName = roleAgentName?.(step.role);
-                  return (
-                    <li key={step.id} className="flex items-start gap-2 rounded-lg px-1 py-1">
+                  const rowBody = (
+                    <>
                       <span className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${STEP_DOT[state]}`} aria-hidden="true" />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                           <span className="text-xs font-medium text-fg-primary">
                             {idx + 1}. {step.name}
                           </span>
                           <span className="text-[10px] text-fg-quaternary">
                             {t(`work:task.${label.key}`, label.label)}
                           </span>
-                        </div>
-                        <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-fg-quaternary">
+                        </span>
+                        <span className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-fg-quaternary">
                           <span>{roleName ?? step.role}</span>
                           {deps.length > 0 ? (
                             <span>
                               {t('work:task.workflowDependsOn', '依赖 {{steps}}', { steps: deps.join('、') })}
                             </span>
                           ) : null}
-                          {task ? <span className="truncate">{task.title}</span> : null}
-                        </div>
-                      </div>
+                          {task ? <span className="max-w-[16rem] truncate">{task.title}</span> : null}
+                        </span>
+                      </span>
+                      {task && onOpenTask ? (
+                        <svg
+                          className="mt-1 h-3 w-3 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                          viewBox="0 0 24 24"
+                          fill="none"
+                          stroke="currentColor"
+                          strokeWidth={2}
+                          aria-hidden="true"
+                        >
+                          <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                        </svg>
+                      ) : null}
+                    </>
+                  );
+                  return (
+                    <li key={step.id}>
+                      {task && onOpenTask ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenTask(task.id)}
+                          data-testid={`workflow-run-step-${step.id}`}
+                          title={t('work:task.workflowOpenTask', '查看对应任务')}
+                          className="group flex w-full items-start gap-2 rounded-lg px-1 py-1 text-left transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                        >
+                          {rowBody}
+                        </button>
+                      ) : (
+                        <div className="flex items-start gap-2 rounded-lg px-1 py-1">{rowBody}</div>
+                      )}
                     </li>
                   );
                 })}

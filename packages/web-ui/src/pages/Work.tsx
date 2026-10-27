@@ -4509,8 +4509,12 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
    * target — invisible as an action and a mis-click hazard. It is now an
    * explicit menu item ("发送到智能体对话").
    */
-  const sendWorkflowToAgent = (wf: WorkflowInfo) => {
-    const wfTeamId = resolveTeam(wf.name);
+  /** Task board deep-link — the drawer/step modal use it to open a step's task. */
+  const openTaskById = (taskId: string) => {
+    navBus.navigate(PAGE.WORK, { openTask: taskId });
+  };
+
+  const sendWorkflowToAgent = (wf: WorkflowInfo) => {    const wfTeamId = resolveTeam(wf.name);
     const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
     const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
     if (targetAgentId) {
@@ -4564,14 +4568,11 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
                 runs={wfRuns}
                 runTasks={runTasks}
                 onRun={() => openRunModal(wf)}
-                onViewTasks={viewRunTasks}
                 onOpenRun={(run) => {
                   setDrawerRun(run);
                   void loadRunTasks(run);
                 }}
-                onPauseResume={(run) => void togglePauseRun(run)}
-                onCancelRun={(run) => setConfirmCancelRunId(run.id)}
-                pausingRunId={pausingRunId}
+                onOpenTask={openTaskById}
                 roleAgentName={roleNameFor}
                 onSendToAgent={() => sendWorkflowToAgent(wf)}
                 onEdit={() => void openManage('edit', wf)}
@@ -4599,6 +4600,10 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
             setDrawerRun(null);
           }}
           pausing={pausingRunId === drawerRun.id}
+          onOpenTask={(taskId) => {
+            setDrawerRun(null);
+            openTaskById(taskId);
+          }}
           roleAgentName={(role) => {
             const agentId = drawerRun.roleMapping?.[role];
             return agentId ? agents.find((a) => a.id === agentId)?.name : undefined;

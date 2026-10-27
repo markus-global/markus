@@ -1,9 +1,14 @@
 /**
- * Behaviour guards for the workflow card (2026-10-27 UX review).
+ * Behaviour guards for the workflow card (2026-10-27 UX review, second pass).
  *
- * These assert the *interaction contract*, not the styling: a card that looks
+ * These assert the interaction contract, not the styling: a card that looks
  * right but cannot be opened from the keyboard, or that shows nothing while its
- * detail request is in flight, is exactly the defect this rewrite targeted.
+ * detail request is in flight, is the defect this rewrite targeted.
+ *
+ * Updated after the Owner's second-pass notes:
+ *   • the header is an index again (no run counters / progress bar),
+ *   • a step is one line and its prompt lives in a modal,
+ *   • a run row exposes exactly one affordance (运行详情).
  */
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
@@ -43,9 +48,9 @@ const detail: WorkflowTemplateInfo = {
   version: '1.0.0',
   params: [{ name: 'feature_title', label: '功能标题', type: 'string', required: true }],
   steps: [
-    { id: 'research', name: '代码研究', role: 'manager', prompt: 'p'.repeat(200) },
-    { id: 'dev', name: '并行开发', role: 'engineer', depends_on: ['research'], prompt: 'short' },
-    { id: 'review', name: '代码审查', role: 'manager', depends_on: ['dev'], prompt: 'short' },
+    { id: 'research', name: '代码研究', role: 'manager', prompt: '研究一下现有代码结构，列出涉及模块与依赖链。' },
+    { id: 'dev', name: '并行开发', role: 'engineer', depends_on: ['research'], prompt: '实现功能主体。' },
+    { id: 'review', name: '代码审查', role: 'manager', depends_on: ['research', 'dev'], prompt: '审查改动。' },
   ],
 };
 
@@ -80,10 +85,8 @@ function renderCard(overrides: Partial<Parameters<typeof WorkflowCard>[0]> = {})
     runs: [run],
     runTasks: { 'run-1': runTasks },
     onRun: vi.fn(),
-    onViewTasks: vi.fn(),
     onOpenRun: vi.fn(),
-    onPauseResume: vi.fn(),
-    onCancelRun: vi.fn(),
+    onOpenTask: vi.fn(),
     onSendToAgent: vi.fn(),
     onEdit: vi.fn(),
     onDuplicate: vi.fn(),
@@ -107,13 +110,10 @@ describe('workflow card — openable without a mouse', () => {
 
   it('has a hit area that is at least 44px tall on touch', () => {
     renderCard();
-    const toggle = screen.getByTestId('workflow-feature-dev-toggle');
-    expect(toggle.className).toContain('min-h-[44px]');
+    expect(screen.getByTestId('workflow-feature-dev-toggle').className).toContain('min-h-[44px]');
   });
 
   it('never nests an interactive element inside the summary button', () => {
-    // the old card nested the "run" button and a chat deep-link inside the
-    // clickable header and patched it with stopPropagation()
     const { container } = renderCard({ expanded: true });
     expect(container.querySelectorAll('button button').length).toBe(0);
   });
@@ -121,9 +121,7 @@ describe('workflow card — openable without a mouse', () => {
   it('keeps the collapsed panel out of the tab order', () => {
     renderCard({ expanded: false });
     const panel = screen.getByTestId('workflow-feature-dev-panel');
-    // the panel wrapper (parent) is inert while closed
-    const inertWrapper = panel.closest('[inert]');
-    expect(inertWrapper).not.toBeNull();
+    expect(panel.closest('[inert]')).not.toBeNull();
   });
 });
 
@@ -136,42 +134,84 @@ describe('workflow card — feedback while loading', () => {
   it('offers a retry instead of failing silently', () => {
     const onRetryDetail = vi.fn();
     renderCard({ expanded: true, detail: undefined, detailState: 'error', onRetryDetail });
-    const retry = screen.getByRole('button', { name: '重试' });
-    fireEvent.click(retry);
+    fireEvent.click(screen.getByRole('button', { name: '重试' }));
     expect(onRetryDetail).toHaveBeenCalledTimes(1);
   });
 });
 
-describe('workflow card — answers "how far did it get"', () => {
-  it('shows derived progress instead of a bare task count', () => {
-    renderCard();
-    expect(screen.getByTestId('workflow-progress').textContent).toContain('1/3');
+describe('workflow card — the header stays an index', () => {
+  it('does not repeat run progress in the header', () => {
+    const { container } = renderCard();
+    const header = within(container).getByTestId('workflow-feature-dev-toggle');
+    expect(header.textContent).not.toMatch(/\d+\s*\/\s*\d+/);
+    expect(container.querySelector('[data-testid="workflow-progress"]')).toBeNull();
   });
 
-  it('names the failed step on the collapsed card', () => {
+  it('does keep the latest run status visible', () => {
     renderCard();
-    expect(screen.getByTestId('workflow-failed-step').textContent).toContain('并行开发');
-  });
-
-  it('translates the run status instead of printing the raw enum', () => {
-    renderCard();
-    expect(screen.queryByText('failed')).toBeNull();
     expect(screen.getAllByText('失败').length).toBeGreaterThan(0);
+    expect(screen.queryByText('failed')).toBeNull();
   });
+});
 
-  it('shows dependency names, never raw step ids', () => {
+describe('workflow card — steps are one line, details on demand', () => {
+  it('does not print step prompts inline', () => {
     renderCard({ expanded: true });
-    const panel = screen.getByTestId('workflow-feature-dev-panel');
-    expect(within(panel).queryByText(/research/)).toBeNull();
-    expect(within(panel).getByText(/依赖 代码研究/)).toBeTruthy();
+    expect(screen.queryByText('研究一下现有代码结构，列出涉及模块与依赖链。')).toBeNull();
   });
 
-  it('opens the run drawer and the task board from a run row', () => {
+  it('renders every step in the flow as a clickable row', () => {
+    renderCard({ expanded: true });
+    const flow = screen.getByTestId('workflow-step-flow');
+    expect(within(flow).getByText('代码研究')).toBeTruthy();
+    expect(within(flow).getByText('并行开发')).toBeTruthy();
+    expect(within(flow).getByText('代码审查')).toBeTruthy();
+  });
+
+  it('marks a step with several upstream dependencies', () => {
+    renderCard({ expanded: true });
+    // 代码审查 depends on research + dev → badge instead of a raw id list
+    expect(screen.getByTitle('代码研究、并行开发')).toBeTruthy();
+    expect(screen.queryByText(/research/)).toBeNull();
+  });
+
+  it('opens the step modal with the full prompt and a task link', () => {
+    const onOpenTask = vi.fn();
+    renderCard({ expanded: true, onOpenTask });
+    fireEvent.click(screen.getByTestId('workflow-step-research'));
+
+    const modal = screen.getByTestId('workflow-step-modal');
+    expect(within(modal).getByText('研究一下现有代码结构，列出涉及模块与依赖链。')).toBeTruthy();
+
+    fireEvent.click(within(modal).getByText('查看对应任务'));
+    expect(onOpenTask).toHaveBeenCalledWith('t1');
+  });
+
+  it('closes the step modal on Escape', () => {
+    renderCard({ expanded: true });
+    fireEvent.click(screen.getByTestId('workflow-step-research'));
+    expect(screen.getByTestId('workflow-step-modal')).toBeTruthy();
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.queryByTestId('workflow-step-modal')).toBeNull();
+  });
+});
+
+describe('workflow card — one affordance per run', () => {
+  it('shows the run number, status and progress on the run row', () => {
+    renderCard({ expanded: true });
+    expect(screen.getByText('#7')).toBeTruthy();
+    expect(screen.getByText('1/3')).toBeTruthy();
+  });
+
+  it('exposes exactly one control per run: 运行详情', () => {
     const { props } = renderCard({ expanded: true });
-    fireEvent.click(screen.getByRole('button', { name: '详情' }));
+    const row = screen.getByText('#7').closest('li')!;
+    const buttons = within(row).getAllByRole('button');
+    expect(buttons).toHaveLength(1);
+    expect(buttons[0]!.getAttribute('aria-label')).toBe('运行详情');
+
+    fireEvent.click(buttons[0]!);
     expect(props.onOpenRun).toHaveBeenCalledWith(run);
-    fireEvent.click(screen.getByRole('button', { name: '查看任务' }));
-    expect(props.onViewTasks).toHaveBeenCalledWith(run);
   });
 });
 
@@ -181,6 +221,7 @@ describe('workflow card — management actions are reachable', () => {
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('menuitem', { name: '编辑 YAML' }));
     expect(props.onEdit).toHaveBeenCalled();
+
     fireEvent.click(screen.getByRole('button', { name: '更多操作' }));
     fireEvent.click(screen.getByRole('menuitem', { name: '删除工作流' }));
     expect(props.onDelete).toHaveBeenCalled();

@@ -280,6 +280,23 @@ export function stepDisplayStatus(task: WorkflowTaskLike | undefined): StepDispl
   return 'pending';
 }
 
+/**
+ * The single step-status → wording/tone table. Steps used to be labelled with
+ * raw task statuses (`in_progress`) or nothing at all, and coloured in three
+ * different places; this is now the only mapping.
+ */
+export const STEP_STATUS_META: Record<StepDisplayStatus, RunStatusMeta> = {
+  done: { tone: 'success', key: 'runStatusCompleted', label: '已完成' },
+  failed: { tone: 'danger', key: 'runStatusFailed', label: '失败' },
+  active: { tone: 'info', key: 'runStatusRunning', label: '进行中' },
+  pending: { tone: 'neutral', key: 'workflowStepPending', label: '待处理' },
+  unknown: { tone: 'neutral', key: 'workflowStepNoTask', label: '未开始' },
+};
+
+export function stepStatusMeta(status: StepDisplayStatus): RunStatusMeta {
+  return STEP_STATUS_META[status] ?? STEP_STATUS_META.unknown;
+}
+
 export const EXPANDED_WORKFLOWS_STORAGE_KEY = 'markus_workflows_expanded';
 
 export function readExpandedWorkflows(getItem: (key: string) => string | null): Set<string> {

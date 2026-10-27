@@ -1,23 +1,26 @@
 /**
  * `WorkflowCard` — one workflow in the Work page's workflow view.
  *
- * Replaces the inline card that lived in `pages/Work.tsx` (2026-10-27 review).
- * The old card was a list item pretending to be a detail page: 24px hit area,
- * no keyboard path, a second clickable target nested inside the header, a
- * silent `catch {}` on the detail fetch, raw `depends_on` ids printed at the
- * user, a fake "DAG" and no answer to "how far did the run get / which step
- * failed".
+ * Layout rules this file encodes (2026-10-27, second pass with the Owner):
  *
- * The card now answers three questions before the panel is even opened —
- * **what is it / how is it doing / what can I do** — and the panel is a
- * structured detail (progress, steps with real dependency names, a layered
- * DAG, params, runs) rather than a text dump.
+ *   1. **One representation per fact.** The card used to render the steps twice
+ *      — a list *and* a separate "DAG" strip — and put run progress in the
+ *      header *and* in the run rows. Now steps appear once (as a layered flow,
+ *      which is what the DAG strip was trying to be) and progress appears only
+ *      where it belongs: on the run.
+ *   2. **The header is an index, not a dashboard.** Name, size, version, the
+ *      latest run's status. No counters, no bar — clicking a run is the way to
+ *      see numbers, and the run drawer is where they live.
+ *   3. **Steps are one line each.** A prompt is detail, not a subtitle: clicking
+ *      the step opens its modal, which also links to the task the step produced.
+ *   4. **A run row is a row, not a toolbar.** One `…` affordance opens the run;
+ *      pause/cancel/见任务 live inside that run's drawer.
  */
 import { useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import type { TFunction } from 'i18next';
 import type { WorkflowInfo, WorkflowRunInfo, WorkflowTemplateInfo } from '../api.ts';
 import { Disclosure } from './Disclosure.tsx';
+import { WorkflowStepModal } from './WorkflowStepModal.tsx';
 import { timeAgo } from '../lib/timeAgo.ts';
 import {
   TONE_CLASS,
@@ -27,8 +30,10 @@ import {
   layeredDag,
   matchTasksToSteps,
   runStatusMeta,
-  shouldClampPrompt,
+  stepDisplayStatus,
+  stepStatusMeta,
   isRunActive,
+  type WorkflowStepLike,
   type WorkflowTaskLike,
 } from '../lib/workflow-view.ts';
 
@@ -44,11 +49,9 @@ export interface WorkflowCardProps {
   /** Tasks per run id — only recent runs are prefetched. */
   runTasks: Record<string, WorkflowTaskLike[] | undefined>;
   onRun: () => void;
-  onViewTasks: (run: WorkflowRunInfo) => void;
   onOpenRun: (run: WorkflowRunInfo) => void;
-  onPauseResume: (run: WorkflowRunInfo) => void;
-  onCancelRun: (run: WorkflowRunInfo) => void;
-  pausingRunId?: string | null;
+  /** Open the task a step produced (task board deep-link). */
+  onOpenTask?: (taskId: string) => void;
   /** Role label → assigned agent display name (undefined when unknown). */
   roleAgentName?: (role: string) => string | undefined;
   onSendToAgent: () => void;
@@ -57,13 +60,13 @@ export interface WorkflowCardProps {
   onDelete: () => void;
 }
 
-function StatusChip({ status }: { status: string }) {
+function StatusChip({ status, className = '' }: { status: string; className?: string }) {
   const { t } = useTranslation(['work']);
   const meta = runStatusMeta(status);
   const tone = TONE_CLASS[meta.tone];
   return (
     <span
-      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${tone.chip}`}
+      className={`inline-flex items-center gap-1 rounded px-1.5 py-0.5 text-[10px] font-medium ${tone.chip} ${className}`}
       data-status={status}
     >
       <span className={`h-1.5 w-1.5 rounded-full ${tone.dot}`} aria-hidden="true" />
@@ -104,11 +107,7 @@ function ActionMenu({ items }: { items: Array<{ key: string; label: string; onSe
         onClick={() => setOpen((v) => !v)}
         className="flex h-8 w-8 items-center justify-center rounded-lg text-fg-tertiary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
       >
-        <svg className="h-4 w-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
-          <circle cx="5" cy="12" r="1.8" />
-          <circle cx="12" cy="12" r="1.8" />
-          <circle cx="19" cy="12" r="1.8" />
-        </svg>
+        <EllipsisIcon />
       </button>
       {open ? (
         <div
@@ -135,6 +134,16 @@ function ActionMenu({ items }: { items: Array<{ key: string; label: string; onSe
   );
 }
 
+function EllipsisIcon({ className = 'h-4 w-4' }: { className?: string }) {
+  return (
+    <svg className={className} viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <circle cx="5" cy="12" r="1.8" />
+      <circle cx="12" cy="12" r="1.8" />
+      <circle cx="19" cy="12" r="1.8" />
+    </svg>
+  );
+}
+
 function DetailSkeleton() {
   return (
     <div className="space-y-2 pt-3" data-testid="workflow-detail-skeleton" aria-busy="true">
@@ -142,6 +151,102 @@ function DetailSkeleton() {
       <div className="h-2.5 w-full animate-pulse rounded bg-surface-elevated" />
       <div className="h-2.5 w-5/6 animate-pulse rounded bg-surface-elevated" />
     </div>
+  );
+}
+
+/**
+ * Layered step flow — rows are dependency depth, siblings in a row are parallel.
+ *
+ * This replaces two half-views that existed side by side ("步骤" list + a "DAG"
+ * strip that was just chips in template order with a decorative arrow). The
+ * order here is topological, so reading top-to-bottom *is* the execution order,
+ * and a bracket marks the steps that can run at the same time.
+ */
+function StepFlow({
+  steps,
+  mapped,
+  roleAgentName,
+  onOpenStep,
+}: {
+  steps: WorkflowStepLike[];
+  mapped: Record<string, WorkflowTaskLike | undefined>;
+  roleAgentName?: (role: string) => string | undefined;
+  onOpenStep: (step: WorkflowStepLike, index: number) => void;
+}) {
+  const { t } = useTranslation(['work']);
+  const stepIndex = buildStepIndex(steps);
+  const { layers } = layeredDag(steps);
+  const order = new Map(steps.map((step, i) => [step.id, i]));
+  let running = 0;
+
+  return (
+    <ol className="space-y-1" data-testid="workflow-step-flow">
+      {layers.map((layer, layerIdx) => {
+        const parallel = layer.length > 1;
+        return (
+          <li key={layerIdx}>
+            {parallel ? (
+              <p className="mb-1 pl-5 text-[10px] font-medium uppercase tracking-wider text-fg-quaternary">
+                {t('work:task.workflowParallel', '并行 {{count}} 步', { count: layer.length })}
+              </p>
+            ) : null}
+            <div className={parallel ? 'ml-1 space-y-0.5 border-l border-brand-500/30 pl-2' : 'space-y-0.5'}>
+              {layer.map((stepId) => {
+                const step = stepIndex.get(stepId);
+                if (!step) return null;
+                const task = mapped[stepId];
+                const status = stepDisplayStatus(task);
+                const meta = stepStatusMeta(status);
+                const deps = dependsOnNames(step, stepIndex);
+                const roleName = roleAgentName?.(step.role);
+                const displayIndex = (order.get(stepId) ?? 0) + 1;
+                running += 1;
+                return (
+                  <li key={stepId}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenStep(step, (order.get(stepId) ?? 0))}
+                      data-testid={`workflow-step-${stepId}`}
+                      className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                    >
+                      <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${TONE_CLASS[meta.tone].dot}`} aria-hidden="true" />
+                      <span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-fg-quaternary">
+                        {displayIndex}
+                      </span>
+                      <span className="min-w-0 flex-1 truncate text-xs text-fg-primary">{step.name}</span>
+                      {deps.length > 1 ? (
+                        <span
+                          className="shrink-0 rounded bg-surface-elevated px-1 py-0.5 text-[9px] text-fg-quaternary"
+                          title={deps.join('、')}
+                        >
+                          ↑{deps.length}
+                        </span>
+                      ) : null}
+                      <span className="hidden shrink-0 text-[10px] text-fg-quaternary sm:inline" title={step.role}>
+                        {roleName ?? step.role}
+                      </span>
+                      <svg
+                        className="h-3 w-3 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+                      </svg>
+                    </button>
+                  </li>
+                );
+              })}
+            </div>
+          </li>
+        );
+      })}
+      {running === 0 ? (
+        <li className="text-[11px] text-fg-quaternary">{t('work:task.workflowNoSteps', '该模板没有步骤')}</li>
+      ) : null}
+    </ol>
   );
 }
 
@@ -155,11 +260,8 @@ export function WorkflowCard({
   runs,
   runTasks,
   onRun,
-  onViewTasks,
   onOpenRun,
-  onPauseResume,
-  onCancelRun,
-  pausingRunId,
+  onOpenTask,
   roleAgentName,
   onSendToAgent,
   onEdit,
@@ -167,28 +269,12 @@ export function WorkflowCard({
   onDelete,
 }: WorkflowCardProps) {
   const { t } = useTranslation(['work', 'common']);
-  const [showAllRuns, setShowAllRuns] = useState(false);
-  const [openPrompts, setOpenPrompts] = useState<Set<string>>(new Set());
+  const [openStep, setOpenStep] = useState<{ step: WorkflowStepLike; index: number } | null>(null);
 
   const latestRun = runs[0];
   const anyActive = runs.some((run) => isRunActive(run.status));
   const steps = detail?.steps ?? [];
-  const stepIndex = buildStepIndex(steps);
   const mapped = latestRun ? matchTasksToSteps(steps, runTasks[latestRun.id] ?? []) : {};
-  const progress = computeProgress(steps, mapped);
-  const hasProgress = progress.total > 0;
-
-  const visibleRuns = showAllRuns ? runs : runs.slice(0, 3);
-  const dag = steps.length > 1 ? layeredDag(steps) : { layers: [], depth: {}, edges: [] };
-  const showDag = dag.layers.length > 1;
-
-  const togglePrompt = (stepId: string) =>
-    setOpenPrompts((prev) => {
-      const next = new Set(prev);
-      if (next.has(stepId)) next.delete(stepId);
-      else next.add(stepId);
-      return next;
-    });
 
   const summary = (
     <span className="block">
@@ -206,22 +292,9 @@ export function WorkflowCard({
         ) : null}
         <span className="text-[10px] text-fg-quaternary">v{workflow.version}</span>
         {latestRun ? <StatusChip status={latestRun.status} /> : null}
-        {hasProgress ? (
-          <span className="text-[11px] font-medium text-fg-secondary" data-testid="workflow-progress">
-            {t('work:task.workflowProgress', '{{done}}/{{total}} 个任务完成', {
-              done: progress.done,
-              total: progress.total,
-            })}
-          </span>
-        ) : null}
       </span>
       {workflow.description ? (
         <span className="mt-0.5 line-clamp-1 block text-[11px] text-fg-tertiary">{workflow.description}</span>
-      ) : null}
-      {latestRun && progress.failedSteps.length > 0 ? (
-        <span className="mt-0.5 block truncate text-[11px] text-red-500" data-testid="workflow-failed-step">
-          {t('work:task.workflowFailedAt', '失败于 {{step}}', { step: progress.failedSteps[0]!.name })}
-        </span>
       ) : null}
     </span>
   );
@@ -288,140 +361,15 @@ export function WorkflowCard({
               <p className="text-xs leading-relaxed text-fg-secondary">{workflow.description}</p>
             ) : null}
 
-            {/* Progress of the most recent run — the question the old card could not answer. */}
-            {hasProgress ? (
-              <div data-testid="workflow-progress-bar">
-                <div className="mb-1 flex flex-wrap items-center gap-2 text-[11px] text-fg-tertiary">
-                  <span className="font-medium text-fg-secondary">
-                    #{latestRun!.runNumber} ·{' '}
-                    {t('work:task.workflowProgress', '{{done}}/{{total}} 个任务完成', {
-                      done: progress.done,
-                      total: progress.total,
-                    })}
-                  </span>
-                  {progress.failedSteps.length > 0 ? (
-                    <span className="text-red-500">
-                      {t('work:task.workflowFailedAt', '失败于 {{step}}', {
-                        step: progress.failedSteps.map((s) => s.name).join('、'),
-                      })}
-                    </span>
-                  ) : progress.activeSteps.length > 0 ? (
-                    <span className="text-blue-600 dark:text-blue-400">
-                      {progress.activeSteps.map((s) => s.name).join('、')}
-                    </span>
-                  ) : null}
-                </div>
-                <div className="h-1.5 w-full overflow-hidden rounded-full bg-surface-elevated">
-                  <div
-                    className={`h-full rounded-full transition-all ${progress.failed > 0 ? TONE_CLASS.danger.bar : TONE_CLASS.success.bar}`}
-                    style={{ width: `${progress.percent}%` }}
-                  />
-                </div>
-              </div>
+            {steps.length > 0 ? (
+              <StepFlow
+                steps={steps}
+                mapped={mapped}
+                roleAgentName={roleAgentName}
+                onOpenStep={(step, index) => setOpenStep({ step, index })}
+              />
             ) : null}
 
-            {/* Steps — names, real role, dependency NAMES, prompt on demand. */}
-            <div>
-              <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-fg-tertiary">
-                {t('work:task.workflowSteps', '步骤')}
-              </p>
-              <ol className="space-y-2">
-                {steps.map((step, idx) => {
-                  const deps = dependsOnNames(step, stepIndex);
-                  const task = mapped[step.id];
-                  const promptOpen = openPrompts.has(step.id);
-                  const roleName = roleAgentName?.(step.role);
-                  const longPrompt = shouldClampPrompt(step.prompt);
-                  return (
-                    <li key={step.id} className="flex items-start gap-2">
-                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-brand-500/15 text-[9px] font-bold text-brand-500">
-                        {idx + 1}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                          <span className="text-xs font-medium text-fg-primary">{step.name}</span>
-                          <span
-                            className="rounded bg-surface-elevated px-1.5 py-0.5 text-[10px] text-fg-tertiary"
-                            title={step.role}
-                          >
-                            {roleName ?? step.role}
-                          </span>
-                          {targetChip(task ? task.status : null, t)}
-                          {deps.length > 0 ? (
-                            <span className="text-[10px] text-fg-quaternary">
-                              {t('work:task.workflowDependsOn', '依赖 {{steps}}', {
-                                steps: deps.join('、'),
-                              })}
-                            </span>
-                          ) : null}
-                        </div>
-                        <p
-                          className={`mt-0.5 text-[11px] leading-relaxed text-fg-tertiary ${promptOpen ? '' : 'line-clamp-2'}`}
-                        >
-                          {step.prompt}
-                        </p>
-                        {longPrompt ? (
-                          <button
-                            type="button"
-                            onClick={() => togglePrompt(step.id)}
-                            aria-expanded={promptOpen}
-                            className="mt-0.5 text-[10px] font-medium text-brand-500 transition-colors hover:text-brand-400"
-                          >
-                            {promptOpen
-                              ? t('work:task.workflowHidePrompt', '收起')
-                              : t('work:task.workflowShowPrompt', '展开')}
-                          </button>
-                        ) : null}
-                      </div>
-                    </li>
-                  );
-                })}
-              </ol>
-            </div>
-
-            {/* Layered DAG: columns are dependency depth, so parallel steps are visible. */}
-            {showDag ? (
-              <div data-testid="workflow-dag">
-                <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-fg-tertiary">
-                  {t('work:task.workflowDependencies', '依赖关系')}
-                </p>
-                <div className="flex items-start gap-2 overflow-x-auto pb-1">
-                  {dag.layers.map((layer, layerIdx) => (
-                    <div key={layerIdx} className="flex items-center gap-2">
-                      {layerIdx > 0 ? (
-                        <svg className="h-3 w-3 shrink-0 text-fg-quaternary" viewBox="0 0 24 24" fill="none" stroke="currentColor" aria-hidden="true">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                        </svg>
-                      ) : null}
-                      <div className="flex flex-col gap-1">
-                        {layer.map((stepId) => {
-                          const step = stepIndex.get(stepId);
-                          if (!step) return null;
-                          const task = mapped[stepId];
-                          return (
-                            <span
-                              key={stepId}
-                              className="whitespace-nowrap rounded border border-border-default/40 bg-surface px-2 py-1 text-[10px] font-medium text-fg-secondary"
-                              title={dependsOnNames(step, stepIndex).join('、')}
-                            >
-                              {step.name}
-                              {task ? (
-                                <span
-                                  className={`ml-1 inline-block h-1.5 w-1.5 rounded-full ${TONE_CLASS[stepTone(task.status)].dot}`}
-                                  aria-hidden="true"
-                                />
-                              ) : null}
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            ) : null}
-
-            {/* Params + schedule */}
             {detail.params && detail.params.length > 0 ? (
               <div>
                 <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-fg-tertiary">
@@ -449,9 +397,8 @@ export function WorkflowCard({
               </p>
             ) : null}
 
-            {/* Runs */}
             <div>
-              <p className="mb-2 text-[10px] font-medium uppercase tracking-wider text-fg-tertiary">
+              <p className="mb-1.5 text-[10px] font-medium uppercase tracking-wider text-fg-tertiary">
                 {t('work:task.workflowRecentRuns', '最近运行')}
               </p>
               {runs.length === 0 ? (
@@ -459,128 +406,69 @@ export function WorkflowCard({
                   {t('work:task.workflowNoRecentRuns', '暂无运行记录')}
                 </p>
               ) : (
-                <>
-                  <ul className="space-y-1">
-                    {visibleRuns.map((run) => {
-                      const runMapped = matchTasksToSteps(steps, runTasks[run.id] ?? []);
-                      const runProgress = computeProgress(steps, runMapped);
-                      return (
-                        <li
-                          key={run.id}
-                          className="flex flex-wrap items-center gap-2 rounded-lg px-2 py-1.5 text-xs transition-colors hover:bg-surface-elevated/50"
-                        >
-                          <span className="font-medium text-fg-secondary">#{run.runNumber}</span>
-                          <StatusChip status={run.status} />
-                          {runProgress.total > 0 ? (
-                            <span className="text-[11px] text-fg-tertiary">
-                              {runProgress.done}/{runProgress.total}
-                            </span>
-                          ) : (
-                            <span className="text-[11px] text-fg-tertiary">
-                              {t('work:task.workflowStepCountShort', '{{count}} 个任务', {
+                <ul className="space-y-0.5">
+                  {runs.map((run) => {
+                    const runMapped = matchTasksToSteps(steps, runTasks[run.id] ?? []);
+                    const runProgress = computeProgress(steps, runMapped);
+                    return (
+                      <li
+                        key={run.id}
+                        className="flex items-center gap-2 rounded-lg px-1.5 py-1 text-xs transition-colors hover:bg-surface-elevated/50"
+                      >
+                        <span className="shrink-0 font-medium tabular-nums text-fg-secondary">
+                          #{run.runNumber}
+                        </span>
+                        <StatusChip status={run.status} />
+                        <span className="shrink-0 text-[11px] tabular-nums text-fg-tertiary">
+                          {runProgress.total > 0
+                            ? `${runProgress.done}/${runProgress.total}`
+                            : t('work:task.workflowStepCountShort', '{{count}} 个任务', {
                                 count: run.taskIds.length,
                               })}
-                            </span>
-                          )}
-                          <span className="text-[11px] text-fg-quaternary">
-                            {timeAgo(run.startedAt, t)}
+                        </span>
+                        <span className="shrink-0 text-[11px] text-fg-quaternary">
+                          {timeAgo(run.startedAt, t)}
+                        </span>
+                        {run.triggeredBy === 'schedule' ? (
+                          <span className="shrink-0 text-[10px] text-purple-500">
+                            {t('work:task.workflowScheduled', '定时')}
                           </span>
-                          {run.triggeredBy === 'schedule' ? (
-                            <span className="text-[10px] text-purple-500">
-                              {t('work:task.workflowScheduled', '定时')}
-                            </span>
-                          ) : null}
-                          <span className="flex-1" />
-                          {isRunActive(run.status) ? (
-                            <>
-                              <button
-                                type="button"
-                                onClick={() => onPauseResume(run)}
-                                disabled={pausingRunId === run.id}
-                                className="rounded-lg bg-amber-500/15 px-2.5 py-1 text-[10px] font-medium text-amber-600 transition-colors hover:bg-amber-500/25 dark:text-amber-400"
-                              >
-                                {pausingRunId === run.id
-                                  ? '…'
-                                  : run.status === 'running'
-                                    ? t('work:task.workflowPause', '暂停')
-                                    : t('work:task.workflowResume', '恢复')}
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() => onCancelRun(run)}
-                                className="rounded-lg bg-red-500/15 px-2.5 py-1 text-[10px] font-medium text-red-500 transition-colors hover:bg-red-500/25"
-                              >
-                                {t('work:task.workflowCancelRun', '取消运行')}
-                              </button>
-                            </>
-                          ) : null}
-                          <button
-                            type="button"
-                            onClick={() => onOpenRun(run)}
-                            className="rounded-lg bg-surface-elevated px-2.5 py-1 text-[10px] font-medium text-fg-secondary transition-colors hover:text-fg-primary"
-                          >
-                            {t('work:task.workflowRunDetails', '详情')}
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onViewTasks(run)}
-                            className="rounded-lg bg-brand-500/15 px-2.5 py-1 text-[10px] font-medium text-brand-500 transition-colors hover:bg-brand-500/25"
-                          >
-                            {t('work:task.workflowViewTasks', '查看任务')}
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
-                  {runs.length > 3 ? (
-                    <button
-                      type="button"
-                      onClick={() => setShowAllRuns((v) => !v)}
-                      className="mt-1.5 text-[10px] font-medium text-fg-tertiary transition-colors hover:text-fg-primary"
-                    >
-                      {showAllRuns
-                        ? t('work:task.workflowShowFewerRuns', '只看最近')
-                        : t('work:task.workflowShowAllRuns', '显示全部 {{count}} 次运行', {
-                            count: runs.length,
-                          })}
-                    </button>
-                  ) : null}
-                </>
+                        ) : null}
+                        <span className="flex-1" />
+                        <button
+                          type="button"
+                          onClick={() => onOpenRun(run)}
+                          aria-label={t('work:task.workflowRunDetails', '运行详情')}
+                          title={t('work:task.workflowRunDetails', '运行详情')}
+                          data-testid={`workflow-run-open-${run.id}`}
+                          className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-fg-tertiary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                        >
+                          <EllipsisIcon className="h-3.5 w-3.5" />
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
               )}
             </div>
           </div>
         )}
       </Disclosure>
+
+      {openStep ? (
+        <WorkflowStepModal
+          step={openStep.step}
+          index={openStep.index}
+          total={steps.length}
+          dependsOnNames={dependsOnNames(openStep.step, buildStepIndex(steps))}
+          roleName={roleAgentName?.(openStep.step.role)}
+          task={mapped[openStep.step.id]}
+          onClose={() => setOpenStep(null)}
+          onOpenTask={onOpenTask}
+        />
+      ) : null}
     </div>
   );
-}
-
-function stepTone(status: string) {
-  if (status === 'completed' || status === 'archived') return 'success' as const;
-  if (status === 'failed' || status === 'rejected') return 'danger' as const;
-  if (status === 'in_progress' || status === 'review') return 'info' as const;
-  return 'neutral' as const;
-}
-
-/** A tiny status chip for the step's task, so the step list doubles as progress. */
-function targetChip(status: string | null, t: TFunction) {
-  if (!status) {
-    return (
-      <span className="text-[10px] text-fg-quaternary">
-        {t('work:task.workflowStepNoTask', '未开始')}
-      </span>
-    );
-  }
-  const tone = stepTone(status);
-  const label =
-    status === 'completed' || status === 'archived'
-      ? t('work:task.runStatusCompleted', '已完成')
-      : status === 'failed' || status === 'rejected'
-        ? t('work:task.runStatusFailed', '失败')
-        : status === 'in_progress' || status === 'review'
-          ? t('work:task.runStatusRunning', '进行中')
-          : t('work:task.workflowStepPending', '待处理');
-  return <span className={`rounded px-1.5 py-0.5 text-[10px] ${TONE_CLASS[tone].chip}`}>{label}</span>;
 }
 
 export default WorkflowCard;
