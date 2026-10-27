@@ -35,6 +35,15 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
+import { WorkflowCard } from '../components/WorkflowCard.tsx';
+import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
+import { WorkflowManageModal, type WorkflowManageMode } from '../components/WorkflowManageModal.tsx';
+import {
+  isRunActive,
+  readExpandedWorkflows,
+  writeExpandedWorkflows,
+  type WorkflowTaskLike,
+} from '../lib/workflow-view.ts';
 
 const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
 const BOARD_TYPE_ORDER = ['backlog', 'kanban', 'dag', 'workflows'] as const;
@@ -4177,8 +4186,28 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
+  // Multiple cards can be open at once, and the choice survives a reload.
+  // The old single-slot `expandedWorkflow` made "open a second one" a surprise
+  // (it silently collapsed the first) and lost the state on every navigation.
+  const [expandedWorkflows, setExpandedWorkflows] = useState<Set<string>>(() =>
+    readExpandedWorkflows((key) => {
+      try { return localStorage.getItem(key); } catch { return null; }
+    }),
+  );
   const [templateDetails, setTemplateDetails] = useState<Record<string, WorkflowTemplateInfo>>({});
+  const [detailState, setDetailState] = useState<Record<string, 'idle' | 'loading' | 'error' | 'ready'>>({});
+  /** Tasks per run id, so the card can derive real progress instead of "N tasks". */
+  const [runTasks, setRunTasks] = useState<Record<string, WorkflowTaskLike[]>>({});
+  const [runTasksLoading, setRunTasksLoading] = useState<Record<string, boolean>>({});
+  const [drawerRun, setDrawerRun] = useState<WorkflowRunInfo | null>(null);
+  const [manage, setManage] = useState<{
+    mode: WorkflowManageMode;
+    workflow: WorkflowInfo;
+    yaml?: string;
+    yamlLoading?: boolean;
+    busy?: boolean;
+    error?: string | null;
+  } | null>(null);
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [confirmCancelRunId, setConfirmCancelRunId] = useState<string | null>(null);
   const [pausingRunId, setPausingRunId] = useState<string | null>(null);
@@ -4186,7 +4215,6 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [roleOverrides, setRoleOverrides] = useState<Record<string, string>>({});
   const [runProjectId, setRunProjectId] = useState<string | null>(null);
   const [workflowTeamMap, setWorkflowTeamMap] = useState<Record<string, string>>({});
-  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
 
   const teamId = propTeamId ?? selectedTeamId;
 
@@ -4235,18 +4263,148 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
 
   const resolveTeam = (wfName: string) => teamId ?? workflowTeamMap[wfName];
 
-  const toggleExpand = async (wf: WorkflowInfo) => {
-    if (expandedWorkflow === wf.name) {
-      setExpandedWorkflow(null);
+  const setExpandedPersisted = useCallback((next: Set<string>) => {
+    setExpandedWorkflows(next);
+    writeExpandedWorkflows(next, (key, value) => {
+      try { localStorage.setItem(key, value); } catch { /* storage disabled */ }
+    });
+  }, []);
+
+  const toggleExpanded = (name: string) => {
+    const next = new Set(expandedWorkflows);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    setExpandedPersisted(next);
+  };
+
+  const retryDetail = (name: string) =>
+    setDetailState((prev) => ({ ...prev, [name]: 'idle' }));
+
+  /**
+   * Detail fetch lives in an effect keyed on the expanded set (instead of inside
+   * the click handler) for two reasons: a restored card loads itself, and a
+   * click paints the skeleton on the next frame rather than after the request.
+   * `error` is deliberately sticky — a failing fetch must not retry forever;
+   * the card shows a 重试 button instead.
+   */
+  useEffect(() => {
+    for (const name of expandedWorkflows) {
+      if (templateDetails[name] || detailState[name] === 'loading' || detailState[name] === 'error') continue;
+      const tid = resolveTeam(name);
+      if (!tid) continue;
+      setDetailState((prev) => ({ ...prev, [name]: 'loading' }));
+      api.workflows
+        .get(tid, name)
+        .then(({ template, yaml }) => {
+          setTemplateDetails((prev) => ({ ...prev, [name]: { ...template, yaml } }));
+          setDetailState((prev) => ({ ...prev, [name]: 'ready' }));
+        })
+        .catch(() => setDetailState((prev) => ({ ...prev, [name]: 'error' })));
+    }
+    // resolveTeam reads teamId + workflowTeamMap; both are in the dep list.
+  }, [expandedWorkflows, templateDetails, detailState, teamId, workflowTeamMap]);
+
+  const tasksInflight = useRef<Set<string>>(new Set());
+
+  /** Load a run's tasks so the card can show 3/9 instead of "9 tasks". */
+  const loadRunTasks = useCallback(async (run: WorkflowRunInfo) => {
+    if (!run.requirementId || tasksInflight.current.has(run.id)) return;
+    tasksInflight.current.add(run.id);
+    setRunTasksLoading((prev) => ({ ...prev, [run.id]: true }));
+    try {
+      const { tasks } = await api.tasks.list({ requirementId: run.requirementId, pageSize: 200 });
+      const wanted = new Set(run.taskIds);
+      const mine = wanted.size > 0 ? tasks.filter((task) => wanted.has(task.id)) : tasks;
+      setRunTasks((prev) => ({
+        ...prev,
+        [run.id]: mine.map((task) => ({
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          notes: Array.isArray(task.notes) ? task.notes.join('\n') : (task.notes ?? undefined),
+        })),
+      }));
+    } catch {
+      setRunTasks((prev) => ({ ...prev, [run.id]: [] }));
+    } finally {
+      tasksInflight.current.delete(run.id);
+      setRunTasksLoading((prev) => ({ ...prev, [run.id]: false }));
+    }
+  }, []);
+
+  // Prefetch the latest run's tasks for every workflow — that is what the
+  // collapsed card shows, so it must be there without a second click.
+  useEffect(() => {
+    for (const wf of workflows) {
+      const latest = (runs[wf.name] ?? [])[0];
+      if (latest && runTasks[latest.id] === undefined && !runTasksLoading[latest.id]) {
+        void loadRunTasks(latest);
+      }
+    }
+  }, [workflows, runs, runTasks, runTasksLoading, loadRunTasks]);
+
+  // Poll only while something is actually moving, and never in a hidden tab.
+  const activeRunsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const list of Object.values(runs)) {
+      for (const run of list) if (isRunActive(run.status)) ids.push(run.id);
+    }
+    return ids.sort().join(',');
+  }, [runs]);
+
+  useEffect(() => {
+    if (!activeRunsKey) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void refresh();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [activeRunsKey, refresh]);
+
+  const openManage = async (mode: WorkflowManageMode, wf: WorkflowInfo) => {
+    const cached = templateDetails[wf.name]?.yaml;
+    setManage({ mode, workflow: wf, yaml: cached, yamlLoading: mode !== 'delete' && !cached, error: null });
+    if (mode === 'delete' || cached) return;
+    const tid = resolveTeam(wf.name);
+    if (!tid) {
+      setManage((prev) => (prev ? { ...prev, yamlLoading: false, error: t('work:task.workflowNoTeam', '无法确定此工作流所属的团队') } : prev));
       return;
     }
-    setExpandedWorkflow(wf.name);
-    const tid = resolveTeam(wf.name);
-    if (!templateDetails[wf.name] && tid) {
-      try {
-        const { template } = await api.workflows.get(tid, wf.name);
-        setTemplateDetails(prev => ({ ...prev, [wf.name]: template }));
-      } catch { /* ignore */ }
+    try {
+      const { template, yaml } = await api.workflows.get(tid, wf.name);
+      setTemplateDetails((prev) => ({ ...prev, [wf.name]: { ...template, yaml } }));
+      setDetailState((prev) => ({ ...prev, [wf.name]: 'ready' }));
+      setManage((prev) => (prev && prev.workflow.name === wf.name ? { ...prev, yaml, yamlLoading: false } : prev));
+    } catch (err) {
+      setManage((prev) => (prev ? { ...prev, yamlLoading: false, error: err instanceof Error ? err.message : String(err) } : prev));
+    }
+  };
+
+  const submitManage = async ({ name, yaml }: { name?: string; yaml?: string }) => {
+    if (!manage) return;
+    const tid = resolveTeam(manage.workflow.name);
+    if (!tid) {
+      setManage((prev) => (prev ? { ...prev, error: t('work:task.workflowNoTeam', '无法确定此工作流所属的团队') } : prev));
+      return;
+    }
+    setManage((prev) => (prev ? { ...prev, busy: true, error: null } : prev));
+    try {
+      if (manage.mode === 'edit') await api.workflows.update(tid, manage.workflow.name, yaml ?? '');
+      else if (manage.mode === 'duplicate') await api.workflows.create(tid, name ?? '', yaml ?? '');
+      else await api.workflows.remove(tid, manage.workflow.name);
+
+      const name0 = manage.workflow.name;
+      setManage(null);
+      setTemplateDetails((prev) => {
+        const next = { ...prev };
+        delete next[name0];
+        return next;
+      });
+      setDetailState((prev) => ({ ...prev, [name0]: 'idle' }));
+      invalidateApiCache();
+      await refresh();
+    } catch (err) {
+      setManage((prev) => (prev ? { ...prev, busy: false, error: err instanceof Error ? err.message : String(err) } : prev));
     }
   };
 
@@ -4343,12 +4501,22 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     }
   };
 
-  const statusBadge = (s: string) => {
-    const colors: Record<string, string> = { running: 'bg-blue-500/20 text-blue-400', paused: 'bg-amber-500/20 text-amber-400', completed: 'bg-green-500/20 text-green-400', failed: 'bg-red-500/20 text-red-400', cancelled: 'bg-gray-500/20 text-gray-400' };
-    return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[s] ?? 'bg-gray-500/20 text-gray-400'}`}>{s}</span>;
-  };
-
   const hasRequiredMissing = runModal && (runModal.params ?? []).some(p => p.required && !runParams[p.name]?.trim());
+
+  /**
+   * Deep-link into the owning team's manager chat, prefilled with the workflow
+   * reference. This used to be a 10px grey text span *inside* the card's click
+   * target — invisible as an action and a mis-click hazard. It is now an
+   * explicit menu item ("发送到智能体对话").
+   */
+  const sendWorkflowToAgent = (wf: WorkflowInfo) => {
+    const wfTeamId = resolveTeam(wf.name);
+    const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
+    const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
+    if (targetAgentId) {
+      navBus.navigate(PAGE.TEAM, { agentId: targetAgentId, prefillMessage: `@[${wf.displayName || wf.name}](workflow:${wf.name}) ` });
+    }
+  };
 
   return (
     <div className="flex-1 min-h-0 overflow-auto px-4 py-5">
@@ -4377,195 +4545,78 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
         </div>
       ) : (
         <div className="grid gap-4 max-w-4xl">
-          {workflows.map(wf => {
-            const isExpanded = expandedWorkflow === wf.name;
-            const detail = templateDetails[wf.name];
+          {workflows.map((wf) => {
             const wfRuns = runs[wf.name] ?? [];
-            const hasRunning = wfRuns.some(r => r.status === 'running' || (r.status as string) === 'paused');
+            const latestRun = wfRuns[0];
+            const roleNameFor = (role: string) => {
+              const agentId = latestRun?.roleMapping?.[role];
+              return agentId ? agents.find((a) => a.id === agentId)?.name : undefined;
+            };
             return (
-            <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                    <h3 className="text-sm font-semibold text-fg-primary">{wf.displayName || wf.name}</h3>
-                    <span className="text-[11px] text-fg-tertiary">{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  <span
-                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors max-w-[12rem] truncate"
-                    title={t('work:task.workflowSendToAgent', 'Send to agent chat')}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const wfTeamId = resolveTeam(wf.name);
-                      const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
-                      const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
-                      if (targetAgentId) {
-                        navBus.navigate(PAGE.TEAM, { agentId: targetAgentId, prefillMessage: `@[${wf.displayName || wf.name}](workflow:${wf.name}) ` });
-                      }
-                    }}
-                  >
-                    <svg className="w-3.5 h-3.5 inline mr-0.5 -mt-px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-                    {wf.name}
-                  </span>
-                  {wf.hasSchedule && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">{t('work:task.workflowScheduled', 'Scheduled')}</span>}
-                  <span className="text-[10px] text-fg-tertiary">v{wf.version}</span>
-                  {hasRunning ? (
-                    <span className="px-3 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-lg font-medium inline-flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                      {t('work:task.workflowRunning', 'Running')}
-                    </span>
-                  ) : (
-                    <button onClick={(e) => { e.stopPropagation(); openRunModal(wf); }} className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">
-                      {t('work:task.workflowRun', 'Run')}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Expanded detail view */}
-              {isExpanded && detail && (
-                <div className="border-t border-border-default/30 pt-3 mt-1 ml-5 space-y-3">
-                  {wf.description && <p className="text-xs text-fg-tertiary">{wf.description}</p>}
-                  <div>
-                    <p className="text-[10px] text-fg-tertiary font-medium mb-2 uppercase tracking-wider">{t('work:task.workflowSteps', 'Steps')}</p>
-                    <div className="space-y-1.5">
-                      {detail.steps.map((step, idx) => (
-                        <div key={step.id} className="flex items-start gap-2">
-                          <div className="shrink-0 w-5 h-5 rounded-full bg-brand-500/15 flex items-center justify-center text-[9px] font-bold text-brand-500 mt-0.5">
-                            {idx + 1}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="text-xs font-medium text-fg-primary">{step.name}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary">{step.role}</span>
-                              {step.depends_on && step.depends_on.length > 0 && (
-                                <span className="text-[10px] text-fg-quaternary">
-                                  ← {step.depends_on.join(', ')}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] text-fg-tertiary line-clamp-1 mt-0.5">{step.prompt}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Step dependency mini-graph */}
-                  {detail.steps.some(s => s.depends_on && s.depends_on.length > 0) && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">DAG</p>
-                      <div className="flex items-center gap-1 flex-wrap text-[10px]">
-                        {detail.steps.map((step, idx) => {
-                          const hasDeps = step.depends_on && step.depends_on.length > 0;
-                          return (
-                            <span key={step.id} className="inline-flex items-center gap-0.5">
-                              {hasDeps && <span className="text-fg-quaternary">→</span>}
-                              <span className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary font-medium">{step.name}</span>
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Params */}
-                  {detail.params && detail.params.length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">{t('work:task.workflowParamsCount', 'Parameters', { count: detail.params.length })}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {detail.params.map(p => (
-                          <span key={p.name} className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-surface-elevated border border-border-default/30">
-                            <span className="font-medium text-fg-secondary">{p.label || p.name}</span>
-                            <span className="text-fg-quaternary">({p.type || 'string'})</span>
-                            {p.required && <span className="text-red-400">*</span>}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Schedule */}
-                  {detail.schedule && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1 uppercase tracking-wider">{t('work:task.workflowScheduled', 'Schedule')}</p>
-                      <p className="text-xs text-fg-secondary">
-                        {detail.schedule.cron && `cron: ${detail.schedule.cron}`}
-                        {detail.schedule.interval && `every: ${detail.schedule.interval}`}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {(() => {
-                const allRuns = runs[wf.name] ?? [];
-                if (allRuns.length === 0) return null;
-                const runsOpen = expandedRuns.has(wf.name);
-                const visibleRuns = runsOpen ? allRuns : allRuns.slice(0, 1);
-                return (
-                <div className="border-t border-border-default/30 pt-2 mt-1">
-                  <div
-                    className="flex items-center gap-1.5 mb-1.5 cursor-pointer select-none"
-                    onClick={() => setExpandedRuns(prev => {
-                      const next = new Set(prev);
-                      next.has(wf.name) ? next.delete(wf.name) : next.add(wf.name);
-                      return next;
-                    })}
-                  >
-                    <svg className={`w-3 h-3 text-fg-quaternary transition-transform ${runsOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                    <p className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('work:task.workflowRecentRuns', 'Recent Runs')}</p>
-                    {allRuns.length > 1 && <span className="text-[10px] text-fg-quaternary">({allRuns.length})</span>}
-                  </div>
-                  <div className="space-y-1">
-                    {visibleRuns.map(run => (
-                      <div key={run.id} className="flex flex-wrap items-center gap-2 text-xs px-2 py-1.5 rounded hover:bg-surface-elevated/50">
-                        <span className="text-fg-secondary font-medium">#{run.runNumber}</span>
-                        {statusBadge(run.status)}
-                        <span className="text-fg-tertiary">{run.taskIds.length} tasks</span>
-                        <span className="text-fg-tertiary">{new Date(run.startedAt).toLocaleDateString()}</span>
-                        {run.triggeredBy === 'schedule' && <span className="text-[10px] text-purple-400">auto</span>}
-                        <span className="flex-1" />
-                        {(run.status === 'running' || (run.status as string) === 'paused') && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); togglePauseRun(run); }}
-                            disabled={pausingRunId === run.id}
-                            className={`px-2.5 py-0.5 text-[10px] rounded-lg font-medium transition-colors ${run.status === 'running' ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
-                          >
-                            {pausingRunId === run.id
-                              ? '...'
-                              : run.status === 'running'
-                                ? t('work:task.workflowPause', 'Pause')
-                                : t('work:task.workflowResume', 'Resume')}
-                          </button>
-                        )}
-                        {(run.status === 'running' || (run.status as string) === 'paused') && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setConfirmCancelRunId(run.id); }}
-                            className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
-                          >
-                            {t('work:task.workflowCancelRun', 'Cancel Run')}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => viewRunTasks(run)}
-                          className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-brand-500/20 text-brand-400 hover:bg-brand-500/30 transition-colors"
-                        >
-                          {t('work:task.workflowViewTasks', 'View Tasks')}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                );
-              })()}
-            </div>
-          );
+              <WorkflowCard
+                key={wf.name}
+                workflow={wf}
+                detail={templateDetails[wf.name]}
+                detailState={detailState[wf.name] ?? 'idle'}
+                onRetryDetail={() => retryDetail(wf.name)}
+                expanded={expandedWorkflows.has(wf.name)}
+                onToggle={() => toggleExpanded(wf.name)}
+                runs={wfRuns}
+                runTasks={runTasks}
+                onRun={() => openRunModal(wf)}
+                onViewTasks={viewRunTasks}
+                onOpenRun={(run) => {
+                  setDrawerRun(run);
+                  void loadRunTasks(run);
+                }}
+                onPauseResume={(run) => void togglePauseRun(run)}
+                onCancelRun={(run) => setConfirmCancelRunId(run.id)}
+                pausingRunId={pausingRunId}
+                roleAgentName={roleNameFor}
+                onSendToAgent={() => sendWorkflowToAgent(wf)}
+                onEdit={() => void openManage('edit', wf)}
+                onDuplicate={() => void openManage('duplicate', wf)}
+                onDelete={() => void openManage('delete', wf)}
+              />
+            );
           })}
           <WorkflowHowItWorks teamId={teamId} agents={agents} compact />
         </div>
+      )}
+
+      {drawerRun && (
+        <WorkflowRunDrawer
+          workflow={workflows.find((w) => w.name === drawerRun.workflowName) ?? { name: drawerRun.workflowName, displayName: drawerRun.workflowName, description: '', version: '', roles: [], hasSchedule: false, stepCount: 0 }}
+          run={drawerRun}
+          detail={templateDetails[drawerRun.workflowName]}
+          tasks={runTasks[drawerRun.id]}
+          tasksLoading={runTasksLoading[drawerRun.id]}
+          onClose={() => setDrawerRun(null)}
+          onPauseResume={() => void togglePauseRun(drawerRun)}
+          onCancel={() => setConfirmCancelRunId(drawerRun.id)}
+          onViewTasks={() => {
+            viewRunTasks(drawerRun);
+            setDrawerRun(null);
+          }}
+          pausing={pausingRunId === drawerRun.id}
+          roleAgentName={(role) => {
+            const agentId = drawerRun.roleMapping?.[role];
+            return agentId ? agents.find((a) => a.id === agentId)?.name : undefined;
+          }}
+        />
+      )}
+
+      {manage && (
+        <WorkflowManageModal
+          mode={manage.mode}
+          workflow={manage.workflow}
+          yaml={manage.yaml}
+          yamlLoading={manage.yamlLoading}
+          busy={manage.busy}
+          error={manage.error}
+          onClose={() => setManage(null)}
+          onSubmit={submitManage}
+        />
       )}
 
       {/* Run modal */}

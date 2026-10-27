@@ -312,6 +312,8 @@ export interface WorkflowInfo {
 }
 
 export interface WorkflowTemplateInfo {
+  /** Raw template source (YAML) — present when fetched, absent in list responses. */
+  yaml?: string;
   name: string;
   displayName?: string;
   description: string;
@@ -2759,7 +2761,7 @@ export const api = {
     list: (teamId: string) =>
       request<{ workflows: WorkflowInfo[] }>(`/teams/${teamId}/workflows`),
     get: (teamId: string, name: string) =>
-      request<{ template: WorkflowTemplateInfo }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}`),
+      request<{ template: WorkflowTemplateInfo; yaml?: string }>(`/teams/${teamId}/workflows/${encodeURIComponent(name)}`),
     create: (teamId: string, name: string, yaml: string) =>
       request<{ template: { name: string; displayName?: string; description: string; version: string; stepCount: number } }>(`/teams/${teamId}/workflows`, { method: 'POST', body: JSON.stringify({ name, yaml }) }),
     update: (teamId: string, name: string, yaml: string) =>

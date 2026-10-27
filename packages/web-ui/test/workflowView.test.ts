@@ -1,0 +1,213 @@
+/**
+ * Guards for the Workflows view's pure logic (`src/lib/workflow-view.ts`).
+ *
+ * These exist because the previous card shipped four lies, all of them
+ * *decision* bugs rather than styling bugs:
+ *   1. `depends_on` ids were printed raw (`← step-1-research`);
+ *   2. the "DAG" was a linear row of chips with arrows that encoded nothing;
+ *   3. raw English status strings leaked into a Chinese UI;
+ *   4. a run's progress was never computed, so "9 tasks" was the only signal.
+ *
+ * Each block below fails if the corresponding lie comes back.
+ */
+import { describe, it, expect } from 'vitest';
+import {
+  RUN_STATUS_META,
+  UNKNOWN_STATUS,
+  runStatusMeta,
+  buildStepIndex,
+  dependsOnNames,
+  layeredDag,
+  stepIdFromNotes,
+  matchTasksToSteps,
+  computeProgress,
+  stepDisplayStatus,
+  readExpandedWorkflows,
+  writeExpandedWorkflows,
+  shouldClampPrompt,
+  PROMPT_CLAMP_CHARS,
+  EXPANDED_WORKFLOWS_STORAGE_KEY,
+  isRunActive,
+  type WorkflowStepLike,
+} from '../src/lib/workflow-view';
+
+const steps: WorkflowStepLike[] = [
+  { id: 'research', name: '代码研究与依赖分析', role: 'manager', prompt: 'research the code' },
+  { id: 'plan', name: '任务分解与分配', role: 'manager', depends_on: ['research'], prompt: 'plan' },
+  { id: 'dev-a', name: '并行开发 A', role: 'engineer', depends_on: ['plan'], prompt: 'a' },
+  { id: 'dev-b', name: '并行开发 B', role: 'engineer', depends_on: ['plan'], prompt: 'b' },
+  { id: 'review', name: '代码审查', role: 'reviewer', depends_on: ['dev-a', 'dev-b'], prompt: 'r' },
+];
+
+describe('run status wording', () => {
+  it('maps every known status to a tone and a translated key', () => {
+    expect(runStatusMeta('completed')).toEqual(RUN_STATUS_META['completed']);
+    // the human-facing label must not be the raw enum
+    expect(runStatusMeta('failed').label).not.toBe('failed');
+    expect(runStatusMeta('running').tone).toBe('info');
+    expect(runStatusMeta('failed').tone).toBe('danger');
+  });
+
+  it('keeps an unknown status visible instead of silently blanking it', () => {
+    const meta = runStatusMeta('weird_state');
+    expect(meta.tone).toBe(UNKNOWN_STATUS.tone);
+    expect(meta.label).toBe('weird_state');
+    expect(runStatusMeta(undefined)).toBe(UNKNOWN_STATUS);
+  });
+
+  it('only treats running/paused as active', () => {
+    expect(isRunActive('running')).toBe(true);
+    expect(isRunActive('paused')).toBe(true);
+    expect(isRunActive('completed')).toBe(false);
+    expect(isRunActive(undefined)).toBe(false);
+  });
+});
+
+describe('dependencies are shown as names', () => {
+  it('resolves depends_on ids to step names', () => {
+    const index = buildStepIndex(steps);
+    const review = steps.find((s) => s.id === 'review')!;
+    expect(dependsOnNames(review, index)).toEqual(['并行开发 A', '并行开发 B']);
+  });
+
+  it('falls back to the raw id when a dependency is missing from the template', () => {
+    const index = buildStepIndex(steps);
+    const orphan: WorkflowStepLike = { id: 'orphan', name: '离群步骤', role: 'x', prompt: '', depends_on: ['ghost'] };
+    expect(dependsOnNames(orphan, index)).toEqual(['ghost']);
+  });
+});
+
+describe('layeredDag', () => {
+  it('groups steps into real depth layers and emits the edges', () => {
+    const { layers, depth, edges } = layeredDag(steps);
+    expect(layers).toEqual([
+      ['research'],
+      ['plan'],
+      ['dev-a', 'dev-b'],
+      ['review'],
+    ]);
+    expect(depth['review']).toBe(3);
+    expect(edges).toContainEqual({ from: 'dev-a', to: 'review' });
+    expect(edges).toContainEqual({ from: 'dev-b', to: 'review' });
+    expect(edges).toHaveLength(5);
+  });
+
+  it('does not hang or mislayer on a cyclic template', () => {
+    const cyclic: WorkflowStepLike[] = [
+      { id: 'a', name: 'A', role: 'r', prompt: '', depends_on: ['b'] },
+      { id: 'b', name: 'B', role: 'r', prompt: '', depends_on: ['a'] },
+    ];
+    const { layers } = layeredDag(cyclic);
+    expect(layers.flat().sort()).toEqual(['a', 'b']);
+  });
+
+  it('ignores dependencies pointing outside the template', () => {
+    const { edges, layers } = layeredDag([
+      { id: 'solo', name: 'Solo', role: 'r', prompt: '', depends_on: ['not-in-template'] },
+    ]);
+    expect(edges).toEqual([]);
+    expect(layers).toEqual([['solo']]);
+  });
+});
+
+describe('matchTasksToSteps', () => {
+  it('prefers the structural `step: <id>` marker in task notes', () => {
+    const mapped = matchTasksToSteps(steps, [
+      { id: 't1', title: '随便什么标题', status: 'completed', notes: 'some notes. step: review' },
+    ]);
+    expect(mapped['review']?.id).toBe('t1');
+  });
+
+  it('falls back to the runner’s title format `[Workflow] Step name`', () => {
+    const mapped = matchTasksToSteps(steps, [
+      { id: 't2', title: '[标准功能开发流程] 代码审查', status: 'failed' },
+    ]);
+    expect(mapped['review']?.id).toBe('t2');
+  });
+
+  it('never maps one task onto two steps', () => {
+    const mapped = matchTasksToSteps(steps, [
+      { id: 'only', title: '[W] 代码审查', status: 'completed', notes: 'step: review' },
+    ]);
+    const ids = Object.values(mapped).filter(Boolean).map((t) => t!.id);
+    expect(ids).toEqual(['only']);
+  });
+
+  it('maps positionally only when every step and task line up', () => {
+    const tasks = steps.map((_, i) => ({ id: `p${i}`, title: `untitled ${i}`, status: 'pending' }));
+    const mapped = matchTasksToSteps(steps, tasks);
+    expect(mapped['research']?.id).toBe('p0');
+    expect(mapped['review']?.id).toBe('p4');
+
+    // partial leftovers must NOT be matched positionally (that would invent statuses)
+    const partial = matchTasksToSteps(steps, [{ id: 'x', title: 'nothing matches', status: 'completed' }]);
+    expect(Object.values(partial).filter(Boolean)).toHaveLength(0);
+  });
+});
+
+describe('computeProgress', () => {
+  it('derives done/failed/active counts from mapped tasks', () => {
+    const mapped = matchTasksToSteps(steps, [
+      { id: 't1', title: '[W] 代码研究与依赖分析', status: 'completed' },
+      { id: 't2', title: '[W] 任务分解与分配', status: 'completed' },
+      { id: 't3', title: '[W] 并行开发 A', status: 'failed' },
+      { id: 't4', title: '[W] 并行开发 B', status: 'in_progress' },
+    ]);
+    const progress = computeProgress(steps, mapped);
+    expect(progress.total).toBe(4);
+    expect(progress.done).toBe(2);
+    expect(progress.failed).toBe(1);
+    expect(progress.active).toBe(1);
+    expect(progress.percent).toBe(50);
+    expect(progress.failedSteps.map((s) => s.name)).toEqual(['并行开发 A']);
+    expect(progress.activeSteps.map((s) => s.name)).toEqual(['并行开发 B']);
+  });
+
+  it('reports zero rather than a fabricated percentage when nothing is mapped', () => {
+    const progress = computeProgress(steps, {});
+    expect(progress).toMatchObject({ total: 0, done: 0, percent: 0 });
+  });
+});
+
+describe('stepDisplayStatus', () => {
+  it('classifies task statuses into the four dot states', () => {
+    expect(stepDisplayStatus({ id: 'a', title: '', status: 'completed' })).toBe('done');
+    expect(stepDisplayStatus({ id: 'a', title: '', status: 'archived' })).toBe('done');
+    expect(stepDisplayStatus({ id: 'a', title: '', status: 'rejected' })).toBe('failed');
+    expect(stepDisplayStatus({ id: 'a', title: '', status: 'review' })).toBe('active');
+    expect(stepDisplayStatus({ id: 'a', title: '', status: 'pending' })).toBe('pending');
+    expect(stepDisplayStatus(undefined)).toBe('unknown');
+  });
+});
+
+describe('expanded-card persistence', () => {
+  it('round-trips a set of workflow names', () => {
+    const store = new Map<string, string>();
+    writeExpandedWorkflows(new Set(['a', 'b']), (k, v) => store.set(k, v));
+    expect(store.get(EXPANDED_WORKFLOWS_STORAGE_KEY)).toBe('["a","b"]');
+    expect(readExpandedWorkflows((k) => store.get(k) ?? null)).toEqual(new Set(['a', 'b']));
+  });
+
+  it('survives malformed or non-array payloads', () => {
+    expect(readExpandedWorkflows(() => 'not json')).toEqual(new Set());
+    expect(readExpandedWorkflows(() => '{"a":1}')).toEqual(new Set());
+    expect(readExpandedWorkflows(() => '["ok",3,null]')).toEqual(new Set(['ok']));
+    expect(readExpandedWorkflows(() => null)).toEqual(new Set());
+  });
+
+  it('does not throw when storage refuses to write', () => {
+    expect(() =>
+      writeExpandedWorkflows(new Set(['a']), () => {
+        throw new Error('quota');
+      }),
+    ).not.toThrow();
+  });
+});
+
+describe('prompt clamping', () => {
+  it('only offers show-more for prompts above the clamp budget', () => {
+    expect(shouldClampPrompt('x'.repeat(PROMPT_CLAMP_CHARS))).toBe(false);
+    expect(shouldClampPrompt('x'.repeat(PROMPT_CLAMP_CHARS + 1))).toBe(true);
+    expect(shouldClampPrompt(undefined)).toBe(false);
+  });
+});

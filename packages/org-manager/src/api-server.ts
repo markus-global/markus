@@ -11743,7 +11743,9 @@ EXPLANATION_END`;
         if (!this.workflowService) { this.json(res, 404, { error: 'Workflow service not available' }); return; }
         const template = this.workflowService.getWorkflow(teamId, wfName);
         if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
-        this.json(res, 200, { template });
+        // `yaml` (raw source) rides along so the UI editor round-trips the file
+        // instead of re-serialising the parsed template. Additive field.
+        this.json(res, 200, { template, yaml: this.workflowService.getWorkflowYaml(teamId, wfName) ?? undefined });
         return;
       }
 

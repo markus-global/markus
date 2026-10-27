@@ -96,6 +96,26 @@ export class WorkflowService {
     }
   }
 
+  /**
+   * Raw template YAML.
+   *
+   * The parsed `WorkflowTemplate` is lossy (comments, ordering, formatting), so
+   * an editor that round-trips must read the file itself. This is the single
+   * reader for that — the API exposes it as `yaml` on `GET .../workflows/:name`
+   * so the Web UI can edit/duplicate without inventing a second serializer.
+   */
+  getWorkflowYaml(teamId: string, name: string): string | null {
+    const dir = this.getWorkflowsDir(teamId);
+    const filePath = this.resolveWorkflowFile(dir, name);
+    if (!filePath) return null;
+    try {
+      return readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      log.warn('Failed to read workflow template YAML', { name, error: String(err) });
+      return null;
+    }
+  }
+
   addWorkflow(teamId: string, name: string, yamlContent: string): WorkflowTemplate {
     const parsed = parseYaml(yamlContent) as unknown;
     const errors = validateWorkflowTemplate(parsed);
