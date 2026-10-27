@@ -14,5 +14,5 @@
     "@larksuiteoapi/node-sdk": "^1.36.0",
     "@markus/shared": "workspace:*"
   },
-  "version": "0.12.0-rc.2"
+  "version": "0.12.0-rc.3"
 }
