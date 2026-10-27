@@ -559,7 +559,19 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     for (const e of overviewEdges) dependedUpon.add(e.target);
     const topLevel = new Set(overviewNodes.filter(n => !dependedUpon.has(n.id)).map(n => n.id));
 
-    if (!expandedNodeId || !topLevel.has(expandedNodeId)) {
+    // An explicit focus (e.g. "open this workflow run's requirement") outranks
+    // the browsing filters. The focus node may be archived, and archived nodes
+    // are dropped by the status-group filter above — so checking `topLevel`
+    // (built from *filtered* data) made the intent lose to the filter, and the
+    // user landed on an unrelated overview. Look for the focus in the complete
+    // node set instead: filters decide what to browse, never what was asked for.
+    const allData = (() => {
+      if (!expandedNodeId) return null;
+      const { nodes: allNodes, edges: allEdges } = buildNodesAndEdges(tasks, requirements);
+      return allNodes.some(n => n.id === expandedNodeId) ? { allNodes, allEdges } : null;
+    })();
+
+    if (!expandedNodeId || !allData) {
       // Overview: show ALL filtered nodes (incl. pending / not-yet-approved tasks
       // that depend on others) with their dependency edges, so the graph is a
       // real dependency graph instead of only top-level cards. Users can still
@@ -572,7 +584,7 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     }
 
     // Expanded: use ALL tasks/requirements regardless of status filter
-    const { nodes: allNodes, edges: allEdges } = buildNodesAndEdges(tasks, requirements);
+    const { allNodes, allEdges } = allData;
     const visible = collectTransitiveDeps(expandedNodeId, taskMap, reqMap, tasks);
     const visibleNodes = allNodes.filter(n => visible.has(n.id)).map(n =>
       n.id === expandedNodeId ? { ...n, data: { ...n.data, isExpandedRoot: true, onCollapse: collapseDAG } } : n

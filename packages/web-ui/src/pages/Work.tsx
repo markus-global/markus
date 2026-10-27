@@ -35,6 +35,7 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
+import { filterBoardTasks } from '../lib/boardFilters.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -4983,6 +4984,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<BoardType>(previewData?.initialBoardType ?? 'backlog');
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
+  // A requirement the user explicitly asked to open. Held separately from the
+  // filtered/paginated list so no filter can hide it (see openRequirementInDag).
+  const [dagFocusReq, setDagFocusReq] = useState<RequirementInfo | null>(null);
+  // …and its tasks: the board only carries active work, so an archived run's
+  // tasks have to be fetched to draw its graph.
+  const [dagFocusTasks, setDagFocusTasks] = useState<TaskInfo[]>([]);
   // Horizontal swipe at PAGE level belongs to the ring (lib/navRing.ts); the four
   // board views are four steps on that ring, so this page no longer runs its own
   // swipe recognisers. It registers a GETTER so the ring always reads the live
@@ -5348,6 +5355,45 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
+
+  /**
+   * "Open this requirement's dependency graph" — one intent, one implementation.
+   *
+   * It used to be three setters written inline at each call site
+   * (`forceOpenReq` + `setDagExpandReqId` + `setBoardType('dag')`), none of which
+   * touched the scope the graph actually depends on. So `查看任务` from a workflow
+   * run's drawer landed on a DAG that could not render: the board was scoped to
+   * another project, and — for any finished run — every task was closed and
+   * `showClosed` was off, so the graph came out empty.
+   */
+  const openRequirementInDag = useCallback((req: RequirementInfo) => {
+    // 1. Scope: select the requirement's project so its tasks are loaded at all
+    //    (this also refetches the board and rewrites the URL).
+    ensureProjectVisible(req.projectId);
+    // 2. Filters: never hide the thing the user explicitly asked to see.
+    setStatusFilter(null);
+    setAgentFilter(new Set());
+    setProjectFilter(new Set());
+    setMyTasksOnly(false);
+    // 3. Closed items: a finished run's requirement/tasks are archived; reveal them.
+    setShowClosed(true);
+    // 4. The focus carries its own data. The requirement list is paginated
+    //    (300+ requirements here) and the board only holds *active* work, so a
+    //    finished run's requirement *and* its archived tasks are often absent —
+    //    filters were the wrong lever. Fetch the requirement's tasks explicitly
+    //    and hand both to the graph as focus data.
+    setDagFocusReq(req);
+    setDagFocusTasks([]);
+    void api.tasks.list({ requirementId: req.id, pageSize: 200 })
+      .then(({ tasks }) => {
+        if (tasks?.length) setDagFocusTasks(tasks);
+      })
+      .catch(() => { /* the graph still shows the requirement node */ });
+    // 5. Open it.
+    forceOpenReq(req);
+    setDagExpandReqId(`req-${req.id}`);
+    setBoardType('dag');
+  }, [ensureProjectVisible, forceOpenReq]);
 
   // Try to open a task from localStorage (set by other pages before mount).
   // Uses API fallback when the task isn't in the board yet.
@@ -5747,17 +5793,24 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const CLOSED_STATUSES = new Set(['rejected', 'cancelled', 'archived']);
   const isClosed = (t: { status: string }) => CLOSED_STATUSES.has(t.status);
 
-  const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
-    let result = tasks.filter(t => showClosed || !isClosed(t));
-    if (statusFilter) result = result.filter(t => t.status === statusFilter);
-    if (viewMode === 'project' && selectedProjectId) {
-      result = result.filter(t => t.projectId === selectedProjectId);
-    }
-    if (projectFilter.size > 0) result = result.filter(t => t.projectId && projectFilter.has(t.projectId));
-    if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
-    if (myTasksOnly && authUser?.id) result = result.filter(t => t.createdBy === authUser.id);
-    return result;
-  };
+  /**
+   * Visibility for the board. The rules themselves live in `lib/boardFilters`
+   * (pure + tested) because the previous inline copy ignored its own
+   * `includeArchived` argument — which is exactly why "查看任务" on a finished
+   * run opened an empty dependency graph.
+   */
+  const filterTasks = (tasks: TaskInfo[], includeArchived = false) =>
+    filterBoardTasks(tasks, {
+      showClosed,
+      includeClosed: includeArchived,
+      statusFilter,
+      viewMode,
+      selectedProjectId,
+      projectFilter,
+      agentFilter,
+      myTasksOnly,
+      currentUserId: authUser?.id,
+    });
 
   const boardTaskMap = useMemo(() => {
     const m = new Map<string, TaskInfo>();
@@ -6504,19 +6557,14 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             className="flex-1 min-h-0 flex flex-col relative"
           >
           <WorkflowsPanel teamId={null} defaultTeamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
-            const openReqInDag = (req: RequirementInfo) => {
-              forceOpenReq(req);
-              setDagExpandReqId(`req-${req.id}`);
-              setBoardType('dag');
-            };
             const req = allRequirements.find(r => r.id === reqId);
             if (req) {
-              openReqInDag(req);
+              openRequirementInDag(req);
             } else {
               api.requirements.get(reqId).then(resp => {
                 if (resp.requirement) {
                   setAllRequirements(prev => [...prev, resp.requirement]);
-                  openReqInDag(resp.requirement);
+                  openRequirementInDag(resp.requirement);
                 }
               }).catch(() => {});
             }
@@ -6534,15 +6582,26 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 const reqTaskIds = new Set(selectedReq.taskIds ?? []);
                 return allDagTasks.filter(t => reqTaskIds.has(t.id));
               }
-              return allDagTasks;
+              // Focus data: the board only carries active work, so an archived
+              // run's tasks are merged in explicitly (deduped by id).
+              if (dagFocusTasks.length === 0) return allDagTasks;
+              const byId = new Map(allDagTasks.map(t => [t.id, t]));
+              for (const task of dagFocusTasks) byId.set(task.id, task);
+              return [...byId.values()];
             })()}
-            requirements={previewMode && selectedReq ? [selectedReq] : filteredReqs}
+            requirements={(() => {
+              const base = previewMode && selectedReq ? [selectedReq] : filteredReqs;
+              // The focus requirement must render even when it is archived, and
+              // even when it is not in the (paginated) requirement list.
+              if (!dagFocusReq || base.some(r => r.id === dagFocusReq.id)) return base;
+              return [dagFocusReq, ...base];
+            })()}
             agents={agents}
             showArchived={showClosed}
             onShowArchivedChange={setShowClosed}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
-            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); }}
+            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
