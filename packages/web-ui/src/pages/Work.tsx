@@ -4189,7 +4189,7 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
+function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -4222,6 +4222,8 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
   const [runTasks, setRunTasks] = useState<Record<string, WorkflowTaskLike[]>>({});
   const [runTasksLoading, setRunTasksLoading] = useState<Record<string, boolean>>({});
   const [drawerRun, setDrawerRun] = useState<WorkflowRunInfo | null>(null);
+  /** Workflow being sent to a chat — drives the shared SendToChatModal. */
+  const [sendWorkflow, setSendWorkflow] = useState<WorkflowInfo | null>(null);
   const [manage, setManage] = useState<{
     mode: WorkflowManageMode;
     workflow: WorkflowInfo;
@@ -4593,12 +4595,22 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
     setDetailState((prev) => ({ ...prev, [wfName]: 'ready' }));
   };
 
-  const sendWorkflowToAgent = (wf: WorkflowInfo) => {    const wfTeamId = resolveTeam(wf.name);
-    const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
-    const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
-    if (targetAgentId) {
-      navBus.navigate(PAGE.TEAM, { agentId: targetAgentId, prefillMessage: `@[${wf.displayName || wf.name}](workflow:${wf.name}) ` });
-    }
+  /**
+   * "Send to chat" goes through the shared `SendToChatModal` — the same picker a
+   * task or requirement uses — instead of silently picking the team manager and
+   * navigating. The recipient is the user's choice, not the platform's.
+   */
+  const sendWorkflowToChat = (wf: WorkflowInfo) => setSendWorkflow(wf);
+
+  const workflowChipLabel = (wf: WorkflowInfo) => wf.displayName || wf.name;
+  const workflowChipContent = (wf: WorkflowInfo) =>
+    `@[${wf.displayName || wf.name}](workflow:${wf.name})`;
+  const workflowDefaultTarget = (wf: WorkflowInfo) => {
+    const wfTeamId = resolveTeam(wf.name);
+    const teamManager = wfTeamId
+      ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager')
+      : undefined;
+    return resolveDefaultChatTarget(teamManager?.id, agents, users);
   };
 
   return (
@@ -4653,7 +4665,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
                 }}
                 onSaveStep={(stepId, patch) => saveWorkflowStep(wf.name, stepId, patch)}
                 roleAgentName={roleNameFor}
-                onSendToAgent={() => sendWorkflowToAgent(wf)}
+                onSendToAgent={() => sendWorkflowToChat(wf)}
                 onEdit={() => void openManage('edit', wf)}
                 onDuplicate={() => void openManage('duplicate', wf)}
                 onDelete={() => void openManage('delete', wf)}
@@ -4700,6 +4712,18 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
           error={manage.error}
           onClose={() => setManage(null)}
           onSubmit={submitManage}
+        />
+      )}
+
+      {/* Same picker a task/requirement uses — the recipient is the user's choice. */}
+      {sendWorkflow && (
+        <SharedSendToChatModal
+          chipLabel={workflowChipLabel(sendWorkflow)}
+          chipContent={workflowChipContent(sendWorkflow)}
+          agents={agents}
+          users={users}
+          defaultTarget={workflowDefaultTarget(sendWorkflow)}
+          onClose={() => setSendWorkflow(null)}
         />
       )}
 
@@ -6556,7 +6580,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           <div
             className="flex-1 min-h-0 flex flex-col relative"
           >
-          <WorkflowsPanel teamId={null} defaultTeamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
+          <WorkflowsPanel teamId={null} defaultTeamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} users={users} projects={projects} onViewRunTasks={(reqId) => {
             const req = allRequirements.find(r => r.id === reqId);
             if (req) {
               openRequirementInDag(req);
