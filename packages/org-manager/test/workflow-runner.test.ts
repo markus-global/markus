@@ -242,6 +242,83 @@ describe('WorkflowRunner', () => {
 
       expect(runner.getRun(run.id)?.status).toBe('failed');
     });
+
+    /**
+     * The run status is a *projection* of its tasks, so it has to be recomputed
+     * on every task change — not only while the run still says `running`.
+     * The old guard latched the first terminal verdict forever: a step that
+     * failed once and then completed on retry left the run reading
+     * "失败 · 9/9 个任务完成" in the Work page.
+     */
+    it('re-derives a failed run when its retried step completes', async () => {
+      const singleStepTemplate: WorkflowTemplate = {
+        ...TEMPLATE,
+        steps: [{ id: 's1', name: 'Only', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task' }],
+      };
+      const run = await runner.createRun(
+        'team-1',
+        singleStepTemplate,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+
+      const taskId = run.taskIds[0]!;
+      mocks.taskService._tasks.get(taskId)!.status = 'failed';
+      await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+      expect(runner.getRun(run.id)?.status).toBe('failed');
+
+      // the same task is retried and finishes
+      mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+      expect(runner.getRun(run.id)?.status).toBe('completed');
+    });
+
+    /** `cancelled` is a human decision, never a projection. */
+    it('does not resurrect a cancelled run from a task update', async () => {
+      const run = await runner.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+      await runner.cancelRun(run.id, 'user-1');
+
+      for (const taskId of run.taskIds) {
+        mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      }
+      await runner.onTaskStatusChange(mocks.taskService.getTask(run.taskIds[0]!) as never);
+
+      expect(runner.getRun(run.id)?.status).toBe('cancelled');
+    });
+
+    /** Historical rows are healed on read, so old drift cannot survive in the UI. */
+    it('heals a stale terminal status when runs are listed', async () => {
+      const bare = new WorkflowRunner(
+        mocks.requirementService as never,
+        mocks.taskService as never,
+        mocks.orgService as never,
+      );
+      const run = await bare.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+      for (const taskId of run.taskIds) {
+        mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      }
+      // simulate a row written while the ratchet still existed
+      const stored = bare.getRun(run.id)!;
+      stored.status = 'failed';
+      stored.completedAt = new Date().toISOString();
+
+      const listed = await bare.listRuns('team-1', TEMPLATE.name);
+      expect(listed.find(r => r.id === run.id)?.status).toBe('completed');
+    });
   });
 
   describe('pause and resume', () => {

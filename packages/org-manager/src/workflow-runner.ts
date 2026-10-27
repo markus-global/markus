@@ -402,14 +402,15 @@ export class WorkflowRunner {
   }
 
   async listRuns(teamId: string, workflowName: string, limit = 20): Promise<WorkflowRun[]> {
-    if (this.runRepo) {
-      const rows = await this.runRepo.findByTeamAndWorkflow(teamId, workflowName, limit);
-      return rows.map(rowToRun);
-    }
-    return [...this.runs.values()]
-      .filter(r => r.teamId === teamId && r.workflowName === workflowName)
-      .sort((a, b) => b.runNumber - a.runNumber)
-      .slice(0, limit);
+    const runs = this.runRepo
+      ? (await this.runRepo.findByTeamAndWorkflow(teamId, workflowName, limit)).map(rowToRun)
+      : [...this.runs.values()]
+          .filter(r => r.teamId === teamId && r.workflowName === workflowName)
+          .sort((a, b) => b.runNumber - a.runNumber)
+          .slice(0, limit);
+    // Rows written before the derive-on-every-change fix can carry a stale
+    // terminal status; heal them here so the UI never shows "失败 · 9/9 完成".
+    return this.reconcileRunStatuses(runs);
   }
 
   getActiveRuns(teamId: string): WorkflowRun[] {
@@ -424,14 +425,25 @@ export class WorkflowRunner {
   async onTaskStatusChange(task: Task): Promise<void> {
     // Find which run this task belongs to
     const run = this.findRunForTask(task.id);
-    if (!run || run.status !== 'running') return;
+    if (!run) return;
+
+    // `paused` / `cancelled` are human decisions, not projections — a task
+    // update must never resurrect them. Everything else IS a projection of the
+    // tasks, and must therefore be recomputed on *every* task change, not just
+    // while the run happens to still be `running`.
+    //
+    // The old `if (run.status !== 'running') return;` was a one-way ratchet: a
+    // run that latched to `failed` could never notice that its failed step was
+    // retried and every task then completed. Observed in the Work page as
+    // "失败 · 9/9 个任务完成".
+    if (run.status === 'paused' || run.status === 'cancelled') return;
 
     const allTasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
     const newStatus: WorkflowRunStatus = this.deriveRunStatus(allTasks);
 
-    // Still running — check for step failure and apply retry logic
-    if (newStatus === 'running') {
-      if (task.status === 'failed') {
+    // Unchanged — still running: step failure / retry bookkeeping only.
+    if (newStatus === run.status) {
+      if (newStatus === 'running' && task.status === 'failed') {
         const retried = this.attemptStepRetry(run, task);
         if (!retried) {
           this.notifyManager(run.teamId, 'step_failed', {
@@ -447,8 +459,30 @@ export class WorkflowRunner {
       return;
     }
 
+    await this.applyRunStatus(run, newStatus, { task });
+  }
+
+  /**
+   * The single writer for a *derived* run status.
+   *
+   * Callers: `onTaskStatusChange` (live) and `reconcileRunStatuses` (read-time
+   * healing of historical drift). Keeping it in one place is what stops the two
+   * paths from disagreeing about notifications or `completedAt`.
+   */
+  private async applyRunStatus(
+    run: WorkflowRun,
+    newStatus: WorkflowRunStatus,
+    ctx: { task?: Task; notify?: boolean } = {},
+  ): Promise<void> {
+    const previous = run.status;
+    const notify = ctx.notify ?? true;
+
     run.status = newStatus;
-    run.completedAt = new Date().toISOString();
+    if (newStatus === 'running') {
+      run.completedAt = undefined;
+    } else {
+      run.completedAt = run.completedAt ?? new Date().toISOString();
+    }
     this.runs.set(run.id, run);
 
     if (this.runRepo) {
@@ -457,23 +491,27 @@ export class WorkflowRunner {
       );
     }
 
-    if (newStatus === 'completed') {
-      this.notifyManager(run.teamId, 'run_completed', {
-        workflowName: run.workflowName,
-        runId: run.id,
-        runNumber: run.runNumber,
-        taskCount: run.taskIds.length,
-        actionRequired: true,
-      });
-    } else if (newStatus === 'failed') {
-      this.notifyManager(run.teamId, 'run_failed', {
-        workflowName: run.workflowName,
-        runId: run.id,
-        runNumber: run.runNumber,
-        failedTaskId: task.id,
-        failedTaskTitle: task.title,
-        actionRequired: true,
-      });
+    // Notify only on a genuine transition out of `running` — healing an old run
+    // on read must not re-ping the manager.
+    if (notify && previous === 'running') {
+      if (newStatus === 'completed') {
+        this.notifyManager(run.teamId, 'run_completed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          taskCount: run.taskIds.length,
+          actionRequired: true,
+        });
+      } else if (newStatus === 'failed') {
+        this.notifyManager(run.teamId, 'run_failed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          failedTaskId: ctx.task?.id ?? '',
+          failedTaskTitle: ctx.task?.title ?? '',
+          actionRequired: true,
+        });
+      }
     }
 
     this.ws?.broadcast?.({
@@ -485,9 +523,35 @@ export class WorkflowRunner {
     log.info('Workflow run status changed', {
       runId: run.id,
       workflow: run.workflowName,
+      previousStatus: previous,
       newStatus,
-      taskId: task.id,
+      taskId: ctx.task?.id,
     });
+  }
+
+  /**
+   * Tasks are the authority; a run's terminal status is a projection of them.
+   * Rows written before the fix above are healed here, on read.
+   */
+  private async reconcileRunStatuses(runs: WorkflowRun[]): Promise<WorkflowRun[]> {
+    const healed: WorkflowRun[] = [];
+    for (const run of runs) {
+      if (run.status === 'paused' || run.status === 'cancelled') {
+        healed.push(run);
+        continue;
+      }
+      const tasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
+      if (tasks.length === 0) {
+        healed.push(run);
+        continue;
+      }
+      const derived = this.deriveRunStatus(tasks);
+      if (derived !== run.status) {
+        await this.applyRunStatus(run, derived, { notify: false });
+      }
+      healed.push(run);
+    }
+    return healed;
   }
 
   async loadFromDB(): Promise<void> {

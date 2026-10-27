@@ -46,6 +46,17 @@ import {
 } from '../lib/workflow-view.ts';
 
 const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
+/**
+ * The workflow view's own team filter.
+ *
+ * It used to be derived from the selected project (`selectedProjectTeamId`),
+ * which is *task board* context. Any deep-link to a task — including the one the
+ * run drawer itself performs — changed the project, and the workflow list
+ * silently emptied out ("暂无工作流模板") because that project's team happened to
+ * have no templates. The panel owns its filter now, and remembers it.
+ */
+const WORKFLOWS_TEAM_KEY = 'markus_workflows_team';
+const WORKFLOWS_TEAM_ALL = '__all__';
 const BOARD_TYPE_ORDER = ['backlog', 'kanban', 'dag', 'workflows'] as const;
 type BoardType = typeof BOARD_TYPE_ORDER[number];
 type RightDetailMode = 'closed' | 'project' | 'item' | 'empty';
@@ -4175,7 +4186,7 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, projects, onViewRunTasks }: { teamId: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
+function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -4185,7 +4196,15 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
+  // Team filter owned by this panel (see WORKFLOWS_TEAM_KEY) — seeded from the
+  // current project's team on first visit, then sticky.
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(() => {
+    try {
+      const stored = localStorage.getItem(WORKFLOWS_TEAM_KEY);
+      if (stored) return stored === WORKFLOWS_TEAM_ALL ? null : stored;
+    } catch { /* storage disabled — fall through to the default */ }
+    return defaultTeamId ?? null;
+  });
   // Multiple cards can be open at once, and the choice survives a reload.
   // The old single-slot `expandedWorkflow` made "open a second one" a surprise
   // (it silently collapsed the first) and lost the state on every navigation.
@@ -4217,6 +4236,17 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [workflowTeamMap, setWorkflowTeamMap] = useState<Record<string, string>>({});
 
   const teamId = propTeamId ?? selectedTeamId;
+
+  /** Single writer for the panel's team filter (state + persistence + reset). */
+  const selectTeam = (next: string | null) => {
+    if (next === selectedTeamId) return;
+    setSelectedTeamId(next);
+    setWorkflows([]);
+    setRuns({});
+    try {
+      localStorage.setItem(WORKFLOWS_TEAM_KEY, next ?? WORKFLOWS_TEAM_ALL);
+    } catch { /* storage disabled — selection just won't persist */ }
+  };
 
   useEffect(() => {
     if (propTeamId) return;
@@ -4527,7 +4557,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
       {!propTeamId && teams.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           <button
-            onClick={() => { if (selectedTeamId !== null) { setSelectedTeamId(null); setWorkflows([]); setRuns({}); } }}
+            onClick={() => selectTeam(null)}
             className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === null ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
           >
             {t('work:task.all', 'All')}
@@ -4535,7 +4565,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
           {teams.map(tm => (
             <button
               key={tm.id}
-              onClick={() => { if (selectedTeamId !== tm.id) { setSelectedTeamId(tm.id); setWorkflows([]); setRuns({}); } }}
+              onClick={() => selectTeam(tm.id)}
               className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === tm.id ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
             >
               {tm.name}
@@ -6425,7 +6455,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           <div
             className="flex-1 min-h-0 flex flex-col relative"
           >
-          <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
+          <WorkflowsPanel teamId={null} defaultTeamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
             const openReqInDag = (req: RequirementInfo) => {
               forceOpenReq(req);
               setDagExpandReqId(`req-${req.id}`);
