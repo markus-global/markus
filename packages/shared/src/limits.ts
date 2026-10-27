@@ -845,6 +845,24 @@ export const CONTEXT_PROACTIVE_COMPACT_RATIO = 0.75;
 export const CONTEXT_WARN_RATIO = 0.80;
 /** At/above this usage ratio the [CONTEXT] hint adds a CRIT line (system will hard-trim). */
 export const CONTEXT_CRIT_RATIO = 0.95;
+/**
+ * Hard context gate (Owner decision, 2026-10-26): at/above this ratio the
+ * platform stops trusting advisory text and restricts the turn to the levers
+ * that actually shrink or end it — `session` (compact | pin) and `end_turn`.
+ * Every other tool call is refused at the tool boundary with an actionable
+ * message.
+ *
+ * Why a gate instead of more prompt text: the advisory ladder already ordered
+ * "ACT NOW: call session compact" from 85% and "the next request may not fit"
+ * from 95%, and two agents still blew past a 1M window on 2026-10-26 (10:12 and
+ * 10:14, both on a2a-driven turns). A warning that carries no consequence is
+ * decoration — it only teaches agents to ignore banners.
+ *
+ * Why 90 and not 95: compaction costs a model call of its own (the compactor
+ * produces a summary), so the lever needs headroom to run. 95% leaves the fix
+ * no room to fit.
+ */
+export const CONTEXT_GATE_RATIO = 0.9;
 /** Max chars for a single pinned slot value (session_pin). */
 export const CONTEXT_SLOT_MAX_CHARS = 1200;
 

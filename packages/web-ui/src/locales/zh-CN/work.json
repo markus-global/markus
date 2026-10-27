@@ -78,6 +78,7 @@
     "tasks": "任务",
     "newTask": "新建任务",
     "noTasks": "暂无任务",
+    "notFound": "找不到任务 {{id}} —— 它可能已被删除，或引用只写了 id 的前几位",
     "assignee": "负责人",
     "unassigned": "未分配",
     "priority": "优先级",

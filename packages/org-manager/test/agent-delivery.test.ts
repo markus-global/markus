@@ -143,9 +143,60 @@ describe('AgentDelivery.deliver — 因果链与载荷', () => {
     const toAddressed = (enqueued[0]!.payload as { content: string }).content;
     const toBystander = (enqueued[1]!.payload as { content: string }).content;
     expect(toAddressed).toContain('[MENTIONED]');
+    // 「还有谁也 @ 了」必须随消息一起送达：收件方据此决定「必须我干」还是「谁先接谁干」。
+    // 只 @ 了 agt_b 一个人 → 计数为 0（**照样输出**，不省略：省略会让前缀分叉）。
+    expect(toAddressed).toContain('Others also addressed: 0');
     expect(toAddressed).toContain('broadcast');
     expect(toBystander).not.toContain('[MENTIONED]');
     expect(toBystander).toContain('broadcast');
+  });
+
+  it('同时 @ 多人时，每个被点名者都看到相同的「另有 N 人」', () => {
+    const { deps, enqueued } = makeDeps();
+    const d = new AgentDelivery(deps);
+    d.deliver(req({
+      targetAgentIds: ['agt_b', 'agt_c', 'agt_d'],
+      addressedTargetIds: ['agt_b', 'agt_c'],
+      content: 'group question',
+    }));
+    const toB = (enqueued[0]!.payload as { content: string }).content;
+    const toC = (enqueued[1]!.payload as { content: string }).content;
+    const toD = (enqueued[2]!.payload as { content: string }).content;
+    // 两个被点名者各看到「另有 1 人」，且是同一个数字（同一个事实，一个来源）。
+    expect(toB).toContain('Others also addressed: 1');
+    expect(toC).toContain('Others also addressed: 1');
+    // 围观者仍然不带标记。
+    expect(toD).not.toContain('[MENTIONED]');
+  });
+
+  it('一个都没送到时报 undelivered —— 不谎报 queued', () => {
+    // F2 的核心守卫（行为测试，不是源码文本断言）。
+    // 旧实现无论收件人是否存在都回 `queued`，差异只体现在正文里一句 WARNING：
+    // 于是调用方以为消息在路上，反复重发，而它从头到尾没有离开本机。
+    const { deps, enqueued } = makeDeps();
+    const d = new AgentDelivery(deps);
+    const out = d.deliver(req({
+      targetAgentIds: ['missing'],
+      content: 'nobody will read this',
+    }));
+    expect(out.state).toBe('undelivered');
+    expect(out.deliveredTo).toHaveLength(0);
+    expect(enqueued).toHaveLength(0);
+  });
+
+  it('部分送达时报 queued，且 deliveredTo 只列真正送达的目标', () => {
+    // “部分送达”是个真实状态：不能因为有一个失败就把整批说成失败，
+    // 也不能因为有一个成功就把失败的那个也算进 deliveredTo。
+    const { deps, enqueued } = makeDeps();
+    const d = new AgentDelivery(deps);
+    const out = d.deliver(req({
+      targetAgentIds: ['missing', 'agt_real'],
+      content: 'partial',
+    }));
+    expect(out.state).toBe('queued');
+    expect(out.deliveredTo).toEqual(['agt_real']);
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.agentId).toBe('agt_real');
   });
 
   it('origin 决定来源标记：人类 vs 同事（唯一写者）', () => {

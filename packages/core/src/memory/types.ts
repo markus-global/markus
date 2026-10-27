@@ -66,6 +66,15 @@ export interface ConversationSession {
   summary?: string;
   /** Count of messages represented by `summary` (informational). */
   summaryPagedOut?: number;
+  /**
+   * Last provider-reported prompt measurement for this session.
+   *
+   * It lives on the session record itself — the same JSON this store already
+   * owns and already persists — because that is the only thing the number
+   * describes. A separate store for it would be a second place for one fact,
+   * free to drift from the history it measures.
+   */
+  lastReportedInput?: { tokens: number; messageCount: number };
 }
 
 /**
@@ -160,6 +169,12 @@ export interface IMemoryStore {
   /** Rename a session (used by the agent session_rename tool). */
   renameSession?(sessionId: string, title: string): void;
   appendMessage(sessionId: string, message: LLMMessage): void;
+  /** Persist the provider's last prompt measurement onto the session record. */
+  recordReportedInputTokens?(sessionId: string, reading: { tokens: number; messageCount: number }): void;
+  /** Read that measurement back (lazily loading the session from disk). */
+  getReportedInputTokens?(sessionId: string): { tokens: number; messageCount: number } | undefined;
+  /** Drop it — compaction shrank the history, so the old reading describes nothing. */
+  clearReportedInputTokens?(sessionId: string): void;
   getRecentMessages(sessionId: string, limit: number): LLMMessage[];
   compactSession(sessionId: string, keepLast?: number): CompactResult;
   summarizeAndTruncate(sessionId: string, keepLast: number): LLMMessage[];

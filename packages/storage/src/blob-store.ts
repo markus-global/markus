@@ -122,8 +122,22 @@ export function resolveJsonFromStorage(json: string | null | undefined, store: B
     if (text == null) return json; // 文件丢了就原样返回，至少不伪造内容
     // 纯指针：blob 正文就是完整答案。
     if (isBlobRef(parsed) && Object.keys(ref).length === 2) return text;
-    // 混合体：blob 正文是**权威**（它是完整快照），外层非 `$` 字段只补缺不覆盖。
-    // 覆盖会把完整数据又降级回残片（外层那 1 段正是降级产物）。
+    // 混合体（指针 + 外层残留字段）：blob 正文是**权威**，外层非 `$` 字段只补缺不覆盖。
+    //
+    // 前提（这个函数能成立的全部依据，写在这里以免下一个人靠猜）：
+    //   外层那些非 `$` 字段是 `projectJsonForStorage` 在**外置那一刻**降级留下的残片，
+    //   而 blob 正文是同一时刻写入的**完整快照**。所以对任何一个两边都有的键，
+    //   blob 侧不旧于外层侧——不是因为「blob 天然更新」，而是因为**两者同源、
+    //   外层是被截断的那一份**。
+    //
+    // 这个前提会在什么情况下**不再成立**：若有哪一天出现一个写入方，先写指针、
+    // 之后又单独修改外层的某个字段（两个写者、两次写），那外层就可能反而更新，
+    // 而这里会把它埋掉。真出现那种场景，不能靠调这里的顺序解决，必须给混合体
+    // 加一个单调的 `$updatedAt` 做仲裁（谁新用谁）。在此之前，任何新增写入路径
+    // 都必须遵守：**指针与它的外层兄弟字段只能同一次写入**。
+    //
+    // 为什么不用 `Object.assign(merged, ref)`（外层覆盖）：外层那 1 段正是降级
+    // 产物，覆盖会把完整数据又降回残片——实测事故里 63 段被 1 段盖掉。
     try {
       const base = JSON.parse(text) as unknown;
       if (base && typeof base === 'object' && !Array.isArray(base)) {

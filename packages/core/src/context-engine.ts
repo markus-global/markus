@@ -307,6 +307,20 @@ export class ContextEngine {
    */
   private reportedInputBySession = new Map<string, { tokens: number; messageCount: number; pct?: number }>();
   /**
+   * Durable cache of those readings, so a restart does not blind the gate.
+   *
+   * The reading dies with the process, and without it the FIRST turn of every
+   * session after a restart reports `pending` — the gate fails open and a 95%
+   * session gets one ungated turn, which is precisely the request that overflows.
+   * Observed 2026-10-26: a 317-message session came back as
+   * `[CONTEXT pending — no provider measurement for this session yet]`.
+   */
+  private readingStore?: {
+    load(sessionId: string): { tokens: number; messageCount: number } | undefined;
+    save(sessionId: string, reading: { tokens: number; messageCount: number }): void;
+    clear(sessionId: string): void;
+  };
+  /**
    * Estimated prompt size of the PREVIOUS pack for each session.
    *
    * `reportedInputBySession` holds the provider's count for the call that just
@@ -332,10 +346,13 @@ export class ContextEngine {
   noteReportedInputTokens(sessionId: string | undefined, tokens: number | undefined): void {
     if (!sessionId) return;
     if (typeof tokens !== 'number' || !Number.isFinite(tokens) || tokens <= 0) return;
-    this.reportedInputBySession.set(sessionId, {
+    const reading = {
       tokens,
       messageCount: this.lastPackMessageCountBySession.get(sessionId) ?? 0,
-    });
+    };
+    this.reportedInputBySession.set(sessionId, reading);
+    // Survive a restart: the next process must be able to gate the first turn.
+    this.persistReading(sessionId, reading);
   }
 
   /**
@@ -358,6 +375,37 @@ export class ContextEngine {
     if (!sessionId) return;
     this.reportedInputBySession.delete(sessionId);
     this.lastPackMessageCountBySession.delete(sessionId);
+    // Drop the durable copy too: a pre-compaction high reading must not survive
+    // a restart and immediately gate a session that just shrank.
+    try {
+      this.readingStore?.clear(sessionId);
+    } catch {
+      // Cache only — never surface IO failure into a turn.
+    }
+  }
+
+  /**
+   * Inject the durable cache for reported readings (see `readingStore`).
+   *
+   * Injection rather than import keeps this engine free of storage concerns and
+   * matches how the summarizer is wired. Passing `undefined` disables
+   * persistence — the engine then behaves exactly as before.
+   */
+  setReadingStore(store: {
+    load(sessionId: string): { tokens: number; messageCount: number } | undefined;
+    save(sessionId: string, reading: { tokens: number; messageCount: number }): void;
+    clear(sessionId: string): void;
+  }): void {
+    this.readingStore = store;
+  }
+
+  /** Persist a reading, never letting a cache failure break a turn. */
+  private persistReading(sessionId: string, reading: { tokens: number; messageCount: number }): void {
+    try {
+      this.readingStore?.save(sessionId, reading);
+    } catch {
+      // Cache only — the in-memory reading stays valid for this process.
+    }
   }
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
@@ -2236,7 +2284,18 @@ export class ContextEngine {
     // Measured water level only. A reading describes ONE pack, so it carries the
     // message count it measured; history is append-only, so a DECREASE can only
     // mean a rewrite (compaction) and invalidates it.
-    const remembered = this.reportedInputBySession.get(opts.sessionId);
+    let remembered = this.reportedInputBySession.get(opts.sessionId);
+    if (!remembered && opts.sessionId) {
+      // Restart recovery: re-arm the gate from the durable cache instead of
+      // reporting `pending` on the most dangerous turn of the session. The same
+      // append-only rule applies — a cached reading measured against more
+      // messages than we have now describes a history that was rewritten.
+      const cached = this.readingStore?.load(opts.sessionId);
+      if (cached && opts.sessionMessages.length >= cached.messageCount) {
+        remembered = { tokens: cached.tokens, messageCount: cached.messageCount };
+        this.reportedInputBySession.set(opts.sessionId, remembered);
+      }
+    }
     let rememberedTokens: number | undefined;
     if (remembered) {
       if (opts.sessionMessages.length < remembered.messageCount) {

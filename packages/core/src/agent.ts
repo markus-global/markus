@@ -56,6 +56,7 @@ import {
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
+import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
@@ -954,6 +955,15 @@ export class Agent {
     // 的模型对 ContextEngine 同样生效。
     this.contextEngine = new ContextEngine({ tokenCounter: this.tokenCounter });
     this.contextEngine.setLLMSummarizer(this.createLLMSummarizer());
+    // Durable source for the provider's last reading: the session record the
+    // memory store already persists. Without it the reading dies with the
+    // process and every session's first turn after a restart reports `pending`,
+    // leaving the 90% gate open on the very turn most likely to overflow.
+    this.contextEngine.setReadingStore({
+      load: (sessionId) => this.memory.getReportedInputTokens?.(sessionId),
+      save: (sessionId, reading) => this.memory.recordReportedInputTokens?.(sessionId, reading),
+      clear: (sessionId) => this.memory.clearReportedInputTokens?.(sessionId),
+    });
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
@@ -8391,6 +8401,9 @@ export class Agent {
 
     const tools = this.toolSelector.selectTools({
       allTools: effectiveTools,
+      // Hard context gate input: the provider's own reading for this session, so
+      // the offered surface and the boundary refusal share one knowledge source.
+      contextPct: this.contextEngine.getMeasuredUsagePercent(this.currentSessionId),
       userMessage: context?.userMessage ?? '',
       recentToolNames: recentPlusActivated,
       isManager,
@@ -8945,6 +8958,16 @@ export class Agent {
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
+    // Hard context gate first, before the write lock: a refused call must not
+    // queue behind a lock it is never going to use. This is the single
+    // enforcement point — every tool call in every loop funnels through here,
+    // including the a2a/mailbox turns that actually overflowed.
+    const gated = contextGateRefusal(
+      toolCall.name,
+      this.contextEngine.getMeasuredUsagePercent(sessionId),
+    );
+    if (gated) return gated;
+
     // 写语义工具跨 worker 互斥（所有外部调用走这里）：
     //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
     //   读工具 → 直接执行，不互斥

@@ -303,6 +303,7 @@
     "creditModalDismiss": "稍后再说",
     "creditModalUpgrade": "充值 / 升级",
     "ai402": "⚠ AI 服务错误：{{detail}}。请充值 API 余额或联系管理员。",
+    "aiContextOverflow": "⚠ 上下文超出模型上限（本次请求 {{asked}} tokens，上限 {{limit}}）。请让 agent 先压缩会话（session compact）后重试；这是请求内容过长，不是 API 密钥或配置问题。",
     "ai401": "⚠ AI 服务认证失败：{{detail}}。请检查配置。",
     "ai429": "⚠ 超出速率限制：{{detail}}。请稍后再试。",
     "ai409": "⚠ 请求冲突：{{detail}}。请重试。",
