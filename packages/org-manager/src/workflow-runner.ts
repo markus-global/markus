@@ -269,9 +269,11 @@ export class WorkflowRunner {
           createdBy: createdBy || team.managerId || 'system',
           creatorRole: 'worker',
           approvedVia: 'workflow',
-          // Human-readable provenance only — the machine-readable identity is
-          // `workflowRunId` / `workflowStepId` on the task itself.
-          notes: `[Workflow] ${template.name} run #${runNumber}`,
+          // No `notes:` here on purpose. `CreateTaskRequest.notes` is a `string`
+          // while `Task.notes` is `string[]`, so this used to be silently dropped
+          // at creation — a dead parameter that made the old UI's "step: <id>"
+          // guess and the P0 backfill impossible. Provenance now lives in the
+          // structural columns below.
           workflowRunId: runId,
           workflowStepId: step.id,
         });

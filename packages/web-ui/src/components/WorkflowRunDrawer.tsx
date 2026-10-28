@@ -92,6 +92,14 @@ export function WorkflowRunDrawer({
     (task) => !Object.values(mapped).some((m) => m?.id === task.id),
   );
 
+  // 历史运行（早于 2026-10-27）：任务没有步骤身份，无法反推对应关系。
+  // 这时把"未匹配"说成"未开始"是不诚实的——两件事必须分开表达。
+  const historicalUnmapped = (tasks?.length ?? 0) > 0 && Object.values(mapped).every((m) => !m);
+  const stepStatusLabel = (state: StepDisplayStatus) =>
+    historicalUnmapped && state === 'unknown'
+      ? { key: 'workflowStepUnmatched', label: '未匹配（历史运行）' }
+      : STEP_LABEL_KEY[state];
+
   return (
     <div className="fixed inset-0 z-50 flex justify-end" role="presentation">
       <div className="absolute inset-0 bg-black/40 backdrop-blur-sm" onClick={onClose} aria-hidden="true" />
@@ -175,7 +183,7 @@ export function WorkflowRunDrawer({
                 {steps.map((step, idx) => {
                   const task = mapped[step.id];
                   const state = stepDisplayStatus(task);
-                  const label = STEP_LABEL_KEY[state];
+                  const label = stepStatusLabel(state);
                   const deps = dependsOnNames(step, stepIndex);
                   const roleName = roleAgentName?.(step.role);
                   const rowBody = (
@@ -235,11 +243,38 @@ export function WorkflowRunDrawer({
               </ol>
             )}
             {unmatchedTasks.length > 0 ? (
-              <p className="mt-2 text-[10px] text-fg-quaternary">
-                {t('work:task.workflowUnmatchedTasks', '另有 {{count}} 个任务未能对应到步骤', {
-                  count: unmatchedTasks.length,
-                })}
-              </p>
+              <div className="mt-3 rounded-lg border border-border-default/50 bg-surface px-2.5 py-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary">
+                  {t('work:task.workflowUnmatchedTitle', '该运行的任务（未能对应到步骤）')}
+                </p>
+                <p className="mt-0.5 text-[10px] leading-relaxed text-fg-quaternary">
+                  {t(
+                    'work:task.workflowUnmatchedHint',
+                    '这是 2026-10-27 之前的运行：任务没有记录步骤身份，历史无法反推。下列任务仍可直接打开。',
+                  )}
+                </p>
+                <ul className="mt-1.5 space-y-0.5">
+                  {unmatchedTasks.map((task) => (
+                    <li key={task.id}>
+                      {onOpenTask ? (
+                        <button
+                          type="button"
+                          onClick={() => onOpenTask(task.id)}
+                          className="flex w-full items-center gap-2 rounded px-1 py-1 text-left transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                        >
+                          <span className={`h-2 w-2 shrink-0 rounded-full ${STEP_DOT[stepDisplayStatus(task)]}`} aria-hidden="true" />
+                          <span className="min-w-0 flex-1 truncate text-[11px] text-fg-secondary">{task.title}</span>
+                          <span className="shrink-0 text-[10px] text-fg-quaternary">
+                            {t(`work:task.${STEP_LABEL_KEY[stepDisplayStatus(task)].key}`, STEP_LABEL_KEY[stepDisplayStatus(task)].label)}
+                          </span>
+                        </button>
+                      ) : (
+                        <span className="block truncate px-1 py-1 text-[11px] text-fg-secondary">{task.title}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
             ) : null}
           </section>
 
