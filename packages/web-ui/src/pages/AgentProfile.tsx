@@ -2636,11 +2636,11 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <summary className="flex items-center gap-2 cursor-pointer list-none">
                 <span className="text-sm">📓</span>
                 <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('agent:profilePage.mind.notebook')}</h4>
-                <span className="text-[10px] text-fg-quaternary ml-auto">
+                <span className="text-[10px] text-fg-muted ml-auto">
                   {t('agent:profilePage.mind.notebookEntries', { count: mind!.notebook!.length })}
                 </span>
               </summary>
-              <p className="mt-2 text-[10px] text-fg-quaternary leading-relaxed">{t('agent:profilePage.mind.notebookHint', { count: NOTEBOOK_DISPLAY_LIMIT })}</p>
+              <p className="mt-2 text-[10px] text-fg-muted leading-relaxed">{t('agent:profilePage.mind.notebookHint', { count: NOTEBOOK_DISPLAY_LIMIT })}</p>
               <div className="mt-2 space-y-2">
                 {nb.visible.map(entry => {
                   const age = formatNotebookAge(entry.updatedAt);
@@ -2651,7 +2651,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
                         <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
-                        <span className="text-[10px] text-fg-quaternary ml-auto">{ageLabel}</span>
+                        <span className="text-[10px] text-fg-muted ml-auto">{ageLabel}</span>
                       </div>
                       <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
                     </div>
@@ -2680,7 +2680,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             <span className="text-sm">🧠</span>
             <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider">{t('agent:profilePage.mind.deliberationInProgress')}</h4>
             <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300">{t('agent:profilePage.mind.batchDeliberating')}</span>
-            <span className="text-[10px] text-fg-quaternary ml-auto">{t('agent:profilePage.mind.since', { time: new Date(mind.deliberationActivity.startedAt).toLocaleTimeString() })}</span>
+            <span className="text-[10px] text-fg-muted ml-auto">{t('agent:profilePage.mind.since', { time: new Date(mind.deliberationActivity.startedAt).toLocaleTimeString() })}</span>
           </div>
           <ActivityLog agentId={agentId} activityId={mind.deliberationActivity.activityId} isLive />
         </section>
@@ -2697,7 +2697,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <summary className="flex items-center gap-2 cursor-pointer list-none">
                 <span className="text-sm">🧠</span>
                 <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">{t('agent:profilePage.mind.triageDecision')}</h4>
-                <span className="text-[10px] text-fg-quaternary ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
+                <span className="text-[10px] text-fg-muted ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
               </summary>
               <p className="text-xs text-fg-secondary leading-relaxed mt-2">{mind.lastTriage.reasoning}</p>
               <div className="flex flex-wrap gap-2 mt-2 text-[10px]">

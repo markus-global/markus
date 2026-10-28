@@ -1,3 +1,8 @@
+  /* 遗留 token 已全部改名（2026-10-28）：`surface-base/2/3/inset/tertiary`、
+     `border-hover`、`content-*` 的 70 处调用点由 scripts/codemod-legacy-tokens.mjs
+     改成规范名，别名定义随之删除——一个概念只留一个名字。
+     新增语义色请先在这里定义 token 再用类名（tailwindTokens.test 会卡住未定义 token）。 */
+
 @layer hljs;
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark.css" layer(hljs);
@@ -29,14 +34,6 @@
   --color-fg-secondary: oklch(0.72 0.006 270);
   --color-fg-tertiary: oklch(0.55 0.006 270);
   --color-fg-muted: oklch(0.42 0.005 270);
-  /* `fg-quaternary` 在 UI 里用了上百处，但主题**从未定义**它 —— 于是那批
-     "最淡的一级文字"实际继承父级颜色（看起来和正文一样重）。这里把它定义成
-     muted 的别名（var 引用，随时跟随主题变化），而不是逐处替换 100 个类名。 */
-  --color-fg-quaternary: var(--color-fg-muted);
-  /* 遗留 token 已全部改名（2026-10-28）：`surface-base/2/3/inset/tertiary`、
-     `border-hover`、`content-*` 的 70 处调用点由 scripts/codemod-legacy-tokens.mjs
-     改成规范名，别名定义随之删除——一个概念只留一个名字。
-     新增语义色请先在这里定义 token 再用类名（tailwindTokens.test 会卡住未定义 token）。 */
 
 
 

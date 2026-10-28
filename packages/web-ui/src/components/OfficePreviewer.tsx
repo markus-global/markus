@@ -171,7 +171,7 @@ export function OfficePreviewer({ data, reference, onFallback }: {
             {status === 'error' && (
               <div className="flex flex-col items-center justify-center h-full gap-2 text-center px-4">
                 <span className="text-[11px] text-fg-tertiary">{t('officeFailed')}</span>
-                <span className="text-[10px] text-fg-quaternary max-w-xs truncate">{error}</span>
+                <span className="text-[10px] text-fg-muted max-w-xs truncate">{error}</span>
                 <div className="flex gap-2 mt-1">
                   <button
                     onClick={() => setRenderKey(k => k + 1)}

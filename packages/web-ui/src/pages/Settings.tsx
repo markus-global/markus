@@ -2221,7 +2221,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               <button
                 onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
-                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
+                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-muted'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
               </button>

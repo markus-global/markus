@@ -34,6 +34,8 @@ const LEGACY_TOKENS = [
   'content-primary',
   'content-secondary',
   'content-tertiary',
+  // 与 muted 同值的第四个文字级，已收敛到 fg-muted
+  'fg-quaternary',
 ];
 
 /** 主题里定义过的语义色 token（--color-*）。 */

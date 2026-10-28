@@ -44,7 +44,7 @@ const STEP_DOT: Record<StepDisplayStatus, string> = {
   done: TONE_CLASS.success.bar,
   failed: TONE_CLASS.danger.bar,
   active: TONE_CLASS.info.bar,
-  pending: 'bg-fg-quaternary/50',
+  pending: 'bg-fg-muted/50',
   unknown: 'bg-border-default',
 };
 
@@ -177,7 +177,7 @@ export function WorkflowRunDrawer({
                 <div className="h-3 w-1/2 animate-pulse rounded bg-surface-elevated" />
               </div>
             ) : steps.length === 0 ? (
-              <p className="text-[11px] text-fg-quaternary">{t('work:task.workflowLoading', '加载中…')}</p>
+              <p className="text-[11px] text-fg-muted">{t('work:task.workflowLoading', '加载中…')}</p>
             ) : (
               <ol className="space-y-1">
                 {steps.map((step, idx) => {
@@ -194,11 +194,11 @@ export function WorkflowRunDrawer({
                           <span className="text-xs font-medium text-fg-primary">
                             {idx + 1}. {step.name}
                           </span>
-                          <span className="text-[10px] text-fg-quaternary">
+                          <span className="text-[10px] text-fg-muted">
                             {t(`work:task.${label.key}`, label.label)}
                           </span>
                         </span>
-                        <span className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-fg-quaternary">
+                        <span className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] text-fg-muted">
                           <span>{roleName ?? step.role}</span>
                           {deps.length > 0 ? (
                             <span>
@@ -210,7 +210,7 @@ export function WorkflowRunDrawer({
                       </span>
                       {task && onOpenTask ? (
                         <svg
-                          className="mt-1 h-3 w-3 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                          className="mt-1 h-3 w-3 shrink-0 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100"
                           viewBox="0 0 24 24"
                           fill="none"
                           stroke="currentColor"
@@ -247,7 +247,7 @@ export function WorkflowRunDrawer({
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary">
                   {t('work:task.workflowUnmatchedTitle', '该运行的任务（未能对应到步骤）')}
                 </p>
-                <p className="mt-0.5 text-[10px] leading-relaxed text-fg-quaternary">
+                <p className="mt-0.5 text-[10px] leading-relaxed text-fg-muted">
                   {t(
                     'work:task.workflowUnmatchedHint',
                     '这是 2026-10-27 之前的运行：任务没有记录步骤身份，历史无法反推。下列任务仍可直接打开。',
@@ -264,7 +264,7 @@ export function WorkflowRunDrawer({
                         >
                           <span className={`h-2 w-2 shrink-0 rounded-full ${STEP_DOT[stepDisplayStatus(task)]}`} aria-hidden="true" />
                           <span className="min-w-0 flex-1 truncate text-[11px] text-fg-secondary">{task.title}</span>
-                          <span className="shrink-0 text-[10px] text-fg-quaternary">
+                          <span className="shrink-0 text-[10px] text-fg-muted">
                             {t(`work:task.${STEP_LABEL_KEY[stepDisplayStatus(task)].key}`, STEP_LABEL_KEY[stepDisplayStatus(task)].label)}
                           </span>
                         </button>

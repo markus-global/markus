@@ -19,6 +19,10 @@
  * 用法：
  *   node scripts/relink-workflow-task-identity.mjs            # dry-run，只报告
  *   node scripts/relink-workflow-task-identity.mjs --apply    # 真正写入
+ *
+ * 何时可以删除：当所有仍在服约的部署都已升级到含 P0（2026-10-27）的版本、
+ * 且库里不再有「有 run 但任务无 workflow_step_id」的行时，此脚本可删。
+ * 在那之前它是升级路径的一部分（新装用户不经过它，但老库升级需要）。
  */
 import { DatabaseSync } from 'node:sqlite';
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
