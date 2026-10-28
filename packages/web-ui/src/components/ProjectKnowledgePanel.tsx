@@ -220,7 +220,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
       {/* Knowledge documents (source='knowledge' deliverables) */}
       <div className="border-t border-border-default/60 pt-3">
         <h5 className="text-[11px] font-medium text-fg-tertiary mb-2">
-          {t('work:project.kbDocsHeading')}{docs.length > 0 && <span className="ml-1 text-fg-quaternary">({docs.length})</span>}
+          {t('work:project.kbDocsHeading')}{docs.length > 0 && <span className="ml-1 text-fg-muted">({docs.length})</span>}
         </h5>
         {loadingDocs ? (
           <ListLoading variant="text" label={t('work:project.kbLoadingDocs')} className="px-0" />
@@ -238,7 +238,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
               >
                 <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0 uppercase">{d.format ?? 'file'}</span>
                 <span className="text-xs text-fg-secondary truncate flex-1 min-w-0 group-hover:text-brand-500">{d.title}</span>
-                <span className="text-[10px] text-fg-quaternary shrink-0">→</span>
+                <span className="text-[10px] text-fg-muted shrink-0">→</span>
               </button>
             ))}
           </div>

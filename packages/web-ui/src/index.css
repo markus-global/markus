@@ -1,3 +1,8 @@
+  /* 遗留 token 已全部改名（2026-10-28）：`surface-base/2/3/inset/tertiary`、
+     `border-hover`、`content-*` 的 70 处调用点由 scripts/codemod-legacy-tokens.mjs
+     改成规范名，别名定义随之删除——一个概念只留一个名字。
+     新增语义色请先在这里定义 token 再用类名（tailwindTokens.test 会卡住未定义 token）。 */
+
 @layer hljs;
 @import "tailwindcss";
 @import "highlight.js/styles/github-dark.css" layer(hljs);
@@ -29,29 +34,8 @@
   --color-fg-secondary: oklch(0.72 0.006 270);
   --color-fg-tertiary: oklch(0.55 0.006 270);
   --color-fg-muted: oklch(0.42 0.005 270);
-  /* `fg-quaternary` 在 UI 里用了上百处，但主题**从未定义**它 —— 于是那批
-     "最淡的一级文字"实际继承父级颜色（看起来和正文一样重）。这里把它定义成
-     muted 的别名（var 引用，随时跟随主题变化），而不是逐处替换 100 个类名。 */
-  --color-fg-quaternary: var(--color-fg-muted);
 
-  /* ── 遗留 token 别名（2026-10-28）──────────────────────────────────────────
-     下面这批名字在源码里被用了 70 处，但主题从未定义 → 类名静默失效
-     （背景透明 / 边框消失 / 文字继承父色）。其中 `surface-default` 就是
-     "任务取消弹窗背景透明"那次事故的直接原因。
 
-     这里给它们**唯一的取值来源**（var 引用规范 token，随主题变化），
-     让现有 70 处立刻恢复正确的视觉语义；新代码一律用规范名。
-     纯改名（把这 70 处调用点改成规范名）是另一笔账：集中在
-     RemoteAccessSection / AgentProfile 等与本次改动无关的组件，单独一张卡做。 */
-  --color-surface-base: var(--color-surface-primary);        /* 画布底色 */
-  --color-surface-2: var(--color-surface-elevated);          /* 抬升一级 */
-  --color-surface-3: var(--color-surface-overlay);           /* 抬升二级 */
-  --color-surface-tertiary: var(--color-surface-elevated);   /* 同 elevated */
-  --color-surface-inset: var(--color-surface-secondary);     /* 凹陷块 */
-  --color-border-hover: var(--color-border-default);         /* 悬停态边框 */
-  --color-content-primary: var(--color-fg-primary);          /* content → fg 家族 */
-  --color-content-secondary: var(--color-fg-secondary);
-  --color-content-tertiary: var(--color-fg-tertiary);
 
   /* Switch (on/off) states. These are tokens, not per-component Tailwind
      colours, because a raw `dark:` utility does NOT follow the app's theme

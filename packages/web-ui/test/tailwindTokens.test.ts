@@ -20,6 +20,24 @@ const here = dirname(fileURLToPath(import.meta.url));
 const webUiRoot = join(here, '..');
 const srcDir = join(webUiRoot, 'src');
 
+/**
+ * 已退役的遗留 token 名（2026-10-28 用 codemod 全部改名）。
+ * 它们**不得再出现在源码里**——否则同一个概念又会多出一个名字。
+ */
+const LEGACY_TOKENS = [
+  'surface-base',
+  'surface-2',
+  'surface-3',
+  'surface-inset',
+  'surface-tertiary',
+  'border-hover',
+  'content-primary',
+  'content-secondary',
+  'content-tertiary',
+  // 与 muted 同值的第四个文字级，已收敛到 fg-muted
+  'fg-quaternary',
+];
+
 /** 主题里定义过的语义色 token（--color-*）。 */
 function definedTokens(): Set<string> {
   const css = readFileSync(join(srcDir, 'index.css'), 'utf8');
@@ -67,6 +85,22 @@ describe('Tailwind 语义色 token', () => {
       report,
       `以下类名在主题里没有对应 token，会静默渲染成"没有背景/颜色/边框"：\n${report.join('\n')}\n` +
         `修法二选一：改用规范 token，或在 index.css 里补一条 var() 别名。`,
+    ).toEqual([]);
+  });
+
+  it('遗留 token 名已全部改名为规范名（不得回流）', () => {
+    const regressions: string[] = [];
+    for (const file of walk(srcDir)) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(SEMANTIC)) {
+        const token = `${match[1]}-${match[2]}`;
+        if (LEGACY_TOKENS.includes(token)) regressions.push(`${relative(webUiRoot, file)} → ${token}`);
+      }
+    }
+
+    expect(
+      regressions,
+      `遗留 token 名又被用上了，请改用规范 token（surface-primary/elevated/overlay/secondary、fg-*）：\n${regressions.join('\n')}`,
     ).toEqual([]);
   });
 });

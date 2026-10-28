@@ -120,7 +120,6 @@ export interface CreateTaskRequest {
   /** Workflow identity (set by WorkflowRunner — never inferred from text). */
   workflowRunId?: string;
   workflowStepId?: string;
-  notes?: string;
   acceptanceCriteria?: string;
   deadline?: string;
 }

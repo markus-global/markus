@@ -182,7 +182,7 @@ function StepFlow({
         return (
           <li key={layerIdx}>
             {parallel ? (
-              <p className="mb-1 pl-5 text-[10px] font-medium uppercase tracking-wider text-fg-quaternary">
+              <p className="mb-1 pl-5 text-[10px] font-medium uppercase tracking-wider text-fg-muted">
                 {t('work:task.workflowParallel', '并行 {{count}} 步', { count: layer.length })}
               </p>
             ) : null}
@@ -202,23 +202,23 @@ function StepFlow({
                       data-testid={`workflow-step-${stepId}`}
                       className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
                     >
-                      <span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-fg-quaternary">
+                      <span className="w-4 shrink-0 text-right text-[10px] tabular-nums text-fg-muted">
                         {displayIndex}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-xs text-fg-primary">{step.name}</span>
                       {deps.length > 1 ? (
                         <span
-                          className="shrink-0 rounded bg-surface-elevated px-1 py-0.5 text-[9px] text-fg-quaternary"
+                          className="shrink-0 rounded bg-surface-elevated px-1 py-0.5 text-[9px] text-fg-muted"
                           title={deps.join('、')}
                         >
                           ↑{deps.length}
                         </span>
                       ) : null}
-                      <span className="hidden shrink-0 text-[10px] text-fg-quaternary sm:inline" title={step.role}>
+                      <span className="hidden shrink-0 text-[10px] text-fg-muted sm:inline" title={step.role}>
                         {roleName ?? step.role}
                       </span>
                       <svg
-                        className="h-3 w-3 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                        className="h-3 w-3 shrink-0 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100"
                         viewBox="0 0 24 24"
                         fill="none"
                         stroke="currentColor"
@@ -236,7 +236,7 @@ function StepFlow({
         );
       })}
       {running === 0 ? (
-        <li className="text-[11px] text-fg-quaternary">{t('work:task.workflowNoSteps', '该模板没有步骤')}</li>
+        <li className="text-[11px] text-fg-muted">{t('work:task.workflowNoSteps', '该模板没有步骤')}</li>
       ) : null}
     </ol>
   );
@@ -281,7 +281,7 @@ export function WorkflowCard({
             {t('work:task.workflowScheduled', '定时')}
           </span>
         ) : null}
-        <span className="text-[10px] text-fg-quaternary">v{workflow.version}</span>
+        <span className="text-[10px] text-fg-muted">v{workflow.version}</span>
         {latestRun ? <StatusChip status={latestRun.status} /> : null}
       </span>
       {workflow.description ? (
@@ -368,7 +368,7 @@ export function WorkflowCard({
                       className="inline-flex items-center gap-1 rounded border border-border-default/40 bg-surface-elevated px-2 py-0.5 text-[10px]"
                     >
                       <span className="font-medium text-fg-secondary">{param.label || param.name}</span>
-                      <span className="text-fg-quaternary">{param.type || 'string'}</span>
+                      <span className="text-fg-muted">{param.type || 'string'}</span>
                       {param.required ? <span className="text-red-500">*</span> : null}
                     </span>
                   ))}
@@ -388,7 +388,7 @@ export function WorkflowCard({
                 {t('work:task.workflowRecentRuns', '最近运行')}
               </p>
               {runs.length === 0 ? (
-                <p className="text-[11px] text-fg-quaternary">
+                <p className="text-[11px] text-fg-muted">
                   {t('work:task.workflowNoRecentRuns', '暂无运行记录')}
                 </p>
               ) : (
@@ -418,7 +418,7 @@ export function WorkflowCard({
                                   count: run.taskIds.length,
                                 })}
                           </span>
-                          <span className="shrink-0 text-[11px] text-fg-quaternary">
+                          <span className="shrink-0 text-[11px] text-fg-muted">
                             {timeAgo(run.startedAt, t)}
                           </span>
                           {run.triggeredBy === 'schedule' ? (
@@ -428,7 +428,7 @@ export function WorkflowCard({
                           ) : null}
                           <span className="flex-1" />
                           <svg
-                            className="h-3.5 w-3.5 shrink-0 text-fg-quaternary opacity-0 transition-opacity group-hover:opacity-100"
+                            className="h-3.5 w-3.5 shrink-0 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"

@@ -94,8 +94,8 @@ export const TONE_CLASS: Record<RunStatusTone, { chip: string; dot: string; bar:
   },
   neutral: {
     chip: 'bg-surface-elevated text-fg-tertiary',
-    dot: 'bg-fg-quaternary',
-    bar: 'bg-fg-quaternary',
+    dot: 'bg-fg-muted',
+    bar: 'bg-fg-muted',
     text: 'text-fg-tertiary',
   },
 };

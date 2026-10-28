@@ -5493,7 +5493,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <span className="text-xs text-fg-tertiary animate-pulse">
                   {t('page.loadingChat', { defaultValue: 'Loading conversation…' })}
                 </span>
-                <span className="text-[11px] text-fg-quaternary max-w-[70%] truncate">{loadingChatLabel}</span>
+                <span className="text-[11px] text-fg-muted max-w-[70%] truncate">{loadingChatLabel}</span>
               </div>
             </div>
           )}

@@ -1847,7 +1847,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     onClick={() => startDeviceCodeLogin(p.name)}
                     disabled={!!oauthLoading}
                     title={t('oauthAuth.deviceTitle')}
-                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-tertiary disabled:opacity-40 transition-colors"
+                    className="px-2.5 py-2 text-xs bg-surface-secondary text-fg-secondary border border-border-default border-l-0 rounded-r-lg hover:bg-surface-elevated disabled:opacity-40 transition-colors"
                   >
                     {t('oauthAuth.device')}
                   </button>
@@ -2094,7 +2094,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
                 <button
                   onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-tertiary transition-colors"
+                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-elevated transition-colors"
                   title={t('networkProxy.refresh')}
                 >
                   ↻ {t('networkProxy.refresh')}
@@ -2221,7 +2221,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               <button
                 onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
-                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-quaternary'}`}
+                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-muted'}`}
               >
                 <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
               </button>

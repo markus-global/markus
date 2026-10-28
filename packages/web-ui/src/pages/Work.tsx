@@ -2574,7 +2574,7 @@ function TaskDetailPanel({
                           </button>
                           <span className={`flex-1 text-sm ${
                             sub.status === 'completed' ? 'line-through text-fg-tertiary'
-                            : sub.status === 'cancelled' ? 'line-through text-fg-quaternary'
+                            : sub.status === 'cancelled' ? 'line-through text-fg-muted'
                             : 'text-fg-secondary'
                           }`}>{sub.title}</span>
                           <button onClick={() => setPendingDelete(sub)} className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-tertiary hover:text-red-500 transition-all text-xs">✕</button>
@@ -3807,7 +3807,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
         )}
         {rows.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 gap-3 max-w-sm mx-auto text-center">
-            <svg className="w-10 h-10 text-fg-quaternary" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
+            <svg className="w-10 h-10 text-fg-muted" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2" /></svg>
             <p className="text-sm font-medium text-fg-secondary">{t('work:task.backlogEmptyTitle')}</p>
             <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.backlogEmptyDesc')}</p>
           </div>
@@ -4062,7 +4062,7 @@ function SaveAsWorkflowModal({
                     {/* Remove button */}
                     <button
                       onClick={() => removeStep(idx)}
-                      className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-quaternary hover:text-red-500 p-1 rounded transition-all"
+                      className="shrink-0 opacity-0 group-hover:opacity-100 text-fg-muted hover:text-red-500 p-1 rounded transition-all"
                       title={t('work:task.removeStep', 'Remove step')}
                     >
                       <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" /></svg>
@@ -6506,7 +6506,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                     }`}>
                     <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                     {item.name}
-                    <span className="text-[9px] text-fg-quaternary">{item.agentIds.length}</span>
+                    <span className="text-[9px] text-fg-muted">{item.agentIds.length}</span>
                   </button>
                 );
               }
@@ -6720,7 +6720,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex items-center gap-1.5">
                                     {reqProject && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[90px]" title={reqProject.name}>{reqProject.name}</span>}
                                     <span className="text-[10px] text-fg-tertiary">{req.priority}</span>
-                                    <span className="text-[10px] text-fg-quaternary">by {creatorName}</span>
+                                    <span className="text-[10px] text-fg-muted">by {creatorName}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
                                     {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}>🎯 {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
@@ -6784,7 +6784,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                 )}
                                 <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
                                   <div className="flex items-center gap-1.5">
-                                    {taskCreatorName && <span className="text-[10px] text-fg-quaternary" title={`by ${taskCreatorName}`}>by {taskCreatorName}</span>}
+                                    {taskCreatorName && <span className="text-[10px] text-fg-muted" title={`by ${taskCreatorName}`}>by {taskCreatorName}</span>}
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     {subCount > 0 && <span className="text-[10px] text-fg-tertiary">⋮ {subCount}</span>}
@@ -7264,7 +7264,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                           }`}>
                           <svg className="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="2"><path strokeLinecap="round" strokeLinejoin="round" d="M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0M15 7a3 3 0 11-6 0 3 3 0 016 0z" /></svg>
                           {item.name}
-                          <span className="text-[9px] text-fg-quaternary">{item.agentIds.length}</span>
+                          <span className="text-[9px] text-fg-muted">{item.agentIds.length}</span>
                         </button>
                       );
                     }
@@ -7895,7 +7895,7 @@ function RequirementDetailPanel({
                       className={`flex items-center gap-2 bg-surface-elevated/60 rounded-lg px-3 py-2 ${onTaskClick ? 'cursor-pointer hover:bg-surface-elevated transition-colors' : ''}`}
                       style={depth > 0 ? { marginLeft: depth * 20 } : undefined}
                     >
-                      {depth > 0 && <span className="text-fg-quaternary text-[10px] shrink-0">↳</span>}
+                      {depth > 0 && <span className="text-fg-muted text-[10px] shrink-0">↳</span>}
                       <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${STATUS_DOT[task.status] ?? 'bg-gray-500'}`} />
                       <span className="text-xs text-fg-secondary flex-1 truncate">{task.title}</span>
                       {sb && <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${sb.cls}`}>{sb.label}</span>}
@@ -8078,7 +8078,7 @@ function RequirementDetailPanel({
                 data-testid="requirement-status-menu"
                 className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-surface-elevated border border-border-default text-fg-secondary hover:border-gray-500 hover:text-fg-primary transition-colors"
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[req.status] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[req.status] ?? 'bg-fg-muted'}`} aria-hidden="true" />
                 {reqBadges[req.status]?.label ?? req.status}
                 <svg className="w-3 h-3 text-fg-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
                   <path strokeLinecap="round" strokeLinejoin="round" d="M18 15l-6-6-6 6" />
@@ -8112,10 +8112,10 @@ function RequirementDetailPanel({
                           onClick={() => { setStatusMenuOpen(false); onStatusChange(req.id, next); }}
                           className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:bg-surface-elevated focus:outline-none"
                         >
-                          <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[next] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                          <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[next] ?? 'bg-fg-muted'}`} aria-hidden="true" />
                           <span className="flex-1">{reqBadges[next]?.label ?? next}</span>
                           {next === 'completed' && (
-                            <span className="text-[10px] text-fg-quaternary">{t('work:requirement.terminalHint', '终态')}</span>
+                            <span className="text-[10px] text-fg-muted">{t('work:requirement.terminalHint', '终态')}</span>
                           )}
                         </button>
                       ));

@@ -113,7 +113,7 @@ export function WorkflowStepModal({
       >
         <header className="flex items-start justify-between gap-3 border-b border-border-default/50 px-5 py-3">
           <div className="min-w-0 flex-1">
-            <p className="text-[10px] font-medium uppercase tracking-wider text-fg-quaternary">
+            <p className="text-[10px] font-medium uppercase tracking-wider text-fg-muted">
               {t('work:task.workflowStepOf', '步骤 {{index}} / {{total}}', { index: index + 1, total })}
             </p>
 
@@ -160,7 +160,7 @@ export function WorkflowStepModal({
                 </span>
               ) : null}
               {saving ? (
-                <span className="text-fg-quaternary">{t('work:task.workflowSaving', '保存中…')}</span>
+                <span className="text-fg-muted">{t('work:task.workflowSaving', '保存中…')}</span>
               ) : null}
             </div>
           </div>
@@ -177,7 +177,7 @@ export function WorkflowStepModal({
         </header>
 
         <div className="flex-1 space-y-2 overflow-y-auto px-5 py-3">
-          <p className="text-[10px] font-medium uppercase tracking-wider text-fg-quaternary">
+          <p className="text-[10px] font-medium uppercase tracking-wider text-fg-muted">
             {t('work:task.workflowStepPrompt', '提示词')}
           </p>
 
@@ -203,7 +203,7 @@ export function WorkflowStepModal({
             </pre>
           )}
 
-          <p className="text-[10px] text-fg-quaternary">
+          <p className="text-[10px] text-fg-muted">
             {t('work:task.workflowStepPromptHint', '失焦即保存，Esc 放弃本次编辑；保存时服务端会重新校验模板。')}
           </p>
           {error ? <p className="text-[11px] text-red-500">{error}</p> : null}

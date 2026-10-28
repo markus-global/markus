@@ -204,7 +204,7 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
                             type="button"
                             disabled={savingId === r.id}
                             onClick={() => void setOverride(r.id, null)}
-                            className="shrink-0 px-2.5 py-1.5 text-xs border border-border-default rounded-lg hover:bg-surface-base disabled:opacity-40 transition-colors"
+                            className="shrink-0 px-2.5 py-1.5 text-xs border border-border-default rounded-lg hover:bg-surface-primary disabled:opacity-40 transition-colors"
                           >
                             {t('perAgentModel.reset', { defaultValue: 'Reset' })}
                           </button>

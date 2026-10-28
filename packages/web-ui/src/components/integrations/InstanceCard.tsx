@@ -534,7 +534,7 @@ export function InstanceCard({
                 data-testid={`instance-agent-${uid}`}
                 title={t('settings:instances.boundAgent', { defaultValue: 'Bound agent' })}
               >
-                <span className="text-fg-quaternary">→</span>
+                <span className="text-fg-muted">→</span>
                 {agentName(instance.agentId)}
               </span>
             )}
