@@ -50,6 +50,24 @@ export interface StepInput {
   as: string;
 }
 
+/**
+ * What a step promises to produce.
+ *
+ * `type` is the bridge to a real, checkable fact: a `TaskDeliverable.type`
+ * (`file` | `directory`). Without it, "produced the output" would have to be
+ * judged from free text — exactly the in-band inference this codebase keeps
+ * paying for. Keep it optional for templates that only want a semantic name.
+ */
+export interface StepOutput {
+  /** Semantic name other steps reference via `inputs[].as` */
+  name: string;
+  /** Deliverable type that satisfies this output (defaults to any deliverable) */
+  type?: 'file' | 'directory';
+  /** Defaults to true: a required output that is missing fails the step */
+  required?: boolean;
+  description?: string;
+}
+
 // ─── Step Definition ─────────────────────────────────────────────────────────
 
 export interface StepDef {
@@ -69,6 +87,8 @@ export interface StepDef {
   depends_on?: string[];
   /** References to upstream step outputs */
   inputs?: StepInput[];
+  /** What this step promises to produce (checked when its task completes) */
+  outputs?: StepOutput[];
 
   priority?: 'low' | 'medium' | 'high' | 'urgent';
   /** Step timeout shorthand, e.g. "30m" */
@@ -208,16 +228,84 @@ export function validateWorkflowTemplate(template: unknown): string[] {
     }
   }
 
-  // Validate inputs[].from references
+  // ── Output declarations ────────────────────────────────────────────────────
+  // A step's `outputs` are the only thing a downstream `inputs` entry may
+  // reference, and `outputs[].type` is what makes the promise checkable at
+  // runtime (a real `TaskDeliverable.type`, not free text).
+  const outputsByStep = new Map<string, Set<string>>();
+  for (const step of steps) {
+    const outs = step.outputs as Array<Record<string, unknown>> | undefined;
+    if (outs === undefined) continue;
+    if (!Array.isArray(outs)) {
+      errors.push(`Step "${String(step.id)}": outputs must be an array`);
+      continue;
+    }
+    const names = new Set<string>();
+    for (const out of outs) {
+      if (typeof out.name !== 'string' || out.name.trim().length === 0) {
+        errors.push(`Step "${String(step.id)}": outputs entries must have a non-empty "name"`);
+        continue;
+      }
+      if (names.has(out.name)) {
+        errors.push(`Step "${String(step.id)}": output "${out.name}" is declared twice`);
+      }
+      names.add(out.name);
+      if (out.type !== undefined && out.type !== 'file' && out.type !== 'directory') {
+        errors.push(
+          `Step "${String(step.id)}": output "${out.name}" type must be "file" or "directory" (got "${String(out.type)}")`,
+        );
+      }
+      if (out.required !== undefined && typeof out.required !== 'boolean') {
+        errors.push(`Step "${String(step.id)}": output "${out.name}" required must be a boolean`);
+      }
+    }
+    outputsByStep.set(String(step.id), names);
+  }
+
+  // ── Input wiring ───────────────────────────────────────────────────────────
+  // `from` must be a *transitive* dependency: consuming a step that runs later
+  // is not a contract, it is a race. And `as` must name a declared upstream
+  // output — otherwise "I consumed X" is unfalsifiable.
+  const dependencyClosure = (stepId: string): Set<string> => {
+    const seen = new Set<string>();
+    const walk = (id: string) => {
+      const s = steps.find(x => x.id === id);
+      const deps = (s?.depends_on as string[] | undefined) ?? [];
+      for (const dep of deps) {
+        if (typeof dep !== 'string' || seen.has(dep)) continue;
+        seen.add(dep);
+        walk(dep);
+      }
+    };
+    walk(stepId);
+    return seen;
+  };
+
   for (const step of steps) {
     const inputs = step.inputs as Array<Record<string, unknown>> | undefined;
-    if (Array.isArray(inputs)) {
-      for (const inp of inputs) {
-        if (typeof inp.from !== 'string' || typeof inp.as !== 'string') {
-          errors.push(`Step "${step.id}": inputs entries must have "from" and "as" string fields`);
-        } else if (!stepIds.has(inp.from)) {
-          errors.push(`Step "${step.id}": inputs.from references unknown step "${inp.from}"`);
-        }
+    if (!Array.isArray(inputs)) continue;
+    const closure = dependencyClosure(String(step.id));
+    for (const inp of inputs) {
+      if (typeof inp.from !== 'string' || typeof inp.as !== 'string') {
+        errors.push(`Step "${String(step.id)}": inputs entries must have "from" and "as" string fields`);
+        continue;
+      }
+      if (!stepIds.has(inp.from)) {
+        errors.push(`Step "${String(step.id)}": inputs.from references unknown step "${inp.from}"`);
+        continue;
+      }
+      if (!closure.has(inp.from)) {
+        errors.push(
+          `Step "${String(step.id)}": inputs.from "${inp.from}" is not a declared dependency — it could run after this step`,
+        );
+      }
+      const upstreamOutputs = outputsByStep.get(inp.from);
+      // Only enforceable when the upstream declares its outputs. Templates that
+      // declare none keep working exactly as before (backward compatible).
+      if (upstreamOutputs && upstreamOutputs.size > 0 && !upstreamOutputs.has(inp.as)) {
+        errors.push(
+          `Step "${String(step.id)}": inputs.as "${inp.as}" is not one of step "${inp.from}" outputs (${[...upstreamOutputs].join(', ')})`,
+        );
       }
     }
   }

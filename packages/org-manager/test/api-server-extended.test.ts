@@ -941,6 +941,9 @@ describe('APIServer extended route coverage', () => {
       ctx.server.setWorkflowService({
         listWorkflows: vi.fn(() => []),
         getWorkflow: vi.fn(() => ({ name: 'wf-test', displayName: 'WF', description: '', version: 1, steps: [] })),
+        // 路由会把原始 YAML 一并返回（供步骤编辑往返）；替身必须建模这个接口，
+        // 否则路由会因 TypeError 变成 500 —— 那正是这条用例抓到的问题。
+        getWorkflowYaml: vi.fn(() => 'name: wf-test\nsteps: []\n'),
         addWorkflow: vi.fn(), updateWorkflow: vi.fn(), removeWorkflow: vi.fn(),
         listRoles: vi.fn(() => []), listRuns: vi.fn(() => []), startRun: vi.fn(),
         buildDefaultRoleMapping: vi.fn(() => ({})), resolveRoles: vi.fn(() => []),

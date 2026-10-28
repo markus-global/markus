@@ -342,6 +342,78 @@ describe('step handoff instructions', () => {
   });
 });
 
+/**
+ * W2 的第二半：**执行侧**。声明了产出就要真的有，缺失即失败；
+ * 声明了输入就把上游**任务 id** 和要读的**交付物类型**写进提示词。
+ */
+describe('step data contract (W2)', () => {
+  const outputTemplate: WorkflowTemplate = {
+    ...TEMPLATE,
+    steps: [
+      { id: 's1', name: 'Plan', role: 'planner', prompt: 'Plan {{topic}}', type: 'agent_task', outputs: [{ name: 'plan', type: 'file' }] },
+    ],
+  };
+
+  it('fails a step that never produced its declared output', async () => {
+    const run = await runner.createRun('team-1', outputTemplate, { topic: 'auth' }, { planner: 'agent-planner' }, 'proj-1');
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'completed';
+    task.deliverables = [];
+
+    await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+    expect(mocks.taskService.updateTaskStatus).toHaveBeenCalledWith(
+      taskId, 'failed', 'system', false, false, 'system', expect.stringContaining('output contract'),
+    );
+  });
+
+  it('accepts a step that produced the declared deliverable type', async () => {
+    const run = await runner.createRun('team-1', outputTemplate, { topic: 'auth' }, { planner: 'agent-planner' }, 'proj-1');
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'completed';
+    task.deliverables = [{ type: 'file', reference: 'docs/plan.md', summary: 'plan' }];
+
+    await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+    expect(runner.getRun(run.id)?.status).toBe('completed');
+  });
+
+  it('leaves pre-contract templates alone (no outputs declared = nothing to enforce)', async () => {
+    const run = await runner.createRun('team-1', TEMPLATE, { topic: 'auth' }, { planner: 'agent-planner', builder: 'agent-builder' }, 'proj-1');
+    for (const id of run.taskIds) {
+      const t = mocks.taskService._tasks.get(id)!;
+      t.status = 'completed';
+      delete t.deliverables;
+    }
+    await runner.onTaskStatusChange(mocks.taskService.getTask(run.taskIds[0]!) as never);
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it('tells the consumer exactly which deliverable to read, by task id and type', async () => {
+    const wired: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [
+        { id: 's1', name: 'Plan', role: 'planner', prompt: 'Plan {{topic}}', type: 'agent_task', outputs: [{ name: 'plan', type: 'file' }] },
+        { id: 's2', name: 'Build', role: 'builder', prompt: 'Build {{topic}}', type: 'agent_task', depends_on: ['s1'], inputs: [{ from: 's1', as: 'plan' }] },
+      ],
+    };
+    await runner.createRun('team-1', wired, { topic: 'auth' }, { planner: 'agent-planner', builder: 'agent-builder' }, 'proj-1');
+
+    const upstreamTaskId = mocks.taskService.createTask.mock.results[0]!.value.id as string;
+    const downstreamDescription = String(
+      (mocks.taskService.createTask.mock.calls[1]![0] as Record<string, unknown>)['description'],
+    );
+
+    expect(downstreamDescription).toContain('Inputs you must consume');
+    expect(downstreamDescription).toContain('`plan`');
+    expect(downstreamDescription).toContain(upstreamTaskId);
+    expect(downstreamDescription).toContain('type "file"');
+  });
+});
+
 describe('parseDurationMs', () => {
   it('parses the documented shorthand and rejects nonsense', () => {
     expect(parseDurationMs('30s')).toBe(30_000);

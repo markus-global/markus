@@ -526,6 +526,34 @@ export class WorkflowRunner {
     // "失败 · 9/9 个任务完成".
     if (run.status === 'paused' || run.status === 'cancelled') return;
 
+    // ── Output contract ─────────────────────────────────────────────────────
+    // A step that declares required `outputs` must actually deliver them. This
+    // is checked on completion and *before* the run status is derived, so a step
+    // that "finishes" without producing its declared artifact fails loudly here
+    // instead of the downstream agent improvising from nothing.
+    if (task.status === 'completed') {
+      const missing = this.missingOutputs(run, task);
+      if (missing.length > 0) {
+        const reason = `Workflow output contract not met: missing ${missing.join(', ')}`;
+        try {
+          this.taskService.updateTaskStatus(task.id, 'failed', 'system', false, false, 'system', reason);
+        } catch (err) {
+          log.warn('Failed to fail a step that missed its declared outputs', { taskId: task.id, error: String(err) });
+        }
+        this.notifyManager(run.teamId, 'step_failed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          taskId: task.id,
+          taskTitle: task.title,
+          reason: 'output_contract',
+          missing,
+          actionRequired: true,
+        });
+        return; // the transition to `failed` re-enters this method with status=failed
+      }
+    }
+
     const allTasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
     const newStatus: WorkflowRunStatus = this.deriveRunStatus(allTasks);
 
@@ -725,6 +753,35 @@ export class WorkflowRunner {
 
   // ─── Private helpers ───────────────────────────────────────────────────────
 
+  /**
+   * Which of the step's *required* declared outputs are missing from the task.
+   *
+   * The check is deliberately narrow and mechanical:
+   *   - `outputs[].type` is compared against `TaskDeliverable.type` (a real
+   *     structured field — never free text);
+   *   - an output declared without a `type` can only be checked as "produced at
+   *     least one deliverable", which is what it says on the tin;
+   *   - `required: false` opts an output out entirely;
+   *   - runs without a template snapshot (pre-2026-10) have no contract to
+   *     enforce and are left alone rather than retro-failed.
+   */
+  private missingOutputs(run: WorkflowRun, task: Task): string[] {
+    const stepId = task.workflowStepId;
+    if (!stepId) return [];
+    const template = run.templateSnapshot;
+    if (!template) return [];
+    const step = template.steps.find(s => s.id === stepId);
+    const required = (step?.outputs ?? []).filter(o => o.required !== false);
+    if (required.length === 0) return [];
+
+    const deliverables = (task.deliverables ?? []) as Array<{ type?: string }>;
+    const types = new Set(deliverables.map(d => d.type).filter((t): t is string => !!t));
+
+    return required
+      .filter(output => (output.type ? !types.has(output.type) : deliverables.length === 0))
+      .map(output => (output.type ? `${output.name}(${output.type})` : output.name));
+  }
+
   private deriveRunStatus(tasks: Task[]): WorkflowRunStatus {
     if (tasks.length === 0) return 'running';
     if (tasks.every(t => t.status === 'completed')) return 'completed';
@@ -833,6 +890,29 @@ export class WorkflowRunner {
       lines.push(`Parameters: ${paramEntries.map(([k, v]) => `${k}="${v}"`).join(', ')}`);
     }
     lines.push(`Your role in this workflow: ${step.role}`);
+
+    // Declared inputs first: this is the contract, and it names exactly what to
+    // read. Falls back to the plain dependency list for templates that declare
+    // no `inputs` (backward compatible).
+    const declaredInputs = step.inputs ?? [];
+    if (declaredInputs.length > 0) {
+      lines.push('');
+      lines.push('Inputs you must consume (declared by this workflow):');
+      for (const input of declaredInputs) {
+        const fromStep = template.steps.find(s => s.id === input.from);
+        const fromTaskId = taskIdMap.get(input.from);
+        const declared = fromStep?.outputs?.find(o => o.name === input.as);
+        const typeHint = declared?.type ? ` of type "${declared.type}"` : '';
+        if (fromTaskId) {
+          lines.push(
+            `- \`${input.as}\`${typeHint} from step "${fromStep?.name || input.from}" → task \`${fromTaskId}\` ` +
+              `(call \`task_get\` with task_id="${fromTaskId}" and read the deliverable${declared?.type ? ` whose type is "${declared.type}"` : ''})`,
+          );
+        } else {
+          lines.push(`- \`${input.as}\` from step "${fromStep?.name || input.from}" — its task has not been created yet`);
+        }
+      }
+    }
 
     // Dependencies — with the actual task ids, so the instruction is executable.
     if (step.depends_on && step.depends_on.length > 0) {
