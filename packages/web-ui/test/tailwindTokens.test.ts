@@ -20,6 +20,25 @@ const here = dirname(fileURLToPath(import.meta.url));
 const webUiRoot = join(here, '..');
 const srcDir = join(webUiRoot, 'src');
 
+/**
+ * 遗留 token 的**存量快照**（数量棘轮）。
+ *
+ * 这些名字在主题里已有 var() 别名（视觉正确），但调用点还没改成规范名。
+ * 允许**减少**，不允许**增加**；数量对不上就红，逼着清单跟着现实走。
+ * 烧账方式：用字符串级 codemod 改完调用点后，相应数字减到 0，然后删掉别名。
+ */
+const LEGACY_BASELINE: Record<string, number> = {
+  'content-tertiary': 17,
+  'content-secondary': 14,
+  'content-primary': 9,
+  'surface-inset': 7,
+  'surface-2': 7,
+  'surface-3': 6,
+  'surface-base': 4,
+  'surface-tertiary': 4,
+  'border-hover': 2,
+};
+
 /** 主题里定义过的语义色 token（--color-*）。 */
 function definedTokens(): Set<string> {
   const css = readFileSync(join(srcDir, 'index.css'), 'utf8');
@@ -68,5 +87,26 @@ describe('Tailwind 语义色 token', () => {
       `以下类名在主题里没有对应 token，会静默渲染成"没有背景/颜色/边框"：\n${report.join('\n')}\n` +
         `修法二选一：改用规范 token，或在 index.css 里补一条 var() 别名。`,
     ).toEqual([]);
+  });
+
+  it('遗留 token 的用量只减不增（存量棘轮）', () => {
+    const counts: Record<string, number> = {};
+    for (const file of walk(srcDir)) {
+      const text = readFileSync(file, 'utf8');
+      for (const match of text.matchAll(SEMANTIC)) {
+        const token = `${match[1]}-${match[2]}`;
+        if (!(token in LEGACY_BASELINE)) continue;
+        counts[token] = (counts[token] ?? 0) + 1;
+      }
+    }
+
+    const regressions: string[] = [];
+    for (const [token, baseline] of Object.entries(LEGACY_BASELINE)) {
+      const now = counts[token] ?? 0;
+      if (now > baseline) regressions.push(`${token}: ${baseline} → ${now}（新增了遗留名用法，请改用规范 token）`);
+      if (now < baseline) regressions.push(`${token}: ${baseline} → ${now}（已减少，请同步更新 LEGACY_BASELINE）`);
+    }
+
+    expect(regressions, `遗留 token 存量对不上：\n${regressions.join('\n')}`).toEqual([]);
   });
 });
