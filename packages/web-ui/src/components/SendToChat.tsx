@@ -1,8 +1,9 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PAGE } from '../routes.ts';
 import { navBus } from '../navBus.ts';
 import type { AgentInfo, HumanUserInfo } from '../api.ts';
+import { Avatar } from './Avatar.tsx';
 
 /**
  * "Send to conversation" — one implementation, shared by every detail surface
@@ -90,10 +91,28 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
     const q = query.trim().toLowerCase();
     const hit = (label: string) => !q || label.toLowerCase().includes(q);
     return [
-      ...agents.filter(a => hit(a.name)).map(a => ({ value: `agent:${a.id}`, name: a.name, meta: a.status, isAgent: true })),
-      ...users.filter(u => hit(u.name)).map(u => ({ value: `human:${u.id}`, name: u.name, meta: '', isAgent: false })),
+      ...agents.filter(a => hit(a.name)).map(a => ({ value: `agent:${a.id}`, name: a.name, meta: a.status, isAgent: true, avatarUrl: a.avatarUrl })),
+      ...users.filter(u => hit(u.name)).map(u => ({ value: `human:${u.id}`, name: u.name, meta: '', isAgent: false, avatarUrl: u.avatarUrl })),
     ];
   }, [agents, users, query]);
+
+  // Open the picker on the *selected* row: with 20+ agents the current target
+  // used to sit below the fold, so the modal looked like nothing was chosen.
+  // Scroll once on open; after that the list belongs to the user.
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const didInitialScroll = useRef(false);
+  useEffect(() => {
+    if (didInitialScroll.current) return;
+    const list = listRef.current;
+    if (!list) return;
+    const selectedRow = list.querySelector<HTMLElement>('[data-selected="true"]');
+    if (!selectedRow) return;
+    didInitialScroll.current = true;
+    // `block: 'nearest'` keeps an already-visible row still.
+    try {
+      selectedRow.scrollIntoView({ block: 'nearest' });
+    } catch { /* jsdom / older engines: no layout, nothing to scroll */ }
+  }, [rows]);
 
   const [targetType, targetId] = target.split(':');
   const targetName = targetType === 'agent'
@@ -155,7 +174,7 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
         </div>
 
         {/* Target list */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2">
+        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2" ref={listRef}>
           {rows.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-fg-tertiary">
               {t('work:task.sendToChatEmpty', { defaultValue: '没有匹配的对象' })}
@@ -175,11 +194,18 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
                 <button
                   type="button"
                   onClick={() => setTarget(r.value)}
+                  data-selected={selected ? 'true' : 'false'}
+                  aria-current={selected ? 'true' : undefined}
                   className={`w-full text-left px-3 py-2 rounded-lg flex items-center gap-2 transition-colors ${
                     selected ? 'bg-brand-500/15 text-brand-500 font-medium' : 'text-fg-secondary hover:bg-surface-elevated'
                   }`}
                 >
-                  <span className="w-5 h-5 flex items-center justify-center text-sm shrink-0">{r.isAgent ? '🤖' : '👤'}</span>
+                  <Avatar
+                    name={r.name}
+                    avatarUrl={r.avatarUrl}
+                    size={22}
+                    fallback={r.isAgent ? 'initials' : 'icon'}
+                  />
                   <span className="flex-1 min-w-0 truncate text-sm">{r.name}</span>
                   {r.meta && <span className="text-[10px] text-fg-tertiary shrink-0">{r.meta}</span>}
                   {selected && (

@@ -54,7 +54,8 @@
     "remark-breaks": "^4.0.0",
     "remark-gfm": "^4.0.1",
     "remark-math": "^6.0.0",
-    "xlsx": "^0.18.5"
+    "xlsx": "^0.18.5",
+    "yaml": "2.9.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.2.1",

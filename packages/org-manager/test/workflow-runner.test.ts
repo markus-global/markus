@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { WorkflowRunner } from '../src/workflow-runner.js';
+import { WorkflowRunner, parseDurationMs } from '../src/workflow-runner.js';
 import type { WorkflowTemplate } from '@markus/shared';
 
 const TEMPLATE: WorkflowTemplate = {
@@ -183,8 +183,251 @@ describe('WorkflowRunner', () => {
     });
   });
 
-  describe('onTaskStatusChange', () => {
-    it('marks run completed when all tasks complete', async () => {
+  /**
+ * P0 (2026-10-27) — the four structural guarantees:
+ *   1. a workflow task carries its (run, step) identity from birth;
+ *   2. a run snapshots the template it started with;
+ *   3. a team cannot exceed its concurrent-run quota;
+ *   4. `steps[].timeout` is actually enforced (it used to be stored and ignored).
+ */
+describe('P0 guards', () => {
+  it('writes structural identity onto every step task', async () => {
+    const run = await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    expect(created).toHaveLength(2);
+    for (const req of created) {
+      expect(req['workflowRunId']).toBe(run.id);
+      expect(typeof req['workflowStepId']).toBe('string');
+      // the legacy in-band marker must be gone from new rows
+      expect(String(req['notes'])).not.toMatch(/step:/);
+    }
+    expect(new Set(created.map(r => r['workflowStepId']))).toEqual(new Set(['s1', 's2']));
+  });
+
+  it('snapshots the template (version + hash + definition) into the run', async () => {
+    const run = await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+    expect(run.templateVersion).toBe(TEMPLATE.version);
+    expect(run.templateHash).toMatch(/^[0-9a-f]{16}$/);
+    expect(run.templateSnapshot?.steps.map(s => s.id)).toEqual(['s1', 's2']);
+
+    // the snapshot is what gets persisted, so history survives a template edit
+    const persisted = mocks.runRepo.create.mock.calls.at(-1)?.[0] as Record<string, unknown>;
+    expect(String(persisted['template_snapshot'])).toContain('"s1"');
+  });
+
+  it('refuses a run beyond the team quota, with no side effects', async () => {
+    runner.setMaxConcurrentRunsPerTeam(1);
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const before = mocks.taskService.createTask.mock.calls.length;
+    await expect(
+      runner.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth2' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      ),
+    ).rejects.toThrow(/limit 1/);
+
+    // rejected before creating a requirement/tasks/run row
+    expect(mocks.taskService.createTask.mock.calls.length).toBe(before);
+    expect(mocks.requirementService.createRequirement).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails a step that blows its timeout', async () => {
+    const timedTemplate: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [{ id: 's1', name: 'Slow', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task', timeout: '1s' }],
+    };
+    const run = await runner.createRun(
+      'team-1',
+      timedTemplate,
+      { topic: 'auth' },
+      { planner: 'agent-planner' },
+      'proj-1',
+    );
+
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'in_progress';
+    task.startedAt = new Date(Date.now() - 5_000).toISOString();
+
+    const enforced = await runner.enforceTimeouts();
+
+    expect(enforced).toBe(1);
+    expect(mocks.taskService.updateTaskStatus).toHaveBeenCalledWith(
+      taskId, 'failed', 'system', false, false, 'system', expect.stringContaining('timed out'),
+    );
+  });
+
+  it('leaves a step inside its timeout alone', async () => {
+    const timedTemplate: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [{ id: 's1', name: 'Slow', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task', timeout: '1h' }],
+    };
+    const run = await runner.createRun(
+      'team-1',
+      timedTemplate,
+      { topic: 'auth' },
+      { planner: 'agent-planner' },
+      'proj-1',
+    );
+    const task = mocks.taskService._tasks.get(run.taskIds[0]!)!;
+    task.status = 'in_progress';
+    task.startedAt = new Date().toISOString();
+
+    expect(await runner.enforceTimeouts()).toBe(0);
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The data channel between steps is: `blockedBy` (order) + `task_get`
+ * (deliverables of the upstream task). That channel only works if the downstream
+ * prompt carries the upstream **task id** — it used to print the *step* id
+ * (`step-1-research`) next to an instruction to call `task_get`, which needs a
+ * `tsk_…` id, so following the text verbatim failed with "Task not found".
+ */
+describe('step handoff instructions', () => {
+  it('names the upstream TASK id so task_get is executable as written', async () => {
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    const upstreamTaskId = mocks.taskService.createTask.mock.results[0]!.value.id as string;
+    const downstream = created[1]!;
+    const description = String(downstream['description']);
+
+    expect(description).toContain(upstreamTaskId);
+    expect(description).toContain('task_get');
+    // the step id may appear as prose, but never as the thing to pass to task_get
+    expect(description).not.toContain('task_id="s1"');
+  });
+
+  it('tells the upstream step who will consume its deliverables', async () => {
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    expect(String(created[0]!['description'])).toContain('Downstream steps waiting on your output');
+  });
+});
+
+/**
+ * W2 的第二半：**执行侧**。声明了产出就要真的有，缺失即失败；
+ * 声明了输入就把上游**任务 id** 和要读的**交付物类型**写进提示词。
+ */
+describe('step data contract (W2)', () => {
+  const outputTemplate: WorkflowTemplate = {
+    ...TEMPLATE,
+    steps: [
+      { id: 's1', name: 'Plan', role: 'planner', prompt: 'Plan {{topic}}', type: 'agent_task', outputs: [{ name: 'plan', type: 'file' }] },
+    ],
+  };
+
+  it('fails a step that never produced its declared output', async () => {
+    const run = await runner.createRun('team-1', outputTemplate, { topic: 'auth' }, { planner: 'agent-planner' }, 'proj-1');
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'completed';
+    task.deliverables = [];
+
+    await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+    expect(mocks.taskService.updateTaskStatus).toHaveBeenCalledWith(
+      taskId, 'failed', 'system', false, false, 'system', expect.stringContaining('output contract'),
+    );
+  });
+
+  it('accepts a step that produced the declared deliverable type', async () => {
+    const run = await runner.createRun('team-1', outputTemplate, { topic: 'auth' }, { planner: 'agent-planner' }, 'proj-1');
+    const taskId = run.taskIds[0]!;
+    const task = mocks.taskService._tasks.get(taskId)!;
+    task.status = 'completed';
+    task.deliverables = [{ type: 'file', reference: 'docs/plan.md', summary: 'plan' }];
+
+    await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+    expect(runner.getRun(run.id)?.status).toBe('completed');
+  });
+
+  it('leaves pre-contract templates alone (no outputs declared = nothing to enforce)', async () => {
+    const run = await runner.createRun('team-1', TEMPLATE, { topic: 'auth' }, { planner: 'agent-planner', builder: 'agent-builder' }, 'proj-1');
+    for (const id of run.taskIds) {
+      const t = mocks.taskService._tasks.get(id)!;
+      t.status = 'completed';
+      delete t.deliverables;
+    }
+    await runner.onTaskStatusChange(mocks.taskService.getTask(run.taskIds[0]!) as never);
+    expect(mocks.taskService.updateTaskStatus).not.toHaveBeenCalled();
+  });
+
+  it('tells the consumer exactly which deliverable to read, by task id and type', async () => {
+    const wired: WorkflowTemplate = {
+      ...TEMPLATE,
+      steps: [
+        { id: 's1', name: 'Plan', role: 'planner', prompt: 'Plan {{topic}}', type: 'agent_task', outputs: [{ name: 'plan', type: 'file' }] },
+        { id: 's2', name: 'Build', role: 'builder', prompt: 'Build {{topic}}', type: 'agent_task', depends_on: ['s1'], inputs: [{ from: 's1', as: 'plan' }] },
+      ],
+    };
+    await runner.createRun('team-1', wired, { topic: 'auth' }, { planner: 'agent-planner', builder: 'agent-builder' }, 'proj-1');
+
+    const upstreamTaskId = mocks.taskService.createTask.mock.results[0]!.value.id as string;
+    const downstreamDescription = String(
+      (mocks.taskService.createTask.mock.calls[1]![0] as Record<string, unknown>)['description'],
+    );
+
+    expect(downstreamDescription).toContain('Inputs you must consume');
+    expect(downstreamDescription).toContain('`plan`');
+    expect(downstreamDescription).toContain(upstreamTaskId);
+    expect(downstreamDescription).toContain('type "file"');
+  });
+});
+
+describe('parseDurationMs', () => {
+  it('parses the documented shorthand and rejects nonsense', () => {
+    expect(parseDurationMs('30s')).toBe(30_000);
+    expect(parseDurationMs('15m')).toBe(900_000);
+    expect(parseDurationMs('2h')).toBe(7_200_000);
+    expect(parseDurationMs('1d')).toBe(86_400_000);
+    expect(parseDurationMs('250')).toBe(250);
+    expect(parseDurationMs('soon')).toBeNull();
+    expect(parseDurationMs(undefined)).toBeNull();
+    expect(parseDurationMs('0s')).toBeNull();
+  });
+});
+
+describe('onTaskStatusChange', () => {    it('marks run completed when all tasks complete', async () => {
       const run = await runner.createRun(
         'team-1',
         TEMPLATE,
@@ -241,6 +484,83 @@ describe('WorkflowRunner', () => {
       await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
 
       expect(runner.getRun(run.id)?.status).toBe('failed');
+    });
+
+    /**
+     * The run status is a *projection* of its tasks, so it has to be recomputed
+     * on every task change — not only while the run still says `running`.
+     * The old guard latched the first terminal verdict forever: a step that
+     * failed once and then completed on retry left the run reading
+     * "失败 · 9/9 个任务完成" in the Work page.
+     */
+    it('re-derives a failed run when its retried step completes', async () => {
+      const singleStepTemplate: WorkflowTemplate = {
+        ...TEMPLATE,
+        steps: [{ id: 's1', name: 'Only', role: 'planner', prompt: 'Do {{topic}}', type: 'agent_task' }],
+      };
+      const run = await runner.createRun(
+        'team-1',
+        singleStepTemplate,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+
+      const taskId = run.taskIds[0]!;
+      mocks.taskService._tasks.get(taskId)!.status = 'failed';
+      await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+      expect(runner.getRun(run.id)?.status).toBe('failed');
+
+      // the same task is retried and finishes
+      mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      await runner.onTaskStatusChange(mocks.taskService.getTask(taskId) as never);
+
+      expect(runner.getRun(run.id)?.status).toBe('completed');
+    });
+
+    /** `cancelled` is a human decision, never a projection. */
+    it('does not resurrect a cancelled run from a task update', async () => {
+      const run = await runner.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+      await runner.cancelRun(run.id, 'user-1');
+
+      for (const taskId of run.taskIds) {
+        mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      }
+      await runner.onTaskStatusChange(mocks.taskService.getTask(run.taskIds[0]!) as never);
+
+      expect(runner.getRun(run.id)?.status).toBe('cancelled');
+    });
+
+    /** Historical rows are healed on read, so old drift cannot survive in the UI. */
+    it('heals a stale terminal status when runs are listed', async () => {
+      const bare = new WorkflowRunner(
+        mocks.requirementService as never,
+        mocks.taskService as never,
+        mocks.orgService as never,
+      );
+      const run = await bare.createRun(
+        'team-1',
+        TEMPLATE,
+        { topic: 'auth' },
+        { planner: 'agent-planner', builder: 'agent-builder' },
+        'proj-1',
+      );
+      for (const taskId of run.taskIds) {
+        mocks.taskService._tasks.get(taskId)!.status = 'completed';
+      }
+      // simulate a row written while the ratchet still existed
+      const stored = bare.getRun(run.id)!;
+      stored.status = 'failed';
+      stored.completedAt = new Date().toISOString();
+
+      const listed = await bare.listRuns('team-1', TEMPLATE.name);
+      expect(listed.find(r => r.id === run.id)?.status).toBe('completed');
     });
   });
 

@@ -191,7 +191,75 @@ export const migrateLargePayloadsToBlobs: Migration = {
   },
 };
 
-export const DEFAULT_MIGRATIONS: Migration[] = [migrateImagesToAttachments, migrateLargePayloadsToBlobs];
+/**
+ * 迁移 3：给历史工作流任务补齐结构身份。
+ *
+ * 2026-10 之前，任务与「(run, step)」的关系只能从 `notes` 里的
+ * `step: <id>` 标记推断——结构藏在文本载荷里。本迁移是**最后一次**读那个标记：
+ * 读出来写进 `workflow_run_id` / `workflow_step_id` 两列，此后运行期代码只读列。
+ *
+ * 幂等：`COALESCE` 只填空值，重复执行/断点续跑都不会覆盖已有数据。
+ */
+export const migrateWorkflowTaskIdentity: Migration = {
+  id: '003-workflow-task-identity',
+  title: '历史工作流任务补齐 workflow_run_id / workflow_step_id',
+  run({ db, cursor, batchSize }) {
+    const errors: string[] = [];
+    let processed = 0;
+
+    const hasRuns = db
+      .prepare("SELECT 1 AS one FROM sqlite_master WHERE type='table' AND name='workflow_runs'")
+      .get();
+    if (!hasRuns) return { processed: 0, nextCursor: cursor, done: true, errors };
+
+    const runs = db
+      .prepare('SELECT rowid AS rid, id AS run_id, task_ids FROM workflow_runs WHERE rowid > ? ORDER BY rowid ASC LIMIT ?')
+      .all(cursor, batchSize) as Array<{ rid: number; run_id: string; task_ids: string }>;
+
+    if (runs.length === 0) return { processed: 0, nextCursor: cursor, done: true, errors };
+
+    const getTask = db.prepare('SELECT notes FROM tasks WHERE id = ?');
+    const update = db.prepare(
+      'UPDATE tasks SET workflow_run_id = COALESCE(workflow_run_id, ?), workflow_step_id = COALESCE(workflow_step_id, ?) WHERE id = ?',
+    );
+
+    let lastRowid = cursor;
+    for (const run of runs) {
+      lastRowid = run.rid;
+      try {
+        const taskIds = JSON.parse(run.task_ids) as string[];
+        for (const taskId of taskIds) {
+          const task = getTask.get(taskId) as { notes: string | null } | undefined;
+          if (!task) continue;
+
+          let stepId: string | null = null;
+          try {
+            const notes = JSON.parse(task.notes ?? '[]') as unknown;
+            if (Array.isArray(notes)) {
+              for (const note of notes) {
+                const match = /step:\s*([A-Za-z0-9_.-]+)/.exec(String(note));
+                if (match) { stepId = match[1]!; break; }
+              }
+            }
+          } catch { /* notes not JSON — leave the step id empty rather than guess */ }
+
+          update.run(run.run_id, stepId, taskId);
+          processed += 1;
+        }
+      } catch (err) {
+        errors.push(`run ${run.run_id}: ${String(err)}`);
+      }
+    }
+
+    return { processed, nextCursor: lastRowid, done: false, errors };
+  },
+};
+
+export const DEFAULT_MIGRATIONS: Migration[] = [
+  migrateImagesToAttachments,
+  migrateLargePayloadsToBlobs,
+  migrateWorkflowTaskIdentity,
+];
 
 // ─── 执行器 ─────────────────────────────────────────────────────────────────
 

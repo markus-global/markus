@@ -12,6 +12,7 @@ import {
   type Task,
   TERMINAL_STATUSES,
 } from '@markus/shared';
+import { createHash } from 'node:crypto';
 import type { RequirementService } from './requirement-service.js';
 import type { TaskService } from './task-service.js';
 import type { OrganizationService } from './org-service.js';
@@ -44,6 +45,10 @@ export interface WorkflowRunRow {
   project_id: string | null;
   started_at: string;
   completed_at: string | null;
+  /** JSON-encoded WorkflowTemplate as of run start (null on pre-2026-10 runs). */
+  template_version?: string | null;
+  template_hash?: string | null;
+  template_snapshot?: string | null;
 }
 
 function rowToRun(row: WorkflowRunRow): WorkflowRun {
@@ -61,6 +66,11 @@ function rowToRun(row: WorkflowRunRow): WorkflowRun {
     projectId: row.project_id ?? undefined,
     startedAt: row.started_at,
     completedAt: row.completed_at ?? undefined,
+    templateVersion: row.template_version ?? undefined,
+    templateHash: row.template_hash ?? undefined,
+    templateSnapshot: row.template_snapshot
+      ? (JSON.parse(row.template_snapshot) as WorkflowTemplate)
+      : undefined,
   };
 }
 
@@ -78,8 +88,36 @@ function runToRow(run: WorkflowRun): WorkflowRunRow {
     triggered_by: run.triggeredBy,
     project_id: run.projectId ?? null,
     started_at: run.startedAt,
+    template_version: run.templateVersion ?? null,
+    template_hash: run.templateHash ?? null,
+    template_snapshot: run.templateSnapshot ? JSON.stringify(run.templateSnapshot) : null,
     completed_at: run.completedAt ?? null,
   };
+}
+
+/** Raised when a team already has its maximum number of running workflows. */
+export class WorkflowConcurrencyError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'WorkflowConcurrencyError';
+  }
+}
+
+/**
+ * Parse a step's `timeout` shorthand (`"30s"`, `"15m"`, `"2h"`, `"1d"`, or raw ms).
+ * Returns `null` for anything unparseable so callers can ignore bad config rather
+ * than silently treating it as "no timeout".
+ */
+export function parseDurationMs(value: string | number | undefined): number | null {
+  if (value === undefined || value === null) return null;
+  if (typeof value === 'number') return Number.isFinite(value) && value > 0 ? value : null;
+  const match = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|m|h|d)?\s*$/i.exec(value);
+  if (!match) return null;
+  const amount = Number(match[1]);
+  const unit = (match[2] ?? 'ms').toLowerCase();
+  const factor = unit === 'd' ? 86_400_000 : unit === 'h' ? 3_600_000 : unit === 'm' ? 60_000 : unit === 's' ? 1_000 : 1;
+  const ms = amount * factor;
+  return Number.isFinite(ms) && ms > 0 ? ms : null;
 }
 
 export class WorkflowRunner {
@@ -88,6 +126,28 @@ export class WorkflowRunner {
   private taskService: TaskService;
   private orgService: OrganizationService;
   private ws?: WSBroadcaster;
+
+  /**
+   * Team-level admission control. Without it a cron glitch (or an eager agent)
+   * could start unlimited runs for one team — every one of them a real
+   * requirement, real tasks and real token spend.
+   *
+   * Source of truth: `MARKUS_WORKFLOW_MAX_CONCURRENT` (process-wide policy), with
+   * a conservative default. `setMaxConcurrentRunsPerTeam` exists for tests and for
+   * a future per-team override; nothing else may write this value.
+   */
+  private maxConcurrentRunsPerTeam = (() => {
+    const raw = Number(process.env['MARKUS_WORKFLOW_MAX_CONCURRENT']);
+    return Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 3;
+  })();
+
+  setMaxConcurrentRunsPerTeam(limit: number): void {
+    if (Number.isFinite(limit) && limit > 0) this.maxConcurrentRunsPerTeam = Math.floor(limit);
+  }
+
+  getMaxConcurrentRunsPerTeam(): number {
+    return this.maxConcurrentRunsPerTeam;
+  }
 
   // In-memory cache for fast lookup
   private runs = new Map<string, WorkflowRun>();
@@ -122,6 +182,27 @@ export class WorkflowRunner {
   ): Promise<WorkflowRun> {
     const team = this.orgService.getTeam(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
+
+    // ── Admission control ───────────────────────────────────────────────────
+    // The single entry point for starting a run, so the quota lives here rather
+    // than in each caller (API route, scheduler, agent tool). Rejecting *before*
+    // any side effect means a refused run leaves no requirement, no tasks and no
+    // run row behind.
+    const active = this.getActiveRuns(teamId).filter(r => r.status === 'running');
+    if (active.length >= this.maxConcurrentRunsPerTeam) {
+      throw new WorkflowConcurrencyError(
+        `Team already has ${active.length} running workflow(s) (limit ${this.maxConcurrentRunsPerTeam}). ` +
+          `Wait for one to finish, or raise workflow.maxConcurrentRunsPerTeam.`,
+      );
+    }
+
+    // The run id is allocated *before* the tasks are created: a task carries its
+    // (run, step) identity from birth, so nothing downstream has to reconstruct
+    // the relationship from notes or titles.
+    const runId = generateId('wfr');
+    // Snapshot the template so this run renders with the definition it started
+    // with, even if the YAML is edited afterwards.
+    const templateHash = createHash('sha256').update(JSON.stringify(template)).digest('hex').slice(0, 16);
 
     // Validate required params
     for (const p of template.params ?? []) {
@@ -161,7 +242,7 @@ export class WorkflowRunner {
     try {
       for (const step of sortedSteps) {
         const description = renderStepPrompt(step, params, runNumber);
-        const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, sortedSteps);
+        const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, taskIdMap);
 
         const assignedAgentId = roleMapping[step.role];
         if (!assignedAgentId) {
@@ -188,7 +269,13 @@ export class WorkflowRunner {
           createdBy: createdBy || team.managerId || 'system',
           creatorRole: 'worker',
           approvedVia: 'workflow',
-          notes: `[Workflow] ${template.name} run #${runNumber}, step: ${step.id}`,
+          // No `notes:` here on purpose. `CreateTaskRequest.notes` is a `string`
+          // while `Task.notes` is `string[]`, so this used to be silently dropped
+          // at creation — a dead parameter that made the old UI's "step: <id>"
+          // guess and the P0 backfill impossible. Provenance now lives in the
+          // structural columns below.
+          workflowRunId: runId,
+          workflowStepId: step.id,
         });
 
         taskIdMap.set(step.id, task.id);
@@ -216,7 +303,7 @@ export class WorkflowRunner {
 
     // 5. Save run record
     const run: WorkflowRun = {
-      id: generateId('wfr'),
+      id: runId,
       teamId,
       workflowName: template.name,
       runNumber,
@@ -229,6 +316,9 @@ export class WorkflowRunner {
       triggeredBy,
       projectId,
       startedAt: new Date().toISOString(),
+      templateVersion: template.version,
+      templateHash,
+      templateSnapshot: template,
     };
 
     this.runs.set(run.id, run);
@@ -402,14 +492,15 @@ export class WorkflowRunner {
   }
 
   async listRuns(teamId: string, workflowName: string, limit = 20): Promise<WorkflowRun[]> {
-    if (this.runRepo) {
-      const rows = await this.runRepo.findByTeamAndWorkflow(teamId, workflowName, limit);
-      return rows.map(rowToRun);
-    }
-    return [...this.runs.values()]
-      .filter(r => r.teamId === teamId && r.workflowName === workflowName)
-      .sort((a, b) => b.runNumber - a.runNumber)
-      .slice(0, limit);
+    const runs = this.runRepo
+      ? (await this.runRepo.findByTeamAndWorkflow(teamId, workflowName, limit)).map(rowToRun)
+      : [...this.runs.values()]
+          .filter(r => r.teamId === teamId && r.workflowName === workflowName)
+          .sort((a, b) => b.runNumber - a.runNumber)
+          .slice(0, limit);
+    // Rows written before the derive-on-every-change fix can carry a stale
+    // terminal status; heal them here so the UI never shows "失败 · 9/9 完成".
+    return this.reconcileRunStatuses(runs);
   }
 
   getActiveRuns(teamId: string): WorkflowRun[] {
@@ -424,14 +515,53 @@ export class WorkflowRunner {
   async onTaskStatusChange(task: Task): Promise<void> {
     // Find which run this task belongs to
     const run = this.findRunForTask(task.id);
-    if (!run || run.status !== 'running') return;
+    if (!run) return;
+
+    // `paused` / `cancelled` are human decisions, not projections — a task
+    // update must never resurrect them. Everything else IS a projection of the
+    // tasks, and must therefore be recomputed on *every* task change, not just
+    // while the run happens to still be `running`.
+    //
+    // The old `if (run.status !== 'running') return;` was a one-way ratchet: a
+    // run that latched to `failed` could never notice that its failed step was
+    // retried and every task then completed. Observed in the Work page as
+    // "失败 · 9/9 个任务完成".
+    if (run.status === 'paused' || run.status === 'cancelled') return;
+
+    // ── Output contract ─────────────────────────────────────────────────────
+    // A step that declares required `outputs` must actually deliver them. This
+    // is checked on completion and *before* the run status is derived, so a step
+    // that "finishes" without producing its declared artifact fails loudly here
+    // instead of the downstream agent improvising from nothing.
+    if (task.status === 'completed') {
+      const missing = this.missingOutputs(run, task);
+      if (missing.length > 0) {
+        const reason = `Workflow output contract not met: missing ${missing.join(', ')}`;
+        try {
+          this.taskService.updateTaskStatus(task.id, 'failed', 'system', false, false, 'system', reason);
+        } catch (err) {
+          log.warn('Failed to fail a step that missed its declared outputs', { taskId: task.id, error: String(err) });
+        }
+        this.notifyManager(run.teamId, 'step_failed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          taskId: task.id,
+          taskTitle: task.title,
+          reason: 'output_contract',
+          missing,
+          actionRequired: true,
+        });
+        return; // the transition to `failed` re-enters this method with status=failed
+      }
+    }
 
     const allTasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
     const newStatus: WorkflowRunStatus = this.deriveRunStatus(allTasks);
 
-    // Still running — check for step failure and apply retry logic
-    if (newStatus === 'running') {
-      if (task.status === 'failed') {
+    // Unchanged — still running: step failure / retry bookkeeping only.
+    if (newStatus === run.status) {
+      if (newStatus === 'running' && task.status === 'failed') {
         const retried = this.attemptStepRetry(run, task);
         if (!retried) {
           this.notifyManager(run.teamId, 'step_failed', {
@@ -447,8 +577,94 @@ export class WorkflowRunner {
       return;
     }
 
+    await this.applyRunStatus(run, newStatus, { task });
+  }
+
+  /**
+   * Enforce `steps[].timeout`.
+   *
+   * The template has always *accepted* a timeout and stored it in
+   * `stepConfigs` — nothing ever read it, so a wedged step kept its run
+   * `running` forever and the config was a lie. Sweeping from the scheduler tick
+   * (rather than per-task timers) means the guarantee survives a restart: the
+   * deadline is recomputed from the task's own `startedAt`.
+   *
+   * Failure policy is shared with the normal failure path: retry if the step has
+   * retries left, otherwise fail the task with an explicit reason so the run
+   * status derives to `failed`.
+   */
+  async enforceTimeouts(now: number = Date.now()): Promise<number> {
+    let enforced = 0;
+    for (const run of [...this.runs.values()]) {
+      if (run.status !== 'running') continue; // paused / cancelled / terminal: not ours to judge
+      for (const cfg of run.stepConfigs ?? []) {
+        const limitMs = parseDurationMs(cfg.timeout);
+        if (!limitMs) continue;
+        const task = this.taskService.getTask(cfg.taskId);
+        if (!task || TERMINAL_STATUSES.has(task.status)) continue;
+
+        const startedAtMs = new Date(task.startedAt ?? task.createdAt).getTime();
+        if (!Number.isFinite(startedAtMs)) continue;
+        if (now - startedAtMs < limitMs) continue;
+
+        enforced += 1;
+        const retried = this.attemptStepRetry(run, task);
+        if (!retried) {
+          try {
+            this.taskService.updateTaskStatus(
+              task.id,
+              'failed',
+              'system',
+              false,
+              false,
+              'system',
+              `Step timed out after ${cfg.timeout} (limit ${Math.round(limitMs / 1000)}s)`,
+            );
+          } catch (err) {
+            log.warn('Failed to fail timed-out workflow step', { taskId: task.id, error: String(err) });
+          }
+          this.notifyManager(run.teamId, 'step_failed', {
+            workflowName: run.workflowName,
+            runId: run.id,
+            runNumber: run.runNumber,
+            taskId: task.id,
+            taskTitle: task.title,
+            reason: 'timeout',
+            actionRequired: true,
+          });
+        }
+        log.info('Workflow step timeout enforced', {
+          runId: run.id,
+          taskId: task.id,
+          timeout: cfg.timeout,
+          retried,
+        });
+      }
+    }
+    return enforced;
+  }
+
+  /**
+   * The single writer for a *derived* run status.
+   *
+   * Callers: `onTaskStatusChange` (live) and `reconcileRunStatuses` (read-time
+   * healing of historical drift). Keeping it in one place is what stops the two
+   * paths from disagreeing about notifications or `completedAt`.
+   */
+  private async applyRunStatus(
+    run: WorkflowRun,
+    newStatus: WorkflowRunStatus,
+    ctx: { task?: Task; notify?: boolean } = {},
+  ): Promise<void> {
+    const previous = run.status;
+    const notify = ctx.notify ?? true;
+
     run.status = newStatus;
-    run.completedAt = new Date().toISOString();
+    if (newStatus === 'running') {
+      run.completedAt = undefined;
+    } else {
+      run.completedAt = run.completedAt ?? new Date().toISOString();
+    }
     this.runs.set(run.id, run);
 
     if (this.runRepo) {
@@ -457,23 +673,27 @@ export class WorkflowRunner {
       );
     }
 
-    if (newStatus === 'completed') {
-      this.notifyManager(run.teamId, 'run_completed', {
-        workflowName: run.workflowName,
-        runId: run.id,
-        runNumber: run.runNumber,
-        taskCount: run.taskIds.length,
-        actionRequired: true,
-      });
-    } else if (newStatus === 'failed') {
-      this.notifyManager(run.teamId, 'run_failed', {
-        workflowName: run.workflowName,
-        runId: run.id,
-        runNumber: run.runNumber,
-        failedTaskId: task.id,
-        failedTaskTitle: task.title,
-        actionRequired: true,
-      });
+    // Notify only on a genuine transition out of `running` — healing an old run
+    // on read must not re-ping the manager.
+    if (notify && previous === 'running') {
+      if (newStatus === 'completed') {
+        this.notifyManager(run.teamId, 'run_completed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          taskCount: run.taskIds.length,
+          actionRequired: true,
+        });
+      } else if (newStatus === 'failed') {
+        this.notifyManager(run.teamId, 'run_failed', {
+          workflowName: run.workflowName,
+          runId: run.id,
+          runNumber: run.runNumber,
+          failedTaskId: ctx.task?.id ?? '',
+          failedTaskTitle: ctx.task?.title ?? '',
+          actionRequired: true,
+        });
+      }
     }
 
     this.ws?.broadcast?.({
@@ -485,9 +705,35 @@ export class WorkflowRunner {
     log.info('Workflow run status changed', {
       runId: run.id,
       workflow: run.workflowName,
+      previousStatus: previous,
       newStatus,
-      taskId: task.id,
+      taskId: ctx.task?.id,
     });
+  }
+
+  /**
+   * Tasks are the authority; a run's terminal status is a projection of them.
+   * Rows written before the fix above are healed here, on read.
+   */
+  private async reconcileRunStatuses(runs: WorkflowRun[]): Promise<WorkflowRun[]> {
+    const healed: WorkflowRun[] = [];
+    for (const run of runs) {
+      if (run.status === 'paused' || run.status === 'cancelled') {
+        healed.push(run);
+        continue;
+      }
+      const tasks = run.taskIds.map(id => this.taskService.getTask(id)).filter(Boolean) as Task[];
+      if (tasks.length === 0) {
+        healed.push(run);
+        continue;
+      }
+      const derived = this.deriveRunStatus(tasks);
+      if (derived !== run.status) {
+        await this.applyRunStatus(run, derived, { notify: false });
+      }
+      healed.push(run);
+    }
+    return healed;
   }
 
   async loadFromDB(): Promise<void> {
@@ -508,6 +754,35 @@ export class WorkflowRunner {
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
+
+  /**
+   * Which of the step's *required* declared outputs are missing from the task.
+   *
+   * The check is deliberately narrow and mechanical:
+   *   - `outputs[].type` is compared against `TaskDeliverable.type` (a real
+   *     structured field — never free text);
+   *   - an output declared without a `type` can only be checked as "produced at
+   *     least one deliverable", which is what it says on the tin;
+   *   - `required: false` opts an output out entirely;
+   *   - runs without a template snapshot (pre-2026-10) have no contract to
+   *     enforce and are left alone rather than retro-failed.
+   */
+  private missingOutputs(run: WorkflowRun, task: Task): string[] {
+    const stepId = task.workflowStepId;
+    if (!stepId) return [];
+    const template = run.templateSnapshot;
+    if (!template) return [];
+    const step = template.steps.find(s => s.id === stepId);
+    const required = (step?.outputs ?? []).filter(o => o.required !== false);
+    if (required.length === 0) return [];
+
+    const deliverables = (task.deliverables ?? []) as Array<{ type?: string }>;
+    const types = new Set(deliverables.map(d => d.type).filter((t): t is string => !!t));
+
+    return required
+      .filter(output => (output.type ? !types.has(output.type) : deliverables.length === 0))
+      .map(output => (output.type ? `${output.name}(${output.type})` : output.name));
+  }
 
   private deriveRunStatus(tasks: Task[]): WorkflowRunStatus {
     if (tasks.length === 0) return 'running';
@@ -583,12 +858,27 @@ export class WorkflowRunner {
     }
   }
 
+  /**
+   * The prompt preamble a step's task starts with.
+   *
+   * Upstream outputs *are* the data channel in this design: the runner creates
+   * every task up front, `blockedBy` orders them, and `task_get` returns an
+   * upstream task's `deliverables`. What used to be broken was the **pointer**:
+   * this text listed upstream *step* ids (`step-1-research`) while the tool it
+   * named (`task_get`) needs a *task* id (`tsk_…`), so the instruction failed
+   * verbatim ("Task not found") and a diligent agent had to rediscover the route
+   * through `blockedBy` on its own task.
+   *
+   * Now the upstream task id is written out explicitly. Tasks are created in
+   * topological order, so every dependency already has its id by the time a
+   * downstream step is rendered.
+   */
   private buildWorkflowContext(
     step: StepDef,
     template: WorkflowTemplate,
     params: Record<string, string>,
     runNumber: number,
-    _sortedSteps: StepDef[],
+    taskIdMap: Map<string, string>,
   ): string {
     const displayName = template.displayName || template.name;
     const lines: string[] = [
@@ -603,13 +893,42 @@ export class WorkflowRunner {
     }
     lines.push(`Your role in this workflow: ${step.role}`);
 
-    // Dependencies
+    // Declared inputs first: this is the contract, and it names exactly what to
+    // read. Falls back to the plain dependency list for templates that declare
+    // no `inputs` (backward compatible).
+    const declaredInputs = step.inputs ?? [];
+    if (declaredInputs.length > 0) {
+      lines.push('');
+      lines.push('Inputs you must consume (declared by this workflow):');
+      for (const input of declaredInputs) {
+        const fromStep = template.steps.find(s => s.id === input.from);
+        const fromTaskId = taskIdMap.get(input.from);
+        const declared = fromStep?.outputs?.find(o => o.name === input.as);
+        const typeHint = declared?.type ? ` of type "${declared.type}"` : '';
+        if (fromTaskId) {
+          lines.push(
+            `- \`${input.as}\`${typeHint} from step "${fromStep?.name || input.from}" → task \`${fromTaskId}\` ` +
+              `(call \`task_get\` with task_id="${fromTaskId}" and read the deliverable${declared?.type ? ` whose type is "${declared.type}"` : ''})`,
+          );
+        } else {
+          lines.push(`- \`${input.as}\` from step "${fromStep?.name || input.from}" — its task has not been created yet`);
+        }
+      }
+    }
+
+    // Dependencies — with the actual task ids, so the instruction is executable.
     if (step.depends_on && step.depends_on.length > 0) {
       lines.push('');
-      lines.push('Step dependencies (review their outputs using `task_get`):');
+      lines.push('Upstream steps — read their deliverables before you start:');
       for (const depId of step.depends_on) {
         const depStep = template.steps.find(s => s.id === depId);
-        lines.push(`- "${depStep?.name || depId}" (${depId})`);
+        const depTaskId = taskIdMap.get(depId);
+        const name = depStep?.name || depId;
+        if (depTaskId) {
+          lines.push(`- "${name}" → task \`${depTaskId}\` — call \`task_get\` with task_id="${depTaskId}" and use its deliverables as your input`);
+        } else {
+          lines.push(`- "${name}" (${depId}) — its task has not been created yet (upstream step failed to materialize)`);
+        }
       }
     } else {
       lines.push('');

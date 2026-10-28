@@ -11743,7 +11743,9 @@ EXPLANATION_END`;
         if (!this.workflowService) { this.json(res, 404, { error: 'Workflow service not available' }); return; }
         const template = this.workflowService.getWorkflow(teamId, wfName);
         if (!template) { this.json(res, 404, { error: `Workflow "${wfName}" not found` }); return; }
-        this.json(res, 200, { template });
+        // `yaml` (raw source) rides along so the UI editor round-trips the file
+        // instead of re-serialising the parsed template. Additive field.
+        this.json(res, 200, { template, yaml: this.workflowService.getWorkflowYaml(teamId, wfName) ?? undefined });
         return;
       }
 
@@ -12894,6 +12896,31 @@ EXPLANATION_END`;
       return;
     }
 
+    // POST /api/requirements/:id/tasks/approve-bulk — 批量批准需求下的待批任务。
+    // 逐条走 approveTask（唯一写者）；dryRun 供弹窗做真实预检，零副作用。
+    if (path.match(/^\/api\/requirements\/[^/]+\/tasks\/approve-bulk$/) && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const reqId = path.split('/')[3]!;
+      if (!this.taskService) {
+        this.json(res, 503, { error: 'Task service not available' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const dryRun = body['dryRun'] === true;
+      try {
+        const result = this.taskService.approveRequirementTasks(reqId, {
+          dryRun,
+          runNow: body['runNow'] !== false,
+          actorId: authUser.userId,
+        });
+        this.json(res, 200, { ...result, dryRun });
+      } catch (e) {
+        this.json(res, 400, { error: String(e) });
+      }
+      return;
+    }
+
     if (path.match(/^\/api\/requirements\/[^/]+\/reject$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -13702,6 +13729,7 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       regex(/^\/api\/requirements\/[^/]+\/status$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/approve$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/tasks\/approve-bulk$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/request-approval$/, 'POST'),

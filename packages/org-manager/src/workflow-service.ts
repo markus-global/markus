@@ -96,6 +96,26 @@ export class WorkflowService {
     }
   }
 
+  /**
+   * Raw template YAML.
+   *
+   * The parsed `WorkflowTemplate` is lossy (comments, ordering, formatting), so
+   * an editor that round-trips must read the file itself. This is the single
+   * reader for that — the API exposes it as `yaml` on `GET .../workflows/:name`
+   * so the Web UI can edit/duplicate without inventing a second serializer.
+   */
+  getWorkflowYaml(teamId: string, name: string): string | null {
+    const dir = this.getWorkflowsDir(teamId);
+    const filePath = this.resolveWorkflowFile(dir, name);
+    if (!filePath) return null;
+    try {
+      return readFileSync(filePath, 'utf-8');
+    } catch (err) {
+      log.warn('Failed to read workflow template YAML', { name, error: String(err) });
+      return null;
+    }
+  }
+
   addWorkflow(teamId: string, name: string, yamlContent: string): WorkflowTemplate {
     const parsed = parseYaml(yamlContent) as unknown;
     const errors = validateWorkflowTemplate(parsed);
@@ -104,6 +124,16 @@ export class WorkflowService {
     }
 
     const template = parsed as WorkflowTemplate;
+    // A template's identity is its `name:` field, but it is addressed by file
+    // name. Letting the two disagree creates two workflows that answer to the
+    // same name (duplicate cards, and `resolveWorkflowFile` can hit the wrong
+    // file). Refuse rather than silently pick one.
+    if (template.name !== name) {
+      throw new Error(
+        `Workflow name mismatch: file name "${name}" but the YAML says name: "${template.name}". ` +
+          `Set the template's \`name\` field to "${name}" (or change the requested name) so the file and the template agree.`,
+      );
+    }
     const dir = this.ensureWorkflowsDir(teamId);
     const fileName = `${name}.yaml`;
     const filePath = join(dir, fileName);
@@ -129,6 +159,15 @@ export class WorkflowService {
     const filePath = this.resolveWorkflowFile(dir, name);
     if (!filePath) {
       throw new Error(`Workflow "${name}" not found`);
+    }
+    // Same identity invariant as `addWorkflow` (checked after existence, so a
+    // missing workflow still reports "not found"): editing a template must not
+    // rename it out from under its file — that is a copy, not an edit.
+    if (template.name !== name) {
+      throw new Error(
+        `Workflow name mismatch: file name "${name}" but the YAML says name: "${template.name}". ` +
+          `Rename the file with a copy instead of editing \`name\` here.`,
+      );
     }
 
     writeFileSync(filePath, yamlContent, 'utf-8');

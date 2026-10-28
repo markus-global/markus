@@ -119,8 +119,29 @@ describe('WorkflowService', () => {
     });
 
     it('rejects duplicate workflow name', () => {
-      service.addWorkflow(teamId, 'dup', VALID_WORKFLOW_YAML);
-      expect(() => service.addWorkflow(teamId, 'dup', VALID_WORKFLOW_YAML)).toThrow(/already exists/);
+      service.addWorkflow(teamId, 'dup', VALID_WORKFLOW_YAML.replace('name: test-workflow', 'name: dup'));
+      expect(() => service.addWorkflow(teamId, 'dup', VALID_WORKFLOW_YAML.replace('name: test-workflow', 'name: dup'))).toThrow(/already exists/);
+    });
+
+    /**
+     * A workflow has two identities: the file name (how the API addresses it)
+     * and the `name:` field inside the YAML (what the parsed template reports,
+     * and therefore what the UI shows). Copying a template without renaming the
+     * inner field produced two workflows answering to the same name — duplicate
+     * cards in the Work page — so the service refuses the mismatch instead of
+     * picking a winner.
+     */
+    it('rejects a template whose YAML name disagrees with the file name', () => {
+      expect(() => service.addWorkflow(teamId, 'renamed', VALID_WORKFLOW_YAML)).toThrow(/name mismatch/i);
+      expect(service.getWorkflow(teamId, 'renamed')).toBeNull();
+    });
+
+    it('rejects renaming a template via update', () => {
+      service.addWorkflow(teamId, 'test-workflow', VALID_WORKFLOW_YAML);
+      const renamed = VALID_WORKFLOW_YAML.replace('name: test-workflow', 'name: something-else');
+      expect(() => service.updateWorkflow(teamId, 'test-workflow', renamed)).toThrow(/name mismatch/i);
+      // the original file is untouched
+      expect(service.getWorkflow(teamId, 'test-workflow')?.name).toBe('test-workflow');
     });
 
     it('throws when updating missing workflow', () => {

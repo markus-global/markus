@@ -35,8 +35,31 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
+import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
+import { WorkflowCard } from '../components/WorkflowCard.tsx';
+import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
+import { WorkflowManageModal, type WorkflowManageMode } from '../components/WorkflowManageModal.tsx';
+import {
+  isRunActive,
+  readExpandedWorkflows,
+  writeExpandedWorkflows,
+  prepareDuplicateYaml,
+  type WorkflowTaskLike,
+} from '../lib/workflow-view.ts';
 
 const WORK_L1_COLLAPSED_KEY = 'markus_work_l1_collapsed';
+/**
+ * The workflow view's own team filter.
+ *
+ * It used to be derived from the selected project (`selectedProjectTeamId`),
+ * which is *task board* context. Any deep-link to a task — including the one the
+ * run drawer itself performs — changed the project, and the workflow list
+ * silently emptied out ("暂无工作流模板") because that project's team happened to
+ * have no templates. The panel owns its filter now, and remembers it.
+ */
+const WORKFLOWS_TEAM_KEY = 'markus_workflows_team';
+const WORKFLOWS_TEAM_ALL = '__all__';
 const BOARD_TYPE_ORDER = ['backlog', 'kanban', 'dag', 'workflows'] as const;
 type BoardType = typeof BOARD_TYPE_ORDER[number];
 type RightDetailMode = 'closed' | 'project' | 'item' | 'empty';
@@ -2912,7 +2935,7 @@ function TaskDetailPanel({
       )}
       {cancelConfirm && cancelConfirm.dependentCount > 0 ? (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setCancelConfirm(null)}>
-          <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work:task.cancelTaskModalTitle')}</h3>
             <p className="text-sm text-fg-secondary mb-4">
               {isScheduled && <><span className="block mb-1 text-amber-600">{t('work:task.cancelScheduledConfirmMessage')}</span></>}
@@ -3274,7 +3297,8 @@ const GROUP_HEADER_CLS: Record<string, string> = {
   closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
-const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived'] as const;
+// 需求状态切换现在由「按钮 + 合法流转菜单」承担（REQ_ALLOWED_TRANSITIONS 是唯一来源），
+// 原来给原生 <select> 用的全量状态列表已无用途，删除以免留下第二个"状态清单"。
 
 function taskToGroup(status: string): string {
   for (const col of BOARD_COLUMNS_BASE) {
@@ -4166,7 +4190,7 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, projects, onViewRunTasks }: { teamId: string | null; projectId: string | null; agents: AgentInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
+function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -4176,9 +4200,39 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
-  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(null);
-  const [expandedWorkflow, setExpandedWorkflow] = useState<string | null>(null);
+  // Team filter owned by this panel (see WORKFLOWS_TEAM_KEY) — seeded from the
+  // current project's team on first visit, then sticky.
+  const [selectedTeamId, setSelectedTeamId] = useState<string | null>(() => {
+    try {
+      const stored = localStorage.getItem(WORKFLOWS_TEAM_KEY);
+      if (stored) return stored === WORKFLOWS_TEAM_ALL ? null : stored;
+    } catch { /* storage disabled — fall through to the default */ }
+    return defaultTeamId ?? null;
+  });
+  // Multiple cards can be open at once, and the choice survives a reload.
+  // The old single-slot `expandedWorkflow` made "open a second one" a surprise
+  // (it silently collapsed the first) and lost the state on every navigation.
+  const [expandedWorkflows, setExpandedWorkflows] = useState<Set<string>>(() =>
+    readExpandedWorkflows((key) => {
+      try { return localStorage.getItem(key); } catch { return null; }
+    }),
+  );
   const [templateDetails, setTemplateDetails] = useState<Record<string, WorkflowTemplateInfo>>({});
+  const [detailState, setDetailState] = useState<Record<string, 'idle' | 'loading' | 'error' | 'ready'>>({});
+  /** Tasks per run id, so the card can derive real progress instead of "N tasks". */
+  const [runTasks, setRunTasks] = useState<Record<string, WorkflowTaskLike[]>>({});
+  const [runTasksLoading, setRunTasksLoading] = useState<Record<string, boolean>>({});
+  const [drawerRun, setDrawerRun] = useState<WorkflowRunInfo | null>(null);
+  /** Workflow being sent to a chat — drives the shared SendToChatModal. */
+  const [sendWorkflow, setSendWorkflow] = useState<WorkflowInfo | null>(null);
+  const [manage, setManage] = useState<{
+    mode: WorkflowManageMode;
+    workflow: WorkflowInfo;
+    yaml?: string;
+    yamlLoading?: boolean;
+    busy?: boolean;
+    error?: string | null;
+  } | null>(null);
   const [cancellingRunId, setCancellingRunId] = useState<string | null>(null);
   const [confirmCancelRunId, setConfirmCancelRunId] = useState<string | null>(null);
   const [pausingRunId, setPausingRunId] = useState<string | null>(null);
@@ -4186,9 +4240,19 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
   const [roleOverrides, setRoleOverrides] = useState<Record<string, string>>({});
   const [runProjectId, setRunProjectId] = useState<string | null>(null);
   const [workflowTeamMap, setWorkflowTeamMap] = useState<Record<string, string>>({});
-  const [expandedRuns, setExpandedRuns] = useState<Set<string>>(new Set());
 
   const teamId = propTeamId ?? selectedTeamId;
+
+  /** Single writer for the panel's team filter (state + persistence + reset). */
+  const selectTeam = (next: string | null) => {
+    if (next === selectedTeamId) return;
+    setSelectedTeamId(next);
+    setWorkflows([]);
+    setRuns({});
+    try {
+      localStorage.setItem(WORKFLOWS_TEAM_KEY, next ?? WORKFLOWS_TEAM_ALL);
+    } catch { /* storage disabled — selection just won't persist */ }
+  };
 
   useEffect(() => {
     if (propTeamId) return;
@@ -4235,18 +4299,155 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
 
   const resolveTeam = (wfName: string) => teamId ?? workflowTeamMap[wfName];
 
-  const toggleExpand = async (wf: WorkflowInfo) => {
-    if (expandedWorkflow === wf.name) {
-      setExpandedWorkflow(null);
+  const setExpandedPersisted = useCallback((next: Set<string>) => {
+    setExpandedWorkflows(next);
+    writeExpandedWorkflows(next, (key, value) => {
+      try { localStorage.setItem(key, value); } catch { /* storage disabled */ }
+    });
+  }, []);
+
+  const toggleExpanded = (name: string) => {
+    const next = new Set(expandedWorkflows);
+    if (next.has(name)) next.delete(name);
+    else next.add(name);
+    setExpandedPersisted(next);
+  };
+
+  const retryDetail = (name: string) =>
+    setDetailState((prev) => ({ ...prev, [name]: 'idle' }));
+
+  /**
+   * Detail fetch lives in an effect keyed on the expanded set (instead of inside
+   * the click handler) for two reasons: a restored card loads itself, and a
+   * click paints the skeleton on the next frame rather than after the request.
+   * `error` is deliberately sticky — a failing fetch must not retry forever;
+   * the card shows a 重试 button instead.
+   */
+  useEffect(() => {
+    for (const name of expandedWorkflows) {
+      if (templateDetails[name] || detailState[name] === 'loading' || detailState[name] === 'error') continue;
+      const tid = resolveTeam(name);
+      if (!tid) continue;
+      setDetailState((prev) => ({ ...prev, [name]: 'loading' }));
+      api.workflows
+        .get(tid, name)
+        .then(({ template, yaml }) => {
+          setTemplateDetails((prev) => ({ ...prev, [name]: { ...template, yaml } }));
+          setDetailState((prev) => ({ ...prev, [name]: 'ready' }));
+        })
+        .catch(() => setDetailState((prev) => ({ ...prev, [name]: 'error' })));
+    }
+    // resolveTeam reads teamId + workflowTeamMap; both are in the dep list.
+  }, [expandedWorkflows, templateDetails, detailState, teamId, workflowTeamMap]);
+
+  const tasksInflight = useRef<Set<string>>(new Set());
+
+  /** Load a run's tasks so the card can show 3/9 instead of "9 tasks". */
+  const loadRunTasks = useCallback(async (run: WorkflowRunInfo) => {
+    if (!run.requirementId || tasksInflight.current.has(run.id)) return;
+    tasksInflight.current.add(run.id);
+    setRunTasksLoading((prev) => ({ ...prev, [run.id]: true }));
+    try {
+      const { tasks } = await api.tasks.list({ requirementId: run.requirementId, pageSize: 200 });
+      const wanted = new Set(run.taskIds);
+      const mine = wanted.size > 0 ? tasks.filter((task) => wanted.has(task.id)) : tasks;
+      setRunTasks((prev) => ({
+        ...prev,
+        [run.id]: mine.map((task) => ({
+          id: task.id,
+          title: task.title,
+          status: task.status,
+          workflowStepId: task.workflowStepId,
+          workflowRunId: task.workflowRunId,
+        })),
+      }));
+    } catch {
+      setRunTasks((prev) => ({ ...prev, [run.id]: [] }));
+    } finally {
+      tasksInflight.current.delete(run.id);
+      setRunTasksLoading((prev) => ({ ...prev, [run.id]: false }));
+    }
+  }, []);
+
+  // Prefetch the latest run's tasks for every workflow — that is what the
+  // collapsed card shows, so it must be there without a second click.
+  useEffect(() => {
+    for (const wf of workflows) {
+      const latest = (runs[wf.name] ?? [])[0];
+      if (latest && runTasks[latest.id] === undefined && !runTasksLoading[latest.id]) {
+        void loadRunTasks(latest);
+      }
+    }
+  }, [workflows, runs, runTasks, runTasksLoading, loadRunTasks]);
+
+  // Poll only while something is actually moving, and never in a hidden tab.
+  const activeRunsKey = useMemo(() => {
+    const ids: string[] = [];
+    for (const list of Object.values(runs)) {
+      for (const run of list) if (isRunActive(run.status)) ids.push(run.id);
+    }
+    return ids.sort().join(',');
+  }, [runs]);
+
+  useEffect(() => {
+    if (!activeRunsKey) return;
+    const timer = window.setInterval(() => {
+      if (document.hidden) return;
+      void refresh();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [activeRunsKey, refresh]);
+
+  const openManage = async (mode: WorkflowManageMode, wf: WorkflowInfo) => {
+    const cached = templateDetails[wf.name]?.yaml;
+    setManage({ mode, workflow: wf, yaml: cached, yamlLoading: mode !== 'delete' && !cached, error: null });
+    if (mode === 'delete' || cached) return;
+    const tid = resolveTeam(wf.name);
+    if (!tid) {
+      setManage((prev) => (prev ? { ...prev, yamlLoading: false, error: t('work:task.workflowNoTeam', '无法确定此工作流所属的团队') } : prev));
       return;
     }
-    setExpandedWorkflow(wf.name);
-    const tid = resolveTeam(wf.name);
-    if (!templateDetails[wf.name] && tid) {
-      try {
-        const { template } = await api.workflows.get(tid, wf.name);
-        setTemplateDetails(prev => ({ ...prev, [wf.name]: template }));
-      } catch { /* ignore */ }
+    try {
+      const { template, yaml } = await api.workflows.get(tid, wf.name);
+      setTemplateDetails((prev) => ({ ...prev, [wf.name]: { ...template, yaml } }));
+      setDetailState((prev) => ({ ...prev, [wf.name]: 'ready' }));
+      setManage((prev) => (prev && prev.workflow.name === wf.name ? { ...prev, yaml, yamlLoading: false } : prev));
+    } catch (err) {
+      setManage((prev) => (prev ? { ...prev, yamlLoading: false, error: err instanceof Error ? err.message : String(err) } : prev));
+    }
+  };
+
+  const submitManage = async ({ name, yaml }: { name?: string; yaml?: string }) => {
+    if (!manage) return;
+    const tid = resolveTeam(manage.workflow.name);
+    if (!tid) {
+      setManage((prev) => (prev ? { ...prev, error: t('work:task.workflowNoTeam', '无法确定此工作流所属的团队') } : prev));
+      return;
+    }
+    setManage((prev) => (prev ? { ...prev, busy: true, error: null } : prev));
+    try {
+      if (manage.mode === 'edit') await api.workflows.update(tid, manage.workflow.name, yaml ?? '');
+      else if (manage.mode === 'duplicate') {
+        // The file name and the template's `name:` field are two identities —
+        // rewriting both here is what stops a copy from claiming to be the
+        // original.
+        const copyName = name ?? '';
+        const copyYaml = prepareDuplicateYaml(yaml ?? '', copyName, parseYaml, stringifyYaml);
+        await api.workflows.create(tid, copyName, copyYaml);
+      } else await api.workflows.remove(tid, manage.workflow.name);
+
+      const name0 = manage.workflow.name;
+      setManage(null);
+      setTemplateDetails((prev) => {
+        const next = { ...prev };
+        delete next[name0];
+        return next;
+      });
+      setDetailState((prev) => ({ ...prev, [name0]: 'idle' }));
+      invalidateApiCache();
+      await refresh();
+    } catch (err) {
+      setManage((prev) => (prev ? { ...prev, busy: false, error: err instanceof Error ? err.message : String(err) } : prev));
     }
   };
 
@@ -4343,19 +4544,83 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
     }
   };
 
-  const statusBadge = (s: string) => {
-    const colors: Record<string, string> = { running: 'bg-blue-500/20 text-blue-400', paused: 'bg-amber-500/20 text-amber-400', completed: 'bg-green-500/20 text-green-400', failed: 'bg-red-500/20 text-red-400', cancelled: 'bg-gray-500/20 text-gray-400' };
-    return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${colors[s] ?? 'bg-gray-500/20 text-gray-400'}`}>{s}</span>;
+  const hasRequiredMissing = runModal && (runModal.params ?? []).some(p => p.required && !runParams[p.name]?.trim());
+
+  /**
+   * Deep-link into the owning team's manager chat, prefilled with the workflow
+   * reference. This used to be a 10px grey text span *inside* the card's click
+   * target — invisible as an action and a mis-click hazard. It is now an
+   * explicit menu item ("发送到智能体对话").
+   */
+  /** Task board deep-link — the drawer/step modal use it to open a step's task. */
+  const openTaskById = (taskId: string) => {
+    navBus.navigate(PAGE.WORK, { openTask: taskId });
   };
 
-  const hasRequiredMissing = runModal && (runModal.params ?? []).some(p => p.required && !runParams[p.name]?.trim());
+  /**
+   * Edit one step of a workflow *template*.
+   *
+   * Writes the whole YAML back through the existing `PUT .../workflows/:name`,
+   * so the server's parser stays the only validator and there is no second
+   * serialiser to drift. Re-serialising reformats the file (comments and key
+   * order are not preserved) — acceptable for agent-generated templates, and far
+   * better than a step-level side table.
+   */
+  const saveWorkflowStep = async (
+    wfName: string,
+    stepId: string,
+    patch: { name?: string; role?: string; prompt?: string },
+  ) => {
+    const tid = resolveTeam(wfName);
+    if (!tid) throw new Error(t('work:task.workflowNoTeam', '无法确定此工作流所属的团队'));
+
+    let yamlText = templateDetails[wfName]?.yaml;
+    if (!yamlText) {
+      const fetched = await api.workflows.get(tid, wfName);
+      yamlText = fetched.yaml;
+      if (!yamlText) throw new Error(t('work:task.workflowNoYaml', '模板缺少原始 YAML，无法编辑'));
+    }
+
+    const doc = parseYaml(yamlText) as { steps?: Array<Record<string, unknown>> } | null;
+    const step = doc?.steps?.find((entry) => entry?.['id'] === stepId);
+    if (!doc || !step) throw new Error(`找不到步骤 ${stepId}`);
+
+    if (patch.name !== undefined) step['name'] = patch.name;
+    if (patch.role !== undefined) step['role'] = patch.role;
+    if (patch.prompt !== undefined) step['prompt'] = patch.prompt;
+
+    await api.workflows.update(tid, wfName, stringifyYaml(doc));
+    invalidateApiCache();
+
+    const { template, yaml } = await api.workflows.get(tid, wfName);
+    setTemplateDetails((prev) => ({ ...prev, [wfName]: { ...template, yaml } }));
+    setDetailState((prev) => ({ ...prev, [wfName]: 'ready' }));
+  };
+
+  /**
+   * "Send to chat" goes through the shared `SendToChatModal` — the same picker a
+   * task or requirement uses — instead of silently picking the team manager and
+   * navigating. The recipient is the user's choice, not the platform's.
+   */
+  const sendWorkflowToChat = (wf: WorkflowInfo) => setSendWorkflow(wf);
+
+  const workflowChipLabel = (wf: WorkflowInfo) => wf.displayName || wf.name;
+  const workflowChipContent = (wf: WorkflowInfo) =>
+    `@[${wf.displayName || wf.name}](workflow:${wf.name})`;
+  const workflowDefaultTarget = (wf: WorkflowInfo) => {
+    const wfTeamId = resolveTeam(wf.name);
+    const teamManager = wfTeamId
+      ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager')
+      : undefined;
+    return resolveDefaultChatTarget(teamManager?.id, agents, users);
+  };
 
   return (
     <div className="flex-1 min-h-0 overflow-auto px-4 py-5">
       {!propTeamId && teams.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           <button
-            onClick={() => { if (selectedTeamId !== null) { setSelectedTeamId(null); setWorkflows([]); setRuns({}); } }}
+            onClick={() => selectTeam(null)}
             className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === null ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
           >
             {t('work:task.all', 'All')}
@@ -4363,7 +4628,7 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
           {teams.map(tm => (
             <button
               key={tm.id}
-              onClick={() => { if (selectedTeamId !== tm.id) { setSelectedTeamId(tm.id); setWorkflows([]); setRuns({}); } }}
+              onClick={() => selectTeam(tm.id)}
               className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === tm.id ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
             >
               {tm.name}
@@ -4377,195 +4642,91 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
         </div>
       ) : (
         <div className="grid gap-4 max-w-4xl">
-          {workflows.map(wf => {
-            const isExpanded = expandedWorkflow === wf.name;
-            const detail = templateDetails[wf.name];
+          {workflows.map((wf) => {
             const wfRuns = runs[wf.name] ?? [];
-            const hasRunning = wfRuns.some(r => r.status === 'running' || (r.status as string) === 'paused');
+            const latestRun = wfRuns[0];
+            const roleNameFor = (role: string) => {
+              const agentId = latestRun?.roleMapping?.[role];
+              return agentId ? agents.find((a) => a.id === agentId)?.name : undefined;
+            };
             return (
-            <div key={wf.name} className="bg-surface-secondary border border-border-default/50 rounded-xl p-4">
-              <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-2 sm:gap-3 mb-2 cursor-pointer" onClick={() => toggleExpand(wf)}>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <svg className={`w-3.5 h-3.5 text-fg-tertiary shrink-0 transition-transform ${isExpanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                    <h3 className="text-sm font-semibold text-fg-primary">{wf.displayName || wf.name}</h3>
-                    <span className="text-[11px] text-fg-tertiary">{t('work:task.workflowStepsCount', '{{count}} steps', { count: wf.stepCount })}</span>
-                  </div>
-                </div>
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  <span
-                    className="text-[10px] text-fg-quaternary font-mono cursor-pointer hover:text-fg-tertiary transition-colors max-w-[12rem] truncate"
-                    title={t('work:task.workflowSendToAgent', 'Send to agent chat')}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      const wfTeamId = resolveTeam(wf.name);
-                      const teamManager = wfTeamId ? agents.find(a => a.teamId === wfTeamId && a.agentRole === 'manager') : undefined;
-                      const targetAgentId = teamManager?.id ?? agents.find(a => a.agentRole === 'manager')?.id ?? agents[0]?.id;
-                      if (targetAgentId) {
-                        navBus.navigate(PAGE.TEAM, { agentId: targetAgentId, prefillMessage: `@[${wf.displayName || wf.name}](workflow:${wf.name}) ` });
-                      }
-                    }}
-                  >
-                    <svg className="w-3.5 h-3.5 inline mr-0.5 -mt-px" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" /></svg>
-                    {wf.name}
-                  </span>
-                  {wf.hasSchedule && <span className="px-1.5 py-0.5 rounded text-[10px] font-medium bg-purple-500/20 text-purple-400">{t('work:task.workflowScheduled', 'Scheduled')}</span>}
-                  <span className="text-[10px] text-fg-tertiary">v{wf.version}</span>
-                  {hasRunning ? (
-                    <span className="px-3 py-1 bg-blue-500/20 text-blue-400 text-xs rounded-lg font-medium inline-flex items-center gap-1.5">
-                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
-                      {t('work:task.workflowRunning', 'Running')}
-                    </span>
-                  ) : (
-                    <button onClick={(e) => { e.stopPropagation(); openRunModal(wf); }} className="px-3 py-1 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">
-                      {t('work:task.workflowRun', 'Run')}
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {/* Expanded detail view */}
-              {isExpanded && detail && (
-                <div className="border-t border-border-default/30 pt-3 mt-1 ml-5 space-y-3">
-                  {wf.description && <p className="text-xs text-fg-tertiary">{wf.description}</p>}
-                  <div>
-                    <p className="text-[10px] text-fg-tertiary font-medium mb-2 uppercase tracking-wider">{t('work:task.workflowSteps', 'Steps')}</p>
-                    <div className="space-y-1.5">
-                      {detail.steps.map((step, idx) => (
-                        <div key={step.id} className="flex items-start gap-2">
-                          <div className="shrink-0 w-5 h-5 rounded-full bg-brand-500/15 flex items-center justify-center text-[9px] font-bold text-brand-500 mt-0.5">
-                            {idx + 1}
-                          </div>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                              <span className="text-xs font-medium text-fg-primary">{step.name}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary">{step.role}</span>
-                              {step.depends_on && step.depends_on.length > 0 && (
-                                <span className="text-[10px] text-fg-quaternary">
-                                  ← {step.depends_on.join(', ')}
-                                </span>
-                              )}
-                            </div>
-                            <p className="text-[10px] text-fg-tertiary line-clamp-1 mt-0.5">{step.prompt}</p>
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Step dependency mini-graph */}
-                  {detail.steps.some(s => s.depends_on && s.depends_on.length > 0) && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">DAG</p>
-                      <div className="flex items-center gap-1 flex-wrap text-[10px]">
-                        {detail.steps.map((step, idx) => {
-                          const hasDeps = step.depends_on && step.depends_on.length > 0;
-                          return (
-                            <span key={step.id} className="inline-flex items-center gap-0.5">
-                              {hasDeps && <span className="text-fg-quaternary">→</span>}
-                              <span className="px-1.5 py-0.5 rounded bg-surface-elevated text-fg-secondary font-medium">{step.name}</span>
-                            </span>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Params */}
-                  {detail.params && detail.params.length > 0 && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1.5 uppercase tracking-wider">{t('work:task.workflowParamsCount', 'Parameters', { count: detail.params.length })}</p>
-                      <div className="flex flex-wrap gap-2">
-                        {detail.params.map(p => (
-                          <span key={p.name} className="inline-flex items-center gap-1 px-2 py-0.5 text-[10px] rounded bg-surface-elevated border border-border-default/30">
-                            <span className="font-medium text-fg-secondary">{p.label || p.name}</span>
-                            <span className="text-fg-quaternary">({p.type || 'string'})</span>
-                            {p.required && <span className="text-red-400">*</span>}
-                          </span>
-                        ))}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Schedule */}
-                  {detail.schedule && (
-                    <div>
-                      <p className="text-[10px] text-fg-tertiary font-medium mb-1 uppercase tracking-wider">{t('work:task.workflowScheduled', 'Schedule')}</p>
-                      <p className="text-xs text-fg-secondary">
-                        {detail.schedule.cron && `cron: ${detail.schedule.cron}`}
-                        {detail.schedule.interval && `every: ${detail.schedule.interval}`}
-                      </p>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              {(() => {
-                const allRuns = runs[wf.name] ?? [];
-                if (allRuns.length === 0) return null;
-                const runsOpen = expandedRuns.has(wf.name);
-                const visibleRuns = runsOpen ? allRuns : allRuns.slice(0, 1);
-                return (
-                <div className="border-t border-border-default/30 pt-2 mt-1">
-                  <div
-                    className="flex items-center gap-1.5 mb-1.5 cursor-pointer select-none"
-                    onClick={() => setExpandedRuns(prev => {
-                      const next = new Set(prev);
-                      next.has(wf.name) ? next.delete(wf.name) : next.add(wf.name);
-                      return next;
-                    })}
-                  >
-                    <svg className={`w-3 h-3 text-fg-quaternary transition-transform ${runsOpen ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                    <p className="text-[10px] text-fg-tertiary font-medium uppercase tracking-wider">{t('work:task.workflowRecentRuns', 'Recent Runs')}</p>
-                    {allRuns.length > 1 && <span className="text-[10px] text-fg-quaternary">({allRuns.length})</span>}
-                  </div>
-                  <div className="space-y-1">
-                    {visibleRuns.map(run => (
-                      <div key={run.id} className="flex flex-wrap items-center gap-2 text-xs px-2 py-1.5 rounded hover:bg-surface-elevated/50">
-                        <span className="text-fg-secondary font-medium">#{run.runNumber}</span>
-                        {statusBadge(run.status)}
-                        <span className="text-fg-tertiary">{run.taskIds.length} tasks</span>
-                        <span className="text-fg-tertiary">{new Date(run.startedAt).toLocaleDateString()}</span>
-                        {run.triggeredBy === 'schedule' && <span className="text-[10px] text-purple-400">auto</span>}
-                        <span className="flex-1" />
-                        {(run.status === 'running' || (run.status as string) === 'paused') && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); togglePauseRun(run); }}
-                            disabled={pausingRunId === run.id}
-                            className={`px-2.5 py-0.5 text-[10px] rounded-lg font-medium transition-colors ${run.status === 'running' ? 'bg-amber-500/20 text-amber-400 hover:bg-amber-500/30' : 'bg-green-500/20 text-green-400 hover:bg-green-500/30'}`}
-                          >
-                            {pausingRunId === run.id
-                              ? '...'
-                              : run.status === 'running'
-                                ? t('work:task.workflowPause', 'Pause')
-                                : t('work:task.workflowResume', 'Resume')}
-                          </button>
-                        )}
-                        {(run.status === 'running' || (run.status as string) === 'paused') && (
-                          <button
-                            onClick={(e) => { e.stopPropagation(); setConfirmCancelRunId(run.id); }}
-                            className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-red-500/20 text-red-400 hover:bg-red-500/30 transition-colors"
-                          >
-                            {t('work:task.workflowCancelRun', 'Cancel Run')}
-                          </button>
-                        )}
-                        <button
-                          onClick={() => viewRunTasks(run)}
-                          className="px-2.5 py-0.5 text-[10px] rounded-lg font-medium bg-brand-500/20 text-brand-400 hover:bg-brand-500/30 transition-colors"
-                        >
-                          {t('work:task.workflowViewTasks', 'View Tasks')}
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-                );
-              })()}
-            </div>
-          );
+              <WorkflowCard
+                key={wf.name}
+                workflow={wf}
+                detail={templateDetails[wf.name]}
+                detailState={detailState[wf.name] ?? 'idle'}
+                onRetryDetail={() => retryDetail(wf.name)}
+                expanded={expandedWorkflows.has(wf.name)}
+                onToggle={() => toggleExpanded(wf.name)}
+                runs={wfRuns}
+                runTasks={runTasks}
+                onRun={() => openRunModal(wf)}
+                onOpenRun={(run) => {
+                  setDrawerRun(run);
+                  void loadRunTasks(run);
+                }}
+                onSaveStep={(stepId, patch) => saveWorkflowStep(wf.name, stepId, patch)}
+                roleAgentName={roleNameFor}
+                onSendToAgent={() => sendWorkflowToChat(wf)}
+                onEdit={() => void openManage('edit', wf)}
+                onDuplicate={() => void openManage('duplicate', wf)}
+                onDelete={() => void openManage('delete', wf)}
+              />
+            );
           })}
           <WorkflowHowItWorks teamId={teamId} agents={agents} compact />
         </div>
+      )}
+
+      {drawerRun && (
+        <WorkflowRunDrawer
+          workflow={workflows.find((w) => w.name === drawerRun.workflowName) ?? { name: drawerRun.workflowName, displayName: drawerRun.workflowName, description: '', version: '', roles: [], hasSchedule: false, stepCount: 0 }}
+          run={drawerRun}
+          detail={templateDetails[drawerRun.workflowName]}
+          tasks={runTasks[drawerRun.id]}
+          tasksLoading={runTasksLoading[drawerRun.id]}
+          onClose={() => setDrawerRun(null)}
+          onPauseResume={() => void togglePauseRun(drawerRun)}
+          onCancel={() => setConfirmCancelRunId(drawerRun.id)}
+          onViewTasks={() => {
+            viewRunTasks(drawerRun);
+            setDrawerRun(null);
+          }}
+          pausing={pausingRunId === drawerRun.id}
+          onOpenTask={(taskId) => {
+            setDrawerRun(null);
+            openTaskById(taskId);
+          }}
+          roleAgentName={(role) => {
+            const agentId = drawerRun.roleMapping?.[role];
+            return agentId ? agents.find((a) => a.id === agentId)?.name : undefined;
+          }}
+        />
+      )}
+
+      {manage && (
+        <WorkflowManageModal
+          mode={manage.mode}
+          workflow={manage.workflow}
+          yaml={manage.yaml}
+          yamlLoading={manage.yamlLoading}
+          busy={manage.busy}
+          error={manage.error}
+          onClose={() => setManage(null)}
+          onSubmit={submitManage}
+        />
+      )}
+
+      {/* Same picker a task/requirement uses — the recipient is the user's choice. */}
+      {sendWorkflow && (
+        <SharedSendToChatModal
+          chipLabel={workflowChipLabel(sendWorkflow)}
+          chipContent={workflowChipContent(sendWorkflow)}
+          agents={agents}
+          users={users}
+          defaultTarget={workflowDefaultTarget(sendWorkflow)}
+          onClose={() => setSendWorkflow(null)}
+        />
       )}
 
       {/* Run modal */}
@@ -4652,11 +4813,27 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
       )}
 
       {/* Cancel confirmation modal */}
-      {confirmCancelRunId && (
+      {confirmCancelRunId && (() => {
+        // 让用户在按"确认"之前看到真实影响面：这次到底会取消几个未完成任务。
+        const target = Object.values(runs).flat().find(r => r.id === confirmCancelRunId);
+        const tasks = target ? runTasks[target.id] : undefined;
+        const total = target?.taskIds.length ?? 0;
+        const terminal = new Set(['completed', 'archived', 'cancelled', 'rejected', 'failed']);
+        const cancellable = tasks ? tasks.filter(t => !terminal.has(t.status)).length : null;
+        return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-semibold text-fg-primary mb-2">{t('work:task.workflowConfirmCancelTitle', 'Cancel Workflow Run')}</h3>
-            <p className="text-xs text-fg-secondary mb-5">{t('work:task.workflowConfirmCancelDesc', 'This will cancel all running and pending tasks in this workflow run. This action cannot be undone.')}</p>
+            <p className="text-xs text-fg-secondary mb-2">{t('work:task.workflowConfirmCancelDesc', 'This will cancel all running and pending tasks in this workflow run. This action cannot be undone.')}</p>
+            {cancellable !== null ? (
+              <p className="text-xs font-medium text-fg-primary mb-5">
+                {t('work:task.workflowCancelScope', '将取消 {{count}} 个未完成任务（该运行共 {{total}} 个）', { count: cancellable, total })}
+              </p>
+            ) : (
+              <p className="text-xs text-fg-tertiary mb-5">
+                {t('work:task.workflowCancelScopeUnknown', '该运行共有 {{total}} 个任务（正在统计其中未完成的数量）', { total })}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmCancelRunId(null)} className="btn-secondary text-xs px-4 py-1.5">{t('work:task.workflowNo', 'No')}</button>
               <button onClick={() => cancelRun(confirmCancelRunId)} disabled={cancellingRunId === confirmCancelRunId} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg font-medium transition-colors">
@@ -4665,7 +4842,8 @@ function WorkflowsPanel({ teamId: propTeamId, projectId: propProjectId, agents, 
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -4849,6 +5027,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [dragOverCol, setDragOverCol] = useState<string | null>(null);
   const [boardType, setBoardType] = useState<BoardType>(previewData?.initialBoardType ?? 'backlog');
   const [dagExpandReqId, setDagExpandReqId] = useState<string | null>(null);
+  // A requirement the user explicitly asked to open. Held separately from the
+  // filtered/paginated list so no filter can hide it (see openRequirementInDag).
+  const [dagFocusReq, setDagFocusReq] = useState<RequirementInfo | null>(null);
+  // …and its tasks: the board only carries active work, so an archived run's
+  // tasks have to be fetched to draw its graph.
+  const [dagFocusTasks, setDagFocusTasks] = useState<TaskInfo[]>([]);
   // Horizontal swipe at PAGE level belongs to the ring (lib/navRing.ts); the four
   // board views are four steps on that ring, so this page no longer runs its own
   // swipe recognisers. It registers a GETTER so the ring always reads the live
@@ -5214,6 +5398,45 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (opts?.scrollToComments) setScrollToComments(true);
     if (isMobile) { setMobileShowDetail(true); }
   }, [isMobile]);
+
+  /**
+   * "Open this requirement's dependency graph" — one intent, one implementation.
+   *
+   * It used to be three setters written inline at each call site
+   * (`forceOpenReq` + `setDagExpandReqId` + `setBoardType('dag')`), none of which
+   * touched the scope the graph actually depends on. So `查看任务` from a workflow
+   * run's drawer landed on a DAG that could not render: the board was scoped to
+   * another project, and — for any finished run — every task was closed and
+   * `showClosed` was off, so the graph came out empty.
+   */
+  const openRequirementInDag = useCallback((req: RequirementInfo) => {
+    // 1. Scope: select the requirement's project so its tasks are loaded at all
+    //    (this also refetches the board and rewrites the URL).
+    ensureProjectVisible(req.projectId);
+    // 2. Filters: never hide the thing the user explicitly asked to see.
+    setStatusFilter(null);
+    setAgentFilter(new Set());
+    setProjectFilter(new Set());
+    setMyTasksOnly(false);
+    // 3. Closed items: a finished run's requirement/tasks are archived; reveal them.
+    setShowClosed(true);
+    // 4. The focus carries its own data. The requirement list is paginated
+    //    (300+ requirements here) and the board only holds *active* work, so a
+    //    finished run's requirement *and* its archived tasks are often absent —
+    //    filters were the wrong lever. Fetch the requirement's tasks explicitly
+    //    and hand both to the graph as focus data.
+    setDagFocusReq(req);
+    setDagFocusTasks([]);
+    void api.tasks.list({ requirementId: req.id, pageSize: 200 })
+      .then(({ tasks }) => {
+        if (tasks?.length) setDagFocusTasks(tasks);
+      })
+      .catch(() => { /* the graph still shows the requirement node */ });
+    // 5. Open it.
+    forceOpenReq(req);
+    setDagExpandReqId(`req-${req.id}`);
+    setBoardType('dag');
+  }, [ensureProjectVisible, forceOpenReq]);
 
   // Try to open a task from localStorage (set by other pages before mount).
   // Uses API fallback when the task isn't in the board yet.
@@ -5613,17 +5836,24 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const CLOSED_STATUSES = new Set(['rejected', 'cancelled', 'archived']);
   const isClosed = (t: { status: string }) => CLOSED_STATUSES.has(t.status);
 
-  const filterTasks = (tasks: TaskInfo[], includeArchived = false) => {
-    let result = tasks.filter(t => showClosed || !isClosed(t));
-    if (statusFilter) result = result.filter(t => t.status === statusFilter);
-    if (viewMode === 'project' && selectedProjectId) {
-      result = result.filter(t => t.projectId === selectedProjectId);
-    }
-    if (projectFilter.size > 0) result = result.filter(t => t.projectId && projectFilter.has(t.projectId));
-    if (agentFilter.size > 0) result = result.filter(t => t.assignedAgentId && agentFilter.has(t.assignedAgentId));
-    if (myTasksOnly && authUser?.id) result = result.filter(t => t.createdBy === authUser.id);
-    return result;
-  };
+  /**
+   * Visibility for the board. The rules themselves live in `lib/boardFilters`
+   * (pure + tested) because the previous inline copy ignored its own
+   * `includeArchived` argument — which is exactly why "查看任务" on a finished
+   * run opened an empty dependency graph.
+   */
+  const filterTasks = (tasks: TaskInfo[], includeArchived = false) =>
+    filterBoardTasks(tasks, {
+      showClosed,
+      includeClosed: includeArchived,
+      statusFilter,
+      viewMode,
+      selectedProjectId,
+      projectFilter,
+      agentFilter,
+      myTasksOnly,
+      currentUserId: authUser?.id,
+    });
 
   const boardTaskMap = useMemo(() => {
     const m = new Map<string, TaskInfo>();
@@ -6369,20 +6599,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           <div
             className="flex-1 min-h-0 flex flex-col relative"
           >
-          <WorkflowsPanel teamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} projects={projects} onViewRunTasks={(reqId) => {
-            const openReqInDag = (req: RequirementInfo) => {
-              forceOpenReq(req);
-              setDagExpandReqId(`req-${req.id}`);
-              setBoardType('dag');
-            };
+          <WorkflowsPanel teamId={null} defaultTeamId={selectedProjectTeamId} projectId={selectedProjectId} agents={agents} users={users} projects={projects} onViewRunTasks={(reqId) => {
             const req = allRequirements.find(r => r.id === reqId);
             if (req) {
-              openReqInDag(req);
+              openRequirementInDag(req);
             } else {
               api.requirements.get(reqId).then(resp => {
                 if (resp.requirement) {
                   setAllRequirements(prev => [...prev, resp.requirement]);
-                  openReqInDag(resp.requirement);
+                  openRequirementInDag(resp.requirement);
                 }
               }).catch(() => {});
             }
@@ -6400,15 +6625,26 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 const reqTaskIds = new Set(selectedReq.taskIds ?? []);
                 return allDagTasks.filter(t => reqTaskIds.has(t.id));
               }
-              return allDagTasks;
+              // Focus data: the board only carries active work, so an archived
+              // run's tasks are merged in explicitly (deduped by id).
+              if (dagFocusTasks.length === 0) return allDagTasks;
+              const byId = new Map(allDagTasks.map(t => [t.id, t]));
+              for (const task of dagFocusTasks) byId.set(task.id, task);
+              return [...byId.values()];
             })()}
-            requirements={previewMode && selectedReq ? [selectedReq] : filteredReqs}
+            requirements={(() => {
+              const base = previewMode && selectedReq ? [selectedReq] : filteredReqs;
+              // The focus requirement must render even when it is archived, and
+              // even when it is not in the (paginated) requirement list.
+              if (!dagFocusReq || base.some(r => r.id === dagFocusReq.id)) return base;
+              return [dagFocusReq, ...base];
+            })()}
             agents={agents}
             showArchived={showClosed}
             onShowArchivedChange={setShowClosed}
             onTaskClick={(task) => handleSelectTask(task)}
             onReqClick={(req) => handleSelectReq(req)}
-            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); }}
+            onCollapseDAG={() => { setSelectedTask(null); setSelectedReq(null); setDagExpandReqId(null); setDagFocusReq(null); setDagFocusTasks([]); }}
             onDependencyChange={refreshBoard}
             selectedTaskId={selectedTask?.id}
             selectedReqId={selectedReq?.id}
@@ -7251,7 +7487,58 @@ function RequirementDetailPanel({
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  /** 状态下拉改成"按钮 + 合法流转菜单"（原生 select 看不出后果，也会展示一堆禁用项） */
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusMenuOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [statusMenuOpen]);
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
+
+  // ── 批量批准（需求级一次决策） ───────────────────────────────────────────
+  // 批准即开始执行（标准任务没有"已批准但未启动"的状态），所以弹窗必须把
+  // "将同时启动 N 个任务"讲清楚；预检数字来自后端 dryRun，不是前端估算。
+  const [bulkApprove, setBulkApprove] = useState<null | {
+    phase: 'preview' | 'result';
+    approved: Array<{ id: string; title: string }>;
+    skipped: Array<{ id: string; title: string; reason: string }>;
+    failed: Array<{ id: string; title: string; error: string }>;
+  }>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const pendingTaskCount = useMemo(
+    () => allTasks.filter((task) => task.requirementId === req.id && task.status === 'pending').length,
+    [allTasks, req.id],
+  );
+
+  const openBulkPreview = async () => {
+    setBulkError(null);
+    setBulkBusy(true);
+    try {
+      const result = await api.requirements.approveTasksBulk(req.id, { dryRun: true });
+      setBulkApprove({ phase: 'preview', ...result });
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmBulkApprove = async () => {
+    setBulkError(null);
+    setBulkBusy(true);
+    try {
+      const result = await api.requirements.approveTasksBulk(req.id, { runNow: true });
+      setBulkApprove({ phase: 'result', ...result });
+      onRefresh?.();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
@@ -7651,6 +7938,129 @@ function RequirementDetailPanel({
 
         {/* Actions */}
         <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
+          {pendingTaskCount > 0 && (
+            <>
+              <button
+                onClick={() => void openBulkPreview()}
+                disabled={bulkBusy}
+                className="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-60"
+              >
+                {t('work:requirement.bulkApprove', '批量批准待批任务 ({{count}})', { count: pendingTaskCount })}
+              </button>
+              {bulkApprove && (
+                <div
+                  className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4"
+                  onClick={() => { if (!bulkBusy) setBulkApprove(null); }}
+                >
+                  <div
+                    className="w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl border border-border-default bg-surface-primary shadow-2xl overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={t('work:requirement.bulkApproveTitle', '批量批准待批任务')}
+                  >
+                    <div className="px-5 pt-4 pb-3 border-b border-border-default shrink-0">
+                      <h3 className="text-sm font-semibold text-fg-primary">
+                        {bulkApprove.phase === 'preview'
+                          ? t('work:requirement.bulkApproveTitle', '批量批准待批任务')
+                          : t('work:requirement.bulkApproveDone', '批量批准结果')}
+                      </h3>
+                      {bulkApprove.phase === 'preview' && (
+                        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400 leading-relaxed">
+                          {t(
+                            'work:requirement.bulkApproveWarning',
+                            '批准后立即开始执行：将同时启动 {{count}} 个任务，各自占用对应 agent。',
+                            { count: bulkApprove.approved.length },
+                          )}
+                        </p>
+                      )}
+                      {bulkApprove.phase === 'result' && (
+                        <p className="mt-1 text-xs text-fg-secondary">
+                          {t('work:requirement.bulkApproveSummary', '成功 {{ok}} · 跳过 {{skip}} · 失败 {{fail}}', {
+                            ok: bulkApprove.approved.length,
+                            skip: bulkApprove.skipped.length,
+                            fail: bulkApprove.failed.length,
+                          })}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3 space-y-3">
+                      {bulkApprove.approved.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary mb-1">
+                            {bulkApprove.phase === 'preview'
+                              ? t('work:requirement.bulkApproveWillApprove', '将批准')
+                              : t('work:requirement.bulkApproveApproved', '已批准')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.approved.map((item) => (
+                              <li key={item.id} className="text-xs text-fg-secondary truncate">· {item.title}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.skipped.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary mb-1">
+                            {t('work:requirement.bulkApproveSkipped', '跳过（不满足批准条件）')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.skipped.map((item) => (
+                              <li key={item.id} className="text-xs text-fg-tertiary truncate">
+                                · {item.title || item.id} — {item.reason}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.failed.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-red-500 mb-1">
+                            {t('work:requirement.bulkApproveFailed', '失败')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.failed.map((item) => (
+                              <li key={item.id} className="text-xs text-red-500 truncate">
+                                · {item.title} — {item.error}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.approved.length === 0 && bulkApprove.skipped.length === 0 && (
+                        <p className="text-xs text-fg-tertiary">
+                          {t('work:requirement.bulkApproveNothing', '没有可批准的待批任务。')}
+                        </p>
+                      )}
+                      {bulkError && <p className="text-xs text-red-500">{bulkError}</p>}
+                    </div>
+
+                    <div className="px-5 py-3 border-t border-border-default flex justify-end gap-2 shrink-0">
+                      <button
+                        onClick={() => setBulkApprove(null)}
+                        disabled={bulkBusy}
+                        className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors disabled:opacity-60"
+                      >
+                        {bulkApprove.phase === 'preview' ? t('common:cancel') : t('common:close')}
+                      </button>
+                      {bulkApprove.phase === 'preview' && (
+                        <button
+                          onClick={() => void confirmBulkApprove()}
+                          disabled={bulkBusy || bulkApprove.approved.length === 0}
+                          className="px-3 py-1.5 text-xs rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium transition-colors disabled:opacity-60"
+                        >
+                          {bulkBusy
+                            ? t('work:requirement.bulkApproving', '批准中…')
+                            : t('work:requirement.bulkApproveConfirm', '确认批准并开始')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
           {needsReview && (
             <>
               <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg font-medium transition-colors">{t('work:requirement.approveRequirement')}</button>
@@ -7658,17 +8068,62 @@ function RequirementDetailPanel({
             </>
           )}
           {!needsReview && onStatusChange && !isTerminal && (
-            <select
-              value={req.status}
-              onChange={e => { if (e.target.value !== req.status) onStatusChange(req.id, e.target.value); }}
-              className="px-2 py-1.5 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-secondary cursor-pointer hover:border-gray-500 transition-colors"
-            >
-              {ALL_REQ_STATUSES.map(s => {
-                const b = reqBadges[s];
-                const allowed = s === req.status || (REQ_ALLOWED_TRANSITIONS[req.status]?.has(s) ?? false);
-                return <option key={s} value={s} disabled={!allowed}>{b?.label ?? s}</option>;
-              })}
-            </select>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setStatusMenuOpen(v => !v)}
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                aria-label={t('work:requirement.changeStatus', '切换状态')}
+                data-testid="requirement-status-menu"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-surface-elevated border border-border-default text-fg-secondary hover:border-gray-500 hover:text-fg-primary transition-colors"
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[req.status] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                {reqBadges[req.status]?.label ?? req.status}
+                <svg className="w-3 h-3 text-fg-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M18 15l-6-6-6 6" />
+                </svg>
+              </button>
+              {statusMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setStatusMenuOpen(false)} aria-hidden="true" />
+                  <div
+                    role="menu"
+                    className="absolute bottom-full left-0 mb-1 z-30 w-52 overflow-hidden rounded-xl border border-border-default bg-surface-secondary py-1 shadow-xl"
+                  >
+                    {(() => {
+                      // 只列出**当前合法**的流转；"取消"由右侧那个红色按钮独占
+                      // （一个动作一个控件，避免两条写路径）。needsReview 时
+                      // 拒绝由 Approve/Reject 按钮负责，这里也不重复给。
+                      const options = [...(REQ_ALLOWED_TRANSITIONS[req.status] ?? [])]
+                        .filter(s => s !== 'cancelled' && !(needsReview && s === 'rejected'));
+                      if (options.length === 0) {
+                        return (
+                          <p className="px-3 py-2 text-[11px] text-fg-tertiary">
+                            {t('work:requirement.noStatusChange', '暂无可用状态变更')}
+                          </p>
+                        );
+                      }
+                      return options.map(next => (
+                        <button
+                          key={next}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => { setStatusMenuOpen(false); onStatusChange(req.id, next); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:bg-surface-elevated focus:outline-none"
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[next] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                          <span className="flex-1">{reqBadges[next]?.label ?? next}</span>
+                          {next === 'completed' && (
+                            <span className="text-[10px] text-fg-quaternary">{t('work:requirement.terminalHint', '终态')}</span>
+                          )}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
           )}
           {isTerminal && onStatusChange && (
             <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">{t('work:task.reopen')}</button>
