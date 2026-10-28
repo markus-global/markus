@@ -3297,7 +3297,8 @@ const GROUP_HEADER_CLS: Record<string, string> = {
   closed: 'border-l-gray-500 text-fg-tertiary',
 };
 
-const ALL_REQ_STATUSES = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived'] as const;
+// 需求状态切换现在由「按钮 + 合法流转菜单」承担（REQ_ALLOWED_TRANSITIONS 是唯一来源），
+// 原来给原生 <select> 用的全量状态列表已无用途，删除以免留下第二个"状态清单"。
 
 function taskToGroup(status: string): string {
   for (const col of BOARD_COLUMNS_BASE) {
@@ -4812,11 +4813,27 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
       )}
 
       {/* Cancel confirmation modal */}
-      {confirmCancelRunId && (
+      {confirmCancelRunId && (() => {
+        // 让用户在按"确认"之前看到真实影响面：这次到底会取消几个未完成任务。
+        const target = Object.values(runs).flat().find(r => r.id === confirmCancelRunId);
+        const tasks = target ? runTasks[target.id] : undefined;
+        const total = target?.taskIds.length ?? 0;
+        const terminal = new Set(['completed', 'archived', 'cancelled', 'rejected', 'failed']);
+        const cancellable = tasks ? tasks.filter(t => !terminal.has(t.status)).length : null;
+        return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-sm font-semibold text-fg-primary mb-2">{t('work:task.workflowConfirmCancelTitle', 'Cancel Workflow Run')}</h3>
-            <p className="text-xs text-fg-secondary mb-5">{t('work:task.workflowConfirmCancelDesc', 'This will cancel all running and pending tasks in this workflow run. This action cannot be undone.')}</p>
+            <p className="text-xs text-fg-secondary mb-2">{t('work:task.workflowConfirmCancelDesc', 'This will cancel all running and pending tasks in this workflow run. This action cannot be undone.')}</p>
+            {cancellable !== null ? (
+              <p className="text-xs font-medium text-fg-primary mb-5">
+                {t('work:task.workflowCancelScope', '将取消 {{count}} 个未完成任务（该运行共 {{total}} 个）', { count: cancellable, total })}
+              </p>
+            ) : (
+              <p className="text-xs text-fg-tertiary mb-5">
+                {t('work:task.workflowCancelScopeUnknown', '该运行共有 {{total}} 个任务（正在统计其中未完成的数量）', { total })}
+              </p>
+            )}
             <div className="flex justify-end gap-2">
               <button onClick={() => setConfirmCancelRunId(null)} className="btn-secondary text-xs px-4 py-1.5">{t('work:task.workflowNo', 'No')}</button>
               <button onClick={() => cancelRun(confirmCancelRunId)} disabled={cancellingRunId === confirmCancelRunId} className="px-4 py-1.5 bg-red-600 hover:bg-red-500 text-white text-xs rounded-lg font-medium transition-colors">
@@ -4825,7 +4842,8 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
             </div>
           </div>
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
@@ -7469,6 +7487,14 @@ function RequirementDetailPanel({
   const [descDraft, setDescDraft] = useState(req.description);
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
+  /** 状态下拉改成"按钮 + 合法流转菜单"（原生 select 看不出后果，也会展示一堆禁用项） */
+  const [statusMenuOpen, setStatusMenuOpen] = useState(false);
+  useEffect(() => {
+    if (!statusMenuOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === 'Escape') setStatusMenuOpen(false); };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [statusMenuOpen]);
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
 
   // ── 批量批准（需求级一次决策） ───────────────────────────────────────────
@@ -8042,17 +8068,62 @@ function RequirementDetailPanel({
             </>
           )}
           {!needsReview && onStatusChange && !isTerminal && (
-            <select
-              value={req.status}
-              onChange={e => { if (e.target.value !== req.status) onStatusChange(req.id, e.target.value); }}
-              className="px-2 py-1.5 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-secondary cursor-pointer hover:border-gray-500 transition-colors"
-            >
-              {ALL_REQ_STATUSES.map(s => {
-                const b = reqBadges[s];
-                const allowed = s === req.status || (REQ_ALLOWED_TRANSITIONS[req.status]?.has(s) ?? false);
-                return <option key={s} value={s} disabled={!allowed}>{b?.label ?? s}</option>;
-              })}
-            </select>
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setStatusMenuOpen(v => !v)}
+                aria-haspopup="menu"
+                aria-expanded={statusMenuOpen}
+                aria-label={t('work:requirement.changeStatus', '切换状态')}
+                data-testid="requirement-status-menu"
+                className="inline-flex items-center gap-1.5 px-2.5 py-1.5 text-xs rounded-lg bg-surface-elevated border border-border-default text-fg-secondary hover:border-gray-500 hover:text-fg-primary transition-colors"
+              >
+                <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[req.status] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                {reqBadges[req.status]?.label ?? req.status}
+                <svg className="w-3 h-3 text-fg-tertiary" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true">
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M18 15l-6-6-6 6" />
+                </svg>
+              </button>
+              {statusMenuOpen && (
+                <>
+                  <div className="fixed inset-0 z-20" onClick={() => setStatusMenuOpen(false)} aria-hidden="true" />
+                  <div
+                    role="menu"
+                    className="absolute bottom-full left-0 mb-1 z-30 w-52 overflow-hidden rounded-xl border border-border-default bg-surface-secondary py-1 shadow-xl"
+                  >
+                    {(() => {
+                      // 只列出**当前合法**的流转；"取消"由右侧那个红色按钮独占
+                      // （一个动作一个控件，避免两条写路径）。needsReview 时
+                      // 拒绝由 Approve/Reject 按钮负责，这里也不重复给。
+                      const options = [...(REQ_ALLOWED_TRANSITIONS[req.status] ?? [])]
+                        .filter(s => s !== 'cancelled' && !(needsReview && s === 'rejected'));
+                      if (options.length === 0) {
+                        return (
+                          <p className="px-3 py-2 text-[11px] text-fg-tertiary">
+                            {t('work:requirement.noStatusChange', '暂无可用状态变更')}
+                          </p>
+                        );
+                      }
+                      return options.map(next => (
+                        <button
+                          key={next}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => { setStatusMenuOpen(false); onStatusChange(req.id, next); }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-xs text-fg-secondary transition-colors hover:bg-surface-elevated hover:text-fg-primary focus:bg-surface-elevated focus:outline-none"
+                        >
+                          <span className={`w-1.5 h-1.5 rounded-full ${STATUS_DOT[next] ?? 'bg-fg-quaternary'}`} aria-hidden="true" />
+                          <span className="flex-1">{reqBadges[next]?.label ?? next}</span>
+                          {next === 'completed' && (
+                            <span className="text-[10px] text-fg-quaternary">{t('work:requirement.terminalHint', '终态')}</span>
+                          )}
+                        </button>
+                      ));
+                    })()}
+                  </div>
+                </>
+              )}
+            </div>
           )}
           {isTerminal && onStatusChange && (
             <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">{t('work:task.reopen')}</button>
