@@ -2935,7 +2935,7 @@ function TaskDetailPanel({
       )}
       {cancelConfirm && cancelConfirm.dependentCount > 0 ? (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[60]" onClick={() => setCancelConfirm(null)}>
-          <div className="bg-surface-default border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
+          <div className="bg-surface-secondary border border-border-default rounded-xl p-6 max-w-md w-full shadow-2xl" onClick={e => e.stopPropagation()}>
             <h3 className="text-base font-semibold text-fg-primary mb-2">{t('work:task.cancelTaskModalTitle')}</h3>
             <p className="text-sm text-fg-secondary mb-4">
               {isScheduled && <><span className="block mb-1 text-amber-600">{t('work:task.cancelScheduledConfirmMessage')}</span></>}

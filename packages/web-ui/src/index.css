@@ -29,6 +29,10 @@
   --color-fg-secondary: oklch(0.72 0.006 270);
   --color-fg-tertiary: oklch(0.55 0.006 270);
   --color-fg-muted: oklch(0.42 0.005 270);
+  /* `fg-quaternary` 在 UI 里用了上百处，但主题**从未定义**它 —— 于是那批
+     "最淡的一级文字"实际继承父级颜色（看起来和正文一样重）。这里把它定义成
+     muted 的别名（var 引用，随时跟随主题变化），而不是逐处替换 100 个类名。 */
+  --color-fg-quaternary: var(--color-fg-muted);
 
   /* Switch (on/off) states. These are tokens, not per-component Tailwind
      colours, because a raw `dark:` utility does NOT follow the app's theme
