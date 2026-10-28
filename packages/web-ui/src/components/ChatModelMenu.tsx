@@ -262,7 +262,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
               value={query}
               onChange={e => setQuery(e.target.value)}
               placeholder={t('chatModel.search', { defaultValue: 'Search models' })}
-              className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-surface-base border border-border-default/50 outline-none focus:border-brand-500/50"
+              className="w-full px-2.5 py-1.5 text-xs rounded-lg bg-surface-primary border border-border-default/50 outline-none focus:border-brand-500/50"
             />
             <label className="flex items-center justify-between gap-2 px-0.5 text-xs text-fg-secondary cursor-pointer select-none">
               <span>{t('chatModel.applyGlobal', { defaultValue: 'Apply to global' })}</span>
@@ -323,7 +323,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
                         }
                         setOpen(false);
                       }}
-                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-surface-base transition-colors ${selected ? 'text-fg-primary' : 'text-fg-secondary'}`}
+                      className={`w-full text-left px-3 py-1.5 text-xs flex items-center gap-2 hover:bg-surface-primary transition-colors ${selected ? 'text-fg-primary' : 'text-fg-secondary'}`}
                     >
                       <span className="truncate flex-1">{m.id}</span>
                       {selected && (

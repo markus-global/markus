@@ -21,23 +21,20 @@ const webUiRoot = join(here, '..');
 const srcDir = join(webUiRoot, 'src');
 
 /**
- * 遗留 token 的**存量快照**（数量棘轮）。
- *
- * 这些名字在主题里已有 var() 别名（视觉正确），但调用点还没改成规范名。
- * 允许**减少**，不允许**增加**；数量对不上就红，逼着清单跟着现实走。
- * 烧账方式：用字符串级 codemod 改完调用点后，相应数字减到 0，然后删掉别名。
+ * 已退役的遗留 token 名（2026-10-28 用 codemod 全部改名）。
+ * 它们**不得再出现在源码里**——否则同一个概念又会多出一个名字。
  */
-const LEGACY_BASELINE: Record<string, number> = {
-  'content-tertiary': 17,
-  'content-secondary': 14,
-  'content-primary': 9,
-  'surface-inset': 7,
-  'surface-2': 7,
-  'surface-3': 6,
-  'surface-base': 4,
-  'surface-tertiary': 4,
-  'border-hover': 2,
-};
+const LEGACY_TOKENS = [
+  'surface-base',
+  'surface-2',
+  'surface-3',
+  'surface-inset',
+  'surface-tertiary',
+  'border-hover',
+  'content-primary',
+  'content-secondary',
+  'content-tertiary',
+];
 
 /** 主题里定义过的语义色 token（--color-*）。 */
 function definedTokens(): Set<string> {
@@ -89,24 +86,19 @@ describe('Tailwind 语义色 token', () => {
     ).toEqual([]);
   });
 
-  it('遗留 token 的用量只减不增（存量棘轮）', () => {
-    const counts: Record<string, number> = {};
+  it('遗留 token 名已全部改名为规范名（不得回流）', () => {
+    const regressions: string[] = [];
     for (const file of walk(srcDir)) {
       const text = readFileSync(file, 'utf8');
       for (const match of text.matchAll(SEMANTIC)) {
         const token = `${match[1]}-${match[2]}`;
-        if (!(token in LEGACY_BASELINE)) continue;
-        counts[token] = (counts[token] ?? 0) + 1;
+        if (LEGACY_TOKENS.includes(token)) regressions.push(`${relative(webUiRoot, file)} → ${token}`);
       }
     }
 
-    const regressions: string[] = [];
-    for (const [token, baseline] of Object.entries(LEGACY_BASELINE)) {
-      const now = counts[token] ?? 0;
-      if (now > baseline) regressions.push(`${token}: ${baseline} → ${now}（新增了遗留名用法，请改用规范 token）`);
-      if (now < baseline) regressions.push(`${token}: ${baseline} → ${now}（已减少，请同步更新 LEGACY_BASELINE）`);
-    }
-
-    expect(regressions, `遗留 token 存量对不上：\n${regressions.join('\n')}`).toEqual([]);
+    expect(
+      regressions,
+      `遗留 token 名又被用上了，请改用规范 token（surface-primary/elevated/overlay/secondary、fg-*）：\n${regressions.join('\n')}`,
+    ).toEqual([]);
   });
 });

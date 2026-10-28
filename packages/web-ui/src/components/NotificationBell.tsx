@@ -1075,7 +1075,7 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
             aria-pressed={notifFilter === f}
             title={f === 'unread' ? t('team:notifications.noUnread') : undefined}
             className={`px-2 py-0.5 rounded text-[10px] font-medium transition-colors ${
-              notifFilter === f ? 'bg-surface-base text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'
+              notifFilter === f ? 'bg-surface-primary text-fg-primary shadow-sm' : 'text-fg-tertiary hover:text-fg-secondary'
             }`}
           >
             {f === 'unread'

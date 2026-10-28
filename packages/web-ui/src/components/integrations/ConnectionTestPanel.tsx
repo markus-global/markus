@@ -145,7 +145,7 @@ export function ConnectionTestPanel({ test, starting, onStart, lastVerifiedAt = 
             (test.status === 'verified' || test.status === 'expired' ? (
               <Msg type={test.status === 'verified' ? 'ok' : 'err'} text={statusHint} />
             ) : (
-              <div className="px-3 py-2 rounded-lg text-xs bg-surface-tertiary text-fg-secondary">
+              <div className="px-3 py-2 rounded-lg text-xs bg-surface-elevated text-fg-secondary">
                 {statusHint}
               </div>
             ))}
@@ -175,7 +175,7 @@ export function ConnectionTestPanel({ test, starting, onStart, lastVerifiedAt = 
         onClick={onStart}
         disabled={starting}
         data-testid="connection-test-start"
-        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-fg-primary border border-border-default rounded-lg hover:bg-surface-tertiary disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+        className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-fg-primary border border-border-default rounded-lg hover:bg-surface-elevated disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
       >
         {starting ? (
           <div className="w-3 h-3 border-2 border-current border-t-transparent rounded-full animate-spin" />

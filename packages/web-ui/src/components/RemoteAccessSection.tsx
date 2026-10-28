@@ -258,7 +258,7 @@ export function RemoteAccessSection() {
   return (
     <Section title={t('settings:remoteAccess.title')}>
       <div className="space-y-5">
-        <p className="text-sm text-content-secondary">{t('settings:remoteAccess.description')}</p>
+        <p className="text-sm text-fg-secondary">{t('settings:remoteAccess.description')}</p>
 
         {!isAuthed ? (
           <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
@@ -274,7 +274,7 @@ export function RemoteAccessSection() {
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-content-secondary">
+          <div className="flex items-center gap-2 text-sm text-fg-secondary">
             <span className="w-2 h-2 rounded-full bg-green-500" />
             {t('settings:remoteAccess.signedInAs')}{' '}
             <strong>{hubUser?.username ?? hubUser?.displayName}</strong>
@@ -376,7 +376,7 @@ export function RemoteAccessSection() {
                       <div className="space-y-3">
                         {targets && targets.agents.length > 0 ? (
                           <label className="block text-sm">
-                            <span className="text-content-secondary">
+                            <span className="text-fg-secondary">
                               {t('settings:remoteAccess.path.agent.pickAgent')}
                             </span>
                             <select
@@ -398,12 +398,12 @@ export function RemoteAccessSection() {
                             </select>
                           </label>
                         ) : (
-                          <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-content-secondary">
+                          <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-fg-secondary">
                             {t('settings:remoteAccess.path.agent.noTargets')}
                           </div>
                         )}
 
-                        <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-content-secondary">
+                        <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-fg-secondary">
                           {wizard.handedToChat
                             ? t('settings:remoteAccess.path.agent.handed')
                             : t('settings:remoteAccess.path.agent.desc')}
@@ -411,7 +411,7 @@ export function RemoteAccessSection() {
 
                         {wizard.agentContract && (
                           <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-xs space-y-2">
-                            <div className="font-semibold text-content-secondary">
+                            <div className="font-semibold text-fg-secondary">
                               {t('settings:remoteAccess.path.agent.willRun')}
                             </div>
                             <ul className="space-y-1">
@@ -420,7 +420,7 @@ export function RemoteAccessSection() {
                                   <span className="shrink-0">
                                     {cmd.sensitive ? t('settings:remoteAccess.path.agent.sensitive') : '›'}
                                   </span>
-                                  <code className="break-all text-content-primary">{cmd.run}</code>
+                                  <code className="break-all text-fg-primary">{cmd.run}</code>
                                 </li>
                               ))}
                             </ul>
@@ -477,7 +477,7 @@ function WarningIcon() {
 
 function Spinner() {
   return (
-    <svg className="w-4 h-4 animate-spin text-content-secondary" viewBox="0 0 24 24" fill="none">
+    <svg className="w-4 h-4 animate-spin text-fg-secondary" viewBox="0 0 24 24" fill="none">
       <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
       <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
     </svg>
@@ -602,7 +602,7 @@ function MethodChooser({
 }) {
   return (
     <div>
-      <div className="text-xs text-content-tertiary uppercase tracking-wider mb-2">
+      <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-2">
         {t('settings:remoteAccess.methodTitle')}
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -621,7 +621,7 @@ function MethodChooser({
               }`}
             >
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-content-primary">
+                <span className="text-sm font-medium text-fg-primary">
                   {t(METHOD_LABEL[m.kind].name)}
                 </span>
                 {m.recommended && (
@@ -630,7 +630,7 @@ function MethodChooser({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-content-tertiary mt-1 leading-snug">
+              <p className="text-xs text-fg-tertiary mt-1 leading-snug">
                 {t(METHOD_LABEL[m.kind].desc)}
               </p>
               <div className="flex flex-wrap items-center gap-1.5 mt-2">
@@ -667,7 +667,7 @@ function Chip({ children, tone = 'default' }: { children: React.ReactNode; tone?
       ? 'bg-green-500/10 text-green-600 dark:text-green-400'
       : tone === 'warn'
         ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
-        : 'bg-surface-inset text-content-tertiary';
+        : 'bg-surface-secondary text-fg-tertiary';
   return <span className={`px-1.5 py-0.5 text-[10px] rounded ${toneClass}`}>{children}</span>;
 }
 
@@ -693,14 +693,14 @@ function WizardProgress({ t, phase }: { t: TFn; phase: WizardPhase }) {
                       ? 'bg-green-500 text-white'
                       : active
                         ? 'bg-brand-600 text-white'
-                        : 'bg-surface-inset text-content-tertiary'
+                        : 'bg-surface-secondary text-fg-tertiary'
                 }`}
               >
                 {done ? '✓' : isError ? '!' : i + 1}
               </span>
               <span
                 className={`text-[10px] leading-tight text-center truncate ${
-                  active || isError ? 'text-content-primary' : 'text-content-tertiary'
+                  active || isError ? 'text-fg-primary' : 'text-fg-tertiary'
                 }`}
               >
                 {t(STEP_LABEL[step])}
@@ -733,7 +733,7 @@ function PathPicker({
 }) {
   return (
     <div>
-      <div className="text-xs text-content-tertiary uppercase tracking-wider mb-2">
+      <div className="text-xs text-fg-tertiary uppercase tracking-wider mb-2">
         {t('settings:remoteAccess.pathTitle')}
       </div>
       <div className="grid gap-2 sm:grid-cols-2">
@@ -744,10 +744,10 @@ function PathPicker({
             setupPath === 'self' ? 'border-brand-500 bg-brand-500/5' : 'border-border-default bg-surface-secondary hover:border-brand-400/60'
           }`}
         >
-          <div className="text-sm font-medium text-content-primary">
+          <div className="text-sm font-medium text-fg-primary">
             {t('settings:remoteAccess.pathSelfTitle')}
           </div>
-          <p className="text-xs text-content-tertiary mt-1">{t('settings:remoteAccess.pathSelfDesc')}</p>
+          <p className="text-xs text-fg-tertiary mt-1">{t('settings:remoteAccess.pathSelfDesc')}</p>
         </button>
         <button
           type="button"
@@ -757,10 +757,10 @@ function PathPicker({
             setupPath === 'agent' ? 'border-brand-500 bg-brand-500/5' : 'border-border-default bg-surface-secondary hover:border-brand-400/60'
           }`}
         >
-          <div className="text-sm font-medium text-content-primary">
+          <div className="text-sm font-medium text-fg-primary">
             {t('settings:remoteAccess.pathAgentTitle')}
           </div>
-          <p className="text-xs text-content-tertiary mt-1">{t('settings:remoteAccess.pathAgentDesc')}</p>
+          <p className="text-xs text-fg-tertiary mt-1">{t('settings:remoteAccess.pathAgentDesc')}</p>
         </button>
       </div>
     </div>
@@ -802,7 +802,7 @@ function CommandsPanel({
             type="button"
             onClick={() => onPlatform(p)}
             className={`px-2 py-1 text-xs rounded-md transition-colors ${
-              platform === p ? 'bg-brand-600 text-white' : 'bg-surface-inset text-content-secondary hover:text-content-primary'
+              platform === p ? 'bg-brand-600 text-white' : 'bg-surface-secondary text-fg-secondary hover:text-fg-primary'
             }`}
           >
             {t(PLATFORM_LABEL[p])}
@@ -818,11 +818,11 @@ function CommandsPanel({
 
       {(['install', 'run'] as const).map((which) => (
         <div key={which}>
-          <div className="text-xs text-content-tertiary mb-1">
+          <div className="text-xs text-fg-tertiary mb-1">
             {which === 'install' ? t('settings:remoteAccess.commandsInstall') : t('settings:remoteAccess.commandsRun')}
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 px-3 py-2 text-xs bg-surface-inset rounded font-mono whitespace-pre-wrap break-all">
+            <code className="flex-1 px-3 py-2 text-xs bg-surface-secondary rounded font-mono whitespace-pre-wrap break-all">
               {commands[which]}
             </code>
             <button
@@ -867,14 +867,14 @@ function AddressPrompt({
 }) {
   return (
     <div className="p-3 rounded-xl bg-surface-secondary border border-border-default space-y-2">
-      <p className="text-xs text-content-secondary">{t('settings:remoteAccess.addressPrompt')}</p>
+      <p className="text-xs text-fg-secondary">{t('settings:remoteAccess.addressPrompt')}</p>
       <div className="flex items-center gap-2">
         <input
           type="text"
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={t('settings:remoteAccess.errorManualPlaceholder')}
-          className="flex-1 px-2 py-1.5 text-xs bg-surface-inset border border-border-default rounded font-mono"
+          className="flex-1 px-2 py-1.5 text-xs bg-surface-secondary border border-border-default rounded font-mono"
         />
         <button
           type="button"
@@ -921,7 +921,7 @@ function ErrorNotice({
       <div className="text-sm font-medium text-red-600 dark:text-red-400">
         {t('settings:remoteAccess.errorTitle')}
       </div>
-      <p className="text-xs text-content-secondary">
+      <p className="text-xs text-fg-secondary">
         {verifyFailure ? t(VERIFY_REASON_LABEL[verifyFailure]) : message ?? t('settings:remoteAccess.errorGeneric')}
       </p>
       {verifyFailure === 'unreachable' && (
@@ -935,7 +935,7 @@ function ErrorNotice({
             value={manualUrl}
             onChange={(e) => onManualChange(e.target.value)}
             placeholder={t('settings:remoteAccess.errorManualPlaceholder')}
-            className="flex-1 px-2 py-1.5 text-xs bg-surface-inset border border-border-default rounded font-mono"
+            className="flex-1 px-2 py-1.5 text-xs bg-surface-secondary border border-border-default rounded font-mono"
           />
           <button
             type="button"
@@ -966,7 +966,7 @@ function ErrorNotice({
         <button
           type="button"
           onClick={onStartOver}
-          className="ml-auto px-3 py-1.5 text-xs text-content-secondary hover:text-content-primary"
+          className="ml-auto px-3 py-1.5 text-xs text-fg-secondary hover:text-fg-primary"
         >
           {t('settings:remoteAccess.errorStartOver')}
         </button>
@@ -1014,7 +1014,7 @@ function ReadyPanel({
     <div className="space-y-3">
       <div className="flex items-center gap-2">
         <span className={`w-2 h-2 rounded-full ${online ? 'bg-green-500 animate-pulse' : reconnecting ? 'bg-blue-500 animate-pulse' : 'bg-amber-500'}`} />
-        <span className="text-sm font-medium text-content-primary">
+        <span className="text-sm font-medium text-fg-primary">
           {online
             ? t('settings:remoteAccess.readyOnline')
             : reconnecting
@@ -1022,9 +1022,9 @@ function ReadyPanel({
               : t('settings:remoteAccess.readyDegraded')}
         </span>
         {online && latencyMs != null && (
-          <span className="text-xs text-content-tertiary">{t('settings:remoteAccess.readyLatency', { ms: latencyMs })}</span>
+          <span className="text-xs text-fg-tertiary">{t('settings:remoteAccess.readyLatency', { ms: latencyMs })}</span>
         )}
-        <span className="text-xs text-content-tertiary">
+        <span className="text-xs text-fg-tertiary">
           · {t(METHOD_LABEL[meta.kind].name)}
         </span>
       </div>
@@ -1042,11 +1042,11 @@ function ReadyPanel({
       {/* Shareable entry */}
       {entryUrl && (
         <div className="p-3 rounded-xl bg-surface-elevated border border-border-default space-y-2">
-          <div className="text-xs text-content-tertiary uppercase tracking-wider">
+          <div className="text-xs text-fg-tertiary uppercase tracking-wider">
             {t('settings:remoteAccess.readyEntry')}
           </div>
           <div className="flex items-center gap-2">
-            <code className="flex-1 px-3 py-1.5 text-sm bg-surface-inset rounded font-mono truncate">{entryUrl}</code>
+            <code className="flex-1 px-3 py-1.5 text-sm bg-surface-secondary rounded font-mono truncate">{entryUrl}</code>
             <button
               type="button"
               onClick={() => onCopy(entryUrl, 'entry')}
@@ -1057,23 +1057,23 @@ function ReadyPanel({
               {copied === 'entry' ? t('settings:remoteAccess.copied') : t('settings:remoteAccess.copy')}
             </button>
           </div>
-          <p className="text-xs text-content-secondary">{t('settings:remoteAccess.readyEntryHint')}</p>
+          <p className="text-xs text-fg-secondary">{t('settings:remoteAccess.readyEntryHint')}</p>
           <div className="pt-1">
             <QRCode url={entryUrl} />
-            <p className="text-xs text-content-tertiary mt-1">{t('settings:remoteAccess.readyScanQr')}</p>
+            <p className="text-xs text-fg-tertiary mt-1">{t('settings:remoteAccess.readyScanQr')}</p>
           </div>
-          <p className="text-xs text-content-tertiary">{t('settings:remoteAccess.readyAuthGateNote')}</p>
+          <p className="text-xs text-fg-tertiary">{t('settings:remoteAccess.readyAuthGateNote')}</p>
         </div>
       )}
 
       {/* Actual tunnel address (302 target) */}
       {publicUrl && (
         <div className="p-3 rounded-xl bg-surface-secondary border border-border-default space-y-1">
-          <div className="text-xs text-content-tertiary uppercase tracking-wider">
+          <div className="text-xs text-fg-tertiary uppercase tracking-wider">
             {t('settings:remoteAccess.readyPublicUrl')}
           </div>
-          <code className="block text-xs font-mono break-all text-content-secondary">{publicUrl}</code>
-          <p className="text-xs text-content-tertiary">{t('settings:remoteAccess.readyAddressBarNote')}</p>
+          <code className="block text-xs font-mono break-all text-fg-secondary">{publicUrl}</code>
+          <p className="text-xs text-fg-tertiary">{t('settings:remoteAccess.readyAddressBarNote')}</p>
         </div>
       )}
 
@@ -1125,7 +1125,7 @@ function HonestTips({ t }: { t: TFn }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between w-full px-3 py-2 text-sm text-content-secondary hover:text-content-primary"
+        className="flex items-center justify-between w-full px-3 py-2 text-sm text-fg-secondary hover:text-fg-primary"
       >
         <span>{t('settings:remoteAccess.tipsTitle')}</span>
         <span className={`transition-transform ${open ? '' : '-rotate-90'}`}>▾</span>
@@ -1133,7 +1133,7 @@ function HonestTips({ t }: { t: TFn }) {
       {open && (
         <ul className="px-4 pb-3 space-y-1.5 list-disc list-inside">
           {items.map((item, i) => (
-            <li key={i} className="text-xs text-content-tertiary leading-snug">{item}</li>
+            <li key={i} className="text-xs text-fg-tertiary leading-snug">{item}</li>
           ))}
         </ul>
       )}

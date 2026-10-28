@@ -1088,14 +1088,14 @@ function FilesTab({ agentId }: { agentId: string }) {
                     setPathCopied(true);
                     setTimeout(() => setPathCopied(false), 2000);
                   }}
-                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-default rounded-md transition-colors"
                   title={t('agent:profilePage.filesTab.copyPath')}
                 >
                   {pathCopied ? t('agent:profilePage.filesTab.pathCopied') : t('agent:profilePage.filesTab.copyPath')}
                 </button>
                 <button
                   onClick={() => void api.system.openPath(roleDir)}
-                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-hover rounded-md transition-colors"
+                  className="shrink-0 px-2 py-1 text-[10px] text-fg-tertiary hover:text-fg-secondary border border-border-default hover:border-border-default rounded-md transition-colors"
                   title={t('agent:profilePage.filesTab.openInFinder')}
                 >
                   {t('agent:profilePage.filesTab.openInFinder')}
@@ -2631,7 +2631,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       {(mind?.notebook?.length ?? 0) > 0 && (() => {
         const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
         return (
-          <section className="bg-surface-2 rounded-lg border border-border-subtle p-3">
+          <section className="bg-surface-elevated rounded-lg border border-border-subtle p-3">
             <details>
               <summary className="flex items-center gap-2 cursor-pointer list-none">
                 <span className="text-sm">📓</span>
@@ -2647,7 +2647,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                   const ageLabel = t(`agent:profilePage.relative.${age.unit === 'seconds' ? 'secondsAgo' : age.unit === 'minutes' ? 'minutesAgo' : 'hoursAgo'}`, { count: age.count, hours: age.count });
                   const managedColor = entry.managed === 'system' ? 'text-blue-400' : 'text-emerald-400';
                   return (
-                    <div key={entry.key} className="px-3 py-2 rounded bg-surface-3 border border-border-subtle">
+                    <div key={entry.key} className="px-3 py-2 rounded bg-surface-overlay border border-border-subtle">
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
                         <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
@@ -2675,7 +2675,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (
-        <section className="bg-surface-2 rounded-lg border border-amber-500/20 p-3">
+        <section className="bg-surface-elevated rounded-lg border border-amber-500/20 p-3">
           <div className="flex items-center gap-2 mb-2">
             <span className="text-sm">🧠</span>
             <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider">{t('agent:profilePage.mind.deliberationInProgress')}</h4>
@@ -2692,7 +2692,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         const isStale = triageAgeMs > 60_000;
         const batchSummary = deriveTriageBatchSummary(mind.lastTriage);
         return (
-          <section className={`bg-surface-2 rounded-lg border p-3 transition-opacity ${isStale ? 'border-border-subtle opacity-60' : 'border-indigo-500/20'}`}>
+          <section className={`bg-surface-elevated rounded-lg border p-3 transition-opacity ${isStale ? 'border-border-subtle opacity-60' : 'border-indigo-500/20'}`}>
             <details open={!isStale}>
               <summary className="flex items-center gap-2 cursor-pointer list-none">
                 <span className="text-sm">🧠</span>
@@ -2702,7 +2702,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <p className="text-xs text-fg-secondary leading-relaxed mt-2">{mind.lastTriage.reasoning}</p>
               <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
                 <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">{t('agent:profilePage.mind.processingItem', { id: mind.lastTriage.processedItemId.slice(0, 12) })}</span>
-                <span className={`px-1.5 py-0.5 rounded ${batchSummary.isBatch ? 'bg-indigo-500/15 text-indigo-300' : 'bg-surface-3 text-fg-tertiary'}`}>
+                <span className={`px-1.5 py-0.5 rounded ${batchSummary.isBatch ? 'bg-indigo-500/15 text-indigo-300' : 'bg-surface-overlay text-fg-tertiary'}`}>
                   {batchSummary.isBatch
                     ? t('agent:profilePage.mind.batchSize', { count: batchSummary.total })
                     : t('agent:profilePage.mind.singleItem')}
@@ -2737,7 +2737,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                   className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
                     catFilter === key
                       ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                      : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+                      : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >{t(`agent:profilePage.mind.categoryFilters.${key}`)}{catCount != null && catCount > 0 && <span className="ml-1 opacity-60">{catCount}</span>}</button>
               );
@@ -2763,7 +2763,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
                   statusFilter === f.key
                     ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                    : 'bg-surface-2 border-border-subtle text-fg-secondary hover:bg-surface-3'
+                    : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
                 }`}
               >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{t(`agent:profilePage.mind.statusFilters.${f.key}`)}{cnt != null && cnt > 0 && <span className="ml-1 opacity-60">{cnt}</span>}</button>
             );
@@ -2791,9 +2791,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             const senderRole = item.metadata?.senderRole as string | undefined;
             const isHighlighted = highlightedId === item.id;
             return (
-              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-2 rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
+              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-elevated rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
                 <button
-                  className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-3/50 transition-colors rounded-lg"
+                  className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
                   onClick={() => setExpandedId(isExpanded ? null : item.id)}
                 >
                   <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
@@ -2821,7 +2821,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                       )}
                     </div>
                   </div>
-                  <span className="text-[10px] text-fg-tertiary bg-surface-3 px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
+                  <span className="text-[10px] text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
                   {canManageAgents && canCancelMailboxItem({
                     agentRunning,
                     itemId: item.id,

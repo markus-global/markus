@@ -60,7 +60,7 @@ export function SlashCommandMenu({ commands, query, onSelect, onClose, anchorRec
   return (
     <div
       ref={menuRef}
-      className="z-50 bg-surface-2 border border-border-default rounded-lg shadow-lg overflow-hidden"
+      className="z-50 bg-surface-elevated border border-border-default rounded-lg shadow-lg overflow-hidden"
       style={style}
     >
       <div className="px-3 py-1.5 text-[10px] text-fg-quaternary uppercase tracking-wider border-b border-border-subtle">
