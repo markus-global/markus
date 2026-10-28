@@ -168,42 +168,50 @@ describe('workflow card — steps', () => {
     expect(screen.queryByText(/research/)).toBeNull();
   });
 
-  it('opens a definition modal: editable prompt, no run status, no task link', () => {
+  it('opens read-only: no input focused, no textarea until the user clicks', () => {
     renderCard({ expanded: true });
     fireEvent.click(screen.getByTestId('workflow-step-research'));
 
     const modal = screen.getByTestId('workflow-step-modal');
-    const prompt = within(modal).getByLabelText('提示词') as HTMLTextAreaElement;
-    expect(prompt.value).toBe('研究一下现有代码结构。');
+    // 内容先可读，别一进来就把光标塞进输入框
+    expect(within(modal).queryByRole('textbox')).toBeNull();
+    expect(within(modal).getByTestId('workflow-step-prompt').textContent).toContain('研究一下现有代码结构。');
+    const active = document.activeElement;
+    expect(active === document.body || !modal.contains(active) || active?.tagName === 'BUTTON').toBe(true);
 
     // instance facts must not leak into the definition view
     expect(within(modal).queryByText('已完成')).toBeNull();
     expect(within(modal).queryByText('查看对应任务')).toBeNull();
   });
 
-  it('saves an edited prompt through onSaveStep', async () => {
+  it('click → edit → blur saves the prompt (no save button to hunt for)', async () => {
     const onSaveStep = vi.fn().mockResolvedValue(undefined);
     renderCard({ expanded: true, onSaveStep });
     fireEvent.click(screen.getByTestId('workflow-step-research'));
 
     const modal = screen.getByTestId('workflow-step-modal');
-    const prompt = within(modal).getByLabelText('提示词') as HTMLTextAreaElement;
-    fireEvent.change(prompt, { target: { value: '新的提示词内容' } });
-    fireEvent.click(within(modal).getByRole('button', { name: '保存' }));
+    fireEvent.click(within(modal).getByTestId('workflow-step-prompt'));
 
-    await waitFor(() => expect(onSaveStep).toHaveBeenCalledWith('research', {
-      name: '代码研究',
-      role: 'manager',
-      prompt: '新的提示词内容',
-    }));
-    await waitFor(() => expect(screen.queryByTestId('workflow-step-modal')).toBeNull());
+    const prompt = within(modal).getByLabelText('提示词') as HTMLTextAreaElement;
+    expect(prompt.value).toBe('研究一下现有代码结构。');
+    fireEvent.change(prompt, { target: { value: '新的提示词内容' } });
+    fireEvent.blur(prompt);
+
+    await waitFor(() => expect(onSaveStep).toHaveBeenCalledWith('research', { prompt: '新的提示词内容' }));
   });
 
-  it('keeps the save button disabled until something changes', () => {
-    renderCard({ expanded: true });
+  it('role is a select, not free text — a typo cannot break role mapping', async () => {
+    const onSaveStep = vi.fn().mockResolvedValue(undefined);
+    renderCard({ expanded: true, onSaveStep });
     fireEvent.click(screen.getByTestId('workflow-step-research'));
+
     const modal = screen.getByTestId('workflow-step-modal');
-    expect((within(modal).getByRole('button', { name: '保存' }) as HTMLButtonElement).disabled).toBe(true);
+    const role = within(modal).getByTestId('workflow-step-role') as HTMLSelectElement;
+    expect(role.tagName).toBe('SELECT');
+    expect([...role.options].map((o) => o.value)).toEqual(expect.arrayContaining(['manager', 'engineer']));
+
+    fireEvent.change(role, { target: { value: 'engineer' } });
+    await waitFor(() => expect(onSaveStep).toHaveBeenCalledWith('research', { role: 'engineer' }));
   });
 });
 

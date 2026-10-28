@@ -1865,6 +1865,20 @@ export const api = {
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) }),
     approve: (id: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/approve`, { method: 'POST' }),
+    /**
+     * 批量批准需求下的待批任务。`dryRun` 只做预检（零副作用），用于确认弹窗；
+     * 真实调用会逐条走既有 approveTask（批准即开始执行）。
+     */
+    approveTasksBulk: (id: string, opts?: { dryRun?: boolean; runNow?: boolean }) =>
+      request<{
+        approved: Array<{ id: string; title: string }>;
+        skipped: Array<{ id: string; title: string; reason: string }>;
+        failed: Array<{ id: string; title: string; error: string }>;
+        dryRun: boolean;
+      }>(`/requirements/${id}/tasks/approve-bulk`, {
+        method: 'POST',
+        body: JSON.stringify({ dryRun: opts?.dryRun === true, runNow: opts?.runNow !== false }),
+      }),
     reject: (id: string, reason: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/reject`, { method: 'POST', body: JSON.stringify({ reason }) }),
     /** 需求闸「重新发起审批」入口 — re-open the approval gate after a 打回. */

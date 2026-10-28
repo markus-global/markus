@@ -7470,6 +7470,49 @@ function RequirementDetailPanel({
   const [savingDesc, setSavingDesc] = useState(false);
   const [showCancelConfirm, setShowCancelConfirm] = useState(false);
   const [showWorkflowModal, setShowWorkflowModal] = useState(false);
+
+  // ── 批量批准（需求级一次决策） ───────────────────────────────────────────
+  // 批准即开始执行（标准任务没有"已批准但未启动"的状态），所以弹窗必须把
+  // "将同时启动 N 个任务"讲清楚；预检数字来自后端 dryRun，不是前端估算。
+  const [bulkApprove, setBulkApprove] = useState<null | {
+    phase: 'preview' | 'result';
+    approved: Array<{ id: string; title: string }>;
+    skipped: Array<{ id: string; title: string; reason: string }>;
+    failed: Array<{ id: string; title: string; error: string }>;
+  }>(null);
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkError, setBulkError] = useState<string | null>(null);
+  const pendingTaskCount = useMemo(
+    () => allTasks.filter((task) => task.requirementId === req.id && task.status === 'pending').length,
+    [allTasks, req.id],
+  );
+
+  const openBulkPreview = async () => {
+    setBulkError(null);
+    setBulkBusy(true);
+    try {
+      const result = await api.requirements.approveTasksBulk(req.id, { dryRun: true });
+      setBulkApprove({ phase: 'preview', ...result });
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
+
+  const confirmBulkApprove = async () => {
+    setBulkError(null);
+    setBulkBusy(true);
+    try {
+      const result = await api.requirements.approveTasksBulk(req.id, { runNow: true });
+      setBulkApprove({ phase: 'result', ...result });
+      onRefresh?.();
+    } catch (err) {
+      setBulkError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBulkBusy(false);
+    }
+  };
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
   const reqScrollRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
@@ -7869,6 +7912,129 @@ function RequirementDetailPanel({
 
         {/* Actions */}
         <div className="flex items-center gap-2 p-5 pt-3 border-t border-border-default">
+          {pendingTaskCount > 0 && (
+            <>
+              <button
+                onClick={() => void openBulkPreview()}
+                disabled={bulkBusy}
+                className="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-60"
+              >
+                {t('work:requirement.bulkApprove', '批量批准待批任务 ({{count}})', { count: pendingTaskCount })}
+              </button>
+              {bulkApprove && (
+                <div
+                  className="fixed inset-0 z-[10050] flex items-center justify-center bg-black/60 p-4"
+                  onClick={() => { if (!bulkBusy) setBulkApprove(null); }}
+                >
+                  <div
+                    className="w-full max-w-lg max-h-[80vh] flex flex-col rounded-2xl border border-border-default bg-surface-primary shadow-2xl overflow-hidden"
+                    onClick={(e) => e.stopPropagation()}
+                    role="dialog"
+                    aria-modal="true"
+                    aria-label={t('work:requirement.bulkApproveTitle', '批量批准待批任务')}
+                  >
+                    <div className="px-5 pt-4 pb-3 border-b border-border-default shrink-0">
+                      <h3 className="text-sm font-semibold text-fg-primary">
+                        {bulkApprove.phase === 'preview'
+                          ? t('work:requirement.bulkApproveTitle', '批量批准待批任务')
+                          : t('work:requirement.bulkApproveDone', '批量批准结果')}
+                      </h3>
+                      {bulkApprove.phase === 'preview' && (
+                        <p className="mt-1 text-xs text-amber-600 dark:text-amber-400 leading-relaxed">
+                          {t(
+                            'work:requirement.bulkApproveWarning',
+                            '批准后立即开始执行：将同时启动 {{count}} 个任务，各自占用对应 agent。',
+                            { count: bulkApprove.approved.length },
+                          )}
+                        </p>
+                      )}
+                      {bulkApprove.phase === 'result' && (
+                        <p className="mt-1 text-xs text-fg-secondary">
+                          {t('work:requirement.bulkApproveSummary', '成功 {{ok}} · 跳过 {{skip}} · 失败 {{fail}}', {
+                            ok: bulkApprove.approved.length,
+                            skip: bulkApprove.skipped.length,
+                            fail: bulkApprove.failed.length,
+                          })}
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="flex-1 min-h-0 overflow-y-auto px-5 py-3 space-y-3">
+                      {bulkApprove.approved.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary mb-1">
+                            {bulkApprove.phase === 'preview'
+                              ? t('work:requirement.bulkApproveWillApprove', '将批准')
+                              : t('work:requirement.bulkApproveApproved', '已批准')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.approved.map((item) => (
+                              <li key={item.id} className="text-xs text-fg-secondary truncate">· {item.title}</li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.skipped.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-fg-tertiary mb-1">
+                            {t('work:requirement.bulkApproveSkipped', '跳过（不满足批准条件）')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.skipped.map((item) => (
+                              <li key={item.id} className="text-xs text-fg-tertiary truncate">
+                                · {item.title || item.id} — {item.reason}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.failed.length > 0 && (
+                        <div>
+                          <p className="text-[10px] font-semibold uppercase tracking-wider text-red-500 mb-1">
+                            {t('work:requirement.bulkApproveFailed', '失败')}
+                          </p>
+                          <ul className="space-y-0.5">
+                            {bulkApprove.failed.map((item) => (
+                              <li key={item.id} className="text-xs text-red-500 truncate">
+                                · {item.title} — {item.error}
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {bulkApprove.approved.length === 0 && bulkApprove.skipped.length === 0 && (
+                        <p className="text-xs text-fg-tertiary">
+                          {t('work:requirement.bulkApproveNothing', '没有可批准的待批任务。')}
+                        </p>
+                      )}
+                      {bulkError && <p className="text-xs text-red-500">{bulkError}</p>}
+                    </div>
+
+                    <div className="px-5 py-3 border-t border-border-default flex justify-end gap-2 shrink-0">
+                      <button
+                        onClick={() => setBulkApprove(null)}
+                        disabled={bulkBusy}
+                        className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors disabled:opacity-60"
+                      >
+                        {bulkApprove.phase === 'preview' ? t('common:cancel') : t('common:close')}
+                      </button>
+                      {bulkApprove.phase === 'preview' && (
+                        <button
+                          onClick={() => void confirmBulkApprove()}
+                          disabled={bulkBusy || bulkApprove.approved.length === 0}
+                          className="px-3 py-1.5 text-xs rounded-lg bg-green-600 hover:bg-green-500 text-white font-medium transition-colors disabled:opacity-60"
+                        >
+                          {bulkBusy
+                            ? t('work:requirement.bulkApproving', '批准中…')
+                            : t('work:requirement.bulkApproveConfirm', '确认批准并开始')}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
           {needsReview && (
             <>
               <button onClick={() => onApprove(req.id)} className="px-4 py-2 bg-green-600 hover:bg-green-500 text-white text-sm rounded-lg font-medium transition-colors">{t('work:requirement.approveRequirement')}</button>

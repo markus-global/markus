@@ -3030,6 +3030,61 @@ export class TaskService implements ApprovalTargetPort {
     return this.updateTaskStatus(taskIdStr, targetStatus, userId, true, false, 'human', 'Approved');
   }
 
+  /**
+   * Approve every approvable task under a requirement — **as a loop over the
+   * single writer** (`approveTask`), never as a second approval path.
+   *
+   * Consequences that matter:
+   *   - each task still passes the `pending` guard, the HITL settlement and the
+   *     gate-aware apply, so bulk cannot bypass a gate or "force" a status;
+   *   - ineligible tasks are *skipped with a reason* instead of silently ignored;
+   *   - per-task failures are reported per task (a partial run must never look
+   *     like a clean one);
+   *   - `dryRun` returns exactly what would happen, with no side effects — the
+   *     confirmation dialog shows real numbers, not client-side guesses;
+   *   - approval starts execution (standard tasks have no "approved but idle"
+   *     state), so callers pass `runNow` and the dialog says so out loud.
+   */
+  approveRequirementTasks(
+    requirementId: string,
+    opts: { runNow?: boolean; dryRun?: boolean; actorId?: string } = {},
+  ): {
+    approved: Array<{ id: string; title: string }>;
+    skipped: Array<{ id: string; title: string; reason: string }>;
+    failed: Array<{ id: string; title: string; error: string }>;
+  } {
+    const requirement = this.requirementService?.getRequirement(requirementId);
+    if (!requirement) throw new Error(`Requirement not found: ${requirementId}`);
+
+    const approved: Array<{ id: string; title: string }> = [];
+    const skipped: Array<{ id: string; title: string; reason: string }> = [];
+    const failed: Array<{ id: string; title: string; error: string }> = [];
+
+    for (const taskId of requirement.taskIds ?? []) {
+      const task = this.tasks.get(taskId);
+      if (!task) {
+        skipped.push({ id: taskId, title: '', reason: 'task not found' });
+        continue;
+      }
+      if (task.status !== 'pending') {
+        skipped.push({ id: task.id, title: task.title, reason: `status is ${task.status}` });
+        continue;
+      }
+      if (opts.dryRun) {
+        approved.push({ id: task.id, title: task.title });
+        continue;
+      }
+      try {
+        this.approveTask(task.id, opts.actorId, opts.runNow !== false);
+        approved.push({ id: task.id, title: task.title });
+      } catch (err) {
+        failed.push({ id: task.id, title: task.title, error: err instanceof Error ? err.message : String(err) });
+      }
+    }
+
+    return { approved, skipped, failed };
+  }
+
   rejectTask(taskIdStr: string, userId?: string): Task {
     const task = this.tasks.get(taskIdStr);
     if (!task) throw new Error(`Task not found: ${taskIdStr}`);

@@ -454,6 +454,12 @@ export function WorkflowCard({
           index={openStep.index}
           total={steps.length}
           dependsOnNames={dependsOnNames(openStep.step, buildStepIndex(steps))}
+          roleOptions={[
+            ...new Set([
+              ...steps.map((s) => s.role),
+              ...Object.keys(latestRun?.roleMapping ?? {}),
+            ]),
+          ]}
           onClose={() => setOpenStep(null)}
           onSave={(patch) => onSaveStep?.(openStep.step.id, patch) ?? Promise.resolve()}
         />
