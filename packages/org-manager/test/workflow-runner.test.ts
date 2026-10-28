@@ -301,6 +301,47 @@ describe('P0 guards', () => {
   });
 });
 
+/**
+ * The data channel between steps is: `blockedBy` (order) + `task_get`
+ * (deliverables of the upstream task). That channel only works if the downstream
+ * prompt carries the upstream **task id** — it used to print the *step* id
+ * (`step-1-research`) next to an instruction to call `task_get`, which needs a
+ * `tsk_…` id, so following the text verbatim failed with "Task not found".
+ */
+describe('step handoff instructions', () => {
+  it('names the upstream TASK id so task_get is executable as written', async () => {
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    const upstreamTaskId = mocks.taskService.createTask.mock.results[0]!.value.id as string;
+    const downstream = created[1]!;
+    const description = String(downstream['description']);
+
+    expect(description).toContain(upstreamTaskId);
+    expect(description).toContain('task_get');
+    // the step id may appear as prose, but never as the thing to pass to task_get
+    expect(description).not.toContain('task_id="s1"');
+  });
+
+  it('tells the upstream step who will consume its deliverables', async () => {
+    await runner.createRun(
+      'team-1',
+      TEMPLATE,
+      { topic: 'auth' },
+      { planner: 'agent-planner', builder: 'agent-builder' },
+      'proj-1',
+    );
+    const created = mocks.taskService.createTask.mock.calls.map(c => c[0] as Record<string, unknown>);
+    expect(String(created[0]!['description'])).toContain('Downstream steps waiting on your output');
+  });
+});
+
 describe('parseDurationMs', () => {
   it('parses the documented shorthand and rejects nonsense', () => {
     expect(parseDurationMs('30s')).toBe(30_000);

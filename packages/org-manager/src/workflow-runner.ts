@@ -242,7 +242,7 @@ export class WorkflowRunner {
     try {
       for (const step of sortedSteps) {
         const description = renderStepPrompt(step, params, runNumber);
-        const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, sortedSteps);
+        const workflowContext = this.buildWorkflowContext(step, template, params, runNumber, taskIdMap);
 
         const assignedAgentId = roleMapping[step.role];
         if (!assignedAgentId) {
@@ -799,12 +799,27 @@ export class WorkflowRunner {
     }
   }
 
+  /**
+   * The prompt preamble a step's task starts with.
+   *
+   * Upstream outputs *are* the data channel in this design: the runner creates
+   * every task up front, `blockedBy` orders them, and `task_get` returns an
+   * upstream task's `deliverables`. What used to be broken was the **pointer**:
+   * this text listed upstream *step* ids (`step-1-research`) while the tool it
+   * named (`task_get`) needs a *task* id (`tsk_…`), so the instruction failed
+   * verbatim ("Task not found") and a diligent agent had to rediscover the route
+   * through `blockedBy` on its own task.
+   *
+   * Now the upstream task id is written out explicitly. Tasks are created in
+   * topological order, so every dependency already has its id by the time a
+   * downstream step is rendered.
+   */
   private buildWorkflowContext(
     step: StepDef,
     template: WorkflowTemplate,
     params: Record<string, string>,
     runNumber: number,
-    _sortedSteps: StepDef[],
+    taskIdMap: Map<string, string>,
   ): string {
     const displayName = template.displayName || template.name;
     const lines: string[] = [
@@ -819,13 +834,19 @@ export class WorkflowRunner {
     }
     lines.push(`Your role in this workflow: ${step.role}`);
 
-    // Dependencies
+    // Dependencies — with the actual task ids, so the instruction is executable.
     if (step.depends_on && step.depends_on.length > 0) {
       lines.push('');
-      lines.push('Step dependencies (review their outputs using `task_get`):');
+      lines.push('Upstream steps — read their deliverables before you start:');
       for (const depId of step.depends_on) {
         const depStep = template.steps.find(s => s.id === depId);
-        lines.push(`- "${depStep?.name || depId}" (${depId})`);
+        const depTaskId = taskIdMap.get(depId);
+        const name = depStep?.name || depId;
+        if (depTaskId) {
+          lines.push(`- "${name}" → task \`${depTaskId}\` — call \`task_get\` with task_id="${depTaskId}" and use its deliverables as your input`);
+        } else {
+          lines.push(`- "${name}" (${depId}) — its task has not been created yet (upstream step failed to materialize)`);
+        }
       }
     } else {
       lines.push('');
