@@ -167,15 +167,19 @@ describe('P2-A Agent 工具写互斥', () => {
       'background_exec', 'process', 'create_project', 'update_project', 'delete_project',
       'workflow_run', 'workflow_cancel', 'team_update', 'agent_start', 'agent_update',
       'generate_image', 'office_generate', 'task_note', 'task_assign',
-      // 共享可变状态：discover_tools 写「本会话已激活工具」集合
-      'discover_tools', 'session', 'complete_deliberation']) {
+      // 共享可变状态：session 切会话、complete_deliberation 关信箱
+      'session', 'complete_deliberation']) {
       expect(cls.isWriteTool(w), `${w} 应判为写`).toBe(true);
     }
     // 读 / 纯计算（即使带 task_/workflow_ 前缀）
     for (const r of ['task_list', 'task_get', 'requirement_list', 'requirement_get',
       'memory_search', 'list_projects', 'team_list', 'web_search',
       'web_fetch', 'llm_list_providers', 'check_mailbox', 'workflow_list', 'workflow_status',
-      'read_terminal', 'list_terminals', 'take_snapshot', 'kb_search']) {
+      'read_terminal', 'list_terminals', 'take_snapshot', 'kb_search',
+      // 纯本地元工具：只动本 Agent 内存里的工具可见性集合，必须免锁。
+      // 曾按「写激活集合」判为写 → 排在 shell_execute 的 '*' 后面，
+      // 实测一次 112.4s 的「工具耗时」里 112.4s 全是在等锁。
+      'discover_tools']) {
       expect(cls.isWriteTool(r), `${r} 应判为读`).toBe(false);
     }
   });
@@ -247,6 +251,36 @@ describe('P2-A Agent 工具写互斥', () => {
     }
   });
 
+  it('discover_tools 不得排队等全局写锁（2026-10-29 112.4s 等锁事故回归）', async () => {
+    const agent = createTestAgent([]);
+    const a = agent as unknown as {
+      executeTool: (tc: ReturnType<typeof makeToolCall>) => Promise<string>;
+      resourceLocks: { withLock: <T>(req: { domain: string }, fn: () => Promise<T>) => Promise<T> };
+    };
+
+    // 复现现场：同一 Agent 的另一个 worker 正在跑 shell_execute（domain '*' 全局独占）。
+    let release!: () => void;
+    const held = new Promise<void>(r => { release = r; });
+    const holder = a.resourceLocks.withLock({ domain: '*' }, () => held);
+    await new Promise(r => setTimeout(r, 30)); // 确保 '*' 已被授予
+    // 兜底放锁：即使回归（排队等锁）也不会把用例挂成 10s 超时，
+    // 而是变成一条清晰的 elapsed 断言失败。
+    setTimeout(() => release(), 300);
+
+    const start = Date.now();
+    const result = await a.executeTool(makeToolCall('discover_tools', { name: ['recall_activity'] }));
+    const elapsed = Date.now() - start;
+
+    release();
+    await holder;
+
+    // 修复前：本调用排在 '*' 后面，耗时 ≈ 持锁时长（生产实测 112.4s）。
+    // 修复后：纯内存查询，立即返回。
+    expect(elapsed, 'discover_tools 被全局写锁阻塞').toBeLessThan(100);
+    expect(result).toContain('"status":"ok"');
+    expect(result).toContain('recall_activity');
+  });
+
   it('写工具集合与资源域表一致（防「两张表漂移」守卫）', () => {
     const cls = Agent as unknown as {
       WRITE_TOOL_NAMES: ReadonlySet<string>;
@@ -280,7 +314,8 @@ describe('P2-A Agent 工具写互斥', () => {
       'agent_start', 'agent_update', 'team_start', 'team_stop', 'team_update',
       'generate_image', 'generate_video', 'office_generate', 'text_to_speech',
       'exec_terminal', 'write_terminal', 'new_terminal', 'close_terminal',
-      'discover_tools', 'session', 'complete_deliberation',
+      // discover_tools 曾在此清单 —— 已改判免锁（纯内存元工具，见 TOOL_LOCK_FREE）
+      'session', 'complete_deliberation',
     ];
     for (const name of MUST_BE_REGISTERED) {
       expect(cls.WRITE_TOOL_NAMES.has(name), `${name} 必须登记资源域`).toBe(true);

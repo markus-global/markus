@@ -8733,8 +8733,6 @@ export class Agent {
     notebook_clear:         { domain: AGENT_MEMORY_RESOURCE_DOMAIN, resource: 'notebook' },
     // 会话自我管理：compact / pin / unpin / purge 都是会话状态变更
     session:                { domain: 'session', arg: ['session_id', 'sessionId'] },
-    // discover_tools 会写入「本会话已激活工具」集合 —— 共享可变状态
-    discover_tools:         { domain: 'session-tools' },
     // ── 全局配置
     llm_switch_model:            { domain: 'llm-config' },
     llm_set_capability_routing:  { domain: 'llm-config' },
@@ -8868,6 +8866,15 @@ export class Agent {
     'list_console_messages', 'get_console_message',
     'list_network_requests', 'get_network_request', 'lighthouse_audit',
     'speech_to_text',
+    // ── 纯本地元工具：只动本 Agent 内存里的「工具可见性」集合并即时返回。
+    //    必须免锁：`discover_tools` 命中工具名时是几次 Set/Map 查询（历史 800 次
+    //    调用耗时 0–4ms），被默认判为写工具后却要排 `shell_execute` 的 `'*'`
+    //    全局独占锁 —— 实测一次 112.4s 的「工具耗时」里 112.4s 全是在等锁，
+    //    真正的执行只用了 3ms（2026-10-29 incident）。它的其余副作用各自已有
+    //    串行化：MCP 连接按 server 名持 startup lock（mcp-client.withStartupLock），
+    //    `Set.add` / `Map.set` 本身在 JS 单线程内原子。
+    //    回归守卫：test/agent-write-lock.test.ts「discover_tools 不得排队等全局写锁」。
+    'discover_tools',
     // ── HITL 阻塞 / 长时任务：绝不能持锁（见上方说明）
     'request_user_input', 'request_user_approval',
     'spawn_subagent', 'spawn_subagents',

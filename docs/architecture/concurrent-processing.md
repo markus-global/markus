@@ -342,7 +342,7 @@ argument so that *different* resources run in parallel:
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
 | `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
 | `agent-memory` | **resource key** (`knowledge` / `notebook` / `identity` / `state`) | `memory_save`, `memory_update`, `memory_update_longterm`, `memory_delete`, `notebook_upsert` / `notebook_clear`, `file_write` / `file_edit` on an agent memory file |
-| `session`, `session-tools`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `session`, `discover_tools`, `team_update` |
+| `session`, `schedule`, `llm-config`, `org`, `ui`, `deliberation`, `mailbox-admin`, `notify` | single resource or item id | `session`, `team_update` |
 
 **Classification is closed and test-enforced.** `Agent.isWriteTool` is *default-deny*:
 
@@ -355,6 +355,14 @@ Two important subtleties:
 - **`TOOL_LOCK_FREE` must stay exempt.** `request_user_input` / `request_user_approval`
   **block on a human**, and `spawn_subagent(s)` run for minutes. If they took `'*'`, the
   entire agent's writes would freeze for the whole wait. This is asserted by a test.
+- **Pure local meta tools must stay exempt too.** `discover_tools` only touches this
+  agent's in-memory tool-visibility sets and answers in 0–4 ms (measured over ~800
+  calls). It was classified as a write tool until 2026-10-29, so it queued behind any
+  `'*'` holder: one live `discover_tools` call reported **112.4 s** of "tool time" of
+  which **112.4 s was lock wait** (it finished 3 ms after the concurrent
+  `shell_execute` released `'*'`). Lesson: a tool whose own work is nanoseconds must
+  never inherit global serialisation — the reported duration becomes a lie about the
+  tool. Regression: `test/agent-write-lock.test.ts` → "discover_tools 不得排队等全局写锁".
 - **Unknown tools get `tool:<name>`, not `'*'`.** MCP/skill/dynamically-registered tools
   are capability-unknown, but serialising *all* of them against *all* writes would break
   the platform's "multiple tool calls in one turn run in parallel" contract and stall the
