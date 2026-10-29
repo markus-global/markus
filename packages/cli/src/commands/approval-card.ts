@@ -65,6 +65,32 @@ export function buildApprovalCardResolution(
 }
 
 /**
+ * Which actor fields may be handed to a platform card.
+ *
+ * An approval record's `respondedBy` is **provenance, not a platform handle**: a
+ * decision made in the Markus UI carries a Markus user id, and Feishu rejects the
+ * entire card when that id is used as an `<at id=…>` mention (ErrCode 100290,
+ * measured 2026-10-29: the card update failed and the chat card stayed clickable).
+ *
+ * So the id travels only when the platform itself resolved a display name for it
+ * (that is proof it is that platform's handle). Otherwise only the human's name
+ * travels — and if we do not even know the name, nothing does. A missing actor
+ * line is correct; an invalid one takes the whole card down with it.
+ */
+export function cardActorFields(opts: {
+  platformName?: string | null;
+  respondedBy?: string;
+  humanName?: string;
+}): { actorId?: string; actorName?: string } {
+  if (opts.platformName && opts.respondedBy) {
+    return { actorId: opts.respondedBy, actorName: opts.platformName };
+  }
+  const name = opts.humanName?.trim();
+  // Card text is `lark_md`; a name carrying markup is not a name.
+  return name && !/[<>]/.test(name) ? { actorName: name } : {};
+}
+
+/**
  * Run a card rewrite after the callback ack, best-effort. Never rejects (a
  * rejection must not become an unhandled one on a timer); failures are handed
  * to `onError` so the caller keeps its log line without turning the tap into

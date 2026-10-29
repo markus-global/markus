@@ -87,7 +87,7 @@ import {
 import { isAnswerableByTap } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
-import { buildApprovalCardResolution, scheduleCardRewrite } from './approval-card.js';
+import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
 import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
@@ -2902,17 +2902,23 @@ async function startServerCore(
   hitlService.onApprovalChanged((changed) => {
     for (const ref of deliveredCards.get(changed.id) ?? []) {
       void scheduleCardRewrite(async () => {
-        const actorName = changed.respondedBy
+        // A platform-resolved name is proof that `respondedBy` is that platform's
+        // handle (true for a card tap). If it does not resolve, the value is a Markus
+        // user id — using it as a mention makes Feishu reject the whole card
+        // (ErrCode 100290, 2026-10-29: the card kept looking clickable after a
+        // decision taken in the Markus UI). Then only the human's name travels.
+        const platformName = changed.respondedBy
           ? await messageRouter.resolveActorName(ref.platform, ref.instanceId, changed.respondedBy)
           : null;
+        const humanName = changed.respondedBy
+          ? orgService.resolveHumanIdentity(changed.respondedBy)?.name
+          : undefined;
+        const actorFields = cardActorFields({ platformName, respondedBy: changed.respondedBy, humanName });
         const updated = await messageRouter.updateResolvedCard(
           ref.platform,
           ref.instanceId,
           ref.messageId,
-          buildApprovalCardResolution(changed, {
-            actorId: changed.respondedBy,
-            actorName: actorName ?? undefined,
-          }),
+          buildApprovalCardResolution(changed, actorFields),
         );
         if (!updated) {
           log.info('Approval card left as-is — platform cannot edit a sent message', {
