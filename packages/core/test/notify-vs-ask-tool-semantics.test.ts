@@ -60,3 +60,25 @@ describe('工具语义边界：notify_user = 告知，request_user_input = 要�
     expect(ask).toContain('Do NOT use it to approve requirements or tasks');
   });
 });
+
+/**
+ * 「不要重复发送」这条规则必须有一个可核对的锚点（2026-10-28 续修）。
+ *
+ * 上一版只写了「不要重复」，但当时上下文里根本没有"我发过什么"这个事实 ——
+ * 回执被结构性地丢掉了（详见 docs/architecture/notify-user-context-truth.md）。
+ * 规则再正确，依赖一个不存在的事实也只是空话：模型只能重新推导「我还没发」。
+ *
+ * 所以描述必须指明证据在哪：回执里的 `notification.id`。这条断言锁住那个指针。
+ */
+describe('notify_user：重复禁令必须指向可核对的事实', () => {
+  it('描述把「已送达」绑定到回执里的 notification.id', () => {
+    const notify = blockOf('notify_user');
+    expect(notify).toContain('notification.id');
+    expect(notify.toLowerCase()).toContain('proof of delivery');
+  });
+
+  it('描述明确否决「我是不是只写了文本、没真发出去」这种重新推导', () => {
+    const notify = blockOf('notify_user');
+    expect(notify.toLowerCase()).toContain('when a receipt is present');
+  });
+});

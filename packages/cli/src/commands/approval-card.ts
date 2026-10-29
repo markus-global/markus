@@ -21,7 +21,7 @@
  */
 import type { CardResolution } from '@markus/comms';
 
-/** Renderable terminal states of a resolved approval card. */
+/** Renderable states of a resolved approval card. */
 export type TerminalApprovalStatus = NonNullable<CardResolution['status']>;
 
 /** Post-ack delay before the card PATCH. Long enough for the ack round-trip to
@@ -50,7 +50,10 @@ export function buildApprovalCardResolution(
   return {
     status: (TERMINAL_STATUSES.has(approval.status)
       ? approval.status
-      : 'expired') as TerminalApprovalStatus,
+      // A request that is still pending (e.g. the tap was refused because the form
+      // needs an answer in the app) must NOT be rendered as `expired` — that says
+      // the request died, which is false and invites a duplicate.
+      : 'pending') as TerminalApprovalStatus,
     title: approval.title,
     body: approval.description,
     actorId: approval.respondedBy ?? tap.actorId,
@@ -59,6 +62,32 @@ export function buildApprovalCardResolution(
     selectedOption: approval.selectedOption ?? tap.tappedOption,
     at: approval.respondedAt,
   };
+}
+
+/**
+ * Which actor fields may be handed to a platform card.
+ *
+ * An approval record's `respondedBy` is **provenance, not a platform handle**: a
+ * decision made in the Markus UI carries a Markus user id, and Feishu rejects the
+ * entire card when that id is used as an `<at id=…>` mention (ErrCode 100290,
+ * measured 2026-10-29: the card update failed and the chat card stayed clickable).
+ *
+ * So the id travels only when the platform itself resolved a display name for it
+ * (that is proof it is that platform's handle). Otherwise only the human's name
+ * travels — and if we do not even know the name, nothing does. A missing actor
+ * line is correct; an invalid one takes the whole card down with it.
+ */
+export function cardActorFields(opts: {
+  platformName?: string | null;
+  respondedBy?: string;
+  humanName?: string;
+}): { actorId?: string; actorName?: string } {
+  if (opts.platformName && opts.respondedBy) {
+    return { actorId: opts.respondedBy, actorName: opts.platformName };
+  }
+  const name = opts.humanName?.trim();
+  // Card text is `lark_md`; a name carrying markup is not a name.
+  return name && !/[<>]/.test(name) ? { actorName: name } : {};
 }
 
 /**

@@ -13,7 +13,7 @@
  *    must never propagate (best-effort by contract).
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
-import { buildApprovalCardResolution, scheduleCardRewrite, CARD_REWRITE_DELAY_MS } from '../src/commands/approval-card.ts';
+import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite, CARD_REWRITE_DELAY_MS } from '../src/commands/approval-card.ts';
 
 const APPROVAL = {
   status: 'approved',
@@ -53,16 +53,41 @@ describe('buildApprovalCardResolution — resolution from the approval record', 
     expect(r.selectedOption).toBe('approve');
   });
 
-  it('maps every terminal status onto the renderable set (unknown → expired)', () => {
+  it('maps every terminal status onto the renderable set (still pending → pending, never expired)', () => {
     for (const [status, expected] of [
       ['approved', 'approved'],
       ['rejected', 'rejected'],
       ['cancelled', 'cancelled'],
       ['expired', 'expired'],
-      ['pending', 'expired'], // must never render a pending card as resolved
+      // 待定不能被画成“已超时”：那是另一种谎（人会以为单子死了，再发一份）。
+      // 2026-10-28 实测：飞书上点对了选项、服务端拒收（表单需到应用内回答），
+      // 卡片却显示“已超时”。
+      ['pending', 'pending'],
     ] as const) {
       expect(buildApprovalCardResolution({ ...APPROVAL, status }, {}).status).toBe(expected);
     }
+  });
+});
+
+describe('cardActorFields — 平台 handle 与来源身份不是一回事（2026-10-29 实测回归）', () => {
+  // 事故：在 Markus 界面批准后，卡片改写把 `user_3cd21…` 当成 Feishu open_id 拼成
+  // `<at id=user_…>` → ErrCode 100290，整张卡片更新失败，卡片永远停在可点状态。
+  it('平台能解析出名字 → 说明这个 id 就是平台 handle，可以进卡片', () => {
+    expect(cardActorFields({ platformName: '老板', respondedBy: 'ou_abc123' }))
+      .toEqual({ actorId: 'ou_abc123', actorName: '老板' });
+  });
+
+  it('解析不出平台名（Markus 用户 id）→ 只传人名，绝不传 id', () => {
+    expect(cardActorFields({ platformName: null, respondedBy: 'user_3cd21fb3205979a0ba7f8978', humanName: '老板' }))
+      .toEqual({ actorName: '老板' });
+  });
+
+  it('连人名都不知道 → 什么都不传（宁可少一行，也不能让整张卡失败）', () => {
+    expect(cardActorFields({ platformName: null, respondedBy: 'user_3cd21fb3205979a0ba7f8978' })).toEqual({});
+  });
+
+  it('人名带标记字符 → 不传（卡片正文是 lark_md，会把名字当标记渲染）', () => {
+    expect(cardActorFields({ platformName: null, humanName: '<at id=all></at>' })).toEqual({});
   });
 });
 

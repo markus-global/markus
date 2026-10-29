@@ -386,7 +386,10 @@ export class ToolSelector {
         + 'If you need an answer or a decision before you can continue (an authorization, a scope call, a choice, '
         + '"I am blocked until someone signs off"), do NOT use this tool — use `request_user_input`, which blocks and returns the answer.\n'
         + 'Do NOT repeat a notification you already sent: a second copy of the same message adds no information and does not make '
-        + 'an answer arrive sooner. If you are waiting on a reply, the right move is `request_user_input`, not another notification.',
+        + 'an answer arrive sooner. If you are waiting on a reply, the right move is `request_user_input`, not another notification.\n'
+        + 'The tool result carries a `notification.id` — that id IS the proof of delivery. If your history already holds one for the '
+        + 'same content, it was delivered: do not send it again, and never re-derive "I only wrote text, it was not actually sent" '
+        + 'when a receipt is present.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -471,6 +474,10 @@ export class ToolSelector {
                     id: { type: 'string' },
                     label: { type: 'string' },
                     description: { type: 'string' },
+                    requires_freeform: {
+                      type: 'boolean',
+                      description: 'Set true when picking this option is NOT yet an answer — the user must also type something (e.g. "give you the numbers" requires `3 / 1 / 1`). Channels that cannot collect text will not offer it as a one-tap button, and a selection without the typed value is refused rather than silently accepted.',
+                    },
                   },
                   required: ['label'],
                 },

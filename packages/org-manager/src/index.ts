@@ -2,8 +2,8 @@ export { OrganizationService } from './org-service.js';
 export { TaskService } from './task-service.js';
 export { APIServer } from './api-server.js';
 export { WSBroadcaster } from './ws-server.js';
-export { HITLService, type NotificationPriority } from './hitl-service.js';
-export type { ApprovalRequest, ApprovalResponse, Notification } from './hitl-service.js';
+export { HITLService, isAnswerableByTap, assessResponseCompleteness, type NotificationPriority } from './hitl-service.js';
+export type { ApprovalRequest, ApprovalResponse, Notification, IncompleteResponse } from './hitl-service.js';
 export { ApprovalApplier, APPROVAL_GATE_SUB_TYPES, routeRecordedDecision, targetOfApproval } from './approval-apply.js';
 export type {
   ApprovalApplyInput,

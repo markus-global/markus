@@ -113,6 +113,13 @@ export interface UserInputOption {
   label: string;
   /** Optional Markdown-supported extra detail. */
   description?: string;
+  /**
+   * 选出这个选项**本身还不是一个回答** —— 必须同时给出补充文字（例：「直接给你数字」
+   * 后面要跟 `3 / 1 / 1`）。渠道若只能点击、收不到文字，就不得把这一项当按钮提供：
+   * 否则人类点一下，agent 收到的是「同意」而不是它要的那个事实，只能自己猜一个默认值
+   * （2026-10-28 实测：老板在飞书点「同意」，agent 拿到空数字后自行决定「对外不写」）。
+   */
+  requiresFreeform?: boolean;
 }
 
 export interface UserInputQuestion {

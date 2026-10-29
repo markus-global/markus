@@ -54,7 +54,7 @@ export interface InboundAction {
  */
 export interface CardResolution {
   /** Terminal status of the underlying request. */
-  status: 'approved' | 'rejected' | 'cancelled' | 'expired';
+  status: 'approved' | 'rejected' | 'cancelled' | 'expired' | 'pending';
   /** Card header — the original notification title, re-used verbatim. */
   title: string;
   /** Card body — the original notification body, re-used verbatim. */

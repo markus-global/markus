@@ -21,6 +21,8 @@ import {
   type NotificationSource,
   type SendOptions,
   type PlatformField,
+  type NotificationLike,
+  type DispatchOutcome,
 } from '@markus/comms';
 import { createLogger } from '@markus/shared';
 
@@ -79,6 +81,13 @@ export interface OutboundWiringOptions {
    * stays usable in a context that knows nothing about users.
    */
   locale?: () => string | undefined;
+  /**
+   * Delivered-message hook. The only place a caller ever learns the platform
+   * message id — and that id is what a later state change needs in order to
+   * converge the message the human is holding (e.g. an approval card decided in
+   * the Markus UI must stop looking clickable in the chat app).
+   */
+  onDelivered?: (notification: NotificationLike, outcome: DispatchOutcome) => void;
 }
 
 export interface OutboundWiring {
@@ -130,6 +139,7 @@ export function setupOutboundDispatch(opts: OutboundWiringOptions): OutboundWiri
     agentName: opts.agentName,
     agentTeamName: opts.agentTeamName,
     locale: opts.locale,
+    onDelivered: opts.onDelivered,
   });
 
   const detachers: Array<() => void> = [];

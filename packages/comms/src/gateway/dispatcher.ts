@@ -160,6 +160,14 @@ export interface OutboundDispatcherOptions {
    * without a composition root that knows about users.
    */
   locale?: () => string | undefined;
+  /**
+   * Called once per **delivered** message, with the notification it came from and
+   * the destination it landed on. This is the only place a caller can learn the
+   * platform's message id, and that id is what a later state change needs in order
+   * to update the message the human is holding (e.g. close an approval card decided
+   * somewhere else). Best-effort by contract: a throwing hook never harms delivery.
+   */
+  onDelivered?: (notification: NotificationLike, outcome: DispatchOutcome) => void;
 }
 
 /** EventBus task events the dispatcher forwards by default, with their severity. */
@@ -180,6 +188,7 @@ export class OutboundDispatcher {
   private readonly agentName?: (agentId: string) => string | undefined;
   private readonly agentTeamName?: (agentId: string) => string | undefined;
   private readonly locale?: () => string | undefined;
+  private readonly onDelivered?: (notification: NotificationLike, outcome: DispatchOutcome) => void;
   /**
    * `info` messages waiting for a digest, each paired with the destination it
    * already passed eligibility for. Pairing is load-bearing: re-resolving at
@@ -199,6 +208,7 @@ export class OutboundDispatcher {
     this.agentName = opts.agentName;
     this.agentTeamName = opts.agentTeamName;
     this.locale = opts.locale;
+    this.onDelivered = opts.onDelivered;
   }
 
   /**
@@ -355,9 +365,20 @@ export class OutboundDispatcher {
    */
   attachNotifications(source: NotificationSource): () => void {
     return source.onChannelNotification((n) => {
-      void this.dispatch(notificationToOutbound(n, this.actionSecret, this.locale?.())).catch((err) => {
-        log.error('Failed to dispatch notification', { error: String(err) });
-      });
+      void this.dispatch(notificationToOutbound(n, this.actionSecret, this.locale?.()))
+        .then((outcome) => {
+          // Bookkeeping only: the platform message id is a fact about what the human
+          // is holding, so the caller can converge that message later. A failure here
+          // must never look like a delivery failure.
+          try {
+            this.onDelivered?.(n, outcome);
+          } catch (err) {
+            log.warn('onDelivered hook failed', { error: String(err) });
+          }
+        })
+        .catch((err) => {
+          log.error('Failed to dispatch notification', { error: String(err) });
+        });
     });
   }
 
@@ -486,6 +507,23 @@ function resolveEnumParams(
   return out;
 }
 
+/**
+ * The sentence that replaces a choice needing typed input on a destination that
+ * cannot collect it. Dispatcher owns the locale; renderer owns the capability.
+ */
+function approvalFreeformNote(locale?: string): string {
+  return locale?.toLowerCase().startsWith('zh')
+    ? '其中需要填写内容的选项无法在这里完成——请到 Markus 应用内回答。'
+    : 'A choice that needs typed input cannot be completed here — answer inside the Markus app.';
+}
+
+/** Said instead of an answer row when the request cannot be answered in one tap. */
+function approvalFormNote(locale?: string): string {
+  return locale?.toLowerCase().startsWith('zh')
+    ? '→ 这个问题需要完整填写（多项/需要文字），请在 Markus 应用内回答。'
+    : '→ This request needs a full answer (several questions / typed input) — answer inside the Markus app.';
+}
+
 export function notificationToOutbound(n: NotificationLike, actionSecret?: string, locale?: string): OutboundMessage {
   const metadata = (n.metadata ?? {}) as Record<string, unknown>;
   const origin: OutboundOrigin = {};
@@ -510,7 +548,15 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
   };
 
   const approvalId = typeof metadata['approvalId'] === 'string' ? (metadata['approvalId'] as string) : undefined;
-  if (approvalId) {
+  // A request that cannot be answered in one tap (several questions, multi-select,
+  // a text question, or an option that needs typed input). Inventing 同意/拒绝 for it
+  // turns a whole form into a single "approved" — worse than offering nothing, because
+  // the agent receives a decision with none of the content it asked for.
+  const formOnly = metadata['formOnly'] === true;
+  if (approvalId && formOnly) {
+    msg.body = `${body}\n\n${approvalFormNote(locale)}`;
+  }
+  if (approvalId && !formOnly) {
     const refFor = (action: string, explicit?: unknown): string => {
       if (typeof explicit === 'string') return explicit;
       if (!actionSecret) return approvalId;
@@ -538,6 +584,9 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
               // A choice that needs a written reason says so; the renderer withholds
               // it on a channel that cannot collect free text.
               ...(opt['requiresComment'] === true ? { requiresComment: true } : {}),
+              // A choice that is only an answer together with typed input says so;
+              // the renderer withholds it on a channel that cannot collect text.
+              ...(opt['requiresFreeform'] === true ? { requiresFreeform: true } : {}),
               ref: refFor(id),
             };
           })
@@ -549,6 +598,9 @@ export function notificationToOutbound(n: NotificationLike, actionSecret?: strin
     // replaces it on a channel which cannot collect the reason.
     if (msg.actions.some((a) => a.requiresComment)) {
       msg.commentRequiredNote = approvalCommentNote(locale);
+    }
+    if (msg.actions.some((a) => a.requiresFreeform)) {
+      msg.freeformRequiredNote = approvalFreeformNote(locale);
     }
   }
   return msg;

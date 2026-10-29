@@ -173,11 +173,19 @@ describe('审批意图解析（唯一解析器 · 两层归一化）', () => {
       .toBe('needs_adjustment');
   });
 
-  it('闭集之外的值才回落布尔，并留下 unknownOption 供诊断', () => {
+  it('闭集之外的值：**有闸门**才回落布尔并留 unknownOption 供诊断', () => {
     expect(resolveApprovalIntent({ subType: 'task_review', approved: true, selectedOption: 'lgtm_maybe' }))
       .toEqual({ intent: 'approve', unknownOption: 'lgtm_maybe' });
+  });
+
+  it('无闸门（agent 自己定选项的 custom 请求）⇒ 不记 unknownOption', () => {
+    // 2026-10-28 实测：飞书点 `tap_second` 已正确落账，却附带 `unknownOption: tap_second`。
+    // 自定义请求的选项 id 由 agent 命名，闸门别名表里当然没有——那不是“未知”，是“自定义”。
+    // 有闸门时依然标记（防止 typo 被静默当成同意），只是不再把自定义选择当错误。
     expect(resolveApprovalIntent({ approved: false, selectedOption: 'weird' }))
-      .toEqual({ intent: 'reject', unknownOption: 'weird' });
+      .toEqual({ intent: 'reject' });
+    expect(resolveApprovalIntent({ approved: true, selectedOption: 'tap_second' }))
+      .toEqual({ intent: 'approve' });
   });
 });
 

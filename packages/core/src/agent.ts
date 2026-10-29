@@ -9067,26 +9067,24 @@ export class Agent {
         const requirementId = this.getCurrentRequirementId();
         const explicitTargetUser = toolCall.arguments.target_user_id as string | undefined;
 
-        // Write full message into in-memory session with embedded context
-        const contextParts: string[] = [];
-        if (taskId) contextParts.push(`task_id=${taskId}`);
-        if (requirementId) contextParts.push(`requirement_id=${requirementId}`);
-        if (priority && priority !== 'normal') contextParts.push(`priority=${priority}`);
-        const contextSuffix = contextParts.length > 0
-          ? `\n\n<!-- notify_context: ${contextParts.join(', ')} -->`
-          : '';
-        const formattedMsg = `**${title}**\n\n${body}${contextSuffix}`;
-        // Best-effort append to current in-memory session for context continuity.
-        // This may fail if the session was evicted (e.g., heartbeat sessions) —
-        // that's fine because start.ts persists to the main DB session independently.
-        if (this.currentSessionId) {
-          try {
-            this.memory.appendMessage(this.currentSessionId, {
-              role: 'assistant',
-              content: formattedMsg,
-            });
-          } catch { /* session may have been evicted — non-fatal */ }
-        }
+        // A notification is a SIDE EFFECT, not something the agent said.
+        //
+        // This used to append the notification payload into the agent's own
+        // session as `role: 'assistant'` "for context continuity". That put a
+        // plain assistant message BETWEEN `assistant(toolCalls)` and its `tool`
+        // result — an invalid protocol sequence, so
+        // `ContextEngine.sanitizeMessageSequence()` resolved it the only correct
+        // way: drop the whole toolCalls block AND the orphaned receipt. Net
+        // effect (measured 2026-10-28, GEO策略主管: 12 identical notifications in
+        // 90 seconds): the model saw only its own words repeated, never a
+        // delivery receipt, so every turn re-derived "I have not actually sent
+        // this yet" and sent it again. The tool-semantics prompt fix could not
+        // help, because the evidence was deleted before the model saw it.
+        // See docs/architecture/notify-user-context-truth.md.
+        //
+        // The payload's legitimate home is the HUMAN's transcript: start.ts
+        // persists it to `chat_messages` and broadcasts it to the chat UI. The
+        // agent's proof of delivery is the tool result returned below.
         this.recentActivityRing.push(`[notify_user] ${title}`);
         if (this.recentActivityRing.length > Agent.ACTIVITY_RING_SIZE) {
           this.recentActivityRing.shift();
@@ -9108,8 +9106,25 @@ export class Agent {
           requirementId,
         });
 
-        log.info('User notification sent', { agentId: this.id, title });
-        return JSON.stringify({ status: 'ok', message: 'Notification sent to user.' });
+        // The receipt is the ONLY thing that lets the agent tell "I meant to
+        // send this" apart from "it was delivered". It must state verifiable
+        // facts, not restate the payload the model just authored.
+        const deliveredAt = new Date().toISOString();
+        const notificationId = `ntf_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+        log.info('User notification sent', { agentId: this.id, title, notificationId });
+        return JSON.stringify({
+          status: 'ok',
+          message: 'Notification delivered to the user.',
+          notification: {
+            id: notificationId,
+            title,
+            priority,
+            to: explicitTargetUser ?? this.currentInteractingUserId ?? 'owner',
+            deliveredAt,
+            ...(taskId ? { taskId } : {}),
+            ...(requirementId ? { requirementId } : {}),
+          },
+        });
       } catch (err) {
         return JSON.stringify({ status: 'error', message: `Failed to send notification: ${String(err)}` });
       }
@@ -9193,11 +9208,20 @@ export class Agent {
       const title = (toolCall.arguments.title as string) ?? '';
       const description = (toolCall.arguments.description as string) ?? '';
       const rawQuestions = toolCall.arguments.questions as Array<Record<string, unknown>> | undefined;
-      const rawOptions = toolCall.arguments.options as Array<{ id?: string; label: string; description?: string }> | undefined;
+      /** One option as the model may send it (snake_case), before normalization. */
+      type RawOption = { id?: string; label: string; description?: string; requires_freeform?: boolean };
+      const rawOptions = toolCall.arguments.options as RawOption[] | undefined;
 
       // Normalize into a canonical questions[] array.
-      const normalizeOptions = (opts?: Array<{ id?: string; label: string; description?: string }>) =>
-        opts?.map((o, i) => ({ id: o.id ?? `opt_${i + 1}`, label: o.label, description: o.description }));
+      // `requires_freeform` is carried through because a tap on such an option is
+      // not an answer: the human still owes text (see assessResponseCompleteness).
+      const normalizeOptions = (opts?: RawOption[]) =>
+        opts?.map((o, i) => ({
+          id: o.id ?? `opt_${i + 1}`,
+          label: o.label,
+          description: o.description,
+          ...(o.requires_freeform === true ? { requiresFreeform: true } : {}),
+        }));
 
       // Explicit-intent policy: every choice question (and the options shorthand)
       // MUST explicitly declare allow_multiple and allow_freeform. There are no
@@ -9207,7 +9231,7 @@ export class Agent {
       let questions: UserInputQuestion[] | undefined;
       if (rawQuestions && rawQuestions.length > 0) {
         questions = rawQuestions.map((q, i) => {
-          const opts = normalizeOptions(q['options'] as Array<{ id?: string; label: string; description?: string }> | undefined);
+          const opts = normalizeOptions(q['options'] as RawOption[] | undefined);
           const inputType = (q['input_type'] as 'choice' | 'text' | undefined)
             ?? (opts && opts.length > 0 ? 'choice' : 'text');
           if (inputType === 'choice') {
@@ -9274,7 +9298,10 @@ export class Agent {
           const resp: Record<string, unknown> = {
             status: 'ok',
             approved: result.approved,
-            selected_option: result.selectedOption ?? (result.approved ? 'approve' : 'reject'),
+            // 不要编造 selected_option。以前没有选中项时也会填 'approve'，于是模型
+            // 分不清「我的选项被选了」和「人被别的路径批准了」——2026-10-28：它把
+            // 'approve' 读成了同意，而它要的数字一个都没拿到。
+            ...(result.selectedOption ? { selected_option: result.selectedOption } : {}),
             comment: result.comment ?? '',
           };
           if (result.answers && result.answers.length > 0) resp.answers = result.answers;

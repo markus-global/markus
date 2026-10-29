@@ -117,13 +117,16 @@ function actorFact(name?: string, id?: string): string | undefined {
 
 /** Header words + colour per terminal status. */
 const RESOLVED_APPROVAL_HEADER: Record<
-  'approved' | 'rejected' | 'cancelled' | 'expired',
+  'approved' | 'rejected' | 'cancelled' | 'expired' | 'pending',
   { icon: string; label: string; template: string }
 > = {
   approved: { icon: '✅', label: '已批准', template: 'green' },
   rejected: { icon: '❌', label: '已驳回', template: 'red' },
   cancelled: { icon: '⚪', label: '已取消', template: 'grey' },
   expired: { icon: '⏰', label: '已超时', template: 'grey' },
+  // 点击没有落账（例如需要到应用内回答的表单）——**不是超时**。把「还没记录」
+  // 画成「已超时」是另一种谎：人会以为请求失效了，于是重发一份。
+  pending: { icon: '⏳', label: '未记录 · 请到 Markus 应用内回答', template: 'orange' },
 };
 
 /** Render an ISO timestamp compactly, without pretending to know the reader's TZ. */
@@ -146,7 +149,7 @@ function formatResolvedAt(at: string): string {
 export function buildResolvedApprovalCard(opts: {
   title: string;
   body: string;
-  status: 'approved' | 'rejected' | 'cancelled' | 'expired';
+  status: 'approved' | 'rejected' | 'cancelled' | 'expired' | 'pending';
   actorId?: string;
   actorName?: string;
   selectedOption?: string;

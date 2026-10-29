@@ -163,8 +163,7 @@ export class WSBroadcaster {
     });
   }
 
-  broadcastTeamUpdate(teamId: string, extra?: Record<string, unknown>): void {
-    this.broadcast({
+  broadcastTeamUpdate(teamId: string, extra?: Record<string, unknown>): void {    this.broadcast({
       type: 'team:update',
       payload: { teamId, ...extra },
       timestamp: new Date().toISOString(),
