@@ -79,12 +79,12 @@ import {
   type PlatformStoreDeps,
   type AuditEventType,
   readStoredPlatformConfig,
+  isAnswerableByTap,
   type StoredPlatformConfig,
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
 } from '@markus/org-manager';
-import { isAnswerableByTap } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
 import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';

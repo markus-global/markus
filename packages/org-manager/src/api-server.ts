@@ -79,8 +79,7 @@ import {
 import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
-import type { HITLService } from './hitl-service.js';
-import { assessResponseCompleteness } from './hitl-service.js';
+import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
 import { deriveSessionTitle } from './session-title.js';
