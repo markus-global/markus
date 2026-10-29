@@ -103,13 +103,26 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
   const isAnswered = (q: UserInputQuestion): boolean => {
     const d = draftFor(q.id);
     if (q.inputType === 'choice') {
-      if (d.selectedOptionIds.length > 0) return true;
+      if (d.selectedOptionIds.length > 0) {
+        // 选中的选项若声明 requiresFreeform（“选它还不是答案”），必须有文字才算回答。
+        // 否则人点一下就等于把一个需要具体内容的问题“答应”了 —— 2026-10-28：
+        // 选项是「直接给你数字」，点完没有任何数字，agent 只能自己编一个默认值。
+        const needsText = (q.options ?? []).some(
+          o => o.id && d.selectedOptionIds.includes(o.id) && o.requiresFreeform,
+        );
+        return needsText ? d.text.trim().length > 0 : true;
+      }
       return !!(q.allowFreeform && d.text.trim());
     }
     return d.text.trim().length > 0;
   };
 
   const allAnswered = questions.every(isAnswered);
+
+  /** 当前问题选中的选项要求补字 —— 输入框必须出现（即便 allowFreeform 为 false）。 */
+  const currentNeedsFreeform = (current.options ?? []).some(
+    o => o.id && draftFor(current.id).selectedOptionIds.includes(o.id) && o.requiresFreeform,
+  );
 
   const buildAnswers = (): UserInputAnswer[] => questions.map(q => {
     const d = draftFor(q.id);
@@ -224,6 +237,13 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
                           <MarkdownMessage content={opt.description} />
                         </span>
                       )}
+                      {opt.requiresFreeform && (
+                        <span className="block text-[11px] text-amber-600 mt-1">
+                          {t('team:userInput.requiresFreeform', {
+                            defaultValue: 'This choice needs the text below — picking it alone is not an answer.',
+                          })}
+                        </span>
+                      )}
                     </span>
                   </button>
                 );
@@ -231,7 +251,7 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
             </div>
           )}
 
-          {(current.inputType === 'text' || current.allowFreeform) && (!readOnly || draftFor(current.id).text) && (
+          {(current.inputType === 'text' || current.allowFreeform || currentNeedsFreeform) && (!readOnly || draftFor(current.id).text) && (
             <textarea
               rows={current.inputType === 'text' ? 4 : 2}
               readOnly={readOnly}

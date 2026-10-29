@@ -80,6 +80,7 @@ import { bucketedDirUsage } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import type { HITLService } from './hitl-service.js';
+import { assessResponseCompleteness } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
 import { deriveSessionTitle } from './session-title.js';
@@ -6988,6 +6989,17 @@ EXPLANATION_END`;
       const comment = body['comment'] as string | undefined;
       const selectedOption = body['selectedOption'] as string | undefined;
       const answers = body['answers'] as UserInputAnswer[] | undefined;
+      // A choice that needs typed input is not an answer on its own — refuse it with
+      // an actionable message instead of recording a decision that is missing its
+      // fact (2026-10-28: 「同意」 recorded as an answer to a question asking for numbers).
+      const incomplete = assessResponseCompleteness(pending, selectedOption, comment, answers);
+      if (incomplete) {
+        this.json(res, 400, {
+          error: 'This choice needs the text it asks for before it counts as an answer',
+          missing: incomplete.missing,
+        });
+        return;
+      }
       const response = this.hitlService.respondToApproval(
         approvalId, approved, respondedBy, comment, selectedOption, answers,
       );

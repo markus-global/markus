@@ -41,6 +41,12 @@ export interface OutboundAction {
    * to act instead.
    */
   requiresComment?: boolean;
+  /**
+   * This choice is only an answer together with typed input (“give you the
+   * numbers”). A channel that cannot collect free text must not offer it as a
+   * one-tap button — the tap would be recorded as the answer.
+   */
+  requiresFreeform?: boolean;
   /** Signed reference (see {@link signActionRef}) resolved back on the inbound side. */
   ref: string;
 }
@@ -101,6 +107,8 @@ export interface OutboundMessage {
    * capabilities) — neither has to know the other's half.
    */
   commentRequiredNote?: string;
+  /** Same contract as {@link commentRequiredNote}, for choices needing typed input. */
+  freeformRequiredNote?: string;
   attachments?: OutboundAttachment[];
   replyRef?: OutboundReplyRef;
   origin?: OutboundOrigin;

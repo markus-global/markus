@@ -21,7 +21,7 @@
  */
 import type { CardResolution } from '@markus/comms';
 
-/** Renderable terminal states of a resolved approval card. */
+/** Renderable states of a resolved approval card. */
 export type TerminalApprovalStatus = NonNullable<CardResolution['status']>;
 
 /** Post-ack delay before the card PATCH. Long enough for the ack round-trip to
@@ -50,7 +50,10 @@ export function buildApprovalCardResolution(
   return {
     status: (TERMINAL_STATUSES.has(approval.status)
       ? approval.status
-      : 'expired') as TerminalApprovalStatus,
+      // A request that is still pending (e.g. the tap was refused because the form
+      // needs an answer in the app) must NOT be rendered as `expired` — that says
+      // the request died, which is false and invites a duplicate.
+      : 'pending') as TerminalApprovalStatus,
     title: approval.title,
     body: approval.description,
     actorId: approval.respondedBy ?? tap.actorId,

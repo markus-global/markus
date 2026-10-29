@@ -84,6 +84,7 @@ import {
   recordInstanceVerification,
   type InstanceStoreDeps,
 } from '@markus/org-manager';
+import { isAnswerableByTap } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
 import { buildApprovalCardResolution, scheduleCardRewrite } from './approval-card.js';
@@ -1502,6 +1503,24 @@ async function startServerCore(
   // Wire user approval requester through HITL service
   agentManager.setUserApprovalRequester(async (opts) => {
     const taskTitle = opts.relatedTaskId ? taskService.getTask(opts.relatedTaskId)?.title : undefined;
+    // What a card can render is the approval's `options`. When the agent asked with
+    // `questions[]`, that list used to be empty — so every channel fell back to a
+    // bare 同意/拒绝 pair and the agent's real choices never reached the human
+    // (2026-10-28: the option said 「直接给你数字」, the Feishu card showed 同意).
+    // Promote them only when the ask is **fully answerable in one tap** — the same
+    // predicate the HITL service uses to decide `formOnly`, so a card can never
+    // offer an action the server would refuse. Multi-question / multi-select /
+    // typed-input requests stay a form inside the app.
+    const channelOptions = opts.options && opts.options.length > 0
+      ? opts.options
+      : isAnswerableByTap(opts.questions, opts.options)
+        ? (opts.questions?.[0]?.options ?? []).map((o) => ({
+            id: o.id,
+            label: o.label,
+            description: o.description,
+            ...(o.requiresFreeform ? { requiresFreeform: true } : {}),
+          }))
+        : undefined;
     return hitlService.requestApprovalAndWait({
       agentId: opts.agentId,
       agentName: opts.agentName,
@@ -1509,7 +1528,7 @@ async function startServerCore(
       title: opts.title,
       description: opts.description,
       targetUserId: ownerUserId,
-      options: opts.options,
+      options: channelOptions,
       allowFreeform: opts.allowFreeform,
       questions: opts.questions,
       details: { priority: opts.priority, taskId: opts.relatedTaskId, taskTitle },
@@ -2626,11 +2645,16 @@ async function startServerCore(
     // renderer withholds it and points at Markus); this refuses the taps a card sent
     // *before* that change can still deliver — fail closed, never a silent mis-apply.
     const tapped = hitlService.getApproval(approvalId)?.options?.find((o) => o.id === command);
-    if (tapped?.requiresComment) {
-      log.warn('Refused a platform approval action that needs an unwritable comment', {
+    if (tapped?.requiresComment || tapped?.requiresFreeform) {
+      // Same contract for both: this surface cannot carry the text the choice
+      // needs, so the tap is not an answer. Cards no longer offer such choices
+      // (the renderer withholds them); this refuses the taps an older card can
+      // still deliver — fail closed, never a silent mis-apply.
+      log.warn('Refused a platform approval action that needs input this surface cannot collect', {
         approvalId,
         command,
         platform: action.platform,
+        needs: tapped?.requiresFreeform ? 'freeform' : 'comment',
       });
       return;
     }
@@ -2644,7 +2668,18 @@ async function startServerCore(
       undefined,
       command,
     );
-    log.info('Platform action resolved', { approvalId, command, platform: action.platform });
+    // 只有真的记下了才说 resolved。被拒（例如表单需要到应用内回答、点了也对不上题）
+    // 时必须如实说"没记录" —— 2026-10-28 实测日志里，拒收和成功都打印 resolved，
+    // 排障的人会把「拒收」读成「已完成」。
+    if (resolved) {
+      log.info('Platform action resolved', { approvalId, command, platform: action.platform });
+    } else {
+      log.warn('Platform action was NOT recorded — the request is still waiting for a full answer', {
+        approvalId,
+        command,
+        platform: action.platform,
+      });
+    }
 
     // Feedback: rewrite the card the tap came from. One invariant, two paths —
     // *the card must converge to the approval's authoritative state*:
@@ -2659,9 +2694,13 @@ async function startServerCore(
     // rewrite (not awaiting it inside this handler) makes it the last write the
     // client applies. Best-effort: failures are logged, never fatal, never roll
     // the decision back.
+    // 卡片收敛的**唯一写者**是 fan-out（approval:changed → 按投递记录改写）。
+    // 只有这张审批没有任何投递记录时（卡片是本次进程启动前发的、或投递钩子没拿到 ref），
+    // 才用本次点击携带的 messageId 兜底 —— 否则这张卡片永远不会收敛到已决态。
     const approval = resolved?.approval ?? hitlService.getApproval(approvalId);
     const messageId = action.messageId;
-    if (approval && messageId) {
+    const hasRecordedCards = (deliveredCards.get(approvalId)?.length ?? 0) > 0;
+    if (approval && messageId && (!resolved || !hasRecordedCards)) {
       void scheduleCardRewrite(async () => {
         // Resolve the display name inside the post-ack rewrite: it is a network
         // round-trip to the contact API, so it must never delay the callback
@@ -2851,6 +2890,40 @@ async function startServerCore(
   // `markus.json` `integrations.feishu.notifyChatId` read is gone (R2, design §3
   // "Single source of truth"), so the configured fact and the consumed fact are
   // the same fact.
+  // ── 审批变化 → 渠道卡片收敛（唯一写者）───────────────────────────────
+  // 审批记录是唯一事实，任何一面（飞书点击 / Markus 界面 / 超时）都只能通过
+  // `respondToApproval` 改写它。改写后需要两件事同时发生：
+  //   · 前端刷新/关弹窗 —— **已经由 api-server 的 onApprovalChanged 广播**
+  //     `approval:resolved`（同一个 `emitApprovalChanged`，这里不再重复广播，
+  //     否则同一事实两个写者）；
+  //   · 渠道卡片收敛到记录状态 —— 那正是这里缺的一半：以前只有"飞书点击"
+  //     这一条路径会改写卡片，从 Markus 界面做决定会让飞书卡片一直停在可点状态。
+  const deliveredCards = new Map<string, Array<{ platform: string; instanceId?: string; messageId: string }>>();
+  hitlService.onApprovalChanged((changed) => {
+    for (const ref of deliveredCards.get(changed.id) ?? []) {
+      void scheduleCardRewrite(async () => {
+        const actorName = changed.respondedBy
+          ? await messageRouter.resolveActorName(ref.platform, ref.instanceId, changed.respondedBy)
+          : null;
+        const updated = await messageRouter.updateResolvedCard(
+          ref.platform,
+          ref.instanceId,
+          ref.messageId,
+          buildApprovalCardResolution(changed, {
+            actorId: changed.respondedBy,
+            actorName: actorName ?? undefined,
+          }),
+        );
+        if (!updated) {
+          log.info('Approval card left as-is — platform cannot edit a sent message', {
+            approvalId: changed.id,
+            platform: ref.platform,
+          });
+        }
+      }, (err) => log.warn('Approval card rewrite failed', { approvalId: changed.id, error: String(err) }));
+    }
+  });
+
   const outbound = setupOutboundDispatch({
     router: messageRouter,
     bindingRepo: storage?.channelBindingRepo,
@@ -2861,6 +2934,18 @@ async function startServerCore(
     orgId: 'default',
     digestInfo: false,
     actionSecret: resolveActionSecret(),
+    // 记住“哪张卡片对应哪个审批”：后续任何一面做出决定，都靠这个 ref 把卡片收敛。
+    onDelivered: (notification, outcome) => {
+      const approvalId = notification.metadata?.['approvalId'];
+      const { messageId } = outcome;
+      const platform = outcome.target?.platform;
+      if (typeof approvalId !== 'string' || !messageId || !platform) return;
+      const list = deliveredCards.get(approvalId) ?? [];
+      if (!list.some((r) => r.platform === platform && r.messageId === messageId)) {
+        list.push({ platform, instanceId: outcome.target?.instanceId, messageId });
+        deliveredCards.set(approvalId, list);
+      }
+    },
     // Resolve the origin agent's display name so a notification landing in a
     // shared group says which agent sent it. A lookup failure must never hold
     // back a delivery — an unknown agent simply goes out unattributed.

@@ -91,11 +91,18 @@ export function resolveApprovalIntent(input: {
   const raw = input.selectedOption?.trim();
   if (raw) {
     const token = normalizeIntentToken(raw);
-    const gateAlias = input.subType ? GATE_OPTION_ALIASES[input.subType]?.[token] : undefined;
+    const gate = input.subType ? GATE_OPTION_ALIASES[input.subType] : undefined;
+    const gateAlias = gate?.[token];
     if (gateAlias) return { intent: gateAlias };
     const intent = GLOBAL_INTENT_TOKENS[token];
     if (intent) return { intent };
-    return { intent: input.approved ? 'approve' : 'reject', unknownOption: raw };
+    // Only a gate that *declares* option aliases can call an id “unknown”. An open
+    // request (`custom` / no gate) carries option ids the **agent authored** — they
+    // cannot be aliased by definition, so flagging them is a false alarm on every
+    // such tap (2026-10-28: `unknownOption: tap_second` on a perfectly valid choice).
+    return gate
+      ? { intent: input.approved ? 'approve' : 'reject', unknownOption: raw }
+      : { intent: input.approved ? 'approve' : 'reject' };
   }
   // Legacy payloads carry a boolean only — behaviour stays exactly as before.
   return { intent: input.approved ? 'approve' : 'reject' };
@@ -244,6 +251,14 @@ export interface ApprovalOption {
    * `OutboundAction.requiresComment`).
    */
   requiresComment?: boolean;
+  /**
+   * Tapping this choice is **not yet an answer** — the decision needs typed input
+   * too (“give you the numbers” means nothing without the numbers). A surface that
+   * cannot collect text must not offer it as a one-tap button, and a tap that
+   * arrives without the text is refused rather than accepted as a decision
+   * (see {@link assessResponseCompleteness}).
+   */
+  requiresFreeform?: boolean;
 }
 
 /**
@@ -345,6 +360,130 @@ type NotificationHandler = (notification: Notification) => void;
 let idCounter = 0;
 function genId(prefix: string): string {
   return `${prefix}_${Date.now().toString(36)}_${(++idCounter).toString(36)}`;
+}
+
+/**
+ * 把「卡片点击」归一成表单的答案形状 —— **同一份答案只能有一个口径**。
+ *
+ * 卡片（飞书/短信）只能带 `selectedOption` + `comment`，表单带 `answers[]`；
+ * 完整性判定若只认 `answers[]`，则“可点击的问题”永远答不完 —— 实测 2026-10-28：
+ * 飞书点对了选项，却被校验当成“没回答”，卡片还显示“已超时”。
+ *
+ * 只在真正能被一次点击答完时归一（单问题 / 单选 / 选项不是 `requiresFreeform`），
+ * 否则返回 undefined：表单本就不可能被一次点击答完。
+ */
+export function answersFromTap(
+  approval: { questions?: UserInputQuestion[]; options?: ApprovalOption[] },
+  selectedOption?: string,
+  comment?: string,
+): UserInputAnswer[] | undefined {
+  const questions = approval.questions ?? [];
+  if (questions.length !== 1) return undefined;
+  const question = questions[0]!;
+  if (question.inputType !== 'choice' || question.allowMultiple === true) return undefined;
+  if (!selectedOption) return undefined;
+  // `approve` / `reject` 是渠道合成的方向，不属于该题的选项。
+  const ids = (question.options ?? []).map((o) => o.id);
+  if (!ids.includes(selectedOption)) return undefined;
+  const text = (comment ?? '').trim();
+  return [
+    {
+      questionId: question.id,
+      selectedOptionIds: [selectedOption],
+      ...(text ? { text } : {}),
+    },
+  ];
+}
+
+/** 一个回答缺少它要回答的那个事实时，哪里缺了。 */
+export interface IncompleteResponse {
+  incomplete: true;
+  /** e.g. `option:give_numbers` / `question:q2:unanswered` —— 供 UI/API 写成可行动提示。 */
+  missing: string[];
+}
+
+/**
+ * 这个请求能否被**一次点击**完整回答？ —— 唯一判定点（纯函数）。
+ *
+ * 一个只能点、不能打字的面（短信、IM 卡片按钮）只有在“问题本身就是一个选择”时
+ * 才是完整的回答通道：
+ *   · 没有 questions/options（纯审批）→ 是（同意/拒绝就是问题）；
+ *   · 恰好一个单选 choice，且每个选项都自带完整含义 → 是；
+ *   · 多问题、多选、文本题、或任一选项 `requiresFreeform` → **不是**。
+ *
+ * 后一种情况不得把“同意/拒绝”当成按钮提供 —— 否则人类点一下就把一个表单“批准”了，
+ * agent 收到的是一个没有内容的允许（2026-10-28 实测）。渲染器用它决定要不要发按钮，
+ * CLI 用它决定要不要把问题的选项提到渠道层。
+ */
+export function isAnswerableByTap(
+  questions?: UserInputQuestion[],
+  options?: ApprovalOption[],
+): boolean {
+  if (!questions || questions.length === 0) {
+    return !options || options.every((o) => o.requiresFreeform !== true);
+  }
+  if (questions.length > 1) return false;
+  const q = questions[0]!;
+  if (q.inputType !== 'choice') return false;
+  if (q.allowMultiple === true) return false;
+  return (q.options ?? []).every((o) => o.requiresFreeform !== true);
+}
+
+/**
+ * 一个「回答」是否真的回答了问题 —— **单一判定点**（纯函数）。
+ *
+ * 两条规则，一起构成“完整性”：
+ *   1. **每个问题都要被回答**（多问题表单里跳过一问，就不是一个回答）；
+ *   2. **选了“选它还不是答案”的选项，必须同时给出文字**（`requiresFreeform`）。
+ *
+ * 2026-10-28 实测：选项写的是「直接给你数字」，老板在飞书点「同意」——那个渠道
+ * 收不到文字；agent 收到一个没有数字的「批准」，只能自己按默认值执行。
+ * 决策被渠道的表达能力偷偷改写了，而它以为那是老板的意思。
+ */
+export function assessResponseCompleteness(
+  approval: { options?: ApprovalOption[]; questions?: UserInputQuestion[] },
+  selectedOption?: string,
+  comment?: string,
+  answers?: UserInputAnswer[],
+): IncompleteResponse | undefined {
+  const commentText = (comment ?? '').trim();
+  const missing: string[] = [];
+
+  // 1) 顶层选项（单问题简写 / 审批按钮）
+  const selected = selectedOption
+    ? approval.options?.find((o) => o.id === selectedOption)
+    : undefined;
+  if (selected?.requiresFreeform && commentText.length === 0) {
+    missing.push(`option:${selected.id}`);
+  }
+
+  // 2) 每个问题都必须被回答（不是“至少有一个回答”）
+  const byQuestion = new Map((answers ?? []).map((a) => [a.questionId, a]));
+  for (const question of approval.questions ?? []) {
+    const answer = byQuestion.get(question.id);
+    const picked = answer?.selectedOptionIds ?? [];
+    // 文字属于**这一个**问题；别的问题的回答不能代它交差。
+    const text = (answer?.text ?? '').trim();
+
+    if (question.inputType === 'text') {
+      if (text.length === 0) missing.push(`question:${question.id}:text`);
+      continue;
+    }
+
+    if (picked.length === 0 && text.length === 0) {
+      missing.push(`question:${question.id}:unanswered`);
+      continue;
+    }
+
+    for (const id of picked) {
+      const opt = question.options?.find((o) => o.id === id);
+      if (opt?.requiresFreeform && text.length === 0) {
+        missing.push(`question:${question.id}:option:${opt.id}:text`);
+      }
+    }
+  }
+
+  return missing.length > 0 ? { incomplete: true, missing } : undefined;
 }
 
 export class HITLService {
@@ -609,7 +748,16 @@ export class HITLService {
       // `agentId` travels with the notification so the outbound gateway can route
       // it to the producing agent's own channel before falling back to the global
       // default (G4, design §7.3).
-      metadata: { approvalId: id, agentId: opts.agentId, options: opts.options, i18n: opts.i18n },
+      // `formOnly`：这张单子**一次点击答不完**（多问题 / 多选 / 文本题 / 需填字的选项）。
+      // 渠道收到它就不得把「同意/拒绝」当答案按钮发出去，改说“请到应用内回答”。
+      // 判定与校验同源（`isAnswerableByTap`），所以不存在“卡片能点、服务端却拒收”。
+      metadata: {
+        approvalId: id,
+        agentId: opts.agentId,
+        options: opts.options,
+        i18n: opts.i18n,
+        ...(isAnswerableByTap(opts.questions, opts.options) ? {} : { formOnly: true }),
+      },
     });
 
     return approval;
@@ -658,6 +806,23 @@ export class HITLService {
     const approval = this.approvals.get(id);
     if (!approval || approval.status !== 'pending') return undefined;
 
+    // A tap carries the same answer in a different shape. Normalize it FIRST, so the
+    // completeness check has one vocabulary and one enforcement point.
+    const resolvedAnswers = answers ?? answersFromTap(approval, selectedOption, comment);
+
+    // A choice that needs typed input is not an answer on its own. This is the
+    // writer-side backstop for the same predicate the UI/API check first: never
+    // record a "decision" that is missing the fact it was supposed to decide on.
+    const incompleteResponse = assessResponseCompleteness(approval, selectedOption, comment, resolvedAnswers);
+    if (incompleteResponse) {
+      log.warn('Refused an incomplete approval response — the chosen option needs typed input', {
+        approvalId: id,
+        selectedOption,
+        missing: incompleteResponse.missing,
+      });
+      return undefined;
+    }
+
     // Single parse point: the intent is resolved exactly once, here, from the
     // approval's own subType + the response payload. Every gate downstream reads
     // `intent` — none of them re-derives it from the boolean.
@@ -669,14 +834,14 @@ export class HITLService {
     approval.respondedBy = respondedBy;
     if (comment) approval.responseComment = comment;
     if (selectedOption) approval.selectedOption = selectedOption;
-    if (answers && answers.length > 0) approval.answers = answers;
+    if (resolvedAnswers && resolvedAnswers.length > 0) approval.answers = resolvedAnswers;
     if (decision.unknownOption) approval.details['unknownOption'] = decision.unknownOption;
     this.persistApproval(approval);
     log.info(`Approval ${id} ${approval.status} (intent=${decision.intent}) by ${respondedBy}`, {
       comment,
       selectedOption,
       unknownOption: decision.unknownOption,
-      answerCount: answers?.length ?? 0,
+      answerCount: resolvedAnswers?.length ?? 0,
     });
 
     this.markApprovalNotificationsRead(id);
@@ -691,7 +856,7 @@ export class HITLService {
         approvalId: approval.id,
         comment,
         selectedOption,
-        answers,
+        answers: resolvedAnswers,
         respondedBy,
         ...(decision.unknownOption ? { unknownOption: decision.unknownOption } : {}),
       });

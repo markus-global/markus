@@ -1567,9 +1567,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       if (!p?.taskId) return;
       setTasks(prev => prev.map(t => t.id === p.taskId ? { ...t, status: p.status as string ?? t.status } : t));
     });
+    // 审批从别的面（飞书卡片 / 通知铃铛）终结时，关掉这里正开着的那张单子。
+    // 审批记录是唯一事实，弹窗只是它的视图；不关就等于让人再答一遍已决的事
+    // （2026-10-28：在飞书点完选项，Markus 里还杵着一个等回答的弹窗）。
+    const unsubApprovalResolved = wsClient.on('approval:resolved', (event) => {
+      const approvalId = (event?.payload as { approvalId?: string } | undefined)?.approvalId;
+      if (!approvalId) return;
+      setActiveInputModal(prev => (prev && prev.id === approvalId ? null : prev));
+      setActiveToolApproval(prev => (prev && prev.id === approvalId ? null : prev));
+    });
     const onDataChanged = () => { refreshAgents(); refreshTeams(); refreshHumans(); };
     window.addEventListener('markus:data-changed', onDataChanged);
-    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); unsubTaskUpdate(); window.removeEventListener('markus:data-changed', onDataChanged); };
+    return () => { clearInterval(timer); clearInterval(teamTimer); unsub(); unsubTeamUpdate(); unsubTeamOnAgentRemoved(); unsubGroup(); unsubGroupUpdate(); unsubGroupDelete(); unsubTaskUpdate(); unsubApprovalResolved(); window.removeEventListener('markus:data-changed', onDataChanged); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode, isActive, refreshHumans]);
 

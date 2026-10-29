@@ -232,6 +232,8 @@ export interface UserInputOption {
   id: string;
   label: string;
   description?: string;
+  /** 选中它还不是答案 —— 必须同时填写文字。 */
+  requiresFreeform?: boolean;
 }
 
 export interface UserInputQuestion {

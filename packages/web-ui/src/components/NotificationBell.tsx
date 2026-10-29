@@ -603,7 +603,17 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
     // A terminal transition settled from any surface (in-app or an external IM)
     // drops out of the pending list — refresh so the bell does not show a
     // still-actionable approval that is already decided.
-    const unsubResolved = wsClient.on('approval:resolved', scheduleFetch);
+    //
+    // The refresh alone is not enough: the modal is a *separate* view of the same
+    // record, so a request answered from Feishu left the in-app modal open, waiting
+    // for a second answer to a question that was already decided (2026-10-28).
+    const unsubResolved = wsClient.on('approval:resolved', (event) => {
+      const approvalId = (event?.payload as { approvalId?: string } | undefined)?.approvalId;
+      if (approvalId) {
+        setModalApproval(prev => (prev && prev.id === approvalId ? null : prev));
+      }
+      scheduleFetch();
+    });
     return () => {
       clearInterval(timer);
       if (debounceTimer) clearTimeout(debounceTimer);

@@ -53,13 +53,16 @@ describe('buildApprovalCardResolution — resolution from the approval record', 
     expect(r.selectedOption).toBe('approve');
   });
 
-  it('maps every terminal status onto the renderable set (unknown → expired)', () => {
+  it('maps every terminal status onto the renderable set (still pending → pending, never expired)', () => {
     for (const [status, expected] of [
       ['approved', 'approved'],
       ['rejected', 'rejected'],
       ['cancelled', 'cancelled'],
       ['expired', 'expired'],
-      ['pending', 'expired'], // must never render a pending card as resolved
+      // 待定不能被画成“已超时”：那是另一种谎（人会以为单子死了，再发一份）。
+      // 2026-10-28 实测：飞书上点对了选项、服务端拒收（表单需到应用内回答），
+      // 卡片却显示“已超时”。
+      ['pending', 'pending'],
     ] as const) {
       expect(buildApprovalCardResolution({ ...APPROVAL, status }, {}).status).toBe(expected);
     }

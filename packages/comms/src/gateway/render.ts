@@ -100,9 +100,22 @@ export function renderOutbound(msg: OutboundMessage, caps: RenderCapabilities = 
   // the job and the message says where to do it instead. The wording comes from the
   // dispatcher (which knows the locale); the decision is made here, where the
   // destination's capabilities are known.
-  const withheld = caps.approvalComment ? [] : declared.filter((a) => a.requiresComment);
-  const actions = withheld.length > 0 ? declared.filter((a) => !a.requiresComment) : declared;
-  const note = withheld.length > 0 ? msg.commentRequiredNote?.trim() : undefined;
+  // Two reasons a choice cannot be completed on this destination: it needs a
+  // written reason (`requiresComment`), or the tap alone is not the answer because
+  // it needs typed input (`requiresFreeform`). Both are withheld where the channel
+  // cannot collect text, and the body says where to answer instead. 2026-10-28:
+  // the owner tapped 「同意」 on a Feishu card whose option needed three numbers; the
+  // agent received the tap as an answer and invented a default.
+  const lacksFreeText = !caps.approvalComment;
+  const withheld = lacksFreeText
+    ? declared.filter((a) => a.requiresComment || a.requiresFreeform)
+    : [];
+  const actions = withheld.length > 0 ? declared.filter((a) => !withheld.includes(a)) : declared;
+  const note = withheld.length > 0
+    ? (withheld.some((a) => a.requiresFreeform)
+        ? (msg.freeformRequiredNote ?? msg.commentRequiredNote)
+        : msg.commentRequiredNote)?.trim()
+    : undefined;
   const body = note ? `${msg.body}\n\n${note}` : msg.body;
   const interactive = Boolean(caps.cards || caps.buttons);
   const format: OutboundFormat = interactive ? 'card' : caps.markdown ? 'markdown' : 'text';
