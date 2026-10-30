@@ -479,6 +479,14 @@ export class AgentMetricsCollector {
     cacheHitRateSamples: number;
     /** Count of llm_request audits where the provider reported prompt tokens. */
     promptTokensReported: number;
+    /**
+     * Raw numerator/denominator behind `cacheHitRate` (reported samples only).
+     * Exposed so ORG-level aggregation can be token-weighted
+     * (`Σ read / Σ denom`) instead of averaging per-agent ratios — a mean of
+     * ratios counts an idle agent as a full vote for 0%.
+     */
+    cacheReadReported: number;
+    cacheDenominatorTotal: number;
     requestCount: number;
     toolCalls: number;
     tokensToday: number;
@@ -511,6 +519,8 @@ export class AgentMetricsCollector {
       cacheHitRateWindow: window.cacheHitRateWindow,
       cacheHitRateSamples: window.cacheHitRateSamples,
       promptTokensReported: c.promptTokensReported,
+      cacheReadReported: c.cacheReadReported,
+      cacheDenominatorTotal: c.cacheDenominatorTotal,
       requestCount: c.requestCount,
       toolCalls: c.toolCalls,
       tokensToday: c.tokensToday,

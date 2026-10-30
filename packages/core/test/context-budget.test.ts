@@ -1,53 +1,75 @@
 /**
- * Context pressure signalling — the ONLY thing the platform still says about
- * context size, and the only lever it names.
+ * Context signalling — ONE measurement line, at most ONE action line.
  *
- * Design rule (Owner, 2026-10-23): do NOT trim history to save tokens. Inside a
- * turn, history IS the agent's working memory; dropping it makes the agent
- * re-derive state, which costs far more than it saves. The platform reports the
- * water level and the agent decides (session compact / pin).
+ * History: this file used to pin `contextActionHint()`, which spoke at ≥70%
+ * window usage while `compactionGuidance()` decided the SAME action (compact)
+ * economically. The agent received two differently-worded instructions for one
+ * action — an invariant with two execution points. That function is deleted;
+ * window pressure (≥ `CONTEXT_CRIT_RATIO`) now survives only as the `overflow`
+ * REASON inside the single line.
  *
- * These tests pin that the hint is ACTIONABLE and never fires when the agent has
- * no lever — an always-lit warning with no lever trains agents to ignore banners.
+ * These tests pin the surviving contract:
+ *   1. One line, always naming the lever (a warning with no lever trains agents
+ *      to ignore banners).
+ *   2. The overflow reason is a different sentence, not a second line.
+ *   3. "Don't compact" remains a sayable conclusion.
  */
 
 import { describe, it, expect } from 'vitest';
 import {
-  contextActionHint,
+  compactionActionLine,
+  compactionGuidance,
+  COMPACTION_MIN_PROMPT_TOKENS,
   CONTEXT_HINT_ADVISORY_PCT,
   CONTEXT_HINT_DIRECTIVE_PCT,
 } from '../src/context-budget.js';
 
-describe('contextActionHint', () => {
-  it('stays silent below the advisory watermark', () => {
-    expect(contextActionHint({ usedPct: 0, canCompact: true })).toBeUndefined();
-    expect(contextActionHint({ usedPct: 31.1, canCompact: true })).toBeUndefined();
-    expect(contextActionHint({ usedPct: CONTEXT_HINT_ADVISORY_PCT - 0.1, canCompact: true })).toBeUndefined();
+describe('compactionActionLine — the single compaction exit', () => {
+  it('names both levers when compacting', () => {
+    const line = compactionActionLine('compact');
+    expect(line).toContain("operation:'compact'");
+    expect(line).toContain("operation:'pin'");
   });
 
-  it('advises at the advisory watermark and names the lever', () => {
-    const hint = contextActionHint({ usedPct: CONTEXT_HINT_ADVISORY_PCT, canCompact: true });
-    expect(hint).toBeDefined();
-    expect(hint).toContain("operation:'compact'");
+  it('uses the overflow REASON instead of emitting a second line', () => {
+    const normal = compactionActionLine('compact');
+    const overflow = compactionActionLine('compact', { overflow: true });
+    expect(overflow).not.toBe(normal);
+    expect(overflow).toContain('may not fit');
+    // Still exactly one instruction, still names the lever.
+    expect(overflow).toContain("operation:'compact'");
   });
 
-  it('issues a directive at the directive watermark', () => {
-    const hint = contextActionHint({ usedPct: CONTEXT_HINT_DIRECTIVE_PCT, canCompact: true });
-    expect(hint).toBeDefined();
-    expect(hint).toContain('ACT NOW');
-    expect(hint).toContain("operation:'compact'");
-    // The pin lever must be named too — compacting without an anchor loses position.
-    expect(hint).toContain("operation:'pin'");
+  it('"do not compact" is a legitimate, sayable conclusion', () => {
+    expect(compactionActionLine('hold')).toMatch(/not worth it|keep going/i);
   });
 
-  it('escalates monotonically: directive text differs from advisory text', () => {
-    const advisory = contextActionHint({ usedPct: 70, canCompact: true });
-    const directive = contextActionHint({ usedPct: 90, canCompact: true });
-    expect(advisory).not.toBe(directive);
+  it('never fires when the agent has no lever — caller gates on canCompact', () => {
+    // The gate lives in context-engine (`canCompact`); this documents that the
+    // line itself carries no condition, so memory_consolidation / distillation
+    // must be filtered upstream. Watermarks remain as documented levels.
+    expect(CONTEXT_HINT_ADVISORY_PCT).toBe(70);
+    expect(CONTEXT_HINT_DIRECTIVE_PCT).toBe(85);
   });
 
-  it('says nothing when the agent has no lever (memory_consolidation / distillation)', () => {
-    // These scenarios must read everything; telling them to compact would be a lie.
-    expect(contextActionHint({ usedPct: 99, canCompact: false })).toBeUndefined();
+  it('absolute floor overrides the ratio math on a just-compacted session', () => {
+    // Regression: after compacting, fEst is optimistically seeded at 0.95, so
+    // f > fStar and the ratio model alone says 'compact' — every turn, on a
+    // prompt that needs nothing. The floor must silence the whole signal.
+    const tiny = compactionGuidance({
+      promptTokens: COMPACTION_MIN_PROMPT_TOKENS - 1,
+      hitRate: 0.9,
+      fEst: 0.95,
+      nEst: 1,
+    });
+    expect(tiny).toBeNull();
+
+    const big = compactionGuidance({
+      promptTokens: COMPACTION_MIN_PROMPT_TOKENS * 3,
+      hitRate: 0.9,
+      fEst: 0.95,
+      nEst: 1,
+    });
+    expect(big).not.toBeNull();
   });
 });

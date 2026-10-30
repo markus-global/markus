@@ -581,3 +581,33 @@ describe('parseOpenAICompatResponse 混合输出清理', () => {
     expect(res.finishReason).toBe('tool_use');
   });
 });
+
+describe('convertMessagesOpenAI — system 段展开', () => {
+  it('segment 列表只展开一次，不随 system 消息条数重复', () => {
+    // 两条 system 消息：第一条被拆成缓存段，第二条必须原样保留（不被替换、不重复）
+    const messages: LLMMessage[] = [
+      { role: 'system', content: 'A' },
+      { role: 'user', content: 'X' },
+      { role: 'system', content: 'B' },
+    ];
+    const out = convertMessagesOpenAI(messages, {
+      systemCacheSegments: [{ content: 'seg1' }, { content: 'seg2' }],
+    });
+    // 期望 seg1, seg2, X, B
+    // 缺陷形态会是 seg1, seg2, X, seg1, seg2（段重复注入，且 B 丢失）
+    expect(out).toHaveLength(4);
+    expect(out[0]).toMatchObject({ role: 'system', content: 'seg1' });
+    expect(out[1]).toMatchObject({ role: 'system', content: 'seg2' });
+    expect(out[2]).toMatchObject({ role: 'user', content: 'X' });
+    expect(out[3]).toMatchObject({ role: 'system', content: 'B' });
+  });
+
+  it('单条 system 时行为不变（回归护栏）', () => {
+    const out = convertMessagesOpenAI(
+      [{ role: 'system', content: 'A' }, { role: 'user', content: 'X' }],
+      { systemCacheSegments: [{ content: 'seg1' }, { content: 'seg2' }] },
+    );
+    expect(out).toHaveLength(3);
+    expect(out.map((m) => m.content)).toEqual(['seg1', 'seg2', 'X']);
+  });
+});

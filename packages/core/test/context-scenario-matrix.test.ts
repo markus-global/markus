@@ -43,10 +43,10 @@ const MOCK_ROLE = {
   builtIn: false,
 } as RoleTemplate;
 
-function build(opts: { scenario: AgentScenario; channelKey?: string; isManager?: boolean }) {
+async function build(opts: { scenario: AgentScenario; channelKey?: string; isManager?: boolean }) {
   const memory = new MemoryStore(tempDir);
   const engine = new ContextEngine({ memorySearchTopK: 3 });
-  return engine.buildSystemPrompt({
+  const r = await engine.buildSystemPrompt({
     agentId: 'agt_scenario_matrix',
     agentName: 'Test Agent',
     role: MOCK_ROLE,
@@ -55,6 +55,13 @@ function build(opts: { scenario: AgentScenario; channelKey?: string; isManager?:
     channelKey: opts.channelKey,
     isTeamManager: opts.isManager,
   });
+  // `## Current Interaction Mode` now rides the volatile TAIL instead of the
+  // byte-stable system message: it differs per scenario, so while it sat in
+  // `system`, a session alternating human-chat ⇄ A2A turns invalidated the whole
+  // cached prefix each time (measured 2026-10-29: 58.2% of the hour's prompt
+  // tokens had ZERO prefix reuse for this one reason). The rules must still
+  // reach the model — assert on the full prompt, not the system message alone.
+  return { ...r, text: [r.text, r.volatile ?? ''].join('\n') };
 }
 
 const ALL_SCENARIOS: AgentScenario[] = [

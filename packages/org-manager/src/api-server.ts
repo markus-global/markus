@@ -46,6 +46,8 @@ import {
   isUsableProviderModelId,
   isChatCapableModel,
   PROVIDER_DEFAULT_BASE_URLS,
+  aggregateCacheHitRate,
+  computeReplayRatio,
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
@@ -7298,7 +7300,11 @@ EXPLANATION_END`;
       let messages = 0;
       let cacheReadTokens = 0;
       let cacheWriteTokens = 0;
-      let cacheHitRate = 0;
+      // Token-weighted aggregation inputs. The org hit rate is Σ(read)/Σ(denom)
+      // over agents that actually reported — NEVER a mean of per-agent ratios.
+      const cacheSamples: Array<{ cacheReadReported: number; cacheDenominatorTotal: number }> = [];
+      let promptTokensReported = 0;
+      let outputTokensReported = 0;
 
       for (const a of allAgents) {
         try {
@@ -7309,9 +7315,17 @@ EXPLANATION_END`;
           messages += stats.requestsToday;
           cacheReadTokens += stats.cacheReadTokens;
           cacheWriteTokens += stats.cacheWriteTokens;
-          cacheHitRate += stats.cacheHitRate;
+          cacheSamples.push({
+            cacheReadReported: stats.cacheReadReported ?? 0,
+            cacheDenominatorTotal: stats.cacheDenominatorTotal ?? 0,
+          });
+          promptTokensReported += stats.cacheDenominatorTotal ?? 0;
+          outputTokensReported += stats.completionTokens;
         } catch { /* agent not loaded */ }
       }
+
+      const agg = aggregateCacheHitRate(cacheSamples);
+      const replayRatio = computeReplayRatio(promptTokensReported, outputTokensReported);
 
       this.json(res, 200, {
         usage: {
@@ -7322,7 +7336,13 @@ EXPLANATION_END`;
           messages,
           cacheReadTokens,
           cacheWriteTokens,
-          cacheHitRate: allAgents.length > 0 ? Math.round((cacheHitRate / allAgents.length) * 1000) / 1000 : 0,
+          // null ⇒ nothing measured. Callers must render "unknown", not 0%.
+          cacheHitRate: agg.cacheHitRate === null ? 0 : Math.round(agg.cacheHitRate * 1000) / 1000,
+          cacheHitRateUnknown: agg.cacheHitRate === null,
+          cacheHitSamples: agg.cacheHitSamples,
+          // Prompt tokens re-sent per output token produced. A 96% hit rate can
+          // still be pathological; this number is the cost itself.
+          replayRatio: replayRatio === null ? null : Math.round(replayRatio * 10) / 10,
           storageBytes: this.billingService?.getUsageSummary(orgId)?.storageBytes ?? 0,
         },
         plan,

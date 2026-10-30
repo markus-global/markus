@@ -26,7 +26,6 @@ import {
   CONTEXT_TOOL_RESULT_KEEP_RECENT,
   CONTEXT_TOOL_RESULT_ELIDE_MIN_CHARS,
   CONTEXT_VOLATILE_REARM_CALLS,
-  CONTEXT_WARN_RATIO,
   CONTEXT_CRIT_RATIO,
   PROMPT_AFFORD_OUTPUT_RESERVE,
   SYSTEM_COLLEAGUES_MAX,
@@ -54,7 +53,15 @@ import { elideStaleToolResults } from './tool-result-elision.js';
 import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
-import { contextActionHint } from './context-budget.js';
+import {
+  compactionGuidance,
+  compactionActionLine,
+  estimateCompactionFractions,
+  shouldEmitCompactionHint,
+  DEFAULT_COMPACT_KEEP_LAST,
+  COMPACTION_SUMMARY_TOKENS,
+  type CompactionAction,
+} from './context-budget.js';
 import type { ConcurrentHandoffLite } from './concurrent-handoff.js';
 
 const log = createLogger('context-engine');
@@ -306,6 +313,18 @@ export class ContextEngine {
    * water level).
    */
   private reportedInputBySession = new Map<string, { tokens: number; messageCount: number; pct?: number }>();
+
+  /**
+   * Per-session compaction economics (see `compactionGuidance`).
+   *
+   * `verdict` exists so the agent is told the conclusion only when it FLIPS —
+   * a banner that repeats the same advice every call gets trained out of the
+   * agent's attention (we already made that mistake once).
+   */
+  private compactionState = new Map<
+    string,
+    { verdict?: CompactionAction; calls: number; emittedAtCall: number }
+  >();
   /**
    * Durable cache of those readings, so a restart does not blind the gate.
    *
@@ -794,6 +813,14 @@ export class ContextEngine {
       ...agentPersona,
     ];
 
+    // Team docs (agent-writable files) are collected here and spliced into the
+    // volatile tail once it exists (declared further down). They must NOT enter
+    // `semiStable` — see the placement note at the push site.
+    const teamDocsTail: string[] = [];
+    // `## Current Interaction Mode` — also tail-bound, and additionally exempt
+    // from the tail's change-gating (it carries behavioural instructions).
+    const scenarioTail: string[] = [];
+
     semiStable.push(this.buildIdentitySection({
       agentId: opts.agentId,
       agentName: opts.agentName,
@@ -805,13 +832,36 @@ export class ContextEngine {
     const orgCtx = this.buildOrgContextSection(opts.orgContext, opts.contextMdPath);
     if (orgCtx) semiStable.push(orgCtx);
 
+    // ── Team docs are AGENT-WRITABLE → they belong in the volatile tail ─────
+    //
+    // NORMS.md / ANNOUNCEMENT.md live in the team data dir, and any team member
+    // edits them with `file_write`. They used to be pushed into `semiStable`
+    // (part of the byte-stable system message) on the premise that they "change
+    // on org/config events (rare)".
+    //
+    // Measured 2026-10-29, that premise is false: one agent rewrote NORMS.md at
+    // 11:05 while five teammates were mid-A2A, and because the norms ride inside
+    // the system message, ALL of their cached prefixes were invalidated at once.
+    // 9 of 25 sessions in the window showed a system-bytes change, and the diff
+    // was entirely inside `## Team Working Norms` (session length unchanged —
+    // the CONTENT moved), with the common prefix collapsing to ~28k of 33k.
+    //
+    // The placement rule: whatever an agent can write must not sit in the cached
+    // prefix. knowledge.md was moved to the tail for exactly this reason. These
+    // now ride the same change-gated tail (full on the first call of a turn / on
+    // change / on periodic re-arm), and the durable `[SYSTEM] [State checkpoint]`
+    // still carries them verbatim — so completeness is preserved.
+    //
+    // NOTE: `## Team Data Directory` (paths + "ask your manager to change these")
+    // stays in the stable tier: paths do not change, and the agent needs to know
+    // where to look even on turns where the bodies are change-gated out.
     if (opts.teamAnnouncements?.trim()) {
       const raw = opts.teamAnnouncements.trim();
       const cap = isConverse ? SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE : SYSTEM_ANNOUNCEMENTS_CHARS;
       const body = raw.length > cap
         ? `${raw.slice(0, cap)}\n\n_[announcements truncated — read \`${opts.teamDataDir ?? 'team'}/ANNOUNCEMENT.md\` for full text]_`
         : raw;
-      semiStable.push('\n## Team Announcements\n' + body);
+      teamDocsTail.push('\n## Team Announcements\n' + body);
     }
     if (opts.teamNorms?.trim()) {
       const raw = opts.teamNorms.trim();
@@ -819,7 +869,7 @@ export class ContextEngine {
       const body = raw.length > cap
         ? `${raw.slice(0, cap)}\n\n_[norms truncated — read \`${opts.teamDataDir ?? 'team'}/NORMS.md\` for full text]_`
         : raw;
-      semiStable.push('\n## Team Working Norms\n' + body);
+      teamDocsTail.push('\n## Team Working Norms\n' + body);
     }
     if (opts.teamDataDir) {
       const lines = ['\n## Team Data Directory', `Path: \`${opts.teamDataDir}\``, 'Files:', '- `ANNOUNCEMENT.md` — team announcements', '- `NORMS.md` — team working norms'];
@@ -923,7 +973,25 @@ export class ContextEngine {
     const isGroupChannel = !!opts.channelKey && opts.channelKey.startsWith('group:');
     const scenario: AgentScenario =
       rawScenario === 'a2a' && isGroupChannel ? 'group_chat' : rawScenario;
-    semiStable.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
+    // ── Scenario / interaction mode → VOLATILE TAIL (not the cached prefix) ──
+    //
+    // This section says "you are in a human chat session" vs "an A2A
+    // conversation" etc., and it is large (~2.6k chars). A session can serve
+    // BOTH kinds of turn: an A2A reply delivered `in_session` lands in the
+    // session that started it, so the same history alternates modes.
+    //
+    // Measured 2026-10-29 13:35–14:00: session cs_51d3f2b304a74142 alternated
+    // human_chat(38,817) ⇄ a2a(36,230) 8:5 times, common prefix collapsed to
+    // 34,550. Across that window 14 calls / 6.44M prompt tokens — **58.2% of all
+    // prompt tokens** — had ZERO prefix reuse, every one of them a `div@0` on
+    // this single section.
+    //
+    // The section is re-sent IN FULL on every call (see
+    // ALWAYS_FRESH_VOLATILE_SECTIONS) so behavioural instructions are never
+    // change-gated away mid-tool-loop, and it is exempt from the durable
+    // checkpoint (re-sending it every call already guarantees delivery, so
+    // persisting it would only duplicate ~2.6k chars into history).
+    scenarioTail.push(this.buildScenarioSection(scenario, { a2aWaitForReply: opts.a2aWaitForReply, isManager: opts.isTeamManager, channelKey: opts.channelKey }));
 
     // L3 checklists: execute/govern only (AGENT-RUNTIME §4). Converse (incl.
     // comment_response) must not carry Error Recovery / Quality Gates — those
@@ -947,7 +1015,12 @@ export class ContextEngine {
     // separate [SYSTEM] message pinned at the TAIL of the history. The system
     // message then stays byte-identical across turns and the full system+history
     // prefix keeps hitting.
-    const volatile: string[] = [];
+    const volatile: string[] = [
+      // Interaction mode first (behavioural instructions), then agent-writable
+      // team docs. Both are tail-bound — see the placement notes above.
+      ...scenarioTail,
+      ...teamDocsTail,
+    ];
     // Tier-3 "dynamic" context ALIASES volatile. Keeping `dynamic === volatile`
     // drains every existing dynamic.push(...) (project context, announcements,
     // task board, human feedback, workflows, cognition/retrieved/reflection,
@@ -2208,6 +2281,12 @@ export class ContextEngine {
      */
     reportedInputTokens?: number;
     /**
+     * Observed cache hit rate (0..1) for this session, from the metrics
+     * collector. Absent ⇒ the compaction-timing signal stays silent (we never
+     * guess a price).
+     */
+    cacheHitRate?: number;
+    /**
      * The turn's scenario. Used only to decide whether the context banner may
      * name a lever (compaction) — scenarios that must read everything get none.
      */
@@ -2249,6 +2328,12 @@ export class ContextEngine {
 
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);
+    // Collapse accumulated state checkpoints BEFORE sanitising: they are
+    // synthetic messages that pile up one per state change (measured 2026-10-29:
+    // 247 across 26 sessions / 3.4M chars; one session carried 26 of them at
+    // 474 695 chars, replayed in full on EVERY call). See the method for why
+    // "keep only the newest" would be lossy and newest-per-section is not.
+    messages = this.collapseStateCheckpoints(messages);
     messages = this.sanitizeMessageSequence(messages);
     // ContextOS v2: transient harness prompts must never stack up in history
     // (see dedupeTransientPrompts).
@@ -2322,12 +2407,88 @@ export class ContextEngine {
     // agent can actually use it. Scenarios that must read everything
     // (memory_consolidation / distillation) have no lever, so they get silence.
     const canCompact = opts.scenario !== 'memory_consolidation' && opts.scenario !== 'distillation';
-    const actionHint = contextActionHint({ usedPct: usedPct ?? 0, canCompact });
-    if (actionHint) hintLines += `\n${actionHint}`;
-    if (usedPct !== undefined && usedPct >= CONTEXT_CRIT_RATIO * 100) {
-      hintLines += `\n[CONTEXT CRIT] at ${usedPct}%: the next request may not fit. Run session_compact now, and session_pin a goal/done/next anchor to keep your position.`;
-    } else if (usedPct !== undefined && usedPct >= CONTEXT_WARN_RATIO * 100) {
-      hintLines += `\n[CONTEXT WARN] at ${usedPct}% → compress now (session_compact) or pin an anchor (session_pin).`;
+    // Hard overflow: the NEXT request may not fit. That is the same ACTION
+    // (compact) for a different REASON, so it is folded into the single line
+    // below rather than emitted as a second, competing advisory. Before this,
+    // `% used` ≥70 and the economic verdict each produced their own advice —
+    // two execution points for one invariant, and the agent got both.
+    const overflow = usedPct !== undefined && usedPct >= CONTEXT_CRIT_RATIO * 100;
+
+    // ── Compaction TIMING (economics) — a DIFFERENT invariant ──────────────
+    // `% used` above answers "will the request still fit" (a hard limit). This
+    // answers "does compacting pay for itself" (an economic limit). Two
+    // invariants, two signals: merging them lets whichever is healthier mask
+    // the other. Measured 2026-10-29: a chat session sat at 63% of a 1M window
+    // and was still 78.3% of the org's entire prompt spend.
+    //
+    // The agent is told the CONCLUSION only, and only when it FLIPS — repeating
+    // the same advice every call is how banners get trained out of attention.
+    // Arithmetic goes to the audit log, never into the prompt.
+    if (canCompact && opts.sessionId && reportedInputTokens && opts.cacheHitRate !== undefined) {
+      const sid = opts.sessionId;
+      const prev = this.compactionState.get(sid);
+      const calls = (prev?.calls ?? 0) + 1;
+
+      const totalChars = messages.reduce((n, m) => n + getTextContent(m.content).length, 0);
+      // Chars of the span `session compact` keeps verbatim (its keep_last default).
+      const recentChars = messages
+        .slice(-DEFAULT_COMPACT_KEEP_LAST)
+        .reduce((n, m) => n + getTextContent(m.content).length, 0);
+      // Calls already issued in THIS user turn — the honest proxy for how much
+      // work is still ahead. (The first version used calls/turns, which measured
+      // nEst=1 on a session that was mid-flight; see estimateCompactionFractions.)
+      const turnStartForEst = this.findCurrentTurnStart(messages);
+      const callsThisTurn = messages.slice(turnStartForEst + 1).filter((m) => m.role === 'assistant').length;
+      const { fEst, nEst } = estimateCompactionFractions({
+        promptTokens: reportedInputTokens,
+        totalChars,
+        recentChars,
+        callsThisTurn,
+      });
+
+      const g = compactionGuidance({
+        promptTokens: reportedInputTokens,
+        hitRate: opts.cacheHitRate,
+        fEst,
+        nEst,
+        summaryTokens: COMPACTION_SUMMARY_TOKENS,
+      });
+      if (g) {
+        // Hard overflow can only FORCE the action toward compact — never hold.
+        const action: CompactionAction = overflow ? 'compact' : g.action;
+        // Only the ACTION speaks. "Not worth it yet" is the default state: printing
+        // it every call is a warning the agent cannot act on — the exact failure mode
+        // that trains agents to ignore banners. The `[CONTEXT n% used]` banner already
+        // carries the measurement, so silence there means "no action needed".
+        // The `hold` verdict is still recorded below for tuning + falsification, and a
+        // flip hold→compact still emits (verdict changed ⇒ shouldEmit true).
+        const emit =
+          action === 'compact' &&
+          (overflow || shouldEmitCompactionHint({ previous: prev, action, callIndex: calls }));
+        if (emit) hintLines += `\n${compactionActionLine(action, { overflow })}`;
+        this.compactionState.set(sid, {
+          verdict: action,
+          calls,
+          emittedAtCall: emit ? calls : (prev?.emittedAtCall ?? 0),
+        });
+        // Tuning + falsification material. NEVER rendered into the prompt.
+        log.info('Compaction economics', { agentId: opts.agentId, sessionId: sid, action, emit, overflow, ...g.params });
+      } else {
+        // No measurement yet. Do NOT seed a verdict: the shipped version seeded
+        // `'hold'` here without ever computing it, so the first REAL `'hold'`
+        // compared equal to the seed and vanished — the agent never saw the
+        // first advice. `verdict` stays undefined until something is decided.
+        this.compactionState.set(sid, {
+          verdict: prev?.verdict,
+          calls,
+          emittedAtCall: prev?.emittedAtCall ?? 0,
+        });
+      }
+      while (this.compactionState.size > 256) {
+        const oldest = this.compactionState.keys().next().value;
+        if (oldest === undefined) break;
+        this.compactionState.delete(oldest);
+      }
     }
     const contextHint = hintLines;
 
@@ -2409,17 +2570,26 @@ export class ContextEngine {
     for (const sec of sections) {
       const h = ContextEngine.hashSection(sec.body);
       nextHashes.set(sec.key, h);
+      // Sections carrying BEHAVIOURAL INSTRUCTIONS are exempt from
+      // change-gating: dropping "you are in an A2A conversation, humans do not
+      // see this" to a digest mid-tool-loop would be a real behavioural
+      // regression. They are cheap to re-send (the mode section is ~2.6k chars)
+      // and they sit at the tail, so re-sending them never invalidates the
+      // cached prefix. They are also NOT written to the durable checkpoint —
+      // re-sending every call already guarantees delivery, so persisting them
+      // would only duplicate the text into replayed history.
+      const alwaysFresh = ContextEngine.ALWAYS_FRESH_VOLATILE_SECTIONS.has(sec.key);
       // A missing snapshot (first call of a session, or a snapshot evicted after
       // CONTEXT_VOLATILE_SNAPSHOT_MAX_SESSIONS other sessions) counts as "changed"
       // so the first delivery is also checkpointed.
       const changed = !prevSnapshot || prevSnapshot.hashes.get(sec.key) !== h;
-      if (changed) {
+      if (changed && !alwaysFresh) {
         anyChanged = true;
         changedBodies.push(sec.body);
       }
       // `forceFull` short-circuits, so `prevSnapshot!` is only dereferenced when
       // a previous snapshot actually exists.
-      if (forceFull || changed) freshBodies.push(sec.body);
+      if (forceFull || changed || alwaysFresh) freshBodies.push(sec.body);
       else omitted.push(sec.key);
     }
     this.volatileSnapshot.set(opts.sessionId, {
@@ -2654,6 +2824,22 @@ export class ContextEngine {
    */
   private static readonly STATE_CHECKPOINT_PREFIX = '[SYSTEM] [State checkpoint]';
 
+  /**
+   * Volatile-tail sections that must be delivered IN FULL on every call.
+   *
+   * The tail is change-gated to stop it working as a stream of "new" user
+   * statements (see the ContextOS v2 note in `prepareMessages`). That gating is
+   * right for *state* (Task Board, Team Status, Knowledge) and wrong for
+   * *instructions*: an omitted instruction is genuinely gone from the model's
+   * context until the next re-arm.
+   *
+   * `## Current Interaction Mode` says which KIND of turn this is ("human chat"
+   * vs "A2A — humans do not see this"). It must never be gated away.
+   */
+  private static readonly ALWAYS_FRESH_VOLATILE_SECTIONS = new Set<string>([
+    'Current Interaction Mode',
+  ]);
+
   private static hashSection(body: string): string {
     return createHash('sha1')
       .update(ContextEngine.normalizeSectionForHash(body))
@@ -2702,6 +2888,96 @@ export class ContextEngine {
       }
     }
     flush();
+    return out;
+  }
+
+  /**
+   * Collapse accumulated `[SYSTEM] [State checkpoint]` messages into ONE.
+   *
+   * A checkpoint is appended to durable history every time the volatile state
+   * changes (see the completeness guarantee in `prepareMessages`), and it is
+   * never rewritten in place — measured 2026-10-29: at a fixed index, 0 hash
+   * changes across 861 adjacent-call pairs. So they do not *thrash* the prefix;
+   * they simply PILE UP, and every request replays all of them:
+   *
+   *   247 checkpoints / 3.4M chars across 26 sessions in one 35-minute window.
+   *   Worst session: 26 checkpoints / 474 695 chars, of which only ~19k was the
+   *   newest — i.e. ~96% of that session's state payload was superseded copies
+   *   of facts already stated again later.
+   *
+   * "Keep only the newest" would be LOSSY and is wrong: a checkpoint writes
+   * only the sections that CHANGED, so the newest one legitimately lacks
+   * sections written earlier (measured: `## Team Status` and `## Notebook`
+   * existed only in older checkpoints). Dropping them would silently remove
+   * state the agent still needs.
+   *
+   * Lossless collapse instead: parse every checkpoint into `## Section` bodies
+   * and keep the NEWEST body per section. Legal precisely because the writer's
+   * own invariant is "each section body is the complete current body of that
+   * section" — so the newest occurrence is authoritative for that section.
+   *
+   * Placement: at the LAST checkpoint's position, so the fewest already-replayed
+   * messages sit behind a block that changes on every state transition.
+   *
+   * Pure and deterministic (same history ⇒ same bytes), and never mutates the
+   * caller's stored messages — a mutation here would poison the session the
+   * same way the old user-message merge did.
+   */
+  private collapseStateCheckpoints(messages: LLMMessage[]): LLMMessage[] {
+    const PREFIX = ContextEngine.STATE_CHECKPOINT_PREFIX;
+    const isCheckpoint = (m: LLMMessage) =>
+      m.role === 'user' && getTextContent(m.content).trimStart().startsWith(PREFIX);
+
+    const indices: number[] = [];
+    messages.forEach((m, i) => { if (isCheckpoint(m)) indices.push(i); });
+    // Nothing to do for 0 or 1 checkpoint. Bailing out keeps a single check >
+    // point byte-identical (no needless rewrite, no new cache break).
+    if (indices.length < 2) return messages;
+
+    // ── Parse: section name → newest body, plus first-appearance order ──────
+    const latestBody = new Map<string, string>();
+    const order: string[] = [];
+    let preamble = '';
+
+    const absorb = (content: string) => {
+      const body = content.trimStart().slice(PREFIX.length);
+      // Split on `## ` headings; keep any leading text as the preamble.
+      const parts = body.split(/\n(?=##\s)/);
+      for (const part of parts) {
+        const firstLine = part.split('\n', 1)[0] ?? '';
+        const m = /^##\s+(.+?)\s*$/.exec(firstLine);
+        if (!m) {
+          // Leading text before the first `## ` heading. Newest wins.
+          const trimmed = part.trim();
+          if (trimmed) preamble = trimmed;
+          continue;
+        }
+        const name = m[1]!;
+        if (!latestBody.has(name)) order.push(name);
+        // Newest wins: we walk oldest → newest, so plain overwrite is correct.
+        latestBody.set(name, part.trim());
+      }
+    };
+
+    for (const i of indices) absorb(getTextContent(messages[i]!.content));
+
+    const collapsed = [
+      PREFIX,
+      ...(preamble ? [preamble] : []),
+      ...order.map((name) => latestBody.get(name)!),
+    ].join('\n');
+
+    // ── Rebuild: drop every checkpoint, re-insert one at the last position ──
+    const lastIdx = indices[indices.length - 1]!;
+    const dropSet = new Set(indices);
+    const out: LLMMessage[] = [];
+    for (let i = 0; i < messages.length; i++) {
+      if (dropSet.has(i)) {
+        if (i === lastIdx) out.push({ ...messages[i]!, content: collapsed });
+        continue;
+      }
+      out.push(messages[i]!);
+    }
     return out;
   }
 
@@ -2826,7 +3102,19 @@ export class ContextEngine {
           prev && prev.role === msg.role && msg.role === 'user' &&
           !isSystemInjected(msgText) && !isSystemInjected(prevText)
         ) {
-          prev.content = prev.content + '\n\n' + msg.content;
+          // Merge into a NEW object — never mutate the stored message.
+          //
+          // This used to be `prev.content = prev.content + '\n\n' + msg.content`
+          // where `prev` is the caller's own object (result.push pushes the
+          // original reference). The merge was therefore persisted by side
+          // effect, while the mergee was never removed from the store (only
+          // from the returned array). Every subsequent call merged the same
+          // pair again — measured 2026-10-29 on session cs_315368b6c6c54bb3:
+          // one user message grew 556 → 1145 chars, +31 chars on EVERY call,
+          // 37 times. Because that message sits mid-history, all ~45 messages
+          // after it stopped being a cacheable prefix: ~1.46M chars re-billed.
+          // It also corrupted what the model actually read back as user input.
+          result[result.length - 1] = { ...prev, content: prevText + '\n\n' + msgText };
         } else {
           result.push(msg);
         }

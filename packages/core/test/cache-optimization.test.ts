@@ -351,11 +351,18 @@ describe('ContextEngine — cache optimization', () => {
         scenario: 'group_chat' as any,
       });
 
-      expect(result.text).toContain('team group chat channel');
-      expect(result.text).toContain('DEFAULT IS SILENCE');
-      expect(result.text).toContain('@MENTION');
-      expect(result.text).toContain('GROUP CHAT PROCESSING CHECKLIST');
-      expect(result.text).toContain('agent_send_group_message');
+      // Scenario rules (`## Current Interaction Mode`) ride the volatile TAIL,
+      // not the byte-stable system message: the section differs per scenario, so
+      // while it sat in `system`, a session alternating human-chat ⇄ A2A turns
+      // invalidated the entire cached prefix each turn (measured 2026-10-29:
+      // 58.2% of an hour's prompt tokens had zero reuse). Assert on the full
+      // prompt the model actually sees.
+      const full = `${result.text}\n${result.volatile ?? ''}`;
+      expect(full).toContain('team group chat channel');
+      expect(full).toContain('DEFAULT IS SILENCE');
+      expect(full).toContain('@MENTION');
+      expect(full).toContain('GROUP CHAT PROCESSING CHECKLIST');
+      expect(full).toContain('agent_send_group_message');
     });
 
     it('should include manager-specific rule 4 when isTeamManager is true', async () => {
@@ -368,8 +375,10 @@ describe('ContextEngine — cache optimization', () => {
         isTeamManager: true,
       });
 
-      expect(result.text).toContain('task_create');
-      expect(result.text).toContain('Verbal delegation without a task is NOT allowed');
+      // Scenario rules ride the volatile tail — see the note above.
+      const full = `${result.text}\n${result.volatile ?? ''}`;
+      expect(full).toContain('task_create');
+      expect(full).toContain('Verbal delegation without a task is NOT allowed');
     });
 
     it('should include worker-specific rule 4 when isTeamManager is false', async () => {
@@ -382,7 +391,9 @@ describe('ContextEngine — cache optimization', () => {
         isTeamManager: false,
       });
 
-      expect(result.text).toContain('verify a task has been created');
+      // Scenario rules ride the volatile tail — see the note above.
+      const full = `${result.text}\n${result.volatile ?? ''}`;
+      expect(full).toContain('verify a task has been created');
     });
   });
 

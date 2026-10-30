@@ -50,6 +50,7 @@ import { ensureKnowledgeFile, knowledgePath, retiredStatePath } from './taxonomy
 import { indexArchiveBodies, healStubLines, accumulateResidue } from './residue-repair.js';
 import { writeFileAtomic } from '../atomic-write.js';
 import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
+import { DEFAULT_COMPACT_KEEP_LAST } from '../context-budget.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
 
@@ -1333,7 +1334,7 @@ export class MemoryStore implements IMemoryStore {
     return idx;
   }
 
-  compactSession(sessionId: string, keepLast: number = 20): CompactResult {
+  compactSession(sessionId: string, keepLast: number = DEFAULT_COMPACT_KEEP_LAST): CompactResult {
     // SSOT / LRU fallback: the in-memory map only holds the N most recent
     // sessions (MAX_SESSIONS_IN_MEMORY=20) while thousands live on disk. Reading
     // ONLY `this.sessions` made compact() a silent no-op for any session that
@@ -1497,7 +1498,7 @@ export class MemoryStore implements IMemoryStore {
    */
   compactSessionOnDemand(
     sessionId: string,
-    keepLast: number = 40,
+    keepLast: number = DEFAULT_COMPACT_KEEP_LAST,
   ): { summary: string; flushedCount: number } {
     return this.compactSession(sessionId, keepLast);
   }

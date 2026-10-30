@@ -105,7 +105,7 @@ export class AnthropicProvider implements LLMProviderInterface {
   }
 
   async chat(request: LLMRequest): Promise<LLMResponse> {
-    const systemMsg = request.messages.find((m) => m.role === 'system');
+    const systemText = collectSystemText(request.messages);
     const messages = this.convertMessages(request.messages.filter((m) => m.role !== 'system'));
     const useCompaction = request.compaction && this.isCompactionSupported();
 
@@ -115,8 +115,8 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
     };
 
-    if (systemMsg) {
-      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
+    if (systemText) {
+      body['system'] = this.buildSystemContent(sanitizeForLLM(systemText), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -164,7 +164,7 @@ export class AnthropicProvider implements LLMProviderInterface {
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, signal?: AbortSignal): Promise<LLMResponse> {
-    const systemMsg = request.messages.find((m) => m.role === 'system');
+    const systemText = collectSystemText(request.messages);
     const messages = this.convertMessages(request.messages.filter((m) => m.role !== 'system'));
     const useCompaction = request.compaction && this.isCompactionSupported();
 
@@ -174,8 +174,8 @@ export class AnthropicProvider implements LLMProviderInterface {
       messages,
       stream: true,
     };
-    if (systemMsg) {
-      body['system'] = this.buildSystemContent(sanitizeForLLM(getTextContent(systemMsg.content)), request.systemCacheSegments);
+    if (systemText) {
+      body['system'] = this.buildSystemContent(sanitizeForLLM(systemText), request.systemCacheSegments);
     }
     if (request.temperature !== undefined) body['temperature'] = request.temperature;
     if (request.stopSequences?.length) body['stop_sequences'] = request.stopSequences;
@@ -531,4 +531,22 @@ export class AnthropicProvider implements LLMProviderInterface {
       compactionContent,
     };
   }
+}
+
+/**
+ * Anthropic carries the system prompt as ONE top-level field, so every system
+ * message has to be folded into it, in order. Picking only the first one (the
+ * previous `.find()`) silently dropped the rest — same defect class as the
+ * duplicate-injection bug in convertMessagesOpenAI, different symptom.
+ *
+ * Consequence to keep in mind: folding moves any later system message to the
+ * head, so a layout that interleaves system messages with conversation content
+ * cannot be represented faithfully on this provider.
+ */
+export function collectSystemText(messages: LLMMessage[]): string {
+  return messages
+    .filter((m) => m.role === 'system')
+    .map((m) => getTextContent(m.content))
+    .filter((text) => text.length > 0)
+    .join('\n\n');
 }

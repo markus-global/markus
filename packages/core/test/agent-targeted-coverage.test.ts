@@ -510,8 +510,13 @@ describe('deliberation and team context', () => {
 
     await agent.handleMessage('What are team norms?');
     const chatReq = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: string }> };
-    const systemMsg = chatReq.messages.find(m => m.role === 'system');
-    expect(String(systemMsg?.content)).toMatch(/Sprint review|Always write tests/i);
+    // Team docs are AGENT-WRITABLE files (any teammate can `file_write`
+    // NORMS.md), so they ride the volatile tail rather than the byte-stable
+    // system message — one teammate's edit otherwise invalidates every running
+    // session's cached prefix (measured 2026-10-29). They must still reach the
+    // model, so assert on the whole prompt, not specifically the system role.
+    const wholePrompt = chatReq.messages.map(m => String(m.content)).join('\n');
+    expect(wholePrompt).toMatch(/Sprint review|Always write tests/i);
 
     rmSync(teamDir, { recursive: true, force: true });
   });

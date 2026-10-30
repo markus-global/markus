@@ -351,9 +351,13 @@ describe('ContextEngine scenario sections', () => {
             ? { id: 'u1', name: 'Owner', role: 'owner' }
             : undefined,
       });
-      expect(result.text.length).toBeGreaterThan(100);
+      // Scenario/mode content rides the volatile tail now, so measure the FULL
+      // prompt the model sees — `text` alone is legitimately short for the
+      // memory_consolidation profile.
+      const full = `${result.text}\n${result.volatile ?? ''}`;
+      expect(full.length).toBeGreaterThan(100);
       if (scenario === 'memory_consolidation') {
-        expect(result.text).not.toContain('## Task & Requirement Workflow');
+        expect(full).not.toContain('## Task & Requirement Workflow');
       }
       if (scenario === 'chat' && result.text.includes('Current Conversation')) {
         expect(result.text).toContain('organization owner');
