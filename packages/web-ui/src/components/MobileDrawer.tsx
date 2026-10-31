@@ -110,8 +110,10 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay active:bg-surface-overlay transition-colors text-left"
           >
             <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0 text-fg-tertiary">
+              {/* 与桌面浮窗同一枚硬币图标（一个含义只给一种形状） */}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
+                <circle cx="12" cy="12" r="9" />
+                <path d="M12 7.5v9" />
               </svg>
             </span>
             <span className="flex-1 min-w-0 text-sm text-fg-secondary truncate">
