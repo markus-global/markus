@@ -161,7 +161,7 @@ export function GrowthAmbassadorModal({ onClose }: Props) {
               type="button"
               onClick={() => {
                 const base = hubApi.getUrl().replace(/\/$/, '');
-                openExternal(`${base}/settings?tab=billing`);
+                openExternal(`${base}/settings`);
               }}
               className="px-3 py-2 text-xs border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary"
             >
