@@ -110,10 +110,10 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
             className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay active:bg-surface-overlay transition-colors text-left"
           >
             <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0 text-fg-tertiary">
-              {/* 与桌面浮窗同一枚硬币图标（一个含义只给一种形状） */}
+              {/* 与桌面浮窗同一枚票券图标（一个含义只给一种形状） */}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 7.5v9" />
+                <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+                <path d="M12.5 5.5v13" strokeDasharray="2 2.5" />
               </svg>
             </span>
             <span className="flex-1 min-w-0 text-sm text-fg-secondary truncate">

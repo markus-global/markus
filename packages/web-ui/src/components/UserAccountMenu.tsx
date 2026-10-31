@@ -152,11 +152,11 @@ export function UserAccountMenu({
               title={t('common:creditBalanceOpenHub')}
               className="text-xs text-fg-secondary mt-0.5 -mx-1 px-1 max-w-full flex items-center gap-1 rounded transition-colors hover:text-brand-500 hover:bg-surface-overlay"
             >
-              {/* 硬币 = 余额。之前这里是 Lucide 的 zap（闪电），24×24 的折线塞进 11px 会糊成
-                  一团斜角，且语义是「速度」而非「余额」。12px + 圆环 + 中缝，小尺寸仍清楚。 */}
+              {/* 票券 = 可用额度。轮廓（带两侧凹口）+ 一条虚线做票据打孔，
+                  12px 下只剩「一个框 + 一条虚线」两个特征，不会糊。 */}
               <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
-                <circle cx="12" cy="12" r="9" />
-                <path d="M12 7.5v9" />
+                <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+                <path d="M12.5 5.5v13" strokeDasharray="2 2.5" />
               </svg>
               <span className="truncate">{t('common:creditBalance')}: {credits.remaining.toLocaleString()}</span>
             </button>
