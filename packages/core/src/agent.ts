@@ -3227,10 +3227,25 @@ export class Agent {
     modelContextWindow: number;
     modelMaxOutput: number | undefined;
     scenario: AgentScenario | undefined;
+    /** Observed cache hit rate for the compaction-timing signal (null ⇒ silent). */
+    cacheHitRate: number | undefined;
   } {
     const provider = this.getEffectiveProvider();
     const effectiveModel = this.getEffectiveModel();
     return {
+      // Feeds `compactionGuidance` (context-budget.ts): the economics of
+      // compacting depend on what a cached vs uncached token actually costs.
+      //
+      // Prefer the per-session window (it reflects THIS conversation), but fall
+      // back to the cumulative rate: the window needs `sessionId` on every
+      // metrics event, and before that was wired it was structurally null — a
+      // silent, "no measurement" that made this whole signal never fire. A
+      // slightly stale number beats a dead signal here, because the decision
+      // it drives is a coarse two-way choice (compact / don't), not a price.
+      cacheHitRate:
+        this.metricsCollector.getUsageStats().cacheHitRateWindow ??
+        this.metricsCollector.getUsageStats().cacheHitRate ??
+        undefined,
       // P1-8: window must be resolved for the model actually used this request,
       // not the provider's configured default (which the session may override).
       modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
@@ -4532,6 +4547,9 @@ export class Agent {
     this.emitAudit({
       type: 'llm_request',
       action,
+      // Per-session window needs this (see emitAudit's note). Without it the
+      // windowed cache-hit metric is always null.
+      sessionId: this.currentSessionId,
       tokensUsed: tokensUsed ?? response.usage.inputTokens + response.usage.outputTokens,
       inputTokens: response.usage.inputTokens,
       outputTokens: response.usage.outputTokens,
@@ -4548,6 +4566,15 @@ export class Agent {
   private emitAudit(event: {
     type: string;
     action: string;
+    /**
+     * Session this event belongs to. REQUIRED for per-session metrics: the
+     * collector's sliding window (`cacheHitRateWindow`) only records a sample
+     * when `event.sessionId` is present, so omitting it silently made that
+     * metric STRUCTURALLY null — `getUsageStats().cacheHitRateWindow` could
+     * never be anything but `null` in production, and every consumer that
+     * preferred it (e.g. the compaction-timing signal) fell back to silence.
+     */
+    sessionId?: string;
     tokensUsed?: number;
     inputTokens?: number;
     outputTokens?: number;

@@ -443,7 +443,10 @@ describe('buildSystemPrompt extended scenarios', () => {
     expect(result.volatile).toContain('Alpha');
     expect(result.volatile).toContain('Release');
     expect(result.volatile).toContain('Deploy freeze');
-    expect(result.text).toContain('Sprint ends tomorrow');
+    // Team announcements are agent-writable → they ride the volatile tail, not
+    // the byte-stable system message (see the placement note in context-engine).
+    expect(result.volatile).toContain('Sprint ends tomorrow');
+    expect(result.volatile).toContain('Standups at 10am');
   });
 
   it('includes a2a and review scenario sections', async () => {
@@ -735,11 +738,15 @@ describe('Learning Habits (LEARNING-LOOP §8)', () => {
       memory,
       scenario: 'distillation',
     });
+    // The distillation scenario rules ride the volatile tail now — the mode
+    // section differs per scenario and used to invalidate the whole cached
+    // prefix whenever a session alternated human-chat ⇄ A2A turns.
+    const full = `${result.text}\n${result.volatile ?? ''}`;
     expect(result.text).toContain('## Learning Habits');
-    expect(result.text).toMatch(/post-task distillation|distillation mode/i);
-    expect(result.text).toMatch(/package_install/);
-    expect(result.text).toMatch(/request_user_input/);
-    expect(result.text).not.toMatch(/"outcome"|staged_skill/);
+    expect(full).toMatch(/post-task distillation|distillation mode/i);
+    expect(full).toMatch(/package_install/);
+    expect(full).toMatch(/request_user_input/);
+    expect(full).not.toMatch(/"outcome"|staged_skill/);
   });
 
   it('B-prompt-learning-habits-absent-dream / B-dream-no-habits: memory_consolidation omits Learning Habits', async () => {

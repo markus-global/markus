@@ -55,14 +55,20 @@ const MOCK_ROLE = {
 async function buildPrompt(scenario: AgentScenario): Promise<string> {
   const memory = new MemoryStore(tempDir);
   const engine = new ContextEngine({ memorySearchTopK: 3 });
-  const { text } = await engine.buildSystemPrompt({
+  const { text, volatile } = await engine.buildSystemPrompt({
     agentId: 'agt_toolface',
     agentName: 'Test Agent',
     role: MOCK_ROLE,
     memory,
     scenario,
   });
-  return text;
+  // `## Current Interaction Mode` (and other per-turn context) now rides the
+  // volatile tail rather than the byte-stable system message — the mode section
+  // used to invalidate the whole cached prefix whenever a session alternated
+  // human-chat ⇄ A2A turns (measured 2026-10-29: 58.2% of prompt tokens in one
+  // hour had ZERO prefix reuse because of it). The rule must still REACH the
+  // model, so assert on the full prompt, not on the system message alone.
+  return [text, volatile ?? ''].join('\n');
 }
 
 describe('场景 × 工具面一致性（提示词声明 ⊆ 权威 allowedTools）', () => {

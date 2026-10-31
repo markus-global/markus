@@ -26,7 +26,13 @@ const baseRole = {
 describe('prompt profiles (AGENT-RUNTIME §4)', () => {
   it('A-collab-rules-always-on: Collaboration Rules present; no HANDBOOK dump', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    // Scenario rules (`## Current Interaction Mode`) now ride the volatile
+    // TAIL, not the byte-stable system message: the section differs per
+    // scenario, so while it sat in `system`, a session alternating human-chat
+    // ⇄ A2A turns invalidated the entire cached prefix each turn (measured
+    // 2026-10-29: 58.2% of an hour's prompt tokens had ZERO reuse for this one
+    // reason). Assert on the full prompt the model actually sees.
+    const { text: systemText, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short CTO role.' } as never,
@@ -34,6 +40,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       scenario: 'chat',
       promptProfile: 'converse',
     });
+    const text = `${systemText}\n${volatile ?? ''}`;
     expect(text).toContain('## Markus Collaboration Rules');
     expect(text).toContain('requirement_id');
     expect(text).toContain('STOP');
@@ -78,10 +85,13 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
         humans: [{ id: 'u1', name: 'Owner', role: 'owner' }],
       } as never,
     });
-    expect(text).toContain('Conversation-first (default)');
-    expect(text).toContain('player-coach');
-    expect(text).toContain('Own the work when pairing');
-    expect(text).toContain('After you create a task for some work, STOP');
+    // Scenario rules (`## Current Interaction Mode`) ride the volatile tail now
+    // — see the note above. Assert on the full prompt.
+    const full = `${text}\n${volatile ?? ''}`;
+    expect(full).toContain('Conversation-first (default)');
+    expect(full).toContain('player-coach');
+    expect(full).toContain('Own the work when pairing');
+    expect(full).toContain('After you create a task for some work, STOP');
     expect(text).not.toContain('tiny clarifications');
     expect(volatile).toContain('## Team Status');
     expect(volatile).toContain('stopped');
@@ -153,7 +163,8 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
 
   it('A-heartbeat-full-capability-prompt: heartbeat runs with full session toolset, no reflex lock', async () => {
     const engine = new ContextEngine();
-    const { text } = await engine.buildSystemPrompt({
+    // Scenario rules ride the volatile tail now — see the note above.
+    const { text: systemText, volatile } = await engine.buildSystemPrompt({
       agentId: 'agt_1',
       agentName: 'T',
       role: { ...baseRole, systemPrompt: 'Short.' } as never,
@@ -161,6 +172,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       scenario: 'heartbeat',
       promptProfile: 'reflex',
     });
+    const text = `${systemText}\n${volatile ?? ''}`;
     expect(text).toContain('heartbeat mode');
     expect(text).toContain('full session capability');
     expect(text).not.toContain('reflex pack only');
@@ -257,8 +269,9 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       promptProfile: 'converse',
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
-    expect(text).toContain('## Current Interaction Mode');
-    expect(text).toContain('comment on a task or requirement');
+    // The mode section now rides the volatile tail — assert there.
+    expect(volatile).toContain('## Current Interaction Mode');
+    expect(volatile).toContain('comment on a task or requirement');
     expect(text).not.toContain('## Error Recovery');
     expect(text).not.toContain('## Quality Gates');
     expect(text).not.toContain('## Deliverable & Report Output Format');
@@ -306,11 +319,17 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       },
     });
 
-    // Progressive disclosure caps (full files remain on disk)
-    expect(text).toContain('announcements truncated');
-    expect(text).toContain('norms truncated');
+    // Progressive disclosure caps (full files remain on disk).
+    //
+    // Team docs now ride the VOLATILE TAIL, not the system message: they are
+    // agent-writable files (any teammate can `file_write` NORMS.md), so they
+    // must not sit in the cached prefix — one teammate's edit otherwise
+    // invalidates every running session's prefix (measured 2026-10-29). The
+    // caps still apply; only the carrier changed.
+    expect(volatile).toContain('announcements truncated');
+    expect(volatile).toContain('norms truncated');
     expect(volatile).toContain('dynamic context truncated');
-    expect(text.split('ANNOUNCEMENT LINE PAD').length - 1).toBeLessThanOrEqual(
+    expect(volatile.split('ANNOUNCEMENT LINE PAD').length - 1).toBeLessThanOrEqual(
       Math.ceil(SYSTEM_ANNOUNCEMENTS_CHARS_CONVERSE / 'ANNOUNCEMENT LINE PAD '.length) + 2,
     );
     expect(volatile).toContain('more — use `workflow_list`');
@@ -320,7 +339,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
     expect(text).not.toContain('_[system trimmed');
 
     expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
-    expect(text).toContain('## Current Interaction Mode');
+    expect(volatile).toContain('## Current Interaction Mode');
     expect(volatile).toContain('User locale:');
   });
 
@@ -339,7 +358,7 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
     expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \(Asia\/Shanghai/);
-    expect(text).toContain('## Current Interaction Mode');
+    expect(volatile).toContain('## Current Interaction Mode');
     expect(text).toContain('## Search & Exploration Strategy');
     expect(text).toContain('## Learning Habits');
     expect(text).not.toContain('_[system trimmed');
@@ -361,10 +380,12 @@ describe('prompt profiles (AGENT-RUNTIME §4)', () => {
       viewerContext: { locale: 'zh-CN', timezone: 'Asia/Shanghai' },
     });
     expect(volatile).toMatch(/Current date and time: \d{4}-\d{2}-\d{2}/);
-    expect(text).toContain('## Current Interaction Mode');
+    expect(volatile).toContain('## Current Interaction Mode');
     expect(text).not.toContain('_[system trimmed');
     // Token counter imported for regression visibility in heavy assemble
-    expect(getDefaultTokenCounter().countTokens(text)).toBeGreaterThan(1000);
+    // Measure the full prompt (system text + volatile tail): the mode section
+    // and other per-turn content live in the tail now.
+    expect(getDefaultTokenCounter().countTokens(`${text}\n${volatile ?? ''}`)).toBeGreaterThan(1000);
   });
 
   it('A-handbook-injected-absolute-path: handbookPath is injected verbatim; no full text dump', async () => {

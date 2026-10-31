@@ -89,6 +89,7 @@ export {
   type DiscoveredModel,
 } from './llm/model-discovery.js';
 export { estimateQualityScore, tierFromQualityScore, costTierFromPrice } from './llm/router.js';
+export { computeCacheHitRate, aggregateCacheHitRate, computeReplayRatio } from './llm/provider-helpers.js';
 export { MemoryStore, parseNotebook, serializeNotebook, loadNotebook, saveNotebook } from './memory/store.js';
 export type { NotebookEntry, NotebookEntryManaged } from './memory/store.js';
 export { PendingCallbackRegistry, pendingCallbackRegistry } from './pending-callback.js';

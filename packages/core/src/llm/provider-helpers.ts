@@ -288,6 +288,11 @@ export function convertMessagesOpenAI(
   // DeepSeek thinking models expect reasoning_content on assistant turns (incl. tool calls).
   const backfillReasoning = !!opts?.backfillReasoning || clean.some((m) => !!m.reasoningContent);
   const splitSystemIntoSegments = !!opts?.systemCacheSegments && opts.systemCacheSegments.length >= 1;
+  // The segment list replaces the system message ONCE, at its first occurrence.
+  // Without this flag every `role:'system'` message expands into the FULL segment
+  // list, so a request carrying two system messages would inject the segments
+  // twice and drop the second message's content.
+  let segmentsEmitted = false;
 
   // De-infect history: strip leaked `<invoke>` plaintext from previous turns so
   // it never reaches the model again (fixes the permanent re-feed loop).
@@ -300,7 +305,8 @@ export function convertMessagesOpenAI(
   }
 
   return clean.flatMap((m): OpenAIMessage | OpenAIMessage[] => {
-    if (splitSystemIntoSegments && m.role === 'system') {
+    if (splitSystemIntoSegments && m.role === 'system' && !segmentsEmitted) {
+      segmentsEmitted = true;
       return (opts!.systemCacheSegments!)
         .filter((seg) => seg.content.length > 0)
         .map((seg) => ({ role: 'system' as const, content: seg.content }));
@@ -432,6 +438,56 @@ export function computeCacheHitRate(input: CacheHitRateInput): number | null {
   const denom = cacheDenominator(input);
   if (denom <= 0) return null;
   return Math.min(1, (input.cacheReadTokens ?? 0) / denom);
+}
+
+/**
+ * Org-level cache-hit rate: **token-weighted**, never a mean of per-agent rates.
+ *
+ * Why this exists: the org endpoint used to average `stats.cacheHitRate` across
+ * every listed agent (`sum(rate) / allAgents.length`). That is a mean of ratios,
+ * and it is wrong in both directions:
+ *   - idle agents contribute `0` to the numerator but a full `1` to the
+ *     denominator, so one busy agent at 96% plus nine idle agents reports 9.6%;
+ *   - a single agent that made one 100-token call outweighs an agent that moved
+ *     200M tokens.
+ *
+ * A rate is only meaningful against the volume it was measured on, so the org
+ * number must be Σ(cache reads) / Σ(prompt side) over agents that actually
+ * REPORTED something. Agents with no reported samples are excluded, not counted
+ * as zero — "no measurement" is not "0% hit".
+ *
+ * Returns `null` when nothing was measured at all: the caller must show
+ * "unknown", never a fabricated 0.
+ */
+export function aggregateCacheHitRate(
+  agents: ReadonlyArray<{ cacheReadReported: number; cacheDenominatorTotal: number }>,
+): { cacheHitRate: number | null; cacheHitSamples: number } {
+  let read = 0;
+  let denom = 0;
+  let samples = 0;
+  for (const a of agents) {
+    if (!Number.isFinite(a.cacheDenominatorTotal) || a.cacheDenominatorTotal <= 0) continue;
+    read += Number.isFinite(a.cacheReadReported) ? a.cacheReadReported : 0;
+    denom += a.cacheDenominatorTotal;
+    samples++;
+  }
+  if (samples === 0 || denom <= 0) return { cacheHitRate: null, cacheHitSamples: 0 };
+  return { cacheHitRate: Math.min(1, read / denom), cacheHitSamples: samples };
+}
+
+/**
+ * Replay ratio: prompt tokens re-sent per output token produced.
+ *
+ * The cache-hit rate alone cannot tell you whether a workload is healthy: a run
+ * can report 96% and still be pathological if every call replays 300k tokens.
+ * Measured 2026-10-29 (GEO A2A burst): 218M prompt tokens produced 0.7M output
+ * tokens — a ratio of ~308:1 at a 94–96% hit rate. This number is the cost
+ * itself; the hit rate only explains part of it.
+ */
+export function computeReplayRatio(promptTokens: number, outputTokens: number): number | null {
+  if (!Number.isFinite(promptTokens) || !Number.isFinite(outputTokens) || outputTokens <= 0) return null;
+  if (promptTokens <= 0) return null;
+  return promptTokens / outputTokens;
 }
 
 export function normalizeOpenAIUsage(raw: Record<string, number> | undefined): LLMResponse['usage'] {

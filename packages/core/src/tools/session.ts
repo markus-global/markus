@@ -2,6 +2,7 @@ import type { AgentToolHandler } from '../agent.js';
 import { createLogger, getTextContent } from '@markus/shared';
 import type { IMemoryStore } from '../memory/types.js';
 import { resetAllFileReadCaches } from './file.js';
+import { DEFAULT_COMPACT_KEEP_LAST, COMPACT_KEEP_LAST_MIN, COMPACT_KEEP_LAST_MAX } from '../context-budget.js';
 
 const log = createLogger('session-tools');
 
@@ -442,13 +443,13 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
     if (!n.sessionId) {
       return JSON.stringify({
         status: 'error',
-        message: 'Compacting needs session_id. Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }.',
+        message: `Compacting needs session_id. Example: { "operation": "compact", "session_id": "sess_...", "keep_last": ${DEFAULT_COMPACT_KEEP_LAST} }.`,
       });
     }
     // 权限：只允许压缩自己拥有的 session（避免 agent 篡改他人上下文）。
     const own = checkOwnership(repo, n.sessionId, ctx.agentId);
     if (own.error) return own.error;
-    const keepLast = Math.max(5, Math.min(200, Math.trunc(Number(n.keepLast) || 40) || 40));
+    const keepLast = Math.max(COMPACT_KEEP_LAST_MIN, Math.min(COMPACT_KEEP_LAST_MAX, Math.trunc(Number(n.keepLast) || DEFAULT_COMPACT_KEEP_LAST) || DEFAULT_COMPACT_KEEP_LAST));
     try {
       const hasAnchor = n.goal || n.done || n.next;
       let res: { summary: string; flushedCount: number; remaining?: number; found?: boolean; anchorKey?: string };
@@ -734,8 +735,8 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
       '• session_get — get one session + its messages. Args: session_id, since/until, page, page_size. Returns { status, sessionId, messages: [{role, content}], total, page }.',
       '  Example: { "operation": "get", "session_id": "sess_...", "page_size": 50 }',
       '• session_compact — collapse stale history into an anchor summary so future turns stop re-reading it. Atomic: an assistant tool-call and its tool results are NEVER split. Optionally pass goal/done/next to anchor your position. Use when earlier tool results are obsolete or context feels bloated. Returns { status, flushedCount, remaining, summary } — flushedCount = messages paged out (0 means nothing was compacted), remaining = messages kept, summary = a [SYSTEM]-prefixed anchor injected into the session; the raw flushed messages are archived and recoverable via session_retrieve. If the session already fits within keep_last you get flushedCount:0, skipped:true, reason:"within_keep_last" (a valid no-op, NOT a failure); an unknown session_id returns status:"error".',
-      '  Args: session_id (required), keep_last (5-200, default 40), goal/done/next (optional anchors).',
-      '  Example: { "operation": "compact", "session_id": "sess_...", "keep_last": 40 }',
+      `  Args: session_id (required), keep_last (5-200, default ${DEFAULT_COMPACT_KEEP_LAST}), goal/done/next (optional anchors).`,
+      `  Example: { "operation": "compact", "session_id": "sess_...", "keep_last": ${DEFAULT_COMPACT_KEEP_LAST} }`,
       '• session_pin — write a durable slot into the fixed [SLOTS] segment: persisted per session and injected every turn, NEVER compacted until you unpin it. Best for your current goal / what is done / what is next (use key=goal/done/next). Returns { status, pinned: {key: content} }.',
       '  Args: session_id, key, content. Example: { "operation": "pin", "session_id": "sess_...", "key": "goal", "content": "..." }',
       '• session_unpin — remove a pinned slot. Args: session_id, key. Returns { status, unpinned: key }.',
@@ -763,7 +764,7 @@ export function createSessionTool(ctx: SessionToolContext): AgentToolHandler {
         until: { type: 'string', description: 'ISO timestamp — filter sessions/messages with timestamp <= until.' },
         page: { type: 'number', description: '1-based page number (default 1).' },
         page_size: { type: 'number', description: 'Page size (list default 20 max 50; get default 50 max 100).' },
-        keep_last: { type: 'number', description: 'For compact: how many most-recent messages to keep verbatim (default 40, range 5-200).' },
+        keep_last: { type: 'number', description: `For compact: how many most-recent messages to keep verbatim (default ${DEFAULT_COMPACT_KEEP_LAST}, range ${COMPACT_KEEP_LAST_MIN}-${COMPACT_KEEP_LAST_MAX}).` },
         key: { type: 'string', description: 'For pin/unpin: the slot key (e.g. goal, done, next).' },
         content: { type: 'string', description: 'For pin: the fact/anchor text to pin (> up to 1200 chars).' },
         query: { type: 'string', description: 'For retrieve: keyword(s) to search archived fragments.' },
