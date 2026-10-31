@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
-import { type AuthUser } from '../api.ts';
+import { type AuthUser, hubApi } from '../api.ts';
 import { useHubAccount } from '../hooks/useHubAccount.ts';
+import { openExternal } from '../hooks/useElectron.ts';
 import { PAGE, PAGE_ICONS } from '../routes.ts';
 import { navBus } from '../navBus.ts';
 import { Avatar, resolveUserAvatarSrc } from './Avatar.tsx';
@@ -141,12 +142,21 @@ export function UserAccountMenu({
             <div className="text-xs text-fg-tertiary mt-0.5 truncate">{displayEmail}</div>
           )}
           {credits !== null && (
-            <div className="text-xs text-fg-secondary mt-0.5 flex items-center gap-1">
+            // 积分数字本身也是入口：点一下去 Hub 设置页看明细（与其下几项同一 tab）。
+            <button
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                openExternal(`${hubApi.getUrl().replace(/\/$/, '')}/settings?tab=billing`);
+              }}
+              title={t('common:creditBalanceOpenHub')}
+              className="text-xs text-fg-secondary mt-0.5 -mx-1 px-1 max-w-full flex items-center gap-1 rounded transition-colors hover:text-brand-500 hover:bg-surface-overlay"
+            >
               <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="shrink-0">
                 <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
               </svg>
               <span className="truncate">{t('common:creditBalance')}: {credits.remaining.toLocaleString()}</span>
-            </div>
+            </button>
           )}
         </div>
         {onEditProfile && (
