@@ -106,7 +106,8 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
         <div className="px-3 pt-3 pb-1 border-b border-border-default space-y-0.5">
           <button
             onClick={handleCredits}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay transition-colors text-left"
+            title={hubConnected ? t('common:creditBalanceOpenHub') : undefined}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay active:bg-surface-overlay transition-colors text-left"
           >
             <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0 text-fg-tertiary">
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -123,6 +124,10 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
                   ? credits.remaining.toLocaleString()
                   : '—'}
             </span>
+            {/* 与下面 Hub 账号行同一颗箭头：让「这一行能点」自解释，而不是靠用户猜 */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary shrink-0">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
           </button>
 
           <button
