@@ -106,11 +106,14 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
         <div className="px-3 pt-3 pb-1 border-b border-border-default space-y-0.5">
           <button
             onClick={handleCredits}
-            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay transition-colors text-left"
+            title={hubConnected ? t('common:creditBalanceOpenHub') : undefined}
+            className="w-full flex items-center gap-3 px-3 py-2.5 rounded-lg hover:bg-surface-overlay active:bg-surface-overlay transition-colors text-left"
           >
             <span className="w-[18px] h-[18px] flex items-center justify-center shrink-0 text-fg-tertiary">
+              {/* 与桌面浮窗同一枚票券图标（一个含义只给一种形状） */}
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <polyline points="13 2 3 14 12 14 18 22 6 22 12 17" />
+                <path d="M2 9a3 3 0 0 1 0 6v2a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-2a3 3 0 0 1 0-6V7a2 2 0 0 0-2-2H4a2 2 0 0 0-2 2Z" />
+                <path d="M12.5 5.5v13" strokeDasharray="2 2.5" />
               </svg>
             </span>
             <span className="flex-1 min-w-0 text-sm text-fg-secondary truncate">
@@ -123,6 +126,10 @@ export function MobileDrawer({ authUser, onNavigate, onLogout }: MobileDrawerPro
                   ? credits.remaining.toLocaleString()
                   : '—'}
             </span>
+            {/* 与下面 Hub 账号行同一颗箭头：让「这一行能点」自解释，而不是靠用户猜 */}
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-fg-tertiary shrink-0">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
           </button>
 
           <button

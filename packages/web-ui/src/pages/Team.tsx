@@ -5087,6 +5087,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
                 {/* Right side buttons */}
                 <div data-no-drag className="ml-auto flex items-center gap-2 shrink-0">
+                  {/* Primary action first: New chat → Find → History → Side panel. */}
+                  {chatMode === 'direct' && currentAgent && mainTab === 'chat' && (
+                    <button
+                      onClick={newConversation}
+                      title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
+                      className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                    >
+                      {t('page.newChatButton')}
+                    </button>
+                  )}
                   {/* Find in THIS session (local, instant, jumps the transcript).
                       Separate from the global search below, which queries the
                       server across every conversation. */}
@@ -5116,25 +5126,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     </button>
                   )}
                   {chatMode === 'direct' && currentAgent && mainTab === 'chat' && (
-                    <div className="flex items-center gap-1.5">
-                      <button
-                        onClick={newConversation}
-                        title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                        className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
-                      >
-                        {t('page.newChatButton')}
-                      </button>
-                      <button
-                        ref={historyBtnRef}
-                        onClick={() => setShowSessions(!showSessions)}
-                        className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
-                        title={t('page.historyTitle')}
-                      >
-                        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
-                          <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </button>
-                    </div>
+                    <button
+                      ref={historyBtnRef}
+                      onClick={() => setShowSessions(!showSessions)}
+                      className={`p-1.5 rounded-md transition-colors ${showSessions ? 'bg-surface-overlay text-fg-primary' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'}`}
+                      title={t('page.historyTitle')}
+                    >
+                      <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M12 6v6h4.5m4.5 0a9 9 0 11-18 0 9 9 0 0118 0z" />
+                      </svg>
+                    </button>
                   )}
                   {!isMobile && layout && (
                     <button

@@ -3630,6 +3630,24 @@ export const hubApi = {
     getBalance: () =>
       hubRequest<{ availableBalance: number; totalEarnings: number }>('/creator/balance'),
   },
+  /**
+   * 问题反馈 / 建议。截图先经 {@link hubApi.uploadImage} 拿到 Hub URL，
+   * 再把 URL 数组传进来——Hub 侧只存快照，不重复处理上传。
+   */
+  feedback: {
+    create: (data: {
+      title: string;
+      content?: string;
+      contact?: string;
+      images?: string[];
+      appVersion?: string;
+      platform?: string;
+      locale?: string;
+    }) => hubRequest<{ id: string; status: string }>('/feedback', {
+      method: 'POST',
+      body: JSON.stringify(data),
+    }),
+  },
   user: {
     plan: () => hubRequest<{
       orgId?: string | null;
@@ -3672,6 +3690,22 @@ export const hubApi = {
       retryAfterSeconds?: number;
       minAccountAgeSeconds?: number;
     }>('/user/claim-free-credits', { method: 'POST' }),
+    /**
+     * 成长大使：邀请码 + 已邀请 / 已奖励统计。
+     * 与 Hub 设置页「邀请奖励」同一数据源（`getReferralStats`），
+     * 数值（`rewardCuPerPaid` / `claimBonusCu`）由服务端下发，前端不写死。
+     */
+    referral: () => hubRequest<{
+      code: string;
+      shareUrl: string;
+      invitedCount: number;
+      paidCount: number;
+      rewardedCount: number;
+      rewardCuTotal: number;
+      rewardCuPerPaid: number;
+      claimBonusCu: number;
+      referredBy?: { userId: string; username: string } | null;
+    }>('/user/referral'),
   },
 };
 
