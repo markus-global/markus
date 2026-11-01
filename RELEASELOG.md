@@ -1,5 +1,61 @@
 # Release Log
 
+## v0.12.1
+
+**正式版（patch）** — 由 `v0.12.1-rc.0` 转正。相对上一正式版 `v0.12.0`，本版三个主题：**工作流从「文本推断」变成「结构化契约」**、**审批与通知「只记录结果，不记录载荷」**、**前缀缓存稳定性与语义色 token 的静默 no-op 修复**。含 6 个功能 PR（#407–#411、#413），120 files changed, +15145 −1129。
+
+> **升级注意**（细节见文末「升级与破坏性变更」）：任务表新增 `workflow_run_id` / `workflow_step_id` 两列并带可续跑迁移；工作流 YAML 的 `name` 必须与文件名一致；并发运行默认上限 3（`MARKUS_WORKFLOW_MAX_CONCURRENT`）。
+
+### Bug Fixes
+
+- **运行报「失败」，而它的 9 个任务全部「已完成」** — 根因是一次**单向棘轮**：`deriveRunStatus()` 只在 `run.status === 'running'` 时才被咨询，一旦运行被锁到 `failed`，之后重试并完成的任务再也纠正不了它。修复：运行状态被明确定义为其任务的**投影**，每次任务状态变更都重算（仅 `paused` / `cancelled` 两个人工决策态豁免）；所有写入收敛到唯一入口 `applyRunStatus()`（持久化 + 通知 + 广播 + 日志），使 live 路径与自愈路径不可能漂移。
+- **历史运行打开后所有步骤显示「未开始」且不可点** — 两层根因叠加：① `CreateTaskRequest.notes` 声明为 `string`，而 `Task.notes` 是 `string[]`，runner 写入的 `[Workflow] … step: <id>` 在创建时被**静默丢弃**（实测 0 条带标记）；② 旧 UI 靠标题后缀匹配步骤，而该匹配器随 notes 读取器一并删除，迁移只能读 notes → 历史行永远无法连接。修复：抽屉把「未匹配」脚注变成**可点击的任务列表**并写明实情；此类步骤状态由「未开始」改为「未匹配（历史运行）」；删掉 runner 里从未生效的 `notes:` 参数（附原因）；另出一次性脚本 `scripts/relink-workflow-task-identity.mjs`，按 `[<displayName>] <step.name>` 对当期模板回填结构列，**仅当步骤名唯一**才写（0 或 >1 命中跳过并报告），默认 dry-run、`--apply` 才写、幂等 —— 实跑 5 runs / 48 tasks：38 relinked、10 已有身份、0 歧义。
+- **点「查看任务」切到依赖图，但图是空的（或聚焦到无关需求）** — 四条根因，任一都足以致败：作用域从未设置（只调了 `forceOpenReq` / `setDagExpandReqId` / `setBoardType('dag')`）；`filterTasks(tasks, includeArchived)` 收下参数却从不读取（死参数）；需求列表分页（当时 384 行）且看板只装活动工作，归档运行的需求及其 16 个任务根本没进内存；`TaskDAG` 用 `filteredReqs` 解析 `expandedNodeId`，显式「打开此需求」输给浏览性过滤。修复：`openRequirementInDag()` 成为该意图的**唯一入口**（设项目作用域 + 清过滤 + 显示关闭项 + 展开）；聚焦自带数据（需求与其任务显式拉取并注入图）；`TaskDAG` 用完整节点集解析焦点；`filterTasks` 迁出为纯函数 `lib/boardFilters.ts`，`includeClosed` 成为真开关。
+- **任务「取消（含依赖任务）」对话框背景透明，页面直接透出来** — 不是 z-index、也不是 backdrop：卡片用了 `bg-surface-default`，而主题**从未定义**这个 token，未知 utility 解析为空故不画背景（不报错、不炸构建，只有人肉发现）。同病的 `fg-quaternary` 约 100 处亦从未定义，"最暗标签层"实际继承父色。修复：先在一处改成 `bg-surface-secondary`（与其它对话框同款），再做根治 —— 9 个长期静默 no-op 的 token（`content-tertiary` 17 / `content-secondary` 14 / `content-primary` 9 / `surface-inset` 7 / `surface-2` 7 / `surface-3` 6 / `surface-base` 4 / `surface-tertiary` 4 / `border-hover` 2，共 70 处）在 `@theme` 各自**定义一次**，作为规范 token 的 `var()` 别名，单一取值来源随主题走；旧调用点不改即正确。守卫从"钉住几个 token"升级为**扫描整个语义色命名空间**（surface / fg / border / content / selected / switch），未定义即失败。
+- **同一 agent 90 秒内发出 12 条完全相同通知；负责人点了「同意」却记成「已批准」并自行编造答案；飞书卡片把一次正确点击判成「未回答」** — 三起线上事故，根因在 `notify_user`：它把通知正文以 `role:'assistant'` 写回 agent 会话，插在 `assistant(toolCalls)` 与其 `tool` 结果之间，属非法协议序列，`sanitizeMessageSequence()` 只能整块丢弃 toolCalls + 回执 —— **交付证据在模型看到之前就被删掉了**，于是模型每轮重新推导"我还没发过"（同一事实两个写者）。修复：**删除会话内写入**，改由 tool result 承载 `notification.id/title/priority/to/deliveredAt`；新增 `requires_freeform` 与唯一判定 `assessResponseCompleteness`（「三个数字」这类必须填答的问题，点击无法冒充答案）；`answersFromTap` / `isAnswerableByTap` 在唯一写入点把"点击"归一化成"回答"；卡片新增真实状态 `pending`（不再映射成 `expired`）；`cardActorFields()` 决定只发人名或人名 + 平台 id（`respondedBy` 是**来源标记不是平台句柄**，`user_…` 会被渲染成 `<at id=user_…>` 导致整卡被拒）；dispatcher 新增 `onDelivered` 记录平台 message id，并用既有 `approval:resolved` 广播让跨界面的卡片随 UI 决策一起关闭。
+- **`discover_tools` 单次调用上报耗时 112,424 ms，实际执行 3 ms** — 它只改本进程内存中的工具可见性集合，却被登记为写工具（`{ domain: 'session-tools' }`），必须排在任意 `'*'` 持有者（`shell_execute` / `apply_patch` / `background_exec`）之后；并发模式下同一 agent 的其它 worker 被活活饿死。修复：移入 `TOOL_LOCK_FREE` 白名单，并删除 `WRITE_TOOL_DOMAINS` 中唯一使用 `session-tools` 的条目（其余副作用已有串行化：MCP 连接走 `mcp-client.withStartupLock`，`Set.add` / `Map.set` 在单线程内原子）。**遗留**：锁等待时间仍被计入执行时间上报，`waitMs` / `runMs` 拆分未做 —— 下一个排查者仍会被这个数字误导。
+- **人 ⇄ A2A 轮次切换处前缀缓存命中率 0%；一轮内 32 个 state checkpoint 追加成新块；org 命中率算成 9.6%；压缩信号从不触发；第二条 system 消息被吞** — 五个症状，同一类病（缓存键与结构被载荷/时序污染）：① 交互模式段位于 **system 段内部**，任何模式切换都让整个缓存前缀失效 → 移到 volatile tail（修复后同场景 35 分钟 26 个会话的命中率从 0% 到 94.6%）；② per-turn checkpoint 逐条**追加**而非合并（26 个会话 247 个块 / 3.4M 字符）→ 新增 `collapseStateCheckpoints()` 按 `## Section` 无损合并、插回最后一个 checkpoint 位置；③ `llm_request` 审计不带 `sessionId`，`cacheHitRateWindow` 恒为 null，且 org 层用**比率均值**（96% 的忙 agent 加九个空闲 = 9.6%）→ 新增 `aggregateCacheHitRate`（token 加权，无样本返回 `null` 而非伪造 0）与 `computeReplayRatio`；④ 压缩信号无输入 → `compactionGuidance` / `compactionActionLine` 收敛为单一决策点，`hold` 不再逐次打印，另加 150k 绝对下限；⑤ `convertMessagesOpenAI` 对**每条** system 消息都展开完整 cache-segment 列表（段被注入两次、第二条内容被吞）→ 导出 `collectSystemText()` 供 `chat()` / `chatStream()` 共用，加 `segmentsEmitted` 单次展开标志；`DEFAULT_COMPACT_KEEP_LAST = 40` 收敛为单一常量（此前四个写者、两个数字，20 从未生效）。
+- **工作流卡片「发送到智能体对话」静默选中团队经理并导航离开** — 发送路径分叉：任务/需求早已有选择器，工作流是例外，直接取 manager。修复：改开同一个 `SendToChatModal`（chip 为 `@[name](workflow:<name>)`），**预选**所属团队 manager 但收件人交用户决定；收件人列表改用共享 `<Avatar>`（上传图 → agent 首字母 / 人类剪影），并在首渲染把选中行滚入视野（100+ 收件人时预选项原本落在折叠线以下，看起来像没选）。
+- **「取消运行」只说"所有运行中和待处理的任务"；需求状态是个原生 `<select>`** — 破坏范围用模糊措辞、状态机被表达成自由选择控件（OS 菜单不说明后果，非法项仅置灰，读起来像"随便选"）。修复：确认文案改为「将取消 N 个未完成任务（该运行共 M 个）」，N 由已加载任务排除终态算出，未加载则**明说并只给总数、不编数字**；状态改为「当前状态 + 圆点」按钮菜单，**仅列** `REQ_ALLOWED_TRANSITIONS` 中当前位置合法的转移（单一来源），`completed` 标注"终态"；取消刻意不入菜单（保留独立红按钮 + 自身确认）；暂停仍**无**确认（可逆、同按钮 toggle，加确认只会训练盲点通过）。删除失去用途的 `ALL_REQ_STATUSES` 防第二份漂移。
+- **步骤弹窗打开就聚焦首个输入框，所有字段永远是 input，role 是自由文本** — `manager` 拼错会在运行期打断角色解析。修复：打开不再 autofocus，点击前只读（blur 保存、Esc 放弃该字段），role 改 `<select>`。
+- **复制工作流模板生成同名重复卡片** — 写出 `<newname>.yaml` 但 YAML 内 `name:` 仍指向原名，`resolveWorkflowFile` 可能指向任一文件。修复：新增 `prepareDuplicateYaml()`（重写 `name`，`displayName` 加「（副本）」）；服务端 `addWorkflow` / `updateWorkflow` 拒绝 `name` 与文件名不一致的 YAML（先查存在性，缺失仍报 not found）。
+- **步骤交接把「步骤 id」写进了要求 `task_get` 的位置** — prompt 前言写 `step-1-research`，而该工具要 `tsk_…`，照做即 `Task not found`，agent 只能反查自己记录的 `blockedBy`（同一事实用错标识符空间）。修复：`buildWorkflowContext` 改输出上游 **task id**（任务按拓扑序创建，必已存在）并给出精确调用；保留「下游会消费你的交付物」提示；上游步骤未落地时显式说明。
+
+### Features / Refactor
+
+- **工作流 P0：结构化的步骤身份、真正的超时、运行快照、准入控制** — 步骤身份此前靠**三重新猜测**（notes 里的 `step: <id>` → `[Workflow] Step name` 标题后缀 → 位置顺序），改个标题就全断；`steps[].timeout` 只解析进 `stepConfigs` 从未被读，卡死步骤让运行永远 `running`；运行只存 `workflowName`，改 YAML 会改变历史运行的含义；并发运行无上限（只有"同一 workflow 不能重复"）。落地：`tasks.workflow_run_id` / `workflow_step_id`（runner 在创建任务前先分配 run id 并写入），`matchTasksToSteps` 改为按 `workflowStepId` 的纯 join；`migrateWorkflowTaskIdentity`（migration `003-workflow-task-identity`，ALTER + `COALESCE`，可恢复且幂等）一次性回填旧标记；`WorkflowRunner.enforceTimeouts()` 由调度 tick 扫描，按任务自身 `startedAt` 重算 deadline（跨重启有效），失败文案 `Step timed out after …`；`workflow_runs` 增 `template_version` / `template_hash` / `template_snapshot`，抽屉按**快照**渲染步骤（历史运行无快照时回落当前模板）；`createRun` 成为团队级准入的单一入口，超限抛 `WorkflowConcurrencyError`（`MARKUS_WORKFLOW_MAX_CONCURRENT`，默认 3）。
+- **工作流 W2：步骤数据契约「声明 → 静态校验 → 运行期强制」** — 数据其实能流（`blockedBy` 排序 + `task_get` 取交付物），缺的是**契约**：没人声明产出、没人校验、消费方不知道该读哪个产物（`StepDef.inputs` 一直存在却从未在运行期被读）。落地：`StepDef.outputs[]`（`{name,type?,required?,description?}`）+ 既有 `inputs`（`from`/`as`）；`validateWorkflowTemplate` 在保存时拒绝：输出名非空且步骤内唯一、`type` 必须是真实 `DeliverableType`、`inputs.from` 必须是**传递依赖**、`inputs.as` 必须命中上游声明过的输出；运行期 `missingOutputs()` 按 `type` 比对交付物，缺失即失败该任务并写 `Workflow output contract not met: missing …` 且通知 manager；消费方 prompt 列出本地名 / 类型 / 上游 task id / 要调用的工具。向后兼容：无 `outputs` 的模板行为不变，无快照的运行不会被追判失败。
+- **工作流卡片重做成可交互 disclosure，且「同一事实只留一种表示」** — 旧卡片头部是 24px 的 `<div onClick>`（无键盘路径），聊天深链嵌在可点击头内靠 `stopPropagation()` 存活，"最近运行"是第二个手写折叠 div；详情未返回前白屏并吞掉错误；展开面板向用户打印原始 `depends_on` id；编辑/删除 API 存在却无人调用。第二遍又暴露三种"同一事实两种表示"：依赖既有 step 列表又有按模板顺序排列的 chip「DAG」、头部进度与正下方运行行重复、运行行堆满动作按钮。落地：唯一的 `Disclosure` 原语（真 `<button>` + `aria-expanded/controls` + focus-visible + 44/36px 命中区 + 折叠时 `inert`），动作按钮作为 summary 的**兄弟节点** —— 让嵌套交互元素在结构上不可能，而非靠补丁；新增 `lib/workflow-view.ts`（状态→中文标签、依赖 id 转名、最长路径分层、step↔task 映射、进度、展开持久化）；步骤一行一条，点开 `WorkflowStepModal`；依赖合并为一张分层图（一行 = 一个依赖深度，同行并行并标注「并行 N 步」，`↑N` 标多上游，自上而下即执行顺序）；运行行只留一个 `…` 打开 `WorkflowRunDrawer`，动作都归那里；详情 fetch 移入按展开集 keying 的 effect（骨架屏 + 可见重试），多卡可同开、跨刷新保留，仅运行中 4s 轮询且跳过隐藏页；步骤状态收敛进单一 `STEP_STATUS_META`。
+- **模板（定义）与运行（实例）分离** — 同一张卡片此前混用两种对象：描述渲染两遍、模板步骤显示「已完成」徽章和「查看对应的任务」、步骤流画运行状态点、运行行只有角落 28px 的 `…` 可点。落地：弹窗改为编辑器（name/role/prompt，走既有 `PUT .../workflows/:name`，Cmd/Ctrl+Enter 保存），步骤流去掉状态点，运行行整体成为按钮。
+- **需求级批量批准** — 新路由 `POST /api/requirements/:id/tasks/approve-bulk` + `TaskService.approveRequirementTasks()`，刻意做成对既有单写者 `approveTask` 的**循环**而非第二条批准路径，故仍走 pending 守卫 / HITL 结算 / gate-aware apply；不合格任务跳过并给出原因，逐任务报错使部分失败不会看着干净；`dryRun` 零副作用返回"将发生什么"，确认框用真实数字，并明说「将同时启动 N 个任务」（批准即启动）。刻意不做"批准不启动"与需求级继承批准。
+- **账号气泡新增「问题反馈」与「成长大使」** — 反馈 modal（标题必填、详情、最多 5 图 pick/drag/paste、联系方式默认账号邮箱，截图经 `hubApi.uploadImage` → Hub `/api/upload` → R2），新增纯规则 `lib/feedbackAttachments.ts`；成长大使 modal（邀请码复制、已邀请 / 已订阅 / 已获积分，复用 `GET /api/user/referral`）。顺带修掉一批手感问题：气泡里的积分数字是唯一点了没反应的数据 → 打开 Hub settings `?tab=billing`；移动抽屉积分行虽是按钮却无 affordance → 补同款 chevron + tooltip；团队聊天头部动作顺序改为 新对话 → 查找 → 历史 → 侧栏；大使弹窗曾指向 `settings?tab=billing` 而邀请卡在 overview（tab 覆盖把用户送到错页）→ 改指 settings 根；积分图标 24×24 的 zap 缩到 11px/stroke 2 时两个锯齿塌成一条斜线、且闪电表达速度而非余额 → 定为票据字形（缺口轮廓 + 虚线齿孔，小尺寸仍可读），气泡 12px 与抽屉 16px 同一字形。
+
+### Tests
+
+- 新增：`web-ui/test/workflowCard.test.tsx`、`workflowView.test.ts`、`sendToChat.test.tsx`（6 个守卫）、`tailwindTokens.test.ts`（钉住依赖 token 并断言 `surface-default` 保持不存在，后升级为扫描整个语义色命名空间）、`src/lib/feedbackAttachments.test.ts`、`org-manager/test/requirement-bulk-approve.test.ts`（5 例）。
+- 上下文 / LLM：新增 `compaction-timing`、`context-checkpoint-collapse`、`context-history-immutability`、`context-interaction-mode-tail`、`llm-system-messages`、`cache-aggregation`；改 `context-budget`、`context-engine`、`context-engine-deep`、`context-scenario-matrix`、`prompt-profiles`、`cache-optimization`、`provider-helpers`、`scenario-tool-face`、`agent-targeted-coverage`。
+- 审批 / 通知：新增 `core/test/notify-user-context-truth.test.ts`、`notify-vs-ask-tool-semantics.test.ts`、`org-manager/test/hitl-response-completeness.test.ts`、`comms/test/gateway-requires-freeform.test.ts`；改 `cli/test/approval-card.test.ts`、`org-manager/test/approval-single-execution-point.test.ts`。
+- 并发：`core/test/agent-write-lock.test.ts` —— 持锁 300 ms 期间断言 `discover_tools` <100 ms（修复前会阻塞至锁释放）。
+- 工作流提示：新增「旧 `task_id="s1"` 不得回归」的守卫，防止步骤 id 重新混入 `task_get` 调用位。
+
+### Stats
+
+- 自 `v0.12.0`：120 files changed, +15145 −1129；其中 `packages/web-ui` 43 files +4448 −364，`packages/core` + `packages/org-manager` 45 files +9322 −715（区间统计，含对应提交之外的改动）。
+- PR：#407（ui-optimize 合集）、#408（回填历史运行身份 + 冻结历史 token 债务）、#409（审批/通知记录结果）、#410（`discover_tools` 去锁）、#411（缓存稳定性 + 压缩信号 + system 消息）、#413（反馈 + 成长大使 + header/nav 打磨）；#412 / #414 为版本发布 PR。
+
+### 升级与破坏性变更
+
+- **数据迁移**：`003-workflow-task-identity` 新增 `tasks.workflow_run_id` / `workflow_step_id` 并回填（ALTER + `COALESCE`，可续跑、幂等，不删数据）；`workflow_runs` 增三个 template 快照列。
+- **行为收紧**：工作流 YAML 的 `name` 必须与文件名一致，否则 `addWorkflow` / `updateWorkflow` 拒绝。
+- **接口删除**：`CreateTaskRequest.notes?: string` 被删除 —— 它因类型不匹配（`Task.notes` 是 `string[]`）从未生效，且已无调用方。
+- **需保留的升级路径**：`scripts/relink-workflow-task-identity.mjs` 只在仍可能服务 P0 之前（2026-10-27 前）创建的数据库时才必须保留；不再需要时方可删除。
+- **新配置**：`MARKUS_WORKFLOW_MAX_CONCURRENT`（默认 3）。
+- **已知残留**：4 个历史运行仍无法逐步映射（需一次性修复，不做运行期推断）；约 70 处旧 token 名仍在使用（已定义别名，机械重命名留后续）；`waitMs` / `runMs` 未拆分，锁等待仍计入工具执行耗时。
+
+> ⚠️ **已知缺口**：`v0.11.2` / `v0.11.3` / `v0.12.0` 三个正式版（及其 RC）尚未在本文件补录。本版上述内容全部取自 `v0.12.0..v0.12.1` 的真实提交与 diff；更早版本的完整记录见 GitHub Releases：https://github.com/markus-global/markus/releases 。补录待办已记录。
+
+---
+
 ## v0.11.1
 
 **正式版（patch）** — 相对上一正式版 `v0.11.0`，本版为**修复合集**，主题是 **Team Chat 流式保活收尾**、**Agent「沉默」契约重构** 与 **工具预算淘汰策略修正**。含 5 个 PR（#341 / #343 / #344 / #346 / #347），无新增对外功能、无破坏性变更。
