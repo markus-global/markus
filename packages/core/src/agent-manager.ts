@@ -576,8 +576,9 @@ export class AgentManager {
     const ds = this.deliverableService;
     return {
       deliverableCreate: async (opts) => {
-        // Tags are normalized to a comma-separated string in deliverable_create.
-        const tags = opts.tags?.split(',').map(t => t.trim()).filter(Boolean);
+        // `tags` 是 string[] 直通：deliverable_create 不再 join 成逗号串，这里
+        // 也就不该再 split。那段“join → split”往返正是把数组写成 `"a,b"` 的来源。
+        const tags = opts.tags;
         return ds.create({
           type: opts.type as 'file' | 'directory',
           title: opts.title,
@@ -614,7 +615,8 @@ export class AgentManager {
         }).results;
       },
       deliverableUpdate: async (id, data) => {
-        const tags = data.tags?.split(',').map(t => t.trim()).filter(Boolean);
+        // string[] 直通（同 deliverableCreate：join→split 往返已删除）
+        const tags = data.tags;
         return ds.update(id, {
           title: data.title,
           summary: data.summary,

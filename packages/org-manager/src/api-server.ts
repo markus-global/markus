@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   WorkflowEngine,
@@ -12836,6 +12836,8 @@ EXPLANATION_END`;
       if (!description) { this.json(res, 400, { error: 'Description is required' }); return; }
       if (!projectId) { this.json(res, 400, { error: 'Project is required' }); return; }
       if (!authUser?.userId) { this.json(res, 400, { error: 'Creator identity is required' }); return; }
+      const tagsCheck = checkTagsInput(body['tags']);
+      if (!tagsCheck.ok) { this.json(res, 400, { error: tagsCheck.error }); return; }
       try {
         const requirement = this.requirementService.createRequirement({
           orgId: (body['orgId'] as string) ?? 'default',
@@ -12845,7 +12847,7 @@ EXPLANATION_END`;
           projectId,
           source: 'user',
           createdBy: authUser.userId,
-          tags: body['tags'] as string[] | undefined,
+          tags: tagsCheck.tags,
         });
         this.json(res, 201, { requirement });
       } catch (e) {
@@ -12861,12 +12863,14 @@ EXPLANATION_END`;
         return;
       }
       const body = await this.readBody(req);
+      const tagsCheck = checkTagsInput(body['tags']);
+      if (!tagsCheck.ok) { this.json(res, 400, { error: tagsCheck.error }); return; }
       try {
         const requirement = this.requirementService.updateRequirement(reqId, {
           title: body['title'] as string | undefined,
           description: body['description'] as string | undefined,
           priority: body['priority'] as TaskPriority | undefined,
-          tags: body['tags'] as string[] | undefined,
+          tags: tagsCheck.tags,
           projectId: body['projectId'] as string | null | undefined,
         });
         this.json(res, 200, { requirement });

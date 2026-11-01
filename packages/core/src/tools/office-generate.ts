@@ -6,6 +6,7 @@ import PptxGenJS from 'pptxgenjs';
 import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import type { AgentToolHandler } from '../agent.js';
+import { checkTagsInput } from '@markus/shared';
 
 // pptxgenjs 的 d.ts（export as namespace + export default）在 NodeNext 下会解析成
 // 模块命名空间而非可构造类（TS2351）。用结构性构造器类型规避 import() 类型注解。
@@ -104,7 +105,7 @@ export interface OfficeDeliverableBridge {
     summary: string;
     reference?: string;
     format?: string;
-    tags?: string;
+    tags?: string[];
     projectId?: string;
   }): Promise<{ id: string; type: string; title: string; status: string }>;
 }
@@ -681,12 +682,10 @@ export function createOfficeGenerateTool(ctx: OfficeGenerateToolContext): AgentT
               || (typeof args['projectId'] === 'string' && args['projectId'])
               || ''
             ).trim() || undefined;
-            const tagsRaw = args['tags'];
-            const tags = Array.isArray(tagsRaw)
-              ? tagsRaw.map(String).map((t) => t.trim()).filter(Boolean).join(', ')
-              : typeof tagsRaw === 'string' && tagsRaw.trim()
-                ? tagsRaw
-                : `office,${result.format}`;
+            // 数组直通。以前这里把数组 join 成逗号串，再交给桥接层 split 回来——
+            // 任何一处忘了 split，字符串就进了库（就是 `"a,b"` 那种行）。
+            const tagsCheck = checkTagsInput(args['tags']);
+            const tags = tagsCheck.ok ? (tagsCheck.tags ?? ['office', result.format]) : ['office', result.format];
             const fallbackTitle = basename(result.outputPath, extname(result.outputPath)) || `office-${result.format}`;
             const dv = await ctx.deliverableCreate({
               type: 'file',

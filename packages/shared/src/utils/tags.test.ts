@@ -1,5 +1,30 @@
 import { describe, it, expect } from 'vitest';
-import { toStringArray } from './tags.js';
+import { toStringArray, checkTagsInput } from './tags.js';
+
+describe('checkTagsInput — 入口校验：拒绝错形状，并告诉调用方怎么改', () => {
+  it('accepts an array of strings (the contract) and trims it', () => {
+    expect(checkTagsInput([' a ', 'b'])).toEqual({ ok: true, tags: ['a', 'b'] });
+    expect(checkTagsInput(undefined)).toEqual({ ok: true, tags: undefined });
+    expect(checkTagsInput(null)).toEqual({ ok: true, tags: undefined });
+  });
+
+  it('rejects a comma string with the exact fix in the message', () => {
+    const result = checkTagsInput('内容运营,工作流');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('unreachable');
+    // 调用方（agent）必须能从这句话直接改对：说清期望形状、它发的是什么、没写任何东西
+    expect(result.error).toContain('expected an array of strings');
+    expect(result.error).toContain('"内容运营,工作流"');
+    expect(result.error).toContain('Nothing was written');
+    expect(result.error).toContain('["tag-a","tag-b"]');
+  });
+
+  it('rejects non-string items and objects', () => {
+    expect(checkTagsInput(['a', 42]).ok).toBe(false);
+    expect(checkTagsInput({ item: ['a'] }).ok).toBe(false);
+    expect(checkTagsInput(42).ok).toBe(false);
+  });
+});
 
 describe('toStringArray — 一个不变量，三种历史编码', () => {
   it('keeps the contract encoding untouched', () => {
