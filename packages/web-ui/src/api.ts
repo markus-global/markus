@@ -1,6 +1,7 @@
 const BASE = '/api';
 
 import { createStreamWatchdog } from './lib/streamResilience.ts';
+import { normalizeRequirement, normalizeDeliverable, normalizeTask } from './lib/entityShapes.ts';
 import type {
   PlatformListResponse,
   PlatformStatus,
@@ -1744,9 +1745,11 @@ export const api = {
       if (filters?.pageSize !== null && filters?.pageSize !== undefined) params.set('pageSize', String(filters.pageSize));
       const qs = params.toString();
       // (lean handled above)
-      return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`);
+      return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`)
+        .then(r => ({ ...r, tasks: (r.tasks ?? []).map(normalizeTask) }));
     },
-    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`),
+    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`)
+      .then(r => ({ ...r, task: normalizeTask(r.task) })),
     create: (title: string, description: string, assignedAgentId: string, reviewerId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string; maxRuns?: number; timezone?: string }, reviewerType?: 'agent' | 'human') =>
       request<{ task: TaskInfo }>('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig, reviewerType }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) =>
@@ -1765,7 +1768,13 @@ export const api = {
       const params = new URLSearchParams();
       if (filters?.projectId) params.set('projectId', filters.projectId);
       const qs = params.toString();
-      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard${qs ? `?${qs}` : ''}`);
+      return request<{ board: Record<string, TaskInfo[]>; counts: Record<string, number> }>(`/taskboard${qs ? `?${qs}` : ''}`)
+        .then(r => ({
+          ...r,
+          board: Object.fromEntries(
+            Object.entries(r.board ?? {}).map(([status, rows]) => [status, (rows ?? []).map(normalizeTask)]),
+          ),
+        }));
     },
     /**
      * Lightweight board for dashboards: active columns (+ recent `failed`) with the
@@ -1856,13 +1865,17 @@ export const api = {
       // lean: omit `description` (large) — use for lists that only need titles/counts.
       if (filters?.lean) params.set('lean', '1');
       const qs = params.toString();
-      return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`);
+      return request<{ requirements: RequirementInfo[] }>(`/requirements${qs ? `?${qs}` : ''}`)
+        .then(r => ({ ...r, requirements: (r.requirements ?? []).map(normalizeRequirement) }));
     },
-    get: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}`),
+    get: (id: string) => request<{ requirement: RequirementInfo }>(`/requirements/${id}`)
+      .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
     create: (data: { title: string; description: string; priority?: string; projectId?: string; tags?: string[] }) =>
-      request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) }),
+      request<{ requirement: RequirementInfo }>('/requirements', { method: 'POST', body: JSON.stringify(data) })
+        .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
     update: (id: string, data: { title?: string; description?: string; priority?: string; tags?: string[]; projectId?: string | null }) =>
-      request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+      request<{ requirement: RequirementInfo }>(`/requirements/${id}`, { method: 'PUT', body: JSON.stringify(data) })
+        .then(r => ({ ...r, requirement: normalizeRequirement(r.requirement) })),
     updateStatus: (id: string, status: string) =>
       request<{ requirement: RequirementInfo }>(`/requirements/${id}/status`, { method: 'POST', body: JSON.stringify({ status }) }),
     approve: (id: string) =>
@@ -2695,7 +2708,8 @@ export const api = {
       return request<{ results: DeliverableInfo[]; total: number }>(`/deliverables?${params}`);
     },
     get: (id: string) =>
-      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`),
+      request<{ deliverable: DeliverableInfo }>(`/deliverables/${id}`)
+        .then(r => ({ ...r, deliverable: normalizeDeliverable(r.deliverable) })),
     create: (data: Partial<DeliverableInfo>) =>
       request<{ deliverable: DeliverableInfo }>('/deliverables', { method: 'POST', body: JSON.stringify(data) }),
     update: (id: string, data: Partial<DeliverableInfo>) =>
