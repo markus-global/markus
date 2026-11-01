@@ -1,6 +1,6 @@
 import type { AgentToolHandler } from '../agent.js';
 import { findUnknownArgs } from './tool-args.js';
-import { createLogger, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
+import { createLogger, checkTagsInput, TASK_GET_NOTES_DEFAULT, TASK_GET_DELIVERABLES_DEFAULT, TASK_GET_STATUS_HISTORY_DEFAULT, REQUIREMENT_LIST_DEFAULT, ENTITY_COMMENTS_DEFAULT, type GoalConfig } from '@markus/shared';
 
 const log = createLogger('task-tools');
 
@@ -1337,12 +1337,14 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const tagsCheck = checkTagsInput(args['tags']);
+                if (!tagsCheck.ok) return JSON.stringify({ status: 'error', error: tagsCheck.error });
                 const req = await ctx.proposeRequirement!({
                   title: args['title'] as string,
                   description: args['description'] as string,
                   priority: args['priority'] as string | undefined,
                   projectId: args['project_id'] as string | undefined,
-                  tags: args['tags'] as string[] | undefined,
+                  tags: tagsCheck.tags,
                 });
                 log.info(`Requirement proposed by agent ${ctx.agentId}`, {
                   requirementId: req.id,
@@ -1625,7 +1627,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 if (args['title']) data.title = args['title'] as string;
                 if (args['description']) data.description = args['description'] as string;
                 if (args['priority']) data.priority = args['priority'] as string;
-                if (args['tags']) data.tags = args['tags'] as string[];
+                const tagsCheck = checkTagsInput(args['tags']);
+                if (!tagsCheck.ok) return JSON.stringify({ status: 'error', error: tagsCheck.error });
+                if (tagsCheck.tags) data.tags = tagsCheck.tags;
                 // Empty string clears the reference; a non-empty id is validated by the service.
                 if (args['project_id'] !== undefined) data.projectId = (args['project_id'] as string) || null;
                 const req = await ctx.updateRequirement!(
@@ -1690,7 +1694,9 @@ export function createAgentTaskTools(ctx: AgentTaskContext): AgentToolHandler[] 
                 if (args['title']) updates.title = args['title'] as string;
                 if (args['description']) updates.description = args['description'] as string;
                 if (args['priority']) updates.priority = args['priority'] as string;
-                if (args['tags']) updates.tags = args['tags'] as string[];
+                const tagsCheck = checkTagsInput(args['tags']);
+                if (!tagsCheck.ok) return JSON.stringify({ status: 'error', error: tagsCheck.error });
+                if (tagsCheck.tags) updates.tags = tagsCheck.tags;
                 const hasUpdates = Object.keys(updates).length > 0;
                 const req = await ctx.resubmitRequirement!(
                   args['requirement_id'] as string,

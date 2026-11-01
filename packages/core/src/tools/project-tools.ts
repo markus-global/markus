@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { checkTagsInput } from '@markus/shared';
 
 export interface DeliverableServiceBridge {
   create(opts: {
@@ -105,7 +106,7 @@ export interface ProjectToolsContext {
     summary: string;
     reference?: string;
     format?: string;
-    tags?: string;
+    tags?: string[];
     projectId?: string;
     source?: 'agent' | 'knowledge';
     knowledgeRoot?: string;
@@ -132,7 +133,7 @@ export interface ProjectToolsContext {
     summary?: string;
     reference?: string;
     status?: string;
-    tags?: string;
+    tags?: string[];
   }) => Promise<{ id: string; status: string } | undefined>;
   /** Read a knowledge-base document's text content (by file path/reference).
    *  projectId is forwarded when the caller scopes the read to a project; the
@@ -510,10 +511,13 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   || (typeof args['projectId'] === 'string' && args['projectId'])
                   || ''
                 ).trim() || undefined;
-                const tagsRaw = args['tags'];
-                const tags = Array.isArray(tagsRaw)
-                  ? tagsRaw.map(String).map(t => t.trim()).filter(Boolean).join(', ')
-                  : (typeof tagsRaw === 'string' ? tagsRaw : undefined);
+                // `tags` 全程是 string[]。这里以前先把数组 join 成逗号串，再由
+                // agent-manager 用 split(',') 拆回数组——一次毫无意义的往返；
+                // 而同一套“逗号串”约定写到需求上时没人拆，于是库里落了
+                // `"a,b"`（JSON 字符串，不是数组）。
+                const tagsCheck = checkTagsInput(args['tags']);
+                if (!tagsCheck.ok) return JSON.stringify({ status: 'error', error: tagsCheck.error });
+                const tags = tagsCheck.tags;
                 const result = await ctx.deliverableCreate!({
                   type,
                   title,
@@ -674,12 +678,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   enum: ['active', 'verified', 'outdated'],
                   description: 'New status (optional)',
                 },
-                tags: { type: 'string', description: 'New comma-separated tags (optional)' },
+                tags: { type: 'array', items: { type: 'string' }, description: 'Tags for this deliverable (optional)' },
               },
               required: ['id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
               try {
+                const tagsCheck = checkTagsInput(args['tags']);
+                if (!tagsCheck.ok) return JSON.stringify({ status: 'error', error: tagsCheck.error });
                 const result = await ctx.deliverableUpdate!(
                   (args['id'] ?? args['deliverable_id']) as string,
                   {
@@ -687,7 +693,7 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     summary: args['summary'] as string | undefined,
                     reference: args['reference'] as string | undefined,
                     status: args['status'] as string | undefined,
-                    tags: args['tags'] as string | undefined,
+                    tags: tagsCheck.tags,
                   }
                 );
                 if (!result) return JSON.stringify({ status: 'error', error: 'Deliverable not found' });
