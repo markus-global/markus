@@ -9,7 +9,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
@@ -70,6 +70,31 @@ function fromJson<T = unknown>(v: string | null): T {
   // 收口在唯一的解析入口，所以没有任何读路径需要知道"外置"这件事存在。
   return JSON.parse(resolveJson(v)) as T;
 }
+/**
+ * Read a column whose contract is "a JSON-encoded string array".
+ *
+ * `fromJson<string[]>` is a cast, not a check: it returns whatever the payload
+ * is. A row written by a sloppier writer (a quoted comma string, an object
+ * wrapper) therefore left this layer as a `string`, and the first consumer that
+ * called `.join()` on it threw during render — one bad tag row = blank page.
+ * `toStringArray` decides the shape here, once, so every caller downstream can
+ * keep assuming `string[]`.
+ */
+function arrayFromJson(v: string | null): string[] {
+  if (!v) return [];
+  try {
+    return toStringArray(fromJson<unknown>(v));
+  } catch {
+    // Not JSON at all (hand-edited legacy row) — read it as the list it looks like.
+    return toStringArray(v);
+  }
+}
+
+/** Write a column whose contract is "a JSON-encoded string array" — see arrayFromJson. */
+function arrayToJson(v: unknown): string {
+  return JSON.stringify(toStringArray(v));
+}
+
 function toDate(v: string | null): Date | null {
   return v ? new Date(v) : null;
 }
@@ -1328,7 +1353,7 @@ export class SqliteAgentRepo {
         data.roleId,
         data.roleName,
         data.agentRole ?? 'worker',
-        toJson(data.skills ?? []),
+        arrayToJson(data.skills),
         toJson(data.llmConfig ?? {}),
         toJson(data.computeConfig ?? {}),
         data.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
@@ -1398,7 +1423,7 @@ export class SqliteAgentRepo {
     const vals: SqlParams = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
     if (data.agentRole !== undefined) { sets.push('agent_role = ?'); vals.push(data.agentRole); }
-    if (data.skills !== undefined) { sets.push('skills = ?'); vals.push(toJson(data.skills)); }
+    if (data.skills !== undefined) { sets.push('skills = ?'); vals.push(arrayToJson(data.skills)); }
     if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
     if (data.computeConfig !== undefined) { sets.push('compute_config = ?'); vals.push(toJson(data.computeConfig)); }
     if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
@@ -1417,7 +1442,7 @@ export class SqliteAgentRepo {
       roleName: r['role_name'],
       agentRole: r['agent_role'],
       status: r['status'],
-      skills: fromJson(r['skills'] as string),
+      skills: arrayFromJson(r['skills'] as string),
       llmConfig: fromJson(r['llm_config'] as string),
       computeConfig: fromJson(r['compute_config'] as string),
       channels: fromJson(r['channels'] as string),
@@ -1748,7 +1773,7 @@ export class SqliteTaskRepo {
       executionRound: r['execution_round'] ?? 1,
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
-      blockedBy: fromJson<string[]>(r['blocked_by'] as string) ?? [],
+      blockedBy: arrayFromJson(r['blocked_by'] as string),
       workflowRunId: (r['workflow_run_id'] as string | null) ?? undefined,
       workflowStepId: (r['workflow_step_id'] as string | null) ?? undefined,
       result: fromJson(r['result'] as string),
@@ -1806,7 +1831,7 @@ export class SqliteRequirementRepo {
         data.approvedAt?.toISOString() ?? null,
         null,
         null,
-        toJson(data.tags ?? []),
+        arrayToJson(data.tags),
         ts,
         ts
       );
@@ -1853,7 +1878,7 @@ export class SqliteRequirementRepo {
     if (data.title !== undefined) { sets.push('title = ?'); vals.push(data.title); }
     if (data.description !== undefined) { sets.push('description = ?'); vals.push(data.description); }
     if (data.priority !== undefined) { sets.push('priority = ?'); vals.push(data.priority); }
-    if (data.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(data.tags)); }
+    if (data.tags !== undefined) { sets.push('tags = ?'); vals.push(arrayToJson(data.tags)); }
     if (data.projectId !== undefined) { sets.push('project_id = ?'); vals.push(data.projectId); }
     if (sets.length === 0) return;
     sets.push('updated_at = ?');
@@ -1904,7 +1929,7 @@ export class SqliteRequirementRepo {
       approvedAt: toDate(r['approved_at'] as string),
       rejectedReason: r['rejected_reason'] as string | null,
       rejectedBy: r['rejected_by'] as string | null,
-      tags: fromJson<string[]>(r['tags'] as string),
+      tags: arrayFromJson(r['tags'] as string),
       goalConfig: gc ? {
         loopEnabled: gc['loopEnabled'] === true,
         completionCriteria: (gc['completionCriteria'] as string) ?? '',
@@ -2007,12 +2032,12 @@ export class SqliteProjectRepo {
       description: r['description'] as string | null,
       status: r['status'] as string,
       repositories: fromJson<unknown[]>(r['repositories'] as string) ?? [],
-      teamIds: fromJson<string[]>(r['team_ids'] as string) ?? [],
+      teamIds: arrayFromJson(r['team_ids'] as string),
       governancePolicy: fromJson(r['governance_policy'] as string),
       archivePolicy: fromJson(r['archive_policy'] as string),
       reportSchedule: fromJson(r['report_schedule'] as string),
       onboardingConfig: fromJson(r['onboarding_config'] as string),
-      knowledgeBasePaths: fromJson<string[]>(r['knowledge_base_paths'] as string) ?? [],
+      knowledgeBasePaths: arrayFromJson(r['knowledge_base_paths'] as string),
       createdBy: r['created_by'] as string | null,
       createdAt: r['created_at'] as string,
       updatedAt: r['updated_at'] as string,
@@ -2292,7 +2317,7 @@ export class SqliteTaskCommentRepo {
       authorType: r['author_type'] as string,
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
-      mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      mentions: arrayFromJson(r['mentions'] as string),
       activityId: r['activity_id'] as string | undefined,
       replyToId: (r['reply_to_id'] as string) ?? undefined,
       replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
@@ -2359,7 +2384,7 @@ export class SqliteRequirementCommentRepo {
       authorType: r['author_type'] as string,
       content: r['content'] as string,
       attachments: fromJson(r['attachments'] as string),
-      mentions: (fromJson(r['mentions'] as string) ?? []) as string[],
+      mentions: arrayFromJson(r['mentions'] as string),
       activityId: r['activity_id'] as string | undefined,
       replyToId: (r['reply_to_id'] as string) ?? undefined,
       replyToAuthor: (r['reply_to_author'] as string) ?? undefined,
@@ -3143,7 +3168,7 @@ export class SqliteChannelMessageRepo {
       senderType: r['sender_type'],
       senderName: r['sender_name'],
       text: r['text'],
-      mentions: fromJson<string[]>(r['mentions'] as string),
+      mentions: arrayFromJson(r['mentions'] as string),
       metadata: expandImageRefs(fromJson<Record<string, unknown>>(r['metadata'] as string)),
       replyToId: (r['reply_to_id'] as string) ?? undefined,
       replyToSender: (r['reply_to_sender'] as string) ?? undefined,
@@ -3571,9 +3596,9 @@ export class SqliteMarketplaceTemplateRepo {
         data.authorName,
         data.roleId,
         data.agentRole ?? 'worker',
-        toJson(data.skills ?? []),
+        arrayToJson(data.skills),
         data.llmProvider ?? null,
-        toJson(data.tags ?? []),
+        arrayToJson(data.tags),
         data.category,
         data.icon ?? null,
         data.heartbeatIntervalMs ?? null,
@@ -3687,11 +3712,11 @@ export class SqliteMarketplaceTemplateRepo {
     }
     if (data.skills !== undefined) {
       sets.push('skills = ?');
-      vals.push(toJson(data.skills));
+      vals.push(arrayToJson(data.skills));
     }
     if (data.tags !== undefined) {
       sets.push('tags = ?');
-      vals.push(toJson(data.tags));
+      vals.push(arrayToJson(data.tags));
     }
     if (data.category !== undefined) {
       sets.push('category = ?');
@@ -3739,9 +3764,9 @@ export class SqliteMarketplaceTemplateRepo {
       authorName: r['author_name'],
       roleId: r['role_id'],
       agentRole: r['agent_role'],
-      skills: fromJson<string[]>(r['skills'] as string),
+      skills: arrayFromJson(r['skills'] as string),
       llmProvider: r['llm_provider'],
-      tags: fromJson<string[]>(r['tags'] as string),
+      tags: arrayFromJson(r['tags'] as string),
       category: r['category'],
       icon: r['icon'],
       heartbeatIntervalMs: r['heartbeat_interval_ms'],
@@ -3794,7 +3819,7 @@ export class SqliteMarketplaceSkillRepo {
         data.authorId ?? null,
         data.authorName,
         data.category,
-        toJson(data.tags ?? []),
+        arrayToJson(data.tags),
         toJson(data.tools ?? []),
         data.readme ?? null,
         toJson(data.requiredPermissions ?? []),
@@ -3894,11 +3919,11 @@ export class SqliteMarketplaceSkillRepo {
       authorId: r['author_id'],
       authorName: r['author_name'],
       category: r['category'],
-      tags: fromJson<string[]>(r['tags'] as string),
+      tags: arrayFromJson(r['tags'] as string),
       tools: fromJson(r['tools'] as string),
       readme: r['readme'],
-      requiredPermissions: fromJson<string[]>(r['required_permissions'] as string),
-      requiredEnv: fromJson<string[]>(r['required_env'] as string),
+      requiredPermissions: arrayFromJson(r['required_permissions'] as string),
+      requiredEnv: arrayFromJson(r['required_env'] as string),
       config: fromJson(r['config'] as string),
       downloadCount: r['download_count'],
       avgRating: r['avg_rating'],
@@ -4050,7 +4075,7 @@ export class SqliteAgentKnowledgeRepo {
         data.category,
         data.title,
         data.content,
-        toJson(data.tags ?? []),
+        arrayToJson(data.tags),
         data.source ?? 'agent',
         toJson(data.metadata ?? {}),
         data.importance ?? 50,
@@ -4137,7 +4162,7 @@ export class SqliteAgentKnowledgeRepo {
     }
     if (data.tags !== undefined) {
       sets.push('tags = ?');
-      vals.push(toJson(data.tags));
+      vals.push(arrayToJson(data.tags));
     }
     if (data.importance !== undefined) {
       sets.push('importance = ?');
@@ -4177,7 +4202,7 @@ export class SqliteAgentKnowledgeRepo {
       category: r['category'],
       title: r['title'],
       content: r['content'],
-      tags: fromJson<string[]>(r['tags'] as string),
+      tags: arrayFromJson(r['tags'] as string),
       source: r['source'],
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
       importance: r['importance'],
@@ -4256,7 +4281,7 @@ export class SqliteExternalAgentRepo {
       externalAgentId: r['external_agent_id'] as string,
       agentName: r['agent_name'] as string,
       orgId: r['org_id'] as string,
-      capabilities: fromJson<string[]>(r['capabilities'] as string) ?? [],
+      capabilities: arrayFromJson(r['capabilities'] as string),
       platform: r['platform'] as string | undefined,
       platformConfig: r['platform_config'] as string | undefined,
       agentCardUrl: r['agent_card_url'] as string | undefined,
@@ -4297,7 +4322,7 @@ export class SqliteDeliverableRepo {
     `).run(
       data.id, data.type, data.title ?? '', data.summary ?? '', data.reference ?? '',
       data.format ?? null,
-      toJson(data.tags ?? []), data.status ?? 'active',
+      arrayToJson(data.tags), data.status ?? 'active',
       data.source ?? 'agent', data.knowledgeRoot ?? null, data.content ?? null,
       data.taskId ?? null, data.agentId ?? null, data.projectId ?? null,
       data.requirementId ?? null,
@@ -4343,7 +4368,7 @@ export class SqliteDeliverableRepo {
     if (patch.title !== undefined) { sets.push('title = ?'); vals.push(patch.title as SQLInputValue); }
     if (patch.summary !== undefined) { sets.push('summary = ?'); vals.push(patch.summary as SQLInputValue); }
     if (patch.status !== undefined) { sets.push('status = ?'); vals.push(patch.status as SQLInputValue); }
-    if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(toJson(patch.tags)); }
+    if (patch.tags !== undefined) { sets.push('tags = ?'); vals.push(arrayToJson(patch.tags)); }
     if (patch.reference !== undefined) { sets.push('reference = ?'); vals.push(patch.reference as SQLInputValue); }
     if (patch.format !== undefined) { sets.push('format = ?'); vals.push(patch.format as SQLInputValue); }
     if (patch.source !== undefined) { sets.push('source = ?'); vals.push(patch.source as SQLInputValue); }
@@ -4401,7 +4426,7 @@ export class SqliteDeliverableRepo {
       summary: r['summary'] as string,
       reference: r['reference'] as string,
       format: (r['format'] as string) ?? null,
-      tags: fromJson<string[]>(r['tags'] as string) ?? [],
+      tags: arrayFromJson(r['tags'] as string) ?? [],
       status: r['status'] as string,
       source: (r['source'] as string) ?? 'agent',
       knowledgeRoot: (r['knowledge_root'] as string) ?? null,
@@ -5538,7 +5563,7 @@ export class SqliteApprovalRepo {
       selectedOption: r['selected_option'] as string | undefined,
       questions: fromJson<UserInputQuestion[]>(r['questions'] as string) ?? undefined,
       answers: fromJson<UserInputAnswer[]>(r['answers'] as string) ?? undefined,
-      approverUserIds: fromJson<string[]>(r['approver_user_ids'] as string) ?? undefined,
+      approverUserIds: arrayFromJson(r['approver_user_ids'] as string),
       targetUserId: (r['target_user_id'] as string) ?? undefined,
       appliedAt: (r['applied_at'] as string) ?? undefined,
       appliedIntent: (r['applied_intent'] as string) ?? undefined,

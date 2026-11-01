@@ -31,6 +31,7 @@ export * from './utils/logger.js';
 export * from './utils/crash.js';
 export * from './utils/id.js';
 export * from './utils/text.js';
+export * from './utils/tags.js';
 export * from './utils/literal-replace.js';
 export * from './utils/platform.js';
 export * from './utils/keyword-search.js';

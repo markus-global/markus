@@ -17,6 +17,7 @@
  */
 
 import type { DatabaseSync } from 'node:sqlite';
+import { toStringArray } from '@markus/shared';
 import { isDataUrl, isAttachmentRef, type AttachmentStore, type AttachmentRef } from './attachments-store.js';
 import { projectJsonForStorage, isBlobRef, type BlobStore } from './blob-store.js';
 
@@ -255,10 +256,96 @@ export const migrateWorkflowTaskIdentity: Migration = {
   },
 };
 
+/**
+ * 迁移 4：把「本来是 JSON 字符串数组」的列改写成唯一编码。
+ *
+ * 为什么
+ * ──────
+ * 这些列的契约是 JSON 数组（`TEXT DEFAULT '[]'`），但历史上的写入方没有校验：
+ * 线上库里同时存在 `["a","b"]`（契约）、`"a,b"`（把逗号串再 stringify 了一次）、
+ * `{"item":["a","b"]}`（包了一层对象）。读路径已经在
+ * `arrayFromJson` 收口成一种形状，但**库里的编码仍要修**，因为还有直接读列的地方：
+ * `agent_knowledge.searchByTags` 用 `tags LIKE '%"tag"%'` 做检索，非数组编码的行
+ * 在那条 SQL 下是隐形的——读路径归一化救不了它。
+ *
+ * 安全规则
+ * ────────
+ * 只改写「能确定原意」的行：
+ *   • 已是规范编码 → 跳过（幂等，第二遍是 no-op）；
+ *   • 能解析出至少一个标签，或原值本来就是空/`[]` → 写入规范编码；
+ *   • 解析结果为空但原值有内容（我们读不懂它）→ **不动**，并记进 errors 让它可见。
+ * 宁可留一行脏数据被看见，也不静默抹掉用户的标签。
+ */
+const STRING_ARRAY_COLUMNS: ReadonlyArray<readonly [table: string, column: string]> = [
+  ['requirements', 'tags'],
+  ['deliverables', 'tags'],
+  ['agent_knowledge', 'tags'],
+  ['marketplace_templates', 'tags'],
+  ['marketplace_templates', 'skills'],
+  ['marketplace_skills', 'tags'],
+  ['marketplace_skills', 'required_permissions'],
+  ['marketplace_skills', 'required_env'],
+  ['agents', 'skills'],
+  ['tasks', 'blocked_by'],
+  ['projects', 'team_ids'],
+  ['projects', 'knowledge_base_paths'],
+  ['channel_messages', 'mentions'],
+  ['task_comments', 'mentions'],
+  ['requirement_comments', 'mentions'],
+  ['external_agent_registrations', 'capabilities'],
+  ['approvals', 'approver_user_ids'],
+];
+
+export const normalizeStringArrayColumns: Migration = {
+  id: '004-string-array-columns',
+  title: '标签类列统一为 JSON 字符串数组（修复 "a,b" / {"item":[…]} 等历史编码）',
+  run({ db, cursor, batchSize }) {
+    const errors: string[] = [];
+    let processed = 0;
+    let { tableIdx, rowid } = decodeCursor(cursor);
+
+    while (tableIdx < STRING_ARRAY_COLUMNS.length) {
+      const [table, column] = STRING_ARRAY_COLUMNS[tableIdx]!;
+      const exists = db
+        .prepare("SELECT 1 AS one FROM sqlite_master WHERE type='table' AND name = ?")
+        .get(table);
+      if (!exists) { tableIdx += 1; rowid = 0; continue; }
+
+      const rows = db
+        .prepare(`SELECT rowid AS rid, "${column}" AS raw FROM "${table}" WHERE rowid > ? ORDER BY rowid ASC LIMIT ?`)
+        .all(rowid, batchSize) as Array<{ rid: number; raw: string | null }>;
+      if (rows.length === 0) { tableIdx += 1; rowid = 0; continue; }
+
+      const update = db.prepare(`UPDATE "${table}" SET "${column}" = ? WHERE rowid = ?`);
+      for (const row of rows) {
+        rowid = row.rid;
+        processed += 1;
+        try {
+          const canonical = JSON.stringify(toStringArray(row.raw));
+          if (row.raw === canonical) continue;
+
+          const looksEmpty = row.raw === null || row.raw.trim() === '' || row.raw.trim() === '[]';
+          if (canonical === '[]' && !looksEmpty) {
+            errors.push(`${table}.${column} rowid ${row.rid}: unreadable value, left untouched`);
+            continue;
+          }
+          update.run(canonical, row.rid);
+        } catch (err) {
+          errors.push(`${table}.${column} rowid ${row.rid}: ${String(err)}`);
+        }
+      }
+      return { processed, nextCursor: encodeCursor(tableIdx, rowid), done: false, errors };
+    }
+
+    return { processed, nextCursor: encodeCursor(tableIdx, rowid), done: true, errors };
+  },
+};
+
 export const DEFAULT_MIGRATIONS: Migration[] = [
   migrateImagesToAttachments,
   migrateLargePayloadsToBlobs,
   migrateWorkflowTaskIdentity,
+  normalizeStringArrayColumns,
 ];
 
 // ─── 执行器 ─────────────────────────────────────────────────────────────────
