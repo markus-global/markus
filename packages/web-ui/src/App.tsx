@@ -13,6 +13,7 @@ const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.W
 const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
 const NotificationsPage = lazy(() => import('./pages/Notifications.tsx').then(m => ({ default: m.NotificationsPage })));
 const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
+import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
 import { MobileBuilderTabs } from './components/MobileBuilderTabs.tsx';
@@ -94,6 +95,35 @@ function PageFallback({ docScroll }: { docScroll?: boolean } = {}) {
   );
 }
 
+/**
+ * What a page shows when its render threw.
+ *
+ * The alternative is a blank window: React unmounts the whole tree when no
+ * boundary catches the error, so the user loses the nav, the error text and any
+ * hint of what happened. This keeps the shell alive and puts the failure where
+ * the user was working, with the one action that can help (retry) plus the
+ * message an engineer needs to fix it.
+ */
+function PageError({ error, onRetry, docScroll }: { error: Error; onRetry: () => void; docScroll?: boolean }) {
+  const { t } = useTranslation('common');
+  return (
+    <div className={`flex-1 flex items-center justify-center p-8 ${docScroll ? 'min-h-[50dvh]' : ''}`}>
+      <div className="max-w-md w-full text-center space-y-3">
+        <h3 className="text-sm font-medium text-fg-primary">{t('pageErrorTitle')}</h3>
+        <p className="text-xs text-fg-tertiary leading-relaxed">{t('pageErrorHint')}</p>
+        <pre className="text-[11px] text-left whitespace-pre-wrap break-words bg-surface-elevated rounded-lg p-3 text-fg-secondary max-h-40 overflow-auto">{error.message}</pre>
+        <button
+          type="button"
+          onClick={onRetry}
+          className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium"
+        >
+          {t('pageErrorRetry')}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 const PageSlot = memo(function PageSlot({
   id, activePage, docScroll, children,
 }: {
@@ -126,7 +156,25 @@ const PageSlot = memo(function PageSlot({
       style={active ? undefined : HIDDEN_STYLE}
     >
       <Suspense fallback={<PageFallback docScroll={docScroll} />}>
-        {children}
+        {/*
+         * A page that throws during render must not take the whole app down.
+         * Without a boundary React unmounts the entire tree and the user sees a
+         * white window with no error — the exact shape of the 2026-11-01 bug,
+         * where one bad `requirements.tags` row (a string, not an array) made
+         * `(req.tags ?? []).join()` throw inside WorkPage and the whole UI
+         * vanished. The read boundary now normalises that data; this keeps any
+         * *future* render bug visible and survivable instead of silent and
+         * total. `resetKeys` retries on page switch, so a transient error does
+         * not stick until a full reload.
+         */}
+        <ErrorBoundary
+          resetKeys={[id, active]}
+          fallback={(error, reset) => (
+            <PageError error={error} onRetry={reset} docScroll={docScroll} />
+          )}
+        >
+          {children}
+        </ErrorBoundary>
       </Suspense>
     </div>
   );

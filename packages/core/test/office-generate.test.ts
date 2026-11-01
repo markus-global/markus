@@ -348,7 +348,7 @@ describe('office_generate 工具层（createOfficeGenerateTool）', () => {
       content: { sheets: [{ name: 'S', headers: ['a'], rows: [[1]] }] },
     }));
     expect(res.status).toBe('success');
-    expect(ctx.deliverableCreate).toHaveBeenCalledWith(expect.objectContaining({ tags: 'office,xlsx' }));
+    expect(ctx.deliverableCreate).toHaveBeenCalledWith(expect.objectContaining({ tags: ['office', 'xlsx'] }));
   });
 
   it('错误路径：缺 format / 缺 output_path', async () => {
