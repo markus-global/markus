@@ -458,8 +458,9 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                   description: 'Content format of the deliverable file: markdown, html, text, json, csv, etc. Auto-detected from file extension if omitted.',
                 },
                 tags: {
-                  type: 'string',
-                  description: 'Comma-separated tags for discoverability (array of strings is also accepted).',
+                  type: 'array',
+                  items: { type: 'string' },
+                  description: 'Tags for discoverability (optional)',
                 },
                 source: {
                   type: 'string',

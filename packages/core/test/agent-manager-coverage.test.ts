@@ -180,7 +180,7 @@ describe('AgentManager task and deliverable tool execution', () => {
       title: 'Monthly Report',
       summary: 'Q1 metrics summary',
       reference: '/tmp/report.md',
-      tags: 'metrics, q1',
+      tags: ['metrics', 'q1'],
     });
     expect(JSON.parse(createRaw).status).toBe('success');
     expect(deliverableService.create).toHaveBeenCalled();
@@ -197,7 +197,7 @@ describe('AgentManager task and deliverable tool execution', () => {
 
     const updateRaw = await agent.getTools().get('deliverable_update')!.execute('del_1', {
       title: 'Updated Report',
-      tags: 'metrics, updated',
+      tags: ['metrics', 'updated'],
     });
     expect(JSON.parse(updateRaw).status).toBe('success');
     expect(deliverableService.update).toHaveBeenCalled();
