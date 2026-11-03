@@ -440,7 +440,10 @@ describe('/api/threads/one — 只给 ref 的单流读取', () => {
     expect(res.body.thread.id).toBe('tsk_one1');
     expect(res.body.thread.title).toBe('修登录超时');
     expect(res.body.thread.taskStatus).toBe('in_progress');
-    expect(res.body.thread.stage).toBe('working');
+    // ThreadStage 自 A3 起值域命名空间化（idle→none:idle、working→agent:working），
+    // 目的是让「流在等谁」与「agent 回合在干什么」在编译期互斥、不再同字面撞车。
+    // 本行原写 'working' 是 A3 合并前留下的旧字面量。
+    expect(res.body.thread.stage).toBe('agent:working');
     expect(res.body.thread.ownerAgent).toBe('agt_test');
   });
 
@@ -474,7 +477,8 @@ describe('/api/threads/one — 只给 ref 的单流读取', () => {
     expect(res.status).toBe(200);
     expect(res.body.thread.ref).toBe('agent:agt_ghost');
     expect(res.body.thread.title).toBeNull();
-    expect(res.body.thread.stage).toBe('idle');
+    // 同上：A3 起 idle 在流这一层写作 none:idle（与 agent 回合的 AttentionState 互斥）。
+    expect(res.body.thread.stage).toBe('none:idle');
   });
 });
 
