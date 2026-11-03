@@ -2844,7 +2844,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
           所以必须能在这里**就地**看到经过，不跳页。
           左边：它经手的事（从邮箱条目派生，内部机械已排除）。
-          右边：选中那件事的时间线（thread_events，只追加的历史事实）。 */}
+          右边：选中那件事的时间线（历史事实，从 triggers 派生）。 */}
       <section>
         <div className="mb-2 flex flex-wrap items-center gap-2">
           <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>

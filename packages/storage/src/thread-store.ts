@@ -683,75 +683,26 @@ export class SqliteTriggerRepo {
       this.db.prepare(`SELECT * FROM triggers ORDER BY received_at DESC LIMIT ?`).all(limit) as RawTrigger[]
     ).map(toTrigger);
   }
-}
 
-/**
- * 流事件时间线 —— **只追加，永不修改**。
- *
- * 为什么只在仓储层提供 insert / list：
- * 「发生了什么」是历史事实，不是当前状态。状态可以被覆盖（任务从 pending 变 review），
- * 但「三点十二分有人评论了」不能。一旦允许 UPDATE，时间线就不再是证据，
- * 只是「最后写者说了什么」。
- *
- * 所以「不可改」不是靠约定，是靠**这里没有那个方法**——想绕过就得先给仓储加方法，
- * 那是一次显眼的改动，而不是一行不容易被看到的 UPDATE。
- */
-export class SqliteThreadEventRepo {
-  constructor(private db: DatabaseSync) {}
-
-  append(e: {
-    id?: string;
-    threadId: string;
-    kind: string;
-    actor?: string;
-    summary: string;
-    payload?: Record<string, unknown>;
-    createdAt?: number;
-  }): string {
-    const id = e.id ?? `evt_${randomId()}`;
-    this.db
-      .prepare(
-        `INSERT INTO thread_events (id, thread_id, kind, actor, summary, payload, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(
-        id,
-        e.threadId,
-        e.kind,
-        e.actor ?? null,
-        e.summary,
-        e.payload ? JSON.stringify(e.payload) : null,
-        e.createdAt ?? Date.now(),
-      );
-    return id;
-  }
-
-  /** 时间线倒序：最新在先（页面从上往下读就是「刚刚发生了什么」）。 */
-  listByThread(threadId: string, limit = 100): Array<{
-    id: string;
-    threadId: string;
-    kind: string;
-    actor?: string;
-    summary: string;
-    payload: Record<string, unknown>;
-    createdAt: number;
-  }> {
-    const rows = this.db
-      .prepare(`SELECT * FROM thread_events WHERE thread_id = ? ORDER BY created_at DESC LIMIT ?`)
-      .all(threadId, limit) as Array<Record<string, any>>;
-    return rows.map(r => ({
-      id: String(r.id),
-      threadId: String(r.thread_id),
-      kind: String(r.kind),
-      actor: r.actor ? String(r.actor) : undefined,
-      summary: String(r.summary),
-      payload: parseJson(r.payload as string | null),
-      createdAt: Number(r.created_at),
-    }));
-  }
-
-  count(): number {
-    const row = this.db.prepare(`SELECT COUNT(*) AS n FROM thread_events`).get() as { n: number } | undefined;
-    return Number(row?.n ?? 0);
+  /**
+   * 时间线：某条流上「发生过什么」—— **从 `triggers` 派生，不落表**。
+   *
+   * 为什么没有 `thread_events` 表（2026-11-03 定案，见 workspace/CONCEPT-CLARITY-*.md §8）：
+   * 它会存 `summary`/`body` 的副本 —— 那是同一内容的第二个写者，注定与 triggers 不一致。
+   * 「发生在什么时刻」本来就是查询，物化成表就必须有人负责同步；没人负责，它就是第二写者。
+   *
+   * `thread_refs` 没建索引：当前量级（本地库万行内）全扫可接受。上到十万级再加，不预先猜。
+   */
+  listByThreadRef(ref: string, limit = 100): TriggerRow[] {
+    return (
+      this.db
+        .prepare(
+          `SELECT t.* FROM triggers t, json_each(t.thread_refs) j
+            WHERE j.value = ?
+            ORDER BY t.received_at DESC, t.id DESC
+            LIMIT ?`,
+        )
+        .all(ref, limit) as RawTrigger[]
+    ).map(toTrigger);
   }
 }

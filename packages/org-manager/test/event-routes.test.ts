@@ -19,7 +19,6 @@ import {
   SqliteEventSourceRepo,
   SqliteTaskRepo,
   SqliteApprovalRepo,
-  SqliteThreadEventRepo,
   SqliteTriggerRepo,
 } from '@markus/storage';
 import { handleEventRoutes } from '../src/event-routes.js';
@@ -31,7 +30,6 @@ let repos: {
   dispositionRepo: SqliteDispositionRepo;
   resourceBindingRepo: SqliteResourceBindingRepo;
   eventSourceRepo: SqliteEventSourceRepo;
-  threadEventRepo?: SqliteThreadEventRepo;
   taskRepo?: SqliteTaskRepo;
   approvalRepo?: SqliteApprovalRepo;
 };
@@ -44,9 +42,7 @@ beforeEach(() => {
     dispositionRepo: new SqliteDispositionRepo(db),
     resourceBindingRepo: new SqliteResourceBindingRepo(db),
     eventSourceRepo: new SqliteEventSourceRepo(db),
-    // 与 storage-bridge 的真实装配保持一致：生产有这条仓库，测试就必须也有，
-    // 否则 `/events` 恒返回 [] ——测出来的「绿」是假绿。
-    threadEventRepo: new SqliteThreadEventRepo(db),
+    // 时间线不再是独立表：它从 triggerRepo 派生（见 CONCEPT-CLARITY §8）。
     // 触发器登记：`IngressDeps.triggers` 是必填（见 event-ingress.ts 的说明），
     // 夹具缺它 → 运行时 `insertOrGet` 空指针，事件根本无法入链。
     triggerRepo: new SqliteTriggerRepo(db),
@@ -405,22 +401,36 @@ describe('/api/threads — 存量视角（threads 表为空）', () => {
  */
 describe('/api/threads/:key/events — 身份解析（id 或 ref 等价）', () => {
   it('按 ref 查能取到事件（这是 Thread 视图的真实调用形态）', async () => {
-    const thread = (repos.threadRepo.upsert('tsk_evt1') as any).thread;
-    new SqliteThreadEventRepo(db).append({
-      threadId: thread.id,
+    (repos.threadRepo.upsert('tsk_evt1') as any).thread;
+    new SqliteTriggerRepo(db).insertOrGet({
       kind: 'comment',
+      idempotencyKey: 'evt:tsk_evt1:1',
       summary: '有人在任务上评论了',
+      threadRefs: ['tsk_evt1'],
     });
 
     const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads/tsk_evt1/events' }), '/api/threads/tsk_evt1/events');
     expect(res.status).toBe(200);
     expect(res.body.events).toHaveLength(1);
     expect(res.body.events[0].summary).toContain('评论');
+    // 对外形状是前端 `ThreadEventAPI`，不是仓储的 TriggerRow：
+    // 时间线换数据源（表 → 派生）时，这条断言是前端的保险。
+    expect(res.body.events[0]).toMatchObject({
+      kind: 'comment',
+      threadId: 'tsk_evt1',
+      summary: '有人在任务上评论了',
+    });
+    expect(typeof res.body.events[0].createdAt).toBe('number');
   });
 
   it('按内部 id 查同样取得到（两种身份等价，不能只认一种）', async () => {
     const thread = (repos.threadRepo.upsert('tsk_evt2') as any).thread;
-    new SqliteThreadEventRepo(db).append({ threadId: thread.id, kind: 'chat', summary: '聊了两句' });
+    new SqliteTriggerRepo(db).insertOrGet({
+      kind: 'chat',
+      idempotencyKey: 'evt:tsk_evt2:1',
+      summary: '聊了两句',
+      threadRefs: ['tsk_evt2'],
+    });
 
     const { res } = await call(
       fakeReq({ method: 'GET', url: `/api/threads/${thread.id}/events` }),

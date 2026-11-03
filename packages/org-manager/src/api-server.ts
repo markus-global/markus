@@ -2884,12 +2884,6 @@ export class APIServer {
             eventSourceRepo: this.storage.eventSourceRepo,
             // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
             triggerRepo: this.storage.triggerRepo,
-            // 事件时间线（S6）：**漏传这一个的后果是「页面空白且不报错」**。
-            // 读取端 `const repo = deps.repos.threadEventRepo` 拿到 undefined 就直接
-            // 回 `{ events: [] }`（那是有意的：空白与端点不存在要能区分）——
-            // 于是 41 条事件在库、接口恒空、UI 一片空白，全部静默。
-            // 之所以容易漏：EventRouteDeps 里它是 `optional`，漏传不报类型错。
-            threadEventRepo: this.storage.threadEventRepo,
             taskRepo: this.storage.taskRepo,
             approvalRepo: this.storage.approvalRepo,
           },

@@ -29,23 +29,14 @@ export interface EventRouteDeps {
     /** 可选：用于判定「等你批准」。缺失时 pendingApproval 会列进 missingFacts。 */
     approvalRepo?: any;
     /**
-     * 流时间线（S6）。
+     * 触发器登记（`triggers` 表的唯一写入者），同时也是**时间线的唯一数据源**。
      *
-     * **刻意不是 optional**：它曾经是 `threadEventRepo?: any`，于是
-     * `api-server` 漏传这一个不会有任何类型错误 —— 结果 41 条事件在库、
-     * `/api/threads/:id/events` 恒返回 `[]`、Thread 视图一片空白，
-     * 全程静默（2026-11-02 浏览器实测抓到）。
+     * **必填**：它此前根本没被接进来，于是仓储实现了、导出了，生产却零使用 ——
+     * `triggers` 永远 0 行，A4.2/A4.3 永远验不了。
      *
-     * 读取端拿不到 repo 时回空数组是**有意**的（空白与端点不存在要能区分），
-     * 所以「漏传」在运行期永远不会报错，只能靠类型挡住。
-     * 把可选项改成必填，让这个 bug 在结构上无法表达。
-     */
-    threadEventRepo: any;
-    /**
-     * 触发器登记（`triggers` 表的唯一写入者）。
-     *
-     * 同样是**必填**：它此前根本没被接进来，于是仓储实现了、导出了，
-     * 生产却零使用 —— `triggers` 永远 0 行，A4.2/A4.3 永远验不了。
+     * 时间线曾单独接一个 `threadEventRepo`（写 `thread_events` 表）。那张表存的是
+     * `triggers` 内容的副本——同一件事的第二个写者，已于 2026-11-03 删除，
+     * 见 workspace/CONCEPT-CLARITY-*.md §8。现在 `/events` 从本仓库派生。
      */
     triggerRepo: any;
   };
@@ -423,11 +414,28 @@ export async function handleEventRoutes(
     const m = /^\/api\/threads\/([^/]+)\/events$/.exec(path);
     if (m && req.method === 'GET') {
       const key = decodeURIComponent(m[1]!);
-      const threadId = resolveThreadId(deps, key);
-      const repo = deps.repos.threadEventRepo;
+      // 时间线现在从 `triggers` 派生（`thread_refs` 存业务 ref），所以要把两种 id
+      // 都归一到 ref：内部 `thr_xxx` → 业务 ref；已经是 ref 就原样用。
+      const thread = deps.repos.threadRepo.getById?.(key) ?? deps.repos.threadRepo.getByRef?.(key);
+      const ref = thread ? String(thread.ref) : key;
+      const repo = deps.repos.triggerRepo;
+      // **对外形状不变**（`ThreadEventAPI`：id/threadId/kind/actor/summary/createdAt）：
+      // 时间线换了数据源（表 → 派生查询），不应让前端跟着改。后端仓储给的是 TriggerRow，
+      // 在这里一次性折成对外 DTO；不做第二张存储，就只剩这一处映射。
+      const events = repo
+        ? repo.listByThreadRef(ref, 100).map((t: any) => ({
+            id: String(t.id),
+            threadId: ref,
+            kind: String(t.kind),
+            actor: t.actorId ?? undefined,
+            summary: t.summary ?? '',
+            payload: {},
+            createdAt: Number(t.receivedAt),
+          }))
+        : [];
       // 没有 repo 时返回空数组而不是 404：页面应该能区分
       // 「这条流没有事件」与「这个端点半不存在」。前者是正常状态。
-      json(res, 200, { events: repo ? repo.listByThread(threadId, 100) : [] });
+      json(res, 200, { events });
       return true;
     }
   }

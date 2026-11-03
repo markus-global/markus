@@ -59,7 +59,6 @@ export interface StorageBridge {
   // Thread / Trigger / Router（设计见 workspace/markus-superagent-02-*.md §2）
   threadRepo?: any;
   dispositionRepo?: any;
-  threadEventRepo?: any;
   resourceBindingRepo?: any;
   eventSourceRepo?: any;
   /**
@@ -268,7 +267,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       mailboxRepo: new storage.SqliteMailboxRepo(db),
       threadRepo: new storage.SqliteThreadRepo(db),
       dispositionRepo: new storage.SqliteDispositionRepo(db),
-      threadEventRepo: new storage.SqliteThreadEventRepo(db),
       resourceBindingRepo: new storage.SqliteResourceBindingRepo(db),
       eventSourceRepo: new storage.SqliteEventSourceRepo(db),
       triggerRepo: new storage.SqliteTriggerRepo(db),
