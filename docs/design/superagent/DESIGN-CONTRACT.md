@@ -176,7 +176,7 @@
 | # | 概念（super-agent） | Markus 现状对应物 | 关系判定 | 差距 | 修复卡 | 状态 | 提交号 |
 |---|---|---|---|---|---|---|---|
 | 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 无「什么算事件」「读到位点」「进领域前过滤」 | 任务四 | 未开始 | — |
-| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 一个枚举混了来源/类别/优先级/UI/执行语义 | 任务八 | 未开始 | — |
+| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 内容轴已切走：正文唯一在 `triggers`，`mailbox_items` 只留执行态 + `trigger_id`（`docs/architecture/mailbox.md`）；枚举里剩下的来源/类别/优先级轴归任务四 | 任务八 | 已完成 | 3d828666 |
 | 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 决策不落库、无 reason、无 matched rule | 任务五 | 未开始 | — |
 | 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定（那层叫 `Disposition`，同名问题已在任务一收口） | 任务一 | 已完成 | b4e7dfd6 |
@@ -201,7 +201,7 @@
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
 | B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
-| C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 未开始 | — | 未更新 |
+| C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 已完成 | 3d828666 | 已更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |
 
 ---
