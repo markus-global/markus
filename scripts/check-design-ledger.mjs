@@ -11,7 +11,7 @@
  *   2. 状态只能是 未开始 / 进行中 / 已完成 / 范围外
  *   3. 已完成 ⇒ 提交号真实存在（7–40 位十六进制 且 git cat-file -e 通过）
  *   4. 范围外 ⇒ 必须写清理由（§9.2 不允许出现范围外：九项必须全部落地）
- *   5. 未开始 / 进行中 ⇒ 提交号必须是 —
+ *   5. 未开始 ⇒ 提交号必须是 —；进行中 可填已产生的提交号，但必须真实存在（A 卡已交付、B 卡未实测的形态）
  */
 import { readFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
@@ -87,6 +87,14 @@ function check(rows, label, spec) {
         errors.push(`${id}：§9.2 不允许「范围外」—— 九项必须全部落地`);
       } else if (!/^理由[:：]/.test(sha ?? '') || (sha ?? '').length < 12) {
         errors.push(`${id}：范围外 必须写清理由（提交号列填「理由：…」，且说明触发条件）`);
+      }
+    } else if (state === '进行中') {
+      // 允许携带已产生的提交号（A 卡交付、B 卡未实测），但它必须真实存在：
+      // 这比“必须写 —”更严格——填了就不能是编的。
+      if (sha !== '—' && !isSha(sha)) {
+        errors.push(`${id}：进行中 时提交号须为 — 或真实 SHA（实际「${sha ?? ''}」）`);
+      } else if (sha !== '—' && !commitExists(sha)) {
+        errors.push(`${id}：提交号 ${sha} 在仓库里不存在`);
       }
     } else if (sha !== '—') {
       errors.push(`${id}：${state} 时提交号必须是 —（不许提前填预期提交号）`);

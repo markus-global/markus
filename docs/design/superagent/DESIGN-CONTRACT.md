@@ -171,37 +171,38 @@
 ### 9.1 设计概念 ↔ 现状（源自 01 §5.1 主对账表，含完成度）
 
 状态取值只有四种：`未开始` / `进行中` / `已完成` / `范围外`。
-**规则**：`已完成` 必须填提交号；`范围外` 必须填理由；其余提交号一律 `—`。
+**规则**：`已完成` 必须填提交号；`进行中` **可以**填已经产生的提交号（A 卡已交付、B 卡未实测的真实形态），但必须能在 git 里查到；`未开始` 必须是 `—`；`范围外` 必须填理由 + 触发条件。
+**任何填写的提交号都必须真实存在** —— 这一条由 `npm run check:design-ledger` 用 `git cat-file -e` 强制。
 
 | # | 概念（super-agent） | Markus 现状对应物 | 关系判定 | 差距 | 修复卡 | 状态 | 提交号 |
 |---|---|---|---|---|---|---|---|
-| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 无「什么算事件」「读到位点」「进领域前过滤」 | 任务四 | 未开始 | — |
-| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 一个枚举混了来源/类别/优先级/UI/执行语义 | 任务八 | 未开始 | — |
-| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七A→七B | 未开始 | — |
-| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 决策不落库、无 reason、无 matched rule | 任务五 | 未开始 | — |
-| 5 | **Decision** | `DecisionType`（「接下来处理哪条」） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定；且与 `RouteDecision` 撞名 | 任务一 | 未开始 | — |
-| 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | Task 是治理对象；缺「执行侧的工作单位」 | 任务三 | 未开始 | — |
-| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 双层授权 vs 单层；与 ResourceBinding 边界未强制 | 任务六 | 未开始 | — |
+| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 差距已补：准入（self→kind→scope→window）+ 读取位点 `source-cursor.ts`，自激消息进领域前丢弃 | 任务四 | 已完成 | 62655742 |
+| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 差距已补：mailbox 只留执行态，内容回落 `triggers`（`mailbox-content.ts`） | 任务八 | 已完成 | 3d828666 |
+| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | UI 已收口：`/api/threads/one?ref=` 单读面 + 三处入口就地打开 + 全局页降为检索；**待 7B 实测** | 任务七A→七B | 进行中 | 8ffddbea |
+| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 差距已补：gate 记 `matchedRule`，assessment 可插拔、无 LLM 降级为 `needs-assessment` | 任务五 | 已完成 | 14d5d1bb |
+| 5 | **Decision** | `DecisionType`（「接下来处理哪条」） | 词汇已具备，语义不同 | 差距已补：`DecisionType` 已消失，改为 `AttentionAction`；`RouteDecision` 保留，两者不再撞名 | 任务一 | 已完成 | b4e7dfd6 |
+| 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | 差距已补：`tickets` 表独立，与 Task 可选关联、删 Task 不级联 | 任务三 | 已完成 | a59daf1e |
+| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 差距已补：`authorizeAction()` 唯一判定点，autonomy 与审批双向不可互替 | 任务六 | 已完成 | 524062d6 |
 | 8 | **Assignment** | 会话绑定 + 并发 worker 槽位 | 部分对应 | 无「一个工作单位 ↔ 一个执行实例」的显式绑定与报告回传 | 未排期 | 范围外 | 理由：本需求 8 卡不含执行实例绑定；触发条件＝出现「同一工作单位被两个执行体同时认领」的真实事故 |
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
-| 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 无法回答「卡在谁那儿」 | 任务二 | 未开始 | — |
+| 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 差距已补：三层不平级、值域命名空间化、词表唯一入口 + 撞词守卫 | 任务二 | 已完成 | 3d112fea |
 | 11 | **Policy / accept mode** | 无（有心跳，无「主动档位」） | 语义空白 | 无法表达「观察但不行动」 | 未排期 | 范围外 | 理由：autonomy 四档已存在（§7.8），本需求不新增档位；触发条件＝需要「观察但不行动」的真实诉求 |
-| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 无「在等我」的合并视图 | 任务二 + 任务七A→七B | 未开始 | — |
+| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 部分补齐：状态词已同源（任务二）；「在等我」合并视图随 Thread 入口改造落地，**待 7B 实测** | 任务二 + 任务七A→七B | 进行中 | 8ffddbea |
 | 13 | **Rejected concepts** | 仅工作区有 `REJECTED-CONCEPTS-2026-11-03.md` | 可低成本补齐 | 缺「为什么不做 X」的否证记录（未入仓） | 未排期 | 范围外 | 理由：内容已存在，缺入仓；触发条件＝下一次否决任何设计概念时一并入仓 |
 
 ### 9.2 本需求九项问题完成度
 
 | # | 问题 | 卡 | 状态 | 提交号 | 台账行（03 文件） |
 |---|---|---|---|---|---|
-| A2 | `Decision` 指两件事 | 任务一 | 未开始 | — | 未更新 |
-| A3 | 三种「状态」混用 | 任务二 | 未开始 | — | 未更新 |
-| A4 | 两种「授权」不可互替 | 任务六 | 未开始 | — | 未更新 |
-| B1 | Eval 只做了一半 | 任务五 | 未开始 | — | 未更新 |
-| B2 | Source 不是适配器 | 任务四 | 未开始 | — | 未更新 |
-| B3 | 同一事实三种记号 | 任务一 | 未开始 | — | 未更新 |
-| B4 | Thread 是对象还是视角 | 任务七A→七B | 未开始 | — | 未更新 |
-| C1 | Ticket 必须独立成表 | 任务三 | 未开始 | — | 未更新 |
-| C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 未开始 | — | 未更新 |
+| A2 | `Decision` 指两件事 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
+| A3 | 三种「状态」混用 | 任务二 | 已完成 | 3d112fea | 已更新 |
+| A4 | 两种「授权」不可互替 | 任务六 | 已完成 | 524062d6 | 已更新 |
+| B1 | Eval 只做了一半 | 任务五 | 已完成 | 14d5d1bb | 已更新 |
+| B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
+| B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
+| B4 | Thread 是对象还是视角 | 任务七A→七B | 进行中 | 8ffddbea | 已更新（A 卡已交付，待 7B 实测） |
+| C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
+| C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 已完成 | 3d828666 | 已更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |
 
 ---
