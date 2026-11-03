@@ -44,14 +44,33 @@ export function hasRegisteredPrefix(ref: ThreadRef, prefixes: readonly string[])
 // 轴 3：它在等谁（派生，不存储）—— 唯一合法的闭集之一
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 「在等谁」的闭集。**每个值都以「谁的回合」开头**，这是刻意的结构约束，不是命名风格：
+ *
+ *   person:*  人在等你（批 / 回话 / 验收 / 解锁）—— 唯一会消耗人的注意力的四类
+ *   system:*  系统在推进（排队等资源）
+ *   agent:*   agent 在推进（分配正在跑）
+ *   none:*    没人的回合（回合结束、等事件）
+ *
+ * 为什么必须带前缀：`idle` / `working` 这两个裸值**同时**出现在
+ * `AttentionState`（`packages/shared/src/types/mailbox.ts`，agent 循环此刻在干什么）里。
+ * 两个不同概念共用一个字面值，展示层就会互相喂错（`stageLabel(attentionState)` 编译通过、
+ * 运行期静默返回另一个概念的文案）。值域命名空间化之后，
+ * `Extract<ThreadStage, AttentionState>` 是 `never`——这条不变量能被编译器守住，
+ * 见 `thread.test.ts` 的编译期断言与 `stateVocabulary.test.ts` 的字面互斥测试。
+ *
+ * 这个类型回答的问题与另外两个「状态」不同：它是**派生量，不落库**（`threads` 表没有
+ * stage 列）。治理态是 `TaskStatus`（落库），运行时注意力是 `AttentionState`（内存）。
+ * 三者的来源与边界见 `docs/architecture/state-machines.md` §16。
+ */
 export type ThreadStage =
-  | 'person:approval' // 等人批
-  | 'person:answer' // 等人回话
-  | 'person:review' // 等人验收
-  | 'person:blocked' // 等人解锁
-  | 'system:queued' // 排队等资源
-  | 'idle' // 回合结束、等事件
-  | 'working'; // 正在跑
+  | 'person:approval' // 人的回合：等人批
+  | 'person:answer' // 人的回合：等人回话
+  | 'person:review' // 人的回合：等人验收
+  | 'person:blocked' // 人的回合：等人解锁
+  | 'system:queued' // 系统回合：排队等资源
+  | 'agent:working' // agent 回合：分配正在跑
+  | 'none:idle'; // 没人的回合：回合结束、等事件
 
 export interface StageFacts {
   pendingApproval: boolean;
@@ -69,8 +88,8 @@ export function deriveStage(f: StageFacts): ThreadStage {
   if (f.submittedReview) return 'person:review';
   if (f.reportedBlockedSinceHuman) return 'person:blocked';
   if (f.assignment?.state === 'pending') return 'system:queued';
-  if (!f.assignment || f.assignment.state === 'ended') return 'idle';
-  return 'working';
+  if (!f.assignment || f.assignment.state === 'ended') return 'none:idle';
+  return 'agent:working';
 }
 
 /** 「在等人」的四类 stage，顺序即 UI 排序。 */
@@ -93,9 +112,9 @@ export function stageSortRank(stage: ThreadStage): number {
       return 3;
     case 'system:queued':
       return 4;
-    case 'working':
+    case 'agent:working':
       return 5;
-    case 'idle':
+    case 'none:idle':
       return 6;
   }
 }
@@ -131,12 +150,18 @@ export interface Trigger {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 路由决定：唯一审计事实
+// 一次路由的**处置**（disposition）：唯一审计事实
+//
+// 原名 `RouteDecision`（2026-11-03 改名，见 docs/architecture/concept-naming.md）。
+// 为什么改：`Decision` 当时同时被邮箱的注意力仲裁用着，一个名字指两件事。
+// 新名字与它落库的地方同名 —— `thread_dispositions` 一行 = 一次处置，
+// 这样「决定」与「记录」不再有两种叫法。旧名只在历史说明里出现。
+//
+// 顺带删除零引用的 `RouteAction`：动作标签已由本联合类型的 `action` 字段穷举表达，
+// 留一个没人用的同步枚举 = 第二个写者。
 // ─────────────────────────────────────────────────────────────
 
-export type RouteAction = 'accept' | 'attach' | 'dispatch' | 'stop' | 'ignore' | 'defer';
-
-export type RouteDecision =
+export type Disposition =
   | { action: 'accept'; threadRef: ThreadRef; newThread?: boolean; ticketId?: string; reason: string }
   | { action: 'attach'; threadRef: ThreadRef; ticketId: string; reason: string }
   | { action: 'dispatch'; threadRef: ThreadRef; agentId: string; sessionId?: string; reason: string }

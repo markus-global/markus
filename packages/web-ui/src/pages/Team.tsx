@@ -4769,7 +4769,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <div className="flex-1 min-w-0 text-left">
                           <div className="text-sm font-medium text-fg-primary truncate flex items-center gap-1.5">
                             {agent.name}
-                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:processStatus.offline')}</span>}
                           </div>
                           <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
                         </div>
@@ -5280,8 +5280,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     // pulsing dot, shown only while this session is generating.
                     <span
                       className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"
-                      title={t('common:status.working')}
-                      aria-label={t('common:status.working')}
+                      title={t('common:processStatus.working')}
+                      aria-label={t('common:processStatus.working')}
                       data-testid="session-tab-streaming"
                     />
                   )}

@@ -180,7 +180,7 @@
 | 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 差距已补：mailbox 只留执行态，内容回落 `triggers`（`mailbox-content.ts`） | 任务八 | 已完成 | 3d828666 |
 | 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | UI 已收口：`/api/threads/one?ref=` 单读面 + 三处入口就地打开 + 全局页降为检索；**待 7B 实测** | 任务七A→七B | 进行中 | 8ffddbea |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 差距已补：gate 记 `matchedRule`，assessment 可插拔、无 LLM 降级为 `needs-assessment` | 任务五 | 已完成 | 14d5d1bb |
-| 5 | **Decision** | `DecisionType`（「接下来处理哪条」） | 词汇已具备，语义不同 | 差距已补：`DecisionType` 已消失，改为 `AttentionAction`；`RouteDecision` 保留，两者不再撞名 | 任务一 | 已完成 | b4e7dfd6 |
+| 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 差距已补：`DecisionType` 已消失，改为 `AttentionAction`；`RouteDecision` 保留，两者不再撞名 | 任务一 | 已完成 | b4e7dfd6 |
 | 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | 差距已补：`tickets` 表独立，与 Task 可选关联、删 Task 不级联 | 任务三 | 已完成 | a59daf1e |
 | 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 差距已补：`authorizeAction()` 唯一判定点，autonomy 与审批双向不可互替 | 任务六 | 已完成 | 524062d6 |
 | 8 | **Assignment** | 会话绑定 + 并发 worker 槽位 | 部分对应 | 无「一个工作单位 ↔ 一个执行实例」的显式绑定与报告回传 | 未排期 | 范围外 | 理由：本需求 8 卡不含执行实例绑定；触发条件＝出现「同一工作单位被两个执行体同时认领」的真实事故 |

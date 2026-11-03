@@ -327,9 +327,15 @@ export interface MailboxItemMetadata {
   };
 }
 
-// ─── Decision Types ─────────────────────────────────────────────────────────
+// ─── 注意力仲裁动作 ─────────────────────────────────────────────────────────
+//
+// 原名 `DecisionType`（2026-11-03 改名，见 docs/architecture/concept-naming.md）。
+// 它回答「注意力循环这次对邮箱条目做什么动作」，与路由层的 `Disposition`
+// （这条信号该进哪条流）是两件事，不该共用 `Decision` 这个词。
+// 字段名 `decisionType` 保留：它是已发布列 `mailbox_decisions.decision_type`
+// 的镜像（H9：不重命名已发布列），类型名与列名是两个层面的事。
 
-export type DecisionType =
+export type AttentionAction =
   | 'pick'
   | 'continue'
   | 'preempt'
@@ -382,7 +388,7 @@ export interface DeliberationResult {
 export interface AttentionDecision {
   id: string;
   agentId: string;
-  decisionType: DecisionType;
+  decisionType: AttentionAction;
   mailboxItemId: string;
   context: DecisionContext;
   reasoning: string;

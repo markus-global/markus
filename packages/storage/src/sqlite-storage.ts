@@ -842,7 +842,10 @@ CREATE TABLE IF NOT EXISTS thread_dispositions (
   thread_id    TEXT NOT NULL,
   action       TEXT NOT NULL,
   reason       TEXT NOT NULL,
-  would_accept INTEGER DEFAULT 0,
+  -- 三态：1 = 会接 / 0 = 不会接 / NULL = 本次处置没问过这个问题（dispatch·attach·stop）。
+  -- 不给 DEFAULT 0：默认值会把「没问过」默认成「不会接」，而唯一转换点
+  -- （packages/storage/src/thread-store.ts 的 WouldAccept）总是显式绑定值，用不上默认值。
+  would_accept INTEGER,
   actor        TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
   UNIQUE(trigger_id, thread_id)

@@ -110,18 +110,6 @@
     "mcp": "MCP：{{server}}"
   },
   "profilePage": {
-    "taskStatus": {
-      "pending": "待处理",
-      "assigned": "已分配",
-      "in_progress": "进行中",
-      "completed": "已完成",
-      "failed": "失败",
-      "cancelled": "已取消",
-      "review": "评审中",
-      "approved": "已通过",
-      "rejected": "已拒绝",
-      "draft": "草稿"
-    },
     "loadingAgent": "正在加载智能体…",
     "chat": "对话",
     "hub": "Hub",
@@ -514,9 +502,9 @@
         "4": "后台"
       },
       "attention": {
-        "idle": "待命",
-        "focused": "专注",
-        "deciding": "决策中"
+        "idle": "Agent 待命",
+        "focused": "Agent 专注",
+        "deciding": "Agent 决策中"
       },
       "mailbox": {
         "commentFrom": "来自 {{name}} 的评论",

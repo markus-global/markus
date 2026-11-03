@@ -13,11 +13,13 @@
  * 把 stage 变化伪造成带时间戳的节点 = 拿今天的推断回填过去，会让人以为那是证据。
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchThreadDispositions, fetchThreadEvents, fetchThreads } from '../api.ts';
 import type { DispositionAPI, ThreadAPI, ThreadEventAPI } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, isWouldAccept } from '../lib/threadPresentation.ts';
+import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, wouldAcceptVerdict, THREAD_GROUP_LABEL } from '../lib/threadPresentation.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { entityNavTarget } from '../lib/threadNav.ts';
 
 // 展示层唯一实现见 lib/threadPresentation.ts（E 区收敛）。
@@ -65,7 +67,7 @@ function DecisionNode({ d }: { d: DispositionAPI }) {
         <span>{clockOf(d.createdAt)}</span><span>· {d.actor}</span>
       </div>
       <p className="mt-1 whitespace-pre-wrap text-sm text-fg-primary">{d.reason || '未记录理由'}</p>
-      {isWouldAccept(d) && (
+      {wouldAcceptVerdict(d) === 'accept' && (
         <p className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700">
           <span className="shrink-0 font-medium">本可接单</span>
           <span className="text-amber-600/90">放行的话它会接下这件事，但当前档位没有动手。</span>
@@ -77,19 +79,34 @@ function DecisionNode({ d }: { d: DispositionAPI }) {
 }
 
 /** 时间线末节点：当前状态 = threads 的派生快照。无时间戳 → 不入排序，并明说它不是事件。 */
-function CurrentStateNode({ t }: { t: ThreadAPI }) {
+function CurrentStateNode({ th }: { th: ThreadAPI }) {
+  // 参数名叫 `th` 而不是 `t`：`t` 在这个文件里是 i18n 函数，同名会让「治理态词」无从使用。
+  const { t } = useTranslation();
   return (
     <li className="relative border-l border-dashed border-border-subtle pl-3">
       <span className="absolute -left-[3px] top-1.5 h-1.5 w-1.5 rounded-full bg-fg-tertiary" />
       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-fg-tertiary">
         <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">当前状态 · 派生快照</span><span>无时间戳</span>
       </div>
+      {/* 两级显示，不是一个「·」串起来的平级三元组。
+          `stage` 的主语是**这条流**；`taskStatus` 的主语是**流挂载的那个对象**（任务 / 需求 /
+          会话都可能是），它取自 describeThread 的 `taskStatus: status ?? null`
+          （org-manager/src/event-routes.ts），不是这条流自己的态。曾经两者拼在同一行、且写死
+          「任务」二字，于是 `req_…` / `cs_…` 的流上会显示「任务 评审中」——主语是错的，
+          读者也自然把「流在等你验收」读成「任务在等你验收」。 */}
       <p className="mt-1 text-sm text-fg-primary">
-        {stageLabel(t.stage).label}{t.taskStatus ? ` · 任务 ${t.taskStatus}` : ''}
-        {t.ownerAgent ? ` · 负责 ${t.ownerAgent}` : ' · 无负责 agent'}
+        这条流：{stageLabel(th.stage).label}
+        {th.ownerAgent ? ` · 负责 ${th.ownerAgent}` : ' · 无负责 agent'}
       </p>
+      {th.taskStatus && (
+        <p className="mt-1 text-[11px] text-fg-secondary">
+          {/* 对象类别由 ref 前缀决定（refDisplay → refKindLabel），不写死「任务」 */}
+          挂载对象 {refDisplay(th.ref)} · 治理态 {taskStatusLabel(th.taskStatus, t)}
+        </p>
+      )}
       <p className="mt-1 text-[11px] text-fg-muted">
-        依据 threads 表的 stage / taskStatus，最后活动 {clockOf(t.lastActivity)}。这不是一条历史事件 —— 它只回答「此刻在等谁」。
+        依据 threads 表的 stage 与挂载对象的治理态，最后活动 {clockOf(th.lastActivity)}。这不是一条历史事件 ——
+        主行只回答「这条流此刻在等谁」，第二行是挂载对象自己的治理态（两者允许不一致）。
       </p>
     </li>
   );
@@ -117,9 +134,9 @@ export function ThreadViewPage() {
   const groups = useMemo(() => {
     const isPerson = (s?: string | null) => !!s && s.startsWith('person:');
     const buckets = [
-      { key: 'need', label: '需要你处理', hint: '在等你批准 / 回答 / 验收 / 解阻', items: sorted.filter(t => isPerson(t.stage)) },
-      { key: 'active', label: '进行中', hint: 'agent 在处理，或在排队等资源', items: sorted.filter(t => !isPerson(t.stage) && t.stage !== 'idle') },
-      { key: 'idle', label: '空闲', hint: '没有待处理的事', items: sorted.filter(t => !isPerson(t.stage) && t.stage === 'idle') },
+      { key: 'need', label: THREAD_GROUP_LABEL.waiting, hint: '在等你批准 / 回答 / 验收 / 解阻', items: sorted.filter(t => isPerson(t.stage)) },
+      { key: 'active', label: THREAD_GROUP_LABEL.active, hint: 'agent 在跑，或在排队等资源', items: sorted.filter(t => !isPerson(t.stage) && t.stage !== 'none:idle') },
+      { key: 'idle', label: THREAD_GROUP_LABEL.idle, hint: '回合已结束，等新事件', items: sorted.filter(t => !isPerson(t.stage) && t.stage === 'none:idle') },
     ];
     return buckets.filter(b => b.items.length > 0);
   }, [sorted]);
@@ -319,7 +336,7 @@ export function ThreadViewPage() {
                     ? <EventNode key={`e-${node.event.id}`} e={node.event} />
                     : <DecisionNode key={`d-${node.decision.id}`} d={node.decision} />,
                 )}
-                <CurrentStateNode t={selected} />
+                <CurrentStateNode th={selected} />
               </ol>
             </div>
           )}
