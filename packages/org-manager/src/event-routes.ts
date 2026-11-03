@@ -15,7 +15,7 @@ import { createGenericWebhookAdapter, SourceRegistry } from '@markus/core';
 import { ThreadService } from '@markus/core';
 import { admitEvent, policyOf, validateSourcePolicy, consumeBatch } from '@markus/core';
 import type { DispatchTarget } from '@markus/core';
-import { deriveStage, stageSortRank } from '@markus/shared';
+import { authorizeAction, deriveStage, isScope, RESOURCE_SCOPES, stageSortRank } from '@markus/shared';
 
 export interface EventRouteDeps {
   orgId: string;
@@ -617,6 +617,64 @@ export async function handleEventRoutes(
       bindings = deps.repos.resourceBindingRepo.listAll();
     }
     json(res, 200, { bindings });
+    return true;
+  }
+
+  /**
+   * 授权判定的**唯一 HTTP 读取面**：某 agent 现在能不能对某资源执行某档动作。
+   *
+   * 为什么它必须是只读的：判定是纯函数（`authorizeAction`），写入一律发生在
+   * 各自的领域路径（绑定写 `resource_bindings`、审批写 `approvals`）。
+   * 如果这里也写，就会出现「查询顺便改状态」的第二个写者 —— 那正是本需求要收口的东西。
+   *
+   * 为什么需要它：判定点如果只活在 core 的执行路径里，人和 UI 就无法回答
+   * 「他现在到底有没有这个权」，只能靠猜或去读两张表自己拼 —— 两个口径。
+   */
+  if (path === '/api/resources/authorization' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://local');
+    const agentId = url.searchParams.get('agent') ?? '';
+    const resource = url.searchParams.get('resource') ?? '';
+    const actionScope = url.searchParams.get('action') ?? 'read';
+    const holderKind = url.searchParams.get('holderKind') === 'team' ? 'team' : 'agent';
+    if (!agentId || !resource) {
+      json(res, 400, { error: 'agent 与 resource 必填（例：?agent=agt_x&resource=gh:o/r&action=publish）' });
+      return true;
+    }
+    if (!isScope(actionScope)) {
+      json(res, 400, { error: `action 只能是 ${RESOURCE_SCOPES.join(' / ')}，收到 "${actionScope}"` });
+      return true;
+    }
+
+    const binding = deps.repos.resourceBindingRepo?.findByHolder
+      ? deps.repos.resourceBindingRepo.findByHolder(holderKind, agentId, resource)
+      : null;
+    // 逐件事审批：查不到就等于没批（不是"可能批了"）
+    const mandate = deps.repos.approvalRepo?.findMandate
+      ? deps.repos.approvalRepo.findMandate({ agentId, resource, actionScope }).state
+      : 'none';
+
+    const authz = authorizeAction({
+      binding: binding ? { scope: binding.scope, autonomy: binding.autonomy } : null,
+      actionScope,
+      mandate,
+      resource,
+    });
+
+    json(res, 200, {
+      agentId,
+      holderKind,
+      resource,
+      actionScope,
+      // 输入也回显：判定必须可复核 —— 否则又是一次"结论没有依据"
+      inputs: {
+        binding: binding ? { scope: binding.scope, autonomy: binding.autonomy, holder: binding.holder } : null,
+        mandate,
+      },
+      verdict: authz.verdict,
+      code: authz.code,
+      reason: authz.reason,
+      hint: authz.hint ?? null,
+    });
     return true;
   }
 

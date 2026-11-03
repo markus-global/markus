@@ -389,9 +389,12 @@ export class SqliteResourceBindingRepo {
   }): { ok: true; binding: ResourceBinding } | { ok: false; reason: string } {
     const existing = this.findByHolder(b.holder.kind, b.holder.id, b.resource);
     if (existing) {
-      this.db
-        .prepare(`UPDATE resource_bindings SET scope = ?, autonomy = ?, granted_by = ?, since = ? WHERE id = ?`)
-        .run(b.scope, b.autonomy ?? existing.autonomy, b.grantedBy, b.since ?? Date.now(), existing.id);
+      const written = this.writeTranslatingL3(b.resource, () =>
+        this.db
+          .prepare(`UPDATE resource_bindings SET scope = ?, autonomy = ?, granted_by = ?, since = ? WHERE id = ?`)
+          .run(b.scope, b.autonomy ?? existing.autonomy, b.grantedBy, b.since ?? Date.now(), existing.id),
+      );
+      if (!written.ok) return written;
       const updated = this.findById(existing.id);
       if (!updated) throw new Error(`BINDING_VANISHED: ${existing.id}`);
       // 已存在绑定也要补订阅：它可能是本次修复之前（或经 API 路径）创建的，
@@ -400,29 +403,52 @@ export class SqliteResourceBindingRepo {
       return { ok: true, binding: updated };
     }
 
-    if (b.scope === 'admin') {
-      const holders = this.listByResource(b.resource).filter(x => x.scope === 'admin');
-      if (holders.length > 0) {
-        const h = holders[0]!;
-        return {
-          ok: false,
-          reason: `资源 ${b.resource} 已由 ${h.holder.kind}:${h.holder.id} 以 admin 档负责。要接管，先让对方释放，或由人执行 transfer（transfer 会记录审计）。`,
-        };
-      }
-    }
-
+    // 刻意**没有**「先查有没有别的 admin，再插入」的预检：
+    // 那是一个只在单进程单连接内成立的检查（靠排队保证正确性），并发下两个调用
+    // 各自查到「还没有 admin」，然后都插进去了 —— 这正是两个写者同时改一个东西。
+    // I8 现在由数据库的部分唯一索引 `uniq_rbd_l3` 守（sqlite-storage.ts 迁移段），
+    // 这里只负责把约束错误翻译成人能照着做的提示。
     const id = b.id ?? `rbd_${randomId()}`;
-    this.db
-      .prepare(
-        `INSERT INTO resource_bindings (id, holder_kind, holder_id, resource, scope, autonomy, granted_by, since)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, b.holder.kind, b.holder.id, b.resource, b.scope, b.autonomy ?? 'observe', b.grantedBy, b.since ?? Date.now());
+    const written = this.writeTranslatingL3(b.resource, () =>
+      this.db
+        .prepare(
+          `INSERT INTO resource_bindings (id, holder_kind, holder_id, resource, scope, autonomy, granted_by, since)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, b.holder.kind, b.holder.id, b.resource, b.scope, b.autonomy ?? 'observe', b.grantedBy, b.since ?? Date.now()),
+    );
+    if (!written.ok) return written;
     const created = this.findById(id);
     if (!created) throw new Error(`BINDING_INSERT_FAILED: ${id}`);
     // 绑定即订阅：同一次调用里完成，调用方不需要记得补。
     this.ensureSubscription(b.resource, b.holder);
     return { ok: true, binding: created };
+  }
+
+  /**
+   * 把 L3 唯一性约束错误翻译成**可行动提示**（平台规则第 5 条：越界时拒绝 + 给提示）。
+   *
+   * 为什么不在写入前预检、而是接住约束错误：预检是第二写者，而且它只能看见
+   * 自己这条连接上的状态。约束是唯一执行点，所以「谁占着」这件事要**事后读**——
+   * 顺带天然正确：读到的就是当前真实持有者。
+   */
+  private writeTranslatingL3(
+    resource: string,
+    write: () => { changes: number | bigint },
+  ): { ok: true } | { ok: false; reason: string } {
+    try {
+      write();
+      return { ok: true };
+    } catch (err) {
+      if (!isL3UniqueViolation(err)) throw err;
+      const holder = this.listByResource(resource).find(x => x.scope === 'admin');
+      const who = holder ? `${holder.holder.kind}:${holder.holder.id}` : '另一个持有者';
+      return {
+        ok: false,
+        reason: `资源 ${resource} 已由 ${who} 以 admin 档负责（同一资源同一时刻只能有一个 L3 责任人，I8）。`
+          + '要接管，先让对方释放，或由人执行 transfer（transfer 会记录审计）。',
+      };
+    }
   }
 
   findById(id: string): ResourceBinding | null {
@@ -615,6 +641,19 @@ function toBinding(r: RawBinding): ResourceBinding {
     since: r.since,
     grantedBy: parseGranter(r.granted_by),
   };
+}
+
+/**
+ * 这条错误是不是「同一资源只能有一个 admin」那条部分唯一索引（`uniq_rbd_l3`）。
+ *
+ * 判据刻意**只认约束名**，不认泛化的 `UNIQUE constraint failed`：
+ * `resource_bindings` 上还有 `UNIQUE(holder_kind, holder_id, resource)`，
+ * 把两者混为一谈会把「同一个 holder 重复绑定」误报成「L3 被别人占了」——
+ * 那种提示会把 agent 引向一个不存在的人。
+ */
+function isL3UniqueViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /uniq_rbd_l3/i.test(msg) || /resource_bindings\.resource/i.test(msg);
 }
 
 function toEventSource(r: RawEventSource): EventSourceRow {

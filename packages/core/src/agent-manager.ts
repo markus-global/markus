@@ -504,7 +504,12 @@ export class AgentManager {
   private escalationHandler?: (agentId: string, reason: string) => void;
   private approvalHandler?: (
     agentId: string,
-    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+    request: {
+      toolName: string; toolArgs: Record<string, unknown>; reason: string;
+      taskId?: string; sessionId?: string; chatSessionId?: string;
+      /** 逐件事许可（Mandate）的载体，见 core/src/agent.ts ApprovalCallback */
+      resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+    }
   ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
@@ -1524,6 +1529,14 @@ export class AgentManager {
         grantedBy: `${b.grantedBy.kind}:${b.grantedBy.id}`,
       }));
     };
+
+    // 逐件事审批（Mandate）的读取器：执行闸门（Agent.enforceRedLine）靠它回答
+    // 「这件事批了没有」。未注入时一律 none —— 不知道就是没批，绝不猜成已批。
+    if (deps.mandates) {
+      const mandates = deps.mandates;
+      agent.getMandate = (resource, actionScope) =>
+        mandates.findMandate({ agentId: id, resource, actionScope }).state;
+    }
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
@@ -3517,7 +3530,12 @@ export class AgentManager {
   setApprovalHandler(
     handler: (
       agentId: string,
-      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+      request: {
+        toolName: string; toolArgs: Record<string, unknown>; reason: string;
+        taskId?: string; sessionId?: string; chatSessionId?: string;
+        /** 逐件事许可（Mandate）的载体，见 agent.ts ApprovalCallback */
+        resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+      }
     ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;

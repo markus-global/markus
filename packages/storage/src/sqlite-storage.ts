@@ -11,6 +11,7 @@ import { dirname } from 'node:path';
 import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
+  type MandateState, type ResourceScope,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
@@ -1109,6 +1110,41 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+
+    // ── I8：同一资源同一时刻只能有一个 L3 责任人（契约 §4 I8 / 设计 01 §7.4）──
+    //
+    // 这条约束**必须由数据库守**，不能靠 `bind()` 里的「先查再插」：
+    // 应用层检查只在「一个进程、一个连接、中间没人插队」时成立 —— 那是靠排队
+    // 保证正确性（R6/R4 同族），并发两条写路径各自查到「还没有 admin」就都插进去了。
+    // 部分唯一索引让「两个 admin」在**结构上不可表达**，任何写入路径（INSERT /
+    // UPDATE scope）都自动被同一条约束守住，不存在第二个执行点。
+    //
+    // 存量去重是创建索引的前置：老库里可能已经有重复 admin（正是这条约束缺位的
+    // 证据）。保留每个资源上最早那条 admin，其余降为 publish 并在日志里点明 ——
+    // 不静默改数据，也不因此让整个 storage 起不来。
+    try {
+      const demoted = _db.prepare(
+        `UPDATE resource_bindings SET scope = 'publish'
+          WHERE scope = 'admin' AND id NOT IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (PARTITION BY resource ORDER BY since ASC, id ASC) AS rn
+                FROM resource_bindings WHERE scope = 'admin'
+            ) WHERE rn = 1
+          )`,
+      ).run();
+      if (Number(demoted.changes) > 0) {
+        log.warn(
+          `I8 backfill: demoted ${demoted.changes} duplicate admin binding(s) to 'publish' `
+          + '(one L3 holder per resource; see docs/architecture/authorization.md)',
+        );
+      }
+      _db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uniq_rbd_l3 ON resource_bindings(resource) WHERE scope = 'admin'");
+    } catch (err) {
+      // 约束建不起来时不能假装没事：I8 会退回"只有应用层检查"，必须留痕。
+      log.error('I8 unique index (uniq_rbd_l3) could not be created — L3 exclusivity is unenforced', {
+        error: String(err),
+      });
+    }
 
     _db.exec('COMMIT');
   } catch (err) {
@@ -5825,6 +5861,57 @@ export class SqliteApprovalRepo {
   get(id: string): ApprovalRow | undefined {
     const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return r ? this.mapRow(r) : undefined;
+  }
+
+  /**
+   * **逐件事授权（Mandate）的唯一读取点**：这个 agent 对这块地上的这一档动作，批了没有。
+   *
+   * 为什么它是一个独立方法，而不是让调用方自己 `list()` 再过滤：
+   * 「哪张审批单算这件事的许可」是一个**判定**，散到每个调用点就会各自漂移
+   * （有人按 type 过滤，有人按 title 猜，有人忘了看 status）。收在一处，
+   * 判定点 `authorizeAction()` 的 `mandate` 入参才有唯一来源。
+   *
+   * 口径（刻意保守 —— 宁可多要一次人批，也不把没有的许可读成有）：
+   *  · 必看 `details.resource` 与 `details.actionScope` 两项**同时**匹配；
+   *  · 调用方给了 `eventKey` 时，只认 eventKey 相同、或**没有** eventKey 的通用单
+   *    （没有 eventKey 的单仍然是针对 (agent, resource, scope) 的，不是针对别的事）；
+   *  · 状态取**最近一条**：approved → approved；pending → pending；rejected/expired → denied；
+   *    一条都没有 → none。
+   *
+   * 已知粒度（本卡残余，写进 docs/architecture/authorization.md）：
+   * 不做「一次性消费」—— 那会要求 mandate 成为独立实体（新系统，H1 禁止）。
+   */
+  findMandate(q: {
+    agentId: string;
+    resource: string;
+    actionScope: ResourceScope;
+    eventKey?: string;
+  }): { state: MandateState; approvalId?: string; requestedAt?: string } {
+    const rows = this.db
+      .prepare(`SELECT * FROM approvals WHERE agent_id = ? ORDER BY requested_at DESC LIMIT 200`)
+      .all(q.agentId) as Record<string, unknown>[];
+
+    for (const raw of rows) {
+      const row = this.mapRow(raw);
+      const details = (row.details ?? {}) as Record<string, unknown>;
+      if (details['resource'] !== q.resource) continue;
+      if (details['actionScope'] !== q.actionScope) continue;
+      if (q.eventKey !== undefined && details['eventKey'] != null && details['eventKey'] !== q.eventKey) continue;
+
+      switch (row.status) {
+        case 'approved':
+        case 'applied':
+          return { state: 'approved', approvalId: row.id, requestedAt: row.requestedAt };
+        case 'pending':
+          return { state: 'pending', approvalId: row.id, requestedAt: row.requestedAt };
+        case 'rejected':
+        case 'expired':
+          return { state: 'denied', approvalId: row.id, requestedAt: row.requestedAt };
+        default:
+          continue;
+      }
+    }
+    return { state: 'none' };
   }
 
   private mapRow(r: Record<string, unknown>): ApprovalRow {
