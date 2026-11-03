@@ -331,20 +331,22 @@ describe('event_sources — 来源配置与健康位', () => {
   it('同一 org 同一前缀 upsert = 合并 config/health，不新增行', () => {
     const repo = new SqliteEventSourceRepo(db);
     repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { repos: ['a/b'] }, secret: 's3cr3t' });
-    repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { events: ['push'] }, health: { cursor: 42 } });
+    repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { events: ['push'] }, health: { fails: 0 } });
     const src = repo.getByPrefix('org_1', 'gh')!;
     expect(src.config).toEqual({ repos: ['a/b'], events: ['push'] });
-    expect(src.health).toEqual({ cursor: 42 });
+    expect(src.health).toEqual({ fails: 0 });
     // secret 未被第二次 upsert 抹掉
     expect(src.secret).toBe('s3cr3t');
     expect(repo.listByOrg('org_1')).toHaveLength(1);
   });
 
-  it('updateHealth 增量合并，历史位点不丢', () => {
+  it('updateHealth 增量合并，历史观测不丢', () => {
     const repo = new SqliteEventSourceRepo(db);
-    const src = repo.upsert({ orgId: 'org_1', prefix: 'xhs', health: { cursor: 1 } });
-    repo.updateHealth(src.id, { cursor: 2, lastError: 'boom' });
+    // 刻意**不**用 `cursor` 当健康位示例：它是 `event_sources.cursor` 这两列的专名，
+    // 放进 health 就是同一个事实两个位置（B2 要治的正是这个病）。
+    const src = repo.upsert({ orgId: 'org_1', prefix: 'xhs', health: { fails: 1 } });
+    repo.updateHealth(src.id, { fails: 2, lastError: 'boom' });
     const after = repo.getById(src.id)!;
-    expect(after.health).toEqual({ cursor: 2, lastError: 'boom' });
+    expect(after.health).toEqual({ fails: 2, lastError: 'boom' });
   });
 });

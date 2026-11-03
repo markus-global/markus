@@ -61,6 +61,18 @@ export interface EventSourceRow {
   id: string;
   orgId: string;
   prefix: string;
+  /**
+   * 读取位点：**这条来源的上游读到哪儿了**。
+   *
+   * - `null` = 没有位点：推送式来源（webhook）不读，或历史行从未拉取过。
+   * - 非 null = 上一次**全部消费成功**后提交的位置（失败不推进，见 `advanceCursor`）。
+   *
+   * 与幂等键的分工：位点负责「不重复拉」（拉取侧、按上游顺序），
+   * 幂等键负责「重复投递只留一行」（入口侧、与顺序无关）。两者不可互替。
+   */
+  cursor: string | null;
+  /** 最近一次拉取尝试的时间（观测用，不参与任何判定） */
+  lastPolledAt: number | null;
   /** HMAC 密钥；**永不**写日志、永不进 API 响应 */
   secret: string | null;
   config: Record<string, unknown>;
@@ -102,6 +114,8 @@ type RawEventSource = {
   org_id: string;
   prefix: string;
   secret: string | null;
+  cursor: string | null;
+  last_polled_at: number | null;
   config: string | null;
   health: string | null;
   created_at: number;
@@ -531,6 +545,35 @@ export class SqliteEventSourceRepo {
       .run(JSON.stringify({ ...cur.health, ...patch }), id);
   }
 
+  /**
+   * 位点推进 —— **全仓唯一一条写 `event_sources.cursor` 的语句**。
+   *
+   * 三条纪律，每条都用结构保证而不是靠调用方自觉：
+   *  1. **CAS**：`WHERE id = ? AND cursor IS ?`。调用方必须交回「它读到哪」，所以
+   *     重复推进 / 乱序推进 / 两个拉取者撞车 → 0 行 no-op，永远不会把位点推回去。
+   *     没有这个前置条件，「慢的那个覆盖快的」就是结构上可表达的 bug。
+   *  2. **只有成功才能拿到凭证**：入参类型 `CursorAdvance` 只在 core 里由
+   *     `mintCursorAdvance()` 铸造，该函数在 `failed > 0` 时直接抛错（拒绝 + 可行动提示）。
+   *     于是「消费失败还推进位点」不是靠人记得，而是拿不到凭证。
+   *  3. **一列一个问题**：推送式来源（webhook）**不写**这一列 —— 它没有读取位点。
+   *     所以本方法只有一个调用方：拉取消费编排的成功分支。
+   *
+   * @returns true = 本次推进生效；false = 期望位点已不匹配（他人已推进）或来源不存在
+   */
+  advanceCursor(a: {
+    sourceId: string;
+    /** 读取前看到的位点；CAS 期望值 */
+    expectedCursor: string | null;
+    /** 推进到的位点（批次末尾位置） */
+    cursor: string | null;
+    polledAt: number;
+  }): boolean {
+    const res = this.db
+      .prepare(`UPDATE event_sources SET cursor = ?, last_polled_at = ? WHERE id = ? AND cursor IS ?`)
+      .run(a.cursor, a.polledAt, a.sourceId, a.expectedCursor);
+    return Number(res.changes) > 0;
+  }
+
   delete(id: string): boolean {
     const res = this.db.prepare(`DELETE FROM event_sources WHERE id = ?`).run(id);
     return Number(res.changes) > 0;
@@ -568,6 +611,8 @@ function toEventSource(r: RawEventSource): EventSourceRow {
     id: r.id,
     orgId: r.org_id,
     prefix: r.prefix,
+    cursor: r.cursor ?? null,
+    lastPolledAt: r.last_polled_at ?? null,
     secret: r.secret,
     config: parseJson(r.config),
     health: parseJson(r.health),

@@ -916,15 +916,24 @@ CREATE TABLE IF NOT EXISTS resource_bindings (
 CREATE INDEX IF NOT EXISTS idx_rbd_holder   ON resource_bindings(holder_kind, holder_id);
 CREATE INDEX IF NOT EXISTS idx_rbd_resource ON resource_bindings(resource);
 
--- 来源配置：外部事件入口。secret 永不落日志。
+-- 来源配置：外部事件入口 + 读取位点。secret 永不落日志。
+--
+-- 为什么位点是独立列，而不是塞进 health（02 §2.1 原本的写法）：
+--   health 是**多写者的观测袋**（updateHealth 一律 {...cur.health, ...patch} 合并），
+--   任何一次上报都能悄悄改它；位点住进去就无法 CAS、无法审计，
+--   与「位点只有一个推进点」直接矛盾。
+--   一列只回答一个问题：cursor = 「这条来源的上游读到哪儿了」
+--   （NULL = 推送式来源，没有位点；或历史行，从未拉取过）。
 CREATE TABLE IF NOT EXISTS event_sources (
-  id         TEXT PRIMARY KEY,
-  org_id     TEXT NOT NULL,
-  prefix     TEXT NOT NULL,
-  secret     TEXT,
-  config     TEXT DEFAULT '{}',
-  health     TEXT DEFAULT '{}',
-  created_at INTEGER NOT NULL,
+  id             TEXT PRIMARY KEY,
+  org_id         TEXT NOT NULL,
+  prefix         TEXT NOT NULL,
+  secret         TEXT,
+  config         TEXT DEFAULT '{}',
+  health         TEXT DEFAULT '{}',
+  cursor         TEXT,
+  last_polled_at INTEGER,
+  created_at     INTEGER NOT NULL,
   UNIQUE(org_id, prefix)
 );
 
@@ -1071,6 +1080,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // 只加列、不回填 —— `trigger_id IS NULL` 即「历史行」，读路径回落自身 payload 列。
     // REFERENCES triggers(id)：triggers 由 SCHEMA_SQL 在同一事务内先建好；存量行全为 NULL。
     { table: 'mailbox_items', column: 'trigger_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN trigger_id TEXT REFERENCES triggers(id) ON DELETE SET NULL' },
+    // ─── Source 读取位点（B2）：只加列、不回填 —— `cursor IS NULL` 就是「推送式来源 / 历史行」──
+    { table: 'event_sources', column: 'cursor', sql: 'ALTER TABLE event_sources ADD COLUMN cursor TEXT' },
+    { table: 'event_sources', column: 'last_polled_at', sql: 'ALTER TABLE event_sources ADD COLUMN last_polled_at INTEGER' },
   ];
     for (const m of migrations) {
       const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
