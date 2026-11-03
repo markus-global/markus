@@ -2493,6 +2493,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [catFilter, setCatFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
+  // 展开 / 丢弃是**投递条目自己**的交互，随投递一起并进 thread 详情。
+  // （我一度把它们当死代码删掉——那是对的判断、错的前提：它们不是死了，是我把宿主删了。）
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const [notebookExpanded, setNotebookExpanded] = useState(false);
   const [hasMore, setHasMore] = useState(true);
@@ -2536,6 +2540,16 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     } catch { /* ignore */ }
     setLoading(false);
   }, [agentId, catFilter, statusFilter]);
+
+  /** 丢弃单条投递（带理由，可回溯）——对齐后端 mailbox:dropped 审计。 */
+  const handleDrop = useCallback(async (itemId: string) => {
+    setActionBusyId(itemId);
+    try {
+      await api.agents.dropMailboxItem(agentId, itemId, 'operator');
+      await load();
+    } catch { /* ignore */ }
+    finally { setActionBusyId(null); }
+  }, [agentId, load]);
 
   // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
   // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
@@ -2878,17 +2892,91 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 <p className="text-xs text-fg-tertiary">读取中…</p>
               ) : threadNodes.length === 0 && activeItems.length > 0 ? (
                 <div className="space-y-2">
-                  <p className="text-[10px] text-fg-tertiary">这件事还没有正式事件记录；以下是它收到过的投递。</p>
-                  {activeItems.map(it => (
-                    <div key={it.id}>
-                      <div className="text-[10px] text-fg-tertiary">
-                        {new Date(it.queuedAt).toLocaleString()} · {it.status}
+                  <p className="text-[10px] text-fg-tertiary">
+                    这件事还没有正式事件记录；以下是它收到过的投递（点开看正文与执行过程）。
+                  </p>
+                  {activeItems.map(item => {
+                    const isExpanded = expandedId === item.id;
+                    const display = getMailboxItemDisplay(item, t);
+                    // 状态点以权威事实为准：DB 记为 processing，但已不是当前 focus
+                    // 或 agent 已停 → stale，不谎称"在处理"。
+                    const rowDisplayStatus = deriveMailboxRowDisplayStatus({
+                      itemStatus: item.status,
+                      agentRunning,
+                      currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
+                      itemId: item.id,
+                    });
+                    const senderName = item.metadata?.senderName as string | undefined;
+                    const senderRole = item.metadata?.senderRole as string | undefined;
+                    return (
+                      <div key={item.id} className="bg-surface-elevated rounded-lg border border-border-subtle">
+                        <button
+                          className="w-full px-2.5 py-2 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
+                          onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                        >
+                          <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
+                          <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
+                          <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2">
+                              <span className="text-xs font-medium text-fg-primary truncate">{display.title}</span>
+                              {display.badge && <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>}
+                            </div>
+                            <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
+                              <span>{new Date(item.queuedAt).toLocaleString()}</span>
+                              {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
+                              {item.activity && item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
+                              {item.activity && item.activity.totalTools > 0 && <span>{item.activity.totalTools} 次工具</span>}
+                            </div>
+                          </div>
+                        </button>
+                        {isExpanded && (
+                          <div className="border-t border-border-subtle px-2.5 py-2 space-y-2">
+                            {senderName && (
+                              <div className="text-[10px] text-fg-tertiary">
+                                来自 <span className="text-fg-secondary">{senderName}</span>
+                                {senderRole && <span> ({senderRole})</span>}
+                              </div>
+                            )}
+                            {/* 正文是「来龙去脉」的实质：只给摘要就是把证据换成标题 */}
+                            {item.payload?.content && (
+                              <div className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary/50 p-2 text-xs text-fg-secondary">
+                                {item.payload.content}
+                              </div>
+                            )}
+                            {item.decisions && item.decisions.length > 0 && (
+                              <div className="space-y-1">
+                                {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
+                                  <div key={d.id} className="flex items-start gap-2 text-[11px]">
+                                    <span className={`shrink-0 rounded px-1.5 py-0.5 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
+                                    <span className="flex-1 text-fg-secondary">{d.reasoning}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {item.activity ? (
+                              item.activity.type === 'task' && item.payload?.taskId ? (
+                                <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
+                              ) : (
+                                <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
+                              )
+                            ) : rowDisplayStatus === 'processing' ? (
+                              <div className="py-1 text-[11px] text-fg-tertiary animate-pulse">处理中…</div>
+                            ) : rowDisplayStatus === 'stale' ? (
+                              <div className="py-1 text-[11px] text-amber-600">库记为处理中，但已不是当前 focus（陈旧）——可用上方「恢复」清理。</div>
+                            ) : null}
+                            {canManageAgents && (
+                              <button
+                                disabled={actionBusyId === item.id}
+                                onClick={() => { void handleDrop(item.id); }}
+                                className="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-40"
+                              >丢弃这一条</button>
+                            )}
+                          </div>
+                        )}
                       </div>
-                      <p className="whitespace-pre-wrap text-xs text-fg-primary">
-                        {String(it.payload?.summary ?? it.payload?.content ?? '（无摘要）').slice(0, 200)}
-                      </p>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               ) : threadNodes.length === 0 ? (
                 <p className="text-xs text-fg-tertiary">这件事还没有时间线记录。</p>
