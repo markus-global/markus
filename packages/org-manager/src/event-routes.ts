@@ -39,6 +39,14 @@ export interface EventRouteDeps {
      * 见 workspace/CONCEPT-CLARITY-*.md §8。现在 `/events` 从本仓库派生。
      */
     triggerRepo: any;
+    /**
+     * 票的仓储（`tickets` 表的**唯一写入者**，见 docs/architecture/ticket.md）。
+     *
+     * 为什么必填：`thread_subscriptions.ticket_id` 一直在指向一个不存在的对象
+     * （C1）。票表建起来之后，这个仓储就是它唯一的读写口 —— 缺它则 HTTP 面
+     * 只能回 501（而不是悄悄返回空数组冒充「没有票」）。
+     */
+    ticketRepo?: any;
   };
   /** 投递到 agent mailbox；未接线时返回 null（事件仍会留痕） */
   deliver: ((target: DispatchTarget) => void) | null;
@@ -535,6 +543,113 @@ export async function handleEventRoutes(
       const ok = deps.repos.resourceBindingRepo.unbind(decodeURIComponent(m[1]!));
       json(res, ok ? 200 : 404, { ok });
       return true;
+    }
+  }
+
+  // ── 票（执行侧的工作单位，见 docs/architecture/ticket.md）────────────────
+  // 边界：Task = 治理对象（该不该做/谁批/谁验收）；Ticket = 「这件外部来的东西归谁、办完没」。
+  // 票**不驱动执行**——没有 ticket → agent 的投递通道。这是它不变成「第二个任务」的判据。
+  //
+  // 单一写入点：本文件的三个入口都只调 `ticketRepo`（create / transition / linkTask），
+  // 不再有第二条「直接拼 SQL 建票」的路径（由 ticket-store.test.ts 的源码守卫咬住）。
+  {
+    const tickets = deps.repos.ticketRepo;
+    const unavailable = (): boolean => {
+      json(res, 501, { error: "该存储没有 ticketRepo，票功能不可用（属接线缺陷，不是业务错误）" });
+      return true;
+    };
+
+    if (path === '/api/tickets' && req.method === 'POST') {
+      if (!tickets) return unavailable();
+      const body = ((await (req as any).__parsedBody__) ?? {}) as Record<string, unknown>;
+      try {
+        const ticket = tickets.create({
+          orgId: String(body['orgId'] ?? deps.orgId),
+          kind: String(body['kind'] ?? ''),
+          sourceRef: body['sourceRef'] == null ? null : String(body['sourceRef']),
+          subject: String(body['subject'] ?? ''),
+          assignee: body['assignee'] == null ? null : String(body['assignee']),
+          taskId: body['taskId'] == null ? null : String(body['taskId']),
+        });
+        json(res, 201, { ticket });
+      } catch (err) {
+        // 拒绝 + 可行动提示（不是 500）：这三类都是调用方输入问题。
+        json(res, 400, { error: String((err as Error)?.message ?? err) });
+      }
+      return true;
+    }
+
+    {
+      const m = /^\/api\/tickets\/([^/]+)$/.exec(path);
+      if (m && req.method === 'GET') {
+        if (!tickets) return unavailable();
+        const ticket = tickets.getById(decodeURIComponent(m[1]!));
+        if (!ticket) {
+          // 404 而不是空对象：页面要能区分「票不存在」与「票存在但没内容」。
+          json(res, 404, {
+            error: `票 ${decodeURIComponent(m[1]!)} 不存在。用 POST /api/tickets 新建，或从 GET /api/tasks/:id/tickets 找正确的 id。`,
+          });
+          return true;
+        }
+        json(res, 200, { ticket });
+        return true;
+      }
+    }
+
+    {
+      // 流转状态（状态机唯一执行点在 repo，这里只做 HTTP 翻译）
+      const m = /^\/api\/tickets\/([^/]+)\/transition$/.exec(path);
+      if (m && req.method === 'POST') {
+        if (!tickets) return unavailable();
+        const body = ((await (req as any).__parsedBody__) ?? {}) as Record<string, unknown>;
+        try {
+          json(res, 200, { ticket: tickets.transition(decodeURIComponent(m[1]!), String(body['status'] ?? '') as any) });
+        } catch (err) {
+          const msg = String((err as Error)?.message ?? err);
+          // 票不存在 → 404；其余（非法状态 / 非法转移）→ 400。都不静默 upsert。
+          json(res, msg.startsWith('TICKET_NOT_FOUND') ? 404 : 400, { error: msg });
+        }
+        return true;
+      }
+    }
+
+    {
+      // 关联/断开任务（票不因 task 完成而消失，也不因 detach 被删）
+      const m = /^\/api\/tickets\/([^/]+)$/.exec(path);
+      if (m && req.method === 'PATCH') {
+        if (!tickets) return unavailable();
+        const body = ((await (req as any).__parsedBody__) ?? {}) as Record<string, unknown>;
+        if (!('taskId' in body)) {
+          json(res, 400, { error: "PATCH /api/tickets/:id 只接受 taskId（字符串或 null）。状态流转请用 POST /api/tickets/:id/transition。" });
+          return true;
+        }
+        try {
+          json(res, 200, {
+            ticket: tickets.linkTask(decodeURIComponent(m[1]!), body['taskId'] == null ? null : String(body['taskId'])),
+          });
+        } catch (err) {
+          const msg = String((err as Error)?.message ?? err);
+          json(res, msg.startsWith('TICKET_NOT_FOUND') ? 404 : 400, { error: msg });
+        }
+        return true;
+      }
+    }
+
+    {
+      // 某张任务上的票。先确认任务存在：否则「任务不存在」与「任务没有票」都返回空数组，
+      // 前端会把打错的 task id 显示成「这个任务没票」——差数据比没数据更坏。
+      const m = /^\/api\/tasks\/([^/]+)\/tickets$/.exec(path);
+      if (m && req.method === 'GET') {
+        if (!tickets) return unavailable();
+        const taskId = decodeURIComponent(m[1]!);
+        const task = deps.repos.taskRepo?.findById?.(taskId) ?? null;
+        if (!task) {
+          json(res, 404, { error: `任务 ${taskId} 不存在。用 GET /api/tasks 确认 id。` });
+          return true;
+        }
+        json(res, 200, { tickets: tickets.listByTask(taskId) });
+        return true;
+      }
     }
   }
 

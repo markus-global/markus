@@ -2876,6 +2876,8 @@ export class APIServer {
     if (
       path.startsWith('/api/threads') ||
       path.startsWith('/api/resources/bindings') ||
+      path.startsWith('/api/tickets') ||
+      /^\/api\/tasks\/[^/]+\/tickets$/.test(path) ||
       path.startsWith('/api/events')
     ) {
       if (!this.storage) {
@@ -2902,6 +2904,7 @@ export class APIServer {
             eventSourceRepo: this.storage.eventSourceRepo,
             // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
             triggerRepo: this.storage.triggerRepo,
+            ticketRepo: this.storage.ticketRepo,
             taskRepo: this.storage.taskRepo,
             approvalRepo: this.storage.approvalRepo,
           },
@@ -13859,6 +13862,11 @@ EXPLANATION_END`;
 
       // ── Tasks ───────────────────────────────────────────────────────────
       exact('/api/tasks', 'GET', 'POST'),
+      // 票（执行侧工作单位）：独立资源 + 「某任务的票」子资源
+      exact('/api/tickets', 'POST'),
+      regex(/^\/api\/tickets\/[^/]+$/, 'GET', 'PATCH'),
+      regex(/^\/api\/tickets\/[^/]+\/transition$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/tickets$/, 'GET'),
       exact('/api/tasks/scheduled', 'GET'),
       exact('/api/tasks/deliverables', 'GET'),
       exact('/api/tasks/dashboard', 'GET'),

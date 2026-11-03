@@ -825,6 +825,37 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 CREATE INDEX IF NOT EXISTS idx_threads_ref   ON threads(ref);
 
+-- 票：**执行侧的工作单位**（设计 01 §7.3；Owner 2026-11-03 裁定「任何事件都可挂票」）。
+--
+-- 与 tasks 的边界（详见 docs/architecture/ticket.md）：
+--   · task 是**治理对象**（该不该做 / 谁批 / 谁验收，9 个治理态 + 审批闸门）；
+--   · ticket 是**执行侧单位**（这件外部来的东西现在归谁、结束了没有，3 个态）；
+--   · 两者是**可选关联**，不是从属：task_id 可空 —— 一条评论、一封消息、一个 webhook
+--     都能挂票，不需要先有 Task。
+--
+-- ON DELETE SET NULL 是「删 task 不得级联删 ticket」的**结构表达**：
+-- 删任务只断开关联，票作为独立事实继续存在（票的结束由它自己的状态机决定）。
+-- 状态机唯一事实源：packages/shared/src/types/ticket.ts 的 TICKET_TRANSITIONS；
+-- 唯一写入点：packages/storage/src/ticket-store.ts（全仓 INSERT/UPDATE tickets 只允许在那里）。
+--
+-- org_id 刻意**不加**外键到 organizations：票的存在不应依赖组织配置先行落库，
+-- 否则「任何事件都能挂票」会被一条无关的初始化顺序卡死；Markus 单租户下
+-- org_id 恒为 'default'（api-server 的 orgId 口径），不构成引用完整性风险。
+CREATE TABLE IF NOT EXISTS tickets (
+  id         TEXT PRIMARY KEY,
+  org_id     TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  source_ref TEXT,
+  subject    TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'open',
+  assignee   TEXT,
+  task_id    TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_task        ON tickets(task_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_org_status  ON tickets(org_id, status, updated_at DESC);
+
 -- 订阅：直通的依据（own = 我负责；context = 我只是在看）
 CREATE TABLE IF NOT EXISTS thread_subscriptions (
   thread_id TEXT NOT NULL REFERENCES threads(id),
