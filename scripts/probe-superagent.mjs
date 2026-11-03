@@ -188,6 +188,23 @@ const RED_LINE_SAMPLES = {
 // 实现文档路径由设计文档推导（A0/G5 要同时看两篇）
 const IMPL_DOC = DESIGN_DOC ? DESIGN_DOC.replace('01-分析与目标设计', '02-实现方案与开发计划') : null;
 
+// ── schema 的真相来自**代码**，不是用户这台机器的库 ──────────────────────────
+// 教训（2026-11-03）：23 项探针报红，全部是「表不存在」——而当时运行的是 main
+// 分支的构建，它建的是另一套库。把「代码里有没有这张表」和「这台机器的库有没有
+// 迁移」混成一个判据，红绿都不可归因，连我自己都被误导过一次。
+// 所以：schema 用**临时库**把 SCHEMA_SQL 建一遍来判定（可复现）；真实流量另读生产库。
+let SCHEMA_TABLES = new Set();
+let SCHEMA_ERR = null;
+try {
+  const storage = await import(pathToFileURL(join(REPO, 'packages/storage/dist/index.js')).href);
+  const tmp = storage.openSqlite(':memory:');
+  for (const r of tmp.prepare("SELECT name FROM sqlite_master WHERE type='table'").all()) {
+    SCHEMA_TABLES.add(r.name);
+  }
+} catch (e) {
+  SCHEMA_ERR = String((e && e.message) || e);
+}
+
 // ── 数据库（只读） ──────────────────────────────────────────────────────────
 const db = existsSync(DB_PATH) ? new DatabaseSync(DB_PATH, { readOnly: true }) : null;
 function cnt(sql, ...params) {
@@ -199,7 +216,13 @@ function cnt(sql, ...params) {
     return 0;
   }
 }
-const hasTable = (name) => cnt(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name) > 0;
+/**
+ * 代码里有没有这张表 —— 用临时库把 SCHEMA_SQL 建一遍判定，与用户机器无关。
+ * 未构建时返回 false，但调用方应优先报「无法判定」而不是「表不存在」。
+ */
+const hasTable = (name) => SCHEMA_TABLES.has(name);
+/** 这台机器的**生产库**里有没有这张表：用于区分「代码没写」与「库没迁移」。 */
+const liveHasTable = (name) => cnt(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name) > 0;
 const hasText = (path, needle) => {
   if (!path || !existsSync(path)) return false;
   try {
@@ -831,6 +854,14 @@ if (wantJson) {
 } else {
   const size = db ? (statSync(DB_PATH).size / 1024 ** 3).toFixed(1) : '?';
   console.log(`\n探针目标库：${DB_PATH}（${size} GB，只读）`);
+  // 归因信息：这一行是 3.3 的修法。没有它，同一个「表不存在」既可能是
+  // 代码没写、也可能是这台机器的库没迁移，红绿都不可信。
+  const liveSchema = ['threads', 'triggers', 'thread_events', 'thread_dispositions', 'thread_subscriptions', 'resource_bindings']
+    .filter(liveHasTable).length;
+  console.log(liveSchema === 0
+    ? '  ⚠ 该库不含本分支 schema（0/6）→ 流量类判据不适用；schema 判定以代码（临时库）为准'
+    : `  该库含本分支 schema（${liveSchema}/6）→ 流量类判据可判定`);
+  if (SCHEMA_ERR) console.log(`  ⚠ 临时库建 schema 失败（无法判定代码侧）：${SCHEMA_ERR}`);
   console.log(`探针仓库：${REPO}`);
   console.log(`设计文档：${DESIGN_DOC ?? '（未提供 --design）'}\n`);
   for (const step of STEPS) {
