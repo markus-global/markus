@@ -15,6 +15,11 @@ import {
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
 import { expandImageRefs } from './attachments-store.js';
+// C2 拆轴（2026-11-03）：内容轴的唯一定义点 + `triggers` 的唯一写函数。
+// 本文件只**调用** `SqliteTriggerRepo.insertOrGet`（不复制它的 SQL），
+// 所以「`INSERT INTO triggers` 全仓唯一一处」这个事实继续成立（有结构测试守着）。
+import { splitMailboxContent, hydrateMailboxContent } from './mailbox-content.js';
+import { SqliteTriggerRepo } from './thread-store.js';
 
 type SqlParams = SQLInputValue[];
 
@@ -551,6 +556,16 @@ CREATE TABLE IF NOT EXISTS execution_stream_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_exec_stream_source ON execution_stream_logs(source_type, source_id, seq);
 
+-- 执行态 + 指针（C2 拆轴 2026-11-03）。
+--
+-- 本表**不存正文**：内容轴（这条事件说了什么）的唯一事实源是 triggers，
+-- 由 SqliteTriggerRepo.insertOrGet 唯一写入；本表只留执行态（投递目标 / 状态机 /
+-- 优先级 / 重试 / 认领租约 / 时间戳）与一个指针 trigger_id。
+--
+-- trigger_id 为空 = **历史行**（拆轴之前写入）：正文还在自己的 payload 列里，
+-- 读路径回落自身列，不搬不回填（H9 / I9）。判据是这一列的值，不是「trigger 读不到内容」。
+-- 轴清单见 docs/architecture/mailbox.md（有测试逐列核对，漏登记即红）。
+-- 不加反引号：本段是模板字符串，反引号会断模板（踩过一次）。
 CREATE TABLE IF NOT EXISTS mailbox_items (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -567,7 +582,10 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  -- 引用轴：内容在 triggers 里的那一行。trigger 若被删，行仍在、只是回到「历史行」形态
+  -- （ON DELETE SET NULL，不是级联删 —— 执行态不该因为正文被清理而消失）。
+  trigger_id TEXT REFERENCES triggers(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 
@@ -1049,6 +1067,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
+    // C2 拆轴（2026-11-03）：内容轴搬到 triggers，本表只留执行态 + 指针。
+    // 只加列、不回填 —— `trigger_id IS NULL` 即「历史行」，读路径回落自身 payload 列。
+    // REFERENCES triggers(id)：triggers 由 SCHEMA_SQL 在同一事务内先建好；存量行全为 NULL。
+    { table: 'mailbox_items', column: 'trigger_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN trigger_id TEXT REFERENCES triggers(id) ON DELETE SET NULL' },
   ];
     for (const m of migrations) {
       const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -4974,6 +4996,11 @@ export interface MailboxItemRow {
   status: string;
   payload: Record<string, unknown>;
   metadata: Record<string, unknown>;
+  /**
+   * C2 拆轴（2026-11-03）：正文所在 `triggers` 行的 id。
+   * 非空 = 正文只从 `triggers` 读；为 null = **历史行**（正文仍在自己 `payload` 里）。
+   */
+  triggerId?: string | null;
   queuedAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -5002,8 +5029,58 @@ export interface MailboxDedupRow {
   queuedAt: string;
 }
 
+/**
+ * mailbox 行 → 承载其正文的 trigger 的幂等键（C2）。
+ *
+ * 两个来源，都是**确定性**值（缓存友好纪律：不含时间/随机/计数器）：
+ *  1. `payload.extra.idempotencyKey` —— 调用方已把事件自身的键带下来了
+ *     （`event-ingress` 投 `system_event` 时会写它）。用它意味着**同一个外部事件
+ *     在库里只有一行正文**（ingress 写的那行），而不是「ingress 一行 + mailbox 一行」。
+ *  2. `mbx:<row id>` —— 没有事件键的投递（心跳、评论、任务状态…），按投递行一一对应。
+ *     同一行重复 save（重投 / 回队）走 `insertOrGet` 命中同一行，不产生第二份正文。
+ */
+function mailboxTriggerKey(item: { id: string; payload: Record<string, unknown> }): string {
+  const extra = item.payload['extra'];
+  const eventKey = extra && typeof extra === 'object'
+    ? (extra as Record<string, unknown>)['idempotencyKey']
+    : undefined;
+  return typeof eventKey === 'string' && eventKey.length > 0 ? eventKey : `mbx:${item.id}`;
+}
+
+/** `queued_at`（ISO TEXT）→ `triggers.received_at`（epoch ms）。解析失败不造时间：退回 0 会让时间线把它排到最前，故用 NaN 保护。 */
+function mailboxReceivedAt(queuedAt: string): number {
+  const ms = Date.parse(queuedAt);
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+/**
+ * 读路径统一投影（C2）：执行态 + 指向的正文。
+ *
+ * 为什么用 JOIN 而不是逐行再查一次：`loadQueued` 在启动时一次要取整个队列，
+ * 逐行查正文就是 N+1（N 是队列深度）。JOIN 让「取回一条带的正文」永远是一次查询。
+ *
+ * 别名 `trigger_summary` / `trigger_body` 而不是 `summary` / `body`：两张表都可能有
+ * 同名列，靠别名让 hydrate 只认一个来源，不靠列顺序猜。
+ * `m.*` 保证本表列集不变（`trigger_id` 由它带出，不需要单独列）。
+ */
+const MAILBOX_ROW_SELECT = `
+  SELECT m.*, t.summary AS trigger_summary, t.body AS trigger_body
+    FROM mailbox_items m
+    LEFT JOIN triggers t ON t.id = m.trigger_id`;
+
 export class SqliteMailboxRepo {
-  constructor(private db: DatabaseSync) {}
+  /**
+   * 内容写入器 —— `triggers` 的**唯一写函数**（`SqliteTriggerRepo.insertOrGet`）。
+   *
+   * 本类只**调用**它，不自己写 `INSERT INTO triggers`：那会让「内容只有一个写者」
+   * 变成「两个写者写了同一张表」。默认按同一个 db 句柄惰性构造，调用方无需改动装配
+   * （少一处可忘的接线 = 少一节断链）。
+   */
+  private readonly triggers: SqliteTriggerRepo;
+
+  constructor(private db: DatabaseSync, triggers?: SqliteTriggerRepo) {
+    this.triggers = triggers ?? new SqliteTriggerRepo(db);
+  }
 
   /**
    * 持久化一个 item。`dedupKey` 非空时依赖部分唯一索引 `uq_mailbox_agent_dedup`
@@ -5012,6 +5089,17 @@ export class SqliteMailboxRepo {
    * 用 `ON CONFLICT DO NOTHING`（而非原先的 `INSERT OR REPLACE`）有两个原因：
    * 1. 重复投递必须**被拒**（不产生第二行），而不是覆盖已有行；
    * 2. `OR REPLACE` 会先 DELETE 命中行再 INSERT，会把已有的认领/租约状态一并抹掉。
+   *
+   * ## C2 拆轴（2026-11-03）：正文搬去 `triggers`，本表只留执行态 + 指针
+   *
+   * 顺序是**先正文、后执行态**：正文进了 `triggers` 才有 id 可指；反过来写会留下
+   * 「有执行行、没正文」的孤儿（那正是最坏的一种不一致）。
+   * 两步同一事务；执行行被唯一键拒绝时整体回滚，不留下没人引用的一行正文。
+   *
+   * 幂等键 = `extra.idempotencyKey`（若调用方带事件自身的键，`event-ingress` 的
+   * `system_event` 就是这种）否则 `mbx:<item.id>`。前者让**同一个外部事件只有一行正文**
+   * （ingress 写的那行），后者按投递行一一对应。两者都是**确定性**值：
+   * 不含 `Date.now()` / 随机数 / 递增计数器，同一逻辑输入永远同一字节序列。
    *
    * @returns true = 本次插入成功；false = 重复（id 或 dedup_key 冲突）被拒。
    */
@@ -5027,18 +5115,53 @@ export class SqliteMailboxRepo {
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
   }): boolean {
-    const res = this.db
-      .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT DO NOTHING`
-      )
-      .run(
-        item.id, item.agentId, item.sourceType, item.priority,
-        item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
-        item.queuedAt, item.dedupKey ?? null,
-      );
-    return ((res as { changes?: number }).changes ?? 0) === 1;
+    const { content, rest } = splitMailboxContent(item.payload);
+
+    // 加入外层事务而不是嵌套（与 StreamWriteBatcher.writeBatch 同一手法）：
+    // save() 若被某个已开事务的调用方包住，这里不能再 BEGIN，否则嵌套事务直接抛错。
+    let began = false;
+    try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
+
+    try {
+      // ① 正文 → triggers（内容唯一写者，幂等）。
+      //    `kind = 'mailbox'`：这是**来源标记**，不是把 mailbox 的 15 值类型搬进 triggers
+      //    （那会把两条不同的分类轴混进一列，R1 原病）。行到底是哪种投递，读
+      //    `mailbox_items.source_type` —— 唯一写者仍在那一列。
+      const trigger = this.triggers.insertOrGet({
+        kind: 'mailbox',
+        idempotencyKey: mailboxTriggerKey(item),
+        summary: content.summary,
+        body: content.body.length > 0 ? content.body : null,
+        receivedAt: mailboxReceivedAt(item.queuedAt),
+      }).trigger;
+
+      // ② 执行态 + 指针（payload 已无内容键）。
+      const res = this.db
+        .prepare(
+          `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key, trigger_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
+        )
+        .run(
+          item.id, item.agentId, item.sourceType, item.priority,
+          item.status, projectJson(toJson(rest)), projectJson(toJson(item.metadata ?? {})),
+          item.queuedAt, item.dedupKey ?? null, (trigger as { id?: string }).id ?? null,
+        );
+      const inserted = ((res as { changes?: number }).changes ?? 0) === 1;
+
+      if (began) this.db.exec(inserted ? 'COMMIT' : 'ROLLBACK');
+      if (!inserted && !began) {
+        // 已被外层事务包住时无法局部回滚：正文行会留下但**没有执行行引用它**。
+        // 这不是丢消息（该投递本就被幂等键拒了），但确实是残留 —— 必须可观测。
+        log.warn('Mailbox duplicate suppressed inside an outer transaction — content row left unreferenced', {
+          id: item.id, agentId: item.agentId, triggerId: (trigger as { id?: string }).id,
+        });
+      }
+      return inserted;
+    } catch (err) {
+      if (began) { try { this.db.exec('ROLLBACK'); } catch { /* already unwound */ } }
+      throw err;
+    }
   }
 
   /**
@@ -5264,16 +5387,16 @@ export class SqliteMailboxRepo {
   }
 
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
-    let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
+    let sql = `${MAILBOX_ROW_SELECT} WHERE m.agent_id = ?`;
     const params: (string | number | null)[] = [agentId];
-    if (options?.status) { sql += ' AND status = ?'; params.push(options.status); }
-    sql += ' ORDER BY priority ASC, queued_at ASC';
+    if (options?.status) { sql += ' AND m.status = ?'; params.push(options.status); }
+    sql += ' ORDER BY m.priority ASC, m.queued_at ASC';
     if (options?.limit) { sql += ' LIMIT ?'; params.push(options.limit); }
     return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
   }
 
   getById(id: string): MailboxItemRow | undefined {
-    const row = this.db.prepare('SELECT * FROM mailbox_items WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const row = this.db.prepare(`${MAILBOX_ROW_SELECT} WHERE m.id = ?`).get(id) as Record<string, unknown> | undefined;
     return row ? this.mapRow(row) : undefined;
   }
 
@@ -5296,33 +5419,52 @@ export class SqliteMailboxRepo {
   }
 
   getHistory(agentId: string, opts?: { limit?: number; offset?: number; sourceTypes?: string[]; status?: string }): MailboxItemRow[] {
-    const conditions = ['agent_id = ?'];
+    const conditions = ['m.agent_id = ?'];
     const params: (string | number)[] = [agentId];
     if (opts?.sourceTypes && opts.sourceTypes.length > 0) {
-      conditions.push(`source_type IN (${opts.sourceTypes.map(() => '?').join(',')})`);
+      conditions.push(`m.source_type IN (${opts.sourceTypes.map(() => '?').join(',')})`);
       params.push(...opts.sourceTypes);
     }
     if (opts?.status) {
-      conditions.push('status = ?');
+      conditions.push('m.status = ?');
       params.push(opts.status);
     }
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
     params.push(limit, offset);
     return (this.db
-      .prepare(`SELECT * FROM mailbox_items WHERE ${conditions.join(' AND ')} ORDER BY queued_at DESC LIMIT ? OFFSET ?`)
+      .prepare(`${MAILBOX_ROW_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY m.queued_at DESC LIMIT ? OFFSET ?`)
       .all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
   }
 
+  /**
+   * 行 → 结构体的**唯一映射点**（`getByAgent` / `getById` / `getHistory` 全部经它）。
+   *
+   * C2 拆轴后这里多一步 hydrate：正文从 JOIN 来的 `triggers` 列取，
+   * `trigger_id IS NULL` 的历史行回落自身 `payload` 列。
+   * **回落判据是 `trigger_id` 的值，不是「trigger 里读不到内容」** —— 后者会把
+   * 「正文真的是空」误判成「没有正文」，又变成一次从载荷猜结构。
+   */
   private mapRow(r: Record<string, unknown>): MailboxItemRow {
+    const triggerId = (r['trigger_id'] as string | null) ?? null;
+    const storedPayload = fromJson<Record<string, unknown>>(r['payload'] as string) ?? {};
     return {
       id: r['id'] as string,
       agentId: r['agent_id'] as string,
       sourceType: r['source_type'] as string,
       priority: r['priority'] as number,
       status: r['status'] as string,
-      payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
+      payload: hydrateMailboxContent(
+        storedPayload,
+        triggerId
+          ? {
+              summary: r['trigger_summary'] as string | null,
+              body: r['trigger_body'] as string | null,
+            }
+          : null,
+      ),
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
+      triggerId,
       queuedAt: r['queued_at'] as string,
       startedAt: r['started_at'] as string | null,
       completedAt: r['completed_at'] as string | null,

@@ -90,11 +90,13 @@ describe('仓库写入自动外置（M1/M2/M4 的写路径）', () => {
   it('大 payload 落库为指针，读回来仍是原始对象', () => {
     const db = openSqlite(dbPath);
     const repo = new SqliteMailboxRepo(db);
-    const bigContent = 'T'.repeat(20_000);
+    // C2 拆轴后 `content` 不再落 mailbox（走 triggers），所以用**仍在执行态轴上的**
+    // 大字段（`extra` 里的任务上下文）来守这个机制 —— 断言点不变：大 JSON 必须外置成指针。
+    const bigContext = 'T'.repeat(20_000);
     repo.save({
       id: 'mbx_big', agentId: 'agt_1', sourceType: 'task_status_update',
       priority: 2, status: 'queued',
-      payload: { summary: 's', content: bigContent, taskId: 't1' },
+      payload: { summary: 's', content: 'small body', taskId: 't1', extra: { taskProjectContext: bigContext } },
       queuedAt: new Date().toISOString(),
     });
 
@@ -104,7 +106,9 @@ describe('仓库写入自动外置（M1/M2/M4 的写路径）', () => {
 
     const back = repo.getHistory('agt_1');
     expect(back).toHaveLength(1);
-    expect((back[0]!.payload as { content: string }).content).toBe(bigContent);
+    expect((back[0]!.payload as { extra: { taskProjectContext: string } }).extra.taskProjectContext).toBe(bigContext);
+    // 正文仍然完整（现在来自 triggers，不因外置而丢）
+    expect((back[0]!.payload as { content: string }).content).toBe('small body');
   });
 });
 
