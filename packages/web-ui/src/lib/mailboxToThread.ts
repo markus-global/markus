@@ -58,7 +58,11 @@ export interface ThreadGroup {
   kinds: string[];
 }
 
-function refOf(item: MailboxLike): string | null {
+/**
+ * 一条 mailbox 条目归属哪条流（null = 落不到实体）。导出供调用方按 ref 过滤 ——
+ * 「这件事收到过哪些投递」和「这些投递属于哪件事」必须是同一套解析，不能各写一份。
+ */
+export function refOf(item: MailboxLike): string | null {
   const p = item.payload ?? {};
   const raw = typeof p.taskId === 'string' ? p.taskId.trim() : '';
   if (raw) return raw.startsWith('tsk_') ? raw : `tsk_${raw}`;
