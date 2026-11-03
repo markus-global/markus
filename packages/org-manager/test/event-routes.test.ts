@@ -20,6 +20,7 @@ import {
   SqliteTaskRepo,
   SqliteApprovalRepo,
   SqliteTriggerRepo,
+  SqliteTicketRepo,
 } from '@markus/storage';
 import { handleEventRoutes } from '../src/event-routes.js';
 
@@ -32,6 +33,7 @@ let repos: {
   eventSourceRepo: SqliteEventSourceRepo;
   taskRepo?: SqliteTaskRepo;
   approvalRepo?: SqliteApprovalRepo;
+  ticketRepo?: SqliteTicketRepo;
 };
 
 beforeEach(() => {
@@ -384,6 +386,95 @@ describe('/api/threads — 存量视角（threads 表为空）', () => {
     expect(t).toBeDefined();
     expect(t.stage).toBe('person:approval');
     expect(t.ownerAgent).toBe('agt_z');
+  });
+});
+
+/**
+ * `GET /api/threads/one?ref=` —— B4 的读取面：**只给 ref** 就能拿到一条流的头部事实。
+ *
+ * 这组用例存在的理由：入口倒置之后，任务详情 / 票据详情 / agent 详情手里只有
+ * 一个实体 id，不能为了渲染一条流去拉全局列表再按 id 找。所以单读必须：
+ *   ① 在 threads 表为空时也能回答（日常主链路不建 thread）；
+ *   ② 与列表**同一个构造点**给出一致的 stage/taskStatus/title（否则同一事实两个口径）；
+ *   ③ 不编造它不知道的事实（只有 ref 时 title 必须是 null，不是「流 xxx」）。
+ */
+describe('/api/threads/one — 只给 ref 的单流读取', () => {
+  const insertTask = (id: string, status: string, title = `任务 ${id}`) =>
+    db
+      .prepare(
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, 'default', title, 'd', status, 'medium', 'agt_test', 'agt_test');
+
+  beforeEach(() => {
+    db.exec('PRAGMA foreign_keys = OFF');
+    repos.taskRepo = new SqliteTaskRepo(db);
+    repos.approvalRepo = new SqliteApprovalRepo(db);
+    repos.ticketRepo = new SqliteTicketRepo(db);
+  });
+
+  const one = async (ref: string) => {
+    const { res } = await call(
+      fakeReq({ method: 'GET', url: `/api/threads/one?ref=${encodeURIComponent(ref)}` }),
+      '/api/threads/one',
+    );
+    return res;
+  };
+
+  it('缺 ref → 400，且提示能直接抄（不是 500/空数组）', async () => {
+    const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads/one' }), '/api/threads/one');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('ref');
+    expect(res.body.hint).toContain('tsk_');
+  });
+
+  it('threads 表为空 + in_progress 任务 → 仍能读到这条流（不依赖全局列表）', async () => {
+    expect(repos.threadRepo.list(10)).toHaveLength(0);
+    insertTask('tsk_one1', 'in_progress', '修登录超时');
+
+    const res = await one('tsk_one1');
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe('tsk_one1');
+    // id = ref：调用方手里就是这个值，不要求它去换一套内部 id
+    expect(res.body.thread.id).toBe('tsk_one1');
+    expect(res.body.thread.title).toBe('修登录超时');
+    expect(res.body.thread.taskStatus).toBe('in_progress');
+    expect(res.body.thread.stage).toBe('working');
+    expect(res.body.thread.ownerAgent).toBe('agt_test');
+  });
+
+  it('单读与列表同一个构造点：同一 ref 的 stage/taskStatus/title 必须一致', async () => {
+    insertTask('tsk_one2', 'review', '待验收的事');
+
+    const single = await one('tsk_one2');
+    const { res: listRes } = await call(fakeReq({ method: 'GET', url: '/api/threads' }), '/api/threads');
+    const row = listRes.body.threads.find((x: any) => x.ref === 'tsk_one2');
+    expect(row).toBeDefined();
+    for (const k of ['stage', 'stageRank', 'taskStatus', 'title']) {
+      expect(single.body.thread[k]).toEqual(row[k]);
+    }
+  });
+
+  it('票据 ref → 标题取票的 subject（票也是「这件事」的凭据）', async () => {
+    const ticket = repos.ticketRepo!.create({
+      orgId: 'default',
+      kind: 'review-comment',
+      sourceRef: 'tsk_x',
+      subject: '验收意见：补齐边界用例',
+    });
+    const res = await one(ticket.id);
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe(ticket.id);
+    expect(res.body.thread.title).toBe('验收意见：补齐边界用例');
+  });
+
+  it('只有 ref、没有任何业务事实 → title 为 null（不编一个标题骗人）', async () => {
+    const res = await one('agent:agt_ghost');
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe('agent:agt_ghost');
+    expect(res.body.thread.title).toBeNull();
+    expect(res.body.thread.stage).toBe('idle');
   });
 });
 

@@ -3803,6 +3803,8 @@ export interface DispositionAPI {
   threadId: string;
   action: string;
   reason: string;
+  /** 命中的 Gate 规则（契约 §5；B1）。null = 处置非 Gate 规则产生。 */
+  matchedRule: string | null;
   /** 三态：true 会接 / false 不会接 / null 没问过（dispatch·attach·stop）。 */
   wouldAccept: boolean | null;
   actor: string;
@@ -3834,6 +3836,42 @@ function toEpochMs(v: unknown): number {
     return Number.isNaN(n) ? 0 : n;
   }
   return 0;
+}
+
+/**
+ * **只给 ref** 读一条流的头部事实（B4：入口倒置的读取面）。
+ *
+ * 为什么不用 `fetchThreads()` 再按 id 找：那要求调用方先拿到全局列表——
+ * 任务详情 / 票据详情 / agent 详情手里只有一个实体 id，为它渲染一条流
+ * 不该先去拉一份目录。三处入口共用本函数，是「组件只依赖 ref」的前提。
+ */
+export async function fetchThreadByRef(ref: string): Promise<{ thread: ThreadAPI }> {
+  const r = await request<{ thread: ThreadAPI }>(`/threads/one?ref=${encodeURIComponent(ref)}`);
+  return { thread: { ...r.thread, lastActivity: toEpochMs(r.thread.lastActivity) } };
+}
+
+/** 票据（C1 建立的独立对象）。票不驱动执行，但它是「这件事的凭据」。 */
+export interface TicketAPI {
+  id: string;
+  orgId: string;
+  kind: string;
+  sourceRef: string | null;
+  subject: string;
+  assignee: string | null;
+  taskId: string | null;
+  status: string;
+  createdAt?: string | number;
+  updatedAt?: string | number;
+}
+
+/** 某张任务卡名下的票据。没有票时返回空数组，不是 404。 */
+export function fetchTaskTickets(taskId: string): Promise<{ tickets: TicketAPI[] }> {
+  return request(`/tasks/${encodeURIComponent(taskId)}/tickets`);
+}
+
+/** 单张票。票不存在时后端回 404 + 可行动提示（页面要能区分「没内容」与「没这张票」）。 */
+export function fetchTicket(ticketId: string): Promise<{ ticket: TicketAPI }> {
+  return request(`/tickets/${encodeURIComponent(ticketId)}`);
 }
 
 export function fetchThreadDispositions(threadId: string): Promise<{ dispositions: DispositionAPI[] }> {

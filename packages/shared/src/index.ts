@@ -42,4 +42,5 @@ export * from './limits.js';
 export * from './sanitize.js';
 export * from './mas.js';
 export * from './types/thread.js';
+export * from './types/ticket.js';
 export * from './types/action-class.js';

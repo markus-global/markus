@@ -46,6 +46,12 @@ export interface DispositionRow {
   action: string;
   reason: string;
   /**
+   * 命中的 Gate 规则 id（契约 §5 六条，见 shared `MatchedRule`）。
+   * null = 处置不是由 Gate 规则产生的（历史行 / 外部直接写入）。
+   * 它是「为什么走了这条」的机器可读载体，与 `reason`（人话）互补。
+   */
+  matchedRule: string | null;
+  /**
    * 「若闸门放行，他会不会接」。三态：
    *   true      会接
    *   false     不会接
@@ -61,6 +67,18 @@ export interface EventSourceRow {
   id: string;
   orgId: string;
   prefix: string;
+  /**
+   * 读取位点：**这条来源的上游读到哪儿了**。
+   *
+   * - `null` = 没有位点：推送式来源（webhook）不读，或历史行从未拉取过。
+   * - 非 null = 上一次**全部消费成功**后提交的位置（失败不推进，见 `advanceCursor`）。
+   *
+   * 与幂等键的分工：位点负责「不重复拉」（拉取侧、按上游顺序），
+   * 幂等键负责「重复投递只留一行」（入口侧、与顺序无关）。两者不可互替。
+   */
+  cursor: string | null;
+  /** 最近一次拉取尝试的时间（观测用，不参与任何判定） */
+  lastPolledAt: number | null;
   /** HMAC 密钥；**永不**写日志、永不进 API 响应 */
   secret: string | null;
   config: Record<string, unknown>;
@@ -81,6 +99,7 @@ type RawDisposition = {
   thread_id: string;
   action: string;
   reason: string;
+  matched_rule: string | null;
   would_accept: number | null;
   actor: string;
   created_at: number;
@@ -102,6 +121,8 @@ type RawEventSource = {
   org_id: string;
   prefix: string;
   secret: string | null;
+  cursor: string | null;
+  last_polled_at: number | null;
   config: string | null;
   health: string | null;
   created_at: number;
@@ -151,6 +172,7 @@ const toDisposition = (r: RawDisposition): DispositionRow => ({
   threadId: r.thread_id,
   action: r.action,
   reason: r.reason,
+  matchedRule: r.matched_rule,
   wouldAccept: WouldAccept.decode(r.would_accept),
   actor: r.actor,
   createdAt: r.created_at,
@@ -272,6 +294,8 @@ export class SqliteDispositionRepo {
     threadId: string;
     action: string;
     reason: string;
+    /** 命中的 Gate 规则（契约 §5）。null = 处置与 Gate 规则无关 / 未记录。 */
+    matchedRule?: string | null;
     /** 三态：见 `WouldAccept`。缺省 = 本次处置没问过这个问题 → 落 NULL。 */
     wouldAccept?: boolean;
     actor?: string;
@@ -282,8 +306,8 @@ export class SqliteDispositionRepo {
     }
     const res = this.db
       .prepare(
-        `INSERT INTO thread_dispositions (id, trigger_id, thread_id, action, reason, would_accept, actor, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO thread_dispositions (id, trigger_id, thread_id, action, reason, matched_rule, would_accept, actor, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(trigger_id, thread_id) DO NOTHING`,
       )
       .run(
@@ -292,6 +316,7 @@ export class SqliteDispositionRepo {
         d.threadId,
         d.action,
         d.reason,
+        d.matchedRule ?? null,
         WouldAccept.encode(d.wouldAccept),
         d.actor ?? 'router',
         d.createdAt ?? Date.now(),
@@ -364,9 +389,12 @@ export class SqliteResourceBindingRepo {
   }): { ok: true; binding: ResourceBinding } | { ok: false; reason: string } {
     const existing = this.findByHolder(b.holder.kind, b.holder.id, b.resource);
     if (existing) {
-      this.db
-        .prepare(`UPDATE resource_bindings SET scope = ?, autonomy = ?, granted_by = ?, since = ? WHERE id = ?`)
-        .run(b.scope, b.autonomy ?? existing.autonomy, b.grantedBy, b.since ?? Date.now(), existing.id);
+      const written = this.writeTranslatingL3(b.resource, () =>
+        this.db
+          .prepare(`UPDATE resource_bindings SET scope = ?, autonomy = ?, granted_by = ?, since = ? WHERE id = ?`)
+          .run(b.scope, b.autonomy ?? existing.autonomy, b.grantedBy, b.since ?? Date.now(), existing.id),
+      );
+      if (!written.ok) return written;
       const updated = this.findById(existing.id);
       if (!updated) throw new Error(`BINDING_VANISHED: ${existing.id}`);
       // 已存在绑定也要补订阅：它可能是本次修复之前（或经 API 路径）创建的，
@@ -375,29 +403,52 @@ export class SqliteResourceBindingRepo {
       return { ok: true, binding: updated };
     }
 
-    if (b.scope === 'admin') {
-      const holders = this.listByResource(b.resource).filter(x => x.scope === 'admin');
-      if (holders.length > 0) {
-        const h = holders[0]!;
-        return {
-          ok: false,
-          reason: `资源 ${b.resource} 已由 ${h.holder.kind}:${h.holder.id} 以 admin 档负责。要接管，先让对方释放，或由人执行 transfer（transfer 会记录审计）。`,
-        };
-      }
-    }
-
+    // 刻意**没有**「先查有没有别的 admin，再插入」的预检：
+    // 那是一个只在单进程单连接内成立的检查（靠排队保证正确性），并发下两个调用
+    // 各自查到「还没有 admin」，然后都插进去了 —— 这正是两个写者同时改一个东西。
+    // I8 现在由数据库的部分唯一索引 `uniq_rbd_l3` 守（sqlite-storage.ts 迁移段），
+    // 这里只负责把约束错误翻译成人能照着做的提示。
     const id = b.id ?? `rbd_${randomId()}`;
-    this.db
-      .prepare(
-        `INSERT INTO resource_bindings (id, holder_kind, holder_id, resource, scope, autonomy, granted_by, since)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(id, b.holder.kind, b.holder.id, b.resource, b.scope, b.autonomy ?? 'observe', b.grantedBy, b.since ?? Date.now());
+    const written = this.writeTranslatingL3(b.resource, () =>
+      this.db
+        .prepare(
+          `INSERT INTO resource_bindings (id, holder_kind, holder_id, resource, scope, autonomy, granted_by, since)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(id, b.holder.kind, b.holder.id, b.resource, b.scope, b.autonomy ?? 'observe', b.grantedBy, b.since ?? Date.now()),
+    );
+    if (!written.ok) return written;
     const created = this.findById(id);
     if (!created) throw new Error(`BINDING_INSERT_FAILED: ${id}`);
     // 绑定即订阅：同一次调用里完成，调用方不需要记得补。
     this.ensureSubscription(b.resource, b.holder);
     return { ok: true, binding: created };
+  }
+
+  /**
+   * 把 L3 唯一性约束错误翻译成**可行动提示**（平台规则第 5 条：越界时拒绝 + 给提示）。
+   *
+   * 为什么不在写入前预检、而是接住约束错误：预检是第二写者，而且它只能看见
+   * 自己这条连接上的状态。约束是唯一执行点，所以「谁占着」这件事要**事后读**——
+   * 顺带天然正确：读到的就是当前真实持有者。
+   */
+  private writeTranslatingL3(
+    resource: string,
+    write: () => { changes: number | bigint },
+  ): { ok: true } | { ok: false; reason: string } {
+    try {
+      write();
+      return { ok: true };
+    } catch (err) {
+      if (!isL3UniqueViolation(err)) throw err;
+      const holder = this.listByResource(resource).find(x => x.scope === 'admin');
+      const who = holder ? `${holder.holder.kind}:${holder.holder.id}` : '另一个持有者';
+      return {
+        ok: false,
+        reason: `资源 ${resource} 已由 ${who} 以 admin 档负责（同一资源同一时刻只能有一个 L3 责任人，I8）。`
+          + '要接管，先让对方释放，或由人执行 transfer（transfer 会记录审计）。',
+      };
+    }
   }
 
   findById(id: string): ResourceBinding | null {
@@ -531,6 +582,35 @@ export class SqliteEventSourceRepo {
       .run(JSON.stringify({ ...cur.health, ...patch }), id);
   }
 
+  /**
+   * 位点推进 —— **全仓唯一一条写 `event_sources.cursor` 的语句**。
+   *
+   * 三条纪律，每条都用结构保证而不是靠调用方自觉：
+   *  1. **CAS**：`WHERE id = ? AND cursor IS ?`。调用方必须交回「它读到哪」，所以
+   *     重复推进 / 乱序推进 / 两个拉取者撞车 → 0 行 no-op，永远不会把位点推回去。
+   *     没有这个前置条件，「慢的那个覆盖快的」就是结构上可表达的 bug。
+   *  2. **只有成功才能拿到凭证**：入参类型 `CursorAdvance` 只在 core 里由
+   *     `mintCursorAdvance()` 铸造，该函数在 `failed > 0` 时直接抛错（拒绝 + 可行动提示）。
+   *     于是「消费失败还推进位点」不是靠人记得，而是拿不到凭证。
+   *  3. **一列一个问题**：推送式来源（webhook）**不写**这一列 —— 它没有读取位点。
+   *     所以本方法只有一个调用方：拉取消费编排的成功分支。
+   *
+   * @returns true = 本次推进生效；false = 期望位点已不匹配（他人已推进）或来源不存在
+   */
+  advanceCursor(a: {
+    sourceId: string;
+    /** 读取前看到的位点；CAS 期望值 */
+    expectedCursor: string | null;
+    /** 推进到的位点（批次末尾位置） */
+    cursor: string | null;
+    polledAt: number;
+  }): boolean {
+    const res = this.db
+      .prepare(`UPDATE event_sources SET cursor = ?, last_polled_at = ? WHERE id = ? AND cursor IS ?`)
+      .run(a.cursor, a.polledAt, a.sourceId, a.expectedCursor);
+    return Number(res.changes) > 0;
+  }
+
   delete(id: string): boolean {
     const res = this.db.prepare(`DELETE FROM event_sources WHERE id = ?`).run(id);
     return Number(res.changes) > 0;
@@ -563,11 +643,26 @@ function toBinding(r: RawBinding): ResourceBinding {
   };
 }
 
+/**
+ * 这条错误是不是「同一资源只能有一个 admin」那条部分唯一索引（`uniq_rbd_l3`）。
+ *
+ * 判据刻意**只认约束名**，不认泛化的 `UNIQUE constraint failed`：
+ * `resource_bindings` 上还有 `UNIQUE(holder_kind, holder_id, resource)`，
+ * 把两者混为一谈会把「同一个 holder 重复绑定」误报成「L3 被别人占了」——
+ * 那种提示会把 agent 引向一个不存在的人。
+ */
+function isL3UniqueViolation(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return /uniq_rbd_l3/i.test(msg) || /resource_bindings\.resource/i.test(msg);
+}
+
 function toEventSource(r: RawEventSource): EventSourceRow {
   return {
     id: r.id,
     orgId: r.org_id,
     prefix: r.prefix,
+    cursor: r.cursor ?? null,
+    lastPolledAt: r.last_polled_at ?? null,
     secret: r.secret,
     config: parseJson(r.config),
     health: parseJson(r.health),

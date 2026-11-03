@@ -10,10 +10,12 @@
 import { ThreadService } from './thread-service.js';
 import type { RouteInput } from './thread-service.js';
 import type { NormalizedEvent, RawEvent, SourceRegistry } from './event-source.js';
+import type { Admission, AdmissionRule } from './source-admission.js';
 
 export type IngressStatus =
   | 'unknown-source' // 前缀没有注册适配器
   | 'unauthorized' // 签名不对 → 401，不解析载荷
+  | 'filtered' // 准入判定拒绝（进领域之前就丢：自激 / 类别 / 范围 / 时间窗）
   | 'duplicate' // 幂等命中 → 200，不重复处理
   | 'direct-through' // 命中已有主/订阅 → 投给持有者，不产生处置
   | 'dispatched' // 人已指定目标 → 直接投递
@@ -27,6 +29,18 @@ export interface IngressResult {
   threadId?: string;
   ticketId?: string;
   events: number;
+  /**
+   * 本次投递是否**失败**（区别于「被规则拒绝」）。
+   *
+   * 只用于一件事：拉取侧位点推进的判据 —— 失败不得推进位点（宁可重拉，不可漏）。
+   * 因此它必须是**入口自己给的结论**，而不是让消费方猜 `status` 的字符串含义
+   * （「ignored」既可能是「规则拒绝」也可能是「归一化失败」，猜错就会漏事件）。
+   */
+  failed?: boolean;
+  /** 被准入规则拒绝时的可判定标签（与 `reason` 同一份事实） */
+  filteredBy?: AdmissionRule;
+  /** 一个请求含多个事件时，逐事件结果（批量入口与测试用；单事件可省略） */
+  results?: IngressResult[];
 }
 
 export interface DispatchTarget {
@@ -41,6 +55,14 @@ export interface DispatchTarget {
 export interface IngressDeps {
   registry: SourceRegistry;
   service: ThreadService;
+  /**
+   * 准入判定：**什么算事件**。
+   *
+   * **刻意是必填**（与 `triggers` 同一个教训）：可选时漏传不报类型错、运行期也不报错，
+   * 事件照样路由 —— 只是「机器人自己发的消息」不再被丢弃，自激循环重新变成可能。
+   * 改必填 = 漏传变成编译错误。判定逻辑本身只在 `source-admission.ts` 一处。
+   */
+  admission: (ev: NormalizedEvent) => Admission;
   /** 投递到 agent mailbox。core 不直接依赖 agent，由调用方注入。 */
   deliver(target: DispatchTarget): void;
   /**
@@ -81,12 +103,12 @@ export class EventIngress {
     // 1. 来源必须已注册（未注册 = 拒绝，而不是「先收下再说」）
     const adapter = this.deps.registry.get(raw.prefix);
     if (!adapter) {
-      return { status: 'unknown-source', reason: `未注册的来源前缀 ${raw.prefix}：请先在 event_sources 里登记适配器`, events: 0 };
+      return { status: 'unknown-source', failed: true, reason: `未注册的来源前缀 ${raw.prefix}：请先在 event_sources 里登记适配器`, events: 0 };
     }
 
     // 2. 签名：失败即返回，**不解析载荷**
     if (!adapter.verify(raw)) {
-      return { status: 'unauthorized', reason: `${raw.prefix} 签名校验失败（原始字节 HMAC 不匹配）`, events: 0 };
+      return { status: 'unauthorized', failed: true, reason: `${raw.prefix} 签名校验失败（原始字节 HMAC 不匹配）`, events: 0 };
     }
 
     // 3. 归一化（一个请求可能是多个事件）
@@ -94,20 +116,37 @@ export class EventIngress {
     try {
       events = adapter.normalize(raw);
     } catch (e) {
-      return { status: 'ignored', reason: `归一化失败：${(e as Error).message}`, events: 0 };
+      return { status: 'ignored', failed: true, reason: `归一化失败：${(e as Error).message}`, events: 0 };
     }
     if (events.length === 0) return { status: 'ignored', reason: '该载荷不包含需要处理的事件', events: 0 };
 
     // 4. 逐事件走同一条确定性链路
+    const results: IngressResult[] = [];
     let last: IngressResult = { status: 'ignored', reason: '无事件', events: 0 };
     for (const ev of events) {
-      last = this.ingestOne(ev);
+      try {
+        last = this.ingestOne(ev);
+      } catch (e) {
+        // 单事件异常不静默：标 failed 让拉取侧拒绝推进位点，而不是「这条过去了」。
+        last = { status: 'ignored', failed: true, reason: `处理异常：${(e as Error).message}`, events: 1 };
+      }
+      results.push(last);
       if (last.status === 'unauthorized' || last.status === 'unknown-source') break;
     }
-    return { ...last, events: events.length };
+    return { ...last, events: events.length, results };
   }
 
   private ingestOne(ev: NormalizedEvent): IngressResult {
+    // 0. 准入：**进领域之前**丢弃（自激 / 类别 / 监听范围 / 时间窗）。
+    //
+    // 为什么必须在 `triggers.insertOrGet` 之前：被规则拒绝的事件不该占用幂等键
+    // —— 否则「同一个 id，先被过滤、后来又在监听范围内」就会被错认成重复而永久丢失。
+    // 同理也不该产生 disposition：领域根本没看见它。
+    const verdict = this.deps.admission(ev);
+    if (!verdict.admitted) {
+      return { status: 'filtered', reason: verdict.reason, filteredBy: verdict.rule, events: 1 };
+    }
+
     // 触发器登记：**先登记「这条消息从哪来」，再路由**。
     //
     // 为什么必须在 route() 之前：`route()` 用 `countByTrigger` 判幂等，

@@ -527,7 +527,8 @@
         "systemEvent": "System Event",
         "statusArrow": "{{from}} → {{to}}"
       }
-    }
+    },
+    "stream": "Stream"
   },
   "deliverables": {
     "empty": "No deliverables yet",

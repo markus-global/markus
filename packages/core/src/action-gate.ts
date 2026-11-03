@@ -24,9 +24,86 @@
  *   没有审批通道 → 明确拒绝 + 给出可行动的替代（用 request_user_input 问人）
  */
 
-import { createLogger, classifyToolAction, gateAction, type ActionClass } from '@markus/shared';
+import { createLogger, classifyToolAction, gateAction, authorizeAction, type ActionClass, type AuthorizationResult, type Autonomy, type MandateState, type ResourceScope } from '@markus/shared';
 
 const log = createLogger('action-gate');
+
+/**
+ * 一次工具调用的授权结论。
+ *
+ * `authz === null` **不是「放行」**，它的意思是「这次调用没有点名资源，资源域授权不适用」——
+ * 平台实体（`tsk_…` / `proj_…`）由任务/需求/审查那条链授权，不是责任域。
+ * 把两者混成一个 `allow` 会让「没有绑定」看起来像「已批准」。
+ */
+export interface ToolAuthorization {
+  action: ActionClass;
+  redLine: boolean;
+  authz: AuthorizationResult | null;
+}
+
+/**
+ * 工具调用的授权判定 —— 把「动作多难撤回」与「逐资源绑定 + 逐件事审批」合到一处。
+ *
+ * 为什么必须在这里合，而不是各自在调用点判：
+ * `isRedLineTool()`（本文件）只看工具名，**完全不知道绑定**；`gateAction()` 只看
+ * autonomy，**不看绑定授予的 scope 上限**。于是两个方向都能被绕过（A4）：
+ *   ① 绑定 admin / autonomy=trusted 被当成「这件事批了」；
+ *   ② 绑定只到 read、autonomy=auto 时，publish 动作被放行。
+ * 合并后两者共用同一个 `authorizeAction()`（唯一判定点），本函数只负责把工具名翻译成
+ * `actionScope`、把资源键翻译成绑定 + 审批状态。
+ */
+export function authorizeToolCall(params: {
+  toolName: string;
+  /** 这次调用点名的资源键；`undefined` = 不适用资源域授权 */
+  resource?: string;
+  /** 该 agent 在该资源上的绑定；`null` = 点名了资源但没有任何绑定 */
+  binding?: { scope: ResourceScope; autonomy: Autonomy } | null;
+  /** 逐件事审批状态的读取器（缺省 = none：不知道就是没批，不猜成已批） */
+  mandateFor?: (resource: string, actionScope: ResourceScope) => MandateState;
+  approver?: string;
+}): ToolAuthorization {
+  const action = classifyToolAction(params.toolName);
+  // 红线 = 连最高档都过不去 ⟺ 拒绝来自动作本身（admin）。判据与 gateAction 同源。
+  const redLine = gateAction(action.scope, 'trusted') === 'deny';
+
+  if (params.resource === undefined) return { action, redLine, authz: null };
+
+  const authz = authorizeAction({
+    binding: params.binding ?? null,
+    actionScope: action.scope,
+    mandate: params.mandateFor?.(params.resource, action.scope) ?? 'none',
+    resource: params.resource,
+    approver: params.approver,
+  });
+  return { action, redLine, authz };
+}
+
+/**
+ * 授权拒绝/只记录的结构化返回 —— Agent 看不到日志，只能靠返回值建模。
+ *
+ * 与 `redLineRefusal` 的分工：那个回答「这个动作类型永远要人批」，这个回答
+ * 「**你**现在对**这块地**没这个权」。两者可以同时成立，但提示不同、解法不同，
+ * 所以不合并 —— 合并后的提示只能写一半，agent 会照着错的半边去试。
+ */
+export function authorizationRefusal(
+  toolName: string,
+  action: ActionClass,
+  authz: AuthorizationResult,
+): string {
+  const recordedOnly = authz.verdict === 'record-only';
+  return JSON.stringify({
+    status: recordedOnly ? 'recorded-only' : 'denied',
+    code: recordedOnly ? 'AUTHORIZATION_OBSERVE' : 'AUTHORIZATION_DENIED',
+    blockedTool: toolName,
+    reasonCode: authz.code,
+    scope: action.scope,
+    reason: authz.reason,
+    hint: authz.hint,
+    note: recordedOnly
+      ? 'observe 档的语义是「看得到、提建议、不代你动手」：判断已记录，动作未执行。'
+      : '这是授权边界（谁有权做、做到哪一步），不是动作类型限制。换工具名 / 拆成多条命令都属于绕过。',
+  });
+}
 
 /** 一次闸门判定的结果。 */
 export interface GateDecision {

@@ -114,3 +114,6 @@ export type {
   EventSourceRow,
   TriggerRow,
 } from './thread-store.js';
+
+// Ticket 持久层（执行侧工作单位；设计见 docs/architecture/ticket.md）
+export { SqliteTicketRepo } from './ticket-store.js';

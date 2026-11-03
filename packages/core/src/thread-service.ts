@@ -10,7 +10,7 @@
  */
 import {
   gateVerdict, deliveryFor,
-  type ActorKind, type Addressing, type Autonomy, type Disposition, type GateVerdict, type ThreadRef, type TriggerKind,
+  type ActorKind, type Addressing, type Autonomy, type Disposition, type GateVerdict, type MatchedRule, type ThreadRef, type TriggerKind,
 } from '@markus/shared';
 import type { WakeEvent } from './rest-wake.js';
 
@@ -40,12 +40,39 @@ export interface DispositionStoreLike {
     threadId: string;
     action: string;
     reason: string;
+    /** 命中的 Gate 规则（契约 §5；B1）。缺省 = 处置与 Gate 规则无关。 */
+    matchedRule?: string | null;
     wouldAccept?: boolean;
     actor?: string;
     createdAt?: number;
   }): boolean;
   countByTrigger(triggerId: string): number;
 }
+
+/**
+ * Eval 两段语义（B1）里第 2 段 assessment（LLM 研判）的**可插拔引擎**。
+ *
+ * - **可插拔**：由调用方注入（仿 `autonomyFor` 的注入模式），core 不依赖任何 LLM 实现。
+ * - **无引擎 = 合法配置**（不是错误）：`assess` 为 `undefined` 时，gate 未命中的事件
+ *   降级为 `needs-assessment`（保留 v1 现行为），**不抛异常、不静默当 accept**。
+ * - **引擎返回 `decided:false`** = 引擎存在但判不了（例如置信度不足 / 载荷不完整）
+ *   → 同样降级为 needs-assessment，并把引擎给的原因写进 reason。
+ */
+export interface AssessInput {
+  kind: TriggerKind;
+  ref: ThreadRef;
+  actorKind: ActorKind;
+  addressing: Addressing;
+  threadEnded?: boolean;
+  entityRef?: ThreadRef;
+  directTargetAgentId?: string;
+  summary?: string;
+  body?: string;
+}
+
+export type AssessOutcome =
+  | { decided: true; disposition: Disposition }
+  | { decided: false; reason: string };
 
 export interface RouteInput {
   triggerId: string;
@@ -64,6 +91,11 @@ export interface RouteInput {
 export interface RouteResult {
   verdict: GateVerdict;
   threadId: string;
+  /**
+   * 命中的 Gate 规则（契约 §5；B1）。随 `decision` 一并产出，供调用方展示/审计，
+   * 也随 `dispositions.record(matchedRule)` 落库 —— 回答「Eval 为什么走了这条」。
+   */
+  matchedRule?: MatchedRule;
   /** null = 直通：命中已有主/订阅，不产生处置记录（流本身就是证据） */
   decision: Disposition | null;
   /** 直通时命中的 ticket（v1 里 ticket 就是 thread 本身） */
@@ -103,6 +135,18 @@ export class ThreadService {
        * 生产由 org-manager 注入真绑定查询 —— **一条链路上只有一个读档位的地方**。
        */
       autonomyFor?: (ref: ThreadRef, agentId: string) => Autonomy | null;
+      /**
+       * Eval 第 2 段：assessment（LLM 研判）的可插拔引擎。
+       *
+       * - **未注入 = 合法配置**：gate 未命中时降级 needs-assessment（保留 v1 行为），
+       *   不抛异常、不静默当 accept。所以生产（org-manager）不注入也能跑 —— 这是默认。
+       * - 注入后：仅当 gate 规则 1–5 全部未命中（verdict==='assess'）时才调用它。
+       *   （规则命中时**绝不**调 assessment —— 见 `decisionFor`，有测试守着零调用。）
+       *
+       * 为什么由外部注入而不是 core 直接依赖 LLM：core 分层不碰任何 provider/gateway，
+       * 和 `autonomyFor` 同一个道理 —— 测试里注入一个 spy 就能断言「命中了不去研判」。
+       */
+      assess?: (input: AssessInput) => AssessOutcome | undefined;
     },
   ) {}
 
@@ -184,7 +228,12 @@ export class ThreadService {
 
     if (verdict === 'duplicate') {
       // 不重复写审计（UNIQUE 也会挡），只回报判定结果
-      return { verdict, threadId: thread.id, decision: { action: 'ignore', threadRef: input.ref, reason: '幂等命中：该事件已处置过', wouldAccept: false } };
+      return {
+        verdict,
+        threadId: thread.id,
+        matchedRule: 'duplicate',
+        decision: { action: 'ignore', threadRef: input.ref, reason: '幂等命中：该事件已处置过', wouldAccept: false },
+      };
     }
 
     if (verdict === 'direct-through') {
@@ -201,7 +250,7 @@ export class ThreadService {
       if (delivery === 'drop') {
         // off：只记录事件发生过，不投递、不动手，也不写「判断」——
         // 没做的决定没有可记的内容（写了就是把「没判断」伪装成「判断过」）。
-        return { verdict, threadId: thread.id, decision: null, ticketId, delivery };
+        return { verdict, threadId: thread.id, matchedRule: 'direct-through', decision: null, ticketId, delivery };
       }
       if (delivery === 'record-only') {
         // observe：记下「本会接」但不叫醒。`wouldAccept: true` 是这句记录的
@@ -212,20 +261,20 @@ export class ThreadService {
           reason: `自主档位为 observe：已记录判断，未执行（若为 auto 则会接这条事件）`,
           wouldAccept: true,
         };
-        this.record(input.triggerId, thread.id, decision, 'autonomy-gate');
-        return { verdict, threadId: thread.id, decision, ticketId, delivery };
+        this.record(input.triggerId, thread.id, decision, undefined, 'autonomy-gate');
+        return { verdict, threadId: thread.id, decision, matchedRule: 'direct-through', ticketId, delivery };
       }
 
       // auto / trusted：叫醒。两者在「要不要做」上一致，差别只在要不要逐次登记 ——
       // 而这差别由动作侧（action-gate / 审计）承担，不在这里伪造。
       this.notifyWake(input);
-      return { verdict, threadId: thread.id, decision: null, ticketId, delivery };
+      return { verdict, threadId: thread.id, matchedRule: 'direct-through', decision: null, ticketId, delivery };
     }
 
-    const decision = this.decisionFor(verdict, input, thread.id);
-    this.record(input.triggerId, thread.id, decision, 'gate');
+    const { decision, matchedRule } = this.decisionFor(verdict, input, thread.id);
+    this.record(input.triggerId, thread.id, decision, matchedRule, 'gate');
     this.notifyWake(input);
-    return { verdict, threadId: thread.id, decision };
+    return { verdict, threadId: thread.id, decision, matchedRule };
   }
 
   /**
@@ -246,45 +295,98 @@ export class ThreadService {
   /**
    * 落一条处置。`reason` 由 repo 强制非空（I4）—— 这里不兜底，
    * 因为「没有理由的处置」不该被静默补一句 `'n/a'` 混过去。
+   *
+   * `matchedRule`（命中的 Gate 规则）随处置一并落库 —— 这是「为什么走了这条」的
+   * 机器可读载体（B1）。缺省 = 处置与 Gate 规则无关（外部直接写入）。
    */
-  record(triggerId: string, threadId: string, decision: Disposition, actor = 'router'): boolean {
+  record(
+    triggerId: string,
+    threadId: string,
+    decision: Disposition,
+    matchedRule: MatchedRule | null | undefined = undefined,
+    actor = 'router',
+  ): boolean {
     return this.deps.dispositions.record({
       triggerId,
       threadId,
       action: decision.action,
       reason: decision.reason,
+      matchedRule: matchedRule ?? undefined,
       wouldAccept: decision.action === 'ignore' ? decision.wouldAccept : undefined,
       actor,
       createdAt: this.now(),
     });
   }
 
-  private decisionFor(verdict: GateVerdict, input: RouteInput, threadId: string): Disposition {
+  /**
+   * Eval 的**单一决策点**：gate（规则 1–5，零 LLM）与 assessment（第 2 段 LLM 研判）
+   * 的合并结论只在这里产生，并在一次 `record` 里连同 `matchedRule` 落库。
+   *
+   * 两层语义（B1）：
+   *  - 命中 gate 规则（dispatch / attach / ignore-ended）→ `matchedRule` = 该规则 id，
+   *    **不调用 assessment**（有行为测试用 spy 断言零调用）；
+   *  - 未命中任何确定性规则（verdict==='assess'，规则 6）→ 进入 assessment：
+   *      · 有引擎且 `decided:true` → 采用引擎的 disposition；
+   *      · 无引擎 / 引擎 `decided:false` → **降级 needs-assessment**（保留 v1 现行为），
+   *        不抛异常、不静默当 accept —— `matchedRule='assess'` + reason 指明原因。
+   *
+   * 「两者都缺」（无确定性规则命中 且 无研判结论）= 显式 needs-assessment 状态，
+   * **不是默认放行**：改回「assess 直接当 accept」会被行为测试拉红。
+   */
+  private decisionFor(verdict: GateVerdict, input: RouteInput, threadId: string): { decision: Disposition; matchedRule: MatchedRule } {
     switch (verdict) {
       case 'dispatch':
         return {
-          action: 'dispatch',
-          threadRef: input.ref,
-          agentId: input.directTargetAgentId!,
-          reason: `人已指定处理者 ${input.directTargetAgentId}，不研判`,
+          matchedRule: 'dispatch',
+          decision: {
+            action: 'dispatch',
+            threadRef: input.ref,
+            agentId: input.directTargetAgentId!,
+            reason: `人已指定处理者 ${input.directTargetAgentId}，不研判`,
+          },
         };
       case 'attach':
-        return { action: 'attach', threadRef: input.ref, ticketId: threadId, reason: `明确指向既有实体 ${input.entityRef}` };
+        return {
+          matchedRule: 'attach',
+          decision: { action: 'attach', threadRef: input.ref, ticketId: threadId, reason: `明确指向既有实体 ${input.entityRef}` },
+        };
       case 'ignore-ended':
         return {
-          action: 'ignore',
-          threadRef: input.ref,
-          reason: `流已结束，${input.actorKind} 事件只留痕不唤醒（避免完成后再跑一轮）`,
-          wouldAccept: false,
+          matchedRule: 'ignore-ended',
+          decision: {
+            action: 'ignore',
+            threadRef: input.ref,
+            reason: `流已结束，${input.actorKind} 事件只留痕不唤醒（避免完成后再跑一轮）`,
+            wouldAccept: false,
+          },
         };
       case 'assess':
-      default:
+      default: {
+        // 规则 1–5 全部未命中 → 第 2 段 assessment。
+        const outcome = this.deps.assess?.({
+          kind: input.kind,
+          ref: input.ref,
+          actorKind: input.actorKind,
+          addressing: input.addressing,
+          threadEnded: input.threadEnded,
+          entityRef: input.entityRef,
+          directTargetAgentId: input.directTargetAgentId,
+        });
+        if (outcome?.decided) {
+          return { matchedRule: 'assess', decision: outcome.disposition };
+        }
+        // 无引擎 / 引擎判不了 → 显式降级 needs-assessment，不静默放行。
+        const why = outcome && !outcome.decided ? outcome.reason : 'v1 无研判引擎';
         return {
-          action: 'ignore',
-          threadRef: input.ref,
-          reason: 'needs-assessment：v1 无研判引擎，记录并延后（wouldAccept=true，便于灰度时回放）',
-          wouldAccept: true,
+          matchedRule: 'assess',
+          decision: {
+            action: 'ignore',
+            threadRef: input.ref,
+            reason: `needs-assessment：${why}，记录并延后（wouldAccept=true，便于灰度时回放）`,
+            wouldAccept: true,
+          },
         };
+      }
     }
   }
 }

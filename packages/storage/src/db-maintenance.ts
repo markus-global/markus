@@ -196,6 +196,13 @@ export interface PruneResult {
   candidates: number;
   deleted: number;
   bytes: number;
+  /**
+   * C2 拆轴后新增：随终态行一起回收的 `mbx:*` 正文行数。
+   *
+   * 为什么必须有：正文搬到 `triggers` 后，只删 `mailbox_items` 行**不会**释放正文 ——
+   * 保留策略会变成空转，`bytes` 也会说谎（报告说回收了多少，实际没释放）。
+   */
+  triggersDeleted?: number;
   vacuumed: boolean;
   error?: string;
 }
@@ -205,6 +212,13 @@ export interface PruneResult {
  *
  * 为什么安全：`completed` / `dropped` / `merged` / `failed` / `cancelled` 都是终态，
  * 没有消费者会再读它们；实测这台机器上 >30 天的终态项有 2.3 GB。
+ *
+ * C2 拆轴（2026-11-03）后两步走：先删终态行，再回收**没有行再引用**的 `mbx:*` 正文。
+ * 顺序反了会被外键挡住（`mailbox_items.trigger_id REFERENCES triggers(id)`）。
+ *
+ * 只回收 `mbx:*` 键：那是本平台为 mailbox 投递自建的正文行（见
+ * `sqlite-storage.ts` 的 `mailboxTriggerKey`）。外部事件（`gh:` / `im:` / …）的 trigger
+ * 由 `event-ingress` 写入、要留在时间线上，**不归保留策略管**。
  */
 export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions = {}): PruneResult {
   const days = opts.olderThanDays ?? 30;
@@ -214,10 +228,19 @@ export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions =
   const cutoff = `-${days} days`;
 
   const placeholders = statuses.map(() => '?').join(',');
-  const where = `status IN (${placeholders}) AND queued_at < datetime('now', ?)`;
+  const where = `m.status IN (${placeholders}) AND m.queued_at < datetime('now', ?)`;
 
+  // 字节数把**正文所在行**也算进来：拆轴后 mailbox 行只剩几十字节，
+  // 只报 `length(payload)+length(metadata)` 会严重低报（同一事实的另一种度量 → R6）。
   const agg = db
-    .prepare(`SELECT COUNT(*) AS n, COALESCE(SUM(length(payload) + length(metadata)), 0) AS bytes FROM mailbox_items WHERE ${where}`)
+    .prepare(
+      `SELECT COUNT(*) AS n,
+              COALESCE(SUM(length(m.payload) + length(m.metadata)
+                           + COALESCE(length(t.body), 0) + COALESCE(length(t.summary), 0)), 0) AS bytes
+         FROM mailbox_items m
+         LEFT JOIN triggers t ON t.id = m.trigger_id
+        WHERE ${where}`
+    )
     .get(...statuses, cutoff) as { n: number; bytes: number };
 
   if (dryRun) {
@@ -229,11 +252,29 @@ export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions =
     const res = db
       .prepare(
         `DELETE FROM mailbox_items
-          WHERE id IN (SELECT id FROM mailbox_items WHERE ${where} LIMIT ?)`
+          WHERE id IN (SELECT m.id FROM mailbox_items m WHERE ${where} LIMIT ?)`
       )
       .run(...statuses, cutoff, batchSize);
     const changes = (res as { changes?: number }).changes ?? 0;
     deleted += changes;
+    if (changes === 0) break;
+  }
+
+  // 回收正文：只删「自己建的」且「已没有任何行引用」的；分页避免一次锁太久。
+  let triggersDeleted = 0;
+  for (;;) {
+    const res = db
+      .prepare(
+        `DELETE FROM triggers
+          WHERE id IN (
+            SELECT t.id FROM triggers t
+             WHERE t.idempotency_key LIKE 'mbx:%'
+               AND NOT EXISTS (SELECT 1 FROM mailbox_items m WHERE m.trigger_id = t.id)
+             LIMIT ?)`
+      )
+      .run(batchSize);
+    const changes = (res as { changes?: number }).changes ?? 0;
+    triggersDeleted += changes;
     if (changes === 0) break;
   }
 
@@ -242,5 +283,5 @@ export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions =
     try { db.exec('PRAGMA incremental_vacuum'); vacuumed = true; } catch { /* auto_vacuum=0 → no-op */ }
   }
 
-  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, vacuumed };
+  return { dryRun: false, candidates: agg.n, deleted, bytes: agg.bytes, triggersDeleted, vacuumed };
 }
