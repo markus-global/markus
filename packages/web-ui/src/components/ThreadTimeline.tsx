@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchThreadByRef, fetchThreadDispositions, fetchThreadEvents } from '../api.ts';
 import type { DispositionAPI, ThreadAPI, ThreadEventAPI } from '../api.ts';
 import { refDisplay, refKindLabel, stageLabel, stageTone } from '../lib/threadPresentation.ts';
-import { mergeTimeline } from '../lib/threadTimeline.ts';
+import { mergeTimeline, type TimelineNode } from '../lib/threadTimeline.ts';
 import { clockOf, CurrentStateNode, DecisionNode, EventNode } from './threadTimelineNodes.tsx';
 
 export function ThreadTimeline({
@@ -72,7 +72,14 @@ export function ThreadTimeline({
     return () => { alive = false; };
   }, [refId]);
 
-  const timeline = useMemo(() => mergeTimeline(events, dispositions), [events, dispositions]);
+  // 本面板只读事件与判断（它没有 agentId，投递在这条读取路径上不存在）。
+  // `mergeTimeline` 的三类行由调用方按需取用 —— 这里显式窄化，不留未处理分支。
+  const timeline = useMemo(
+    () => mergeTimeline(events, dispositions).filter(
+      (n): n is Exclude<TimelineNode, { kind: 'delivery' }> => n.kind !== 'delivery',
+    ),
+    [events, dispositions],
+  );
 
   return (
     <section className={`rounded-lg border border-border-subtle bg-surface-secondary ${className}`} data-thread-ref={refId}>
@@ -137,7 +144,13 @@ export function ThreadTimeline({
 
       {!loading && !threadError && !eventsError && !dispositionsError && timeline.length === 0 && (
         <div className="px-4 py-3 text-xs text-fg-tertiary">
-          这条流还没有事件或决定记录，只有下面的当前状态。
+          {refId.startsWith('agent:')
+            // 缺陷 C 的裁定（B4-3）：**agent 轴不登记生命周期事件**。
+            // agent 是「主体」，不是「发生了什么」——它的启停/状态已经在 agents 表与审计里，
+            // 再往 triggers 写一份就是同一事实的第二个写者。所以这里必须把口径说清楚，
+            // 不能让一个空白面板被读成「这个 agent 什么都没经历过」。
+            ? 'agent 是主体而不是事件：这条轴不登记生命周期事件。它经手过的事（每件都有自己的来龙去脉）在该 agent 详情的「来龙去脉」区块里逐条展开。'
+            : '这条流还没有事件或决定记录，只有下面的当前状态。'}
         </div>
       )}
 

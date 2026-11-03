@@ -127,4 +127,18 @@ describe('ThreadTimeline — 只给 ref 就能渲染来龙去脉', () => {
     expect(await screen.findByText(/事件读取失败/)).toBeTruthy();
     expect(screen.queryByText(/这条流还没有事件或决定记录/)).toBeNull();
   });
+
+  /**
+   * 缺陷 C 的裁定必须**可观察**：agent 是主体、不是「发生了什么」，因此这条轴不登记
+   * 生命周期事件。空面板会被读成「这个 agent 什么都没经历过」，所以必须给出明确口径
+   * （改回通用空态文案 → 本用例红）。
+   */
+  it('agent 轴没有事件时明说「主体不登记生命周期事件」，不留空白面板', async () => {
+    apiMocks.fetchThreadEvents.mockResolvedValue({ events: [] });
+    apiMocks.fetchThreadDispositions.mockResolvedValue({ dispositions: [] });
+    render(<ThreadTimeline refId="agent:agt_x" />);
+
+    expect(await screen.findByText(/这条轴不登记生命周期事件/)).toBeTruthy();
+    expect(screen.queryByText(/这条流还没有事件或决定记录/)).toBeNull();
+  });
 });

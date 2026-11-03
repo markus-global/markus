@@ -178,7 +178,7 @@
 |---|---|---|---|---|---|---|---|
 | 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 差距已补：准入（self→kind→scope→window）+ 读取位点 `source-cursor.ts`，自激消息进领域前丢弃 | 任务四 | 已完成 | 62655742 |
 | 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 差距已补：mailbox 只留执行态，内容回落 `triggers`（`mailbox-content.ts`） | 任务八 | 已完成 | 3d828666 |
-| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | UI 已收口：`/api/threads/one?ref=` 单读面 + 三处入口就地打开 + 全局页降为检索；**7B 实测（2026-11-03 21:2x，8d28d064）：后端三项 + 任务入口 + 票据入口 + 全局页检索全 pass；agent 入口在桌面端不可达** —— `AgentProfile.tsx:146 if (headless) return` 直接跳过含 `profilePage.stream` 的页头，桌面只有 headless 分支 → 打回 7A 补入口 | 任务七A→七B | 进行中 | 8ffddbea |
+| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | UI 已收口：`/api/threads/one?ref=` 单读面 + 三处入口就地打开 + 全局页降为检索。**7B 实测（8d28d064）**：后端三项 + 任务入口 + 票据入口 + 全局页检索全 pass，agent 入口桌面端不可达。**7C 已修（代码段）**：入口与弹层各一份、headless 分支同层渲染（不再复制按钮）；agent 详情面板的时间线改为「事件 ∪ 判断 ∪ 投递」单一来源（`lib/threadTimeline.ts`），三态分开、失败不再伪装成空态；票轴补事件写者（§9.3）。**待编译重启后按 7B 的 11 项复测全绿才可改「已完成」** | 任务七A→七B→七C | 进行中 | 8ffddbea |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 差距已补：gate 记 `matchedRule`，assessment 可插拔、无 LLM 降级为 `needs-assessment` | 任务五 | 已完成 | 14d5d1bb |
 | 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 差距已补：`DecisionType` 已消失，改为 `AttentionAction`；`RouteDecision` 保留，两者不再撞名 | 任务一 | 已完成 | b4e7dfd6 |
 | 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | 差距已补：`tickets` 表独立，与 Task 可选关联、删 Task 不级联 | 任务三 | 已完成 | a59daf1e |
@@ -187,10 +187,12 @@
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
 | 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 差距已补：三层不平级、值域命名空间化、词表唯一入口 + 撞词守卫 | 任务二 | 已完成 | 3d112fea |
 | 11 | **Policy / accept mode** | 无（有心跳，无「主动档位」） | 语义空白 | 无法表达「观察但不行动」 | 未排期 | 范围外 | 理由：autonomy 四档已存在（§7.8），本需求不新增档位；触发条件＝需要「观察但不行动」的真实诉求 |
-| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 部分补齐：状态词已同源（任务二）；「在等我」合并视图随 Thread 入口改造落地，**7B 实测：任务/票据两处就地打开通过，agent 一处桌面端不可达（同第 3 行）** | 任务二 + 任务七A→七B | 进行中 | 8ffddbea |
+| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 部分补齐：状态词已同源（任务二）；「在等我」合并视图随 Thread 入口改造落地。**7B 实测**：任务/票据两处就地打开通过，agent 一处桌面端不可达（同第 3 行）。**7C 已修（代码段）**：桌面 headless 也能一步打开「来龙去脉」（入口归一，不是复制一套）；面板改为单一时间线来源 + loading/error/empty 三态。待重启实测 | 任务二 + 任务七A→七B→七C | 进行中 | 8ffddbea |
 | 13 | **Rejected concepts** | 仅工作区有 `REJECTED-CONCEPTS-2026-11-03.md` | 可低成本补齐 | 缺「为什么不做 X」的否证记录（未入仓） | 未排期 | 范围外 | 理由：内容已存在，缺入仓；触发条件＝下一次否决任何设计概念时一并入仓 |
 
 ### 9.2 本需求九项问题完成度
+
+
 
 | # | 问题 | 卡 | 状态 | 提交号 | 台账行（03 文件） |
 |---|---|---|---|---|---|
@@ -200,10 +202,24 @@
 | B1 | Eval 只做了一半 | 任务五 | 已完成 | 14d5d1bb | 已更新 |
 | B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
-| B4 | Thread 是对象还是视角 | 任务七A→七B | 进行中 | 8ffddbea | 已更新（7B 实测 11 项：10 pass / 1 fail —— agent 入口桌面端不可达，待 7A 修复后再判「已完成」） |
+| B4 | Thread 是对象还是视角 | 任务七A→七B→七C | 进行中 | 8ffddbea | 已更新（7B 实测 11 项：10 pass / 1 fail —— agent 入口桌面端不可达；7C 已修代码段：入口归一 + 时间线单一来源 + 票轴写者，**等编译重启后复测 11 项全绿才可改「已完成」**） |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
 | C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 已完成 | 3d828666 | 已更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |
+
+### 9.3 轴写者裁定：哪些「发生过的事」该登记成 trigger（B4-3 缺陷 C）
+
+B4-2 实测发现：`triggers` 的写者只有 task 评论 / chat / a2a / 外部 ingress 四类，
+**票轴（`tkt_…`）与 agent 轴（`agent:…`）在自然业务流里没有任何写者** ——
+两处入口因此长期空白。空白面板不是「没有数据源」，读者会把它读成「什么都没发生」。
+本节是裁定结果，**任何一条轴要改口径都必须改这里**。
+
+| 轴 | 裁定 | 写者 | 理由 / 阈值 / 观测方式 |
+|---|---|---|---|
+| **票轴** `tkt_<id>` | **登记** | `event-routes.ts` 建票 + 流转两处调用 `deps.recordEvent`，最终落到 `thread-ensure.recordThreadEvent`（`triggers` 的唯一写入者） | 票是「一件事」，建票与流转都是**发生过的事**；量小、幂等键稳定（`ticket-created:<id>` / `ticket-status:<id>:<status>`）。失败的动作（非法流转、建票被拒）**不写** —— 失败不是事实。 |
+| **agent 轴** `agent:<id>` | **不登记生命周期事件** | 无（读取端明确说明口径） | ① agent 是**主体**，不是「发生了什么」；它的启停/状态已有唯一写者（agents 表 + `audit_logs`），往 `triggers` 再写一份就是同一事实的第二写者（R1）。② start/stop 与心跳恢复高频、幂等性差，会把「只追加的事实表」变成状态日志。③ agent 的来龙去脉 = **它经手的事**：每件事有自己的 ref 与完整时间线（agent 详情「来龙去脉」区块即此口径）。 |
+| agent 轴的**未来阈值** | 若确有必要，只登记**不可逆主体变更**（hire / fire） | 待实现时接入 | 不登记 start / stop / heartbeat。观测方式：`audit_logs` + `GET /api/agents/:id` 的 state。触发条件：出现「需要回答『这个 agent 什么时候被谁创建/解雇』」的真实诉求。 |
+| agent 轴的**对外表达** | 面板必须给出明确口径，不得留白 | `ThreadTimeline` 空态文案 | 空面板会被读成「什么都没发生」。事件为空时明说「agent 是主体而不是事件：这条轴不登记生命周期事件……」，由 `ThreadTimeline.test.tsx`「agent 轴没有事件时明说…」咬住。 |
 
 ---
 

@@ -23,6 +23,7 @@ import {
   SqliteTicketRepo,
 } from '@markus/storage';
 import { handleEventRoutes } from '../src/event-routes.js';
+import { recordThreadEvent } from '../src/thread-ensure.js';
 
 let dir: string;
 let db: ReturnType<typeof openSqlite>;
@@ -48,6 +49,8 @@ beforeEach(() => {
     // 触发器登记：`IngressDeps.triggers` 是必填（见 event-ingress.ts 的说明），
     // 夹具缺它 → 运行时 `insertOrGet` 空指针，事件根本无法入链。
     triggerRepo: new SqliteTriggerRepo(db),
+    // 票仓储：票轴的事件写者用例需要它（缺它 → `/api/tickets` 回 501，不是「票功能没做完」）。
+    ticketRepo: new SqliteTicketRepo(db),
   };
 });
 
@@ -91,7 +94,15 @@ function fakeRes(): FakeRes {
 async function call(req: IncomingMessage, path: string) {
   const res = fakeRes();
   const handled = await handleEventRoutes(
-    { orgId: 'default', repos: repos as any, deliver: null, now: () => 1000 },
+    {
+      orgId: 'default',
+      repos: repos as any,
+      deliver: null,
+      // 票轴事件走**真实的** recordThreadEvent（triggers 的唯一写入者），
+      // 而不是在夹具里再拼一份 SQL —— 夹具复制实现就等于把被测对象换成假的。
+      recordEvent: (ref, event) => recordThreadEvent({ triggerRepo: repos.triggerRepo } as any, ref, event),
+      now: () => 1000,
+    },
     req,
     res,
     path,
@@ -541,5 +552,71 @@ describe('/api/threads/:key/events — 身份解析（id 或 ref 等价）', () 
     );
     expect(res.status).toBe(200);
     expect(res.body.events).toEqual([]);
+  });
+});
+
+/**
+ * 票轴的事件写者（B4-3 缺陷 C 的裁定）：票是「一件事」，建票与流转都是**发生过的事**。
+ *
+ * 这组用例存在的理由：`triggers` 的写者此前只有 task 评论 / chat / a2a / 外部 ingress，
+ * `tkt_…` 这条轴在生产里**从来没有一行** —— 于是「票据详情 → 来龙去脉」永远是空面板，
+ * 而空面板会被读成「什么都没发生」（不是「没有数据源」）。
+ *
+ * 把实现怎么改坏会让它变红：删掉 `event-routes.ts` 里 `deps.recordEvent?.()` 的任一调用，
+ * 对应用例立刻读不到那条事实（时间线少一条，不是少一行日志）。
+ */
+describe('票轴事件：建票 / 流转都要登进同一条时间线', () => {
+  async function eventsOf(ref: string) {
+    const { res } = await call(fakeReq({ method: 'GET', url: `/api/threads/${ref}/events` }), `/api/threads/${ref}/events`);
+    return res.body.events as Array<{ id: string; kind: string; summary: string; createdAt: number }>;
+  }
+
+  it('POST /api/tickets → 该票的 /events 能读到「创建」这一条', async () => {
+    const { res } = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '补齐边界用例' } }),
+      '/api/tickets',
+    );
+    expect(res.status).toBe(201);
+    const id = res.body.ticket.id as string;
+    expect(id.startsWith('tkt_')).toBe(true);
+
+    const events = await eventsOf(id);
+    expect(events.map(e => e.kind)).toEqual(['ticket']);
+    expect(events[0]!.summary).toContain('补齐边界用例');
+    expect(events[0]!.createdAt).toBeGreaterThan(0);
+  });
+
+  it('POST /api/tickets/:id/transition → 时间线多一条状态流转，且不重复', async () => {
+    const created = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '验收意见' } }),
+      '/api/tickets',
+    );
+    const id = created.res.body.ticket.id as string;
+    expect(await eventsOf(id)).toHaveLength(1);
+
+    const moved = await call(
+      fakeReq({ method: 'POST', url: `/api/tickets/${id}/transition`, parsed: { status: 'ended' } }),
+      `/api/tickets/${id}/transition`,
+    );
+    expect(moved.res.status).toBe(200);
+
+    const events = await eventsOf(id);
+    expect(events).toHaveLength(2);
+    expect(events.some(e => e.summary.includes('ended'))).toBe(true);
+  });
+
+  it('非法流转被拒时不写事件（失败的动作不是「发生过的事」）', async () => {
+    const created = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '会被拒的票' } }),
+      '/api/tickets',
+    );
+    const id = created.res.body.ticket.id as string;
+
+    const bad = await call(
+      fakeReq({ method: 'POST', url: `/api/tickets/${id}/transition`, parsed: { status: 'not-a-status' } }),
+      `/api/tickets/${id}/transition`,
+    );
+    expect(bad.res.status).toBe(400);
+    expect(await eventsOf(id)).toHaveLength(1);
   });
 });

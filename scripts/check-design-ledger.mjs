@@ -103,7 +103,7 @@ function check(rows, label, spec) {
 }
 
 check(tableRows('### 9.1', '### 9.2'), '9.1', { state: 6, commit: 7 });
-check(tableRows('### 9.2', '## 10'), '9.2', { state: 3, commit: 4 });
+check(tableRows('### 9.2', '### 9.3'), '9.2', { state: 3, commit: 4 });
 
 if (errors.length) {
   console.error('✗ 设计契约台账校验失败：');

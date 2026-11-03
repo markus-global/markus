@@ -1,7 +1,9 @@
 import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI } from '../api.ts';
+import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI, type EnrichedMailboxItem, type ThreadEventAPI } from '../api.ts';
+import { timelineView, type TimelineNode, type TimelineSource } from '../lib/threadTimeline.ts';
+import { EventNode, DecisionNode } from '../components/threadTimelineNodes.tsx';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
@@ -10,7 +12,7 @@ import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsT
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
-import { refDisplay, actionLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { refDisplay, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { taskStatusLabel, processStatusLabel, attentionStateLabel } from '../lib/stateVocabulary.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -143,15 +145,40 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
   const localLegacySection = LEGACY_TAB_SECTION[tab];
 
+  // 「来龙去脉」的**入口与弹层各一份**，两个渲染分支共用。
+  //
+  // 桌面端走 headless（只渲染正文），而这段入口原先长在非 headless 的页头里 ——
+  // `if (headless) return` 在到达页头之前就返回，桌面**结构上**点不到它（B4-2 唯一 fail）。
+  // 修的是入口归属：入口跟着正文走，而不是给桌面再复制一套按钮。
+  const streamEntry = (
+    <button onClick={() => setShowStream(true)} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors" title="这个 agent 的来龙去脉">
+      {t('agent:profilePage.stream')}
+    </button>
+  );
+  const streamModal = showStream && (
+    <div
+      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
+      onClick={() => setShowStream(false)}
+    >
+      <div className="w-full max-w-2xl" onClick={e => e.stopPropagation()}>
+        <ThreadTimeline refId={`agent:${agentId}`} onClose={() => setShowStream(false)} />
+      </div>
+    </div>
+  );
+
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
+        <div className="flex items-center justify-end px-5 pt-3">
+          {streamEntry}
+        </div>
         <div className="p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
           {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
+        {streamModal}
       </div>
     );
   }
@@ -173,10 +200,9 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           </div>
           <div className="flex gap-1.5 shrink-0">
             {/* 入口倒置（B4）：agent 也是「一条流」，就地看它经历过什么。
-                ref 用解析器的 agent 轴口径（`agent:<id>`），不是前端自造的另一种键。 */}
-            <button onClick={() => setShowStream(true)} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors" title="这个 agent 的来龙去脉">
-              {t('agent:profilePage.stream')}
-            </button>
+                ref 用解析器的 agent 轴口径（`agent:<id>`），不是前端自造的另一种键。
+                按钮本身与 headless 分支共用同一份（见上方 streamEntry）。 */}
+            {streamEntry}
             {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             {canManageAgents && (
             <button onClick={async () => {
@@ -205,16 +231,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
-        {showStream && (
-          <div
-            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
-            onClick={() => setShowStream(false)}
-          >
-            <div className="w-full max-w-2xl" onClick={e => e.stopPropagation()}>
-              <ThreadTimeline refId={`agent:${agentId}`} onClose={() => setShowStream(false)} />
-            </div>
-          </div>
-        )}
+        {streamModal}
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
           {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
@@ -2533,12 +2550,17 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   // 内部机械（心跳/记忆整理/回调）不算"事"，已在派生时排除。
   const [threadTitleByRef, setThreadTitleByRef] = useState<Record<string, string>>({});
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
-  // 一条 thread 的来龙去脉 = 事件（Triggers）+ 判断（Decisions），合流按时间排。
-  // 参考实现 docs/005-panel.md：「Each Thread shows its Triggers newest first, Decisions and Subscriptions」。
-  const [threadNodes, setThreadNodes] = useState<Array<{
-    id: string; at: number; kind: 'event' | 'decision'; label: string; summary: string; actor?: string;
-  }>>([]);
-  const [eventsLoading, setEventsLoading] = useState(false);
+  // 一条 thread 的来龙去脉 = 事件 ∪ 判断 ∪ 投递，合流按时间排（`lib/threadTimeline.ts` 是唯一实现）。
+  //
+  // 三个来源各自记住自己的读取状态：**「读取失败」与「确实没有」是两件事**。
+  // 这里曾经是 `.catch(() => ({ events: [] }))` 外加一句断言「这件事还没有正式事件记录」
+  // —— 抓取失败被伪装成空态，读者拿到的是一句假的确定性陈述（缺陷 B / 契约 R2）。
+  // 「有没有东西」只由 `timelineView()` 回答（单一判据），UI 不再自己数 length。
+  const [threadEvents, setThreadEvents] = useState<TimelineSource<ThreadEventAPI>>({ state: 'ok', items: [] });
+  const [threadDispositions, setThreadDispositions] = useState<TimelineSource<DispositionAPI>>({ state: 'ok', items: [] });
+  const [threadDeliveries, setThreadDeliveries] = useState<TimelineSource<EnrichedMailboxItem>>({ state: 'ok', items: [] });
+  /** 重试计数：改它等于让下面的 effect 重跑一次（失败后的「重试」按钮用它，不另开机制）。 */
+  const [timelineTick, setTimelineTick] = useState(0);
   // 参考实现 docs/005-panel.md 的 Trigger 页签按状态过滤 thread
   // （Subscribed / Evaluating / New Triggers in 24h / All）。这里先落能算的两种：
   // 「全部」与「24h 内有动静」。「订阅中 / 研判中」需要按 thread 查订阅，
@@ -2601,35 +2623,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return () => { alive = false; };
   }, [agentId]);
 
-  /** 选中某件事 → 就地取它的来龙去脉。 */
-  useEffect(() => {
-    if (!selectedRef) { setThreadNodes([]); return; }
-    let alive = true;
-    setEventsLoading(true);
-    (async () => {
-      // 参考实现（deepseek-ai/dsh-superagent-prototype docs/005-panel.md）明确：
-      // 「Each Thread shows its Triggers newest first, **Decisions** and Subscriptions」
-      // —— 所以这里必须把判断（dispositions）和事件合流，只显示事件是残的。
-      const [ev, dp] = await Promise.all([
-        fetchThreadEvents(selectedRef).catch(() => ({ events: [] as never[] })),
-        fetchThreadDispositions(selectedRef).catch(() => ({ dispositions: [] as never[] })),
-      ]);
-      if (!alive) return;
-      const nodes = [
-        ...(ev.events ?? []).map(e => ({
-          id: `e-${e.id}`, at: e.createdAt, kind: 'event' as const,
-          label: '', summary: e.summary, actor: e.actor ?? undefined,
-        })),
-        ...(dp.dispositions ?? []).map(d => ({
-          id: `d-${d.id}`, at: d.createdAt, kind: 'decision' as const,
-          label: actionLabel(d.action), summary: d.reason, actor: d.actor ?? undefined,
-        })),
-      ].sort((a, b) => a.at - b.at);
-      setThreadNodes(nodes);
-    })().finally(() => { if (alive) setEventsLoading(false); });
-    return () => { alive = false; };
-  }, [selectedRef]);
-
   /** 这个 agent 经手的事：从邮箱条目派生（内部机械已排除，见 lib/mailboxToThread.ts）。 */
   const workItems = useMemo(
     () => groupMailboxByThread(mailbox?.history, ref => threadTitleByRef[ref], 20),
@@ -2643,24 +2636,133 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   }, [workItems, listFilter]);
   const activeRef = selectedRef ?? visibleItems.find(w => w.ref)?.ref ?? null;
 
-  // 这条 thread 收到过的**全部**投递（后端按 ref 取，不受邮箱分页限制）。
-  // 为什么不能只从已加载页过滤：一条 thread 可能有上百条投递，而邮箱一页 50 条，
+  // 这件事的来龙去脉：事件（triggers 派生）/ 判断（dispositions）/ 投递（这个 agent 的邮箱条目）
+  // **三路并行、各自记状态**，最后交给 `timelineView()` 合流。
+  //
+  // 为什么要读全部投递而不是从已加载页过滤：一条 thread 可能有上百条投递，而邮箱一页 50 条，
   // 那样详情会静默少显示——分组写 N 条、列表只渲染 M 条。
-  const [threadDeliveries, setThreadDeliveries] = useState<import('../api.ts').EnrichedMailboxItem[]>([]);
-  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
   useEffect(() => {
-    if (!activeRef) { setThreadDeliveries([]); return; }
+    if (!activeRef) {
+      setThreadEvents({ state: 'ok', items: [] });
+      setThreadDispositions({ state: 'ok', items: [] });
+      setThreadDeliveries({ state: 'ok', items: [] });
+      return;
+    }
     let alive = true;
-    setDeliveriesLoading(true);
-    (async () => {
-      try {
-        const r = await api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef });
-        if (alive) setThreadDeliveries(r.history ?? []);
-      } catch { if (alive) setThreadDeliveries([]); }
-      finally { if (alive) setDeliveriesLoading(false); }
-    })();
+    setThreadEvents({ state: 'loading', items: [] });
+    setThreadDispositions({ state: 'loading', items: [] });
+    setThreadDeliveries({ state: 'loading', items: [] });
+    fetchThreadEvents(activeRef)
+      .then(r => { if (alive) setThreadEvents({ state: 'ok', items: r.events ?? [] }); })
+      .catch(() => { if (alive) setThreadEvents({ state: 'error', items: [] }); });
+    fetchThreadDispositions(activeRef)
+      .then(r => { if (alive) setThreadDispositions({ state: 'ok', items: r.dispositions ?? [] }); })
+      .catch(() => { if (alive) setThreadDispositions({ state: 'error', items: [] }); });
+    api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef })
+      .then(r => { if (alive) setThreadDeliveries({ state: 'ok', items: r.history ?? [] }); })
+      .catch(() => { if (alive) setThreadDeliveries({ state: 'error', items: [] }); });
     return () => { alive = false; };
-  }, [agentId, activeRef]);
+  }, [agentId, activeRef, timelineTick]);
+
+  const timeline = useMemo(
+    () => timelineView({ events: threadEvents, dispositions: threadDispositions, deliveries: threadDeliveries }),
+    [threadEvents, threadDispositions, threadDeliveries],
+  );
+
+  /**
+   * 时间线的一行 —— 三种来源共用**同一个渲染入口**。
+   *
+   * 行怎么排、有哪些行由 `lib/threadTimeline.ts` 决定（单一判据），这里只决定长相：
+   *   - 事件 / 判断：复用 `threadTimelineNodes.tsx`（与全局检索页、任务详情共用一份）；
+   *   - 投递：保留展开正文 / 决策链 / 执行过程 / 丢弃，因为投递的**正文**
+   *     才是「这件事到底怎么了」的实质 —— 只给摘要就是把证据换成标题。
+   */
+  const renderTimelineRow = (n: TimelineNode) => {
+    if (n.kind === 'event') return <EventNode key={`e-${n.event.id}`} e={n.event} />;
+    if (n.kind === 'decision') return <DecisionNode key={`d-${n.decision.id}`} d={n.decision} />;
+    const item = n.delivery;
+    const isExpanded = expandedId === item.id;
+    const display = getMailboxItemDisplay(item, t);
+    // 状态点以权威事实为准：DB 记为 processing，但已不是当前 focus
+    // 或 agent 已停 → stale，不谎称"在处理"。
+    const rowDisplayStatus = deriveMailboxRowDisplayStatus({
+      itemStatus: item.status,
+      agentRunning,
+      currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
+      itemId: item.id,
+    });
+    const senderName = item.metadata?.senderName as string | undefined;
+    const senderRole = item.metadata?.senderRole as string | undefined;
+    return (
+      <li key={`m-${item.id}`} data-timeline-kind="delivery" className="bg-surface-elevated rounded-lg border border-border-subtle">
+        <button
+          className="w-full px-2.5 py-2 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
+          onClick={() => setExpandedId(isExpanded ? null : item.id)}
+        >
+          <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
+          <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
+          <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] text-fg-secondary shrink-0">投递</span>
+              <span className="text-xs font-medium text-fg-primary truncate">{display.title}</span>
+              {display.badge && <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>}
+            </div>
+            <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
+              <span>{new Date(item.queuedAt).toLocaleString()}</span>
+              {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
+              {item.activity && item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
+              {item.activity && item.activity.totalTools > 0 && <span>{item.activity.totalTools} 次工具</span>}
+            </div>
+          </div>
+        </button>
+        {isExpanded && (
+          <div className="border-t border-border-subtle px-2.5 py-2 space-y-2">
+            {senderName && (
+              <div className="text-[10px] text-fg-tertiary">
+                来自 <span className="text-fg-secondary">{senderName}</span>
+                {senderRole && <span> ({senderRole})</span>}
+              </div>
+            )}
+            {/* 正文是「来龙去脉」的实质：只给摘要就是把证据换成标题 */}
+            {item.payload?.content && (
+              <div className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary/50 p-2 text-xs text-fg-secondary">
+                {item.payload.content}
+              </div>
+            )}
+            {item.decisions && item.decisions.length > 0 && (
+              <div className="space-y-1">
+                {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
+                  <div key={d.id} className="flex items-start gap-2 text-[11px]">
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
+                    <span className="flex-1 text-fg-secondary">{d.reasoning}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {item.activity ? (
+              item.activity.type === 'task' && item.payload?.taskId ? (
+                <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
+              ) : (
+                <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
+              )
+            ) : rowDisplayStatus === 'processing' ? (
+              <div className="py-1 text-[11px] text-fg-tertiary animate-pulse">处理中…</div>
+            ) : rowDisplayStatus === 'stale' ? (
+              <div className="py-1 text-[11px] text-amber-600">库记为处理中，但已不是当前 focus（陈旧）——可用上方「恢复」清理。</div>
+            ) : null}
+            {canManageAgents && (
+              <button
+                disabled={actionBusyId === item.id}
+                onClick={() => { void handleDrop(item.id); }}
+                className="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-40"
+              >丢弃这一条</button>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
 
   // Auto-load more history until the highlighted item appears, then scroll to it
   const autoLoadingForHighlightRef = useRef(false);
@@ -2919,118 +3021,25 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               })}
             </ul>
             <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
-              {eventsLoading ? (
-                <p className="text-xs text-fg-tertiary">读取中…</p>
-              ) : deliveriesLoading ? (
-                <p className="text-xs text-fg-tertiary">读取这件事的投递记录…</p>
-              ) : threadNodes.length === 0 && threadDeliveries.length > 0 ? (
-                <div className="space-y-2">
-                  <p className="text-[10px] text-fg-tertiary">
-                    这件事还没有正式事件记录；以下是它收到过的投递（点开看正文与执行过程）。
-                  </p>
-                  {threadDeliveries.map(item => {
-                    const isExpanded = expandedId === item.id;
-                    const display = getMailboxItemDisplay(item, t);
-                    // 状态点以权威事实为准：DB 记为 processing，但已不是当前 focus
-                    // 或 agent 已停 → stale，不谎称"在处理"。
-                    const rowDisplayStatus = deriveMailboxRowDisplayStatus({
-                      itemStatus: item.status,
-                      agentRunning,
-                      currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
-                      itemId: item.id,
-                    });
-                    const senderName = item.metadata?.senderName as string | undefined;
-                    const senderRole = item.metadata?.senderRole as string | undefined;
-                    return (
-                      <div key={item.id} className="bg-surface-elevated rounded-lg border border-border-subtle">
-                        <button
-                          className="w-full px-2.5 py-2 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
-                          onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                        >
-                          <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
-                          <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
-                          <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
-                          <div className="flex-1 min-w-0">
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs font-medium text-fg-primary truncate">{display.title}</span>
-                              {display.badge && <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>}
-                            </div>
-                            <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
-                              <span>{new Date(item.queuedAt).toLocaleString()}</span>
-                              {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
-                              {item.activity && item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
-                              {item.activity && item.activity.totalTools > 0 && <span>{item.activity.totalTools} 次工具</span>}
-                            </div>
-                          </div>
-                        </button>
-                        {isExpanded && (
-                          <div className="border-t border-border-subtle px-2.5 py-2 space-y-2">
-                            {senderName && (
-                              <div className="text-[10px] text-fg-tertiary">
-                                来自 <span className="text-fg-secondary">{senderName}</span>
-                                {senderRole && <span> ({senderRole})</span>}
-                              </div>
-                            )}
-                            {/* 正文是「来龙去脉」的实质：只给摘要就是把证据换成标题 */}
-                            {item.payload?.content && (
-                              <div className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary/50 p-2 text-xs text-fg-secondary">
-                                {item.payload.content}
-                              </div>
-                            )}
-                            {item.decisions && item.decisions.length > 0 && (
-                              <div className="space-y-1">
-                                {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
-                                  <div key={d.id} className="flex items-start gap-2 text-[11px]">
-                                    <span className={`shrink-0 rounded px-1.5 py-0.5 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
-                                    <span className="flex-1 text-fg-secondary">{d.reasoning}</span>
-                                  </div>
-                                ))}
-                              </div>
-                            )}
-                            {item.activity ? (
-                              item.activity.type === 'task' && item.payload?.taskId ? (
-                                <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
-                              ) : (
-                                <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
-                              )
-                            ) : rowDisplayStatus === 'processing' ? (
-                              <div className="py-1 text-[11px] text-fg-tertiary animate-pulse">处理中…</div>
-                            ) : rowDisplayStatus === 'stale' ? (
-                              <div className="py-1 text-[11px] text-amber-600">库记为处理中，但已不是当前 focus（陈旧）——可用上方「恢复」清理。</div>
-                            ) : null}
-                            {canManageAgents && (
-                              <button
-                                disabled={actionBusyId === item.id}
-                                onClick={() => { void handleDrop(item.id); }}
-                                className="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-40"
-                              >丢弃这一条</button>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
+              {/* 三态分开：还在读 / 读失败 / 真的空。失败绝不渲染成「没有」。 */}
+              {timeline.loading && <p className="text-xs text-fg-tertiary">读取这件事的来龙去脉…</p>}
+              {timeline.failures.length > 0 && (
+                <div data-timeline-error className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-rose-500/10 px-2 py-1 text-[11px] text-rose-600">
+                  <span>{timeline.failures.join('、')}读取失败 —— 这不等于「没有记录」。</span>
+                  <button
+                    onClick={() => setTimelineTick(n => n + 1)}
+                    className="rounded bg-rose-500/15 px-1.5 py-0.5 font-medium hover:bg-rose-500/25"
+                  >重试</button>
                 </div>
-              ) : threadNodes.length === 0 ? (
-                <p className="text-xs text-fg-tertiary">这件事还没有时间线记录。</p>
-              ) : (
-                <ol className="space-y-2">
-                  {threadNodes.map(n => (
-                    <li key={n.id} className="flex items-start gap-2">
-                      <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.kind === 'decision' ? 'bg-brand-500' : 'bg-fg-secondary'}`} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-tertiary">
-                          {n.kind === 'decision' && (
-                            <span className="rounded bg-surface-overlay px-1 py-px text-fg-secondary">判断 · {n.label}</span>
-                          )}
-                          <span>{new Date(n.at).toLocaleString()}</span>
-                          {n.actor && <span>· {n.actor}</span>}
-                        </div>
-                        <p className="whitespace-pre-wrap text-xs text-fg-primary">{n.summary || '（未记录理由）'}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ol>
+              )}
+              {/* 行怎么排、有哪些行由 lib/threadTimeline.ts 决定；这里只按行渲染（含来源标签）。 */}
+              <ol className="space-y-2" data-timeline-rows={timeline.rows.length}>
+                {timeline.rows.map(renderTimelineRow)}
+              </ol>
+              {timeline.empty && (
+                <p data-timeline-empty className="text-xs text-fg-tertiary">
+                  这件事还没有任何记录（没有事件、判断或投递）。
+                </p>
               )}
             </div>
           </div>

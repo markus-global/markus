@@ -1,34 +1,111 @@
 /**
- * 时间线合流：**唯一实现**。
+ * 时间线合流 + 「这条流有没有东西」的**唯一实现**。
  *
- * 为什么需要合流而不是并排两个列表：读者要回答的是「这件事先后发生了什么」，
- * 「谁评论了」和「系统为什么把这条挂给他」拼起来才是来龙去脉；只给一半，
- * 等于让读者自己猜两段之间发生了什么。
+ * 为什么需要合流而不是并排几个列表：读者要回答的是「这件事先后发生了什么」。
+ * 「谁评论了」（事件）、「系统为什么把它挂给他」（判断）、「这条流投给谁办过」（投递）
+ * 拼起来才是来龙去脉；只给其中一部分，等于让读者自己猜另外两段之间发生了什么。
  *
- * 两条纪律：
- *   1. 只按真实 `createdAt` 排序 —— 没有任何一条线可以插到前面去；
- *   2. 当前状态（threads 派生快照）**不进排序**：它没有时间戳，属于「此刻在等谁」，
- *      由渲染层单独放在末尾并显式说明。伪造时间戳会让推断变成「证据」。
+ * 三条纪律（改它就是改语义）：
+ *   1. 只按真实时刻排序 —— 没有任何一条线可以插到前面去；
+ *   2. 同一毫秒按「投递 → 事件 → 判断」：投递是输入，事件是它的登记，判断是对事件的反应，
+ *      把反应排在输入前面会读成因果倒置；
+ *   3. **失败不等于空**：来源的 `state` 与 `items` 分开表达，「读取失败」永远不能
+ *      被渲染成「没有记录」（这曾是生产缺陷：`.catch(() => [])` 把失败吞成确定性的「还没有」）。
+ *
+ * 单一判据：**「有没有东西」只能由 `timelineView()` 回答**。UI 不得再各自写
+ * `length === 0` —— 那是同一问题的第二份实现，迟早会和这里对不上。
  */
-import type { DispositionAPI, ThreadEventAPI } from '../api.ts';
+import type { DispositionAPI, EnrichedMailboxItem, ThreadEventAPI } from '../api.ts';
 
+/**
+ * 时间线节点的三种来源。取值集合固定：行形状由 `kind` 决定，
+ * **不随来源数量变化**（否则列表缓存键会漂移）。
+ */
 export type TimelineNode =
+  | { kind: 'delivery'; at: number; delivery: EnrichedMailboxItem }
   | { kind: 'event'; at: number; event: ThreadEventAPI }
   | { kind: 'decision'; at: number; decision: DispositionAPI };
+
+export type TimelineKind = TimelineNode['kind'];
+
+/** 来源的读取状态。'error' 与「读到 0 条」是两件不同的事，绝不允许折叠成一个空数组。 */
+export type SourceState = 'loading' | 'ok' | 'error';
+
+export interface TimelineSource<T> {
+  state: SourceState;
+  items: readonly T[];
+}
+
+export interface TimelineSources {
+  events: TimelineSource<ThreadEventAPI>;
+  dispositions: TimelineSource<DispositionAPI>;
+  /** 投递：这条流在某个 agent 邮箱里收到过的条目。缺省 = 该视角不读投递（**不是**「没有投递」）。 */
+  deliveries?: TimelineSource<EnrichedMailboxItem>;
+}
+
+export interface TimelineView {
+  /** 仍有来源在读 */
+  loading: boolean;
+  /** 读取失败的来源（人话标签） */
+  failures: string[];
+  /** 按时间升序合并后的行 */
+  rows: TimelineNode[];
+  /** **唯一**「这条流什么都没有」的判据：不在读取中、没有失败、也没有行 */
+  empty: boolean;
+}
+
+/** 来源 → 人话。集中一处，避免各渲染处各写一套。 */
+const SOURCE_LABEL = { events: '事件', dispositions: '判断', deliveries: '投递' } as const;
+
+/** 同一毫秒内的固定次序：输入（投递）< 登记（事件）< 反应（判断）。 */
+const KIND_RANK: Record<TimelineKind, number> = { delivery: 0, event: 1, decision: 2 };
+
+/** ISO 字符串或 epoch ms → epoch ms，非法值折成 0（排序里 NaN 会让顺序变成未定义）。 */
+export function toEpochMs(v: string | number | null | undefined): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (!v) return 0;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : 0;
+}
 
 /**
  * 合流并按时间升序。
  *
- * 时间相同者保持「事件先于决定」：事件是输入，决定是对它的反应，
- * 同一毫秒里把反应排在输入前面会读成因果倒置。
+ * 不做去重、不改写正文：两条内容相同的事件是真的发生过两次（契约 H3：只并排呈现）。
  */
 export function mergeTimeline(
   events: readonly ThreadEventAPI[],
   dispositions: readonly DispositionAPI[],
+  deliveries: readonly EnrichedMailboxItem[] = [],
 ): TimelineNode[] {
   const merged: TimelineNode[] = [
-    ...events.map(e => ({ kind: 'event' as const, at: e.createdAt, event: e })),
-    ...dispositions.map(d => ({ kind: 'decision' as const, at: d.createdAt, decision: d })),
+    ...deliveries.map(d => ({ kind: 'delivery' as const, at: toEpochMs(d.queuedAt), delivery: d })),
+    ...events.map(e => ({ kind: 'event' as const, at: toEpochMs(e.createdAt), event: e })),
+    ...dispositions.map(d => ({ kind: 'decision' as const, at: toEpochMs(d.createdAt), decision: d })),
   ];
-  return merged.sort((a, b) => a.at - b.at || (a.kind === 'event' ? -1 : 1));
+  return merged.sort((a, b) => a.at - b.at || KIND_RANK[a.kind] - KIND_RANK[b.kind]);
+}
+
+/**
+ * 一次调用回答三件事：还在读吗 / 哪几个来源失败了 / 有没有东西。
+ *
+ * `empty` 只有在「没在读、没有失败、也没有行」时才为 true —— 因此调用方
+ * 不需要（也不允许）自己再判一次 `rows.length === 0`。
+ */
+export function timelineView(sources: TimelineSources): TimelineView {
+  const order = ['events', 'dispositions', 'deliveries'] as const;
+  const failures: string[] = [];
+  let loading = false;
+  for (const key of order) {
+    const src = sources[key];
+    if (!src) continue;
+    if (src.state === 'loading') loading = true;
+    if (src.state === 'error') failures.push(SOURCE_LABEL[key]);
+  }
+  const rows = mergeTimeline(
+    sources.events.items,
+    sources.dispositions.items,
+    sources.deliveries?.items ?? [],
+  );
+  return { loading, failures, rows, empty: !loading && failures.length === 0 && rows.length === 0 };
 }

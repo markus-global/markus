@@ -51,6 +51,17 @@ export interface EventRouteDeps {
   };
   /** 投递到 agent mailbox；未接线时返回 null（事件仍会留痕） */
   deliver: ((target: DispatchTarget) => void) | null;
+  /**
+   * 往一条流上记一件事 —— **只允许指向 `thread-ensure.recordThreadEvent`**
+   * （`triggers` 表的唯一写入者）。
+   *
+   * 为什么要从这里开口而不是直接拿 `repos.triggerRepo.insertOrGet()` 写：
+   * 那就是「同一件事的第二个写者」。时间线是证据，两个写者必然会在某天不一致，
+   * 而错了最难发现（A1 整条链路为 0 行就是这么来的）。
+   *
+   * 未接线时票照常建/照常流转，只是不登记事件 —— 旁路记账不能回滚业务写入。
+   */
+  recordEvent?: (ref: string, event: { kind: string; actor?: string; summary: string; eventId?: string }) => void;
   now?: () => number;
 }
 
@@ -829,6 +840,14 @@ export async function handleEventRoutes(
           assignee: body['assignee'] == null ? null : String(body['assignee']),
           taskId: body['taskId'] == null ? null : String(body['taskId']),
         });
+        // 票轴的事件写者（B4-3 缺陷 C 的裁定）：票是「一件事」，它被建出来是**发生过的事**，
+        // 必须登记成 trigger —— 否则 `tkt_…` 这条轴的来龙去脉在生产里长期空白，
+        // 而空白面板会被读者读成「什么都没发生」。
+        deps.recordEvent?.(String(ticket.id), {
+          kind: 'ticket',
+          summary: `票「${ticket.subject}」创建（${ticket.kind}）`,
+          eventId: `ticket-created:${ticket.id}`,
+        });
         json(res, 201, { ticket });
       } catch (err) {
         // 拒绝 + 可行动提示（不是 500）：这三类都是调用方输入问题。
@@ -861,7 +880,15 @@ export async function handleEventRoutes(
         if (!tickets) return unavailable();
         const body = ((await (req as any).__parsedBody__) ?? {}) as Record<string, unknown>;
         try {
-          json(res, 200, { ticket: tickets.transition(decodeURIComponent(m[1]!), String(body['status'] ?? '') as any) });
+          const ticket = tickets.transition(decodeURIComponent(m[1]!), String(body['status'] ?? '') as any);
+          // 状态流转同样是「发生过的事」（与建票同一个写者、同一张表、同一条轴）：
+          // 时间线上必须能看到这张票什么时候被谁推进到哪一步，否则「票办完没」只能靠读当前状态猜。
+          deps.recordEvent?.(String(ticket.id), {
+            kind: 'ticket',
+            summary: `票「${ticket.subject}」→ ${ticket.status}`,
+            eventId: `ticket-status:${ticket.id}:${String(ticket.status)}`,
+          });
+          json(res, 200, { ticket });
         } catch (err) {
           const msg = String((err as Error)?.message ?? err);
           // 票不存在 → 404；其余（非法状态 / 非法转移）→ 400。都不静默 upsert。

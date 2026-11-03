@@ -2921,6 +2921,9 @@ export class APIServer {
               },
             });
           },
+          // 票轴的事件写者：**只**指向 triggers 的唯一写入者 `recordThreadEvent`。
+          // 不在这里拼 SQL、不直接调 triggerRepo —— 那是同一件事的第二个写者。
+          recordEvent: (ref, event) => recordThreadEvent(this.storage, ref, event),
         },
         req,
         res,
