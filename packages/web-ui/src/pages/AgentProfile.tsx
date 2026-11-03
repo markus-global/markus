@@ -2492,7 +2492,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const [notebookExpanded, setNotebookExpanded] = useState(false);
@@ -2500,7 +2499,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
   const QUEUE_COLLAPSE_THRESHOLD = 3;
-  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   // ── 来龙去脉（Thread 视图进这个 tab）──────────────────────────────────────
   // Owner 的要求：用户想看清"这件事到底怎么了"时看的就是它，所以要能在这里
@@ -2539,27 +2537,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     setLoading(false);
   }, [agentId, catFilter, statusFilter]);
 
-  /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——对齐后端的 mailbox:dropped 审计。 */
-  const handleDrop = useCallback(async (itemId: string) => {
-    setActionBusyId(itemId);
-    try {
-      await api.agents.dropMailboxItem(agentId, itemId, 'operator');
-      await load();
-    } catch { /* ignore */ }
-    finally { setActionBusyId(null); }
-  }, [agentId, load]);
-
-  const loadMore = useCallback(async () => {
-    if (!mailbox) return;
-    const catParam = catFilter === 'all' ? undefined : catFilter;
-    const statusParam = statusFilter === 'all' ? undefined : statusFilter;
-    try {
-      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
-      setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
-      setHasMore((mb.history?.length ?? 0) >= PAGE);
-    } catch { /* ignore */ }
-  }, [agentId, mailbox, catFilter, statusFilter]);
-
   // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
   // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
   // 不再只能重启。租约感知，不误杀其它实例/在飞项。
@@ -2571,7 +2548,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   }, [agentId, load]);
 
   useEffect(() => {
-    setExpandedId(highlightId ?? null);
     setHighlightedId(highlightId ?? null);
     load();
   }, [load, highlightId]);
