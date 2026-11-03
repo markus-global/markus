@@ -88,6 +88,16 @@ export interface Task {
   assignedAgentId: string;
   subtasks: SubTask[];
   /** Current execution round (increments on revision rejection, reopen, scheduled rerun) */
+  /**
+   * 主动暂停的标记（人/agent 叫停），**不是**「等依赖」。
+   *
+   * 为什么要单独记：`blocked` 这一个状态值同时被用作「等上游依赖」与「主动暂停」，
+   * 而依赖引擎只看 blockedBy 是否满足，于是主动暂停的任务每轮扫描都会被
+   * 以「Dependency satisfied」理由自动恢复成 in_progress（2026-11-03 实测反复拉锯）。
+   * 存在本字段 = 这是有意停的，任何自动逻辑不得推翻；`resumeTask()` 会清掉它。
+   */
+  pausedAt?: string;
+  pausedBy?: string;
   executionRound: number;
   /** Task IDs that must be completed before this task can start */
   blockedBy?: string[];

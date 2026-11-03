@@ -183,6 +183,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   schedule_config TEXT,
   open_question TEXT,
   decisions TEXT DEFAULT '[]',
+  -- 主动暂停标记（与「等依赖」区分）。存在即有意停的，依赖引擎不得自动恢复。
+  paused_at TEXT,
+  paused_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -1021,6 +1024,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
+    { table: 'tasks', column: 'paused_at', sql: "ALTER TABLE tasks ADD COLUMN paused_at TEXT" },
+    { table: 'tasks', column: 'paused_by', sql: "ALTER TABLE tasks ADD COLUMN paused_by TEXT" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
     { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
@@ -1747,6 +1752,18 @@ export class SqliteTaskRepo {
     }
     vals.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  /**
+   * 主动暂停标记（与「等依赖」区分）。
+   *
+   * 为什么需要它持久化：`blocked` 同时被用作「等依赖」与「主动叫停」，依赖引擎
+   * 只看 blockedBy 是否满足 → 暂停后每轮扫描都被自动恢复成 in_progress。
+   * 且用户常常「暂停 → 重启应用 → 继续」，所以内存标记不够，必须落库。
+   */
+  async updatePause(id: string, at: string | null, by: string | null) {
+    this.db.prepare('UPDATE tasks SET paused_at = ?, paused_by = ?, updated_at = ? WHERE id = ?')
+      .run(at, by, now(), id);
   }
 
   async assign(id: string, agentId: string, updatedBy?: string) {
