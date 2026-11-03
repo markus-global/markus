@@ -40,8 +40,7 @@ export interface RingStep {
 export const NAV_RING: readonly RingStep[] = [
   { id: 'overview', page: PAGE.HOME },
   { id: 'team-l1', page: PAGE.TEAM, sub: 'l1' },
-  { id: 'approvals', page: PAGE.NOTIFICATIONS, sub: 'approvals' },
-  { id: 'notifications', page: PAGE.NOTIFICATIONS, sub: 'notifications' },
+  // 通知页已移除（Owner 2026-11-02）：手势环从「团队」直接到「任务」。
   { id: 'tasks-backlog', page: PAGE.WORK, sub: 'backlog' },
   { id: 'tasks-kanban', page: PAGE.WORK, sub: 'kanban' },
   { id: 'tasks-dag', page: PAGE.WORK, sub: 'dag' },

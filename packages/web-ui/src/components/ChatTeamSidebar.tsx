@@ -1207,9 +1207,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             <div data-no-drag className="ml-auto relative" ref={actionMenuRef}>
               <button
                 onClick={() => setActionMenu(!actionMenu)}
-                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-md transition-colors"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
               >
-                <span className="text-brand-500">+</span> {t('chat.manage')}
+                <span className="text-white/80">+</span> {t('chat.manage')}
                 <svg className={`w-2.5 h-2.5 transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>

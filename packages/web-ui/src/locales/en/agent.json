@@ -175,6 +175,10 @@
           "title": "Memory & Heartbeat",
           "hint": "Long-term memory · sessions · heartbeat rhythm"
         },
+        "governance": {
+          "title": "Autonomy & Oversight",
+          "hint": "Autonomy level · owned resources · recent routing decisions"
+        },
         "usage": {
           "title": "Usage & Storage",
           "hint": "Lifetime tokens · requests · disk usage",

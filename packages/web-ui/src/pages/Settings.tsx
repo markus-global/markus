@@ -18,6 +18,7 @@ import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
 import { RemoteAccessSection } from '../components/RemoteAccessSection.tsx';
+import { GovernanceSettings } from '../components/GovernanceSettings.tsx';
 import { FilterableSelect } from '../components/FilterableSelect.tsx';
 // import { CodingToolsSettings } from './CodingToolsSettings.tsx'; // TEMP-HIDDEN (2026-08)
 import { WebSearchSettings } from './WebSearchSettings.tsx';
@@ -51,7 +52,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license' | 'governance';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -66,6 +67,9 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+  // 「主动模式」：来源 / 主动模式档位 / 责任域 三组（实现文档 §5.5）。
+  // 单独一页而不是塞进「组织」：这三件事回答的是同一个问题 —— 系统自己会动哪些东西。
+  { id: 'governance', labelKey: 'nav.governance', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
 ];
 
@@ -73,7 +77,7 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote', 'governance'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
 
@@ -2515,7 +2519,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     setBrowserSaving(false);
                   }}
                   disabled={browserSaving}
-                  className="px-3 py-1.5 text-xs bg-surface-primary border border-border text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 shrink-0"
+                  className="px-3 py-1.5 text-xs bg-surface-primary border border-border-default text-fg-primary rounded-lg hover:bg-surface-elevated transition-colors disabled:opacity-40 shrink-0"
                 >
                   {browserSaving ? t('browserAutomation.backendVerifying') : t('browserAutomation.backendVerify')}
                 </button>
@@ -2811,6 +2815,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'remote' && <RemoteAccessSection />}
+
+        {resolvedTab === 'governance' && <GovernanceSettings />}
 
         {resolvedTab === 'integrations' && <>
           <section>

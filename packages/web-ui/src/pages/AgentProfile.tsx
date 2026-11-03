@@ -1,7 +1,7 @@
 import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, wsClient, hubApi, kebab } from '../api.ts';
+import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI } from '../api.ts';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
@@ -10,6 +10,8 @@ import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsT
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
+import { refDisplay, actionLabel } from '../lib/threadPresentation.ts';
+import { groupMailboxByThread } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -287,6 +289,124 @@ function SectionPanel({ children }: { children: React.ReactNode }) {
 }
 
 /** 单条活动（心跳 / A2A 共用）。两个列表原先各自烤了一份完全一样的行标记。 */
+/**
+ * 自主权与监督（实现文档 §5.5「AgentProfile：显示 autonomy 档位 + 负责的资源清单 +
+ * 最近 20 条路由决定」，目的是让「它自己会动」变成可监督的）。
+ *
+ * 三块数据都是只读：
+ *   档位 + 资源 → GET /api/resources/bindings?holder=agent:<id>
+ *   最近决定   → GET /api/threads/dispositions/recent（按 actor 过滤到本 agent）
+ *
+ * 为什么不把 autonomy 当成 agent 的一个字段：它本来就是**按责任域**授予的
+ * （同一个 agent 可以读 A 资源、发布 B 资源）。压成一个标量会丢掉「对什么放开」，
+ * 而监督恰恰要看的就是这一维。
+ */
+function GovernanceTab({ agentId }: { agentId: string }) {
+  const [bindings, setBindings] = useState<ResourceBindingAPI[]>([]);
+  const [decisions, setDecisions] = useState<DispositionAPI[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    Promise.allSettled([
+      fetchResourceBindings({ holder: `agent:${agentId}` }),
+      fetchRecentDispositions(200),
+    ]).then(([b, d]) => {
+      if (!alive) return;
+      const errs: string[] = [];
+      if (b.status === 'fulfilled') setBindings(b.value.bindings ?? []);
+      else errs.push('责任域读取失败');
+      if (d.status === 'fulfilled') {
+        // 只留这个 agent 自己做的决定 —— 全局决定清单不属于「它自己会动」的证据。
+        setDecisions((d.value.dispositions ?? []).filter(x => x.actor === agentId).slice(0, 20));
+      } else errs.push('路由决定读取失败');
+      setError(errs.length ? errs.join('；') : null);
+    }).finally(() => { if (alive) setLoading(false); });
+    return () => { alive = false; };
+  }, [agentId]);
+
+  const AUTO_LABEL: Record<string, string> = {
+    off: '关闭', observe: '观察', auto: '自动', trusted: '托管',
+  };
+  const AUTO_TONE: Record<string, string> = {
+    off: 'bg-surface-overlay text-fg-tertiary',
+    observe: 'bg-sky-500/15 text-sky-600',
+    auto: 'bg-amber-500/15 text-amber-600',
+    trusted: 'bg-rose-500/15 text-rose-600',
+  };
+
+  if (loading) return <p className="text-xs text-fg-tertiary">读取中…</p>;
+
+  return (
+    <div className="space-y-5">
+      {error && (
+        <div className="rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-600">
+          {error} —— 下方为可读到的部分，缺的部分不等于「没有」。
+        </div>
+      )}
+
+      {/* ── 负责的资源 + 档位 ── */}
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-tertiary">
+          负责的资源与主动模式
+        </h4>
+        <p className="mb-2 text-[11px] text-fg-tertiary leading-relaxed">
+          授权是<strong className="text-fg-secondary">按资源</strong>给的：同一个 agent 可以对一个资源只读、对另一个可发布。
+        </p>
+        {bindings.length === 0 ? (
+          <p className="text-xs text-fg-tertiary">
+            这个 agent 还没有声明任何责任域。它做的事情都来自被派的活，不会自行盯外部资源。
+          </p>
+        ) : (
+          <div className="divide-y divide-border-default/40 rounded-lg border border-border-subtle">
+            {bindings.map(b => (
+              <div key={b.id} className="flex flex-wrap items-center gap-x-3 gap-y-1 px-3 py-2 text-[11px]">
+                <span className="text-fg-primary">{b.resource}</span>
+                <code className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">{b.scope}</code>
+                <span className={`rounded px-1.5 py-0.5 text-[10px] ${AUTO_TONE[b.autonomy] ?? 'bg-surface-overlay text-fg-tertiary'}`}>
+                  {AUTO_LABEL[b.autonomy] ?? b.autonomy}
+                </span>
+                <span className="ml-auto text-fg-tertiary">授权人 {b.grantedBy}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── 最近 20 条路由决定 ── */}
+      <div>
+        <h4 className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-fg-tertiary">
+          最近 20 条路由决定
+        </h4>
+        <p className="mb-2 text-[11px] text-fg-tertiary leading-relaxed">
+          系统替它接了哪些活、忽略了什么，以及理由。调不下来就是<strong className="text-fg-secondary">没记录</strong>，
+          不代表没发生。
+        </p>
+        {decisions.length === 0 ? (
+          <p className="text-xs text-fg-tertiary">这个 agent 名下还没有路由决定记录。</p>
+        ) : (
+          <ol className="space-y-1.5">
+            {decisions.map(d => (
+              <li key={d.id} className="rounded-lg border border-border-subtle px-3 py-2 text-[11px]">
+                <div className="flex flex-wrap items-center gap-1.5 text-fg-tertiary">
+                  <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">{d.action}</span>
+                  <span>{new Date(d.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
+                  {d.wouldAccept === false && (
+                    <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">当时判定不该接</span>
+                  )}
+                </div>
+                <p className="mt-1 text-fg-secondary">{d.reason || '未记录理由'}</p>
+              </li>
+            ))}
+          </ol>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
   agentId: string; act: ActivityRecord; dotClass: string; expanded: boolean; onToggle: () => void;
 }) {
@@ -684,6 +804,12 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
       {section === 'tools' && (
         <SectionPanel>
           <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+        </SectionPanel>
+      )}
+
+      {section === 'governance' && (
+        <SectionPanel>
+          <GovernanceTab agentId={agent.id} />
         </SectionPanel>
       )}
 
@@ -2376,6 +2502,27 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const QUEUE_COLLAPSE_THRESHOLD = 3;
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
+  // ── 来龙去脉（Thread 视图进这个 tab）──────────────────────────────────────
+  // Owner 的要求：用户想看清"这件事到底怎么了"时看的就是它，所以要能在这里
+  // **就地**看到经过，而不是跳去别的页面再跳回来。
+  //
+  // 数据：这个 agent 经手的事 = 它邮箱里那些带实体键的条目（taskId/sessionId）。
+  // 实测：一个内容 agent 的 5060 条邮箱里可反推出 35 件不同的事。
+  // 内部机械（心跳/记忆整理/回调）不算"事"，已在派生时排除。
+  const [threadTitleByRef, setThreadTitleByRef] = useState<Record<string, string>>({});
+  const [selectedRef, setSelectedRef] = useState<string | null>(null);
+  // 一条 thread 的来龙去脉 = 事件（Triggers）+ 判断（Decisions），合流按时间排。
+  // 参考实现 docs/005-panel.md：「Each Thread shows its Triggers newest first, Decisions and Subscriptions」。
+  const [threadNodes, setThreadNodes] = useState<Array<{
+    id: string; at: number; kind: 'event' | 'decision'; label: string; summary: string; actor?: string;
+  }>>([]);
+  const [eventsLoading, setEventsLoading] = useState(false);
+  // 参考实现 docs/005-panel.md 的 Trigger 页签按状态过滤 thread
+  // （Subscribed / Evaluating / New Triggers in 24h / All）。这里先落能算的两种：
+  // 「全部」与「24h 内有动静」。「订阅中 / 研判中」需要按 thread 查订阅，
+  // 是 N+1，等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑第四档。
+  const [listFilter, setListFilter] = useState<'all' | 'active24h'>('all');
+
   const load = useCallback(async (reset = true) => {
     if (reset) setLoading(true);
     try {
@@ -2428,6 +2575,63 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     setHighlightedId(highlightId ?? null);
     load();
   }, [load, highlightId]);
+
+  /** thread 标题字典（只当标题用，不做归属判断）。 */
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      try {
+        const all = await fetchThreads();
+        if (!alive) return;
+        const map: Record<string, string> = {};
+        for (const t of all.threads ?? []) if (t.title) map[t.ref] = t.title;
+        setThreadTitleByRef(map);
+      } catch { /* 取不到标题就退回 ref，不影响时间线 */ }
+    })();
+    return () => { alive = false; };
+  }, [agentId]);
+
+  /** 选中某件事 → 就地取它的来龙去脉。 */
+  useEffect(() => {
+    if (!selectedRef) { setThreadNodes([]); return; }
+    let alive = true;
+    setEventsLoading(true);
+    (async () => {
+      // 参考实现（deepseek-ai/dsh-superagent-prototype docs/005-panel.md）明确：
+      // 「Each Thread shows its Triggers newest first, **Decisions** and Subscriptions」
+      // —— 所以这里必须把判断（dispositions）和事件合流，只显示事件是残的。
+      const [ev, dp] = await Promise.all([
+        fetchThreadEvents(selectedRef).catch(() => ({ events: [] as never[] })),
+        fetchThreadDispositions(selectedRef).catch(() => ({ dispositions: [] as never[] })),
+      ]);
+      if (!alive) return;
+      const nodes = [
+        ...(ev.events ?? []).map(e => ({
+          id: `e-${e.id}`, at: e.createdAt, kind: 'event' as const,
+          label: '', summary: e.summary, actor: e.actor ?? undefined,
+        })),
+        ...(dp.dispositions ?? []).map(d => ({
+          id: `d-${d.id}`, at: d.createdAt, kind: 'decision' as const,
+          label: actionLabel(d.action), summary: d.reason, actor: d.actor ?? undefined,
+        })),
+      ].sort((a, b) => a.at - b.at);
+      setThreadNodes(nodes);
+    })().finally(() => { if (alive) setEventsLoading(false); });
+    return () => { alive = false; };
+  }, [selectedRef]);
+
+  /** 这个 agent 经手的事：从邮箱条目派生（内部机械已排除，见 lib/mailboxToThread.ts）。 */
+  const workItems = useMemo(
+    () => groupMailboxByThread(mailbox?.history, ref => threadTitleByRef[ref], 20),
+    [mailbox, threadTitleByRef],
+  );
+  // 参考实现的 Trigger 页签按状态过滤（24h 新触发 / 全部）。
+  const visibleItems = useMemo(() => {
+    if (listFilter === 'all') return workItems;
+    const cutoff = Date.now() - 24 * 3600_000;
+    return workItems.filter(w => new Date(w.latestAt).getTime() >= cutoff);
+  }, [workItems, listFilter]);
+  const activeRef = selectedRef ?? visibleItems.find(w => w.ref)?.ref ?? null;
 
   // Auto-load more history until the highlighted item appears, then scroll to it
   const autoLoadingForHighlightRef = useRef(false);
@@ -2625,6 +2829,93 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             </div>
           );
         })()}
+      </section>
+
+      {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
+          Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
+          所以必须能在这里**就地**看到经过，不跳页。
+          左边：它经手的事（从邮箱条目派生，内部机械已排除）。
+          右边：选中那件事的时间线（thread_events，只追加的历史事实）。 */}
+      <section>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>
+          <span className="text-[10px] text-fg-muted">
+            最近 {mailbox?.history?.length ?? 0} 条里涉及 {workItems.filter(w => w.ref).length} 件事
+          </span>
+          {/* 过滤档位对齐参考实现 Trigger 页签（Subscribed / Evaluating / New Triggers in 24h / All）。
+              这里只落能算的两档；「订阅中 / 研判中」需要按 thread 查订阅（N+1），
+              等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑档位。 */}
+          <div className="ml-auto flex gap-1">
+            {([['all', '全部'], ['active24h', '24h 内有动静']] as const).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setListFilter(k)}
+                className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
+                  listFilter === k
+                    ? 'bg-surface-overlay text-fg-primary'
+                    : 'text-fg-tertiary hover:text-fg-secondary'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {visibleItems.length === 0 ? (
+          <p className="text-xs text-fg-tertiary">
+            还没读到它经手的事（心跳、记忆整理等自身运转不算）。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2 md:flex-row md:items-start">
+            <ul className="w-full shrink-0 space-y-1 md:w-64">
+              {visibleItems.map(w => {
+                const active = activeRef === w.ref;
+                return (
+                  <li key={w.ref ?? '__orphan'}>
+                    <button
+                      onClick={() => setSelectedRef(w.ref)}
+                      className={`w-full rounded-md border px-2 py-1.5 text-left transition-colors ${
+                        active
+                          ? 'border-selected-border bg-selected-bg'
+                          : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
+                      }`}
+                    >
+                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`}>
+                        {w.ref ? (threadTitleByRef[w.ref] ?? w.latestSummary ?? w.ref) : '未关联到某件事'}
+                      </span>
+                      <span className="mt-0.5 block text-[10px] text-fg-tertiary">
+                        {w.ref ? refDisplay(w.ref) : '—'} · {w.count} 条
+                      </span>
+                    </button>
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
+              {eventsLoading ? (
+                <p className="text-xs text-fg-tertiary">读取中…</p>
+              ) : threadNodes.length === 0 ? (
+                <p className="text-xs text-fg-tertiary">这件事还没有时间线记录。</p>
+              ) : (
+                <ol className="space-y-2">
+                  {threadNodes.map(n => (
+                    <li key={n.id} className="flex items-start gap-2">
+                      <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.kind === 'decision' ? 'bg-brand-500' : 'bg-fg-secondary'}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-tertiary">
+                          {n.kind === 'decision' && (
+                            <span className="rounded bg-surface-overlay px-1 py-px text-fg-secondary">判断 · {n.label}</span>
+                          )}
+                          <span>{new Date(n.at).toLocaleString()}</span>
+                          {n.actor && <span>· {n.actor}</span>}
+                        </div>
+                        <p className="whitespace-pre-wrap text-xs text-fg-primary">{n.summary || '（未记录理由）'}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          </div>
+        )}
       </section>
 
       {/* ── Notebook (Cognitive Workspace) ── */}
