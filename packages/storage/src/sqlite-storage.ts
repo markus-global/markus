@@ -811,6 +811,110 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   timeout_ms INTEGER NOT NULL DEFAULT 600000
 );
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
+
+-- ── Thread / Trigger / Router（设计见 workspace/markus-superagent-0{1,2}*.md）─────
+-- 五张表合一件事：让「同一段时间只属于一个人」成为存储层的事实，而不是各链路的约定。
+
+-- 流：唯一持有 串行/订阅/归属。UNIQUE(ref) 强制「一个实体只有一条流」。
+CREATE TABLE IF NOT EXISTS threads (
+  id            TEXT PRIMARY KEY,
+  ref           TEXT NOT NULL,
+  created_at    INTEGER NOT NULL,
+  last_activity INTEGER NOT NULL,
+  UNIQUE(ref)
+);
+CREATE INDEX IF NOT EXISTS idx_threads_ref   ON threads(ref);
+
+-- 订阅：直通的依据（own = 我负责；context = 我只是在看）
+CREATE TABLE IF NOT EXISTS thread_subscriptions (
+  thread_id TEXT NOT NULL REFERENCES threads(id),
+  ticket_id TEXT NOT NULL,
+  agent_id  TEXT NOT NULL,
+  purpose   TEXT NOT NULL,
+  PRIMARY KEY (thread_id, ticket_id)
+);
+CREATE INDEX IF NOT EXISTS idx_sub_agent ON thread_subscriptions(agent_id);
+
+-- 处置：唯一审计事实。UNIQUE(trigger_id, thread_id) 就是幂等键。
+CREATE TABLE IF NOT EXISTS thread_dispositions (
+  id           TEXT PRIMARY KEY,
+  trigger_id   TEXT NOT NULL,
+  thread_id    TEXT NOT NULL,
+  action       TEXT NOT NULL,
+  reason       TEXT NOT NULL,
+  would_accept INTEGER DEFAULT 0,
+  actor        TEXT NOT NULL,
+  created_at   INTEGER NOT NULL,
+  UNIQUE(trigger_id, thread_id)
+);
+CREATE INDEX IF NOT EXISTS idx_disp_thread ON thread_dispositions(thread_id, created_at DESC);
+
+-- 事件时间线：一条流上「发生了什么」。
+--
+-- 为什么必须只追加：「发生了什么」是历史事实，不是当前状态。
+-- 状态可以被覆盖（任务从 pending 变成 review），但「3 点 12 分有人评论了」不能。
+-- 一旦允许 UPDATE，时间线就不再是证据，只是「最后写者说了什么」。
+-- 结构性保证：仓储层只提供 insert / list，不提供 update / delete。
+-- 测试 D1.5 直接断言「全仓无 UPDATE thread_events」。
+CREATE TABLE IF NOT EXISTS thread_events (
+  id         TEXT PRIMARY KEY,
+  thread_id  TEXT NOT NULL REFERENCES threads(id),
+  kind       TEXT NOT NULL,
+  actor      TEXT,
+  summary    TEXT NOT NULL,
+  payload    TEXT,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_evt_thread ON thread_events(thread_id, created_at DESC);
+
+-- 责任域绑定：agent/team 负责某个外部资源到某一档（read < draft < publish < admin）
+CREATE TABLE IF NOT EXISTS resource_bindings (
+  id          TEXT PRIMARY KEY,
+  holder_kind TEXT NOT NULL,
+  holder_id   TEXT NOT NULL,
+  resource    TEXT NOT NULL,
+  scope       TEXT NOT NULL,
+  autonomy    TEXT NOT NULL DEFAULT 'observe',
+  granted_by  TEXT NOT NULL,
+  since       INTEGER NOT NULL,
+  UNIQUE(holder_kind, holder_id, resource)
+);
+CREATE INDEX IF NOT EXISTS idx_rbd_holder   ON resource_bindings(holder_kind, holder_id);
+CREATE INDEX IF NOT EXISTS idx_rbd_resource ON resource_bindings(resource);
+
+-- 来源配置：外部事件入口。secret 永不落日志。
+CREATE TABLE IF NOT EXISTS event_sources (
+  id         TEXT PRIMARY KEY,
+  org_id     TEXT NOT NULL,
+  prefix     TEXT NOT NULL,
+  secret     TEXT,
+  config     TEXT DEFAULT '{}',
+  health     TEXT DEFAULT '{}',
+  created_at INTEGER NOT NULL,
+  UNIQUE(org_id, prefix)
+);
+
+-- 触发：幂等的唯一载体。必须先于任何副作用存在。
+--
+-- 为什么不只用 thread_dispositions 的 UNIQUE(trigger_id, thread_id)：
+--   ① 同一 trigger 可被路由到不同 thread → 允许多行，挡不住重投；
+--   ② 一条 trigger 可能还没产生处置就被重投（被忽略/直通/进程崩溃）→ 无行可查。
+-- 所以「这个投递我见过」必须由一张独立表记住，且**只按 idempotency_key 唯一**。
+CREATE TABLE IF NOT EXISTS triggers (
+  id              TEXT PRIMARY KEY,
+  org_id          TEXT,
+  kind            TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  actor_kind      TEXT,
+  actor_id        TEXT,
+  addressing      TEXT,
+  summary         TEXT,
+  body            TEXT,
+  thread_refs     TEXT DEFAULT '[]',
+  received_at     INTEGER NOT NULL,
+  UNIQUE(idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS idx_triggers_kind ON triggers(kind, received_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────

@@ -184,11 +184,6 @@ const VOCABULARY: Record<string, Record<string, string>> = {
     zh: '任务卡住',
     es: 'Tarea atascada',
   },
-  'notifications.titles.unstartedTask': {
-    en: 'Unstarted task',
-    zh: '任务未启动',
-    es: 'Tarea sin iniciar',
-  },
   'notifications.bodies.staleTaskInProgress': {
     en: 'Task "{{title}}" has been in_progress for {{hours}}h',
     zh: '任务「{{title}}」已进行 {{hours}} 小时',
@@ -198,11 +193,6 @@ const VOCABULARY: Record<string, Record<string, string>> = {
     en: 'Task "{{title}}" has been in review for {{hours}}h with no action',
     zh: '任务「{{title}}」已待审核 {{hours}} 小时且无动作',
     es: 'La tarea "{{title}}" lleva {{hours}} h en revisión sin acción',
-  },
-  'notifications.bodies.staleTaskUnstarted': {
-    en: 'Task "{{title}}" awaiting approval for {{hours}}h',
-    zh: '任务「{{title}}」已等待审批 {{hours}} 小时',
-    es: 'La tarea "{{title}}" lleva {{hours}} h esperando aprobación',
   },
 
   // ── Escalation and the activity feed ───────────────────────────────────────
