@@ -3792,7 +3792,8 @@ export interface DispositionAPI {
   threadId: string;
   action: string;
   reason: string;
-  wouldAccept: boolean;
+  /** 三态：true 会接 / false 不会接 / null 没问过（dispatch·attach·stop）。 */
+  wouldAccept: boolean | null;
   actor: string;
   createdAt: number;
 }

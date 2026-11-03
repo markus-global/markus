@@ -573,7 +573,7 @@ CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease  ON mailbox_items(agent_id, s
 CREATE TABLE agent_decisions (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
-  decision_type TEXT NOT NULL,       -- DecisionType enum value
+  decision_type TEXT NOT NULL,       -- AttentionAction enum value (历史列名，见 concept-naming.md)
   mailbox_item_id TEXT NOT NULL,     -- FK → mailbox_items.id
   context TEXT NOT NULL DEFAULT '{}',
   reasoning TEXT NOT NULL DEFAULT '',

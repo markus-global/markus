@@ -10,7 +10,7 @@ import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsT
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
-import { refDisplay, actionLabel } from '../lib/threadPresentation.ts';
+import { refDisplay, actionLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -393,7 +393,7 @@ function GovernanceTab({ agentId }: { agentId: string }) {
                 <div className="flex flex-wrap items-center gap-1.5 text-fg-tertiary">
                   <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">{d.action}</span>
                   <span>{new Date(d.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
-                  {d.wouldAccept === false && (
+                  {wouldAcceptVerdict(d) === 'reject' && (
                     <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">当时判定不该接</span>
                   )}
                 </div>

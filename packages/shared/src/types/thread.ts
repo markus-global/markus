@@ -131,12 +131,18 @@ export interface Trigger {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 路由决定：唯一审计事实
+// 一次路由的**处置**（disposition）：唯一审计事实
+//
+// 原名 `RouteDecision`（2026-11-03 改名，见 docs/architecture/concept-naming.md）。
+// 为什么改：`Decision` 当时同时被邮箱的注意力仲裁用着，一个名字指两件事。
+// 新名字与它落库的地方同名 —— `thread_dispositions` 一行 = 一次处置，
+// 这样「决定」与「记录」不再有两种叫法。旧名只在历史说明里出现。
+//
+// 顺带删除零引用的 `RouteAction`：动作标签已由本联合类型的 `action` 字段穷举表达，
+// 留一个没人用的同步枚举 = 第二个写者。
 // ─────────────────────────────────────────────────────────────
 
-export type RouteAction = 'accept' | 'attach' | 'dispatch' | 'stop' | 'ignore' | 'defer';
-
-export type RouteDecision =
+export type Disposition =
   | { action: 'accept'; threadRef: ThreadRef; newThread?: boolean; ticketId?: string; reason: string }
   | { action: 'attach'; threadRef: ThreadRef; ticketId: string; reason: string }
   | { action: 'dispatch'; threadRef: ThreadRef; agentId: string; sessionId?: string; reason: string }

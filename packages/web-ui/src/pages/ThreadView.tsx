@@ -17,7 +17,7 @@ import { fetchThreadDispositions, fetchThreadEvents, fetchThreads } from '../api
 import type { DispositionAPI, ThreadAPI, ThreadEventAPI } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, isWouldAccept } from '../lib/threadPresentation.ts';
+import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { entityNavTarget } from '../lib/threadNav.ts';
 
 // 展示层唯一实现见 lib/threadPresentation.ts（E 区收敛）。
@@ -65,7 +65,7 @@ function DecisionNode({ d }: { d: DispositionAPI }) {
         <span>{clockOf(d.createdAt)}</span><span>· {d.actor}</span>
       </div>
       <p className="mt-1 whitespace-pre-wrap text-sm text-fg-primary">{d.reason || '未记录理由'}</p>
-      {isWouldAccept(d) && (
+      {wouldAcceptVerdict(d) === 'accept' && (
         <p className="mt-1.5 flex items-start gap-1.5 rounded-md bg-amber-500/10 px-2 py-1 text-[11px] text-amber-700">
           <span className="shrink-0 font-medium">本可接单</span>
           <span className="text-amber-600/90">放行的话它会接下这件事，但当前档位没有动手。</span>

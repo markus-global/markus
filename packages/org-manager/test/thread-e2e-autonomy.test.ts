@@ -186,3 +186,62 @@ describe('端到端 · 事实 / 执行态 / 时间线（F2.2 的机制层判据�
     expect(countDispositions()).toBe(1);
   });
 });
+
+/**
+ * B3 的度量：一次真实路由写下的 DB 列 `would_accept` 与读出的 TS 字段 `wouldAccept`
+ * 必须语义一致；且必须**三态**——「没问过」不得伪装成「不会接」。
+ *
+ * 为什么必须跑真库：这条断言的全部意义在「SQLite 把布尔写成 1/0/NULL」这个边界上。
+ * fake repo 直接存布尔，边界根本不存在，测出来的绿是假的。
+ * 把编解码任一方向写反（`WouldAccept.encode` 反过来，或 decode 用 `!== 0`），三条用例必红。
+ */
+describe('B3 · would-accept 三态回环（DB 列 ↔ TS 字段，术语映射表见 docs/architecture/concept-naming.md）', () => {
+  const rawWouldAccept = (triggerId: string) => {
+    const row = db
+      .prepare('SELECT would_accept FROM thread_dispositions WHERE trigger_id = ?')
+      .get(triggerId) as { would_accept: number | null } | undefined;
+    expect(row, `没有写下 trigger=${triggerId} 的处置`).toBeDefined();
+    return row!.would_accept;
+  };
+
+  const readWouldAccept = (triggerId: string) =>
+    dispositions.listRecent(100).find(d => d.triggerId === triggerId)?.wouldAccept;
+
+  it('record-only（observe 档）：DB 1 ↔ TS true', () => {
+    const { service } = wire('observe');
+    service.route({ triggerId: 'trg_b3_observe', kind: 'comment', ref: REF, actorKind: 'human', addressing: 'ambient' });
+
+    expect(rawWouldAccept('trg_b3_observe')).toBe(1);
+    expect(readWouldAccept('trg_b3_observe')).toBe(true);
+  });
+
+  it('ignore-ended（流已结束的机器人事件）：DB 0 ↔ TS false', () => {
+    const { service } = wire('observe');
+    service.route({
+      triggerId: 'trg_b3_ended',
+      kind: 'task',
+      ref: 'tsk_b3_done',
+      actorKind: 'agent',
+      addressing: 'ambient',
+      threadEnded: true,
+    });
+
+    expect(rawWouldAccept('trg_b3_ended')).toBe(0);
+    expect(readWouldAccept('trg_b3_ended')).toBe(false);
+  });
+
+  it('dispatch（人已指定处理者）：DB NULL ↔ TS null —— 没问过不等于不会接', () => {
+    const { service } = wire('observe');
+    service.route({
+      triggerId: 'trg_b3_dispatch',
+      kind: 'chat',
+      ref: 'cs_b3_dispatch',
+      actorKind: 'human',
+      addressing: 'direct',
+      directTargetAgentId: AGENT,
+    });
+
+    expect(rawWouldAccept('trg_b3_dispatch')).toBeNull();
+    expect(readWouldAccept('trg_b3_dispatch')).toBeNull();
+  });
+});

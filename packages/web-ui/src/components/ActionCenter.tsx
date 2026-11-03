@@ -4,7 +4,7 @@ import { HistoryModal } from './HistoryModal.tsx';
 import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { STAGE_LABEL, formatDuration, formatRelativeAny } from '../lib/threadPresentation.ts';
+import { STAGE_LABEL, formatDuration, formatRelativeAny, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 
 /**
  * 概览页的「行动台」—— 取代原先并列的两块（独立收件箱卡片 + Needs Your Attention 聚合块）。
@@ -439,7 +439,7 @@ export function ActionCenter({
                             {' · '}
                             {d.actor}
                           </span>
-                          {d.wouldAccept === false && (
+                          {wouldAcceptVerdict(d) === 'reject' && (
                             <span className="ml-1.5 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">当时判定不该来</span>
                           )}
                         </li>

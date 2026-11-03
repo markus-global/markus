@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  refKindLabel, shortRef, refDisplay, waitPhrase, isWouldAccept, STAGE_LABEL,
+  refKindLabel, shortRef, refDisplay, waitPhrase, wouldAcceptVerdict, STAGE_LABEL,
 } from './threadPresentation.ts';
 
 // ── 展示层原语 ────────────────────────────────────────────────────────────────
@@ -83,18 +83,20 @@ describe('waitPhrase — 时间短语按 stage 变（修「空闲却说已等」
   });
 });
 
-describe('isWouldAccept — 语义唯一判据（判据写反过两次）', () => {
+describe('wouldAcceptVerdict — 语义唯一判据（判据写反过两次，且被当布尔用过一次）', () => {
   it('true = 本可接单（放行的话他会接）', () => {
-    expect(isWouldAccept({ wouldAccept: true })).toBe(true);
+    expect(wouldAcceptVerdict({ wouldAccept: true })).toBe('accept');
     // 关键反例：曾经两处 UI 都写成 `=== false`，于是 observe 记录
     // 永远进不了「观察模式」筛选、提示也永远不显示。
-    expect(isWouldAccept({ wouldAccept: false })).toBe(false);
+    expect(wouldAcceptVerdict({ wouldAccept: false })).toBe('reject');
   });
 
-  it('缺失/null 一律不算「本可接单」—— 不确定就不声称', () => {
-    expect(isWouldAccept({})).toBe(false);
-    expect(isWouldAccept({ wouldAccept: null })).toBe(false);
-    expect(isWouldAccept({ wouldAccept: undefined })).toBe(false);
+  it('缺失/null 是「没问过」—— 不是「不会接」', () => {
+    // B3（2026-11-03）：这三态曾经被压成布尔，dispatch/attach/stop 的处置
+    // 被读成 false，UI 于是对着「没问过」的行说「当时判定不该来」。
+    expect(wouldAcceptVerdict({})).toBe('not-asked');
+    expect(wouldAcceptVerdict({ wouldAccept: null })).toBe('not-asked');
+    expect(wouldAcceptVerdict({ wouldAccept: undefined })).toBe('not-asked');
   });
 });
 

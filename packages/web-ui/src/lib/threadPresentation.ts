@@ -54,7 +54,7 @@ export function stageTone(stage: string | null | undefined): string {
     : 'bg-surface-overlay text-fg-secondary';
 }
 
-/** 路由决定的展示名。键与 `RouteDecision['action']` 对应。 */
+/** 路由处置的展示名。键与 `Disposition['action']`（shared/types/thread.ts）对应。 */
 export const ACTION_LABEL: Record<string, string> = {
   accept: '接单',
   attach: '归入既有流',
@@ -178,15 +178,22 @@ export function waitPhrase(stage: string | null | undefined, elapsedMs: number):
 }
 
 /**
- * 「本可接单」的唯一判据。
+ * 「本会接 / 本不会接 / 没问过」的唯一判据（三态）。
  *
  * **踩过的坑（2026-11-02）**：这个语义在 UI 里写反过两次 ——
  * `wouldAccept` 的含义是「如果放行，他会接」，所以「本可接单」= `true`。
  * 两处 UI 都写成 `=== false`，于是 observe 的记录**永远进不了观察模式筛选**，
  * 那句提示也永远不显示。语义反了不会报错，只会安静地少显示东西。
  *
- * 收敛成一个函数，让「反了」这件事只需要在**一处**被想清楚。
+ * **第二个坑（2026-11-03，B3）**：它被当成布尔，而库里其实有三态。
+ * `null` = 这次处置**没问过**这个问题（dispatch / attach / stop），
+ * 被读成 `false` 后，UI 对着「没问过」的行说「当时判定不该来」。
+ * 所以判据必须三态，且**只能在这里**从字段映射成结论。
  */
-export function isWouldAccept(d: { wouldAccept?: boolean | null }): boolean {
-  return d.wouldAccept === true;
+export type WouldAcceptVerdict = 'accept' | 'reject' | 'not-asked';
+
+export function wouldAcceptVerdict(d: { wouldAccept?: boolean | null }): WouldAcceptVerdict {
+  if (d.wouldAccept === true) return 'accept';
+  if (d.wouldAccept === false) return 'reject';
+  return 'not-asked';
 }
