@@ -40,6 +40,8 @@ export interface MailboxLike {
   sourceType: string;
   status: string;
   queuedAt: string;
+  /** 服务端用 core/thread-resolver 算出的归属（唯一解析点），前端只读 */
+  threadRef?: string | null;
   payload?: { summary?: string; content?: string; taskId?: string; sessionId?: string; [k: string]: unknown } | null;
   metadata?: Record<string, unknown> | null;
 }
@@ -59,22 +61,16 @@ export interface ThreadGroup {
 }
 
 /**
- * 一条 mailbox 条目归属哪条流（null = 落不到实体）。导出供调用方按 ref 过滤 ——
- * 「这件事收到过哪些投递」和「这些投递属于哪件事」必须是同一套解析，不能各写一份。
+ * 一条 mailbox 条目归属哪条流。
+ *
+ * **只用服务端下发的 `threadRef`**（后端调 core/thread-resolver.ts 的唯一解析点算出）。
+ * 我一度在这里手写了一份 payload 解析（taskId/sessionId/requirementId），
+ * 结果是同一事实有三个写者：resolver / api-server / 浏览器。而且手写版把
+ * 「一条 Trigger 可属多个 Thread」压成了单值 —— 语义也错。
+ * 现在这里只做一件事：读字段。
  */
 export function refOf(item: MailboxLike): string | null {
-  const p = item.payload ?? {};
-  const raw = typeof p.taskId === 'string' ? p.taskId.trim() : '';
-  if (raw) return raw.startsWith('tsk_') ? raw : `tsk_${raw}`;
-
-  const sid = (typeof p.sessionId === 'string' ? p.sessionId : '') ||
-    (typeof item.metadata?.['sessionId'] === 'string' ? String(item.metadata['sessionId']) : '');
-  if (sid) return sid.startsWith('cs_') ? sid : `cs_${sid}`;
-
-  const rid = typeof p.requirementId === 'string' ? p.requirementId.trim() : '';
-  if (rid) return rid.startsWith('req_') ? rid : `req_${rid}`;
-
-  return null;
+  return item.threadRef ?? null;
 }
 
 /** 是否属于「内部机械」—— 不进历史。 */

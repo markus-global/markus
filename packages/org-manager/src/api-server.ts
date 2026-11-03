@@ -49,6 +49,8 @@ import {
   aggregateCacheHitRate,
   computeReplayRatio,
 } from '@markus/core';
+// 归属解析的唯一来源（设计原文：「全仓库只有这里能产出 ref」）
+import { resolveThreadRef } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
@@ -5542,23 +5544,10 @@ export class APIServer {
 
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
-          // 按 thread ref 取「这件事的全部投递」。
-          //
-          // 为什么必须在后端做：邮箱是分页的（默认 50），而一条 thread 可能有上百条投递。
-          // 前端若只在已加载页里过滤，详情就会**静默少显示**——分组写 N 条、列表只渲染 M 条。
-          // 所以带 ref 时忽略分页、取一个足够大的窗口再按 ref 过滤；不带 ref 时行为不变。
-          const resolveRefOf = (it: Record<string, unknown>): string | null => {
-            const p = (it['payload'] ?? {}) as Record<string, unknown>;
-            const meta = (it['metadata'] ?? {}) as Record<string, unknown>;
-            const tid = typeof p['taskId'] === 'string' ? p['taskId'].trim() : '';
-            if (tid) return tid.startsWith('tsk_') ? tid : `tsk_${tid}`;
-            const sid = (typeof p['sessionId'] === 'string' ? p['sessionId'] : '')
-              || (typeof meta['sessionId'] === 'string' ? String(meta['sessionId']) : '');
-            if (sid) return sid.startsWith('cs_') ? sid : `cs_${sid}`;
-            const rid = typeof p['requirementId'] === 'string' ? p['requirementId'].trim() : '';
-            if (rid) return rid.startsWith('req_') ? rid : `req_${rid}`;
-            return null;
-          };
+          // 归属解析只用**唯一解析点**（core/thread-resolver.ts）。
+          // 我一度在这里手写了一份 payload 解析，前端另有一份 —— 那是同一事实的三个写者。
+          // 而且手写版把「一条 Trigger 可属多个 Thread」压成了单值，语义也错了。
+          const refOfItem = (it: Record<string, unknown>) => resolveThreadRef(it as never, agentId);
 
           const fetched = this.storage.mailboxRepo.getHistory(agentId, {
             limit: refFilter ? 2000 : limit,
@@ -5567,7 +5556,7 @@ export class APIServer {
             status,
           });
           const raw = refFilter
-            ? fetched.filter((it: Record<string, unknown>) => resolveRefOf(it) === refFilter)
+            ? fetched.filter((it: Record<string, unknown>) => refOfItem(it).ref === refFilter)
             : fetched;
           const itemIds = raw.map((item: { id: string }) => item.id);
 
@@ -5580,6 +5569,12 @@ export class APIServer {
 
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
+            // 归属由服务端用唯一解析点算好，随条目下发。
+            // 前端只读这个字段 —— 浏览器不该再解析一遍 payload（那是第二个写者）。
+            const resolved = refOfItem(item);
+            enriched.threadRef = resolved.ref;
+            enriched.threadAxis = resolved.axis;
+            enriched.threadLegacyKeys = resolved.legacyKeys;
             enriched.decisions = decisionsMap.get(item.id) ?? [];
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {
