@@ -1,5 +1,8 @@
 export { OrganizationService } from './org-service.js';
 export { TaskService } from './task-service.js';
+// 日常链路写 Thread 的唯一收口（S3）：三条链路都通过它，拼 ref 的知识只留在一处
+// eslint-disable-next-line import/no-unresolved
+export { ensureThread, recordThreadEvent, taskRef, a2aRef } from './thread-ensure.js';
 export { APIServer } from './api-server.js';
 export { WSBroadcaster } from './ws-server.js';
 export { HITLService, isAnswerableByTap, assessResponseCompleteness, type NotificationPriority } from './hitl-service.js';

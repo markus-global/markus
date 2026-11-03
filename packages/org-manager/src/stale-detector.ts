@@ -22,12 +22,11 @@ export interface StaleConfig {
    * happened to notice 15 hours later. Notify the responsible party first.
    */
   maxReviewWaitMs: number;
-  maxAssignedUnstartedMs: number;
   maxBranchDivergenceCommits: number;
 }
 
 export interface StaleItem {
-  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'unstarted_task' | 'branch_diverged';
+  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'branch_diverged';
   taskId?: string;
   ageMs: number;
   agentId?: string;
@@ -44,7 +43,6 @@ const DEFAULT_CONFIG: StaleConfig = {
   maxInProgressMs: 24 * 60 * 60 * 1000,
   reviewReminderMs: 30 * 60 * 1000,
   maxReviewWaitMs: 4 * 60 * 60 * 1000,
-  maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
   maxBranchDivergenceCommits: 100,
 };
 
@@ -154,17 +152,8 @@ export class StaleDetector {
         });
       }
 
-      if (task.status === 'pending' && age > this.config.maxAssignedUnstartedMs) {
-        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'unstarted_task', {
-          ageMs: age,
-          agentId: task.assignedAgentId,
-          message: `Task "${task.title}" awaiting approval for ${Math.round(age / 3600000)}h`,
-          i18n: {
-            bodyKey: 'notifications.bodies.staleTaskUnstarted',
-            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
-          },
-        });
-      }
+      // `unstarted_task`（pending 任务迟迟未批）的定时提醒已按 Owner 2026-11-02 决定移除：
+      // 未批准的任务**始终**作为行动项常驻概览「等你处理」，再推一条通知只会造成重复噪音。
     }
 
     // Release memory for tasks that are no longer stale, so they can be notified again

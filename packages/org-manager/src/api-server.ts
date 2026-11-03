@@ -84,6 +84,7 @@ import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
+import { ensureThread, recordThreadEvent } from './thread-ensure.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -117,6 +118,7 @@ import {
 } from './middleware/auth.js';
 import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
+import { handleEventRoutes } from './event-routes.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { AgentDelivery, newChainId } from './agent-delivery.js';
@@ -2226,6 +2228,33 @@ export class APIServer {
   }
 
   /** Persist a chat turn (user + assistant) to DB if storage is available */
+  /**
+   * 主干接通：让一条聊天会话在 `threads` 表里存在（设计 §3.2 / §7.3）。
+   *
+   * 【为什么放在 persistChatTurn】它是 stream 与 non-stream **两条路径的唯一落库点**，
+   * 在这里加一处就覆盖两条——这是单一写者，而不是在两个分支各加一遍。
+   *
+   * 【ref 为什么直接用 session.id】会话 id（`cs_*`）本身就是 ThreadRef 的合法命名空间
+   * （见 @markus/shared 的 ThreadRef 注释），不需要另造一套映射；另造就会多一个第二写者。
+   *
+   * 【为什么失败不抛】thread 是派生视图，不能因为它的写入失败而丢掉用户消息。
+   * 但必须留日志——静默吞掉会让“流没建”变成永远查不到的盲区。
+   */
+  /**
+   * 为一条聊天会话建流。
+   *
+   * 调用点有两个（`persistUserMessage` / `persistChatTurn`），因为存在两条历史落库路径。
+   * 两个调用点共享**同一个幂等入口**（ThreadService.ensure → UNIQUE(ref)），
+   * 所以不会产生第二条流；但这不等于「只写一处」——真正的单一执行点是 repo 的唯一约束。
+   */
+  private ensureChatThread(sessionRef: string, agentId: string): void {
+    // 统一走 ThreadService.ensure()（§7.3.1 唯一写者）。
+    // 此前这里直接调 repo.upsert()，是绕过 service 的第二条写路径。
+    if (!ensureThread(this.storage, sessionRef, agentId)) {
+      log.warn('Chat thread not ensured (no thread repo)', { sessionRef, agentId });
+    }
+  }
+
   private async persistChatTurn(
     agentId: string,
     userMessage: string,
@@ -2241,6 +2270,15 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 主干接通：每一条真实聊天会话都必须是一条流（否则 Thread 视图 / 路由台永远是空壳）。
+      this.ensureChatThread(session.id, agentId);
+      // 时间线（S6）：记下「这条消息发生过」。只追加，不提供修改路径——
+      // 历史事实不应被后来的写者覆盖。
+      recordThreadEvent(this.storage, session.id, {
+        kind: 'chat',
+        actor: senderId ?? agentId,
+        summary: userMessage.slice(0, 80),
+      });
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
@@ -2501,6 +2539,23 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 聊天进入 Thread（S3，真实路径）。
+      //
+      // 【更正】我曾写过「persistChatTurn 是 stream 与 non-stream 的唯一落库点」——这句话是错的：
+      // appendMessage 全仓有 4 个调用点，流式聊天走的是本方法（persistUserMessage）
+      // 与 persistAssistantMessage，根本不经过 persistChatTurn。
+      // 于是「一处覆盖两条」的假设，让 chat 链路接在了一条不会被流式聊天经过的分支上。
+      // （实测：浏览器发一条真实消息后，chat_sessions 多了 cs_609ff62a63e04701，threads 仍为 0。）
+      //
+      // 现在挂在这里：session 已确定，是落库路径必经的最小公共点。
+      // ensure 幂等，所以 persistChatTurn 里保留的同名调用不会产生第二条流。
+      this.ensureChatThread(session!.id, agentId);
+      // 流式聊天的落库路径也必须写时间线，否则「发了消息但时间线是空的」。
+      recordThreadEvent(this.storage, session!.id, {
+        kind: 'chat',
+        actor: senderId ?? agentId,
+        summary: userMessage.slice(0, 80),
+      });
       const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       // base64 不再进库：字节落附件存储，行里只留 imageRefs。
@@ -2794,6 +2849,67 @@ export class APIServer {
       if (!ct.includes('multipart/form-data')) {
         await this.readBody(req);
       }
+    }
+
+    // ── Thread / 外部事件（设计见 workspace/markus-superagent-0{1,2}-*.md）──────
+    // 鉴权分工：webhook 只认 HMAC（它没有用户会话），其余沿用既有会话鉴权。
+    if (
+      path.startsWith('/api/threads') ||
+      path.startsWith('/api/resources/bindings') ||
+      path.startsWith('/api/events')
+    ) {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const isWebhook =
+        path.startsWith('/api/events/') &&
+        !path.startsWith('/api/events/sources') &&
+        req.method === 'POST';
+      if (!isWebhook) {
+        const authUser = this.authEnabled
+          ? await this.requireAuth(req, res)
+          : await this.getAuthUser(req);
+        if (!authUser) return;
+      }
+      const handled = await handleEventRoutes(
+        {
+          orgId: 'default',
+          repos: {
+            threadRepo: this.storage.threadRepo,
+            dispositionRepo: this.storage.dispositionRepo,
+            resourceBindingRepo: this.storage.resourceBindingRepo,
+            eventSourceRepo: this.storage.eventSourceRepo,
+            // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
+            triggerRepo: this.storage.triggerRepo,
+            // 事件时间线（S6）：**漏传这一个的后果是「页面空白且不报错」**。
+            // 读取端 `const repo = deps.repos.threadEventRepo` 拿到 undefined 就直接
+            // 回 `{ events: [] }`（那是有意的：空白与端点不存在要能区分）——
+            // 于是 41 条事件在库、接口恒空、UI 一片空白，全部静默。
+            // 之所以容易漏：EventRouteDeps 里它是 `optional`，漏传不报类型错。
+            threadEventRepo: this.storage.threadEventRepo,
+            taskRepo: this.storage.taskRepo,
+            approvalRepo: this.storage.approvalRepo,
+          },
+          deliver: target => {
+            const agent = this.orgService.getAgentManager().getAgent(target.agentId);
+            if (!agent) return;
+            agent.enqueueToMailbox('system_event', {
+              summary: target.event.summary,
+              content: target.event.body || target.event.summary,
+              extra: {
+                threadRef: target.threadRef,
+                idempotencyKey: target.event.idempotencyKey,
+                ticketId: target.ticketId,
+              },
+            });
+          },
+        },
+        req,
+        res,
+        path,
+      );
+      if (handled) return;
     }
 
     // ── Auth endpoints (no auth required) ──────────────────────────────────
@@ -14252,7 +14368,12 @@ EXPLANATION_END`;
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         try {
-          const raw = Buffer.concat(chunks).toString();
+          const rawBuf = Buffer.concat(chunks);
+          // HMAC 必须对**原始字节**校验：解析后重新序列化会改变字节（空格/字段序），
+          // 于是「签名有效」与「实际解析到的内容」不再是同一个东西。
+          // 存成 Buffer 而不是 string，避免 utf8 往返改变非法字节序列。
+          (req as any).__rawBody__ = rawBuf;
+          const raw = rawBuf.toString();
           const parsed = JSON.parse(raw);
           // BUG-003: JSON literal null or array is not a valid request body
           if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
