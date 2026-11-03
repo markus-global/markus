@@ -11,9 +11,9 @@ import {
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
-  resolveEntityKeys,
   isStrictStateItem,
 } from '@markus/shared';
+import { threadEntityKeys } from './thread-resolver.js';
 import type { EventBus } from './events.js';
 import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
 
@@ -824,14 +824,19 @@ export class AgentMailbox {
    * `user:{senderId}` 又是 `conv:{sessionId}`），**全部**需要锁定。
    *
    * 作用域映射是**声明式**的 —— 由 `MAILBOX_TYPE_REGISTRY[type].entityScopes`
-   * 定义（见 @markus/shared `resolveEntityKeys`），而不是在这里硬编码 if 链，
+   * 定义（见 `thread-resolver.ts`），而不是在这里硬编码 if 链，
    * 因此新增 mailbox 类型不会静默绕过并发保护。
+   *
+   * **2026-11 起主轴换成流标识**（`threadEntityKeys`）：第一键是「这条事件属于哪条流」
+   * （`tsk_…` / `gh:owner/repo` / 会话 id / `agent:<id>`），旧的 `task:` / `req:` /
+   * `conv:` / `channel:` 维度作为**附加键**保留在后面——两个维度是「与」关系，
+   * 删掉旧键等于放宽并发保护。
    *
    * 返回值恒为非空数组：无法解析出具体实体时退化为 `['system:{agentId}']`
    * （同 Agent 内串行），即「未知 = 保守串行」而非「未知 = 完全并发」。
    */
   entityKeysOf(item: MailboxItem): string[] {
-    return resolveEntityKeys(item, this.agentId);
+    return threadEntityKeys(item, this.agentId);
   }
 
   /**

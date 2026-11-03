@@ -559,6 +559,46 @@ export class ToolSelector {
     });
 
     pushUnique({
+      name: 'rest',
+      description:
+        'Suspend this session until a CONDITION fires, instead of waking on a timer. ' +
+        'Use when you are waiting for something you do not control (a trigger on a thread, a stage change, a task reaching a status). ' +
+        'Any one condition wakes you (OR). While resting the session costs nothing — no LLM turns. ' +
+        'Prefer this over schedule_wakeup polling: a timer wakes you whether or not anything happened; rest wakes you only when it did. ' +
+        'Bounded by design — if you omit a timeout a fallback one is added for you, and after too many consecutive rests the platform refuses and asks you to escalate to a human instead.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          wake_on: {
+            type: 'array',
+            description: 'Conditions to wait for. ANY one firing wakes you (OR semantics, not AND).',
+            items: {
+              type: 'object',
+              properties: {
+                kind: {
+                  type: 'string',
+                  enum: ['trigger', 'stage', 'timeout', 'dependency'],
+                  description:
+                    'trigger = a new trigger lands on a thread; ' +
+                    'stage = a thread reaches a given stage; ' +
+                    'timeout = wall-clock fallback (not for polling); ' +
+                    'dependency = a task reaches a terminal status.',
+                },
+                thread_ref: { type: 'string', description: 'For kind=trigger/stage: the thread, e.g. "gh:owner/repo#12". Omit on trigger to mean "any thread".' },
+                stage: { type: 'string', description: 'For kind=stage: the stage to wait for.' },
+                ms: { type: 'number', description: 'For kind=timeout: milliseconds from now.' },
+                task_id: { type: 'string', description: 'For kind=dependency: the task to wait on.' },
+              },
+              required: ['kind'],
+            },
+          },
+          note: { type: 'string', description: 'Why you are resting and what to do when it fires — future-you needs this context.' },
+        },
+        required: ['wake_on'],
+      },
+    });
+
+    pushUnique({
       name: 'set_heartbeat_interval',
       description: 'Adjust your own heartbeat (periodic safety-net patrol) interval. The heartbeat is a coarse fallback — prefer schedule_wakeup for precise follow-ups. Increase the interval to save tokens when you are idle; decrease it if you need to patrol more often. The value is clamped to a safe range (5 minutes – 24 hours) and applied immediately. Provide EITHER interval_minutes OR interval_ms.',
       inputSchema: {

@@ -142,14 +142,16 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     }
   });
 
-  it('无具体实体的 item 退化为 system:{agentId}（同 Agent 内串行）', () => {
+  it('无具体实体的 item 退化为 agent 级单键（同 Agent 内串行）', () => {
     const hb = mailbox.enqueue('heartbeat', { summary: 'h', content: 'h' });
     const hb2 = mailbox.enqueue('heartbeat', { summary: 'h2', content: 'h2' });
     const a2a = mailbox.enqueue('a2a_message', { summary: 'm', content: 'm' });
 
-    expect(mailbox.entityKeyOf(hb)).toBe(`system:${AGENT_ID}`);
-    expect(mailbox.entityKeyOf(hb2)).toBe(`system:${AGENT_ID}`);
-    expect(mailbox.entityKeyOf(a2a)).toBe(`system:${AGENT_ID}`);
+    // 主轴 = 流标识 `agent:<id>`；旧的 `system:<id>` 作为附加维度保留
+    expect(mailbox.entityKeyOf(hb)).toBe(`agent:${AGENT_ID}`);
+    expect(mailbox.entityKeysOf(hb)).toContain(`system:${AGENT_ID}`);
+    expect(mailbox.entityKeyOf(hb2)).toBe(`agent:${AGENT_ID}`);
+    expect(mailbox.entityKeyOf(a2a)).toBe(`agent:${AGENT_ID}`);
   });
 
   it('两个 heartbeat 不会并发处理（原实现的盲区）', () => {
@@ -190,8 +192,10 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     const c2 = mailbox.enqueue('human_chat', { summary: 'b', content: 'b' }, { metadata: { senderId: 'user_1', sessionId: 'sess_B' } });
     const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c' }, { metadata: { senderId: 'user_1', sessionId: 'sess_A' } });
 
-    expect(mailbox.entityKeyOf(c1)).toBe('conv:sess_A');
-    expect(mailbox.entityKeyOf(c2)).toBe('conv:sess_B');
+    // 主轴 = 会话 id 本身；旧的 conv: 维度作为附加键保留（行为约束不变）
+    expect(mailbox.entityKeyOf(c1)).toBe('sess_A');
+    expect(mailbox.entityKeysOf(c1)).toContain('conv:sess_A');
+    expect(mailbox.entityKeyOf(c2)).toBe('sess_B');
 
     expect(mailbox.lockEntities(mailbox.entityKeysOf(c1), c1.id)).toBe(true);
     // 同一个人、不同会话 tab → 可并行（本次改动的核心：不再按发起人串行）
@@ -203,7 +207,7 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
 
   it('human_chat 无 senderId 时回落到会话键', () => {
     const c = mailbox.enqueue('human_chat', { summary: 'a', content: 'a' }, { metadata: { sessionId: 'sess_Z' } });
-    expect(mailbox.entityKeyOf(c)).toBe('conv:sess_Z');
+    expect(mailbox.entityKeyOf(c)).toBe('sess_Z');
   });
 
   it('多实体维度：human_chat 带 taskId 时同时锁 task + conv（任一维度冲突都串行）', () => {
@@ -214,7 +218,11 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     const c3 = mailbox.enqueue('human_chat', { summary: 'c', content: 'c', taskId: 'tsk_3' }, { metadata: { senderId: 'user_2', sessionId: 'sess_A' } }); // 同会话
     const c4 = mailbox.enqueue('human_chat', { summary: 'd', content: 'd', taskId: 'tsk_4' }, { metadata: { senderId: 'user_3', sessionId: 'sess_C' } }); // 无关
 
-    expect(mailbox.entityKeysOf(c1).sort()).toEqual(['conv:sess_A', 'task:tsk_1']);
+    // 主轴（tsk_1）在前，旧维度 task:/conv: 保留在后 —— 任一维度冲突都串行
+    const keysC1 = mailbox.entityKeysOf(c1);
+    expect(keysC1[0]).toBe('tsk_1');
+    expect(keysC1).toContain('task:tsk_1');
+    expect(keysC1).toContain('conv:sess_A');
 
     expect(mailbox.lockEntities(mailbox.entityKeysOf(c1), c1.id)).toBe(true);
     // 同 user 但会话/任务都不同 → 不再互锁（会话优先，本次改动）
@@ -246,6 +254,7 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
 
   it('任务相关 item 仍按任务实体串行（回归保护）', () => {
     const t = mailbox.enqueue('task_status_update', { summary: 't', content: 'c', taskId: 'tsk_77' });
-    expect(mailbox.entityKeyOf(t)).toBe('task:tsk_77');
+    expect(mailbox.entityKeyOf(t)).toBe('tsk_77');
+    expect(mailbox.entityKeysOf(t)).toContain('task:tsk_77');
   });
 });

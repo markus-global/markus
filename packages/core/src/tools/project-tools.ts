@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { approvalBlock } from './approval.js';
 import { checkTagsInput } from '@markus/shared';
 
 export interface DeliverableServiceBridge {
@@ -252,14 +253,12 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                     try {
                       const name = args['name'] as string;
                       const description = args['description'] as string;
-                      if (ctx.requestApproval) {
-                        const { approved, comment } = await ctx.requestApproval({
-                          toolName: 'create_project',
-                          toolArgs: { name, description },
-                          reason: `Agent wants to create project "${name}"`,
-                        });
-                        if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project creation' });
-                      }
+                      const blocked = await approvalBlock(ctx.requestApproval, {
+                        toolName: 'create_project',
+                        toolArgs: { name, description },
+                        reason: `Agent wants to create project "${name}"`,
+                      }, 'User denied project creation');
+                      if (blocked) return blocked;
                       const project = ctx.projectService!.createProject!({
                         orgId: ctx.orgId,
                         name,
@@ -331,14 +330,14 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
                       const APPROVAL_FIELDS = ['name', 'status', 'repositories', 'teamIds', 'governancePolicy'];
                       const needsApproval = APPROVAL_FIELDS.some(f => data[f] !== undefined);
 
-                      if (needsApproval && ctx.requestApproval) {
+                      if (needsApproval) {
                         const changedFields = Object.keys(data).filter(k => k !== 'description');
-                        const { approved, comment } = await ctx.requestApproval({
+                        const blocked = await approvalBlock(ctx.requestApproval, {
                           toolName: 'update_project',
                           toolArgs: { project_id: projectId, ...data },
                           reason: `Agent wants to update project ${projectId} (fields: ${changedFields.join(', ')})`,
-                        });
-                        if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project update' });
+                        }, 'User denied project update');
+                        if (blocked) return blocked;
                       }
                       const project = ctx.projectService!.updateProject!(projectId, data);
                       return JSON.stringify({ status: 'success', project: { id: project.id, name: project.name, status: project.status } });
@@ -369,13 +368,13 @@ export function createProjectTools(ctx: ProjectToolsContext): AgentToolHandler[]
               try {
                 const projectId = args['project_id'] as string;
                 const reason = args['reason'] as string;
-                if (ctx.requestApproval) {
-                  const { approved, comment } = await ctx.requestApproval({
+                {
+                  const blocked = await approvalBlock(ctx.requestApproval, {
                     toolName: 'delete_project',
                     toolArgs: { project_id: projectId, reason },
                     reason: `Agent wants to DELETE project ${projectId}: ${reason}`,
-                  });
-                  if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied project deletion' });
+                  }, 'User denied project deletion');
+                  if (blocked) return blocked;
                 }
                 ctx.projectService!.deleteProject!(projectId);
                 return JSON.stringify({ status: 'success', deleted: projectId });

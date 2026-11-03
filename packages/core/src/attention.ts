@@ -831,6 +831,13 @@ export class AttentionController {
    * **不同类型的 item**（如人类消息与后台回调）在同一份记忆会话里并发跑回合。
    * 声明式的实体维度永远推不出后者的存在（payload 里没有这个事实），所以由
    * delegate 用与 `resolveTurnSession` 同一套解析来表态。
+   *
+   * **2026-11 起这一维度降级为安全网**：`mailbox.entityKeysOf` 的主轴已经改成流标识
+   * （`thread-resolver.ts`，会读 `extra.sessionId` / `metadata.dbSessionId`），
+   * 所以「同一会话」通常已由主轴覆盖。这里继续保留是为了兜住**主轴推不出的情形**
+   * —— item 的流标识不是会话派生（如 `tsk_…`），但这一轮实际会跑进某个既有会话。
+   * 保留不动的原因是：删掉它属于「无法用现有用例证明安全」的行为变更，
+   * 而它的代价只是多一把键。要删必须先补一条「流标识与会话不重合」的回归用例。
    */
   private lockKeysFor(item: MailboxItem): string[] {
     const keys = this.mailbox.entityKeysOf(item);

@@ -96,7 +96,7 @@ export const TOOL_DEF_PROTECTED = new Set([
 
 /**
  * Tools whose schemas are unconditionally injected by ToolSelector.pushUnique
- * (schedule_wakeup / cancel_wakeup / set_heartbeat_interval / recall_activity /
+ * (schedule_wakeup / cancel_wakeup / rest / set_heartbeat_interval / recall_activity /
  * complete_deliberation / notebook_upsert / notebook_clear). discover_tools must
  * treat them as activate-able (sticky activated → protected from eviction), or
  * they dead-lock once budget pressure moves them into the Deferred catalog.
@@ -106,6 +106,7 @@ export const TOOL_DEF_PROTECTED = new Set([
 export const SCHEMA_INJECTED_TOOLS = new Set([
   'schedule_wakeup',
   'cancel_wakeup',
+  'rest',
   'set_heartbeat_interval',
   'recall_activity',
   'complete_deliberation',
