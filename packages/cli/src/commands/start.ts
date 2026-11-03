@@ -84,6 +84,10 @@ import {
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
+  ensureThread,
+  recordThreadEvent,
+  taskRef,
+  a2aRef,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
@@ -730,6 +734,10 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   taskService.setSharedDataDir(sharedDataDir);
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
+    // S3：任务建卡即建流。流是「这条任务卡在谁那儿」的存储级答案。
+    taskService.setThreadEnsurer((taskId) => ensureThread(storage, taskRef(taskId)));
+    // S6：任务评论写入时间线（D1.3）。注入而不是让 task-service import storage。
+    taskService.setThreadEventRecorder((taskId, e) => recordThreadEvent(storage, taskRef(taskId), e));
     taskService.setTaskLogRepo(storage.taskLogRepo);
     if (storage.executionStreamRepo) {
       taskService.setExecutionStreamRepo(storage.executionStreamRepo);
@@ -822,7 +830,48 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService,
     mcpServers,
     feishuToolsConfig,
+    // 责任域工具：让 agent 自己声明「我负责哪个资源」。依赖由这里注入，
+    // core 不认识 sqlite；storage 缺表时返回 undefined（工具不注册，而不是空实现）。
+    resourceToolDeps: ({ agentId, agentName, teamId }) => {
+      const s = storage;
+      if (!s?.threadRepo || !s.resourceBindingRepo) return undefined;
+      return {
+        agentId,
+        agentName,
+        teamId,
+        bindings: s.resourceBindingRepo,
+        // 绑定即订阅：后续该资源的事件天然直通给绑定者（v1 里 ticket 就是 thread 本身）
+        subscribe: (resource: string, holderAgentId: string) => {
+          const { thread } = s.threadRepo.upsert(resource);
+          s.threadRepo.subscribe(thread.id, thread.id, holderAgentId, 'own');
+        },
+        // 「我盯的资源最近发生了什么」：取该流最近的处置记录。
+        // 读不到时返回 undefined —— 工具会回 recentUnknown:true，而不是编一个空数组说「没事发生」。
+        recentActivity: (resource: string) => {
+          if (!s.dispositionRepo) return undefined;
+          const th = s.threadRepo.getByRef(resource);
+          if (!th) return undefined;
+          const rows = s.dispositionRepo.listByThread(th.id, 5) as Array<{ action: string; reason: string; createdAt: number }>;
+          if (rows.length === 0) return [];
+          return rows.map((d: { action: string; reason: string }) => `${d.action}：${d.reason}`);
+        },
+      };
+    },
   });
+
+  // S3：A2A 投递即建流（同一次 DM 对话一条流，与方向无关）。
+  // 未拿到 storage 时不注入 —— 不注册一个跑不动的空实现。
+  if (storage?.threadRepo) {
+    agentManager.setThreadEnsurer((a, b) => {
+      const ref = a2aRef(a, b);
+      ensureThread(storage, ref, a);
+      // S6：A2A DM 写入时间线（D1.4）。
+      //
+      // 摘要只能到「谁给谁发了消息」这一层：投递回调拿不到正文，而为了拿正文
+      // 去改 A2A 的签名得不偿失。宁要一个诚实的粗粒度事件，也不要一条编造的详细记录。
+      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: `${a} → ${b} 发了一条消息` });
+    });
+  }
 
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
@@ -1327,7 +1376,9 @@ async function startServerCore(
       hitlService.notify({
         targetUserId: 'all',
         type: 'system',
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Unstarted task',
+        // unstarted_task 的提醒已移除（Owner 2026-11-02）：未批准任务常驻概览「等你处理」。
+        // branch_diverged 原先被错误地落到 else 分支显示 "Unstarted task"，现在用中性标题。
+        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Stale task',
         body: item.message,
         priority: item.type === 'review_stale' ? 'high' : 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
@@ -1342,9 +1393,7 @@ async function startServerCore(
             titleKey:
               item.type === 'review_stale'
                 ? 'notifications.titles.staleReview'
-                : item.type === 'stuck_task'
-                  ? 'notifications.titles.stuckTask'
-                  : 'notifications.titles.unstartedTask',
+                : 'notifications.titles.stuckTask',
             ...(item.i18n ?? {}),
           },
         },
