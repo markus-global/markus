@@ -21,7 +21,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { fetchThreadByRef, fetchThreadDispositions, fetchThreadEvents } from '../api.ts';
 import type { DispositionAPI, ThreadAPI, ThreadEventAPI } from '../api.ts';
 import { refDisplay, refKindLabel, stageLabel, stageTone } from '../lib/threadPresentation.ts';
-import { mergeTimeline, type TimelineNode } from '../lib/threadTimeline.ts';
+import { timelineView } from '../lib/threadTimeline.ts';
 import { clockOf, CurrentStateNode, DecisionNode, EventNode } from './threadTimelineNodes.tsx';
 
 export function ThreadTimeline({
@@ -41,6 +41,10 @@ export function ThreadTimeline({
   const [threadError, setThreadError] = useState<string | null>(null);
   const [eventsError, setEventsError] = useState<string | null>(null);
   const [dispositionsError, setDispositionsError] = useState<string | null>(null);
+  // 每一路历史各自记「还在读」——用头部的 `loading` 代理另外两路的状态，
+  // 会让「事件还在路上」与「事件确实没有」在渲染上无法区分（缺陷 B 的同族）。
+  const [eventsLoading, setEventsLoading] = useState(true);
+  const [dispositionsLoading, setDispositionsLoading] = useState(true);
 
   useEffect(() => {
     let alive = true;
@@ -48,6 +52,8 @@ export function ThreadTimeline({
     setThreadError(null);
     setEventsError(null);
     setDispositionsError(null);
+    setEventsLoading(true);
+    setDispositionsLoading(true);
     setThread(null);
     setEvents([]);
     setDispositions([]);
@@ -63,23 +69,28 @@ export function ThreadTimeline({
     // 两段历史分开取：都会失败，但失败的含义不同，混在一个请求里就分不清是哪一种
     fetchThreadEvents(refId)
       .then(r => { if (alive) setEvents(r.events ?? []); })
-      .catch(e => { if (alive) setEventsError(msg(e)); });
+      .catch(e => { if (alive) setEventsError(msg(e)); })
+      .finally(() => { if (alive) setEventsLoading(false); });
 
     fetchThreadDispositions(refId)
       .then(r => { if (alive) setDispositions(r.dispositions ?? []); })
-      .catch(e => { if (alive) setDispositionsError(msg(e)); });
+      .catch(e => { if (alive) setDispositionsError(msg(e)); })
+      .finally(() => { if (alive) setDispositionsLoading(false); });
 
     return () => { alive = false; };
   }, [refId]);
 
   // 本面板只读事件与判断（它没有 agentId，投递在这条读取路径上不存在）。
-  // `mergeTimeline` 的三类行由调用方按需取用 —— 这里显式窄化，不留未处理分支。
-  const timeline = useMemo(
-    () => mergeTimeline(events, dispositions).filter(
-      (n): n is Exclude<TimelineNode, { kind: 'delivery' }> => n.kind !== 'delivery',
-    ),
-    [events, dispositions],
+  // **三态与「有没有东西」一律交给 `timelineView()`**（单一执行点）：
+  // 这里不允许出现第二份 `length === 0` —— 那正是本卡要消灭的「同一问题的第二份实现」。
+  const view = useMemo(
+    () => timelineView({
+      events: { state: eventsError ? 'error' : eventsLoading ? 'loading' : 'ok', items: events },
+      dispositions: { state: dispositionsError ? 'error' : dispositionsLoading ? 'loading' : 'ok', items: dispositions },
+    }),
+    [events, eventsError, eventsLoading, dispositions, dispositionsError, dispositionsLoading],
   );
+  const timeline = view.rows;
 
   return (
     <section className={`rounded-lg border border-border-subtle bg-surface-secondary ${className}`} data-thread-ref={refId}>
@@ -142,7 +153,7 @@ export function ThreadTimeline({
         </div>
       )}
 
-      {!loading && !threadError && !eventsError && !dispositionsError && timeline.length === 0 && (
+      {view.empty && (
         <div className="px-4 py-3 text-xs text-fg-tertiary">
           {refId.startsWith('agent:')
             // 缺陷 C 的裁定（B4-3）：**agent 轴不登记生命周期事件**。
@@ -155,11 +166,13 @@ export function ThreadTimeline({
       )}
 
       <ol className="space-y-3 px-4 py-3">
-        {timeline.map(node =>
-          node.kind === 'event'
-            ? <EventNode key={`e-${node.event.id}`} e={node.event} />
-            : <DecisionNode key={`d-${node.decision.id}`} d={node.decision} />,
-        )}
+        {timeline.map(node => {
+          // 本面板不读投递（没有 agentId），但行类型是三源合一的联合类型 ——
+          // 显式窄化而不是 `timeline` 里塞一个假的第三类分支。
+          if (node.kind === 'event') return <EventNode key={`e-${node.event.id}`} e={node.event} />;
+          if (node.kind === 'decision') return <DecisionNode key={`d-${node.decision.id}`} d={node.decision} />;
+          return null;
+        })}
         {thread && <CurrentStateNode t={thread} />}
       </ol>
     </section>
