@@ -175,7 +175,7 @@
 
 | # | 概念（super-agent） | Markus 现状对应物 | 关系判定 | 差距 | 修复卡 | 状态 | 提交号 |
 |---|---|---|---|---|---|---|---|
-| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 无「什么算事件」「读到位点」「进领域前过滤」 | 任务四 | 未开始 | — |
+| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 已在传输层之上补领域层：读取位点（`event_sources.cursor`，单一推进点）+ 准入规则（`admitEvent()`，含丢自激）+ 监听范围 | 任务四 | 已完成 `62655742` | `docs/architecture/sources.md` |
 | 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 内容轴已切走：正文唯一在 `triggers`，`mailbox_items` 只留执行态 + `trigger_id`（`docs/architecture/mailbox.md`）；枚举里剩下的来源/类别/优先级轴归任务四 | 任务八 | 已完成 | 3d828666 |
 | 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 决策不落库、无 reason、无 matched rule | 任务五 | 未开始 | — |
@@ -197,7 +197,7 @@
 | A3 | 三种「状态」混用 | 任务二 | 未开始 | — | 未更新 |
 | A4 | 两种「授权」不可互替 | 任务六 | 未开始 | — | 未更新 |
 | B1 | Eval 只做了一半 | 任务五 | 未开始 | — | 未更新 |
-| B2 | Source 不是适配器 | 任务四 | 未开始 | — | 未更新 |
+| B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
 | B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
