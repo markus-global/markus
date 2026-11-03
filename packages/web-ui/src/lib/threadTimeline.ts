@@ -57,6 +57,25 @@ export interface TimelineView {
 /** 来源 → 人话。集中一处，避免各渲染处各写一套。 */
 const SOURCE_LABEL = { events: '事件', dispositions: '判断', deliveries: '投递' } as const;
 
+/**
+ * 这份数据属于当前的流吗？不属于就一律当作「在读取」。
+ *
+ * 为什么需要它：React 的 effect 在首帧渲染**之后**才跑。所以挂载时、以及切到另一条流时，
+ * 手上有两种「旧值」——初始值（空）与上一条流的数据。两者若直接被 timelineView() 计算，
+ * 首帧就会得出 `empty: true` 并画出空态（或先闪一下别人的内容），下一帧才纠正。
+ * 用户看到的就是「一瞬间闪了个丑东西」。
+ *
+ * 判据：「还没读」与「确实没有」不能共用一个值（契约 R2）；而「这份数据是给哪条流的」
+ * 只有调用方知道，所以由它作为入参传进来，而不是在组件里再写一遍三处判断。
+ */
+export function sourceForRef<T>(
+  ref: string | null,
+  loadedForRef: string | null,
+  source: TimelineSource<T>,
+): TimelineSource<T> {
+  return loadedForRef === ref ? source : { state: 'loading', items: [] };
+}
+
 /** 同一毫秒内的固定次序：输入（投递）< 登记（事件）< 反应（判断）。 */
 const KIND_RANK: Record<TimelineKind, number> = { delivery: 0, event: 1, decision: 2 };
 

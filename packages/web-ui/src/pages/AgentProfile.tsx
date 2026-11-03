@@ -2,7 +2,7 @@ import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI, type EnrichedMailboxItem, type ThreadEventAPI } from '../api.ts';
-import { timelineView, type TimelineNode, type TimelineSource } from '../lib/threadTimeline.ts';
+import { timelineView, sourceForRef, type TimelineNode, type TimelineSource } from '../lib/threadTimeline.ts';
 import { EventNode, DecisionNode } from '../components/threadTimelineNodes.tsx';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
@@ -2556,9 +2556,17 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   // 这里曾经是 `.catch(() => ({ events: [] }))` 外加一句断言「这件事还没有正式事件记录」
   // —— 抓取失败被伪装成空态，读者拿到的是一句假的确定性陈述（缺陷 B / 契约 R2）。
   // 「有没有东西」只由 `timelineView()` 回答（单一判据），UI 不再自己数 length。
-  const [threadEvents, setThreadEvents] = useState<TimelineSource<ThreadEventAPI>>({ state: 'ok', items: [] });
-  const [threadDispositions, setThreadDispositions] = useState<TimelineSource<DispositionAPI>>({ state: 'ok', items: [] });
-  const [threadDeliveries, setThreadDeliveries] = useState<TimelineSource<EnrichedMailboxItem>>({ state: 'ok', items: [] });
+  // **初始态必须是 loading，不能是「已读完且为空」**。
+  //
+  // 踩过：初值写成 { state:'ok', items: [] } 时，首帧的 timelineView() 算出
+  // `empty: true` —— 取数的 effect 要等首帧渲染完才跑，于是用户先看到一闪而过的
+  // 空态，再看到「读取中…」，最后才是真内容。
+  // 「还没读」和「确实没有」是两件事，不能用同一个值表示（契约 R2）。
+  const [threadEvents, setThreadEvents] = useState<TimelineSource<ThreadEventAPI>>({ state: 'loading', items: [] });
+  const [threadDispositions, setThreadDispositions] = useState<TimelineSource<DispositionAPI>>({ state: 'loading', items: [] });
+  const [threadDeliveries, setThreadDeliveries] = useState<TimelineSource<EnrichedMailboxItem>>({ state: 'loading', items: [] });
+  /** 当前这份数据是「哪条流」的。≠ activeRef 时，手上这份就是上一条流的旧数据，一律当没读。 */
+  const [loadedForRef, setLoadedForRef] = useState<string | null>(null);
   /** 重试计数：改它等于让下面的 effect 重跑一次（失败后的「重试」按钮用它，不另开机制）。 */
   const [timelineTick, setTimelineTick] = useState(0);
   // 参考实现 docs/005-panel.md 的 Trigger 页签按状态过滤 thread
@@ -2646,27 +2654,37 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       setThreadEvents({ state: 'ok', items: [] });
       setThreadDispositions({ state: 'ok', items: [] });
       setThreadDeliveries({ state: 'ok', items: [] });
+      setLoadedForRef(null);
       return;
     }
     let alive = true;
     setThreadEvents({ state: 'loading', items: [] });
     setThreadDispositions({ state: 'loading', items: [] });
     setThreadDeliveries({ state: 'loading', items: [] });
-    fetchThreadEvents(activeRef)
+    const pEvents = fetchThreadEvents(activeRef)
       .then(r => { if (alive) setThreadEvents({ state: 'ok', items: r.events ?? [] }); })
       .catch(() => { if (alive) setThreadEvents({ state: 'error', items: [] }); });
-    fetchThreadDispositions(activeRef)
+    const pDispositions = fetchThreadDispositions(activeRef)
       .then(r => { if (alive) setThreadDispositions({ state: 'ok', items: r.dispositions ?? [] }); })
       .catch(() => { if (alive) setThreadDispositions({ state: 'error', items: [] }); });
-    api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef })
+    const pDeliveries = api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef })
       .then(r => { if (alive) setThreadDeliveries({ state: 'ok', items: r.history ?? [] }); })
       .catch(() => { if (alive) setThreadDeliveries({ state: 'error', items: [] }); });
+    // 三路都落定才标记「这份数据属于哪条流」——否则先到的那路会让另外两路看起来已经读完。
+    void Promise.allSettled([pEvents, pDispositions, pDeliveries])
+      .then(() => { if (alive) setLoadedForRef(activeRef); });
     return () => { alive = false; };
   }, [agentId, activeRef, timelineTick]);
 
   const timeline = useMemo(
-    () => timelineView({ events: threadEvents, dispositions: threadDispositions, deliveries: threadDeliveries }),
-    [threadEvents, threadDispositions, threadDeliveries],
+    () => timelineView({
+      // 数据还不属于当前选中的流（刚切过来 / 首次挂载）→ 当作在读取，
+      // 不把上一条流的内容或空态先闪一下。判据在 lib 里，不在这里重复三遗。
+      events: sourceForRef(activeRef, loadedForRef, threadEvents),
+      dispositions: sourceForRef(activeRef, loadedForRef, threadDispositions),
+      deliveries: sourceForRef(activeRef, loadedForRef, threadDeliveries),
+    }),
+    [threadEvents, threadDispositions, threadDeliveries, loadedForRef, activeRef],
   );
 
   /**

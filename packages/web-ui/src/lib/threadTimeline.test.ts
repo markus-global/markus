@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mergeTimeline, timelineView, toEpochMs } from './threadTimeline.ts';
+import { mergeTimeline, sourceForRef, timelineView, toEpochMs } from './threadTimeline.ts';
 import type { DispositionAPI, EnrichedMailboxItem, ThreadEventAPI } from '../api.ts';
 
 /**
@@ -152,6 +152,29 @@ describe('timelineView —— 「有没有东西」的单一判据', () => {
     });
     expect(view.rows).toHaveLength(1);
     expect(view.failures).toEqual(['判断']);
+    expect(view.empty).toBe(false);
+  });
+});
+
+describe('sourceForRef — 旧数据不许被当成「已读完」', () => {
+  const loaded = { state: 'ok' as const, items: [ev('e1', 1)] };
+
+  it('数据属于当前流 → 原样返回', () => {
+    expect(sourceForRef('tsk_1', 'tsk_1', loaded)).toBe(loaded);
+  });
+
+  it('刚切到另一条流（手上还是上一条的）→ 当「在读取」，不先闪旧内容', () => {
+    expect(sourceForRef('tsk_2', 'tsk_1', loaded)).toEqual({ state: 'loading', items: [] });
+  });
+
+  it('首帧（还没标过属于哪条流）→ 当「在读取」，不画空态', () => {
+    const view = timelineView({
+      events: sourceForRef('tsk_1', null, { state: 'ok', items: [] }),
+      dispositions: sourceForRef('tsk_1', null, { state: 'ok', items: [] }),
+      deliveries: sourceForRef('tsk_1', null, { state: 'ok', items: [] }),
+    });
+    // 关键：empty 必须为 false。否则首帧就会画出「这件事还没有任何记录」。
+    expect(view.loading).toBe(true);
     expect(view.empty).toBe(false);
   });
 });
