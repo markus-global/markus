@@ -1449,6 +1449,14 @@ export class Agent {
   }
 
   /**
+   * 撤回某需求下尚未消费的行动型条目（需求转终态时调用）。
+   * 见 `AgentMailbox.withdrawActionableFor` 的说明。
+   */
+  withdrawActionableFor(requirementId: string, reason: string): number {
+    return this.mailbox.withdrawActionableFor(requirementId, reason);
+  }
+
+  /**
    * Route a message through the mailbox and return a promise that resolves
    * when the agent finishes processing it.  This is the external replacement
    * for direct `handleMessage` calls — callers await the returned promise

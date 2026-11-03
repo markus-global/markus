@@ -3661,6 +3661,8 @@ export class TaskService implements ApprovalTargetPort {
             guidance ? `\nAction: ${guidance}` : '',
           ].filter(Boolean).join('\n'),
           taskId: task.id,
+          // 迁移对写进结构化字段：幂等键需要它，且**不得**从 content 文本里反解析。
+          extra: { taskId: task.id, from, to },
         }, {
           metadata: { taskId: task.id },
         });

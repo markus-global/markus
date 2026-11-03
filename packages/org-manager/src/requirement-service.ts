@@ -688,6 +688,19 @@ export class RequirementService implements ApprovalTargetPort {
       } catch { /* agent not found — skip */ }
     }
 
+    // 转终态 = 此前投出的「请审阅 / 请处理」不再为真 → 就在**这一个迁移点**撤回。
+    // 不放到投递侧做二次判定：那会变成第二个执行点，两处迟早漂移。
+    if (
+      (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') &&
+      req.createdBy && this.agentManager
+    ) {
+      try {
+        this.agentManager
+          .getAgent(req.createdBy)
+          ?.withdrawActionableFor(id, `requirement ${oldStatus} → ${newStatus}`);
+      } catch { /* mailbox 不可用不影响状态本身的正确性：撤回是清理，不是前提 */ }
+    }
+
     const resolvedActorType = actorType ?? (userId ? 'human' : 'system');
     this.recordTransition(id, oldStatus, newStatus, userId, resolvedActorType);
     this.broadcast('requirement:updated', req);
@@ -809,6 +822,15 @@ export class RequirementService implements ApprovalTargetPort {
     const oldStatus = req.status;
     req.status = 'cancelled';
     req.updatedAt = new Date().toISOString();
+
+    // 同 updateRequirementStatus：取消也是终态，未消费的「请审阅」必须一起消失。
+    if (req.createdBy && this.agentManager) {
+      try {
+        this.agentManager
+          .getAgent(req.createdBy)
+          ?.withdrawActionableFor(id, `requirement ${oldStatus} → cancelled`);
+      } catch { /* mailbox unavailable */ }
+    }
 
     if (this.requirementRepo) {
       this.requirementRepo.updateStatus(id, 'cancelled').catch((e: unknown) =>

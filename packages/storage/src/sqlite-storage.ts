@@ -5337,6 +5337,28 @@ export class SqliteMailboxRepo {
   }
 
   /**
+   * 撤回某实体下尚未消费的**行动型**条目（需求转终态时调用）。
+   *
+   * 只动 `payload.extra.actionRequired = 1` 的行：普通状态流水保留，历史可查。
+   * `processing` 也一并撤回 —— 正在被读取的那一条同样是「已不成立的请求」。
+   */
+  dropPendingByEntity(agentId: string, entityId: string, reason: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'dropped',
+                completed_at = ?,
+                metadata = json_set(coalesce(metadata, '{}'), '$.dropReason', ?)
+          WHERE agent_id = ?
+            AND status IN ('queued', 'processing')
+            AND json_extract(payload, '$.requirementId') = ?
+            AND json_extract(payload, '$.extra.actionRequired') = 1`
+      )
+      .run(new Date().toISOString(), reason, agentId, entityId);
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  /**
    * 回收过期租约（P0 · 运行期看门狗）：把 `processing` 且租约已过期的 item 退回 `queued`，
    * 使崩溃或超时的 worker 不会永久占位。返回回收条数。
    *

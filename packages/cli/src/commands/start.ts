@@ -2477,6 +2477,9 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // dropPendingByEntity：需求转终态时撤回「请审阅」类行动项，止住重复投递。
+          dropPendingByEntity: (aid: string, entityId: string, reason: string) =>
+            mbRepo.dropPendingByEntity(aid, entityId, reason),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
