@@ -3015,7 +3015,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           </p>
         ) : (
           <div className="flex flex-col gap-2 md:flex-row md:items-start">
-            <ul className="w-full shrink-0 space-y-1 md:w-64">
+            {/* 左列（经手的事）自管滚动：列表可能十几条，以前会把整页拉得很长，
+                右侧时间线被顶出视口 —— 手机上尤其难用（要滑很久才看到详情）。
+                现在列表自己滚，右侧详情停在原地。 */}
+            <ul className="w-full shrink-0 space-y-1 overflow-y-auto pr-1 max-h-[38vh] md:w-64 md:max-h-[60vh]">
               {visibleItems.map(w => {
                 const active = activeRef === w.ref;
                 // Owner 2026-11-03：标题要能认人。

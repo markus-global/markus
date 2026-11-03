@@ -4992,9 +4992,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const headerDesc = chatMode === 'direct' ? (currentAgent?.role || '') : chatMode === 'channel' ? (activeTeam?.description || '') : '';
             const headerAvatarUrl = chatMode === 'direct' ? currentAgent?.avatarUrl : undefined;
             const headerAvatarName = headerName || 'U';
-            // 当前 agent 的「在等谁」角标。取不到就 null，header 里什么都不渲染（不占位、
-            // 不显示「未知」）——header 是高频扫读区，宁缺勿滥。
-            const headerStage = chatMode === 'direct' && agentStage ? stageLabel(agentStage.stage) : null;
+            // 当前 agent 的「在等谁」角标已删除（Owner 2026-11-03）：chip 不可点、无信息。
+            const headerStage = null;
             const showEntityInfo = (chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId);
 
             return (
@@ -5100,13 +5099,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {chatMode === 'direct' && currentAgent && (
                         <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
-                      {/* 和 AgentStatusBadge 并排：状态徽标回答「这个人是谁/在不在」，
-                          stage 回答「他现在卡在什么事上」。两者不同维度，所以不合并。 */}
-                      {headerStage && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ${headerStage.cls}`} title={headerStage.hint}>
-                          {headerStage.label}
-                        </span>
-                      )}
+                      {/* Owner 2026-11-03：删掉这个「在等谁」stage 小 chip（如「等你批准」）。
+                          它不可点、不可展开、也不告诉你到底卡在哪件事上 —— 高频扫读区里
+                          放一个「只能看、不能做」的信号，只会让人反复点它、反复失望。
+                          真正要看的卡在哪，去 agent 详情的「运行与注意力」。 */}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
                       editingHeaderDesc ? (

@@ -701,6 +701,22 @@ export class RequirementService implements ApprovalTargetPort {
       } catch { /* mailbox 不可用不影响状态本身的正确性：撤回是清理，不是前提 */ }
     }
 
+    // 终态还必须**结算审批**（Owner 2026-11-03）。
+    // 踩过：需求已 completed，它挂着的审批行仍是 pending（实测 apr_mw08kfis_u →
+    // req_2c9595…completed），于是待办列表给一条已完成的需求挂着「待审批」徽标 ——
+    // 界面没有撒谎，库里就是留了一条本该关掉的记录。
+    // 与上面撤回同一时机、同一判据：终态只在这一个迁移点发生。
+    if (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') {
+      if (this.hitlService) {
+        try {
+          this.hitlService.cancelApprovalsByDetail(
+            'requirementId', id, userId ?? 'system',
+            `requirement ${oldStatus} → ${newStatus}（终态不再需要审批）`,
+          );
+        } catch { /* 审批不可用不影响状态迁移本身 */ }
+      }
+    }
+
     const resolvedActorType = actorType ?? (userId ? 'human' : 'system');
     this.recordTransition(id, oldStatus, newStatus, userId, resolvedActorType);
     this.broadcast('requirement:updated', req);
