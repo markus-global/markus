@@ -17,6 +17,7 @@ import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
 import { friendlyAgentError, ProcessTimeline } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
@@ -91,6 +92,8 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
+  /** agent 自己的来龙去脉（B4）：就地展开，不去全局页搜。 */
+  const [showStream, setShowStream] = useState(false);
   const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
   const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
@@ -167,6 +170,11 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
+            {/* 入口倒置（B4）：agent 也是「一条流」，就地看它经历过什么。
+                ref 用解析器的 agent 轴口径（`agent:<id>`），不是前端自造的另一种键。 */}
+            <button onClick={() => setShowStream(true)} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors" title="这个 agent 的来龙去脉">
+              {t('agent:profilePage.stream')}
+            </button>
             {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             {canManageAgents && (
             <button onClick={async () => {
@@ -195,6 +203,16 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
+        {showStream && (
+          <div
+            className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
+            onClick={() => setShowStream(false)}
+          >
+            <div className="w-full max-w-2xl" onClick={e => e.stopPropagation()}>
+              <ThreadTimeline refId={`agent:${agentId}`} onClose={() => setShowStream(false)} />
+            </div>
+          </div>
+        )}
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
           {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}

@@ -177,7 +177,7 @@
 |---|---|---|---|---|---|---|---|
 | 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 已在传输层之上补领域层：读取位点（`event_sources.cursor`，单一推进点）+ 准入规则（`admitEvent()`，含丢自激）+ 监听范围；详见 `docs/architecture/sources.md` | 任务四 | 已完成 | 62655742 |
 | 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 内容轴已切走：正文唯一在 `triggers`，`mailbox_items` 只留执行态 + `trigger_id`（`docs/architecture/mailbox.md`）；枚举里剩下的来源/类别/优先级轴归任务四 | 任务八 | 已完成 | 3d828666 |
-| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
+| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 「视角」层已收口：单一 ref→行 读取面（`GET /api/threads/one?ref=`，不依赖全局列表）+ 唯一时间线渲染（`components/threadTimelineNodes.tsx`）+ 三处入口**就地**打开（任务 / 票据 / agent）；全局页降级为「搜索一条流」。存储 `UNIQUE(ref)` 未动。见 `docs/architecture/thread.md`；浏览器实测待任务七B | 任务七 | 进行中 | — |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 已补齐两段：gate 命中记 `matched_rule`（新列，值为六条规则 id，SQL 可查分布），未命中进 assessment（`deps.assess` 可插拔，无引擎/判不了→降级 `needs-assessment` 不静默放行）；单一决策点 `ThreadService.decisionFor()`；降级矩阵见 `docs/architecture/eval.md` | 任务五 | 已完成 | 14d5d1bb |
 | 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定（那层叫 `Disposition`，同名问题已在任务一收口） | 任务一 | 已完成 | b4e7dfd6 |
 | 6 | **Ticket** | `tickets` 表（`tkt_`）+ `SqliteTicketRepo` | 形似神不同 | 已补齐「执行侧的工作单位」：与 task 可选关联（`ON DELETE SET NULL`），唯一写入点 + 三态自有状态机；票不驱动执行 | 任务三 | 已完成 | a59daf1e |
@@ -186,7 +186,7 @@
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
 | 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 无法回答「卡在谁那儿」 | 任务二 | 未开始 | — |
 | 11 | **Policy / accept mode** | 无（有心跳，无「主动档位」） | 语义空白 | 无法表达「观察但不行动」 | 未排期 | 范围外 | 理由：autonomy 四档已存在（§7.8），本需求不新增档位；触发条件＝需要「观察但不行动」的真实诉求 |
-| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 无「在等我」的合并视图 | 任务二 + 任务七 | 未开始 | — |
+| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 「在等我」已收口到行动台（Inbox）的单一派生 stage；Thread 视角可**就地**打开（任务 / 票据 / agent），全局页降级为检索梗；浏览器实测待任务七B | 任务二 + 任务七 | 进行中 | — |
 | 13 | **Rejected concepts** | 仅工作区有 `REJECTED-CONCEPTS-2026-11-03.md` | 可低成本补齐 | 缺「为什么不做 X」的否证记录（未入仓） | 未排期 | 范围外 | 理由：内容已存在，缺入仓；触发条件＝下一次否决任何设计概念时一并入仓 |
 
 ### 9.2 本需求九项问题完成度
@@ -199,7 +199,7 @@
 | B1 | Eval 只做了一半 | 任务五 | 已完成 | 14d5d1bb | 已更新 |
 | B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
-| B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
+| B4 | Thread 是对象还是视角 | 任务七 | 进行中 | — | 已更新 |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
 | C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 已完成 | 3d828666 | 已更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |

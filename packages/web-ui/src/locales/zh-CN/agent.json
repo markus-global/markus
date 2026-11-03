@@ -538,7 +538,8 @@
         "systemEvent": "系统事件",
         "statusArrow": "{{from}} → {{to}}"
       }
-    }
+    },
+    "stream": "来龙去脉"
   },
   "deliverables": {
     "empty": "暂无交付物",

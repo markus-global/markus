@@ -270,6 +270,71 @@ function buildInboxRows(deps: EventRouteDeps): any[] {
   return [...rows.values()].sort((x, y) => Number(y.lastActivity ?? 0) - Number(x.lastActivity ?? 0));
 }
 
+/**
+ * 一条流（**单个 ref**）的读取单元：**业务事实优先**。
+ *
+ * 为什么必须有它（B4 的结构理由）：
+ * 时间线要能从「任务详情 / 票据详情 / agent 详情」**就地**打开，此时前端手里
+ * 只有一个实体 id（`tsk_…` / `tkt_…` / `agent:…`），它不该为了渲染一条流去拉
+ * 全局列表再按 id 找 —— 那是「必须先到目录页」的旧心智，也是第二套查找实现。
+ *
+ * 单一构造点：**ref → 行** 只在本函数里发生。列表（`/api/threads`）对已登记的流
+ * 也走这里，所以「同一 ref 在单读与列表里字段不一致」这种漂移在结构上不成立
+ * （由 `event-routes.test.ts` 的对照用例钉住）。
+ *
+ * 优先级顺序即语义：业务事实（任务 / 票据）> 已登记的流 > 只有 ref。
+ * 反了会让标题/负责人永远为空（历史教训：threads 表的 owner 列已删）。
+ */
+function rowForRef(deps: EventRouteDeps, ref: string): Record<string, unknown> {
+  const now = deps.now ? deps.now() : Date.now();
+  const base: Record<string, unknown> = {
+    id: ref,
+    ref,
+    ownerAgent: null,
+    ownerSession: null,
+    lastActivity: now,
+    title: null,
+    detail: null,
+  };
+
+  // 1) 任务：标题/描述/负责人就是任务本身的事实（任务流也是最多的一类）
+  if (ref.startsWith('tsk_') && deps.repos.taskRepo?.findById) {
+    const task: any = deps.repos.taskRepo.findById(ref) ?? null;
+    if (task) {
+      return {
+        ...base,
+        ownerAgent: task.assignedAgentId ?? null,
+        lastActivity: toEpochMs(task.updatedAt ?? task.createdAt, now),
+        title: task.title ?? null,
+        detail: task.description ?? null,
+        priority: task.priority ?? null,
+      };
+    }
+  }
+
+  // 2) 票据：票不驱动执行，但它是「这件事的凭据」，标题取 subject
+  if (ref.startsWith('tkt_') && deps.repos.ticketRepo?.getById) {
+    const ticket: any = deps.repos.ticketRepo.getById(ref) ?? null;
+    if (ticket) {
+      return {
+        ...base,
+        ownerAgent: ticket.assignee ?? null,
+        lastActivity: toEpochMs(ticket.updatedAt ?? ticket.createdAt, now),
+        title: ticket.subject ?? null,
+        detail: ticket.kind ?? null,
+      };
+    }
+  }
+
+  // 3) 已登记的流（外部资源 `gh:` / agent 轴 `agent:` / 会话轴……）
+  const persisted: any = deps.repos.threadRepo?.getByRef?.(ref) ?? null;
+  if (persisted) return { ...base, ...persisted };
+
+  // 4) 兜底：只有 ref，没有业务事实。
+  //    **不编标题** —— 编出来的标题会让人以为平台知道这件事是什么。
+  return base;
+}
+
 function serviceOf(deps: EventRouteDeps): ThreadService {
   return new ThreadService({
     threads: deps.repos.threadRepo,
@@ -497,7 +562,27 @@ export async function handleEventRoutes(
     return true;
   }
 
-  // ── 流列表（Inbox 数据源）────────────────────────────────────────────────
+  // ── 单条流（B4：入口倒置的读取面）──────────────────────────────────────────
+  //
+  // 契约：**只给 ref** 就能拿到这条流的头部事实（标题 / stage / 任务状态）。
+  // 为什么是查询参数而不是 `/api/threads/<ref>`：ref 里可以有 `/`（`gh:owner/repo`），
+  // 塞进路径要靠 `%2F` 穿透多层路由，任何一层解码就会把一条流劈成两段。
+  // 只读：不写 threads 表 —— 视角不能顺手造对象（H1）。
+  if (path === '/api/threads/one' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://local');
+    const ref = (url.searchParams.get('ref') ?? '').trim();
+    if (!ref) {
+      json(res, 400, {
+        error: 'ref 必填',
+        hint: '例：?ref=tsk_xxx / ?ref=tkt_xxx / ?ref=agent:agt_xxx',
+      });
+      return true;
+    }
+    json(res, 200, { thread: withStage(rowForRef(deps, ref), deps) });
+    return true;
+  }
+
+  // ── 流列表（Inbox 数据源 + 全局页的**检索语料**）──────────────────────────
   if (path === '/api/threads' && req.method === 'GET') {
     // 两条来源合并、按 ref 去重：
     //   a) threads 表 —— 外部事件真正创建过的流（有就有）
@@ -509,7 +594,14 @@ export async function handleEventRoutes(
     // 以业务事实（task）为准。persisted 只补业务里没有的外部流。
     // 反了会让 owner 恒为 null（threads.owner_* 已删）→ 归属提示全部失效。
     const inboxRefs = new Set(inbox.map(r => String(r?.ref ?? '')));
-    const rows = [...inbox, ...persisted.filter((t: any) => !inboxRefs.has(String(t?.ref ?? '')))];
+    // 已登记的流也走 `rowForRef` —— 单读与列表必须是**同一个构造点**，
+    // 否则同一个 ref 在两个入口给出不同标题/负责人（两个写者，第八种分叉）。
+    const rows = [
+      ...inbox,
+      ...persisted
+        .filter((t: any) => !inboxRefs.has(String(t?.ref ?? '')))
+        .map((t: any) => rowForRef(deps, String(t?.ref ?? ''))),
+    ];
     json(res, 200, { threads: rows.map((t: any) => withStage(t, deps)) });
     return true;
   }

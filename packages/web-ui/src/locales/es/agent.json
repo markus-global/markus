@@ -539,7 +539,8 @@
       "notebookEntries": "{{count}} entradas",
       "notebookHint": "El espacio de trabajo cognitivo persistente del agente. Mostrando las {{count}} más recientes; el resto vive en NOTEBOOK.md. Las entradas expiran automáticamente.",
       "expandNotebook": "Mostrar {{count}} más…"
-    }
+    },
+    "stream": "Hilo"
   },
   "deliverables": {
     "empty": "No hay entregables todavía",
