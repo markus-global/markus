@@ -5526,6 +5526,7 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      const refFilter = url.searchParams.get('ref') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -5541,7 +5542,33 @@ export class APIServer {
 
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
-          const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          // 按 thread ref 取「这件事的全部投递」。
+          //
+          // 为什么必须在后端做：邮箱是分页的（默认 50），而一条 thread 可能有上百条投递。
+          // 前端若只在已加载页里过滤，详情就会**静默少显示**——分组写 N 条、列表只渲染 M 条。
+          // 所以带 ref 时忽略分页、取一个足够大的窗口再按 ref 过滤；不带 ref 时行为不变。
+          const resolveRefOf = (it: Record<string, unknown>): string | null => {
+            const p = (it['payload'] ?? {}) as Record<string, unknown>;
+            const meta = (it['metadata'] ?? {}) as Record<string, unknown>;
+            const tid = typeof p['taskId'] === 'string' ? p['taskId'].trim() : '';
+            if (tid) return tid.startsWith('tsk_') ? tid : `tsk_${tid}`;
+            const sid = (typeof p['sessionId'] === 'string' ? p['sessionId'] : '')
+              || (typeof meta['sessionId'] === 'string' ? String(meta['sessionId']) : '');
+            if (sid) return sid.startsWith('cs_') ? sid : `cs_${sid}`;
+            const rid = typeof p['requirementId'] === 'string' ? p['requirementId'].trim() : '';
+            if (rid) return rid.startsWith('req_') ? rid : `req_${rid}`;
+            return null;
+          };
+
+          const fetched = this.storage.mailboxRepo.getHistory(agentId, {
+            limit: refFilter ? 2000 : limit,
+            offset: refFilter ? 0 : offset,
+            sourceTypes,
+            status,
+          });
+          const raw = refFilter
+            ? fetched.filter((it: Record<string, unknown>) => resolveRefOf(it) === refFilter)
+            : fetched;
           const itemIds = raw.map((item: { id: string }) => item.id);
 
           const decisionsMap = this.storage?.decisionRepo

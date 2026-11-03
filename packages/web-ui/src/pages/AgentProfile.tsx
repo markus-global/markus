@@ -2623,13 +2623,24 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   }, [workItems, listFilter]);
   const activeRef = selectedRef ?? visibleItems.find(w => w.ref)?.ref ?? null;
 
-  // 这条 thread 收到过的投递。时间线还没有正式事件时，它就是这件事的历史 ——
-  // 这就是「把邮箱历史并进 thread 视图」的落点：投递不再是独立区块，
-  // 而是挂在它所归属的那件事下面。解析复用 lib 里同一套 refOf，不另写一份。
-  const activeItems = useMemo(
-    () => (mailbox?.history ?? []).filter(it => refOf(it) === activeRef),
-    [mailbox, activeRef],
-  );
+  // 这条 thread 收到过的**全部**投递（后端按 ref 取，不受邮箱分页限制）。
+  // 为什么不能只从已加载页过滤：一条 thread 可能有上百条投递，而邮箱一页 50 条，
+  // 那样详情会静默少显示——分组写 N 条、列表只渲染 M 条。
+  const [threadDeliveries, setThreadDeliveries] = useState<import('../api.ts').EnrichedMailboxItem[]>([]);
+  const [deliveriesLoading, setDeliveriesLoading] = useState(false);
+  useEffect(() => {
+    if (!activeRef) { setThreadDeliveries([]); return; }
+    let alive = true;
+    setDeliveriesLoading(true);
+    (async () => {
+      try {
+        const r = await api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef });
+        if (alive) setThreadDeliveries(r.history ?? []);
+      } catch { if (alive) setThreadDeliveries([]); }
+      finally { if (alive) setDeliveriesLoading(false); }
+    })();
+    return () => { alive = false; };
+  }, [agentId, activeRef]);
 
   // Auto-load more history until the highlighted item appears, then scroll to it
   const autoLoadingForHighlightRef = useRef(false);
@@ -2890,12 +2901,14 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
               {eventsLoading ? (
                 <p className="text-xs text-fg-tertiary">读取中…</p>
-              ) : threadNodes.length === 0 && activeItems.length > 0 ? (
+              ) : deliveriesLoading ? (
+                <p className="text-xs text-fg-tertiary">读取这件事的投递记录…</p>
+              ) : threadNodes.length === 0 && threadDeliveries.length > 0 ? (
                 <div className="space-y-2">
                   <p className="text-[10px] text-fg-tertiary">
                     这件事还没有正式事件记录；以下是它收到过的投递（点开看正文与执行过程）。
                   </p>
-                  {activeItems.map(item => {
+                  {threadDeliveries.map(item => {
                     const isExpanded = expandedId === item.id;
                     const display = getMailboxItemDisplay(item, t);
                     // 状态点以权威事实为准：DB 记为 processing，但已不是当前 focus

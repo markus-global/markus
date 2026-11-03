@@ -1497,13 +1497,16 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; ref?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
+      // 按 thread ref 取「这件事的全部投递」：邮箱是分页的，
+      // 前端在已加载页里过滤会让详情静默少显示。
+      if (opts?.ref) params.set('ref', opts.ref);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
     },
