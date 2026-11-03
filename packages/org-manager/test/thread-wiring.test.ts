@@ -10,11 +10,11 @@ import { tmpdir } from 'node:os';
 import type { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { openSqlite, closeSqlite } from '@markus/storage';
-import { SqliteThreadRepo, SqliteDispositionRepo, SqliteChatSessionRepo } from '@markus/storage';
+import { SqliteThreadRepo, SqliteDispositionRepo, SqliteChatSessionRepo, SqliteTriggerRepo } from '@markus/storage';
 import { AgentManager } from '@markus/core';
 import { TaskService } from '../src/task-service.js';
 import { APIServer } from '../src/api-server.js';
-import { ensureThread, taskRef, a2aRef } from '../src/thread-ensure.js';
+import { ensureThread, recordThreadEvent, taskRef, a2aRef } from '../src/thread-ensure.js';
 import type { StorageBridge } from '../src/storage-bridge.js';
 
 let dir: string;
@@ -28,6 +28,7 @@ beforeEach(() => {
     threadRepo: new SqliteThreadRepo(db),
     dispositionRepo: new SqliteDispositionRepo(db),
     chatSessionRepo: new SqliteChatSessionRepo(db),
+    triggerRepo: new SqliteTriggerRepo(db),
   } as unknown as StorageBridge;
 
   // 本测试的命题是「建卡/发消息/投递会不会建流」，不是外键完整性。
@@ -216,9 +217,11 @@ describe('a2a 链路 — 投递时建流', () => {
    */
   it('deliverA2AMessage 在投递早期调用 threadEnsurer，参数是双方 id', async () => {
     const seen: Array<[string, string]> = [];
+    const texts: Array<string | undefined> = [];
     const mgr = new AgentManager({ llmRouter: {} as never });
-    mgr.setThreadEnsurer((a, b) => {
+    mgr.setThreadEnsurer((a, b, _actor, text) => {
       seen.push([a, b]);
+      texts.push(text);
       ensureThread(storage, a2aRef(a, b));
     });
 
@@ -239,6 +242,8 @@ describe('a2a 链路 — 投递时建流', () => {
     ).rejects.toThrow();
 
     expect(seen).toEqual([['agt_a', 'agt_b']]);
+    // 正文必须一路传到接线层：时间线要能写「发了什么」，不能只写「发了一条」
+    expect(texts).toEqual(['你好']);
     // 且流真的落到存储里，ref 与方向无关
     const rows = db.prepare(`SELECT ref FROM threads WHERE ref LIKE 'a2a_%'`).all() as Array<{ ref: string }>;
     expect(rows).toHaveLength(1);

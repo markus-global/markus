@@ -429,7 +429,6 @@ export async function handleEventRoutes(
             kind: String(t.kind),
             actor: t.actorId ?? undefined,
             summary: t.summary ?? '',
-            payload: {},
             createdAt: Number(t.receivedAt),
           }))
         : [];

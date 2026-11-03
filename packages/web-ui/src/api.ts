@@ -3835,7 +3835,6 @@ export interface ThreadEventAPI {
   kind: string;
   actor?: string;
   summary: string;
-  payload: Record<string, unknown>;
   createdAt: number;
 }
 

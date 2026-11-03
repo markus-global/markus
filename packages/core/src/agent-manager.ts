@@ -1251,10 +1251,10 @@ export class AgentManager {
    * 日常链路写 Thread 的注入点（core 不依赖 storage，由上层注入）。
    * A2A 投递时回调 —— 同一次 DM 对话是一条流，不因方向不同裂成两条。
    */
-  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string) => void): void {
+  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string, text?: string) => void): void {
     this.threadEnsurer = fn;
   }
-  private threadEnsurer?: (a: string, b: string, actorAgentId?: string) => void;
+  private threadEnsurer?: (a: string, b: string, actorAgentId?: string, text?: string) => void;
 
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
@@ -1429,7 +1429,9 @@ export class AgentManager {
     const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
     // A2A 进入 Thread（S3）。包 try：建流是派生行为，绝不得阻断消息投递。
     try {
-      this.threadEnsurer?.(fromId, targetId, fromId);
+      // 把正文一并交出去：它就在这里（`message`），没有理由让时间线只能写
+      // 「A → B 发了一条消息」而不写发了什么。
+      this.threadEnsurer?.(fromId, targetId, fromId, message);
     } catch {
       /* 派生视图失败不影响投递本身 */
     }

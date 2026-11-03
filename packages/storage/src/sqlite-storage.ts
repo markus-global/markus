@@ -897,6 +897,11 @@ CREATE TABLE IF NOT EXISTS triggers (
   UNIQUE(idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_kind ON triggers(kind, received_at DESC);
+-- 时间线派生查询的索引（2026-11-03 实测决定，不是预设优化）：
+-- 无此索引时 10 万条 triggers 取一条流需 14.7ms（踩在一帧 16ms 边上）；
+-- 有了它 0.24ms。它不索引 JSON 数组（索引不了），而是让 ORDER BY received_at
+-- 直接走索引顺序，省掉 json_each 之后的 TEMP B-TREE 排序。
+CREATE INDEX IF NOT EXISTS idx_trg_received ON triggers(received_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────

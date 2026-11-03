@@ -692,6 +692,9 @@ export class SqliteTriggerRepo {
    * 「发生在什么时刻」本来就是查询，物化成表就必须有人负责同步；没人负责，它就是第二写者。
    *
    * `thread_refs` 没建索引：当前量级（本地库万行内）全扫可接受。上到十万级再加，不预先猜。
+   *
+   * 排序用 `received_at DESC, rowid DESC`：同一毫秒内的多条事件靠 `rowid`（SQLite 的插入
+   * 序列）确定真实先后——按随机 id 排会给出「确定性但错误」的顺序。
    */
   listByThreadRef(ref: string, limit = 100): TriggerRow[] {
     return (
@@ -699,7 +702,7 @@ export class SqliteTriggerRepo {
         .prepare(
           `SELECT t.* FROM triggers t, json_each(t.thread_refs) j
             WHERE j.value = ?
-            ORDER BY t.received_at DESC, t.id DESC
+            ORDER BY t.received_at DESC, t.rowid DESC
             LIMIT ?`,
         )
         .all(ref, limit) as RawTrigger[]

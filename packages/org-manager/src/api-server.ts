@@ -2283,7 +2283,7 @@ export class APIServer {
       });
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(
+      const assistantMsg = await this.storage.chatSessionRepo.appendMessage(
         session.id,
         agentId,
         'assistant',
@@ -2291,6 +2291,15 @@ export class APIServer {
         tokensUsed,
         metadata
       );
+      // 时间线的另一半。此前只记了用户那句，助手回复从未进流——
+      // 那不是「残余」，是「发生过的事」少记了一半。
+      // 幂等键用 message id：同一条消息被重试落库不会在时间线里长出第二条。
+      recordThreadEvent(this.storage, session.id, {
+        kind: 'chat',
+        actor: agentId,
+        summary: reply.slice(0, 80),
+        eventId: assistantMsg?.id,
+      });
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2615,6 +2624,15 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      // 助手回复进时间线。幂等键 = message id：流式重写 / 重连重存都只会有一行。
+      if (msg?.id) {
+        recordThreadEvent(this.storage, sessionId, {
+          kind: 'chat',
+          actor: agentId,
+          summary: reply.slice(0, 80),
+          eventId: msg.id,
+        });
+      }
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
