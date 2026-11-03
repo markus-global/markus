@@ -180,7 +180,7 @@
 | 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
 | 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 决策不落库、无 reason、无 matched rule | 任务五 | 未开始 | — |
 | 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定（那层叫 `Disposition`，同名问题已在任务一收口） | 任务一 | 已完成 | b4e7dfd6 |
-| 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | Task 是治理对象；缺「执行侧的工作单位」 | 任务三 | 未开始 | — |
+| 6 | **Ticket** | `tickets` 表（`tkt_`）+ `SqliteTicketRepo` | 形似神不同 | 已补齐「执行侧的工作单位」：与 task 可选关联（`ON DELETE SET NULL`），唯一写入点 + 三态自有状态机；票不驱动执行 | 任务三 | 已完成 | a59daf1e |
 | 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 双层授权 vs 单层；与 ResourceBinding 边界未强制 | 任务六 | 未开始 | — |
 | 8 | **Assignment** | 会话绑定 + 并发 worker 槽位 | 部分对应 | 无「一个工作单位 ↔ 一个执行实例」的显式绑定与报告回传 | 未排期 | 范围外 | 理由：本需求 8 卡不含执行实例绑定；触发条件＝出现「同一工作单位被两个执行体同时认领」的真实事故 |
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
@@ -200,7 +200,7 @@
 | B2 | Source 不是适配器 | 任务四 | 未开始 | — | 未更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
 | B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
-| C1 | Ticket 必须独立成表 | 任务三 | 未开始 | — | 未更新 |
+| C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
 | C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 未开始 | — | 未更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |
 
