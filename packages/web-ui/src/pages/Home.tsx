@@ -5,6 +5,7 @@ import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, t
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { STAGE_LABEL } from '../lib/threadPresentation.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -50,10 +51,10 @@ const STATUS_COLORS_BG: Record<string, string> = {
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
 };
 const TASK_STATUS_I18N: Record<string, string> = {
-  pending: 'common:status.pending', in_progress: 'common:status.inProgress',
-  blocked: 'common:status.blocked', review: 'common:status.review',
-  completed: 'common:status.completed', failed: 'common:status.failed',
-  rejected: 'common:status.rejected', cancelled: 'common:status.cancelled',
+  pending: 'common:taskStatus.pending', in_progress: 'common:taskStatus.inProgress',
+  blocked: 'common:taskStatus.blocked', review: 'common:taskStatus.review',
+  completed: 'common:taskStatus.completed', failed: 'common:taskStatus.failed',
+  rejected: 'common:taskStatus.rejected', cancelled: 'common:taskStatus.cancelled',
 };
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 const ACTIVITY_ICON_BG: Record<string, string> = {
@@ -839,7 +840,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   {allRequirements.length > 0 && (
                     <EntityRow icon="edit" label={t('globalOverview.requirements')} value={allRequirements.length} onClick={() => navBus.navigate(PAGE.WORK)}>
                       {(['in_progress', 'pending', 'completed'] as const).map(s =>
-                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {t(`common:status.${s === 'in_progress' ? 'inProgress' : s}`)}</Chip>
+                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {taskStatusLabel(s, t)}</Chip>
                       )}
                     </EntityRow>
                   )}

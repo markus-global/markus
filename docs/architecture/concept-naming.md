@@ -94,7 +94,41 @@ history cannot be recovered — it is a bounded, documented loss, not an open qu
 
 ---
 
-## 3. Adding a name later
+## 3. A3 — three "statuses", three sources, zero shared literals
+
+| Concept | Question it answers | Type (single name) | Source — only writer | Stored |
+|---|---|---|---|---|
+| In whose court (在等谁) | Whose turn is it on this flow? | `ThreadStage` — `packages/shared/src/types/thread.ts:66` | `deriveStage()` — same file `:85`; only caller `org-manager/src/event-routes.ts` | No (derived; `threads` has no stage column) |
+| Governance state (治理态) | How far through the governance flow? | `TaskStatus` (= `ItemStatus`) — `packages/shared/src/types/task.ts:3` / `:14` | `updateTaskStatus()` + `TASK_TRANSITIONS` (`:23`) | Yes (`tasks.status`) |
+| Runtime attention (注意力) | What is the agent loop doing now? | `AttentionState` — `packages/shared/src/types/mailbox.ts:409` | `AttentionController.getState()` — `packages/core/src/attention.ts:1967` | No (in memory, resets on restart) |
+
+**Value namespaces.** `ThreadStage` values are named after whose turn it is
+(`person:*` / `system:*` / `agent:working` / `none:idle`). Before 2026-11-03 the two bare values
+`idle` and `working` were spelled identically in `AttentionState`, so
+`stageLabel(attentionState)` compiled and silently rendered another concept's word. Because the
+stage values are now namespaced, `Extract<ThreadStage, AttentionState>` is `never` and
+`thread.test.ts` asserts it at compile time.
+
+**Words.** One table per concept; the literal used by one concept may never appear under another:
+
+| Concept | Owner |
+|---|---|
+| in whose court | `STAGE_LABEL` / `THREAD_GROUP_LABEL` — `packages/web-ui/src/lib/threadPresentation.ts` |
+| governance | `common:taskStatus.*` → `taskStatusLabel()` — `packages/web-ui/src/lib/stateVocabulary.ts` |
+| attention | `agent:profilePage.mind.attention.*` → `attentionStateLabel()` — same file |
+| process (not one of the three) | `common:processStatus.*` → `processStatusLabel()` — same file |
+
+The invariant is executable: `crossVocabularyCollisions()` (`stateVocabulary.ts`) + its test across
+zh-CN / en / es, including a self-test that feeds a deliberately colliding table. Deleted in this
+change: the duplicate governance dictionary `agent:profilePage.taskStatus.*` (its `review` said
+评审中 while `common:status.review` said 待审核), the ghost statuses `assigned` / `approved` /
+`draft`, and the mixed `common:status` namespace (governance + process in one table).
+
+Details and the R6 answer (which pairs legitimately disagree, and why): `state-machines.md` §16.
+
+---
+
+## 4. Adding a name later
 
 1. If the new name denotes an existing fact → **do not add it**; extend the table in §1 or §2.
 2. If it denotes a new fact → add a row here **and** name its single writer. Two writers is a

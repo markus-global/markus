@@ -6420,7 +6420,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               {statusFilter && (
                 <button onClick={() => setStatusFilter(null)}
                   className="px-2 py-0.5 text-[11px] rounded-md font-medium bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30 flex items-center gap-1">
-                  {t(`common:status.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
+                  {t(`common:taskStatus.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </button>
               )}

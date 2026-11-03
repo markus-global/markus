@@ -262,7 +262,7 @@ describe('/api/threads — stage 派生（真实 repo）', () => {
     const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads' }), '/api/threads');
     const byRef = Object.fromEntries(res.body.threads.map((t: any) => [t.ref, t]));
     expect(byRef['tsk_t2'].stage).toBe('person:blocked');
-    expect(byRef['tsk_t3'].stage).toBe('idle');
+    expect(byRef['tsk_t3'].stage).toBe('none:idle');
   });
 
   it('能精确归属到这条流的待批 → person:approval', async () => {

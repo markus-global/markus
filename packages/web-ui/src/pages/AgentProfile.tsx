@@ -11,6 +11,7 @@ import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { refDisplay, actionLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { taskStatusLabel, processStatusLabel } from '../lib/stateVocabulary.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -62,9 +63,10 @@ export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'deliverables', icon: '📦' },
 ];
 
-function taskStatusLabel(status: string, t: TFunction): string {
-  return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
-}
+// 治理态 / 注意力 / 进程态的词表唯一写者是 lib/stateVocabulary.ts（A3）。
+// 这里曾经自己拼 `agent:profilePage.taskStatus.*`，与 `common:status.*` 并存——
+// 同一治理状态两个说法（review = 待审核 / 评审中），且还有 assigned/approved/draft
+// 三个枚举里根本不存在的位置。
 
 /**
  * Label for a process status, delegated to the shared presentation table so this
@@ -548,7 +550,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
 
         <Card title={t('agent:profilePage.overview.connectionStatus')}>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={externalInfo.connected ? t('common:status.online') : t('common:status.offline')} color={externalInfo.connected ? 'green' : 'gray'} />
+            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={processStatusLabel(externalInfo.connected ? 'online' : 'offline', t)} color={externalInfo.connected ? 'green' : 'gray'} />
             <StatBox label={t('agent:profilePage.overview.labels.platform')} value={t('agent:profilePage.overview.openClaw')} />
             <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
             <StatBox label={t('agent:profilePage.overview.labels.lastSync')} value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />

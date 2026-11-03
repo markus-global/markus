@@ -192,8 +192,8 @@ export function notifBody(n: NotificationInfo, t: TFunction): string {
       params[k] = t(`common:priority.${v}`, { defaultValue: v });
     } else if (k === 'status' || k === 'statusKey') {
       const camel = camelizeEnum(v);
-      params[k] = t(`common:status.${v}`, {
-        defaultValue: camel === v ? v : t(`common:status.${camel}`, { defaultValue: v }),
+      params[k] = t(`common:taskStatus.${v}`, {
+        defaultValue: camel === v ? v : t(`common:taskStatus.${camel}`, { defaultValue: v }),
       });
     } else {
       params[k] = v;
@@ -216,7 +216,7 @@ function approvalStatusTone(status: string): { dot: string; text: string } {
 
 /**
  * Approval statuses live in their OWN namespace (`approvalStatus.*`), separate
- * from the task/requirement status space (`common:status.*`). The two spaces have
+ * from the task/requirement status space (`common:taskStatus.*`). The two spaces have
  * different vocabularies — `changes_requested` exists only on the approval side —
  * and sharing one dictionary is exactly what let a missing key render as the raw
  * English token in the bell.

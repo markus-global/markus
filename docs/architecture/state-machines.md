@@ -663,3 +663,75 @@ agent stop
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
 
 See [memory-system.md](./memory-system.md) and [cognitive-architecture.md](./cognitive-architecture.md) for storage format and deterministic context assembly.
+
+---
+
+## 16. Three Kinds of "Status" (在等谁 / 治理态 / 注意力)
+
+Three different questions get called "status" in this codebase. They have **separate types,
+separate sources, and separate lifecycles**, and they are allowed to disagree at the same instant
+(a task can be in `review` while its agent's attention loop is `idle` — that is the normal case,
+not a bug).
+
+| Concept | Question it answers | Type (single name) | Source — the only writer | Stored? |
+|---|---|---|---|---|
+| **In whose court** (在等谁) | Whose turn is it on this flow? | `ThreadStage` — `packages/shared/src/types/thread.ts` | `deriveStage(facts)` — same file; the only caller is `packages/org-manager/src/event-routes.ts` (`describeThread`) | **No.** Derived per read. No `stage` column exists (`threads` holds `id / ref / created_at / last_activity`). |
+| **Governance state** (治理态) | How far has this item got through the governance flow? | `TaskStatus` (= `ItemStatus`) — `packages/shared/src/types/task.ts` | `updateTaskStatus()`, guarded by the declarative `TASK_TRANSITIONS` matrix | **Yes** — `tasks.status` / `requirements.status` |
+| **Runtime attention** (注意力) | What is the agent's loop doing right now? | `AttentionState` — `packages/shared/src/types/mailbox.ts` (`idle \| focused \| deciding`) | `AttentionController.getState()` — `packages/core/src/attention.ts` | **No.** In-memory; resets on restart. |
+
+A fourth word that shows up on the same screens but is **not** one of the three: **process status**
+(`online / offline / working / paused / error`), which answers "is this process alive and busy".
+It has its own namespace (`common:processStatus.*`) precisely so it stops sharing a table with
+governance states.
+
+### 16.1 Value namespaces — the collision is structurally impossible
+
+`ThreadStage` values are namespaced by **whose turn it is**, so no value can be confused with a
+runtime attention value (which is what `idle` / `working` used to be):
+
+| Value | Whose turn | Meaning |
+|---|---|---|
+| `person:approval` / `person:answer` / `person:review` / `person:blocked` | a human | the only four states that consume human attention |
+| `system:queued` | the system | waiting for resource / prerequisite |
+| `agent:working` | the agent | an assignment is running |
+| `none:idle` | nobody | turn ended, waiting for the next event |
+
+`Extract<ThreadStage, AttentionState>` is `never`, and `thread.test.ts` asserts it at **compile
+time**: adding `idle` / `working` back to `ThreadStage` fails `tsc`, not a UI review.
+`deriveStage` is total: exactly one value for any fact set (property test over all 64 combinations
+of 4 booleans × 4 assignment states, compared against an independent oracle — invariant I7).
+
+### 16.2 Vocabulary — one table per concept, no shared literal
+
+Words are user-visible facts, so they get the same "one writer" rule as data:
+
+| Concept | Vocabulary owner | Notes |
+|---|---|---|
+| in whose court | `packages/web-ui/src/lib/threadPresentation.ts` → `STAGE_LABEL`, `THREAD_GROUP_LABEL` | Enforced by architecture guard E2.1: a second `STAGE_LABEL` anywhere is an error. |
+| governance | `common:taskStatus.*` (i18n) → `taskStatusLabel()` in `web-ui/src/lib/stateVocabulary.ts` | Nine real `ItemStatus` values only. `approved` / `draft` / `assigned` are **not** statuses (approval lives in `common:approvalStatus.*`). |
+| attention | `agent:profilePage.mind.attention.*` → `attentionStateLabel()` | Labels carry their subject: 「Agent 待命」, not 「待命」. |
+| process | `common:processStatus.*` → `processStatusLabel()` | Separate namespace from governance; `common:status.*` no longer exists. |
+
+**The invariant**: no literal may appear under two different concepts. It is executable —
+`crossVocabularyCollisions()` in `stateVocabulary.ts`, asserted by
+`packages/web-ui/src/lib/stateVocabulary.test.ts` across all three locales, plus a self-test that
+feeds a deliberately colliding table and requires the checker to catch it.
+
+Why this is a *test* and not a review checklist: the previous defect (`STAGE_LABEL.working` =
+「进行中」 = `taskStatus.in_progress`; `STAGE_LABEL.idle` = 「空闲」 = process `idle`) passed
+typecheck, unit tests and code review. Only two labels compared side by side could reveal it.
+
+### 16.3 The R6 answer — is the same fact measured twice?
+
+- **Governance was.** Two dictionaries (`common:status.*` with `review` = 待审核, and
+  `agent:profilePage.taskStatus.*` with `review` = 评审中) described the same FSM. One was deleted
+  in favour of `common:taskStatus.*`.
+- **Attention vs `agent:working` is not.** `AttentionState` is per-agent-loop (in memory, resets on
+  restart, may be `idle` between turns); `ThreadStage` is per-flow and derived from the persisted
+  assignment. They measure different subjects at different granularity, and divergence is expected.
+- **Process status vs attention is not**, either: one is the OS-level process, the other is the
+  loop inside it. A stopped process has no loop at all, which is why the UI shows 「已停止」 instead
+  of a misleading attention label (`AgentProfile` mind section).
+
+See also: [concept-naming.md](./concept-naming.md) §3 (the same-fact-one-name table),
+`docs/design/superagent/DESIGN-CONTRACT.md` §4 (I7) and §7 (task-2 anchor).

@@ -13,11 +13,13 @@
  * 把 stage 变化伪造成带时间戳的节点 = 拿今天的推断回填过去，会让人以为那是证据。
  */
 import { useEffect, useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { fetchThreadDispositions, fetchThreadEvents, fetchThreads } from '../api.ts';
 import type { DispositionAPI, ThreadAPI, ThreadEventAPI } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { stageLabel, actionLabel, stageTone, refDisplay, refKindLabel, shortRef, waitPhrase, wouldAcceptVerdict, THREAD_GROUP_LABEL } from '../lib/threadPresentation.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { entityNavTarget } from '../lib/threadNav.ts';
 
 // 展示层唯一实现见 lib/threadPresentation.ts（E 区收敛）。
@@ -77,7 +79,9 @@ function DecisionNode({ d }: { d: DispositionAPI }) {
 }
 
 /** 时间线末节点：当前状态 = threads 的派生快照。无时间戳 → 不入排序，并明说它不是事件。 */
-function CurrentStateNode({ t }: { t: ThreadAPI }) {
+function CurrentStateNode({ th }: { th: ThreadAPI }) {
+  // 参数名叫 `th` 而不是 `t`：`t` 在这个文件里是 i18n 函数，同名会让「治理态词」无从使用。
+  const { t } = useTranslation();
   return (
     <li className="relative border-l border-dashed border-border-subtle pl-3">
       <span className="absolute -left-[3px] top-1.5 h-1.5 w-1.5 rounded-full bg-fg-tertiary" />
@@ -85,11 +89,11 @@ function CurrentStateNode({ t }: { t: ThreadAPI }) {
         <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">当前状态 · 派生快照</span><span>无时间戳</span>
       </div>
       <p className="mt-1 text-sm text-fg-primary">
-        {stageLabel(t.stage).label}{t.taskStatus ? ` · 任务 ${t.taskStatus}` : ''}
-        {t.ownerAgent ? ` · 负责 ${t.ownerAgent}` : ' · 无负责 agent'}
+        {stageLabel(th.stage).label}{th.taskStatus ? ` · 任务${taskStatusLabel(th.taskStatus, t)}` : ''}
+        {th.ownerAgent ? ` · 负责 ${th.ownerAgent}` : ' · 无负责 agent'}
       </p>
       <p className="mt-1 text-[11px] text-fg-muted">
-        依据 threads 表的 stage / taskStatus，最后活动 {clockOf(t.lastActivity)}。这不是一条历史事件 —— 它只回答「此刻在等谁」。
+        依据 threads 表的 stage / taskStatus，最后活动 {clockOf(th.lastActivity)}。这不是一条历史事件 —— 它只回答「此刻在等谁」。
       </p>
     </li>
   );
@@ -117,9 +121,9 @@ export function ThreadViewPage() {
   const groups = useMemo(() => {
     const isPerson = (s?: string | null) => !!s && s.startsWith('person:');
     const buckets = [
-      { key: 'need', label: '需要你处理', hint: '在等你批准 / 回答 / 验收 / 解阻', items: sorted.filter(t => isPerson(t.stage)) },
-      { key: 'active', label: '进行中', hint: 'agent 在处理，或在排队等资源', items: sorted.filter(t => !isPerson(t.stage) && t.stage !== 'idle') },
-      { key: 'idle', label: '空闲', hint: '没有待处理的事', items: sorted.filter(t => !isPerson(t.stage) && t.stage === 'idle') },
+      { key: 'need', label: THREAD_GROUP_LABEL.waiting, hint: '在等你批准 / 回答 / 验收 / 解阻', items: sorted.filter(t => isPerson(t.stage)) },
+      { key: 'active', label: THREAD_GROUP_LABEL.active, hint: 'agent 在跑，或在排队等资源', items: sorted.filter(t => !isPerson(t.stage) && t.stage !== 'none:idle') },
+      { key: 'idle', label: THREAD_GROUP_LABEL.idle, hint: '回合已结束，等新事件', items: sorted.filter(t => !isPerson(t.stage) && t.stage === 'none:idle') },
     ];
     return buckets.filter(b => b.items.length > 0);
   }, [sorted]);
@@ -319,7 +323,7 @@ export function ThreadViewPage() {
                     ? <EventNode key={`e-${node.event.id}`} e={node.event} />
                     : <DecisionNode key={`d-${node.decision.id}`} d={node.decision} />,
                 )}
-                <CurrentStateNode t={selected} />
+                <CurrentStateNode th={selected} />
               </ol>
             </div>
           )}
