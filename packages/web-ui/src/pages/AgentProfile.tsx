@@ -97,8 +97,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
-  /** agent 自己的来龙去脉（B4）：就地展开，不去全局页搜。 */
-  const [showStream, setShowStream] = useState(false);
   const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
   const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
@@ -146,40 +144,22 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
   const localLegacySection = LEGACY_TAB_SECTION[tab];
 
-  // 「来龙去脉」的**入口与弹层各一份**，两个渲染分支共用。
+  // 「来龙去脉」的入口与弹层**已删除**（Owner 2026-11-03）。
   //
-  // 桌面端走 headless（只渲染正文），而这段入口原先长在非 headless 的页头里 ——
-  // `if (headless) return` 在到达页头之前就返回，桌面**结构上**点不到它（B4-2 唯一 fail）。
-  // 修的是入口归属：入口跟着正文走，而不是给桌面再复制一套按钮。
-  const streamEntry = (
-    <button onClick={() => setShowStream(true)} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors" title="这个 agent 的来龙去脉">
-      {t('agent:profilePage.stream')}
-    </button>
-  );
-  const streamModal = showStream && (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
-      onClick={() => setShowStream(false)}
-    >
-      <div className="w-full max-w-2xl" onClick={e => e.stopPropagation()}>
-        <ThreadTimeline refId={`agent:${agentId}`} onClose={() => setShowStream(false)} />
-      </div>
-    </div>
-  );
+  // 原实现：页头一个按钮 → 开一个 fixed 浮层，里面再塞一份 ThreadTimeline。
+  // Owner 评价：浮窗里内容零乱、还带报错，而「运行与注意力」tab 本来就就地渲染
+  // 同一份时间线 —— 那就是第二套呈现，同一事实两个来源。
+  // 现在只有一处：tab 内的「来龙去脉」区块。
 
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
-        <div className="flex items-center justify-end px-5 pt-3">
-          {streamEntry}
-        </div>
         <div className="p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
           {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
-        {streamModal}
       </div>
     );
   }
@@ -200,10 +180,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            {/* 入口倒置（B4）：agent 也是「一条流」，就地看它经历过什么。
-                ref 用解析器的 agent 轴口径（`agent:<id>`），不是前端自造的另一种键。
-                按钮本身与 headless 分支共用同一份（见上方 streamEntry）。 */}
-            {streamEntry}
             {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             {canManageAgents && (
             <button onClick={async () => {
@@ -232,7 +208,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
-        {streamModal}
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
           {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
