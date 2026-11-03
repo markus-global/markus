@@ -891,6 +891,9 @@ CREATE TABLE IF NOT EXISTS thread_dispositions (
   thread_id    TEXT NOT NULL,
   action       TEXT NOT NULL,
   reason       TEXT NOT NULL,
+  -- 命中的 Gate 规则（契约 §5 六条；B1）。NULL = 处置不是 Gate 规则产生的。
+  -- 「为什么走了这条」的机器可读载体：SELECT matched_rule GROUP BY 即可回答。
+  matched_rule TEXT,
   -- 三态：1 = 会接 / 0 = 不会接 / NULL = 本次处置没问过这个问题（dispatch·attach·stop）。
   -- 不给 DEFAULT 0：默认值会把「没问过」默认成「不会接」，而唯一转换点
   -- （packages/storage/src/thread-store.ts 的 WouldAccept）总是显式绑定值，用不上默认值。
@@ -1083,6 +1086,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ─── Source 读取位点（B2）：只加列、不回填 —— `cursor IS NULL` 就是「推送式来源 / 历史行」──
     { table: 'event_sources', column: 'cursor', sql: 'ALTER TABLE event_sources ADD COLUMN cursor TEXT' },
     { table: 'event_sources', column: 'last_polled_at', sql: 'ALTER TABLE event_sources ADD COLUMN last_polled_at INTEGER' },
+    // ─── Eval 规则命中（B1）：只加列、不回填 —— `matched_rule IS NULL` 就是「处置非 Gate 规则产生 / 历史行」──
+    { table: 'thread_dispositions', column: 'matched_rule', sql: 'ALTER TABLE thread_dispositions ADD COLUMN matched_rule TEXT' },
   ];
     for (const m of migrations) {
       const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;

@@ -315,7 +315,37 @@ export type GateVerdict =
   | 'direct-through' // 命中已有主/订阅 → 直通，不产生 Decision
   | 'attach' // 明确指向既有实体 → 挂到那条流
   | 'ignore-ended' // 已结束的卡 + 非人事件 → 只记录，不唤醒
-  | 'assess'; // 判不了 → 延后（v1 记录 reason，不上 LLM）
+  | 'assess'; // 判不了 → 进入 assessment（v1 无引擎时降级 needs-assessment）
+
+/**
+ * `matchedRule` = 一次处置命中的**哪条 Gate 规则**（契约 §5 六条，逐字对齐）。
+ *
+ * 与 `action`/`reason` 的分工：`action` 是「做了什么决定」，`reason` 是「人话为什么」，
+ * `matchedRule` 是「哪一条确定性规则命中」——它是**可解释性**的机器可读载体，
+ * 让 `SELECT matched_rule GROUP BY` 就能回答「Eval 为什么走了这条」（B1 的目标）。
+ *
+ * 每个值对应 §5 的一条规则：
+ *  · duplicate        → 规则 1（幂等命中）
+ *  · dispatch         → 规则 2（人已指定，不研判）
+ *  · direct-through   → 规则 3（命中已订阅 Thread，直通不产生 Decision）
+ *  · attach           → 规则 4（带 tsk_/req_/cs_ id 或资源键）
+ *  · ignore-ended     → 规则 5（bot/CI 事件 + thread 已结束，只记录不唤醒）
+ *  · assess           → 规则 6（其余 → 进入 assessment；未命中任何确定性规则）
+ *
+ * 「未命中任何规则」时 `assess` 作为兜底规则 id 仍被记录——这不是「命中了规则 6」，
+ * 而是「规则 1–5 全部未命中，进入了第 2 段 assessment」，语义在「降级矩阵」文档里写死。
+ */
+export type MatchedRule = GateVerdict;
+
+/** 六条规则各自的人话解释（用于 matchedRule 的可解释展示 / 审计可读化）。 */
+export const MATCHED_RULE_LABEL: Record<MatchedRule, string> = {
+  duplicate: '幂等命中：该事件已处置过',
+  dispatch: '人已指定处理者，不研判',
+  'direct-through': '命中已订阅 Thread，直通',
+  attach: '明确指向既有实体，挂载',
+  'ignore-ended': '流已结束 + 非人事件，只留痕不唤醒',
+  assess: '规则 1–5 未命中，进入 assessment',
+};
 
 export interface GateFacts {
   alreadyHandled: boolean;

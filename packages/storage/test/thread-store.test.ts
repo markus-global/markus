@@ -259,6 +259,29 @@ describe('thread_dispositions — I3 幂等 / I4 理由必填', () => {
     // TS 字段名：与 DB 列语义一致——NULL 不许变成 false
     expect(fromApi).toEqual({ trg_accept: true, trg_reject: false, trg_dispatch: null });
   });
+
+  it('matched_rule 回环：写入的 Gate 规则 id 原样读回；未记录 → NULL（B1）', () => {
+    // 「为什么走了这条」必须可查询：写 dispatch/attach/assess 三条，再按 trigger 读回，
+    // 值必须原样（不能丢、不能被 when 滤成空）。未记录匹配规则的处置 → NULL。
+    const { thread } = threads.upsert('tsk_abc');
+    const repo = new SqliteDispositionRepo(db);
+
+    repo.record({ triggerId: 'trg_d', threadId: thread.id, action: 'dispatch', reason: 'r1', matchedRule: 'dispatch' });
+    repo.record({ triggerId: 'trg_a', threadId: thread.id, action: 'attach', reason: 'r2', matchedRule: 'attach' });
+    repo.record({ triggerId: 'trg_s', threadId: thread.id, action: 'ignore', reason: 'r3', matchedRule: 'assess', wouldAccept: true });
+    repo.record({ triggerId: 'trg_n', threadId: thread.id, action: 'accept', reason: 'r4' }); // 未记录 → NULL
+
+    const fromDb = Object.fromEntries(
+      (db.prepare('SELECT trigger_id, matched_rule FROM thread_dispositions').all() as Array<{
+        trigger_id: string;
+        matched_rule: string | null;
+      }>).map(r => [r.trigger_id, r.matched_rule]),
+    );
+    expect(fromDb).toEqual({ trg_d: 'dispatch', trg_a: 'attach', trg_s: 'assess', trg_n: null });
+
+    const fromApi = Object.fromEntries(repo.listByThread(thread.id).map(d => [d.triggerId, d.matchedRule]));
+    expect(fromApi).toEqual({ trg_d: 'dispatch', trg_a: 'attach', trg_s: 'assess', trg_n: null });
+  });
 });
 
 describe('resource_bindings — I8 同一资源只能有一个 admin', () => {

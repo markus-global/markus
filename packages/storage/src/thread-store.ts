@@ -46,6 +46,12 @@ export interface DispositionRow {
   action: string;
   reason: string;
   /**
+   * 命中的 Gate 规则 id（契约 §5 六条，见 shared `MatchedRule`）。
+   * null = 处置不是由 Gate 规则产生的（历史行 / 外部直接写入）。
+   * 它是「为什么走了这条」的机器可读载体，与 `reason`（人话）互补。
+   */
+  matchedRule: string | null;
+  /**
    * 「若闸门放行，他会不会接」。三态：
    *   true      会接
    *   false     不会接
@@ -93,6 +99,7 @@ type RawDisposition = {
   thread_id: string;
   action: string;
   reason: string;
+  matched_rule: string | null;
   would_accept: number | null;
   actor: string;
   created_at: number;
@@ -165,6 +172,7 @@ const toDisposition = (r: RawDisposition): DispositionRow => ({
   threadId: r.thread_id,
   action: r.action,
   reason: r.reason,
+  matchedRule: r.matched_rule,
   wouldAccept: WouldAccept.decode(r.would_accept),
   actor: r.actor,
   createdAt: r.created_at,
@@ -286,6 +294,8 @@ export class SqliteDispositionRepo {
     threadId: string;
     action: string;
     reason: string;
+    /** 命中的 Gate 规则（契约 §5）。null = 处置与 Gate 规则无关 / 未记录。 */
+    matchedRule?: string | null;
     /** 三态：见 `WouldAccept`。缺省 = 本次处置没问过这个问题 → 落 NULL。 */
     wouldAccept?: boolean;
     actor?: string;
@@ -296,8 +306,8 @@ export class SqliteDispositionRepo {
     }
     const res = this.db
       .prepare(
-        `INSERT INTO thread_dispositions (id, trigger_id, thread_id, action, reason, would_accept, actor, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO thread_dispositions (id, trigger_id, thread_id, action, reason, matched_rule, would_accept, actor, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(trigger_id, thread_id) DO NOTHING`,
       )
       .run(
@@ -306,6 +316,7 @@ export class SqliteDispositionRepo {
         d.threadId,
         d.action,
         d.reason,
+        d.matchedRule ?? null,
         WouldAccept.encode(d.wouldAccept),
         d.actor ?? 'router',
         d.createdAt ?? Date.now(),
