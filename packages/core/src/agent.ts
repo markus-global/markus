@@ -9134,12 +9134,23 @@ export class Agent {
     const decision = isRedLineTool(toolCall.name);
     if (decision.allow) return undefined;
 
+    // 3.4：拒绝是**动作审计**事件，不是流上的路由处置。
+    // `thread_dispositions` 要求 trigger_id/thread_id，而一次工具调用没有 trigger，
+    // 硬塞进去既是滥用表结构，也会因缺列落不了库 —— 结果就是"拒绝了但只有一条日志"。
+    // 所以走既有的审计通道（emitAudit）：它本来就在记录"谁做了什么、成不成、为什么"。
+    const audit = (success: boolean, detail: string) => {
+      try {
+        this.emitAudit({ type: 'red_line_action', action: toolCall.name, success, detail });
+      } catch { /* 审计写失败不能反过来阻断拒绝本身 */ }
+    };
+
     const hasApprovalChannel = Boolean(this.approvalCallback);
     if (!hasApprovalChannel) {
       logRedLineDecision({
         toolName: toolCall.name, action: decision.action,
         agentId: this.id, sessionId, outcome: 'no-channel',
       });
+      audit(false, `denied (no approval channel): ${decision.action.why}`);
       return redLineRefusal(toolCall.name, decision.action, { hasApprovalChannel: false });
     }
 
@@ -9163,6 +9174,7 @@ export class Agent {
         toolName: toolCall.name, action: decision.action,
         agentId: this.id, sessionId, outcome: 'denied-by-human',
       });
+      audit(false, `denied by human${result.comment ? `: ${result.comment}` : ''}`);
       return redLineRefusal(toolCall.name, decision.action, {
         deniedByHuman: true,
         comment: result.comment,
@@ -9174,6 +9186,7 @@ export class Agent {
       toolName: toolCall.name, action: decision.action,
       agentId: this.id, sessionId, outcome: 'approved',
     });
+    audit(true, `approved by human: ${decision.action.why}`);
     return undefined;
   }
 
