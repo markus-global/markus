@@ -6,13 +6,14 @@ import { timelineView, sourceForRef, type TimelineNode, type TimelineSource } fr
 import { EventNode, DecisionNode } from '../components/threadTimelineNodes.tsx';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { entityNavTarget } from '../lib/threadNav.ts';
 import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
-import { refDisplay, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { refDisplay, refKindLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { taskStatusLabel, processStatusLabel, attentionStateLabel } from '../lib/stateVocabulary.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -3017,23 +3018,44 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             <ul className="w-full shrink-0 space-y-1 md:w-64">
               {visibleItems.map(w => {
                 const active = activeRef === w.ref;
+                // Owner 2026-11-03：标题要能认人。
+                // 旧行为是「threads 表没标题就拿最新一条消息当标题」——于是卡片上写的是
+                // 「A2A message from Secretary」这种一眼看不出是哪件事的句子。
+                // 现在：实体标题 → 按 ref 种类给出可认知的名字（任务/会话/需求…）→ 最后才退回 ref。
+                // **不再拿最新消息冒充标题**。
+                const title = w.ref
+                  ? (threadTitleByRef[w.ref] ?? refKindLabel(w.ref))
+                  : '未关联到某件事';
+                const target = entityNavTarget(w.ref);
                 return (
-                  <li key={w.ref ?? '__orphan'}>
+                  <li key={w.ref ?? '__orphan'} className="flex items-stretch gap-1 min-w-0">
                     <button
                       onClick={() => setSelectedRef(w.ref)}
-                      className={`w-full rounded-md border px-2 py-1.5 text-left transition-colors ${
+                      className={`min-w-0 flex-1 rounded-md border px-2 py-1.5 text-left transition-colors ${
                         active
                           ? 'border-selected-border bg-selected-bg'
                           : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
                       }`}
                     >
-                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`}>
-                        {w.ref ? (threadTitleByRef[w.ref] ?? w.latestSummary ?? w.ref) : '未关联到某件事'}
+                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`} title={title}>
+                        {title}
                       </span>
-                      <span className="mt-0.5 block text-[10px] text-fg-tertiary">
-                        {w.ref ? refDisplay(w.ref) : '—'} · {w.count} 条
+                      <span className="mt-0.5 flex items-center gap-1 min-w-0 text-[10px] text-fg-tertiary">
+                        {/* 长 ref（如 channel:dm:a2a:agt_xxx:agt_yyy）曾经直接撑破卡片边框：
+                            这里强制单行截断，完整值放 title。 */}
+                        <span className="truncate font-mono" title={w.ref ?? ''}>
+                          {w.ref ? refDisplay(w.ref) : '—'}
+                        </span>
+                        <span className="shrink-0">· {w.count} 条</span>
                       </span>
                     </button>
+                    {target && (
+                      <button
+                        onClick={() => navBus.navigate(target.page as Parameters<typeof navBus.navigate>[0], target.params)}
+                        title={`打开${refKindLabel(w.ref!)}`}
+                        className="shrink-0 self-center rounded-md border border-border-subtle px-1.5 py-1 text-[10px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-elevated transition-colors"
+                      >↗</button>
+                    )}
                   </li>
                 );
               })}

@@ -202,24 +202,10 @@ export function ActionCenter({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* 两个新面的入口就放在这里，不占侧标导航（Owner 砍过导航密度）。
-                语义上它们就是行动台的下层：行动台答「现在要我做什么」，
-                检索页答「这一条到底经过什么」（B4 把它从「全部流目录」降级为检索 ——
-                主入口已倒置到任务 / 票据 / agent 详情里），路由台答「系统自己判断了什么」。 */}
-            <button
-              onClick={() => navBus.navigate(PAGE.THREAD)}
-              className="flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
-              title="按 ref 或关键词检索一条流（来龙去脉在各自的详情页就地展开）"
-            >
-              搜索一条流
-            </button>
-            <button
-              onClick={() => navBus.navigate(PAGE.ROUTER)}
-              className="flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
-              title="系统对每条信号做过什么决定，以及理由"
-            >
-              路由台
-            </button>
+            {/* Owner 2026-11-03：「搜索一条流」「路由台」两个入口删掉。
+                理由：它们在「现在要我做什么」的卡片右上角堆了两个入口，用户看不懂它们是什么，
+                也不该在这里回答。来龙去脉的主入口已经倒置到任务 / 票据 / agent 详情里
+                （就地展开），全局检索页仍可从导航进入 —— 不必再在这里多两个按钮。 */}
           <button
             onClick={() => setShowHistory(true)}
             className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
@@ -451,18 +437,9 @@ export function ActionCenter({
               )}
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border-default bg-surface-primary/40">
-              {detail.ref && (
-                <button
-                  onClick={() => {
-                    setDetail(null);
-                    navBus.navigate(PAGE.THREAD, { threadRef: detail.ref! });
-                  }}
-                  className="mr-auto text-[11px] font-medium px-3 py-1.5 rounded-lg text-brand-400 hover:bg-surface-overlay transition-colors"
-                  title="这条流的时间线：决定 + 当前状态"
-                >
-                  看这条流的来龙去脉
-                </button>
-              )}
+              {/* Owner 2026-11-03：这里的「看这条流的来龙去脉」按钮删掉。
+                  它把用户从正在看的这件事里再拽去另一个页面；而 agent 详情的
+                  「运行与注意力」里已经就地展开了同一份时间线。一件事一个入口。 */}
               <button
                 onClick={() => setDetail(null)}
                 className="text-[11px] font-medium px-3 py-1.5 rounded-lg text-fg-secondary hover:bg-surface-overlay transition-colors"
