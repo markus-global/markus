@@ -3776,6 +3776,17 @@ export interface ThreadAPI {
   /** partial = 部分事实未接线（缺 pendingApproval/openQuestion） */
   stageBasis: 'partial' | 'threadOnly';
   missingFacts: string[];
+  /**
+   * **主体是「流挂载的那个对象」，不是这条流自己。**
+   *
+   * 一条流可以挂在任务 / 需求 / 会话 / 外部资源上（见 `ref` 前缀）；这里说的是**那个对象**
+   * 的治理态（`TaskStatus`）。流自己的态是上面那个 `stage`（`ThreadStage`，派生、不落库），
+   * 两者是两个主语，允许不一致（`stage` = 等你验收，而挂载的任务仍是 `in_progress`）。
+   *
+   * 为什么必须写在这里：UI 曾把它渲染成流那一行上的「任务 评审中」，于是 `req_…` / `cs_…`
+   * 的流也被贴上「任务」二字，读者自然把「这条流在等你」读成「任务在等你」。
+   * 展示时请用 `refDisplay(ref)` 决定对象类别，不要写死「任务」。
+   */
   taskStatus: string | null;
   /** 以下由服务端聚合带出，前端不再各查 task/approval 表（避免第二写者） */
   title?: string | null;

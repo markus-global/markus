@@ -50,12 +50,6 @@ const STATUS_COLORS_BG: Record<string, string> = {
   pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-amber-500',
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
 };
-const TASK_STATUS_I18N: Record<string, string> = {
-  pending: 'common:taskStatus.pending', in_progress: 'common:taskStatus.inProgress',
-  blocked: 'common:taskStatus.blocked', review: 'common:taskStatus.review',
-  completed: 'common:taskStatus.completed', failed: 'common:taskStatus.failed',
-  rejected: 'common:taskStatus.rejected', cancelled: 'common:taskStatus.cancelled',
-};
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 const ACTIVITY_ICON_BG: Record<string, string> = {
   completed: 'bg-green-500/15', in_progress: 'bg-brand-500/15', pending: 'bg-amber-500/15',
@@ -822,7 +816,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         <button key={status} onClick={() => navBus.navigate(PAGE.WORK, { statusFilter: status })}
                           className="flex items-center gap-2 group cursor-pointer text-left">
                           <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS_BG[status] ?? 'bg-gray-500'}`} />
-                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{t(TASK_STATUS_I18N[status] ?? status)}</span>
+                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{taskStatusLabel(status, t)}</span>
                           <span className="text-sm font-semibold text-fg-primary ml-auto tabular-nums">{count}</span>
                         </button>
                       ))}

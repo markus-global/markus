@@ -88,12 +88,25 @@ function CurrentStateNode({ th }: { th: ThreadAPI }) {
       <div className="flex flex-wrap items-center gap-1.5 text-[11px] text-fg-tertiary">
         <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">当前状态 · 派生快照</span><span>无时间戳</span>
       </div>
+      {/* 两级显示，不是一个「·」串起来的平级三元组。
+          `stage` 的主语是**这条流**；`taskStatus` 的主语是**流挂载的那个对象**（任务 / 需求 /
+          会话都可能是），它取自 describeThread 的 `taskStatus: status ?? null`
+          （org-manager/src/event-routes.ts），不是这条流自己的态。曾经两者拼在同一行、且写死
+          「任务」二字，于是 `req_…` / `cs_…` 的流上会显示「任务 评审中」——主语是错的，
+          读者也自然把「流在等你验收」读成「任务在等你验收」。 */}
       <p className="mt-1 text-sm text-fg-primary">
-        {stageLabel(th.stage).label}{th.taskStatus ? ` · 任务${taskStatusLabel(th.taskStatus, t)}` : ''}
+        这条流：{stageLabel(th.stage).label}
         {th.ownerAgent ? ` · 负责 ${th.ownerAgent}` : ' · 无负责 agent'}
       </p>
+      {th.taskStatus && (
+        <p className="mt-1 text-[11px] text-fg-secondary">
+          {/* 对象类别由 ref 前缀决定（refDisplay → refKindLabel），不写死「任务」 */}
+          挂载对象 {refDisplay(th.ref)} · 治理态 {taskStatusLabel(th.taskStatus, t)}
+        </p>
+      )}
       <p className="mt-1 text-[11px] text-fg-muted">
-        依据 threads 表的 stage / taskStatus，最后活动 {clockOf(th.lastActivity)}。这不是一条历史事件 —— 它只回答「此刻在等谁」。
+        依据 threads 表的 stage 与挂载对象的治理态，最后活动 {clockOf(th.lastActivity)}。这不是一条历史事件 ——
+        主行只回答「这条流此刻在等谁」，第二行是挂载对象自己的治理态（两者允许不一致）。
       </p>
     </li>
   );

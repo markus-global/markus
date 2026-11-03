@@ -11,7 +11,7 @@ import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { refDisplay, actionLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
-import { taskStatusLabel, processStatusLabel } from '../lib/stateVocabulary.ts';
+import { taskStatusLabel, processStatusLabel, attentionStateLabel } from '../lib/stateVocabulary.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -2732,7 +2732,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             </span>
           ) : (
             <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
-              {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
+              {attentionStateLabel(effectiveAttentionState, t)}
             </span>
           )}
           {!agentRunning ? (

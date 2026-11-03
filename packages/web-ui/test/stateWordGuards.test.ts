@@ -71,4 +71,26 @@ describe('A3 · 死掉的命名空间不得复活', () => {
       expect(profile['taskStatus'], `${locale}: agent:profilePage.taskStatus 重复词表还在`).toBeUndefined();
     }
   });
+
+  it('词表只有一处入口：`stateVocabulary.ts` 之外不得自己拼 taskStatus / attention 的 i18n key', () => {
+    // 「词表唯一」有两种破法：① 另建一张表（上一条已挡）；② 表还在，但调用点自己拼 key
+    // 并自带一份枚举映射——后者不会撞词（最终仍落到同一张表），所以撞词不变量抓不到它，
+    // 只能靠扫描。曾经有三处：AgentProfile（attention）、NotificationBell（taskStatus +
+    // 自带 camel 映射）、Work（taskStatus + 自带 in_progress→inProgress 映射）。
+    const owner = 'lib/stateVocabulary.ts';
+    const hits: string[] = [];
+    for (const abs of walk(srcDir)) {
+      const rel = relative(srcDir, abs).replace(/\\/g, '/');
+      if (rel === owner) continue;
+      stripComments(readFileSync(abs, 'utf8')).split('\n').forEach((line, i) => {
+        if (
+          /`(common:taskStatus|agent:profilePage\.mind\.attention)\.\$\{/.test(line) ||
+          /['"](common:taskStatus|agent:profilePage\.mind\.attention)\./.test(line)
+        ) {
+          hits.push(`${rel}:${i + 1}  ${line.trim()}`);
+        }
+      });
+    }
+    expect(hits).toEqual([]);
+  });
 });

@@ -39,6 +39,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -6420,7 +6421,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               {statusFilter && (
                 <button onClick={() => setStatusFilter(null)}
                   className="px-2 py-0.5 text-[11px] rounded-md font-medium bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30 flex items-center gap-1">
-                  {t(`common:taskStatus.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
+                  {taskStatusLabel(statusFilter, t)}
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </button>
               )}
