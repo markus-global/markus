@@ -15,7 +15,7 @@ import { createGenericWebhookAdapter, SourceRegistry } from '@markus/core';
 import { ThreadService } from '@markus/core';
 import { admitEvent, policyOf, validateSourcePolicy, consumeBatch } from '@markus/core';
 import type { DispatchTarget } from '@markus/core';
-import { authorizeAction, deriveStage, isScope, RESOURCE_SCOPES, stageSortRank } from '@markus/shared';
+import { authorizeAction, deriveStage, isScope, orderTodos, RESOURCE_SCOPES, stageSortRank } from '@markus/shared';
 
 export interface EventRouteDeps {
   orgId: string;
@@ -282,7 +282,11 @@ function buildInboxRows(deps: EventRouteDeps): any[] {
     });
   }
 
-  return [...rows.values()].sort((x, y) => Number(y.lastActivity ?? 0) - Number(x.lastActivity ?? 0));
+  // **不在这里排序**：`buildInboxRows` 是「合并 + 去重」的中间结果，排序是出口的事。
+  // 它曾经在这里按 `lastActivity` 降序排一次，而概览首屏又用 `PRIORITY_WEIGHT` 排一次 ——
+  // 同一批待办在两个界面给出两种序（2026-11-04 实测）。序的唯一写者是
+  // `@markus/shared` 的 `orderTodos()`，在 `/api/threads` 出口调用（见下方路由）。
+  return [...rows.values()];
 }
 
 /**
@@ -643,7 +647,13 @@ export async function handleEventRoutes(
         .filter((t: any) => !inboxRefs.has(String(t?.ref ?? '')))
         .map((t: any) => rowForRef(deps, String(t?.ref ?? ''))),
     ];
-    json(res, 200, { threads: rows.map((t: any) => withStage(t, deps)) });
+    // 序的唯一写者：`orderTodos`（`@markus/shared`）。同样的比较器也给 web-ui 用
+    // （`lib/todoOrder.ts` 同源转发），因此「API 返回序 == 概览首屏序」是结构结论。
+    // `withStage` 的返回是 `Record<string, unknown>`（它按 ref 动态拼字段），
+    // 这里保持 `any[]`：为了让它匹配 `TodoOrderInput` 去造一个转换层，等于给同一个
+    // 形状再加一个类型写者；比较器本身只读 id/stage/priority/lastActivity 四个键。
+    const withStages: any[] = rows.map((t: any) => withStage(t, deps));
+    json(res, 200, { threads: orderTodos(withStages) });
     return true;
   }
 

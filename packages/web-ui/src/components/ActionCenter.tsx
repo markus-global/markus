@@ -5,6 +5,7 @@ import { navigateForNotification, notificationHasTarget } from '../lib/notifyNav
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { STAGE_LABEL, formatDuration, formatRelativeAny, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { orderTodos } from '../lib/todoOrder.ts';
 import { markNotificationRead } from '../lib/notifyRead.ts';
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { publishUnreadCount } from '../lib/attentionCount.ts';
@@ -31,8 +32,20 @@ export interface ActionItem {
   /** 弹窗里的详细说明（任务/需求描述） */
   detail?: string;
   priority?: string;
-  /** 已等待多久（毫秒） */
-  ageMs?: number;
+  /**
+   * 这条待办属于哪个 stage（`person:approval` / `person:review` / …）。
+   *
+   * 排序用它，而不是从 `kind` 反推：`kind` 是渲染用的粗粒度（`thread` 一类），
+   * 从它反推 stage 就是**同一个事实的第二份映射** —— `deriveStage` 加一档时两份就会分叉。
+   */
+  stage?: string;
+  /**
+   * 最后一次活动的 epoch ms（与 `ThreadAPI.lastActivity` 同义同源）。
+   *
+   * 排序的第 3 段键用它；「已等多久」是**渲染时**由 `now - lastActivity` 算出的派生量，
+   * 不再作为字段保存 —— 存一份快照就是同一个事实的第二个表示（`ageMs` 曾经就是）。
+   */
+  lastActivity?: number;
   actionLabel: string;
   onAction: () => void;
   /**
@@ -72,20 +85,7 @@ const KIND_META = {
   },
 } as const;
 
-const PRIORITY_WEIGHT: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
 const DAY_MS = 86_400_000;
-
-
-
-/** 排序：紧急优先，其次等得久的优先。 */
-function sortActions(items: ActionItem[]): ActionItem[] {
-  return [...items].sort((a, b) => {
-    const pa = PRIORITY_WEIGHT[a.priority ?? ''] ?? 4;
-    const pb = PRIORITY_WEIGHT[b.priority ?? ''] ?? 4;
-    if (pa !== pb) return pa - pb;
-    return (b.ageMs ?? 0) - (a.ageMs ?? 0);
-  });
-}
 
 export function ActionCenter({
   items,
@@ -149,7 +149,19 @@ export function ActionCenter({
     };
   }, [detail]);
 
-  const sorted = sortActions(items);
+  /**
+   * 排序的唯一写者是 `lib/todoOrder.ts`（源自 `@markus/shared` 的 `orderTodos`）。
+   *
+   * 这里曾有一份本地比较器 + 本地优先级权重表：概览按「优先级优先」排，而 `/api/threads`
+   * 按「最新活动优先」排 —— 同一条流在两个界面排不同位次，用户按一个界面做的判断另一个
+   * 界面不认。现在两处共用同一个比较器；对已经排好的输入它是**幂等**的（全序 + 确定性
+   * id 兜底），所以「API 序 == 首屏序」是结构上的结论，不是踩出来的一次性一致。
+   */
+  const sorted = orderTodos(items);
+  /** 已等待时长：渲染时从 lastActivity 派生，不落成字段（同一个事实不留第二个表示）。 */
+  const nowMs = Date.now();
+  const ageOf = (it: ActionItem): number | null =>
+    it.lastActivity == null ? null : Math.max(0, nowMs - it.lastActivity);
   const visibleActions = showAllActions ? sorted : sorted.slice(0, ACTION_CAP);
   const hiddenActions = sorted.length - visibleActions.length;
   /**
@@ -264,10 +276,15 @@ export function ActionCenter({
               <div className="px-2 pb-1 space-y-0.5">
                 {visibleActions.map(item => {
                   const m = KIND_META[item.kind];
-                  const stale = (item.ageMs ?? 0) > DAY_MS;
+                  const ageMs = ageOf(item);
+                  const stale = (ageMs ?? 0) > DAY_MS;
                   return (
                     <div
                       key={`${item.kind}:${item.id}`}
+                      /* 结构标记（不是样式钩子）：测试要靠它读出**首屏渲染序**，
+                         并与 `/api/threads` 的 id 序列逐条比对。同 ThreadView 的
+                         `data-thread-row`，标记一行比放宽断言更能守住语义。 */
+                      data-action-id={item.id}
                       role="button"
                       tabIndex={0}
                       onClick={() => setDetail(item)}
@@ -288,9 +305,9 @@ export function ActionCenter({
                         </div>
                         <div className="flex items-center gap-2 mt-0.5 text-[11px] text-fg-tertiary">
                           {item.meta && <span className="truncate">{item.meta}</span>}
-                          {item.ageMs != null && item.ageMs > 60_000 && (
+                          {ageMs != null && ageMs > 60_000 && (
                             <span className={`shrink-0 tabular-nums ${stale ? 'text-red-500 font-medium' : ''}`}>
-                              {formatDuration(item.ageMs)}
+                              {formatDuration(ageMs)}
                             </span>
                           )}
                           {(item.priority === 'urgent' || item.priority === 'high') && (
@@ -407,11 +424,15 @@ export function ActionCenter({
               <h3 className="text-sm font-semibold text-fg-primary leading-snug">{detail.title}</h3>
               <div className="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-tertiary">
                 {detail.meta && <span>{detail.meta}</span>}
-                {detail.ageMs != null && detail.ageMs > 60_000 && (
-                  <span className={(detail.ageMs ?? 0) > DAY_MS ? 'text-red-500 font-medium' : ''}>
-                    已{formatDuration(detail.ageMs)}
-                  </span>
-                )}
+                {(() => {
+                  const dAge = ageOf(detail);
+                  if (dAge == null || dAge <= 60_000) return null;
+                  return (
+                    <span className={dAge > DAY_MS ? 'text-red-500 font-medium' : ''}>
+                      已{formatDuration(dAge)}
+                    </span>
+                  );
+                })()}
               </div>
               {/* 正文是 markdown（任务描述/需求描述里常带标题、列表、表格、代码）。
                   以前用 whitespace-pre-wrap 直接吐纯文本 —— 于是 `## 标题`、`| 表 |` 原样显示。

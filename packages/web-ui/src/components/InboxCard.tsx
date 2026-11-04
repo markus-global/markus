@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { stageLabel, formatRelative } from '../lib/threadPresentation.ts';
+import { orderTodos } from '../lib/todoOrder.ts';
 import { fetchThreads } from '../api.ts';
 import type { ThreadAPI } from '../api.ts';
 
@@ -60,8 +61,10 @@ export function useThreads() {
     setLoading(true);
     try {
       const { threads: rows } = await fetchThreads();
-      // 排序键来自服务端（stageRank），客户端不再另做一套启发式
-      setThreads([...rows].sort((a, b) => a.stageRank - b.stageRank || b.lastActivity - a.lastActivity));
+      // 排序的唯一写者是 `lib/todoOrder.ts`（= `@markus/shared` 的 `orderTodos`）。
+      // 这里曾经自己写 `a.stageRank - b.stageRank || b.lastActivity - a.lastActivity`，
+      // 与本页之外的排序各说一套（同一批待办在收件箱/概览/检索结果三种位次）。
+      setThreads(orderTodos(rows));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));

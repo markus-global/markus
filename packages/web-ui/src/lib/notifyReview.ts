@@ -12,13 +12,20 @@ import type { NotificationInfo } from '../api.ts';
 
 export type { NotificationInfo };
 
-const PRIORITY_RANK: Record<string, number> = { urgent: 0, high: 1, normal: 2, low: 3 };
+/**
+ * 优先级权重的**唯一写者**在 `@markus/shared`（经 `lib/todoOrder.ts` 同源转发）。
+ * 这里曾经有一份本地副本 `{ urgent:0, high:1, normal:2, low:3 }` —— 同一语义的权重表
+ * 出现第二处定义，改一处另一处不跟随（`todo-order-single-writer` 门禁会判红）。
+ *
+ * 注意：共享的只是**权重表**，不是比较器。审阅队列的同秩次序是「新的在前」，
+ * 待办队列是「等得久的在前」——两个不同的问题，各自的比较器显式写在自己这一侧。
+ */
+import { PRIORITY_RANK } from './todoOrder.ts';
 
-/** 优先级 → 可比较秩（未知 / 缺省按 normal）。 */
+/** 优先级 → 可比较秩（未知 / 缺省按 normal = medium 同秩）。 */
 export function notificationPriorityRank(priority: string | undefined): number {
-  return PRIORITY_RANK[priority ?? 'normal'] ?? PRIORITY_RANK.normal;
+  return PRIORITY_RANK[priority ?? 'normal'] ?? PRIORITY_RANK['normal']!;
 }
-
 /**
  * 审阅队列顺序：先按优先级（urgent → low），同级按时间倒序（新的在前）。
  * 「先看最要紧的」对收件箱式审阅是标准做法；同级用时间保证稳定。

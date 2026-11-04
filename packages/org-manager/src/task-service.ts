@@ -46,6 +46,7 @@ import {
   stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
+  PRIORITY_RANK,
 } from '@markus/shared';
 import {
   shouldDistillTask,
@@ -2617,9 +2618,16 @@ export class TaskService implements ApprovalTargetPort {
     }
   }
 
-  private static readonly PRIORITY_ORDER: Record<string, number> = {
-    urgent: 0, high: 1, medium: 2, low: 3,
-  };
+  /**
+   * 优先级权重表**不在这里定义**：唯一写者是 `@markus/shared` 的 `PRIORITY_RANK`
+   * （见 `shared/src/types/todo-order.ts`）。这里曾有一份 `urgent:0/high:1/medium:2/low:3`
+   * 的本地副本，与待办排序那份各改各的 —— 同一语义的权重常量出现第二处定义就是缺陷，
+   * `scripts/architecture-guard.mjs` 的 `todo-order-single-writer` 会判红。
+   *
+   * 缺省值保持 `medium`：这里是「重启后先跑哪些任务」，无优先级按中等处理是既有行为，
+   * 不改语义（与待办排序里「无优先级排最后」是两个不同的判定，各自显式写出）。
+   */
+  private static readonly PRIORITY_FALLBACK = PRIORITY_RANK['medium']!;
 
   /**
    * Resume execution for all tasks that are currently in_progress.
@@ -2631,8 +2639,8 @@ export class TaskService implements ApprovalTargetPort {
     const inProgressTasks = [...this.tasks.values()]
       .filter(t => t.status === 'in_progress')
       .sort((a, b) =>
-        (TaskService.PRIORITY_ORDER[a.priority] ?? 2) -
-        (TaskService.PRIORITY_ORDER[b.priority] ?? 2)
+        (PRIORITY_RANK[a.priority] ?? TaskService.PRIORITY_FALLBACK) -
+        (PRIORITY_RANK[b.priority] ?? TaskService.PRIORITY_FALLBACK)
       );
     if (inProgressTasks.length === 0) return;
 

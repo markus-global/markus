@@ -18,6 +18,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { fetchThreadByRef, fetchThreads } from '../api.ts';
 import type { ThreadAPI } from '../api.ts';
+import { orderTodos } from '../lib/todoOrder.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { looksLikeRef, matchesThreadQuery } from '../lib/threadSearch.ts';
@@ -151,8 +152,7 @@ export function ThreadViewPage() {
                 命中 <span className="rounded bg-surface-overlay px-1 text-fg-muted">{results.length}</span>
               </h2>
               <ul className="space-y-1.5">
-                {[...results]
-                  .sort((a, b) => a.stageRank - b.stageRank || b.lastActivity - a.lastActivity)
+                {orderTodos(results)
                   .map(t => {
                     const active = selected?.ref === t.ref;
                     const nav = entityNavTarget(t.ref);

@@ -19,6 +19,7 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { ActionCenter, type ActionItem } from '../components/ActionCenter.tsx';
 import { useThreads, isWaitingOnPerson } from '../components/InboxCard.tsx';
 import { publishAttentionCount } from '../lib/attentionCount.ts';
+import { buildActionItems } from '../lib/actionItems.ts';
 import { navigateForApproval } from '../lib/notifyNavigate.ts';
 import {
   isUserOnboarded,
@@ -505,86 +506,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
    *  - ③ 从 `threads` 取等我回话 → 与 ① 重复。
    * 一个数字只能有一个度量，而度量的输入必须来自一个源。
    */
-  const actionItems = useMemo<ActionItem[]>(() => {
-    const now = Date.now();
-    const out: ActionItem[] = [];
-
-    for (const th of threads.filter(isWaitingOnPerson)) {
-      const owner = th.ownerAgent ? (agentNameMap.get(th.ownerAgent) ?? th.ownerAgent) : null;
-      const ageMs = Math.max(0, now - th.lastActivity);
-      const title = th.title ?? th.ref;
-
-      if (th.stage === 'person:approval') {
-        // 跳转语义统一交给 lib/notifyNavigate：提问类会自动落到 Team Chat，
-        // 而不是把它当成普通审批丢到任务页（那就是之前“跳得不对”的根因）。
-        const pseudo = {
-          id: th.approvalId ?? th.id,
-          agentId: th.ownerAgent ?? undefined,
-          agentName: owner ?? undefined,
-          title,
-          description: th.detail ?? '',
-          requestedAt: new Date(th.lastActivity).toISOString(),
-          details: th.ref.startsWith('tsk_')
-            ? { taskId: th.ref }
-            : th.ref.startsWith('req_')
-              ? { requirementId: th.ref }
-              : {},
-        } as unknown as ApprovalInfo;
-        out.push({
-          id: th.id,
-          ref: th.ref,
-          kind: 'approval',
-          title,
-          meta: [owner, '待你批准'].filter(Boolean).join(' · '),
-          detail: th.detail ?? undefined,
-          ageMs,
-          actionLabel: '去处理',
-          onAction: () => navigateForApproval(pseudo),
-        });
-      } else if (th.stage === 'person:review') {
-        out.push({
-          id: th.id,
-          ref: th.ref,
-          kind: 'review',
-          title,
-          meta: [owner, '已提交待验收'].filter(Boolean).join(' · '),
-          detail: th.detail ?? undefined,
-          priority: th.priority ?? undefined,
-          ageMs,
-          actionLabel: '去验收',
-          onAction: () => navBus.navigate(PAGE.WORK, { openTask: th.ref }),
-        });
-      } else if (th.stage === 'person:blocked') {
-        out.push({
-          id: th.id,
-          ref: th.ref,
-          kind: 'blocked',
-          title,
-          meta: owner ? `卡在 ${owner}` : '需要人工介入',
-          detail: th.detail ?? undefined,
-          priority: th.priority ?? undefined,
-          ageMs,
-          actionLabel: '查看',
-          onAction: () => navBus.navigate(PAGE.WORK, { openTask: th.ref }),
-        });
-      } else if (th.stage === 'person:answer') {
-        out.push({
-          id: th.id,
-          ref: th.ref,
-          kind: 'thread',
-          title,
-          meta: owner
-            ? `${owner} ${STAGE_LABEL['person:answer']!.label}`
-            : STAGE_LABEL['person:answer']!.label,
-          ageMs,
-          actionLabel: '去看',
-          onAction: () => navBus.navigate(PAGE.TEAM),
-        });
-      }
-    }
-
-    return out;
-  }, [threads, agentNameMap]);
+  const actionItems = useMemo<ActionItem[]>(
+    () => buildActionItems(threads, agentNameMap),
+    [threads, agentNameMap],
+  );
 
   /**
    * 概览是「待办数」的唯一计算点：算完就发布，侧栏与移动端底栏只订阅。

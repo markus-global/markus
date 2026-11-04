@@ -43,6 +43,7 @@ import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { PRIORITY_RANK } from '../lib/todoOrder.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -3601,7 +3602,8 @@ const REQ_DROP_STATUS: Record<string, string> = {
 
 // ─── Backlog Table View ─────────────────────────────────────────────────────────
 
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+// 优先级权重的唯一写者是 `@markus/shared` 的 `PRIORITY_RANK`（经 lib/todoOrder.ts 转发）。
+// 这里曾有一份逐字相同的本地副本 —— 同一语义的权重表两处定义，改一处另一处不跟随。
 const GROUP_ORDER: Record<string, number> = { failed: 0, todo: 1, in_progress: 2, review: 3, done: 4, closed: 5 };
 const GROUP_ACCENT: Record<string, string> = {
   failed: 'border-l-red-500 bg-red-500/5',
@@ -3982,7 +3984,7 @@ function BacklogTable({ tasks, requirements, agents, projects, stageByRef, onTas
         return bT - aT;
       });
     } else {
-      const pA = (r: BacklogRow) => PRIORITY_ORDER[r.data.priority] ?? 2;
+      const pA = (r: BacklogRow) => PRIORITY_RANK[r.data.priority] ?? PRIORITY_RANK['medium']!;
       result.sort((a, b) => {
         const pa = pA(a), pb = pA(b);
         if (pa !== pb) return pa - pb;
