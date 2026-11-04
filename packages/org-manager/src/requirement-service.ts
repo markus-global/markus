@@ -1038,7 +1038,22 @@ export class RequirementService implements ApprovalTargetPort {
         summary: `Requirement "${req.title}" ${decision === 'changes_requested' ? 'needs changes' : decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
-        extra: { actionRequired: true },
+        extra: {
+          actionRequired: true,
+          // 事件种类 + 事实指纹：与 mailboxDedupKey 配合，让「同一个决定」只投递一次。
+          // 之前载荷只有 actionRequired，幂等键对它返回 undefined → 任何重放都会再发一遍，
+          // 而且与「全部任务已终态」的载荷形状完全相同，事后无法区分谁发的
+          //（2026-11-04 实测：20:52 审批通过，22:51 又收到一条同形状投递）。
+          event: `decision:${decision}`,
+          // approved 用持久时间戳：同一决定的重复通知指纹相同 → 抑制；
+          // 真实二次审批会刷新 approvedAt → 新事实 → 正常通知。
+          factFingerprint:
+            decision === 'approved'
+              ? (req.approvedAt ?? req.status)
+              : decision === 'rejected'
+                ? `${req.status}:${req.rejectedBy ?? ''}`
+                : `${req.status}:${(reason ?? '').slice(0, 40)}`,
+        },
       }, {
         priority: 1,
         metadata: { senderName: 'System', senderRole: 'manager' },

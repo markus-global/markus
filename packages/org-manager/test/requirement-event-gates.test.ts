@@ -156,6 +156,43 @@ describe('3 · comment spam gate', () => {
   });
 });
 
+describe('5 · decision notifications are identifiable and deduplicable', () => {
+  it('an approval notice declares its event kind, so the delivery layer can suppress replays', () => {
+    const service = new RequirementService();
+    service.setStatusTransitionRepo({ record: vi.fn(), getByEntity: vi.fn(() => []) } as never);
+    const enqueue = vi.fn();
+    service.setAgentManager({
+      hasAgent: vi.fn(() => true),
+      getAgent: vi.fn(() => ({ enqueueToMailbox: enqueue })),
+    } as never);
+
+    const req = service.createRequirement({
+      orgId: 'org-1',
+      projectId: 'proj-1',
+      title: 'Do the thing',
+      description: 'Deliver the thing end to end',
+      priority: 'high' as const,
+      source: 'agent',
+      createdBy: 'agent-1',
+    } as never);
+    service.approveRequirement(req.id, 'user-1');
+
+    const decisionCall = enqueue.mock.calls.find(
+      call => (call[1] as { extra?: { event?: string } }).extra?.event === 'decision:approved',
+    );
+    expect(decisionCall).toBeTruthy();
+
+    // The whole point: the key must be computable, otherwise replays are undeduped.
+    const key = mailboxDedupKey({
+      sourceType: 'requirement_update',
+      payload: decisionCall![1] as never,
+      metadata: (decisionCall![2]?.metadata ?? {}) as never,
+    });
+    expect(key).toBeTruthy();
+    expect(key).toContain('decision:approved');
+  });
+});
+
 describe('4 · terminal requirement accepts no new tasks', () => {
   it('rejects task creation with an actionable error instead of minting an orphan card', () => {
     const ts = new TaskService();
