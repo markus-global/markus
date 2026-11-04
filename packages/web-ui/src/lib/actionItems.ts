@@ -21,10 +21,29 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { STAGE_LABEL } from './threadPresentation.ts';
 import { navigateForApproval } from './notifyNavigate.ts';
+import { orderTodos } from './todoOrder.ts';
 import type { ActionItem } from '../components/ActionCenter.tsx';
 
 /** 只有 `person:*` 才是「在等我」。判据同 `InboxCard.isWaitingOnPerson`（不另写一份）。 */
 const isWaitingOnPerson = (t: ThreadAPI): boolean => t.stage.startsWith('person:');
+
+/**
+ * Team 页 agent 头像角标「压着几条流时显示哪一条」。
+ *
+ * 语义 = **该 agent 名下最该被处理的那一条**，判据完全交给唯一排序器：
+ * `orderTodos(mine)[0]`。这里不写任何比较式 —— 曾经这里是一个 `for` 循环加手写偏序，
+ * 且方向与契约**相反**（同 stage 内取最新，而契约第 3 段键是取等得最久的），
+ * 于是角标指向 A、概览首屏把 B 排第一。见 `teamStagePick.parity.test.ts`。
+ */
+export function pickAgentStageThread(
+  threads: readonly ThreadAPI[],
+  agentId: string,
+): ThreadAPI | null {
+  const mine = threads.filter(th => th.ownerAgent === agentId);
+  if (mine.length === 0) return null;
+  // 序即 SSOT：`[0]` 就是「最该被人处理的一条」，不在这里写任何比较式。
+  return orderTodos(mine)[0]!;
+}
 
 /**
  * `GET /api/threads` 的行 → 概览「要我动手」的条目，**保持输入顺序**。

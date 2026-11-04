@@ -19,6 +19,8 @@ import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
 // stage 的文案/配色只认 InboxCard 那一套（单一事实源），别在 Team 页再手写一份
 import { stageLabel } from '../components/InboxCard.tsx';
+// 角标「取最佳一条」的判据只认唯一排序器：`pickAgentStageThread` = `orderTodos(mine)[0]`
+import { pickAgentStageThread } from '../lib/actionItems.ts';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
@@ -689,17 +691,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [previewMode, isActive]); // isActive：切回 Team 页时刷一次，否则角标会停在旧 stage
 
   // 一个 agent 可能同时压着多条线程（多个任务），而我们只有一个位置放一个角标。
-  // 选「谁最该被人处理」而不是顺抹：stageRank 是服务端定的优先级（person:* 从小到大），
-  // 同 rank 再用 lastActivity 取最新的。这样角标是确定的，不会随接口返回顺序跳动。
+  // 选「谁最该被人处理」：判据完全交给唯一排序器 `lib/todoOrder.ts`（`pickAgentStageThread`
+  // 内部就是 `orderTodos(mine)[0]`）。这里**不再**写比较式 —— 曾经这里是一段手写偏序，
+  // 且方向与契约相反（同 stage 内取最新，而契约第 3 段键是取等得最久），
+  // 于是角标指向的流与概览首屏排第一的不是同一条。
   const agentStage = useMemo(() => {
     if (!selectedAgent) return null;
-    let best: ThreadAPI | null = null;
-    for (const th of threads) {
-      if (th.ownerAgent !== selectedAgent) continue;
-      if (!best || th.stageRank < best.stageRank
-        || (th.stageRank === best.stageRank && th.lastActivity > best.lastActivity)) best = th;
-    }
-    return best;
+    return pickAgentStageThread(threads, selectedAgent);
   }, [threads, selectedAgent]);
 
   // ── Deduplication: track server message IDs we already inserted via HTTP ─────

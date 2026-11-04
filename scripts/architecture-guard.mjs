@@ -307,6 +307,19 @@ const INVARIANT_RULES = [
         },
       },
       {
+        file: 'packages/web-ui/src/pages/Team.tsx',
+        label: 'Team 页角标「取最佳一条」走 orderTodos（pickAgentStageThread），不再手工展开 stage 偏序',
+        hint: '手写偏序回来了 → 角标与概览首屏指向不同的流（旧实现同 stage 取最新，契约取等得最久，方向相反）',
+        detect: t =>
+          /pickAgentStageThread\(|orderTodos\(|compareTodoOrder\(/.test(t) &&
+          !/\b\w*\.?stageRank\b\s*(<=|>=|<|>)\s*\w*\.?stageRank\b/.test(t),
+        fixtures: {
+          ok: "import { pickAgentStageThread } from '../lib/actionItems.ts';\nconst agentStage = useMemo(() => (selectedAgent ? pickAgentStageThread(threads, selectedAgent) : null), [threads, selectedAgent]);",
+          // bad 用 Team.tsx 的**真实旧形态**（不是人造样本）：这是它当初逃过门禁的样子。
+          bad: "let best: ThreadAPI | null = null;\nfor (const th of threads) {\n  if (!best || th.stageRank < best.stageRank\n    || (th.stageRank === best.stageRank && th.lastActivity > best.lastActivity)) best = th;\n}",
+        },
+      },
+      {
         file: 'packages/web-ui/src/components/ActionCenter.tsx',
         label: '概览行动台改用 orderTodos，本地优先级权重表与 sortActions 已删除',
         hint: '概览自排一套 → 首屏序与 API 序分叉（这就是被修的缺陷本身）',
@@ -574,6 +587,10 @@ const TODO_ORDER_SECOND_WRITER = [
   { re: /\b(TODO_STAGE_RANK|STAGE_SORT_RANK|INBOX_STAGE_RANK|STAGE_PRIORITY)\b\s*[:=]/, what: 'stage 排序常量表' },
   { re: /function\s+(sortActions|sortTodos|orderInbox|compareTodoOrder|orderTodos)\s*\(/, what: '待办排序函数' },
   { re: /\.sort\([^)]{0,120}\bstageRank\b/, what: '就地 stage 比较器' },
+  // 形态覆盖（2026-11-04 第 3 轮补）：上面那条只匹配 `.sort(...)`，于是 Team.tsx 里
+  // 「for 循环 + 手写偏序」（`th.stageRank < best.stageRank || (相等 && lastActivity > ...)`）
+  // 从门禁底下走过去了，而且它的方向与契约相反。规则要按**语义形态**写，不能按某一种写法写。
+  { re: /\b\w*\.?stageRank\b\s*(<=|>=|<|>)\s*\w*\.?stageRank\b/, what: '就地 stage 偏序比较（非 .sort）' },
 ];
 
 function checkTodoOrderSingleWriter(file, text) {
