@@ -3,11 +3,9 @@ import {
   generateId,
   type MailboxItem,
   type MailboxItemType,
-  type MailboxPriority,
   type AttentionState,
   type AttentionDecision,
-  type DecisionType,
-  type DecisionContext,
+  type AttentionAction,
   type AgentMindState,
   type TriageContext,
   type TriageResult,
@@ -98,7 +96,7 @@ export interface AttentionDelegate {
   evaluateInterrupt(
     currentItem: MailboxItem,
     newItem: MailboxItem,
-  ): Promise<DecisionType>;
+  ): Promise<AttentionAction>;
   getTriageContext?(): Promise<TriageContext>;
   onTriageCompleted?(result: TriageResult | null): void;
   /** Full-session deliberation: the agent reasons over all queued items as itself. */
@@ -154,9 +152,9 @@ export interface DecisionPersistence {
 
 /**
  * Lightweight LLM judge for ambiguous attention decisions.
- * Receives a structured prompt and returns a DecisionType string.
+ * Receives a structured prompt and returns an AttentionAction string.
  */
-export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
+export type LLMDecisionJudge = (prompt: string) => Promise<AttentionAction>;
 
 
 /**
@@ -230,7 +228,7 @@ export class AttentionController {
   /** Set to true when a human_chat arrives during deliberation, causing early abort. */
   private deliberationAbortSignal = false;
   /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
-  private lastYieldDecision?: DecisionType;
+  private lastYieldDecision?: AttentionAction;
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
   /** 冲突策略：auto=实体锁冲突时放回队列错开（默认）；report=冲突时上报并放回。 */
@@ -1475,7 +1473,7 @@ export class AttentionController {
    * - 'merge' → item was absorbed into current work (caller may inject into session)
    */
   async checkYieldPoint(): Promise<{
-    decision: DecisionType;
+    decision: AttentionAction;
     item?: MailboxItem;
     reasoning?: string;
   }> {
@@ -1515,7 +1513,7 @@ export class AttentionController {
 
     this.setState('deciding');
 
-    let decisionType: DecisionType;
+    let decisionType: AttentionAction;
     try {
       decisionType = this.delegate
         ? await this.delegate.evaluateInterrupt(this.currentFocus, newItem)
@@ -1625,7 +1623,7 @@ export class AttentionController {
    * | R9   | New is mention, current priority >= normal      | preempt   |
    * | --   | Otherwise                                       | continue  |
    */
-  heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
+  heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): AttentionAction {
     const isNewUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(newItem.sourceType);
     const isCurrentUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(currentItem.sourceType);
 
@@ -1739,7 +1737,7 @@ export class AttentionController {
   async evaluateWithLLMFallback(
     currentItem: MailboxItem,
     newItem: MailboxItem,
-  ): Promise<DecisionType> {
+  ): Promise<AttentionAction> {
     const heuristic = this.heuristicDecision(currentItem, newItem);
 
     // If heuristics produce a clear non-continue answer, use it
@@ -1753,7 +1751,7 @@ export class AttentionController {
     try {
       const prompt = this.buildJudgePrompt(currentItem, newItem);
       const llmDecision = await this.llmJudge(prompt);
-      const validDecisions: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+      const validDecisions: AttentionAction[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
       if (validDecisions.includes(llmDecision)) return llmDecision;
     } catch (err) {
       log.debug('LLM judge failed, falling back to heuristic', {
@@ -2094,7 +2092,7 @@ export class AttentionController {
   }
 
   private recordDecision(
-    type: DecisionType,
+    type: AttentionAction,
     item: MailboxItem,
     reasoning: string,
   ): AttentionDecision {
@@ -2128,7 +2126,7 @@ export class AttentionController {
   }
 
   private formatDecisionReasoning(
-    type: DecisionType,
+    type: AttentionAction,
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): string {

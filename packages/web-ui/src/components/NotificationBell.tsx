@@ -13,6 +13,7 @@ import { ConfirmModal } from './ConfirmModal.tsx';
 import { UserInputModal } from './UserInputModal.tsx';
 import { timeAgo } from '../lib/timeAgo.ts';
 import { decideNextPage, mergeNotificationPage } from '../lib/notificationPaging.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 
 /** A request_user_input carries an explicit multi-question payload. */
 function isUserInputApproval(a: ApprovalInfo): boolean {
@@ -168,11 +169,6 @@ function notifI18n(n: NotificationInfo): NotifI18nMeta | undefined {
   return meta.i18n as NotifI18nMeta;
 }
 
-/** 任务状态用 snake_case（in_progress），词表用 camelCase（inProgress）——两种键都试。 */
-function camelizeEnum(value: string): string {
-  return value.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
-}
-
 export function notifTitle(n: NotificationInfo, t: TFunction): string {
   const i18n = notifI18n(n);
   if (!i18n?.titleKey) return n.title;
@@ -191,10 +187,9 @@ export function notifBody(n: NotificationInfo, t: TFunction): string {
     if (k === 'priority') {
       params[k] = t(`common:priority.${v}`, { defaultValue: v });
     } else if (k === 'status' || k === 'statusKey') {
-      const camel = camelizeEnum(v);
-      params[k] = t(`common:status.${v}`, {
-        defaultValue: camel === v ? v : t(`common:status.${camel}`, { defaultValue: v }),
-      });
+      // 不在这里拼 `common:taskStatus.*`、也不自带 camel 映射：那是词表的第二写者。
+      // 枚举 snake_case → 词表键的唯一映射在 `stateVocabulary.ts`（TASK_STATUS_KEY）。
+      params[k] = taskStatusLabel(v, t);
     } else {
       params[k] = v;
     }
@@ -216,7 +211,7 @@ function approvalStatusTone(status: string): { dot: string; text: string } {
 
 /**
  * Approval statuses live in their OWN namespace (`approvalStatus.*`), separate
- * from the task/requirement status space (`common:status.*`). The two spaces have
+ * from the task/requirement status space (`common:taskStatus.*`). The two spaces have
  * different vocabularies — `changes_requested` exists only on the approval side —
  * and sharing one dictionary is exactly what let a missing key render as the raw
  * English token in the bell.

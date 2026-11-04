@@ -321,7 +321,7 @@ export function TeamDetailPanel({
                       <div className="flex items-center gap-1">
                         <span className="truncate font-medium text-[12px] leading-tight">{a.name}</span>
                         {isManager && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
-                        {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:status.offline')}</span>}
+                        {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:processStatus.offline')}</span>}
                       </div>
                       <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-secondary">
                         {a.role || '\u00A0'}

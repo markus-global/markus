@@ -29,22 +29,41 @@ export interface StagePresentation {
 
 /**
  * 七个 stage 的展示。键是闭集（ThreadStage），不是任意字符串——
- * 这样漏一个 stage 编译器就会报错，而不是运行时静默回退成「空闲」。
+ * 这样漏一个 stage 编译器就会报错，而不是运行时静默回退成「无待办」。
+ *
+ * **文案纪律（A3）**：每个标签都必须自带主语，且不得与另外两个「状态」词表
+ * （治理态 `TaskStatus`、运行时注意力 `AttentionState`、进程态）出现相同字面。
+ * 判据是可执行的：`stateVocabulary.test.ts` 把四张词表两两比对，撞词即红。
+ * 曾经这里写着「进行中」（与治理态 `in_progress` 同字）和「空闲」（与进程态同字），
+ * 用户在同一屏看到两个「进行中」，一个说任务、一个说流。
  */
 export const STAGE_LABEL: Record<string, StagePresentation> = {
   'person:approval': { label: '等你批准', cls: 'bg-amber-500/15 text-amber-600', hint: '有东西卡在审批上' },
   'person:answer': { label: '等你回答', cls: 'bg-sky-500/15 text-sky-600', hint: '有提问没被回答' },
   'person:review': { label: '等你验收', cls: 'bg-violet-500/15 text-violet-600', hint: '已提交，等人确认' },
   'person:blocked': { label: '等你解阻', cls: 'bg-rose-500/15 text-rose-600', hint: '报了阻塞' },
-  'system:queued': { label: '排队中', cls: 'bg-surface-overlay text-fg-secondary', hint: '等资源 / 等前置' },
-  working: { label: '进行中', cls: 'bg-emerald-500/15 text-emerald-600', hint: 'agent 正在处理' },
-  idle: { label: '空闲', cls: 'bg-surface-overlay text-fg-tertiary', hint: '没有待处理' },
+  'system:queued': { label: '排队等资源', cls: 'bg-surface-overlay text-fg-secondary', hint: '等资源 / 等前置' },
+  'agent:working': { label: 'Agent 处理中', cls: 'bg-emerald-500/15 text-emerald-600', hint: '分配在跑，没人在等你' },
+  'none:idle': { label: '无待办', cls: 'bg-surface-overlay text-fg-tertiary', hint: '回合已结束，等新事件' },
 };
 
-/** 未知 stage 回退到「空闲」而不是抛错：展示层不该因为后端多一个 stage 就白屏。 */
+/**
+ * 流的**分组**头（ThreadView 的三个筛选组）。
+ *
+ * 单独一张表而不是就地写字面值：分组是 stage 的聚合，曾经在 ThreadView 里
+ * 硬编码「进行中」「空闲」两个词，与治理态/进程态撞字面，且改 stage 词表时必须
+ * 记得改第二处。这里是它唯一的写者，并同样受 `stateVocabulary.test.ts` 的互斥断言约束。
+ */
+export const THREAD_GROUP_LABEL = {
+  waiting: '等你处理',
+  active: '系统或 Agent 在推进',
+  idle: '已收尾',
+} as const;
+
+/** 未知 stage 回退到「无待办」而不是抛错：展示层不该因为后端多一个 stage 就白屏。 */
 export function stageLabel(stage: string | null | undefined): StagePresentation {
-  if (!stage) return STAGE_LABEL.idle;
-  return STAGE_LABEL[stage] ?? STAGE_LABEL.idle!;
+  if (!stage) return STAGE_LABEL['none:idle']!;
+  return STAGE_LABEL[stage] ?? STAGE_LABEL['none:idle']!;
 }
 
 /** 颜色只承载「要不要我动手」：在等人的高亮，其余中性。 */
@@ -54,7 +73,7 @@ export function stageTone(stage: string | null | undefined): string {
     : 'bg-surface-overlay text-fg-secondary';
 }
 
-/** 路由决定的展示名。键与 `RouteDecision['action']` 对应。 */
+/** 路由处置的展示名。键与 `Disposition['action']`（shared/types/thread.ts）对应。 */
 export const ACTION_LABEL: Record<string, string> = {
   accept: '接单',
   attach: '归入既有流',
@@ -173,20 +192,27 @@ export function refDisplay(ref: string | null | undefined): string {
 export function waitPhrase(stage: string | null | undefined, elapsedMs: number): string {
   if (stage?.startsWith('person:')) return `已等 ${formatDuration(elapsedMs)}`;
   if (stage === 'system:queued') return `排队 ${formatDuration(elapsedMs)}`;
-  if (stage === 'working') return `已进行 ${formatDuration(elapsedMs)}`;
+  if (stage === 'agent:working') return `已进行 ${formatDuration(elapsedMs)}`;
   return `最后活动 ${formatDuration(elapsedMs)}前`;
 }
 
 /**
- * 「本可接单」的唯一判据。
+ * 「本会接 / 本不会接 / 没问过」的唯一判据（三态）。
  *
  * **踩过的坑（2026-11-02）**：这个语义在 UI 里写反过两次 ——
  * `wouldAccept` 的含义是「如果放行，他会接」，所以「本可接单」= `true`。
  * 两处 UI 都写成 `=== false`，于是 observe 的记录**永远进不了观察模式筛选**，
  * 那句提示也永远不显示。语义反了不会报错，只会安静地少显示东西。
  *
- * 收敛成一个函数，让「反了」这件事只需要在**一处**被想清楚。
+ * **第二个坑（2026-11-03，B3）**：它被当成布尔，而库里其实有三态。
+ * `null` = 这次处置**没问过**这个问题（dispatch / attach / stop），
+ * 被读成 `false` 后，UI 对着「没问过」的行说「当时判定不该来」。
+ * 所以判据必须三态，且**只能在这里**从字段映射成结论。
  */
-export function isWouldAccept(d: { wouldAccept?: boolean | null }): boolean {
-  return d.wouldAccept === true;
+export type WouldAcceptVerdict = 'accept' | 'reject' | 'not-asked';
+
+export function wouldAcceptVerdict(d: { wouldAccept?: boolean | null }): WouldAcceptVerdict {
+  if (d.wouldAccept === true) return 'accept';
+  if (d.wouldAccept === false) return 'reject';
+  return 'not-asked';
 }

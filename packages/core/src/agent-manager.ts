@@ -504,7 +504,12 @@ export class AgentManager {
   private escalationHandler?: (agentId: string, reason: string) => void;
   private approvalHandler?: (
     agentId: string,
-    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+    request: {
+      toolName: string; toolArgs: Record<string, unknown>; reason: string;
+      taskId?: string; sessionId?: string; chatSessionId?: string;
+      /** 逐件事许可（Mandate）的载体，见 core/src/agent.ts ApprovalCallback */
+      resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+    }
   ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
@@ -1251,10 +1256,10 @@ export class AgentManager {
    * 日常链路写 Thread 的注入点（core 不依赖 storage，由上层注入）。
    * A2A 投递时回调 —— 同一次 DM 对话是一条流，不因方向不同裂成两条。
    */
-  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string) => void): void {
+  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string, text?: string) => void): void {
     this.threadEnsurer = fn;
   }
-  private threadEnsurer?: (a: string, b: string, actorAgentId?: string) => void;
+  private threadEnsurer?: (a: string, b: string, actorAgentId?: string, text?: string) => void;
 
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
@@ -1429,7 +1434,9 @@ export class AgentManager {
     const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
     // A2A 进入 Thread（S3）。包 try：建流是派生行为，绝不得阻断消息投递。
     try {
-      this.threadEnsurer?.(fromId, targetId, fromId);
+      // 把正文一并交出去：它就在这里（`message`），没有理由让时间线只能写
+      // 「A → B 发了一条消息」而不写发了什么。
+      this.threadEnsurer?.(fromId, targetId, fromId, message);
     } catch {
       /* 派生视图失败不影响投递本身 */
     }
@@ -1522,6 +1529,14 @@ export class AgentManager {
         grantedBy: `${b.grantedBy.kind}:${b.grantedBy.id}`,
       }));
     };
+
+    // 逐件事审批（Mandate）的读取器：执行闸门（Agent.enforceRedLine）靠它回答
+    // 「这件事批了没有」。未注入时一律 none —— 不知道就是没批，绝不猜成已批。
+    if (deps.mandates) {
+      const mandates = deps.mandates;
+      agent.getMandate = (resource, actionScope) =>
+        mandates.findMandate({ agentId: id, resource, actionScope }).state;
+    }
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
@@ -3515,7 +3530,12 @@ export class AgentManager {
   setApprovalHandler(
     handler: (
       agentId: string,
-      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+      request: {
+        toolName: string; toolArgs: Record<string, unknown>; reason: string;
+        taskId?: string; sessionId?: string; chatSessionId?: string;
+        /** 逐件事许可（Mandate）的载体，见 agent.ts ApprovalCallback */
+        resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+      }
     ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;

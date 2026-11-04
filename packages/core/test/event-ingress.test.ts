@@ -9,6 +9,7 @@
 import { createHmac } from 'node:crypto';
 import { describe, it, expect, beforeEach } from 'vitest';
 import { EventIngress } from '../src/event-ingress.js';
+import { admitEvent } from '../src/source-admission.js';
 import { SourceRegistry, sourceIdempotencyKey, verifyHmac } from '../src/event-source.js';
 import type { NormalizedEvent, RawEvent, SourceAdapter } from '../src/event-source.js';
 import { ThreadService } from '../src/thread-service.js';
@@ -114,7 +115,11 @@ beforeEach(() => {
   dispositions = new FakeDispositions();
   service = new ThreadService({ threads, dispositions, now: () => 5000 });
   delivered = [];
-  ingress = new EventIngress({ registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers() });
+  ingress = new EventIngress({
+    registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers(),
+    // 无策略 = 全收；自激保护由 selfActorIds 提供（见 source-admission.test.ts）
+    admission: ev => admitEvent(ev, {}),
+  });
 });
 
 const raw = (payload: object, headers: Record<string, string> = {}): RawEvent => {
@@ -223,10 +228,15 @@ describe('EventIngress — 单一顺序', () => {
         },
       }),
     );
-    ingress = new EventIngress({ registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers() });
+    ingress = new EventIngress({
+      registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers(),
+      admission: ev => admitEvent(ev, {}),
+    });
     const r = ingress.ingest(raw({ id: 'e1', repo: 'o/r' }));
     expect(r.status).toBe('ignored');
     expect(r.reason).toContain('归一化失败');
+    // 归一化失败是**消费失败**：拉取侧据此拒绝推进位点（否则这条事件永久丢失）
+    expect(r.failed).toBe(true);
   });
 
   it('批量载荷逐个走同一条链（2 个事件 → 2 行审计）', () => {
@@ -249,7 +259,10 @@ describe('EventIngress — 单一顺序', () => {
         },
       }),
     );
-    ingress = new EventIngress({ registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers() });
+    ingress = new EventIngress({
+      registry, service, deliver: t => delivered.push(t), triggers: fakeTriggers(),
+      admission: ev => admitEvent(ev, {}),
+    });
     const r = ingress.ingest(raw({ ids: ['a', 'b'], repo: 'o/r' }));
     expect(r.events).toBe(2);
     expect(dispositions.rows).toHaveLength(2);

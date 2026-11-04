@@ -2544,6 +2544,9 @@ export class TaskService implements ApprovalTargetPort {
           reviewerId: (row as any).reviewerId ?? (row as any).reviewer_agent_id ?? '',
           reviewerType: ((row as any).reviewerType ?? (row as any).reviewer_type ?? 'agent') as 'agent' | 'human',
           executionRound: (row as any).executionRound ?? (row as any).execution_round ?? 1,
+          // 主动暂停标记：有值即「人/agent 有意叫停」，依赖引擎不得自动恢复。
+          pausedAt: (row as any).pausedAt ?? (row as any).paused_at ?? undefined,
+          pausedBy: (row as any).pausedBy ?? (row as any).paused_by ?? undefined,
           requirementId: (row as any).requirementId ?? undefined,
           subtasks,
           blockedBy,
@@ -3145,6 +3148,11 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'in_progress') {
       throw new Error(`Cannot pause task in ${task.status} status`);
     }
+    // 标记「有意叫停」：blocked 同时被用作「等依赖」，不标记就会被依赖引擎
+    // 当成「已满足 → 自动恢复」每 30s 翻回 in_progress（2026-11-03 实测）。
+    task.pausedAt = new Date().toISOString();
+    task.pausedBy = updatedBy ?? updatedByType ?? 'unknown';
+    this.persistPause(task);
     return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType);
   }
 
@@ -3172,7 +3180,19 @@ export class TaskService implements ApprovalTargetPort {
         { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
       );
     }
+    // 恢复 = 清掉暂停标记，交还给正常流程（否则依赖引擎永远不碰它）。
+    task.pausedAt = undefined;
+    task.pausedBy = undefined;
+    this.persistPause(task);
     return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
+  }
+
+  /** 暂停标记落库（restart 后仍然有效）。失败只记 warn，不阻断状态机。 */
+  private persistPause(task: Task): void {
+    const repo = this.taskRepo as unknown as { updatePause?: (id: string, at: string | null, by: string | null) => Promise<void> };
+    if (!repo?.updatePause) return;
+    repo.updatePause(task.id, task.pausedAt ?? null, task.pausedBy ?? null)
+      .catch(err => log.warn('Failed to persist task pause marker', { taskId: task.id, error: String(err) }));
   }
 
   getTask(id: string): Task | undefined {
@@ -3661,6 +3681,8 @@ export class TaskService implements ApprovalTargetPort {
             guidance ? `\nAction: ${guidance}` : '',
           ].filter(Boolean).join('\n'),
           taskId: task.id,
+          // 迁移对写进结构化字段：幂等键需要它，且**不得**从 content 文本里反解析。
+          extra: { taskId: task.id, from, to },
         }, {
           metadata: { taskId: task.id },
         });
@@ -4276,7 +4298,27 @@ export class TaskService implements ApprovalTargetPort {
     assertValidProjectReference(this.projectService, projectId, 'task');
   }
 
-  private reevaluateBlockedStatus(task: Task): void {    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
+  /**
+   * 依赖变化后，按**依赖**重算 blocked / in_progress。
+   *
+   * ── 为什么必须区分「两种 blocked」（2026-11-03 生产事故）───────────────
+   * `blocked` 这一个值同时承担了两个问题：
+   *   (a) 「等上游依赖」——依赖满足就该自己跑；
+   *   (b) 「人/agent 主动叫停」——依赖跟它没关系，不该被任何自动逻辑动。
+   *
+   * 旧实现只看依赖：`const shouldBeBlocked = task.blockedBy?.length && !satisfied`。
+   * 于是「主动暂停」的任务（blockedBy 为空）算出 shouldBeBlocked=false，
+   * 被下面第一行无条件翻回 `in_progress` —— 用户暂停一次被推翻一次，反复多次，
+   * 看起来像「系统跟我抢方向盘」。实测：blocked→in_progress 自动回弹，pause 无效。
+   *
+   * 判据：只有**依赖导致的** blocked 才由依赖引擎解除（blockedBy 非空且已满足）；
+   * 主动暂停没有 blockedBy，不属于本函数的职权范围，一律不碰。
+   * 恢复通道仍然存在：`resumeTask()`（人）或重新设置 blockedBy。
+   */
+  private reevaluateBlockedStatus(task: Task): void {
+    // 主动暂停的任务不被依赖重算影响（否则人一按暂停就被推翻）。
+    if (task.pausedAt) return;
+    const shouldBeBlocked = (task.blockedBy?.length ?? 0) > 0 && !this.areBlockersSatisfied(task);
     if (task.status === 'blocked' && !shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
@@ -4415,6 +4457,10 @@ export class TaskService implements ApprovalTargetPort {
    * enforceable by construction.
    */
   private evaluateBlockedDependent(task: Task): void {
+    // 主动暂停（人/agent 叫停）不是「等依赖」，依赖引擎无权解除。
+    // 实测事故：暂停后每 30s 被以「Dependency satisfied」翻回 in_progress，
+    // 与用户抢方向盘。恢复通道 = resumeTask()（显式动作）。
+    if (task.pausedAt) return;
     if (!task.blockedBy?.length) return;
     const verdicts = task.blockedBy.map(id => this.blockerVerdict(id));
 

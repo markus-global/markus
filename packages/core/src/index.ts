@@ -426,3 +426,22 @@ export {
   type IngressDeps,
   type DispatchTarget,
 } from './event-ingress.js';
+export {
+  admitEvent,
+  policyOf,
+  validateSourcePolicy,
+  type Admission,
+  type AdmissionRule,
+  type SourcePolicy,
+} from './source-admission.js';
+export {
+  consumeBatch,
+  mintCursorAdvance,
+  type ConsumeDeps,
+  type ConsumeResult,
+  type ConsumeStatus,
+  type CursorAdvance,
+  type CursorAdvanceEvidence,
+  type CursorStore,
+  type PullSource,
+} from './source-cursor.js';

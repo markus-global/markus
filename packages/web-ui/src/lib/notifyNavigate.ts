@@ -108,6 +108,19 @@ export function navigateForNotification(n: NotificationInfo, ctx: NotifyNavConte
   const meta = (n.metadata ?? {}) as Record<string, unknown>;
   const asStr = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined);
 
+  // ⓪ 「具体优先于笼统」（Owner 2026-11-04）：
+  //
+  // `agent_report` 写「某任务已批准」时，actionType 是 open_chat → 以前一律跳聊天，
+  // 用户看到“点了没反应/没到该去的地方”。若 metadata 里带着具体实体，就直接打开它：
+  // 人想知道的是「那张卡/那个需求现在怎样」，不是「回到聊天窗口」。
+  // 拿不到实体时才退回聊天——那个兜底仍在，只是不再抢在实体前面。
+  if (n.actionType === 'open_chat') {
+    const concreteTask = asStr(meta['taskId']);
+    const concreteReq = asStr(meta['requirementId']);
+    if (concreteTask) return void navBus.navigate(PAGE.WORK, { openTask: concreteTask });
+    if (concreteReq) return void navBus.navigate(PAGE.WORK, { openRequirement: concreteReq });
+  }
+
   // ① 明确要求「打开会话」—— 跳到发送者那条 session
   if (n.actionType === 'open_chat') {
     const t = parseTarget(n.actionTarget);

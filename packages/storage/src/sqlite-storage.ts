@@ -11,10 +11,16 @@ import { dirname } from 'node:path';
 import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
+  type MandateState, type ResourceScope,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
 import { expandImageRefs } from './attachments-store.js';
+// C2 拆轴（2026-11-03）：内容轴的唯一定义点 + `triggers` 的唯一写函数。
+// 本文件只**调用** `SqliteTriggerRepo.insertOrGet`（不复制它的 SQL），
+// 所以「`INSERT INTO triggers` 全仓唯一一处」这个事实继续成立（有结构测试守着）。
+import { splitMailboxContent, hydrateMailboxContent } from './mailbox-content.js';
+import { SqliteTriggerRepo } from './thread-store.js';
 
 type SqlParams = SQLInputValue[];
 
@@ -177,6 +183,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   schedule_config TEXT,
   open_question TEXT,
   decisions TEXT DEFAULT '[]',
+  -- 主动暂停标记（与「等依赖」区分）。存在即有意停的，依赖引擎不得自动恢复。
+  paused_at TEXT,
+  paused_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -551,6 +560,16 @@ CREATE TABLE IF NOT EXISTS execution_stream_logs (
 );
 CREATE INDEX IF NOT EXISTS idx_exec_stream_source ON execution_stream_logs(source_type, source_id, seq);
 
+-- 执行态 + 指针（C2 拆轴 2026-11-03）。
+--
+-- 本表**不存正文**：内容轴（这条事件说了什么）的唯一事实源是 triggers，
+-- 由 SqliteTriggerRepo.insertOrGet 唯一写入；本表只留执行态（投递目标 / 状态机 /
+-- 优先级 / 重试 / 认领租约 / 时间戳）与一个指针 trigger_id。
+--
+-- trigger_id 为空 = **历史行**（拆轴之前写入）：正文还在自己的 payload 列里，
+-- 读路径回落自身列，不搬不回填（H9 / I9）。判据是这一列的值，不是「trigger 读不到内容」。
+-- 轴清单见 docs/architecture/mailbox.md（有测试逐列核对，漏登记即红）。
+-- 不加反引号：本段是模板字符串，反引号会断模板（踩过一次）。
 CREATE TABLE IF NOT EXISTS mailbox_items (
   id TEXT PRIMARY KEY,
   agent_id TEXT NOT NULL,
@@ -567,7 +586,10 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  -- 引用轴：内容在 triggers 里的那一行。trigger 若被删，行仍在、只是回到「历史行」形态
+  -- （ON DELETE SET NULL，不是级联删 —— 执行态不该因为正文被清理而消失）。
+  trigger_id TEXT REFERENCES triggers(id) ON DELETE SET NULL
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 
@@ -825,6 +847,37 @@ CREATE TABLE IF NOT EXISTS threads (
 );
 CREATE INDEX IF NOT EXISTS idx_threads_ref   ON threads(ref);
 
+-- 票：**执行侧的工作单位**（设计 01 §7.3；Owner 2026-11-03 裁定「任何事件都可挂票」）。
+--
+-- 与 tasks 的边界（详见 docs/architecture/ticket.md）：
+--   · task 是**治理对象**（该不该做 / 谁批 / 谁验收，9 个治理态 + 审批闸门）；
+--   · ticket 是**执行侧单位**（这件外部来的东西现在归谁、结束了没有，3 个态）；
+--   · 两者是**可选关联**，不是从属：task_id 可空 —— 一条评论、一封消息、一个 webhook
+--     都能挂票，不需要先有 Task。
+--
+-- ON DELETE SET NULL 是「删 task 不得级联删 ticket」的**结构表达**：
+-- 删任务只断开关联，票作为独立事实继续存在（票的结束由它自己的状态机决定）。
+-- 状态机唯一事实源：packages/shared/src/types/ticket.ts 的 TICKET_TRANSITIONS；
+-- 唯一写入点：packages/storage/src/ticket-store.ts（全仓 INSERT/UPDATE tickets 只允许在那里）。
+--
+-- org_id 刻意**不加**外键到 organizations：票的存在不应依赖组织配置先行落库，
+-- 否则「任何事件都能挂票」会被一条无关的初始化顺序卡死；Markus 单租户下
+-- org_id 恒为 'default'（api-server 的 orgId 口径），不构成引用完整性风险。
+CREATE TABLE IF NOT EXISTS tickets (
+  id         TEXT PRIMARY KEY,
+  org_id     TEXT NOT NULL,
+  kind       TEXT NOT NULL,
+  source_ref TEXT,
+  subject    TEXT NOT NULL,
+  status     TEXT NOT NULL DEFAULT 'open',
+  assignee   TEXT,
+  task_id    TEXT REFERENCES tasks(id) ON DELETE SET NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_tickets_task        ON tickets(task_id);
+CREATE INDEX IF NOT EXISTS idx_tickets_org_status  ON tickets(org_id, status, updated_at DESC);
+
 -- 订阅：直通的依据（own = 我负责；context = 我只是在看）
 CREATE TABLE IF NOT EXISTS thread_subscriptions (
   thread_id TEXT NOT NULL REFERENCES threads(id),
@@ -842,30 +895,18 @@ CREATE TABLE IF NOT EXISTS thread_dispositions (
   thread_id    TEXT NOT NULL,
   action       TEXT NOT NULL,
   reason       TEXT NOT NULL,
-  would_accept INTEGER DEFAULT 0,
+  -- 命中的 Gate 规则（契约 §5 六条；B1）。NULL = 处置不是 Gate 规则产生的。
+  -- 「为什么走了这条」的机器可读载体：SELECT matched_rule GROUP BY 即可回答。
+  matched_rule TEXT,
+  -- 三态：1 = 会接 / 0 = 不会接 / NULL = 本次处置没问过这个问题（dispatch·attach·stop）。
+  -- 不给 DEFAULT 0：默认值会把「没问过」默认成「不会接」，而唯一转换点
+  -- （packages/storage/src/thread-store.ts 的 WouldAccept）总是显式绑定值，用不上默认值。
+  would_accept INTEGER,
   actor        TEXT NOT NULL,
   created_at   INTEGER NOT NULL,
   UNIQUE(trigger_id, thread_id)
 );
 CREATE INDEX IF NOT EXISTS idx_disp_thread ON thread_dispositions(thread_id, created_at DESC);
-
--- 事件时间线：一条流上「发生了什么」。
---
--- 为什么必须只追加：「发生了什么」是历史事实，不是当前状态。
--- 状态可以被覆盖（任务从 pending 变成 review），但「3 点 12 分有人评论了」不能。
--- 一旦允许 UPDATE，时间线就不再是证据，只是「最后写者说了什么」。
--- 结构性保证：仓储层只提供 insert / list，不提供 update / delete。
--- 测试 D1.5 直接断言「全仓无 UPDATE thread_events」。
-CREATE TABLE IF NOT EXISTS thread_events (
-  id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL REFERENCES threads(id),
-  kind       TEXT NOT NULL,
-  actor      TEXT,
-  summary    TEXT NOT NULL,
-  payload    TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_evt_thread ON thread_events(thread_id, created_at DESC);
 
 -- 责任域绑定：agent/team 负责某个外部资源到某一档（read < draft < publish < admin）
 CREATE TABLE IF NOT EXISTS resource_bindings (
@@ -882,15 +923,24 @@ CREATE TABLE IF NOT EXISTS resource_bindings (
 CREATE INDEX IF NOT EXISTS idx_rbd_holder   ON resource_bindings(holder_kind, holder_id);
 CREATE INDEX IF NOT EXISTS idx_rbd_resource ON resource_bindings(resource);
 
--- 来源配置：外部事件入口。secret 永不落日志。
+-- 来源配置：外部事件入口 + 读取位点。secret 永不落日志。
+--
+-- 为什么位点是独立列，而不是塞进 health（02 §2.1 原本的写法）：
+--   health 是**多写者的观测袋**（updateHealth 一律 {...cur.health, ...patch} 合并），
+--   任何一次上报都能悄悄改它；位点住进去就无法 CAS、无法审计，
+--   与「位点只有一个推进点」直接矛盾。
+--   一列只回答一个问题：cursor = 「这条来源的上游读到哪儿了」
+--   （NULL = 推送式来源，没有位点；或历史行，从未拉取过）。
 CREATE TABLE IF NOT EXISTS event_sources (
-  id         TEXT PRIMARY KEY,
-  org_id     TEXT NOT NULL,
-  prefix     TEXT NOT NULL,
-  secret     TEXT,
-  config     TEXT DEFAULT '{}',
-  health     TEXT DEFAULT '{}',
-  created_at INTEGER NOT NULL,
+  id             TEXT PRIMARY KEY,
+  org_id         TEXT NOT NULL,
+  prefix         TEXT NOT NULL,
+  secret         TEXT,
+  config         TEXT DEFAULT '{}',
+  health         TEXT DEFAULT '{}',
+  cursor         TEXT,
+  last_polled_at INTEGER,
+  created_at     INTEGER NOT NULL,
   UNIQUE(org_id, prefix)
 );
 
@@ -915,6 +965,11 @@ CREATE TABLE IF NOT EXISTS triggers (
   UNIQUE(idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_kind ON triggers(kind, received_at DESC);
+-- 时间线派生查询的索引（2026-11-03 实测决定，不是预设优化）：
+-- 无此索引时 10 万条 triggers 取一条流需 14.7ms（踩在一帧 16ms 边上）；
+-- 有了它 0.24ms。它不索引 JSON 数组（索引不了），而是让 ORDER BY received_at
+-- 直接走索引顺序，省掉 json_each 之后的 TEMP B-TREE 排序。
+CREATE INDEX IF NOT EXISTS idx_trg_received ON triggers(received_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
@@ -969,6 +1024,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
+    { table: 'tasks', column: 'paused_at', sql: "ALTER TABLE tasks ADD COLUMN paused_at TEXT" },
+    { table: 'tasks', column: 'paused_by', sql: "ALTER TABLE tasks ADD COLUMN paused_by TEXT" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
     { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
@@ -1028,6 +1085,15 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
+    // C2 拆轴（2026-11-03）：内容轴搬到 triggers，本表只留执行态 + 指针。
+    // 只加列、不回填 —— `trigger_id IS NULL` 即「历史行」，读路径回落自身 payload 列。
+    // REFERENCES triggers(id)：triggers 由 SCHEMA_SQL 在同一事务内先建好；存量行全为 NULL。
+    { table: 'mailbox_items', column: 'trigger_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN trigger_id TEXT REFERENCES triggers(id) ON DELETE SET NULL' },
+    // ─── Source 读取位点（B2）：只加列、不回填 —— `cursor IS NULL` 就是「推送式来源 / 历史行」──
+    { table: 'event_sources', column: 'cursor', sql: 'ALTER TABLE event_sources ADD COLUMN cursor TEXT' },
+    { table: 'event_sources', column: 'last_polled_at', sql: 'ALTER TABLE event_sources ADD COLUMN last_polled_at INTEGER' },
+    // ─── Eval 规则命中（B1）：只加列、不回填 —— `matched_rule IS NULL` 就是「处置非 Gate 规则产生 / 历史行」──
+    { table: 'thread_dispositions', column: 'matched_rule', sql: 'ALTER TABLE thread_dispositions ADD COLUMN matched_rule TEXT' },
   ];
     for (const m of migrations) {
       const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
@@ -1049,6 +1115,41 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+
+    // ── I8：同一资源同一时刻只能有一个 L3 责任人（契约 §4 I8 / 设计 01 §7.4）──
+    //
+    // 这条约束**必须由数据库守**，不能靠 `bind()` 里的「先查再插」：
+    // 应用层检查只在「一个进程、一个连接、中间没人插队」时成立 —— 那是靠排队
+    // 保证正确性（R6/R4 同族），并发两条写路径各自查到「还没有 admin」就都插进去了。
+    // 部分唯一索引让「两个 admin」在**结构上不可表达**，任何写入路径（INSERT /
+    // UPDATE scope）都自动被同一条约束守住，不存在第二个执行点。
+    //
+    // 存量去重是创建索引的前置：老库里可能已经有重复 admin（正是这条约束缺位的
+    // 证据）。保留每个资源上最早那条 admin，其余降为 publish 并在日志里点明 ——
+    // 不静默改数据，也不因此让整个 storage 起不来。
+    try {
+      const demoted = _db.prepare(
+        `UPDATE resource_bindings SET scope = 'publish'
+          WHERE scope = 'admin' AND id NOT IN (
+            SELECT id FROM (
+              SELECT id, ROW_NUMBER() OVER (PARTITION BY resource ORDER BY since ASC, id ASC) AS rn
+                FROM resource_bindings WHERE scope = 'admin'
+            ) WHERE rn = 1
+          )`,
+      ).run();
+      if (Number(demoted.changes) > 0) {
+        log.warn(
+          `I8 backfill: demoted ${demoted.changes} duplicate admin binding(s) to 'publish' `
+          + '(one L3 holder per resource; see docs/architecture/authorization.md)',
+        );
+      }
+      _db.exec("CREATE UNIQUE INDEX IF NOT EXISTS uniq_rbd_l3 ON resource_bindings(resource) WHERE scope = 'admin'");
+    } catch (err) {
+      // 约束建不起来时不能假装没事：I8 会退回"只有应用层检查"，必须留痕。
+      log.error('I8 unique index (uniq_rbd_l3) could not be created — L3 exclusivity is unenforced', {
+        error: String(err),
+      });
+    }
 
     _db.exec('COMMIT');
   } catch (err) {
@@ -1651,6 +1752,18 @@ export class SqliteTaskRepo {
     }
     vals.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  /**
+   * 主动暂停标记（与「等依赖」区分）。
+   *
+   * 为什么需要它持久化：`blocked` 同时被用作「等依赖」与「主动叫停」，依赖引擎
+   * 只看 blockedBy 是否满足 → 暂停后每轮扫描都被自动恢复成 in_progress。
+   * 且用户常常「暂停 → 重启应用 → 继续」，所以内存标记不够，必须落库。
+   */
+  async updatePause(id: string, at: string | null, by: string | null) {
+    this.db.prepare('UPDATE tasks SET paused_at = ?, paused_by = ?, updated_at = ? WHERE id = ?')
+      .run(at, by, now(), id);
   }
 
   async assign(id: string, agentId: string, updatedBy?: string) {
@@ -4953,6 +5066,11 @@ export interface MailboxItemRow {
   status: string;
   payload: Record<string, unknown>;
   metadata: Record<string, unknown>;
+  /**
+   * C2 拆轴（2026-11-03）：正文所在 `triggers` 行的 id。
+   * 非空 = 正文只从 `triggers` 读；为 null = **历史行**（正文仍在自己 `payload` 里）。
+   */
+  triggerId?: string | null;
   queuedAt: string;
   startedAt: string | null;
   completedAt: string | null;
@@ -4981,8 +5099,58 @@ export interface MailboxDedupRow {
   queuedAt: string;
 }
 
+/**
+ * mailbox 行 → 承载其正文的 trigger 的幂等键（C2）。
+ *
+ * 两个来源，都是**确定性**值（缓存友好纪律：不含时间/随机/计数器）：
+ *  1. `payload.extra.idempotencyKey` —— 调用方已把事件自身的键带下来了
+ *     （`event-ingress` 投 `system_event` 时会写它）。用它意味着**同一个外部事件
+ *     在库里只有一行正文**（ingress 写的那行），而不是「ingress 一行 + mailbox 一行」。
+ *  2. `mbx:<row id>` —— 没有事件键的投递（心跳、评论、任务状态…），按投递行一一对应。
+ *     同一行重复 save（重投 / 回队）走 `insertOrGet` 命中同一行，不产生第二份正文。
+ */
+function mailboxTriggerKey(item: { id: string; payload: Record<string, unknown> }): string {
+  const extra = item.payload['extra'];
+  const eventKey = extra && typeof extra === 'object'
+    ? (extra as Record<string, unknown>)['idempotencyKey']
+    : undefined;
+  return typeof eventKey === 'string' && eventKey.length > 0 ? eventKey : `mbx:${item.id}`;
+}
+
+/** `queued_at`（ISO TEXT）→ `triggers.received_at`（epoch ms）。解析失败不造时间：退回 0 会让时间线把它排到最前，故用 NaN 保护。 */
+function mailboxReceivedAt(queuedAt: string): number {
+  const ms = Date.parse(queuedAt);
+  return Number.isFinite(ms) ? ms : Date.now();
+}
+
+/**
+ * 读路径统一投影（C2）：执行态 + 指向的正文。
+ *
+ * 为什么用 JOIN 而不是逐行再查一次：`loadQueued` 在启动时一次要取整个队列，
+ * 逐行查正文就是 N+1（N 是队列深度）。JOIN 让「取回一条带的正文」永远是一次查询。
+ *
+ * 别名 `trigger_summary` / `trigger_body` 而不是 `summary` / `body`：两张表都可能有
+ * 同名列，靠别名让 hydrate 只认一个来源，不靠列顺序猜。
+ * `m.*` 保证本表列集不变（`trigger_id` 由它带出，不需要单独列）。
+ */
+const MAILBOX_ROW_SELECT = `
+  SELECT m.*, t.summary AS trigger_summary, t.body AS trigger_body
+    FROM mailbox_items m
+    LEFT JOIN triggers t ON t.id = m.trigger_id`;
+
 export class SqliteMailboxRepo {
-  constructor(private db: DatabaseSync) {}
+  /**
+   * 内容写入器 —— `triggers` 的**唯一写函数**（`SqliteTriggerRepo.insertOrGet`）。
+   *
+   * 本类只**调用**它，不自己写 `INSERT INTO triggers`：那会让「内容只有一个写者」
+   * 变成「两个写者写了同一张表」。默认按同一个 db 句柄惰性构造，调用方无需改动装配
+   * （少一处可忘的接线 = 少一节断链）。
+   */
+  private readonly triggers: SqliteTriggerRepo;
+
+  constructor(private db: DatabaseSync, triggers?: SqliteTriggerRepo) {
+    this.triggers = triggers ?? new SqliteTriggerRepo(db);
+  }
 
   /**
    * 持久化一个 item。`dedupKey` 非空时依赖部分唯一索引 `uq_mailbox_agent_dedup`
@@ -4991,6 +5159,17 @@ export class SqliteMailboxRepo {
    * 用 `ON CONFLICT DO NOTHING`（而非原先的 `INSERT OR REPLACE`）有两个原因：
    * 1. 重复投递必须**被拒**（不产生第二行），而不是覆盖已有行；
    * 2. `OR REPLACE` 会先 DELETE 命中行再 INSERT，会把已有的认领/租约状态一并抹掉。
+   *
+   * ## C2 拆轴（2026-11-03）：正文搬去 `triggers`，本表只留执行态 + 指针
+   *
+   * 顺序是**先正文、后执行态**：正文进了 `triggers` 才有 id 可指；反过来写会留下
+   * 「有执行行、没正文」的孤儿（那正是最坏的一种不一致）。
+   * 两步同一事务；执行行被唯一键拒绝时整体回滚，不留下没人引用的一行正文。
+   *
+   * 幂等键 = `extra.idempotencyKey`（若调用方带事件自身的键，`event-ingress` 的
+   * `system_event` 就是这种）否则 `mbx:<item.id>`。前者让**同一个外部事件只有一行正文**
+   * （ingress 写的那行），后者按投递行一一对应。两者都是**确定性**值：
+   * 不含 `Date.now()` / 随机数 / 递增计数器，同一逻辑输入永远同一字节序列。
    *
    * @returns true = 本次插入成功；false = 重复（id 或 dedup_key 冲突）被拒。
    */
@@ -5006,18 +5185,53 @@ export class SqliteMailboxRepo {
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
   }): boolean {
-    const res = this.db
-      .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT DO NOTHING`
-      )
-      .run(
-        item.id, item.agentId, item.sourceType, item.priority,
-        item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
-        item.queuedAt, item.dedupKey ?? null,
-      );
-    return ((res as { changes?: number }).changes ?? 0) === 1;
+    const { content, rest } = splitMailboxContent(item.payload);
+
+    // 加入外层事务而不是嵌套（与 StreamWriteBatcher.writeBatch 同一手法）：
+    // save() 若被某个已开事务的调用方包住，这里不能再 BEGIN，否则嵌套事务直接抛错。
+    let began = false;
+    try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
+
+    try {
+      // ① 正文 → triggers（内容唯一写者，幂等）。
+      //    `kind = 'mailbox'`：这是**来源标记**，不是把 mailbox 的 15 值类型搬进 triggers
+      //    （那会把两条不同的分类轴混进一列，R1 原病）。行到底是哪种投递，读
+      //    `mailbox_items.source_type` —— 唯一写者仍在那一列。
+      const trigger = this.triggers.insertOrGet({
+        kind: 'mailbox',
+        idempotencyKey: mailboxTriggerKey(item),
+        summary: content.summary,
+        body: content.body.length > 0 ? content.body : null,
+        receivedAt: mailboxReceivedAt(item.queuedAt),
+      }).trigger;
+
+      // ② 执行态 + 指针（payload 已无内容键）。
+      const res = this.db
+        .prepare(
+          `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key, trigger_id)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT DO NOTHING`
+        )
+        .run(
+          item.id, item.agentId, item.sourceType, item.priority,
+          item.status, projectJson(toJson(rest)), projectJson(toJson(item.metadata ?? {})),
+          item.queuedAt, item.dedupKey ?? null, (trigger as { id?: string }).id ?? null,
+        );
+      const inserted = ((res as { changes?: number }).changes ?? 0) === 1;
+
+      if (began) this.db.exec(inserted ? 'COMMIT' : 'ROLLBACK');
+      if (!inserted && !began) {
+        // 已被外层事务包住时无法局部回滚：正文行会留下但**没有执行行引用它**。
+        // 这不是丢消息（该投递本就被幂等键拒了），但确实是残留 —— 必须可观测。
+        log.warn('Mailbox duplicate suppressed inside an outer transaction — content row left unreferenced', {
+          id: item.id, agentId: item.agentId, triggerId: (trigger as { id?: string }).id,
+        });
+      }
+      return inserted;
+    } catch (err) {
+      if (began) { try { this.db.exec('ROLLBACK'); } catch { /* already unwound */ } }
+      throw err;
+    }
   }
 
   /**
@@ -5140,6 +5354,28 @@ export class SqliteMailboxRepo {
   }
 
   /**
+   * 撤回某实体下尚未消费的**行动型**条目（需求转终态时调用）。
+   *
+   * 只动 `payload.extra.actionRequired = 1` 的行：普通状态流水保留，历史可查。
+   * `processing` 也一并撤回 —— 正在被读取的那一条同样是「已不成立的请求」。
+   */
+  dropPendingByEntity(agentId: string, entityId: string, reason: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'dropped',
+                completed_at = ?,
+                metadata = json_set(coalesce(metadata, '{}'), '$.dropReason', ?)
+          WHERE agent_id = ?
+            AND status IN ('queued', 'processing')
+            AND json_extract(payload, '$.requirementId') = ?
+            AND json_extract(payload, '$.extra.actionRequired') = 1`
+      )
+      .run(new Date().toISOString(), reason, agentId, entityId);
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  /**
    * 回收过期租约（P0 · 运行期看门狗）：把 `processing` 且租约已过期的 item 退回 `queued`，
    * 使崩溃或超时的 worker 不会永久占位。返回回收条数。
    *
@@ -5243,16 +5479,16 @@ export class SqliteMailboxRepo {
   }
 
   getByAgent(agentId: string, options?: { status?: string; limit?: number }): MailboxItemRow[] {
-    let sql = 'SELECT * FROM mailbox_items WHERE agent_id = ?';
+    let sql = `${MAILBOX_ROW_SELECT} WHERE m.agent_id = ?`;
     const params: (string | number | null)[] = [agentId];
-    if (options?.status) { sql += ' AND status = ?'; params.push(options.status); }
-    sql += ' ORDER BY priority ASC, queued_at ASC';
+    if (options?.status) { sql += ' AND m.status = ?'; params.push(options.status); }
+    sql += ' ORDER BY m.priority ASC, m.queued_at ASC';
     if (options?.limit) { sql += ' LIMIT ?'; params.push(options.limit); }
     return (this.db.prepare(sql).all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
   }
 
   getById(id: string): MailboxItemRow | undefined {
-    const row = this.db.prepare('SELECT * FROM mailbox_items WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    const row = this.db.prepare(`${MAILBOX_ROW_SELECT} WHERE m.id = ?`).get(id) as Record<string, unknown> | undefined;
     return row ? this.mapRow(row) : undefined;
   }
 
@@ -5275,33 +5511,74 @@ export class SqliteMailboxRepo {
   }
 
   getHistory(agentId: string, opts?: { limit?: number; offset?: number; sourceTypes?: string[]; status?: string }): MailboxItemRow[] {
-    const conditions = ['agent_id = ?'];
+    const conditions = ['m.agent_id = ?'];
     const params: (string | number)[] = [agentId];
     if (opts?.sourceTypes && opts.sourceTypes.length > 0) {
-      conditions.push(`source_type IN (${opts.sourceTypes.map(() => '?').join(',')})`);
+      conditions.push(`m.source_type IN (${opts.sourceTypes.map(() => '?').join(',')})`);
       params.push(...opts.sourceTypes);
     }
     if (opts?.status) {
-      conditions.push('status = ?');
+      conditions.push('m.status = ?');
       params.push(opts.status);
     }
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
     params.push(limit, offset);
     return (this.db
-      .prepare(`SELECT * FROM mailbox_items WHERE ${conditions.join(' AND ')} ORDER BY queued_at DESC LIMIT ? OFFSET ?`)
+      .prepare(`${MAILBOX_ROW_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY m.queued_at DESC LIMIT ? OFFSET ?`)
       .all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
   }
 
+  /**
+   * 某个任务的**历次评审投递**（`review_request`）——「谁在哪一轮审过 / 正在审」的唯一读面。
+   *
+   * 判据是**结构键**，不是正文：任务归属读 `payload.taskId`（拆轴后 taskId 属执行态/路由提示，
+   * 仍留在本表），旧行读轮次化幂等键前缀 `review_request:<taskId>:`。
+   * 两者取并集是因为历史行里有一部分正文已被 blob 化、payload 里没有 taskId，
+   * 只能靠幂等键认领 —— 少认一条就等于 UI 少显示一轮审核。
+   *
+   * `substr(...) = ?` 而不是 `LIKE 'review_request:<taskId>:%'`：任务 id 含 `_`，
+   * 而 `_` 在 LIKE 里是单字符通配符 —— 用 LIKE 会把别的任务的行算成这个任务的。
+   */
+  getReviewRequestsByTask(taskId: string): MailboxItemRow[] {
+    const dedupPrefix = `review_request:${taskId}:`;
+    return (this.db
+      .prepare(`${MAILBOX_ROW_SELECT}
+         WHERE m.source_type = 'review_request'
+           AND (json_extract(m.payload, '$.taskId') = ?
+                OR (m.dedup_key IS NOT NULL AND substr(m.dedup_key, 1, ?) = ?))
+         ORDER BY m.queued_at ASC`)
+      .all(taskId, dedupPrefix.length, dedupPrefix) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  /**
+   * 行 → 结构体的**唯一映射点**（`getByAgent` / `getById` / `getHistory` 全部经它）。
+   *
+   * C2 拆轴后这里多一步 hydrate：正文从 JOIN 来的 `triggers` 列取，
+   * `trigger_id IS NULL` 的历史行回落自身 `payload` 列。
+   * **回落判据是 `trigger_id` 的值，不是「trigger 里读不到内容」** —— 后者会把
+   * 「正文真的是空」误判成「没有正文」，又变成一次从载荷猜结构。
+   */
   private mapRow(r: Record<string, unknown>): MailboxItemRow {
+    const triggerId = (r['trigger_id'] as string | null) ?? null;
+    const storedPayload = fromJson<Record<string, unknown>>(r['payload'] as string) ?? {};
     return {
       id: r['id'] as string,
       agentId: r['agent_id'] as string,
       sourceType: r['source_type'] as string,
       priority: r['priority'] as number,
       status: r['status'] as string,
-      payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
+      payload: hydrateMailboxContent(
+        storedPayload,
+        triggerId
+          ? {
+              summary: r['trigger_summary'] as string | null,
+              body: r['trigger_body'] as string | null,
+            }
+          : null,
+      ),
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
+      triggerId,
       queuedAt: r['queued_at'] as string,
       startedAt: r['started_at'] as string | null,
       completedAt: r['completed_at'] as string | null,
@@ -5645,6 +5922,57 @@ export class SqliteApprovalRepo {
   get(id: string): ApprovalRow | undefined {
     const r = this.db.prepare('SELECT * FROM approvals WHERE id = ?').get(id) as Record<string, unknown> | undefined;
     return r ? this.mapRow(r) : undefined;
+  }
+
+  /**
+   * **逐件事授权（Mandate）的唯一读取点**：这个 agent 对这块地上的这一档动作，批了没有。
+   *
+   * 为什么它是一个独立方法，而不是让调用方自己 `list()` 再过滤：
+   * 「哪张审批单算这件事的许可」是一个**判定**，散到每个调用点就会各自漂移
+   * （有人按 type 过滤，有人按 title 猜，有人忘了看 status）。收在一处，
+   * 判定点 `authorizeAction()` 的 `mandate` 入参才有唯一来源。
+   *
+   * 口径（刻意保守 —— 宁可多要一次人批，也不把没有的许可读成有）：
+   *  · 必看 `details.resource` 与 `details.actionScope` 两项**同时**匹配；
+   *  · 调用方给了 `eventKey` 时，只认 eventKey 相同、或**没有** eventKey 的通用单
+   *    （没有 eventKey 的单仍然是针对 (agent, resource, scope) 的，不是针对别的事）；
+   *  · 状态取**最近一条**：approved → approved；pending → pending；rejected/expired → denied；
+   *    一条都没有 → none。
+   *
+   * 已知粒度（本卡残余，写进 docs/architecture/authorization.md）：
+   * 不做「一次性消费」—— 那会要求 mandate 成为独立实体（新系统，H1 禁止）。
+   */
+  findMandate(q: {
+    agentId: string;
+    resource: string;
+    actionScope: ResourceScope;
+    eventKey?: string;
+  }): { state: MandateState; approvalId?: string; requestedAt?: string } {
+    const rows = this.db
+      .prepare(`SELECT * FROM approvals WHERE agent_id = ? ORDER BY requested_at DESC LIMIT 200`)
+      .all(q.agentId) as Record<string, unknown>[];
+
+    for (const raw of rows) {
+      const row = this.mapRow(raw);
+      const details = (row.details ?? {}) as Record<string, unknown>;
+      if (details['resource'] !== q.resource) continue;
+      if (details['actionScope'] !== q.actionScope) continue;
+      if (q.eventKey !== undefined && details['eventKey'] != null && details['eventKey'] !== q.eventKey) continue;
+
+      switch (row.status) {
+        case 'approved':
+        case 'applied':
+          return { state: 'approved', approvalId: row.id, requestedAt: row.requestedAt };
+        case 'pending':
+          return { state: 'pending', approvalId: row.id, requestedAt: row.requestedAt };
+        case 'rejected':
+        case 'expired':
+          return { state: 'denied', approvalId: row.id, requestedAt: row.requestedAt };
+        default:
+          continue;
+      }
+    }
+    return { state: 'none' };
   }
 
   private mapRow(r: Record<string, unknown>): ApprovalRow {

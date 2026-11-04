@@ -92,26 +92,24 @@
     "cancelled": "Cancelled",
     "expired": "Expired"
   },
-  "status": {
+  "taskStatus": {
     "pending": "Pending",
-    "approved": "Approved",
     "inProgress": "In Progress",
+    "blocked": "Blocked",
+    "review": "In Review",
     "completed": "Completed",
     "failed": "Failed",
-    "blocked": "Blocked",
-    "review": "Review",
     "rejected": "Rejected",
     "cancelled": "Cancelled",
-    "active": "Active",
+    "archived": "Archived"
+  },
+  "processStatus": {
     "idle": "Idle",
     "working": "Working",
+    "online": "Online",
     "offline": "Offline",
     "paused": "Paused",
-    "error": "Error",
-    "online": "Online",
-    "verified": "Verified",
-    "outdated": "Outdated",
-    "expired": "Expired"
+    "error": "Error"
   },
   "priority": {
     "urgent": "Urgent",

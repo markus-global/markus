@@ -4,7 +4,10 @@ import { HistoryModal } from './HistoryModal.tsx';
 import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
-import { STAGE_LABEL, formatDuration, formatRelativeAny } from '../lib/threadPresentation.ts';
+import { STAGE_LABEL, formatDuration, formatRelativeAny, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { markNotificationRead } from '../lib/notifyRead.ts';
+import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { publishUnreadCount } from '../lib/attentionCount.ts';
 
 /**
  * 概览页的「行动台」—— 取代原先并列的两块（独立收件箱卡片 + Needs Your Attention 聚合块）。
@@ -172,16 +175,27 @@ export function ActionCenter({
     // 右栏要「最近发生了什么」——含已读。若只取未读，用户把通知点完那一刻
     // 整块动态就会突然消失（看起来像功能坏了）。未读数由同一次响应给出，
     // 不在前端数列表（列表是分页的，数出来必然少）。
-    api.notifications
-      .list(userId, false, { limit: 5 })
-      .then(d => {
-        if (!alive) return;
-        setNotices(d.notifications ?? []);
-        setUnread((d as { unreadCount?: number }).unreadCount ?? 0);
-      })
-      .catch(() => undefined);
+    const load = () => {
+      api.notifications
+        .list(userId, false, { limit: 5 })
+        .then(d => {
+          if (!alive) return;
+          setNotices(d.notifications ?? []);
+          const n = (d as { unreadCount?: number }).unreadCount ?? 0;
+          setUnread(n);
+          // 未读计入导航徽标（Owner 2026-11-04：未读也要算进同一个数字）
+          publishUnreadCount(n);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    // 别处（铃铛、历史弹窗）标了已读 → 这里的未读数必须跟着变，
+    // 否则从 Work 回到概览仍显示旧数字（Owner 2026-11-04）。
+    const onChanged = () => load();
+    window.addEventListener('markus:notifications-changed', onChanged);
     return () => {
       alive = false;
+      window.removeEventListener('markus:notifications-changed', onChanged);
     };
   }, [userId]);
 
@@ -195,6 +209,8 @@ export function ActionCenter({
           <div className="flex items-center gap-2 min-w-0">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sorted.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-green-500'}`} />
             <h3 className="text-sm font-semibold text-fg-primary">等你处理</h3>
+            {/* 数字 = 全部行动项（待批 + 待评审 + 阻塞 + 等回话）。
+                Owner 2026-11-04：不要在锁屏之外改这个口径，恢复原口径。 */}
             {sorted.length > 0 && (
               <span className="text-[11px] font-semibold text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded tabular-nums">
                 {sorted.length}
@@ -202,28 +218,15 @@ export function ActionCenter({
             )}
           </div>
           <div className="flex items-center gap-1 shrink-0">
-            {/* 两个新面的入口就放在这里，不占侧标导航（Owner 砍过导航密度）。
-                语义上它们就是行动台的下层：行动台答「现在要我做什么」，
-                Thread 视图答「这一条到底经过什么」，路由台答「系统自己判断了什么」。 */}
-            <button
-              onClick={() => navBus.navigate(PAGE.THREAD)}
-              className="flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
-              title="一条流的来龙去脉（时间线）"
-            >
-              全部流
-            </button>
-            <button
-              onClick={() => navBus.navigate(PAGE.ROUTER)}
-              className="flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
-              title="系统对每条信号做过什么决定，以及理由"
-            >
-              路由台
-            </button>
+            {/* Owner 2026-11-03：「搜索一条流」「路由台」两个入口删掉。
+                理由：它们在「现在要我做什么」的卡片右上角堆了两个入口，用户看不懂它们是什么，
+                也不该在这里回答。来龙去脉的主入口已经倒置到任务 / 票据 / agent 详情里
+                （就地展开），全局检索页仍可从导航进入 —— 不必再在这里多两个按钮。 */}
           <button
             onClick={() => setShowHistory(true)}
             className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
           >
-            历史
+            未读消息{unread > 0 ? `（${unread}条）` : ''}
             {unread > 0 && (
               <span className="text-[10px] font-semibold text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded-full tabular-nums">
                 {unread > 99 ? '99+' : unread}
@@ -343,9 +346,8 @@ export function ActionCenter({
                     // 与 NotificationBell 一致：agent_report 要在 Chat 里显示「知道了」确认卡，
                     // 提前标已读会把那张卡抹掉，所以它留到 Chat 那边处理。
                     if (n.type !== 'agent_report') {
-                      api.notifications.markRead(n.id).catch(() => undefined);
+                      markNotificationRead(n);
                       setNotices(prev => prev.map(x => (x.id === n.id ? { ...x, read: true } : x)));
-                      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
                     }
                     navigateForNotification(n);
                   }}
@@ -411,8 +413,14 @@ export function ActionCenter({
                   </span>
                 )}
               </div>
+              {/* 正文是 markdown（任务描述/需求描述里常带标题、列表、表格、代码）。
+                  以前用 whitespace-pre-wrap 直接吐纯文本 —— 于是 `## 标题`、`| 表 |` 原样显示。
+                  Owner 2026-11-04：这里应该 markdown 渲染。用全应用同一份 MarkdownMessage，
+                  不另写第二套解析器。 */}
               {detail.detail ? (
-                <p className="mt-3 text-[12px] text-fg-secondary leading-relaxed whitespace-pre-wrap">{detail.detail}</p>
+                <div className="mt-3 text-[12px] text-fg-secondary leading-relaxed">
+                  <MarkdownMessage content={detail.detail} />
+                </div>
               ) : (
                 <p className="mt-3 text-[11px] text-fg-muted">没有更多说明，点下面的按钮去处理。</p>
               )}
@@ -439,7 +447,7 @@ export function ActionCenter({
                             {' · '}
                             {d.actor}
                           </span>
-                          {d.wouldAccept === false && (
+                          {wouldAcceptVerdict(d) === 'reject' && (
                             <span className="ml-1.5 rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">当时判定不该来</span>
                           )}
                         </li>
@@ -450,18 +458,9 @@ export function ActionCenter({
               )}
             </div>
             <div className="flex items-center justify-end gap-2 px-4 py-3 border-t border-border-default bg-surface-primary/40">
-              {detail.ref && (
-                <button
-                  onClick={() => {
-                    setDetail(null);
-                    navBus.navigate(PAGE.THREAD, { threadRef: detail.ref! });
-                  }}
-                  className="mr-auto text-[11px] font-medium px-3 py-1.5 rounded-lg text-brand-400 hover:bg-surface-overlay transition-colors"
-                  title="这条流的时间线：决定 + 当前状态"
-                >
-                  看这条流的来龙去脉
-                </button>
-              )}
+              {/* Owner 2026-11-03：这里的「看这条流的来龙去脉」按钮删掉。
+                  它把用户从正在看的这件事里再拽去另一个页面；而 agent 详情的
+                  「运行与注意力」里已经就地展开了同一份时间线。一件事一个入口。 */}
               <button
                 onClick={() => setDetail(null)}
                 className="text-[11px] font-medium px-3 py-1.5 rounded-lg text-fg-secondary hover:bg-surface-overlay transition-colors"

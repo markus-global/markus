@@ -102,7 +102,6 @@ export { rebuildInto, verifyRecovered } from './repair-rebuild.js';
 // Thread / Trigger / Router 持久层（设计见 workspace/markus-superagent-02-*.md §2）
 export {
   SqliteThreadRepo,
-  SqliteThreadEventRepo,
   SqliteDispositionRepo,
   SqliteResourceBindingRepo,
   SqliteEventSourceRepo,
@@ -115,3 +114,6 @@ export type {
   EventSourceRow,
   TriggerRow,
 } from './thread-store.js';
+
+// Ticket 持久层（执行侧工作单位；设计见 docs/architecture/ticket.md）
+export { SqliteTicketRepo } from './ticket-store.js';

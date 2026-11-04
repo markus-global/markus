@@ -110,18 +110,6 @@
     "mcp": "MCP: {{server}}"
   },
   "profilePage": {
-    "taskStatus": {
-      "pending": "Pendiente",
-      "assigned": "Asignado",
-      "in_progress": "En curso",
-      "completed": "Completado",
-      "failed": "Fallido",
-      "cancelled": "Cancelado",
-      "review": "Revisión",
-      "approved": "Aprobado",
-      "rejected": "Rechazado",
-      "draft": "Borrador"
-    },
     "loadingAgent": "Agente de carga...",
     "chat": "Chat",
     "hub": "Hub",
@@ -509,9 +497,9 @@
         "4": "Antecedentes"
       },
       "attention": {
-        "idle": "IDLE",
-        "focused": "FOCUSED",
-        "deciding": "DECIDING"
+        "idle": "AGENTE EN ESPERA",
+        "focused": "AGENTE ENFOCADO",
+        "deciding": "AGENTE DECIDIENDO"
       },
       "mailbox": {
         "commentFrom": "Comentario de {{name}}",
@@ -539,7 +527,8 @@
       "notebookEntries": "{{count}} entradas",
       "notebookHint": "El espacio de trabajo cognitivo persistente del agente. Mostrando las {{count}} más recientes; el resto vive en NOTEBOOK.md. Las entradas expiran automáticamente.",
       "expandNotebook": "Mostrar {{count}} más…"
-    }
+    },
+    "stream": "Hilo"
   },
   "deliverables": {
     "empty": "No hay entregables todavía",
