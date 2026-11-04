@@ -5530,6 +5530,28 @@ export class SqliteMailboxRepo {
   }
 
   /**
+   * 某个任务的**历次评审投递**（`review_request`）——「谁在哪一轮审过 / 正在审」的唯一读面。
+   *
+   * 判据是**结构键**，不是正文：任务归属读 `payload.taskId`（拆轴后 taskId 属执行态/路由提示，
+   * 仍留在本表），旧行读轮次化幂等键前缀 `review_request:<taskId>:`。
+   * 两者取并集是因为历史行里有一部分正文已被 blob 化、payload 里没有 taskId，
+   * 只能靠幂等键认领 —— 少认一条就等于 UI 少显示一轮审核。
+   *
+   * `substr(...) = ?` 而不是 `LIKE 'review_request:<taskId>:%'`：任务 id 含 `_`，
+   * 而 `_` 在 LIKE 里是单字符通配符 —— 用 LIKE 会把别的任务的行算成这个任务的。
+   */
+  getReviewRequestsByTask(taskId: string): MailboxItemRow[] {
+    const dedupPrefix = `review_request:${taskId}:`;
+    return (this.db
+      .prepare(`${MAILBOX_ROW_SELECT}
+         WHERE m.source_type = 'review_request'
+           AND (json_extract(m.payload, '$.taskId') = ?
+                OR (m.dedup_key IS NOT NULL AND substr(m.dedup_key, 1, ?) = ?))
+         ORDER BY m.queued_at ASC`)
+      .all(taskId, dedupPrefix.length, dedupPrefix) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  /**
    * 行 → 结构体的**唯一映射点**（`getByAgent` / `getById` / `getHistory` 全部经它）。
    *
    * C2 拆轴后这里多一步 hydrate：正文从 JOIN 来的 `triggers` 列取，

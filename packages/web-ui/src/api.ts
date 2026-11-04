@@ -1091,6 +1091,26 @@ export interface RoundSummary {
   status: string;
 }
 
+/**
+ * 一次**审核 session** —— 一条投递给审核人的 `review_request`。
+ *
+ * 判定归服务端：客户端只消费 `status`，不再读正文猜「有没有人在审」。
+ * 「待审核」状态下「某 Agent 正在审批」这层感知的唯一数据来源。
+ */
+export interface TaskReviewSession {
+  /** mailbox item id —— 一次审核投递的唯一身份 */
+  id: string;
+  round: number | null;
+  reviewerId: string;
+  reviewerName: string;
+  status: 'queued' | 'reviewing' | 'completed' | 'dropped';
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** 该轮审核的执行 activity id —— 非空即可展开完整的审核执行流 */
+  activityId: string | null;
+}
+
 export interface TaskComment {
   id: string;
   taskId: string;
@@ -1802,6 +1822,9 @@ export const api = {
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
     getLogs: (id: string, round?: number) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs${round !== null && round !== undefined ? `?round=${round}` : ''}`),
     getLogsSummary: (id: string) => request<{ rounds: RoundSummary[] }>(`/tasks/${id}/logs/summary`),
+    /** 这张卡的历次审核 session（含「正在审」的那一条）。判定归服务端。 */
+    getReviews: (id: string) =>
+      request<{ reviews: TaskReviewSession[]; active: TaskReviewSession | null }>(`/tasks/${id}/reviews`),
     accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerId: reviewerId ?? 'human' }) }),
     revision: (id: string, reason: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerId: reviewerId ?? 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),

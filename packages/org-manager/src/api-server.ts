@@ -13882,6 +13882,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/reviews$/, 'GET'),
 
       // ── Execution ────────────────────────────────────────────────────────
       exact('/api/execution-logs', 'GET'),
