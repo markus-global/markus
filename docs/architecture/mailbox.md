@@ -51,7 +51,7 @@
 | `payload.content` | 内容 | `triggers.body` | **权威正文**，`turnContentOf()` 只读它 |
 | `payload.messages` | 内容 | **不落库** | 合并产生的派生视图；正文已在 `content`，序列化进文本列会重新引入 R3「用文本表达结构」 |
 | `payload.reviewContext` | 内容 | **不落库** | 全仓零生产者的死字段；移除条件＝确认无外部消费方后从 `MailboxPayload` 删除 |
-| `payload.taskId` | 执行态（实体引用） | 留在 `payload` | 实体作用域/幂等键用；**不是**流键（流键只能由 `resolveThreadRefs` 产出） |
+| `payload.taskId` | 执行态（实体引用） | 留在 `payload` | 实体作用域/幂等键用；**不是**流键（流键只能由 `ensureThread` @ `packages/org-manager/src/thread-ensure.ts:23` 产出，见设计契约 H7/§1.1） |
 | `payload.requirementId` | 执行态（实体引用） | 留在 `payload` | 同上 |
 | `payload.extra` | 执行态（执行提示） | 留在 `payload` | `triggerExecution` / `actionRequired` / `directMention` / `round` / `sessionHint` 等；决定走哪条执行路径与是否 strict-state |
 
@@ -101,7 +101,9 @@ trigger_id 为空 → 用自身 payload 列（历史行）
 
 ## 7. 刻意不做（每条都有理由）
 
-1. **不给 `mbx:*` trigger 填 `thread_refs`**：H7 明令流键只能由 `resolveThreadRefs` 产出；
+1. **不给 `mbx:*` trigger 填 `thread_refs`**：H7 明令流键只能由 `ensureThread`
+   （`packages/org-manager/src/thread-ensure.ts:23`，落表点 `ThreadService.ensure()` @
+   `packages/core/src/thread-service.ts:158`）产出；
    在这里再推一次就是第二个流键写者。故 `thread_refs` 留空，时间线仍只由 ingress 侧事件派生。
 2. **不把 15 值 `MailboxItemType` 重构成注册表**：那是任务四（Source 适配器）的范围。
 3. **不给 `triggers.body` 做 blob 外置**：与 `event-ingress` 写 body 的现状一致（同一列同一语义）。
