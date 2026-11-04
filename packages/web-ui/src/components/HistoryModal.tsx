@@ -291,6 +291,10 @@ export function HistoryModal({
                 return (
                   <div
                     key={`n:${row.notice.id}`}
+                    // 不能点的原因写在这里：不是“已读所以不能点”，而是这条通知没有关联对象。
+                    // Owner 2026-11-04 实测后直接问「有的没法点？还是已读的没法点？」——
+                    // 界面没解释，用户只能猜。
+                    title={go ? undefined : '这条通知没有关联的任务 / 需求 / 会话，仅作告知'}
                     className={`flex items-start gap-2.5 px-2.5 py-2.5 rounded-xl transition-colors ${go ? 'hover:bg-surface-overlay/50 cursor-pointer' : ''}`}
                     onClick={go ? () => {
                       // 点开 = 读过。这里曾经只跳转不标已读（与铃铛不一致），于是
@@ -304,6 +308,9 @@ export function HistoryModal({
                     <div className="flex-1 min-w-0">
                       <div className={`text-xs truncate ${row.notice.read ? 'text-fg-tertiary' : 'text-fg-primary font-medium'}`}>
                         {row.notice.title}
+                        {!go && (
+                          <span className="ml-1.5 align-middle text-[10px] font-normal text-fg-muted">仅告知</span>
+                        )}
                       </div>
                       {row.notice.body && (
                         <div className="text-[11px] text-fg-muted mt-0.5 line-clamp-2 leading-relaxed">{row.notice.body}</div>
