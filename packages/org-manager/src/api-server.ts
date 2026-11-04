@@ -2884,6 +2884,8 @@ export class APIServer {
             triggerRepo: this.storage.triggerRepo,
             ticketRepo: this.storage.ticketRepo,
             taskRepo: this.storage.taskRepo,
+            requirementRepo: this.storage.requirementRepo,
+            chatSessionRepo: this.storage.chatSessionRepo,
             approvalRepo: this.storage.approvalRepo,
           },
           deliver: target => {

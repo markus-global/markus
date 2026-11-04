@@ -154,7 +154,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
-        <div className="p-5">
+        <div className="p-3 sm:p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
@@ -218,7 +218,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           ))}
         </div>
       </div>
-      <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
+      <div className="p-3 sm:p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {bodyTabFor(tab) === 'overview' && (
           <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
@@ -2956,6 +2956,52 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         })()}
       </section>
 
+      {/* ── Notebook (Cognitive Workspace) ── */}
+      {(mind?.notebook?.length ?? 0) > 0 && (() => {
+        const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
+        return (
+          <section className="bg-surface-elevated rounded-lg border border-border-subtle p-3">
+            <details>
+              <summary className="flex items-center gap-2 cursor-pointer list-none">
+                <span className="text-sm">📓</span>
+                <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('agent:profilePage.mind.notebook')}</h4>
+                <span className="text-[10px] text-fg-muted ml-auto">
+                  {t('agent:profilePage.mind.notebookEntries', { count: mind!.notebook!.length })}
+                </span>
+              </summary>
+              <p className="mt-2 text-[10px] text-fg-muted leading-relaxed">{t('agent:profilePage.mind.notebookHint', { count: NOTEBOOK_DISPLAY_LIMIT })}</p>
+              <div className="mt-2 space-y-2">
+                {nb.visible.map(entry => {
+                  const age = formatNotebookAge(entry.updatedAt);
+                  const ageLabel = t(`agent:profilePage.relative.${age.unit === 'seconds' ? 'secondsAgo' : age.unit === 'minutes' ? 'minutesAgo' : 'hoursAgo'}`, { count: age.count, hours: age.count });
+                  const managedColor = entry.managed === 'system' ? 'text-blue-400' : 'text-emerald-400';
+                  return (
+                    <div key={entry.key} className="px-3 py-2 rounded bg-surface-overlay border border-border-subtle">
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
+                        <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
+                        <span className="text-[10px] text-fg-muted ml-auto">{ageLabel}</span>
+                      </div>
+                      <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
+                    </div>
+                  );
+                })}
+                {nb.collapsible && (
+                  <button
+                    onClick={() => setNotebookExpanded(!notebookExpanded)}
+                    className="w-full text-center text-[11px] text-accent-primary hover:opacity-80 py-1 transition-colors"
+                  >
+                    {notebookExpanded
+                      ? t('agent:profilePage.mind.collapseQueue')
+                      : t('agent:profilePage.mind.expandNotebook', { count: nb.hiddenCount })}
+                  </button>
+                )}
+              </div>
+            </details>
+          </section>
+        );
+      })()}
+
       {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
           Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
           所以必须能在这里**就地**看到经过，不跳页。
@@ -3038,7 +3084,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                 );
               })}
             </ul>
-            <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
+            <div className="min-w-0 w-full flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
               {/* 三态分开：还在读 / 读失败 / 真的空。失败绝不渲染成「没有」。 */}
               {timeline.loading && <p className="text-xs text-fg-tertiary">读取这件事的来龙去脉…</p>}
               {timeline.failures.length > 0 && (
@@ -3063,52 +3109,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           </div>
         )}
       </section>
-
-      {/* ── Notebook (Cognitive Workspace) ── */}
-      {(mind?.notebook?.length ?? 0) > 0 && (() => {
-        const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
-        return (
-          <section className="bg-surface-elevated rounded-lg border border-border-subtle p-3">
-            <details>
-              <summary className="flex items-center gap-2 cursor-pointer list-none">
-                <span className="text-sm">📓</span>
-                <h4 className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('agent:profilePage.mind.notebook')}</h4>
-                <span className="text-[10px] text-fg-muted ml-auto">
-                  {t('agent:profilePage.mind.notebookEntries', { count: mind!.notebook!.length })}
-                </span>
-              </summary>
-              <p className="mt-2 text-[10px] text-fg-muted leading-relaxed">{t('agent:profilePage.mind.notebookHint', { count: NOTEBOOK_DISPLAY_LIMIT })}</p>
-              <div className="mt-2 space-y-2">
-                {nb.visible.map(entry => {
-                  const age = formatNotebookAge(entry.updatedAt);
-                  const ageLabel = t(`agent:profilePage.relative.${age.unit === 'seconds' ? 'secondsAgo' : age.unit === 'minutes' ? 'minutesAgo' : 'hoursAgo'}`, { count: age.count, hours: age.count });
-                  const managedColor = entry.managed === 'system' ? 'text-blue-400' : 'text-emerald-400';
-                  return (
-                    <div key={entry.key} className="px-3 py-2 rounded bg-surface-overlay border border-border-subtle">
-                      <div className="flex items-center gap-2 mb-1">
-                        <span className="text-xs font-medium text-fg-primary">{entry.key}</span>
-                        <span className={`text-[10px] ${managedColor}`}>[{entry.managed}]</span>
-                        <span className="text-[10px] text-fg-muted ml-auto">{ageLabel}</span>
-                      </div>
-                      <pre className="text-[11px] text-fg-secondary whitespace-pre-wrap break-words leading-relaxed max-h-32 overflow-y-auto">{entry.text.length > 500 ? entry.text.slice(0, 500) + '…' : entry.text}</pre>
-                    </div>
-                  );
-                })}
-                {nb.collapsible && (
-                  <button
-                    onClick={() => setNotebookExpanded(!notebookExpanded)}
-                    className="w-full text-center text-[11px] text-accent-primary hover:opacity-80 py-1 transition-colors"
-                  >
-                    {notebookExpanded
-                      ? t('agent:profilePage.mind.collapseQueue')
-                      : t('agent:profilePage.mind.expandNotebook', { count: nb.hiddenCount })}
-                  </button>
-                )}
-              </div>
-            </details>
-          </section>
-        );
-      })()}
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (

@@ -27,6 +27,10 @@ export interface EventRouteDeps {
     eventSourceRepo: any;
     /** 可选：用于把任务状态折算成「在等谁」。缺失时 stage 会标记为部分推断。 */
     taskRepo?: any;
+    /** 需求标题：`req_` 行必须有标题，否则列表只能显示 ref。 */
+    requirementRepo?: any;
+    /** 会话标题：`cs_` 行取 chat_sessions.title。 */
+    chatSessionRepo?: any;
     /** 可选：用于判定「等你批准」。缺失时 pendingApproval 会列进 missingFacts。 */
     approvalRepo?: any;
     /**
@@ -333,6 +337,32 @@ function rowForRef(deps: EventRouteDeps, ref: string): Record<string, unknown> {
         lastActivity: toEpochMs(ticket.updatedAt ?? ticket.createdAt, now),
         title: ticket.subject ?? null,
         detail: ticket.kind ?? null,
+      };
+    }
+  }
+
+  // 2.5) 需求：标题就是需求自己的 title（此前没这个分支，于是列表里 req_ 行永远无标题）
+  if (ref.startsWith('req_') && deps.repos.requirementRepo?.findById) {
+    const req: any = deps.repos.requirementRepo.findById(ref) ?? null;
+    if (req) {
+      return {
+        ...base,
+        lastActivity: toEpochMs(req.updatedAt ?? req.createdAt, now),
+        title: req.title ?? null,
+        detail: req.description ?? null,
+        priority: req.priority ?? null,
+      };
+    }
+  }
+
+  // 2.6) 会话：标题用会话自己的 title（同样缺分支，导致 cs_ 行只能显示一串 id）
+  if (ref.startsWith('cs_')) {
+    const sess: any = deps.repos.chatSessionRepo?.getSession?.(ref) ?? null;
+    if (sess) {
+      return {
+        ...base,
+        lastActivity: toEpochMs(sess.updatedAt ?? sess.createdAt ?? sess.lastMessageAt, now),
+        title: sess.title ?? null,
       };
     }
   }
