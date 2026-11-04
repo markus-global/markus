@@ -151,8 +151,6 @@ export function ActionCenter({
 
   const sorted = sortActions(items);
   const visibleActions = showAllActions ? sorted : sorted.slice(0, ACTION_CAP);
-  /** 「等你处理」标题旁的数字 = **待审批**数（不是全部行动项，也不是未读）。 */
-  const approvalCount = sorted.filter(a => a.kind === 'approval').length;
   const hiddenActions = sorted.length - visibleActions.length;
   /**
    * 只有**未读且高优先级**的通知才进概览（Owner 2026-11-02）。
@@ -211,12 +209,11 @@ export function ActionCenter({
           <div className="flex items-center gap-2 min-w-0">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sorted.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-green-500'}`} />
             <h3 className="text-sm font-semibold text-fg-primary">等你处理</h3>
-            {/* 这个数字 = **待审批**数（Owner 2026-11-04）。
-                「等你处理」这一块的核心是审批；未读消息已经由右上角的「未读消息（x条）」单独承担，
-                两边各算各的，不混成一个数。 */}
-            {approvalCount > 0 && (
+            {/* 数字 = 全部行动项（待批 + 待评审 + 阻塞 + 等回话）。
+                Owner 2026-11-04：不要在锁屏之外改这个口径，恢复原口径。 */}
+            {sorted.length > 0 && (
               <span className="text-[11px] font-semibold text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded tabular-nums">
-                {approvalCount}
+                {sorted.length}
               </span>
             )}
           </div>
