@@ -1,9 +1,11 @@
 import { useEffect, useState, useMemo, useRef, useCallback, forwardRef } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo } from '../api.ts';
+import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo, type ApprovalInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import { STAGE_LABEL } from '../lib/threadPresentation.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -14,6 +16,11 @@ import {
   useOverviewUsageData,
 } from '../components/OverviewUsage.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
+import { ActionCenter, type ActionItem } from '../components/ActionCenter.tsx';
+import { useThreads, isWaitingOnPerson } from '../components/InboxCard.tsx';
+import { publishAttentionCount } from '../lib/attentionCount.ts';
+import { buildActionItems } from '../lib/actionItems.ts';
+import { navigateForApproval } from '../lib/notifyNavigate.ts';
 import {
   isUserOnboarded,
   isChecklistDismissed,
@@ -43,12 +50,6 @@ const STATUS_COLORS_BG: Record<string, string> = {
   completed: 'bg-green-500', in_progress: 'bg-brand-500', review: 'bg-blue-500',
   pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-amber-500',
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
-};
-const TASK_STATUS_I18N: Record<string, string> = {
-  pending: 'common:status.pending', in_progress: 'common:status.inProgress',
-  blocked: 'common:status.blocked', review: 'common:status.review',
-  completed: 'common:status.completed', failed: 'common:status.failed',
-  rejected: 'common:status.rejected', cancelled: 'common:status.cancelled',
 };
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 const ACTIVITY_ICON_BG: Record<string, string> = {
@@ -119,6 +120,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const [showCreateMenu, setShowCreateMenu] = useState(false);
   const [showWorkingModal, setShowWorkingModal] = useState(false);
   const [showHealthModal, setShowHealthModal] = useState(false);
+  /** 待批审批 —— 概览「等你处理」与历史弹窗的唯一来源 */
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalInfo[]>([]);
+  // 概览的行动台要「在等我回话的流」，与收件箱用的是同一个 hook，判定也用同一个纯函数。
+  const { threads } = useThreads();
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [markusConfigured, setMarkusConfigured] = useState(false);
   // Display name of the current default provider (e.g. "Markus"), shown in the
@@ -219,6 +224,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     // avoids pulling the (unbounded) terminal task lists just to show numbers.
     api.tasks.boardSummary().then(d => { setBoard(d.board); setBoardCounts(d.counts); }).catch(() => {});
     api.ops.dashboard(opsPeriod).then(setOps).catch(() => {});
+    // 待批审批：直接问审批表，不从 task/requirement 状态推断（见 actionItems 注释）
+    api.approvals.list('pending', { limit: 50 })
+      .then(d => setPendingApprovals((d.approvals ?? []).filter(a => a.status === 'pending')))
+      .catch(() => {});
     // Lean list: Home only needs requirement counts by status (no descriptions).
     const reqsP = api.requirements.list({ lean: true }).then(d => setAllRequirements(d.requirements)).catch(() => {});
     const projsP = api.projects.list().then(d => setProjects(d.projects)).catch(() => {});
@@ -470,31 +479,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     });
   }, [allTasksMap]);
 
-  const attentionItems = useMemo(() => {
-    const items: Array<{ type: 'review' | 'approval' | 'blocked' | 'blocked_abnormal'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
-    const reviewTasks = (board['review'] ?? []).filter(tk => tk.reviewerType === 'human');
-    if (reviewTasks.length > 0) {
-      const urg = reviewTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-      items.push({ type: 'review', count: reviewTasks.length, tasks: reviewTasks, urgent: urg });
-    }
-    const pendingReqs = allRequirements.filter(r => r.status === 'pending');
-    if (pendingReqs.length > 0) items.push({ type: 'approval', count: pendingReqs.length });
-
-    const blockedTasks = [...(board['blocked'] ?? [])];
-    const failedTasks = [...(board['failed'] ?? [])];
-    const abnormal = blockedTasks.filter(t => isBlockedAbnormally(t));
-    const normal = blockedTasks.filter(t => !isBlockedAbnormally(t));
-    const allAbnormal = [...abnormal, ...failedTasks];
-
-    if (allAbnormal.length > 0) {
-      const urg = allAbnormal.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-      items.push({ type: 'blocked_abnormal', count: allAbnormal.length, tasks: allAbnormal, urgent: urg });
-    }
-    if (normal.length > 0) {
-      items.push({ type: 'blocked', count: normal.length, tasks: normal });
-    }
-    return items;
-  }, [board, allRequirements, isBlockedAbnormally]);
 
   const taskPriorityMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -509,6 +493,32 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     for (const a of agents) m.set(a.id, a.name);
     return m;
   }, [agents]);
+
+  /**
+   * 逐条行动项 —— 概览页「要我动手」的唯一数据源。
+   *
+   * **唯一数据源是 `GET /api/threads` 的聚合结果**：服务端已把 tasks / approvals / 外部流
+   * 合并、按 ref 去重、并把 stage（在等谁）算好带下来。
+   *
+   * 三种旧口径都删掉了：
+   *  - ① 从 `pendingApprovals` 取待批 → 与线程里同一条任务重复计一次；
+   *  - ② 从 `board` 取阻塞异常 → 需要全量 board 才判得出「是否还在等依赖」，移动端拿不到，口径必然分叉；
+   *  - ③ 从 `threads` 取等我回话 → 与 ① 重复。
+   * 一个数字只能有一个度量，而度量的输入必须来自一个源。
+   */
+  const actionItems = useMemo<ActionItem[]>(
+    () => buildActionItems(threads, agentNameMap),
+    [threads, agentNameMap],
+  );
+
+  /**
+   * 概览是「待办数」的唯一计算点：算完就发布，侧栏与移动端底栏只订阅。
+   * 曾有 3 个口径（侧栏=未读+待批、行动台=待批+阻塞+回话、移动端=只看未读），
+   * 移动端因此永远显示不出数字 —— 想加一类待办，只改上面那一处。
+   */
+  useEffect(() => {
+    if (!previewMode) publishAttentionCount(actionItems.length);
+  }, [actionItems.length, previewMode]);
 
   const { activityLimit, teamsLimit } = useMemo(() => {
     const entityCount = (projects.length > 0 ? 1 : 0) + (allRequirements.length > 0 ? 1 : 0) + (deliverableTotal > 0 ? 1 : 0);
@@ -542,7 +552,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   // ═══════════════════════════════════════════════════════════════════════════
 
   return (
-    <div className="flex-1 overflow-y-auto scrollbar-thin">
+    <div data-app-scroll className="flex-1 overflow-y-auto scrollbar-thin">
       {/* ── Header (data-electron-drag: empty space + title move the window on macOS) ── */}
       <div
         data-electron-drag
@@ -579,63 +589,15 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
             onClick={() => setShowHealthModal(true)} />
         </div>
 
-        {/* ── Needs Your Attention ── */}
-        {!previewMode && attentionItems.length > 0 && (
-          <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
-            <div className="flex items-center justify-between px-5 pt-4 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
-                <h3 className="text-sm font-semibold text-fg-primary">{t('attention.title')}</h3>
-              </div>
-            </div>
-            <div className="px-3 pb-3 space-y-1">
-              {attentionItems.map(item => {
-                const isAbnormal = item.type === 'blocked_abnormal';
-                const isBlocked = item.type === 'blocked' || isAbnormal;
-                const iconBg = item.type === 'review' ? 'bg-blue-500/15' : item.type === 'approval' ? 'bg-amber-500/15' : isAbnormal ? 'bg-red-500/15' : 'bg-amber-500/15';
-                const btnCls = item.type === 'review' ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
-                  : item.type === 'approval' ? 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20'
-                  : isAbnormal ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
-                  : 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20';
-                const label = item.type === 'review' ? t('attention.tasksReview')
-                  : item.type === 'approval' ? t('attention.requirements')
-                  : isAbnormal ? t('attention.blockedAbnormal')
-                  : t('attention.blockedNormal');
-                const btnLabel = item.type === 'review' ? t('attention.goReview')
-                  : item.type === 'approval' ? t('attention.goApprove')
-                  : t('attention.viewDetails');
-                return (
-                  <div key={item.type} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                    onClick={() => {
-                      if (item.type === 'review') {
-                        navBus.navigate(PAGE.WORK, { statusFilter: 'review' });
-                      } else if (item.type === 'approval') {
-                        navBus.navigate(PAGE.WORK);
-                      } else if (isBlocked && item.tasks && item.tasks.length > 0) {
-                        navBus.navigate(PAGE.WORK, { openTask: item.tasks[0]!.id });
-                      } else {
-                        navBus.navigate(PAGE.WORK);
-                      }
-                    }}>
-                    <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconBg}`}>
-                      <AttentionIcon type={isBlocked ? 'blocked' : item.type as 'review' | 'approval' | 'blocked'} />
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-medium text-fg-primary">
-                        {item.count} {label}
-                      </span>
-                      {(item.urgent ?? 0) > 0 && (
-                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-500">{item.urgent} urgent</span>
-                      )}
-                    </div>
-                    <button className={`text-[11px] font-medium px-3 py-1 rounded-lg transition-colors shrink-0 ${btnCls}`}>
-                      {btnLabel}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
+        {/* ── 行动台：一个卡片两个部分（左行动 / 右动态），整行可点开详情，右上角历史走弹窗。
+               这里原来是两块表达同一件事的东西（双 tab 收件箱 + Needs Your Attention 聚合块），
+               现已合并为一处（Owner 2026-11-02：要设计感，不要搬运）。 ── */}
+        {!previewMode && (
+          <ActionCenter
+            items={actionItems}
+            userId={authUser?.id}
+            runningSummary={workingAgents > 0 ? `团队有 ${workingAgents} 个 agent 正在跑` : undefined}
+          />
         )}
 
         {/* ── Recent Deliverables (full-width, high priority) ── */}
@@ -779,7 +741,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         <button key={status} onClick={() => navBus.navigate(PAGE.WORK, { statusFilter: status })}
                           className="flex items-center gap-2 group cursor-pointer text-left">
                           <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS_BG[status] ?? 'bg-gray-500'}`} />
-                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{t(TASK_STATUS_I18N[status] ?? status)}</span>
+                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{taskStatusLabel(status, t)}</span>
                           <span className="text-sm font-semibold text-fg-primary ml-auto tabular-nums">{count}</span>
                         </button>
                       ))}
@@ -797,7 +759,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   {allRequirements.length > 0 && (
                     <EntityRow icon="edit" label={t('globalOverview.requirements')} value={allRequirements.length} onClick={() => navBus.navigate(PAGE.WORK)}>
                       {(['in_progress', 'pending', 'completed'] as const).map(s =>
-                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {t(`common:status.${s === 'in_progress' ? 'inProgress' : s}`)}</Chip>
+                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {taskStatusLabel(s, t)}</Chip>
                       )}
                     </EntityRow>
                   )}

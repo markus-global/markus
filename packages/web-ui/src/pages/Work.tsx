@@ -1,8 +1,14 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, fetchThreads, fetchTaskTickets, type TicketAPI, type ThreadAPI, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type TaskReviewSession, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
+import { TicketDetailPanel } from '../components/TicketDetailPanel.tsx';
+// stage 角标必须和收件箱共用同一套文案/配色（InboxCard 是唯一事实源），
+// 否则同一个 stage 会在「收件箱」和「任务板」上是两种颜色、两套说法。
+import { StageChip } from '../components/InboxCard.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
+import { activeReviewSession as pickActiveReviewSession, hasLiveReview } from '../lib/taskReview.ts';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
 import {
@@ -36,6 +42,8 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { PRIORITY_RANK } from '../lib/todoOrder.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -1770,6 +1778,184 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   );
 }
 
+// ─── Task Review Sessions ───────────────────────────────────────────────────────
+/**
+ * 「这张卡被谁审过 / 谁正在审」——审核 session 视图。
+ *
+ * 为什么它必须是一个独立 tab 而不是塞进执行日志：执行日志是**执行人**的回合
+ * （executionRound），审核是**审核人**的回合（review_request，session id 形如
+ * `review_<agentId>_<ts>`）。两者是不同的写者、不同的会话。混在一起会让
+ * 「谁在审」这条最需要被看见的事实淹没在执行流水里。
+ *
+ * 每一行 = 一次投递（mailbox item），状态由服务端判定；展开即读该轮审核的
+ * activity 执行流（正在审时追加实时日志）。
+ */
+function TaskReviewSessions({ task, sessions, agents, onRefreshReviews }: {
+  task: TaskInfo;
+  sessions: TaskReviewSession[];
+  agents: AgentInfo[];
+  onRefreshReviews: () => Promise<void> | void;
+}) {
+  const { t } = useTranslation(['work', 'common']);
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [logsBySession, setLogsBySession] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
+  const [loadingId, setLoadingId] = useState<string | null>(null);
+
+  const active = sessions.find(s => s.status === 'reviewing') ?? null;
+
+  // 打开面板时补一次：poll 只在 review 状态跑，历史卡的「刚刚结束」要靠这一次。
+  useEffect(() => { void onRefreshReviews(); }, [onRefreshReviews]);
+
+  const loadLogs = useCallback(async (s: TaskReviewSession) => {
+    if (!s.activityId) return;
+    if (logsBySession.has(s.id)) return;
+    setLoadingId(s.id);
+    try {
+      const { logs } = await api.agents.getActivityLogs(s.reviewerId, s.activityId);
+      const entries = logs
+        .map(l => activityLogToStreamEntry(l, s.activityId!, s.reviewerId))
+        .filter((e): e is NonNullable<typeof e> => e !== null);
+      setLogsBySession(prev => new Map(prev).set(s.id, entries));
+    } catch { /* 读不到日志不代表这条审核没发生 */ }
+    setLoadingId(null);
+  }, [logsBySession]);
+
+  // 实时追加：正被审核的那条，其 activity 日志经 WS 推过来。
+  useEffect(() => {
+    if (!active?.activityId) return;
+    const activityId = active.activityId;
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event?.payload;
+      if (!p) return;
+      if (p['agentId'] !== active.reviewerId || p['activityId'] !== activityId) return;
+      const entry = wsPayloadToStreamEntry(p);
+      if (!entry) return;
+      setLogsBySession(prev => {
+        const list = prev.get(active.id) ?? [];
+        if (list.some(e => e.id === entry.id)) return prev;
+        return new Map(prev).set(active.id, [...list, entry]);
+      });
+    });
+    return unsub;
+  }, [active?.id, active?.activityId, active?.reviewerId]);
+
+  const toggle = useCallback((s: TaskReviewSession) => {
+    if (expandedId === s.id) { setExpandedId(null); return; }
+    setExpandedId(s.id);
+    void loadLogs(s);
+  }, [expandedId, loadLogs]);
+
+  const statusMeta = (status: TaskReviewSession['status']) => {
+    switch (status) {
+      case 'reviewing': return { label: t('work:task.reviewStatusReviewing'), cls: 'bg-purple-500/15 text-purple-400', icon: '👀' };
+      case 'queued': return { label: t('work:task.reviewStatusQueued'), cls: 'bg-amber-500/15 text-amber-500', icon: '⏳' };
+      case 'completed': return { label: t('work:task.reviewStatusCompleted'), cls: 'bg-green-500/15 text-green-500', icon: '✅' };
+      default: return { label: t('work:task.reviewStatusDropped'), cls: 'bg-gray-500/15 text-fg-tertiary', icon: '⏹' };
+    }
+  };
+
+  const fmtDuration = (from: string | null, to: string | null) => {
+    if (!from) return '';
+    const end = to ? new Date(to).getTime() : Date.now();
+    const ms = Math.max(0, end - new Date(from).getTime());
+    if (ms < 1000) return '';
+    if (ms < 60000) return `${Math.floor(ms / 1000)}s`;
+    const m = Math.floor(ms / 60000);
+    if (m < 60) return `${m}m ${Math.floor((ms % 60000) / 1000)}s`;
+    return `${Math.floor(m / 60)}h ${m % 60}m`;
+  };
+
+  if (sessions.length === 0) {
+    return (
+      <div className="flex items-center justify-center py-10">
+        <div className="text-center text-fg-tertiary">
+          <div className="text-2xl mb-2">👀</div>
+          <div className="text-xs">
+            {task.status === 'review' ? t('work:task.reviewsEmptyPending') : t('work:task.reviewsEmpty')}
+            <br />
+            <span className="text-fg-muted">{t('work:task.reviewsEmptyHint')}</span>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // 新的在前：最近一轮审核是用户最可能关心的。
+  const ordered = [...sessions].sort((a, b) => new Date(b.queuedAt).getTime() - new Date(a.queuedAt).getTime());
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <div className="text-[11px] text-fg-tertiary">
+        {t('work:task.reviewsIntro')}
+      </div>
+      {ordered.map(s => {
+        const meta = statusMeta(s.status);
+        const isExpanded = expandedId === s.id;
+        const entries = logsBySession.get(s.id) ?? [];
+        const duration = fmtDuration(s.startedAt ?? s.queuedAt, s.completedAt);
+        return (
+          <div key={s.id} className="border border-border-default/50 rounded-lg overflow-hidden">
+            <button
+              onClick={() => toggle(s)}
+              className="w-full flex items-center gap-2 px-3 py-2 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors text-left"
+            >
+              <span className="text-sm shrink-0">{meta.icon}</span>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="text-xs text-fg-primary font-medium truncate">{s.reviewerName}</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${meta.cls}`}>{meta.label}</span>
+                  {s.round != null && (
+                    <span className="text-[10px] text-fg-tertiary">{t('work:task.reviewRoundLabel', { n: s.round })}</span>
+                  )}
+                </div>
+                <div className="text-[10px] text-fg-tertiary mt-0.5">
+                  {new Date(s.queuedAt).toLocaleString()}
+                  {duration && ` · ${duration}`}
+                  {!s.activityId && s.status !== 'queued' && ` · ${t('work:task.reviewNoLog')}`}
+                </div>
+              </div>
+              {s.status === 'reviewing' && (
+                <span className="shrink-0 flex items-center gap-1 text-[10px] text-purple-400 font-medium">
+                  <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />
+                  {t('work:task.reviewLive')}
+                </span>
+              )}
+              {s.activityId && (
+                <svg className={`w-3 h-3 text-fg-tertiary transition-transform shrink-0 ${isExpanded ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                  <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                </svg>
+              )}
+            </button>
+            {isExpanded && s.activityId && (
+              <div className="border-t border-border-default/40">
+                {loadingId === s.id && entries.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-fg-tertiary">{t('work:task.loadingExecutionLog')}</div>
+                ) : entries.length === 0 ? (
+                  <div className="px-3 py-3 text-xs text-fg-tertiary">{t('work:task.noExecutionLogAvailable')}</div>
+                ) : (
+                  <div className="max-h-[60vh] overflow-y-auto">
+                    <FullExecutionLog
+                      entries={entries}
+                      isActive={s.status === 'reviewing'}
+                      onCollapse={() => setExpandedId(null)}
+                      embedded
+                    />
+                  </div>
+                )}
+              </div>
+            )}
+            {isExpanded && !s.activityId && (
+              <div className="border-t border-border-default/40 px-3 py-3 text-xs text-fg-tertiary">
+                {t('work:task.reviewNoLog')}
+              </div>
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── File Preview Modal ─────────────────────────────────────────────────────────
 
 type DirEntry = { name: string; path: string; isDirectory: boolean; size?: number; ext: string };
@@ -2018,7 +2204,21 @@ function TaskDetailPanel({
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'reviews' | 'history' | 'thread'>('details');
+  /**
+   * 审核 session —— 「这张卡正在被谁审 / 历次谁审过」。
+   *
+   * 判定**只有服务端**（`GET /tasks/:id/reviews`）：这里不读任何正文、不猜状态。
+   * 曾经的缺口：待审核状态只看得到两个按钮，看不到「审核人已经在审了」，
+   * 用户要么以为没人管、要么直接点通过去抢跑。
+   */
+  const [reviewSessions, setReviewSessions] = useState<TaskReviewSession[]>([]);
+  /**
+   * 票——它是「这件事的凭据」（C1）。
+   * 只在真的有时才渲染；没票的行不占注意力（Q4）。
+   */
+  const [tickets, setTickets] = useState<TicketAPI[]>([]);
+  const [openTicketId, setOpenTicketId] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
@@ -2029,7 +2229,47 @@ function TaskDetailPanel({
       setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
     } catch { /* ok */ }
   }, [task.id]);
-  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
+  /**
+   * 票——「这件事的凭据」。
+   * 读失败不拦住宿主页面：票是补充事实，不是这张卡的宿主数据。
+   */
+  useEffect(() => {
+    let alive = true;
+    fetchTaskTickets(task.id)
+      .then(r => { if (alive) setTickets(Array.isArray(r.tickets) ? r.tickets : []); })
+      .catch(() => { if (alive) setTickets([]); });
+    return () => { alive = false; };
+  }, [task.id]);
+  const loadReviewSessions = useCallback(async () => {
+    try {
+      const { reviews } = await api.tasks.getReviews(task.id);
+      setReviewSessions(Array.isArray(reviews) ? reviews : []);
+    } catch { /* 读失败不拦住宿主页面：审核进度是补充事实 */ }
+  }, [task.id]);
+
+  useEffect(() => { void loadReviewSessions(); }, [loadReviewSessions]);
+
+  // 「有没有人正在审」在任务卡上看不到别的信号：审核人是 agent，它开始/结束审核
+  // 不会改任务状态（只有审完才会 submit）。所以这里只做两件事：
+  //  ① 待审核期间低频轮询（点到点，任务级，一次几十行）；
+  //  ② 订阅审核人的活动流事件做即时刷新。
+  useEffect(() => {
+    if (task.status !== 'review') return;
+    const timer = window.setInterval(() => { void loadReviewSessions(); }, 6000);
+    return () => window.clearInterval(timer);
+  }, [task.status, loadReviewSessions]);
+
+  useEffect(() => {
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event?.payload;
+      if (!p) return;
+      if (p['agentId'] !== task.reviewerId) return;
+      void loadReviewSessions();
+    });
+    return unsub;
+  }, [task.reviewerId, loadReviewSessions]);
+
+  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'reviews' | 'history' | 'thread') => {
     setActiveTab(tab);
     // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
     if (tab === 'deliverables') void loadUnifiedDeliverables();
@@ -2037,7 +2277,7 @@ function TaskDetailPanel({
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, [loadUnifiedDeliverables]);
-  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'reviews' as const }, { id: 'history' as const }, { id: 'thread' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   useEffect(() => {
@@ -2210,6 +2450,12 @@ function TaskDetailPanel({
   const cancelledCount = subtasks.filter(s => s.status === 'cancelled').length;
   const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
+  /**
+   * 「有审核人正在审这张卡」/「有没有正在跑的审核」—— 唯一判据见 lib/taskReview.ts。
+   * tab 徽标、横幅、空态都读它，不允许各处自己再推一遍。
+   */
+  const activeReviewSession = useMemo(() => pickActiveReviewSession(reviewSessions), [reviewSessions]);
+  const reviewLive = useMemo(() => hasLiveReview(reviewSessions), [reviewSessions]);
   const isBlocked = task.status === 'blocked';
   const isAbnormallyBlocked = isBlocked && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
     const dep = allTasks.find(t => t.id === id);
@@ -2282,6 +2528,9 @@ function TaskDetailPanel({
         />
       )}
 
+        {/* 票的详情：就地展开，不新造路由（票挂在这张卡上，人在这里遇到它） */}
+        {openTicketId && <TicketDetailPanel ticketId={openTicketId} onClose={() => setOpenTicketId(null)} />}
+
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 shrink-0">
           <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work:task.detailsTab')}</button>
@@ -2292,8 +2541,22 @@ function TaskDetailPanel({
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {(() => { const c = unifiedDeliverables.filter(d => typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
+          {(reviewSessions.length > 0 || task.status === 'review') && (
+            <button onClick={() => switchTab('reviews')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'reviews' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+              {(() => activeReviewSession
+                ? t('work:task.reviewsTabActive', { count: reviewSessions.length })
+                : reviewSessions.length > 0
+                  ? t('work:task.reviewsCount', { count: reviewSessions.length })
+                  : t('work:task.reviewsTab'))()}
+              {reviewLive && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />}
+            </button>
+          )}
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
+          </button>
+          {/* 入口倒置（B4）：任务卡自己的来龙去脉就地展开，不再要求先去全局页搜。 */}
+          <button onClick={() => switchTab('thread')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'thread' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            {t('work:task.threadTab')}
           </button>
         </div>
 
@@ -2310,7 +2573,45 @@ function TaskDetailPanel({
               <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
           </div>
 
+          <div className={activeTab === 'reviews' ? 'min-w-0 min-h-full' : 'hidden'}>
+            <TaskReviewSessions
+              task={task}
+              sessions={reviewSessions}
+              agents={agents}
+              onRefreshReviews={loadReviewSessions}
+            />
+          </div>
+
+          <div className={activeTab === 'thread' ? 'px-6 py-4' : 'hidden'}>
+            {/* 只给 ref —— Thread 是「视角」，不是一个需要先打开的对象 */}
+            {activeTab === 'thread' && <ThreadTimeline refId={task.id} />}
+          </div>
+
           <div className={activeTab === 'details' ? '' : 'hidden'}>
+              {/* 票据：这件事的凭据。没有票就不渲染这一块（不赚注意力就不占位）。 */}
+              {tickets.length > 0 && (
+                <div className="border-b border-border-default px-6 pt-4 pb-3">
+                  <h4 className="mb-2 flex items-baseline gap-1.5 text-xs font-medium text-fg-secondary">
+                    {t('work:task.ticketsHeading')}
+                    <span className="rounded bg-surface-overlay px-1 text-[11px] text-fg-muted">{tickets.length}</span>
+                  </h4>
+                  <ul className="space-y-1">
+                    {tickets.map(tk => (
+                      <li key={tk.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle bg-surface-secondary px-2.5 py-1.5">
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg-primary" title={tk.subject}>{tk.subject}</span>
+                        <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-[11px] text-fg-tertiary">{tk.status}</span>
+                        <button
+                          onClick={() => setOpenTicketId(tk.id)}
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-brand-400 hover:bg-surface-overlay"
+                          title="这张票的来龙去脉"
+                        >
+                          {t('work:task.openTicketStream')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {/* Description */}
               <div className="px-6 pt-4 pb-3 border-b border-border-default">
                 {editingDesc ? (
@@ -2816,6 +3117,29 @@ function TaskDetailPanel({
           </div>
         )}
 
+        {/* 正在被审核 —— 用户此刻要做的决定（等 / 看 / 直接裁决）就在这里给出 */}
+        {task.status === 'review' && activeReviewSession && (
+          <div className="mx-6 mt-3 flex items-start gap-2.5 rounded-lg border border-purple-500/30 bg-purple-500/8 px-3 py-2">
+            <span className="mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400 animate-pulse" />
+            <div className="min-w-0 flex-1">
+              <div className="text-xs text-fg-primary">
+                {activeReviewSession.status === 'queued'
+                  ? t('work:task.reviewQueuedBy', { agent: activeReviewSession.reviewerName })
+                  : t('work:task.reviewInProgressBy', { agent: activeReviewSession.reviewerName })}
+              </div>
+              <div className="mt-0.5 text-[11px] text-fg-tertiary">
+                {t('work:task.reviewWaitOrDecide')}
+              </div>
+            </div>
+            <button
+              onClick={() => switchTab('reviews')}
+              className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors"
+            >
+              {t('work:task.reviewViewSession')}
+            </button>
+          </div>
+        )}
+
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">
           <div className="flex gap-2 flex-wrap">
@@ -3278,7 +3602,8 @@ const REQ_DROP_STATUS: Record<string, string> = {
 
 // ─── Backlog Table View ─────────────────────────────────────────────────────────
 
-const PRIORITY_ORDER: Record<string, number> = { urgent: 0, high: 1, medium: 2, low: 3 };
+// 优先级权重的唯一写者是 `@markus/shared` 的 `PRIORITY_RANK`（经 lib/todoOrder.ts 转发）。
+// 这里曾有一份逐字相同的本地副本 —— 同一语义的权重表两处定义，改一处另一处不跟随。
 const GROUP_ORDER: Record<string, number> = { failed: 0, todo: 1, in_progress: 2, review: 3, done: 4, closed: 5 };
 const GROUP_ACCENT: Record<string, string> = {
   failed: 'border-l-red-500 bg-red-500/5',
@@ -3467,9 +3792,10 @@ function QuickAddRow({
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, stageByRef, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
+  stageByRef?: Map<string, string>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
   onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: (e: React.DragEvent) => void;
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
@@ -3484,6 +3810,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   const priorityBadges = useMemo(() => buildPriorityBadges(t), [t]);
   const status = row.data.status;
   const priority = row.data.priority;
+  const stage = stageByRef?.get(row.data.id);
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = (() => {
     const p = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
@@ -3508,6 +3835,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
           {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500">⚠</span>}
+          <StageChip stage={stage} />
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -3556,6 +3884,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
         <span className="truncate">{row.data.title}</span>
         {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500 shrink-0">⚠</span>}
+        <StageChip stage={stage} />
       </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
@@ -3600,11 +3929,13 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   );
 }
 
-function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask }: {
+function BacklogTable({ tasks, requirements, agents, projects, stageByRef, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask }: {
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
   agents: AgentInfo[];
   projects: ProjectInfo[];
+  /** 任务/需求 id → 线程 stage（看板卡片与列表行共用同一份角标数据源） */
+  stageByRef?: Map<string, string>;
   onTaskClick: (t: TaskInfo) => void;
   onReqClick: (r: RequirementInfo) => void;
   onRefresh: () => void;
@@ -3653,7 +3984,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
         return bT - aT;
       });
     } else {
-      const pA = (r: BacklogRow) => PRIORITY_ORDER[r.data.priority] ?? 2;
+      const pA = (r: BacklogRow) => PRIORITY_RANK[r.data.priority] ?? PRIORITY_RANK['medium']!;
       result.sort((a, b) => {
         const pa = pA(a), pb = pA(b);
         if (pa !== pb) return pa - pb;
@@ -3791,7 +4122,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} stageByRef={stageByRef} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
                 ))}
                 {/* Quick-capture placeholder — pinned to the bottom of the 待办 group. */}
                 {groupId === 'todo' && (
@@ -3802,7 +4133,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} stageByRef={stageByRef} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
           ))
         )}
         {rows.length === 0 && (
@@ -4948,6 +5279,35 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
   const [loading, setLoading] = useState(previewData ? false : true);
+
+  // ── 任务卡片上的 stage 角标（实现文档 §5.5）───────────────────────────────
+  // 为什么要单独拉一次 /threads，而不复用 InboxCard 的 useThreads：
+  //   useThreads 自带 loading/error 状态，用它就等于把「线程聚合接口挂了」放大成
+  //   整页 loading/报错。而 stage 角标是**附加信息**——拿不到就该退回原来的卡片，
+  //   绝不能因为一个锦上添花的接口把任务板本身拖到不可用。所以这里自己维护一份，
+  //   失败 catch 掉、静默退化（没有角标 = 老样子）。
+  // 用 Map<ref, thread> 而不是每次渲染 filter：卡片列表很长，O(1) 查一次就够。
+  const [threadByRef, setThreadByRef] = useState<Map<string, ThreadAPI>>(new Map());
+  useEffect(() => {
+    if (previewMode) return; // 预览态没有真实后端，别去打空请求
+    let cancelled = false;   // 组件卸载/切页后别再 setState（React 会警告，也会覆盖新数据）
+    void fetchThreads()
+      .then(({ threads: rows }) => {
+        if (cancelled) return;
+        // thread.ref 就是 task.id（形如 tsk_xxx），所以直接按 ref 建索引
+        setThreadByRef(new Map(rows.map(th => [th.ref, th])));
+      })
+      .catch(() => { /* 静默：角标拿不到就不显示，不影响任务板 */ });
+    return () => { cancelled = true; };
+  }, [previewMode, isActive]); // isActive：切回任务页时重新取一次，避免角标显示陈旧的 stage
+  // 从 threadByRef 派生出「id → stage」的只读视图，交给列表行渲染器。
+  // 为什么不直接把整个 ThreadAPI 传下去：列表行只关心 stage 一个字段，
+  // 传大对象会让「谁是 stage 的写者」变模糊；这里只有一处派生、一处消费。
+  const stageByRef = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [ref, th] of threadByRef) m.set(ref, th.stage);
+    return m;
+  }, [threadByRef]);
   const [flash, setFlash] = useState('');
   const openCreateReq = useCallback(() => {
     setReqProjectId(selectedProjectId ?? '');
@@ -6382,7 +6742,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               {statusFilter && (
                 <button onClick={() => setStatusFilter(null)}
                   className="px-2 py-0.5 text-[11px] rounded-md font-medium bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30 flex items-center gap-1">
-                  {t(`common:status.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
+                  {taskStatusLabel(statusFilter, t)}
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </button>
               )}
@@ -6586,6 +6946,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             requirements={filteredReqs}
             agents={agents}
             projects={projects}
+            stageByRef={stageByRef}
             onTaskClick={task => handleSelectTask(task)}
             onReqClick={req => handleSelectReq(req)}
             onRefresh={() => { refreshBoard(); refreshRequirements(); }}
@@ -6753,6 +7114,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                               const dep = boardTaskMap.get(id);
                               return dep && dep.status === 'completed';
                             }));
+                            // stage 角标只显示「在等人」的四类（person:*）。
+                            // working/idle 对一张任务卡没有信息量，反而会让**每**张卡都挂一个
+                            // 灰标签，把真正需要人处理的信号洗掉——只突出要人动的那些。
+                            const taskThread = threadByRef.get(task.id);
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
@@ -6771,6 +7136,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
                                   {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                  {/* 等谁动 —— 唯一渲染点是 StageChip，看板卡片与列表行共用，不在这里另算 */}
+                                  <StageChip stage={taskThread?.stage} />
                                   {cardAbnormalBlocked && <span className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0 bg-red-500/15 text-red-500 font-medium">⚠</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>

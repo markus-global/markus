@@ -693,7 +693,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     const subtitle = agentLastMsg.get(a.id)
       || (a.currentActivity?.label?.slice(0, 60) || '');
 
-    const statusTitle = isBusy ? t('common:status.working') : a.status === 'error' ? t('common:status.error') : isStopped ? t('common:status.offline') : t('common:status.online');
+    const statusTitle = isBusy ? t('common:processStatus.working') : a.status === 'error' ? t('common:processStatus.error') : isStopped ? t('common:processStatus.offline') : t('common:processStatus.online');
 
     return (
       <div
@@ -736,7 +736,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
               {showRole && <span className="text-[9px] text-fg-secondary shrink-0 truncate max-w-[80px]">({a.role})</span>}
               {isManager && <svg width="10" height="10" viewBox="0 0 24 24" fill="currentColor" className="text-amber-500 shrink-0"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>}
               {isExt && <span className="text-[8px] px-1 py-0 rounded bg-brand-500/20 text-brand-400 font-medium shrink-0 leading-relaxed">EXT</span>}
-              {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:status.offline')}</span>}
+              {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium shrink-0 leading-relaxed">{t('common:processStatus.offline')}</span>}
             </div>
             <div className="truncate text-[10px] leading-tight mt-0.5 text-fg-secondary">
               {subtitle || '\u00A0'}
@@ -861,7 +861,7 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
               )}
               <div className="text-[10px] text-fg-secondary leading-tight mt-0.5 flex items-center gap-1.5">
                 {t('chat.members_other', { count: memberCount })}
-                {allStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                {allStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:processStatus.offline')}</span>}
                 {someStopped && <span className="text-[8px] px-1 py-0 rounded bg-amber-500/20 text-amber-500 font-medium leading-relaxed">{stoppedCount}/{totalAgents}</span>}
               </div>
             </div>
@@ -1207,9 +1207,9 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
             <div data-no-drag className="ml-auto relative" ref={actionMenuRef}>
               <button
                 onClick={() => setActionMenu(!actionMenu)}
-                className="flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-fg-secondary hover:text-fg-primary bg-surface-elevated/60 hover:bg-surface-elevated rounded-md transition-colors"
+                className="flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 rounded-lg shadow-sm transition-colors"
               >
-                <span className="text-brand-500">+</span> {t('chat.manage')}
+                <span className="text-white/80">+</span> {t('chat.manage')}
                 <svg className={`w-2.5 h-2.5 transition-transform ${actionMenu ? 'rotate-180' : ''}`} fill="currentColor" viewBox="0 0 20 20">
                   <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
                 </svg>

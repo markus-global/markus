@@ -112,6 +112,8 @@
   },
   "attention": {
     "title": "需要你的关注",
+    "tasksAndApprovals": "任务与审批",
+    "recentActivity": "最近动态",
     "allClear": "一切正常 — 当前没有需要你处理的事项。",
     "approvals": "项审批等待处理",
     "requirements": "条需求待审核",

@@ -5,11 +5,11 @@ import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-  api, wsClient, invalidateApiCache,
+  api, wsClient, invalidateApiCache, fetchThreads,
   type AgentInfo, type AgentActivityInfo, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
-  type NotificationInfo, type SearchResult,
+  type NotificationInfo, type SearchResult, type ThreadAPI,
 } from '../api.ts';
 import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
@@ -17,6 +17,10 @@ import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
+// stage 的文案/配色只认 InboxCard 那一套（单一事实源），别在 Team 页再手写一份
+import { stageLabel } from '../components/InboxCard.tsx';
+// 角标「取最佳一条」的判据只认唯一排序器：`pickAgentStageThread` = `orderTodos(mine)[0]`
+import { pickAgentStageThread } from '../lib/actionItems.ts';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
@@ -670,6 +674,31 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     () => previewData?.activeChannel ?? localStorage.getItem('markus_chat_channel') ?? '#general'
   );
   const [activeDmUserId, setActiveDmUserId] = useState<string>('');
+
+  // ── 会话头 stage 角标（实现文档 §5.5）─────────────────────────────────────
+  // 为什么要单独拉 /threads：agent 现在到底在干活、还是卡在等我们批准，是最想
+  // 一眼看到的，但这件事不在 agents 表里 —— 后端只能从线程聚合算出来（stage）。
+  // 失败必须静默：这是个附加接口，挂了也只是少一个角标，不能让整个 Team 页报错；
+  // 同理不接 loading/error 状态，避免把局部失败放大成整页空态。
+  const [threads, setThreads] = useState<ThreadAPI[]>([]);
+  useEffect(() => {
+    if (previewMode) return; // 预览态没有真实后端，不去打空请求
+    let cancelled = false;
+    void fetchThreads()
+      .then(({ threads: rows }) => { if (!cancelled) setThreads(rows); })
+      .catch(() => { /* 静默降级：拿不到就不显示 stage */ });
+    return () => { cancelled = true; };
+  }, [previewMode, isActive]); // isActive：切回 Team 页时刷一次，否则角标会停在旧 stage
+
+  // 一个 agent 可能同时压着多条线程（多个任务），而我们只有一个位置放一个角标。
+  // 选「谁最该被人处理」：判据完全交给唯一排序器 `lib/todoOrder.ts`（`pickAgentStageThread`
+  // 内部就是 `orderTodos(mine)[0]`）。这里**不再**写比较式 —— 曾经这里是一段手写偏序，
+  // 且方向与契约相反（同 stage 内取最新，而契约第 3 段键是取等得最久），
+  // 于是角标指向的流与概览首屏排第一的不是同一条。
+  const agentStage = useMemo(() => {
+    if (!selectedAgent) return null;
+    return pickAgentStageThread(threads, selectedAgent);
+  }, [threads, selectedAgent]);
 
   // ── Deduplication: track server message IDs we already inserted via HTTP ─────
   const MAX_RECENT_MSG_IDS = 500;
@@ -1586,6 +1615,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => {
     if (previewMode) return;
     const handleNav = (e: Event) => {
+      /**
+       * 必须在这里**遮蔽**外层的 isMobile。
+       *
+       * Owner 2026-11-02 报告：从概览点一条通知/审批，跳过去只落到 Team 列表，
+       * 没进具体的 agent 对话（移动端）。
+       *
+       * 根因：这个 handler 注册在 `useEffect(..., [previewMode])` 里，依赖里没有 isMobile，
+       * 所以闭包捕获的 isMobile 永远停在注册那一刻的值。视口从宽变窄（或反过来）后不更新，
+       * `if (isMobile) enterMobileDetail()` 就永远不执行 —— hash 停在 #team，停在列表页。
+       * 遮蔚后，本函数体内后续所有 isMobile 判定（包含下面对 localStorage
+       * markus_nav_agentId 的消费）都是派发时的真实视口宽度。
+       */
+      const isMobile = window.matchMedia('(max-width: 767px)').matches;
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
@@ -4128,6 +4170,41 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (fileArr.length === 0) return;
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) continue;
+
+      // ── 非图片文件：给 Agent 一个**它真能读到的**路径 ──
+      //
+      // 两种环境能力不同，不能一刀切：
+      //   · 桌面端（Electron）：File 带 `.path`，和 Agent 同机 → 直接用，**一个字节都不上传**；
+      //   · 浏览器：沙箱不暴露本地路径。只发文件名对 Agent 毫无意义（Owner 2026-11-04：
+      //     “只发文件名没意义，Agent 也不知道文件在哪里”）。所以转存到**本机**的
+      //     LocalFileStorage（服务端 `fileStorage` 就是它，落盘不是云存储），
+      //     再把服务端返回的绝对路径写进消息。
+      if (!file.type.startsWith('image/')) {
+        const localPath = (file as File & { path?: string }).path;
+        if (localPath) {
+          setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name} — ${localPath}`);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          api.uploads
+            .upload([{ dataUrl, name: file.name }], 'chat')
+            .then(res => {
+              const f = res.files?.[0] as { name?: string; url?: string; path?: string } | undefined;
+              const where = f?.path ?? f?.url;
+              if (!where) throw new Error('no path');
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${f?.name ?? file.name} — ${where}`);
+            })
+            .catch(() => {
+              // 拿不到可读路径就不要装成功——否则 Agent 又拿到一个它无能为力的名字。
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name}（未能转存，Agent 无法读取此文件）`);
+            });
+        };
+        reader.readAsDataURL(file);
+        continue;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
@@ -4725,7 +4802,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <div className="flex-1 min-w-0 text-left">
                           <div className="text-sm font-medium text-fg-primary truncate flex items-center gap-1.5">
                             {agent.name}
-                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:processStatus.offline')}</span>}
                           </div>
                           <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
                         </div>
@@ -4840,6 +4917,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <AgentStatusDot agent={currentAgent} />
                   )}
                 </div>
+                {/* 移动端：新对话独立成一个显眼按钮，不再藏在更多菜单里（Owner 2026-11-02） */}
+                {chatMode === 'direct' && currentAgent && !isProfileTab(mainTab) && (
+                  <button
+                    onClick={newConversation}
+                    className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-white bg-brand-600 hover:bg-brand-700 px-2.5 py-1.5 rounded-lg shadow-sm transition-colors"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                    {t('page.newChat')}
+                  </button>
+                )}
                 <button
                   onClick={() => setShowMoreMenu(o => !o)}
                   aria-label={t('page.moreActions', { defaultValue: '更多操作' })}
@@ -4872,15 +4961,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
                       {t('page.findInConversation')}
                     </button>
-                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
-                      <button
-                        onClick={() => { setShowMoreMenu(false); newConversation(); }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                        {t('page.newChat')}
-                      </button>
-                    )}
                     {chatMode === 'direct' && !isProfileTab(mainTab) && (
                       <button
                         ref={historyBtnRef}
@@ -4945,6 +5025,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const headerDesc = chatMode === 'direct' ? (currentAgent?.role || '') : chatMode === 'channel' ? (activeTeam?.description || '') : '';
             const headerAvatarUrl = chatMode === 'direct' ? currentAgent?.avatarUrl : undefined;
             const headerAvatarName = headerName || 'U';
+            // 当前 agent 的「在等谁」角标已删除（Owner 2026-11-03）：chip 不可点、无信息。
+            const headerStage = null;
             const showEntityInfo = (chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId);
 
             return (
@@ -5050,6 +5132,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {chatMode === 'direct' && currentAgent && (
                         <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
+                      {/* Owner 2026-11-03：删掉这个「在等谁」stage 小 chip（如「等你批准」）。
+                          它不可点、不可展开、也不告诉你到底卡在哪件事上 —— 高频扫读区里
+                          放一个「只能看、不能做」的信号，只会让人反复点它、反复失望。
+                          真正要看的卡在哪，去 agent 详情的「运行与注意力」。 */}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
                       editingHeaderDesc ? (
@@ -5092,7 +5178,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <button
                       onClick={newConversation}
                       title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                      className="text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 px-3.5 py-1.5 rounded-lg shadow-sm transition-colors flex items-center gap-1"
                     >
                       {t('page.newChatButton')}
                     </button>
@@ -5223,8 +5309,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     // pulsing dot, shown only while this session is generating.
                     <span
                       className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"
-                      title={t('common:status.working')}
-                      aria-label={t('common:status.working')}
+                      title={t('common:processStatus.working')}
+                      aria-label={t('common:processStatus.working')}
                       data-testid="session-tab-streaming"
                     />
                   )}

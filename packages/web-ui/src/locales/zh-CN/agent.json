@@ -110,18 +110,6 @@
     "mcp": "MCP：{{server}}"
   },
   "profilePage": {
-    "taskStatus": {
-      "pending": "待处理",
-      "assigned": "已分配",
-      "in_progress": "进行中",
-      "completed": "已完成",
-      "failed": "失败",
-      "cancelled": "已取消",
-      "review": "评审中",
-      "approved": "已通过",
-      "rejected": "已拒绝",
-      "draft": "草稿"
-    },
     "loadingAgent": "正在加载智能体…",
     "chat": "对话",
     "hub": "Hub",
@@ -174,6 +162,10 @@
         "memory": {
           "title": "记忆与心跳",
           "hint": "长期记忆 · 会话 · 心跳节奏与唤醒"
+        },
+        "governance": {
+          "title": "自主权与监督",
+          "hint": "主动模式档位 · 负责的资源 · 最近路由决定"
         },
         "usage": {
           "title": "用量与存储",
@@ -510,9 +502,9 @@
         "4": "后台"
       },
       "attention": {
-        "idle": "待命",
-        "focused": "专注",
-        "deciding": "决策中"
+        "idle": "Agent 待命",
+        "focused": "Agent 专注",
+        "deciding": "Agent 决策中"
       },
       "mailbox": {
         "commentFrom": "来自 {{name}} 的评论",
@@ -534,7 +526,8 @@
         "systemEvent": "系统事件",
         "statusArrow": "{{from}} → {{to}}"
       }
-    }
+    },
+    "stream": "来龙去脉"
   },
   "deliverables": {
     "empty": "暂无交付物",

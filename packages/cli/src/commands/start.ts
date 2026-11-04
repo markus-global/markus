@@ -25,7 +25,8 @@ import {
   resolveJwtSecret,
   resolveGatewaySecret,
   type LLMProviderConfig,
-  type DecisionType,
+  type AttentionAction,
+  type ResourceScope,
   type MarkusConfig,
   pickOrgSecretary,
   setEnvValue,
@@ -84,6 +85,10 @@ import {
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
+  ensureThread,
+  recordThreadEvent,
+  taskRef,
+  a2aRef,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
@@ -94,6 +99,36 @@ import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
+
+/**
+ * A2A 消息摘要：正文优先，真没正文才退回「谁发给谁」。
+ *
+ * 投递的 `message` 可能是纯文本，也可能是 JSON 信封（如 status_broadcast）。
+ * 直接截 JSON 前 80 字会在时间线上显示成 `{"type":...`——那比不写更糟，
+ * 所以信封里找可读字段；找不到就只写类型名，不编造内容。
+ */
+function a2aSummary(text: string | undefined, a: string, b: string): string {
+  const fallback = `${a} → ${b} 发了一条消息`;
+  const raw = (text ?? '').trim();
+  if (!raw) return fallback;
+  let readable = raw;
+  if (raw.startsWith('{')) {
+    try {
+      const env = JSON.parse(raw) as Record<string, unknown>;
+      const payload = (env.payload ?? {}) as Record<string, unknown>;
+      const candidate = [payload.text, payload.message, env.text, env.message].find(
+        v => typeof v === 'string' && v.trim(),
+      );
+      if (typeof candidate === 'string') readable = candidate;
+      else if (typeof env.type === 'string') readable = `[${env.type}]`;
+    } catch {
+      // 不是合法 JSON：当纯文本用，不编造。
+    }
+  }
+  const oneLine = readable.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return fallback;
+  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+}
 
 // ─── Manifest-driven platform startup (issue #340) ────────────────────────────
 //
@@ -730,6 +765,10 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   taskService.setSharedDataDir(sharedDataDir);
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
+    // S3：任务建卡即建流。流是「这条任务卡在谁那儿」的存储级答案。
+    taskService.setThreadEnsurer((taskId) => ensureThread(storage, taskRef(taskId)));
+    // S6：任务评论写入时间线（D1.3）。注入而不是让 task-service import storage。
+    taskService.setThreadEventRecorder((taskId, e) => recordThreadEvent(storage, taskRef(taskId), e));
     taskService.setTaskLogRepo(storage.taskLogRepo);
     if (storage.executionStreamRepo) {
       taskService.setExecutionStreamRepo(storage.executionStreamRepo);
@@ -822,7 +861,54 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
     taskService,
     mcpServers,
     feishuToolsConfig,
+    // 责任域工具：让 agent 自己声明「我负责哪个资源」。依赖由这里注入，
+    // core 不认识 sqlite；storage 缺表时返回 undefined（工具不注册，而不是空实现）。
+    resourceToolDeps: ({ agentId, agentName, teamId }) => {
+      const s = storage;
+      if (!s?.threadRepo || !s.resourceBindingRepo) return undefined;
+      return {
+        agentId,
+        agentName,
+        teamId,
+        bindings: s.resourceBindingRepo,
+        // 逐件事审批（Mandate）唯一读取点：执行闸门问「这件事批了没有」时用它。
+        // storage 没有 approvalRepo 时干脆不注入 —— 判定点会按 none 处理（需要人批），
+        // 而不是把一个"查不到"当成"已批"。
+        mandates: s.approvalRepo
+          ? { findMandate: (q: { agentId: string; resource: string; actionScope: ResourceScope; eventKey?: string }) => s.approvalRepo!.findMandate(q) }
+          : undefined,
+        // 绑定即订阅：后续该资源的事件天然直通给绑定者（v1 里 ticket 就是 thread 本身）
+        subscribe: (resource: string, holderAgentId: string) => {
+          const { thread } = s.threadRepo.upsert(resource);
+          s.threadRepo.subscribe(thread.id, thread.id, holderAgentId, 'own');
+        },
+        // 「我盯的资源最近发生了什么」：取该流最近的处置记录。
+        // 读不到时返回 undefined —— 工具会回 recentUnknown:true，而不是编一个空数组说「没事发生」。
+        recentActivity: (resource: string) => {
+          if (!s.dispositionRepo) return undefined;
+          const th = s.threadRepo.getByRef(resource);
+          if (!th) return undefined;
+          const rows = s.dispositionRepo.listByThread(th.id, 5) as Array<{ action: string; reason: string; createdAt: number }>;
+          if (rows.length === 0) return [];
+          return rows.map((d: { action: string; reason: string }) => `${d.action}：${d.reason}`);
+        },
+      };
+    },
   });
+
+  // S3：A2A 投递即建流（同一次 DM 对话一条流，与方向无关）。
+  // 未拿到 storage 时不注入 —— 不注册一个跑不动的空实现。
+  if (storage?.threadRepo) {
+    agentManager.setThreadEnsurer((a, b, _actor, text) => {
+      const ref = a2aRef(a, b);
+      ensureThread(storage, ref, a);
+      // S6：A2A DM 写入时间线（D1.4）。
+      //
+      // 【更正 2026-11-03】原先这里写「投递回调拿不到正文，所以只记粗粒度」——那是错的：
+      // `deliverA2AMessage` 的 `message` 就在手上，只是没往下传。现在传递并提取可读摘要。
+      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: a2aSummary(text, a, b) });
+    });
+  }
 
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
@@ -1324,30 +1410,18 @@ async function startServerCore(
           });
         }
       }
-      hitlService.notify({
-        targetUserId: 'all',
-        type: 'system',
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Unstarted task',
-        body: item.message,
-        priority: item.type === 'review_stale' ? 'high' : 'normal',
-        actionType: item.taskId ? 'navigate' : 'none',
-        actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: {
-          taskId: item.taskId,
-          agentId: item.agentId,
-          staleType: item.type,
-          // The title and body as structure: the detector knows *what* to say,
-          // this is the only place that knows the sentence's key.
-          i18n: {
-            titleKey:
-              item.type === 'review_stale'
-                ? 'notifications.titles.staleReview'
-                : item.type === 'stuck_task'
-                  ? 'notifications.titles.stuckTask'
-                  : 'notifications.titles.unstartedTask',
-            ...(item.i18n ?? {}),
-          },
-        },
+      // 【已删】不再把 task 陈旧状态推成人通知（Owner 2026-11-04：「系统不应该再发出类似
+      // Unstarted task 这种通知了」）。
+      //
+      // 理由不是文案不好，是这类通知没有新的信息量：
+      //   · 未批准 / 待评审 的任务常驻概览「等你处理」，人本来就看得到；
+      //   · 定时重复推 同一个任务（实测同一秒 12–13 条、累计 4902 条）只训练人忽略铃铛；
+      //   · 审核提醒本来就发给 review_reminder 指定的**评审人**（上面的分支），
+      //     发给所有人等于把「该谁做」的信号摊平成噪音。
+      // 需要任务陈旧状态的地方（例如概览统计）直接读任务本身，不靠通知回放。
+      log.info('Stale task reminder suppressed (notifications for stale tasks are retired)', {
+        taskId: item.taskId,
+        staleType: item.type,
       });
     }
   });
@@ -2110,10 +2184,22 @@ async function startServerCore(
     const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
+      // 带资源与档位 = 这是一张**逐件事许可（Mandate）**：`details.resource` +
+      // `details.actionScope` 两个字段就是判据（不新增 approvals.type 枚举值，
+      // 那个联合类型是 UI 渲染链的输入，为一张新单子加值会牵动整条链）。
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId, chatSessionId: request.chatSessionId },
+      details: {
+        ...request.toolArgs,
+        toolName: request.toolName,
+        agentId,
+        taskId: request.taskId,
+        taskTitle,
+        sessionId: request.sessionId,
+        chatSessionId: request.chatSessionId,
+        ...(request.resource ? { resource: request.resource, actionScope: request.actionScope } : {}),
+      },
       targetUserId: ownerUserId,
     });
     auditService.record({
@@ -2379,6 +2465,9 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // dropPendingByEntity：需求转终态时撤回「请审阅」类行动项，止住重复投递。
+          dropPendingByEntity: (aid: string, entityId: string, reason: string) =>
+            mbRepo.dropPendingByEntity(aid, entityId, reason),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
@@ -2417,8 +2506,8 @@ async function startServerCore(
             // real limit; the one-word answer stops the generation naturally.
           }, triageProvider);
           const raw = response.content.trim().toLowerCase();
-          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
+          const valid: AttentionAction[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+          return valid.includes(raw as AttentionAction) ? (raw as AttentionAction) : 'continue';
         });
       } catch { /* agent not found */ }
     };

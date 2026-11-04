@@ -24,7 +24,6 @@ describe('StaleDetector', () => {
     detector = new StaleDetector(taskService as never, {
       maxInProgressMs: 24 * 60 * 60 * 1000,
       maxReviewWaitMs: 12 * 60 * 60 * 1000,
-      maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
       maxBranchDivergenceCommits: 100,
     }, onStaleItems);
   });
@@ -46,15 +45,6 @@ describe('StaleDetector', () => {
       })]);
       const items = await detector.scan();
       expect(items.some(i => i.type === 'review_stale')).toBe(true);
-    });
-
-    it('detects unstarted pending tasks', async () => {
-      taskService.listTasks.mockReturnValue([createTask({
-        status: 'pending',
-        updatedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
-      })]);
-      const items = await detector.scan();
-      expect(items.some(i => i.type === 'unstarted_task')).toBe(true);
     });
 
     it('returns empty when tasks are fresh', async () => {

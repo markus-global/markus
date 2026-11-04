@@ -1,0 +1,65 @@
+{
+  "_why": "「待办排序」的服务端/前端对照语料。两个测试读同一份文件、断言同一条 expectedIds —— 这就是判据「API 返回的 id 序列 == 概览首屏渲染的 id 序列」的机械形式。",
+  "_invariant": "expectedIds 是**手写**的契约期望序，不是由实现生成的：① stage 契约序（approval → answer → review → blocked）② 同 stage 比优先级（urgent → high → medium → low → 无）③ 同 stage+优先级比等待时长（等得久者在前）④ id 升序兜底。",
+  "_before": "改前的实测序（API 按 lastActivity 降序）：tsk_f_blocked, tsk_c_review, tsk_b_appr, tsk_d_review, tsk_e_blocked, tsk_a_appr —— 与 expectedIds 不同，所以本夹具在修复前是红的。",
+  "_corpus": "只含 person:* 行：非 person:* 的流不进待办（唯一判据 isWaitingOnPerson），把它们放进来会让两侧的语料本身不同，比对就失去意义。",
+  "now": 1762300000000,
+  "todos": [
+    {
+      "id": "tsk_a_appr",
+      "stage": "person:approval",
+      "priority": "low",
+      "lastActivity": 1762288000000,
+      "title": "审批：低优先级，已等 200 分钟",
+      "ownerAgent": "agt_dev"
+    },
+    {
+      "id": "tsk_b_appr",
+      "stage": "person:approval",
+      "priority": "urgent",
+      "lastActivity": 1762299400000,
+      "title": "审批：紧急，已等 10 分钟",
+      "ownerAgent": "agt_qa"
+    },
+    {
+      "id": "tsk_c_review",
+      "stage": "person:review",
+      "priority": "medium",
+      "lastActivity": 1762299700000,
+      "title": "待验收：中优先级，已等 5 分钟",
+      "ownerAgent": "agt_dev"
+    },
+    {
+      "id": "tsk_d_review",
+      "stage": "person:review",
+      "priority": "high",
+      "lastActivity": 1762297600000,
+      "title": "待验收：高优先级，已等 40 分钟",
+      "ownerAgent": "agt_dev"
+    },
+    {
+      "id": "tsk_e_blocked",
+      "stage": "person:blocked",
+      "priority": "urgent",
+      "lastActivity": 1762294600000,
+      "title": "阻塞：紧急，已等 90 分钟",
+      "ownerAgent": "agt_ops"
+    },
+    {
+      "id": "tsk_f_blocked",
+      "stage": "person:blocked",
+      "priority": "urgent",
+      "lastActivity": 1762299820000,
+      "title": "阻塞：紧急，刚发生（旧口径里它排第一）",
+      "ownerAgent": "agt_ops"
+    }
+  ],
+  "expectedIds": [
+    "tsk_b_appr",
+    "tsk_a_appr",
+    "tsk_d_review",
+    "tsk_c_review",
+    "tsk_e_blocked",
+    "tsk_f_blocked"
+  ]
+}

@@ -58,6 +58,9 @@ function createMockContext(overrides?: Partial<ProjectToolsContext>): ProjectToo
       { id: 'dlv_001', type: 'file', title: 'API Doc', summary: 'API reference', reference: '/docs/api.md', status: 'active', tags: ['api'], updatedAt: '2024-01-01' },
     ]),
     deliverableUpdate: vi.fn(async (id) => ({ id, status: 'verified' })),
+    // 默认假设「审批已通过」：绝大多数测试要验的是批准后的业务逻辑。
+    // 想要验「没通道时会怎样」的，显式传 requestApproval: undefined。
+    requestApproval: vi.fn(async () => ({ approved: true })),
     ...overrides,
   };
 }
@@ -481,11 +484,14 @@ describe('get_project extended', () => {
 });
 
 describe('create_project extended', () => {
-  it('creates without approval callback', async () => {
+  it('无审批通道时拒绝创建（fail-closed，不是静默放行）', async () => {
     const ctx = createMockContext({ requestApproval: undefined });
     const tool = findTool(ctx, 'create_project');
     const result = JSON.parse(await tool.execute({ name: 'Direct', description: 'No approval gate' }));
-    expect(result.status).toBe('success');
+    // 修复前这里断言 success——那正是漏洞的成文版本：
+    // if (ctx.requestApproval) 在回调缺失时整块跳过，动作遂直接执行。
+    expect(result.status).toBe('rejected');
+    expect(result.reason).toContain('未接入审批通道');
   });
 });
 

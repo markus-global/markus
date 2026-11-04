@@ -49,6 +49,8 @@ import {
   aggregateCacheHitRate,
   computeReplayRatio,
 } from '@markus/core';
+// 归属解析的唯一来源（设计原文：「全仓库只有这里能产出 ref」）
+import { resolveThreadRef } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
@@ -84,6 +86,7 @@ import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
+import { ensureThread, recordThreadEvent } from './thread-ensure.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -117,6 +120,7 @@ import {
 } from './middleware/auth.js';
 import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
+import { handleEventRoutes } from './event-routes.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { AgentDelivery, newChainId } from './agent-delivery.js';
@@ -2226,6 +2230,33 @@ export class APIServer {
   }
 
   /** Persist a chat turn (user + assistant) to DB if storage is available */
+  /**
+   * 主干接通：让一条聊天会话在 `threads` 表里存在（设计 §3.2 / §7.3）。
+   *
+   * 【为什么放在 persistChatTurn】它是 stream 与 non-stream **两条路径的唯一落库点**，
+   * 在这里加一处就覆盖两条——这是单一写者，而不是在两个分支各加一遍。
+   *
+   * 【ref 为什么直接用 session.id】会话 id（`cs_*`）本身就是 ThreadRef 的合法命名空间
+   * （见 @markus/shared 的 ThreadRef 注释），不需要另造一套映射；另造就会多一个第二写者。
+   *
+   * 【为什么失败不抛】thread 是派生视图，不能因为它的写入失败而丢掉用户消息。
+   * 但必须留日志——静默吞掉会让“流没建”变成永远查不到的盲区。
+   */
+  /**
+   * 为一条聊天会话建流。
+   *
+   * 调用点有两个（`persistUserMessage` / `persistChatTurn`），因为存在两条历史落库路径。
+   * 两个调用点共享**同一个幂等入口**（ThreadService.ensure → UNIQUE(ref)），
+   * 所以不会产生第二条流；但这不等于「只写一处」——真正的单一执行点是 repo 的唯一约束。
+   */
+  private ensureChatThread(sessionRef: string, agentId: string): void {
+    // 统一走 ThreadService.ensure()（§7.3.1 唯一写者）。
+    // 此前这里直接调 repo.upsert()，是绕过 service 的第二条写路径。
+    if (!ensureThread(this.storage, sessionRef, agentId)) {
+      log.warn('Chat thread not ensured (no thread repo)', { sessionRef, agentId });
+    }
+  }
+
   private async persistChatTurn(
     agentId: string,
     userMessage: string,
@@ -2241,9 +2272,17 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 主干接通：每一条真实聊天会话都必须是一条流（否则 Thread 视图 / 路由台永远是空壳）。
+      this.ensureChatThread(session.id, agentId);
+      // 【已删】不再把聊天消息写成时间线事件（Owner 2026-11-03）。
+      //
+      // 原来每条用户消息 / 助手回复都 recordThreadEvent → triggers 一行。后果：
+      // agent 的「来龙去脉」里会出现一串「会话消息」碎片（原始 markdown、裸 user id），
+      // 而同一段对话已经有更准的一行——「投递 · 来自 Jason Carter 的对话 · 3.1M tokens · 8 次工具」。
+      // 时间线回答的是「这件事经历了几次处理」，不是「聊天记录」；转写内容的家只有一个：会话本身。
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(
+      const assistantMsg = await this.storage.chatSessionRepo.appendMessage(
         session.id,
         agentId,
         'assistant',
@@ -2251,6 +2290,7 @@ export class APIServer {
         tokensUsed,
         metadata
       );
+      // 【已删】助手回复也不再单独进时间线（同上：对话是一条，不是 N 条消息）。
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2501,6 +2541,18 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 聊天进入 Thread（S3，真实路径）。
+      //
+      // 【更正】我曾写过「persistChatTurn 是 stream 与 non-stream 的唯一落库点」——这句话是错的：
+      // appendMessage 全仓有 4 个调用点，流式聊天走的是本方法（persistUserMessage）
+      // 与 persistAssistantMessage，根本不经过 persistChatTurn。
+      // 于是「一处覆盖两条」的假设，让 chat 链路接在了一条不会被流式聊天经过的分支上。
+      // （实测：浏览器发一条真实消息后，chat_sessions 多了 cs_609ff62a63e04701，threads 仍为 0。）
+      //
+      // 现在挂在这里：session 已确定，是落库路径必经的最小公共点。
+      // ensure 幂等，所以 persistChatTurn 里保留的同名调用不会产生第二条流。
+      this.ensureChatThread(session!.id, agentId);
+      // 【已删】流式路径也不再逐条写时间线（理由同 persistChatTurn）。
       const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       // base64 不再进库：字节落附件存储，行里只留 imageRefs。
@@ -2558,6 +2610,7 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      // 【已删】助手回复不单独进时间线（同上）。
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
@@ -2794,6 +2847,69 @@ export class APIServer {
       if (!ct.includes('multipart/form-data')) {
         await this.readBody(req);
       }
+    }
+
+    // ── Thread / 外部事件（设计见 workspace/markus-superagent-0{1,2}-*.md）──────
+    // 鉴权分工：webhook 只认 HMAC（它没有用户会话），其余沿用既有会话鉴权。
+    if (
+      path.startsWith('/api/threads') ||
+      path.startsWith('/api/resources/bindings') ||
+      path.startsWith('/api/tickets') ||
+      /^\/api\/tasks\/[^/]+\/tickets$/.test(path) ||
+      path.startsWith('/api/events')
+    ) {
+      if (!this.storage) {
+        this.json(res, 503, { error: 'Storage not available' });
+        return;
+      }
+      const isWebhook =
+        path.startsWith('/api/events/') &&
+        !path.startsWith('/api/events/sources') &&
+        req.method === 'POST';
+      if (!isWebhook) {
+        const authUser = this.authEnabled
+          ? await this.requireAuth(req, res)
+          : await this.getAuthUser(req);
+        if (!authUser) return;
+      }
+      const handled = await handleEventRoutes(
+        {
+          orgId: 'default',
+          repos: {
+            threadRepo: this.storage.threadRepo,
+            dispositionRepo: this.storage.dispositionRepo,
+            resourceBindingRepo: this.storage.resourceBindingRepo,
+            eventSourceRepo: this.storage.eventSourceRepo,
+            // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
+            triggerRepo: this.storage.triggerRepo,
+            ticketRepo: this.storage.ticketRepo,
+            taskRepo: this.storage.taskRepo,
+            requirementRepo: this.storage.requirementRepo,
+            chatSessionRepo: this.storage.chatSessionRepo,
+            approvalRepo: this.storage.approvalRepo,
+          },
+          deliver: target => {
+            const agent = this.orgService.getAgentManager().getAgent(target.agentId);
+            if (!agent) return;
+            agent.enqueueToMailbox('system_event', {
+              summary: target.event.summary,
+              content: target.event.body || target.event.summary,
+              extra: {
+                threadRef: target.threadRef,
+                idempotencyKey: target.event.idempotencyKey,
+                ticketId: target.ticketId,
+              },
+            });
+          },
+          // 票轴的事件写者：**只**指向 triggers 的唯一写入者 `recordThreadEvent`。
+          // 不在这里拼 SQL、不直接调 triggerRepo —— 那是同一件事的第二个写者。
+          recordEvent: (ref, event) => recordThreadEvent(this.storage, ref, event),
+        },
+        req,
+        res,
+        path,
+      );
+      if (handled) return;
     }
 
     // ── Auth endpoints (no auth required) ──────────────────────────────────
@@ -3485,7 +3601,7 @@ export class APIServer {
         return;
       }
       const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
-      const results: Array<{ url: string; key: string; name: string }> = [];
+      const results: Array<{ url: string; key: string; name: string; path?: string }> = [];
       for (const file of files) {
         if (!file.dataUrl || typeof file.dataUrl !== 'string') continue;
         const m = file.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -3498,7 +3614,13 @@ export class APIServer {
           contentType,
           prefix,
         });
-        results.push({ ...result, name: file.name });
+        // 带上**落盘绝对路径**：浏览器端拿不到本地路径（沙箱），但文件已经在本机磁盘上，
+        // 这个路径就是 Agent 能直接 read 的那个。不返回它，调用方只能告诉用户一个文件名 ——
+        // 而「只发文件名」对 Agent 毫无意义（Owner 2026-11-04 指出）。
+        const resolved = typeof (this.fileStorage as { resolve?: (k: string) => string }).resolve === 'function'
+          ? (this.fileStorage as { resolve: (k: string) => string }).resolve(result.key)
+          : undefined;
+        results.push({ ...result, name: file.name, ...(resolved ? { path: resolved } : {}) });
       }
       this.json(res, 200, { files: results });
       return;
@@ -5410,6 +5532,7 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      const refFilter = url.searchParams.get('ref') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -5425,7 +5548,20 @@ export class APIServer {
 
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
-          const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          // 归属解析只用**唯一解析点**（core/thread-resolver.ts）。
+          // 我一度在这里手写了一份 payload 解析，前端另有一份 —— 那是同一事实的三个写者。
+          // 而且手写版把「一条 Trigger 可属多个 Thread」压成了单值，语义也错了。
+          const refOfItem = (it: Record<string, unknown>) => resolveThreadRef(it as never, agentId);
+
+          const fetched = this.storage.mailboxRepo.getHistory(agentId, {
+            limit: refFilter ? 2000 : limit,
+            offset: refFilter ? 0 : offset,
+            sourceTypes,
+            status,
+          });
+          const raw = refFilter
+            ? fetched.filter((it: Record<string, unknown>) => refOfItem(it).ref === refFilter)
+            : fetched;
           const itemIds = raw.map((item: { id: string }) => item.id);
 
           const decisionsMap = this.storage?.decisionRepo
@@ -5437,6 +5573,12 @@ export class APIServer {
 
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
+            // 归属由服务端用唯一解析点算好，随条目下发。
+            // 前端只读这个字段 —— 浏览器不该再解析一遍 payload（那是第二个写者）。
+            const resolved = refOfItem(item);
+            enriched.threadRef = resolved.ref;
+            enriched.threadAxis = resolved.axis;
+            enriched.threadLegacyKeys = resolved.legacyKeys;
             enriched.decisions = decisionsMap.get(item.id) ?? [];
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {
@@ -13709,6 +13851,11 @@ EXPLANATION_END`;
 
       // ── Tasks ───────────────────────────────────────────────────────────
       exact('/api/tasks', 'GET', 'POST'),
+      // 票（执行侧工作单位）：独立资源 + 「某任务的票」子资源
+      exact('/api/tickets', 'POST'),
+      regex(/^\/api\/tickets\/[^/]+$/, 'GET', 'PATCH'),
+      regex(/^\/api\/tickets\/[^/]+\/transition$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/tickets$/, 'GET'),
       exact('/api/tasks/scheduled', 'GET'),
       exact('/api/tasks/deliverables', 'GET'),
       exact('/api/tasks/dashboard', 'GET'),
@@ -13741,6 +13888,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/reviews$/, 'GET'),
 
       // ── Execution ────────────────────────────────────────────────────────
       exact('/api/execution-logs', 'GET'),
@@ -14252,7 +14400,12 @@ EXPLANATION_END`;
       req.on('data', (chunk: Buffer) => chunks.push(chunk));
       req.on('end', () => {
         try {
-          const raw = Buffer.concat(chunks).toString();
+          const rawBuf = Buffer.concat(chunks);
+          // HMAC 必须对**原始字节**校验：解析后重新序列化会改变字节（空格/字段序），
+          // 于是「签名有效」与「实际解析到的内容」不再是同一个东西。
+          // 存成 Buffer 而不是 string，避免 utf8 往返改变非法字节序列。
+          (req as any).__rawBody__ = rawBuf;
+          const raw = rawBuf.toString();
           const parsed = JSON.parse(raw);
           // BUG-003: JSON literal null or array is not a valid request body
           if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {

@@ -184,11 +184,6 @@ const VOCABULARY: Record<string, Record<string, string>> = {
     zh: '任务卡住',
     es: 'Tarea atascada',
   },
-  'notifications.titles.unstartedTask': {
-    en: 'Unstarted task',
-    zh: '任务未启动',
-    es: 'Tarea sin iniciar',
-  },
   'notifications.bodies.staleTaskInProgress': {
     en: 'Task "{{title}}" has been in_progress for {{hours}}h',
     zh: '任务「{{title}}」已进行 {{hours}} 小时',
@@ -198,11 +193,6 @@ const VOCABULARY: Record<string, Record<string, string>> = {
     en: 'Task "{{title}}" has been in review for {{hours}}h with no action',
     zh: '任务「{{title}}」已待审核 {{hours}} 小时且无动作',
     es: 'La tarea "{{title}}" lleva {{hours}} h en revisión sin acción',
-  },
-  'notifications.bodies.staleTaskUnstarted': {
-    en: 'Task "{{title}}" awaiting approval for {{hours}}h',
-    zh: '任务「{{title}}」已等待审批 {{hours}} 小时',
-    es: 'La tarea "{{title}}" lleva {{hours}} h esperando aprobación',
   },
 
   // ── Escalation and the activity feed ───────────────────────────────────────
@@ -227,26 +217,31 @@ const VOCABULARY: Record<string, Record<string, string>> = {
   'common.priority.urgent': { en: 'Urgent', zh: '紧急', es: 'Urgente' },
 
   // Status words, same reason: `状态已变为 completed` is still English inside a
-  // Chinese sentence. Kept verbatim from the UI's `common.status` table.
-  'common.status.pending': { en: 'Pending', zh: '待处理', es: 'Pendiente' },
-  'common.status.approved': { en: 'Approved', zh: '已批准', es: 'Aprobado' },
-  'common.status.inProgress': { en: 'In Progress', zh: '进行中', es: 'En curso' },
-  'common.status.completed': { en: 'Completed', zh: '已完成', es: 'Completado' },
-  'common.status.failed': { en: 'Failed', zh: '失败', es: 'Fallido' },
-  'common.status.blocked': { en: 'Blocked', zh: '已阻塞', es: 'Bloqueado' },
-  'common.status.review': { en: 'Review', zh: '待审核', es: 'Revisión' },
-  'common.status.rejected': { en: 'Rejected', zh: '已拒绝', es: 'Rechazado' },
-  'common.status.cancelled': { en: 'Cancelled', zh: '已取消', es: 'Cancelado' },
-  'common.status.active': { en: 'Active', zh: '活跃', es: 'Activo' },
-  'common.status.idle': { en: 'Idle', zh: '空闲', es: 'Inactivo' },
-  'common.status.working': { en: 'Working', zh: '工作中', es: 'Trabajo' },
-  'common.status.offline': { en: 'Offline', zh: '离线', es: 'Sin conexión' },
-  'common.status.paused': { en: 'Paused', zh: '已暂停', es: 'En pausa' },
-  'common.status.error': { en: 'Error', zh: '错误', es: 'Error' },
-  'common.status.online': { en: 'Online', zh: '在线', es: 'En línea' },
-  'common.status.verified': { en: 'Verified', zh: '已验证', es: 'Verificado' },
-  'common.status.outdated': { en: 'Outdated', zh: '已过期', es: 'Desactualizado' },
-  'common.status.expired': { en: 'Expired', zh: '已过期', es: 'Expirado' },
+  // Chinese sentence. The keys mirror the UI's two namespaces **exactly**
+  // (`common.taskStatus.*` / `common.processStatus.*`) — they used to share one
+  // `common.status.*` table that mixed the two facts, and this table drifted with
+  // it (`review` = 待审核 while the UI said 评审中). One namespace per fact, both
+  // here and in `web-ui/src/locales/*/common.json`; the parity test compares them.
+  //
+  // `approved` / `draft` / `assigned` are **not** task statuses (see
+  // `docs/architecture/state-machines.md` §16): approvals have their own namespace.
+  // `active` / `verified` / `outdated` / `expired` were never statuses either — they
+  // were dead keys kept alive only by this table copying the UI's table wholesale.
+  'common.taskStatus.pending': { en: 'Pending', zh: '待处理', es: 'Pendiente' },
+  'common.taskStatus.inProgress': { en: 'In Progress', zh: '进行中', es: 'En curso' },
+  'common.taskStatus.blocked': { en: 'Blocked', zh: '已阻塞', es: 'Bloqueado' },
+  'common.taskStatus.review': { en: 'In Review', zh: '评审中', es: 'En revisión' },
+  'common.taskStatus.completed': { en: 'Completed', zh: '已完成', es: 'Completado' },
+  'common.taskStatus.failed': { en: 'Failed', zh: '失败', es: 'Fallido' },
+  'common.taskStatus.rejected': { en: 'Rejected', zh: '已拒绝', es: 'Rechazado' },
+  'common.taskStatus.cancelled': { en: 'Cancelled', zh: '已取消', es: 'Cancelado' },
+  'common.taskStatus.archived': { en: 'Archived', zh: '已归档', es: 'Archivado' },
+  'common.processStatus.idle': { en: 'Idle', zh: '空闲', es: 'Inactivo' },
+  'common.processStatus.working': { en: 'Working', zh: '工作中', es: 'Trabajando' },
+  'common.processStatus.online': { en: 'Online', zh: '在线', es: 'En línea' },
+  'common.processStatus.offline': { en: 'Offline', zh: '离线', es: 'Sin conexión' },
+  'common.processStatus.paused': { en: 'Paused', zh: '已暂停', es: 'En pausa' },
+  'common.processStatus.error': { en: 'Error', zh: '错误', es: 'Error' },
 };
 
 /** The task priority words, for a param embedded in a sentence. */
@@ -257,15 +252,21 @@ export function priorityLabel(value: string | undefined, locale?: string): strin
 /**
  * The status word, for a param embedded in a sentence.
  *
- * Tries the value as written, then its camelCase form: task statuses are
- * `in_progress` while the string table is keyed `inProgress`, and a plain lookup
- * silently misses — leaving `状态已变为 in_progress` in a Chinese sentence.
+ * Governance and process statuses live in **two** namespaces (§16 of
+ * state-machines.md), so the lookup tries the governance table first and falls
+ * back to the process table — never a shared table, because sharing one is what
+ * let `review` mean 待审核 in a notification and 评审中 in the UI.
+ *
+ * CamelCase fallback: task statuses are `in_progress` while the string table is
+ * keyed `inProgress`; a plain lookup silently misses and leaves
+ * `状态已变为 in_progress` in a Chinese sentence.
  */
 export function statusLabel(value: string | undefined, locale?: string): string | undefined {
   if (!value) return undefined;
   const camel = value.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
-  return notificationLabel(`common.status.${value}`, locale)
-    ?? (camel !== value ? notificationLabel(`common.status.${camel}`, locale) : undefined);
+  return notificationLabel(`common.taskStatus.${value}`, locale)
+    ?? notificationLabel(`common.taskStatus.${camel}`, locale)
+    ?? notificationLabel(`common.processStatus.${value}`, locale);
 }
 
 /** Every key this module can write. Exposed so a test can prove coverage. */

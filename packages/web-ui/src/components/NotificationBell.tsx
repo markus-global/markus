@@ -13,6 +13,7 @@ import { ConfirmModal } from './ConfirmModal.tsx';
 import { UserInputModal } from './UserInputModal.tsx';
 import { timeAgo } from '../lib/timeAgo.ts';
 import { decideNextPage, mergeNotificationPage } from '../lib/notificationPaging.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 
 /** A request_user_input carries an explicit multi-question payload. */
 function isUserInputApproval(a: ApprovalInfo): boolean {
@@ -168,11 +169,6 @@ function notifI18n(n: NotificationInfo): NotifI18nMeta | undefined {
   return meta.i18n as NotifI18nMeta;
 }
 
-/** 任务状态用 snake_case（in_progress），词表用 camelCase（inProgress）——两种键都试。 */
-function camelizeEnum(value: string): string {
-  return value.replace(/_([a-z])/g, (_m, c: string) => c.toUpperCase());
-}
-
 export function notifTitle(n: NotificationInfo, t: TFunction): string {
   const i18n = notifI18n(n);
   if (!i18n?.titleKey) return n.title;
@@ -191,10 +187,9 @@ export function notifBody(n: NotificationInfo, t: TFunction): string {
     if (k === 'priority') {
       params[k] = t(`common:priority.${v}`, { defaultValue: v });
     } else if (k === 'status' || k === 'statusKey') {
-      const camel = camelizeEnum(v);
-      params[k] = t(`common:status.${v}`, {
-        defaultValue: camel === v ? v : t(`common:status.${camel}`, { defaultValue: v }),
-      });
+      // 不在这里拼 `common:taskStatus.*`、也不自带 camel 映射：那是词表的第二写者。
+      // 枚举 snake_case → 词表键的唯一映射在 `stateVocabulary.ts`（TASK_STATUS_KEY）。
+      params[k] = taskStatusLabel(v, t);
     } else {
       params[k] = v;
     }
@@ -216,7 +211,7 @@ function approvalStatusTone(status: string): { dot: string; text: string } {
 
 /**
  * Approval statuses live in their OWN namespace (`approvalStatus.*`), separate
- * from the task/requirement status space (`common:status.*`). The two spaces have
+ * from the task/requirement status space (`common:taskStatus.*`). The two spaces have
  * different vocabularies — `changes_requested` exists only on the approval side —
  * and sharing one dictionary is exactly what let a missing key render as the raw
  * English token in the bell.
@@ -737,7 +732,17 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
    */
   const unreadNotificationCount = sortedUnreadNotifications.length;
   const pendingApprovals = pendingApprovalIds.size;
-  const badgeCount = unreadNotificationCount + pendingApprovals;
+  /**
+   * 规则 1（设计 §5.1）：**审批不再在铃铛里独立产生未读**。
+   *
+   * 之前是 `unreadNotificationCount + pendingApprovals` —— 同一批待批既算在铃铛上、
+   * 又算在概览「等你处理」里，两处红点同时闪，用户要猜「这两个数字是不是同一件事」。
+   * 注意力预算上这是净亏损：多一个入口，却没多一份信息。
+   *
+   * 现在铃铛只承载**非审批类**通知；审批统一归入概览行动台（Inbox）。
+   * 「审批」标签页本身保留，作用是**入口**（点过去处理），不再自带数字。
+   */
+  const badgeCount = unreadNotificationCount;
 
   useEffect(() => {
     if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {

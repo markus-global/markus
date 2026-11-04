@@ -11,9 +11,9 @@ import {
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
-  resolveEntityKeys,
   isStrictStateItem,
 } from '@markus/shared';
+import { threadEntityKeys } from './thread-resolver.js';
 import type { EventBus } from './events.js';
 import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
 
@@ -106,10 +106,28 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
 export function mailboxDedupKey(
   item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
 ): string | undefined {
-  if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
-  const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-  const roundRaw = item.payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.round;
+  const meta = item.metadata as Record<string, unknown> | undefined;
+  const extra = item.payload.extra;
+  const taskId = item.payload.taskId ?? (meta?.taskId as string | undefined);
+
+  // 轮次字段有**两个写法**：`extra.round`（review_request 用这个）与
+  // `extra.executionRound`（任务执行链路实际写入的那个）。只读前者会让后者永远
+  // 算不出键 —— 实测同一任务同一轮被重复投递 11 次、dedup_key 全 NULL 即由此而来。
+  // 别名收在这一个函数里：别处不得再各写一份（否则又是「一个契约两处实现」）。
+  const roundRaw = extra?.round ?? extra?.executionRound ?? meta?.round ?? meta?.executionRound;
   const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
+
+  // 状态更新：同一轮次内「同一 from→to」至多一条。
+  // 迁移对必须取自**结构化字段**（不从 content 文本里解析）：同一轮次里
+  // in_progress→review→in_progress→review 是**两个不同事实**，不能被折叠。
+  if (item.sourceType === 'task_status_update') {
+    const from = typeof extra?.from === 'string' ? extra.from : undefined;
+    const to = typeof extra?.to === 'string' ? extra.to : undefined;
+    if (!taskId || !from || !to) return undefined;
+    return `task_status_update:${taskId}:${round ?? '-'}:${from}->${to}`;
+  }
+
+  if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
   if (!taskId || round === undefined) return undefined;
   return `${item.sourceType}:${taskId}:${round}`;
 }
@@ -142,6 +160,12 @@ export interface MailboxPersistence {
    *  treated as stale (a dead instance's claim must not be "respected" merely because its
    *  lease has not expired yet). */
   markStaleProcessingAsDropped?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
+  /**
+   * 撤回某实体下**尚未被消费**的行动型条目（`payload.extra.actionRequired`）。
+   * 需求转终态时调用：那条「请审阅」已经不再为真，留在队列里只会被反复重投。
+   * 返回撤回行数。
+   */
+  dropPendingByEntity?(agentId: string, entityId: string, reason: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -824,14 +848,19 @@ export class AgentMailbox {
    * `user:{senderId}` 又是 `conv:{sessionId}`），**全部**需要锁定。
    *
    * 作用域映射是**声明式**的 —— 由 `MAILBOX_TYPE_REGISTRY[type].entityScopes`
-   * 定义（见 @markus/shared `resolveEntityKeys`），而不是在这里硬编码 if 链，
+   * 定义（见 `thread-resolver.ts`），而不是在这里硬编码 if 链，
    * 因此新增 mailbox 类型不会静默绕过并发保护。
+   *
+   * **2026-11 起主轴换成流标识**（`threadEntityKeys`）：第一键是「这条事件属于哪条流」
+   * （`tsk_…` / `gh:owner/repo` / 会话 id / `agent:<id>`），旧的 `task:` / `req:` /
+   * `conv:` / `channel:` 维度作为**附加键**保留在后面——两个维度是「与」关系，
+   * 删掉旧键等于放宽并发保护。
    *
    * 返回值恒为非空数组：无法解析出具体实体时退化为 `['system:{agentId}']`
    * （同 Agent 内串行），即「未知 = 保守串行」而非「未知 = 完全并发」。
    */
   entityKeysOf(item: MailboxItem): string[] {
-    return resolveEntityKeys(item, this.agentId);
+    return threadEntityKeys(item, this.agentId);
   }
 
   /**
@@ -1224,6 +1253,38 @@ export class AgentMailbox {
       this.persistence?.updateStatus(item.id, 'dropped');
     }
     return toRemove.length;
+  }
+
+  /**
+   * 撤回某需求下**尚未被消费**的行动型条目（`extra.actionRequired`）。
+   *
+   * 为什么需要：`[REQUIREMENT REVIEW NEEDED]` 是**决策请求**，不是流水账。需求一旦
+   * completed/cancelled/rejected，这条请求就不再为真；留在队列里会被反复重投
+   * （实测：同一需求结项后事件仍被投递 40 余轮，每一轮烧掉一个完整回合的上下文）。
+   *
+   * 只撤行动型，普通状态流水保留 —— 历史要能查，只有「不再成立的请求」才该消失。
+   */
+  withdrawActionableFor(requirementId: string, reason: string): number {
+    let removed = 0;
+    for (let i = this.queue.length - 1; i >= 0; i--) {
+      const item = this.queue[i];
+      if (item.sourceType !== 'requirement_update') continue;
+      if (item.payload.requirementId !== requirementId) continue;
+      if (item.payload.extra?.actionRequired !== true) continue;
+      this.queue.splice(i, 1);
+      item.status = 'dropped';
+      this.persistence?.updateStatus(item.id, 'dropped');
+      removed++;
+      log.info('Actionable requirement item withdrawn', {
+        agentId: this.agentId, itemId: item.id, requirementId, reason,
+      });
+      this.eventBus.emit('mailbox:dropped', {
+        agentId: this.agentId, itemId: item.id, sourceType: item.sourceType, reason,
+      });
+    }
+    // 持久层里可能还有 queued/processing 的同实体行动项（内存队列看不到的那部分）。
+    const persisted = this.persistence?.dropPendingByEntity?.(this.agentId, requirementId, reason) ?? 0;
+    return removed + persisted;
   }
 
   /**

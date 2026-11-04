@@ -219,6 +219,121 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  {
+    id: 'thread-presentation-single-source',
+    title: 'Thread 展示层单一实现（STAGE_LABEL / ACTION_LABEL / 时间格式化只许一份）',
+    checks: [
+      {
+        file: 'packages/web-ui/src/lib/threadPresentation.ts',
+        label: '唯一实现存在（导出 STAGE_LABEL / ACTION_LABEL / formatRelative / formatDuration）',
+        hint: '单一实现文件消失 → 各页面会各自长回本地副本，文案与时间口径随即分叉',
+        detect: t =>
+          /export const STAGE_LABEL/.test(t) &&
+          /export const ACTION_LABEL/.test(t) &&
+          /export function formatRelative\b/.test(t) &&
+          /export function formatDuration\b/.test(t),
+        fixtures: {
+          ok: "export const STAGE_LABEL = {}; export const ACTION_LABEL = {}; export function formatRelative(ms) {} export function formatDuration(ms) {}",
+          bad: "export const STAGE_LABEL = {};",
+        },
+      },
+      // 已知消费方：这些文件曾经各带一份副本，历史上真的分叉过
+      // （概览说「等你回话」、Thread 视图说「等你回答」）。
+      // 局限：只管这 5 个文件，新增文件不受约束——所以 S3 同时把它们改成 import。
+      ...[
+        'src/components/InboxCard.tsx',
+        'src/pages/ThreadView.tsx',
+        'src/pages/RouterDesk.tsx',
+        'src/components/HistoryModal.tsx',
+        'src/components/ActionCenter.tsx',
+      ].map(rel => ({
+        file: `packages/web-ui/${rel}`,
+        label: `${rel} 不再自带 stage/action/时间副本，改为引用 lib/threadPresentation`,
+        hint: '该文件重新长出本地 STAGE_LABEL / relTime / relAge / humanDuration → 第二个写者回来了，文案会再次分叉',
+        detect: t =>
+          !/const STAGE_LABEL\s*:/.test(t) &&
+          !/const ACTION_LABEL\s*:/.test(t) &&
+          !/function\s+(relTime|relAge|humanDuration)\s*\(/.test(t) &&
+          /from '\.\.\/lib\/threadPresentation\.ts'/.test(t),
+        fixtures: {
+          ok: "import { stageLabel } from '../lib/threadPresentation.ts';",
+          bad: "const STAGE_LABEL: Record<string,string> = { idle: '空闲' };",
+        },
+      })),
+    ],
+  },
+  {
+    id: 'todo-order-single-writer',
+    title: '待办排序单一事实源（唯一比较器 = shared/src/types/todo-order.ts）',
+    checks: [
+      {
+        file: 'packages/shared/src/types/todo-order.ts',
+        label: '唯一比较器存在，且 stage 序号**复用** stageSortRank（不自建第二张 stage 表）',
+        hint: '唯一写者消失或被改写 → 各界面会各自长回本地排序，同一批待办在不同页面给出不同位次（2026-11-04 实测：审批优先 vs 紧急优先）',
+        detect: t =>
+          /export function orderTodos\b/.test(t) &&
+          /export function compareTodoOrder\b/.test(t) &&
+          /export const PRIORITY_RANK\b/.test(t) &&
+          /from '\.\/thread\.js'/.test(t) &&
+          /stageSortRank\(/.test(t),
+        fixtures: {
+          ok: "import { stageSortRank } from './thread.js';\nexport const PRIORITY_RANK = { urgent: 0 };\nexport function compareTodoOrder(a, b) { return stageSortRank(a.stage) - stageSortRank(b.stage); }\nexport function orderTodos(rows) { return [...rows].sort(compareTodoOrder); }",
+          bad: "export function orderTodos(rows) { return [...rows].sort((a, b) => b.lastActivity - a.lastActivity); }",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/event-routes.ts',
+        label: '/api/threads 出口用 orderTodos 排序，且不再就地按 lastActivity 排',
+        hint: '接口自己排一套 → 概览（前端 orderTodos）与接口的序列分叉，判据「API 序 == 首屏序」不成立',
+        detect: t =>
+          /orderTodos\(/.test(t) &&
+          !/\.sort\(\s*\(\s*x\s*,\s*y\s*\)\s*=>\s*Number\(y\.lastActivity/.test(t),
+        fixtures: {
+          ok: 'const withStages = rows.map((t) => withStage(t, deps));\njson(res, 200, { threads: orderTodos(withStages) });',
+          bad: 'const rows = [...map.values()].sort((x, y) => Number(y.lastActivity ?? 0) - Number(x.lastActivity ?? 0));',
+        },
+      },
+      {
+        file: 'packages/web-ui/src/lib/todoOrder.ts',
+        label: '浏览器入口只转发（同源相对导入），不得自带实现',
+        hint: '入口长出本地比较器/权重表 → 前端又有了第二个写者，与 shared 那份迟早分叉',
+        detect: t =>
+          /from '\.\.\/\.\.\/\.\.\/shared\/src\/types\/todo-order\.ts'/.test(t) &&
+          !/\.sort\(/.test(t) &&
+          !/PRIORITY_RANK\s*[:=]/.test(t),
+        fixtures: {
+          ok: "export { orderTodos, compareTodoOrder } from '../../../shared/src/types/todo-order.ts';",
+          bad: 'export const PRIORITY_RANK: Record<string, number> = { urgent: 0 };\nexport function orderTodos(rows) { return [...rows].sort((a, b) => a.id < b.id ? -1 : 1); }',
+        },
+      },
+      {
+        file: 'packages/web-ui/src/pages/Team.tsx',
+        label: 'Team 页角标「取最佳一条」走 orderTodos（pickAgentStageThread），不再手工展开 stage 偏序',
+        hint: '手写偏序回来了 → 角标与概览首屏指向不同的流（旧实现同 stage 取最新，契约取等得最久，方向相反）',
+        detect: t =>
+          /pickAgentStageThread\(|orderTodos\(|compareTodoOrder\(/.test(t) &&
+          !/\b\w*\.?stageRank\b\s*(<=|>=|<|>)\s*\w*\.?stageRank\b/.test(t),
+        fixtures: {
+          ok: "import { pickAgentStageThread } from '../lib/actionItems.ts';\nconst agentStage = useMemo(() => (selectedAgent ? pickAgentStageThread(threads, selectedAgent) : null), [threads, selectedAgent]);",
+          // bad 用 Team.tsx 的**真实旧形态**（不是人造样本）：这是它当初逃过门禁的样子。
+          bad: "let best: ThreadAPI | null = null;\nfor (const th of threads) {\n  if (!best || th.stageRank < best.stageRank\n    || (th.stageRank === best.stageRank && th.lastActivity > best.lastActivity)) best = th;\n}",
+        },
+      },
+      {
+        file: 'packages/web-ui/src/components/ActionCenter.tsx',
+        label: '概览行动台改用 orderTodos，本地优先级权重表与 sortActions 已删除',
+        hint: '概览自排一套 → 首屏序与 API 序分叉（这就是被修的缺陷本身）',
+        detect: t =>
+          /orderTodos\(/.test(t) &&
+          !/\bPRIORITY_WEIGHT\b/.test(t) &&
+          !/function\s+sortActions\s*\(/.test(t),
+        fixtures: {
+          ok: "import { orderTodos } from '../lib/todoOrder.ts';\nconst sorted = orderTodos(items);",
+          bad: "const PRIORITY_WEIGHT = { urgent: 0 };\nfunction sortActions(items) { return [...items].sort((a, b) => a.priority - b.priority); }",
+        },
+      },
+    ],
+  },
 ];
 
 /** 门禁自检：每条检测器都必须「命中违规样本、放过合规样本」。 */
@@ -445,6 +560,56 @@ function checkBareEmptyCatch(file, text) {
   return out;
 }
 
+/**
+ * 规则 6：todo-order-single-writer —— 全仓库反「待办排序第二写者」。
+ *
+ * 背景（2026-11-04 实测）：同一个事实「谁该先被处理」当时有三份实现 ——
+ * `event-routes#buildInboxRows`（lastActivity 降序）、`ActionCenter#sortActions`
+ * （本地优先级权重表）、`InboxCard/ThreadView`（就地 stageRank 比较）。
+ * 三份给出三种位次，同一条流在接口排第 4、在概览排第 1。
+ *
+ * 判据：**唯一写者**是 `packages/shared/src/types/todo-order.ts`（浏览器入口
+ * `packages/web-ui/src/lib/todoOrder.ts` 只转发同一份源码）。除此之外任何文件
+ * 重新定义「优先级权重表 / stage 排序常量 / 待办比较器 / 就地 stage 比较器」即红。
+ *
+ * 局限（诚实标注）：这是**形态**检测，不是语义检测。换个记号（比如用三元表达式
+ * 手工展开权重）可以绕过。真正的兜底是行为测试
+ * `actionItems.parity.test.tsx` / `threads-order-parity.test.ts` —— 它们断言
+ * 「两侧序列逐条相等」，换个记号但给出不同序列，测试会红。
+ */
+const TODO_ORDER_WRITER_FILES = new Set([
+  'packages/shared/src/types/todo-order.ts', // 唯一写者
+  'packages/web-ui/src/lib/todoOrder.ts', // 浏览器入口（只转发，不实现）
+]);
+
+const TODO_ORDER_SECOND_WRITER = [
+  { re: /\b(PRIORITY_WEIGHT|PRIORITY_ORDER|PRIORITY_RANK)\b\s*[:=]/, what: '优先级权重表' },
+  { re: /\b(TODO_STAGE_RANK|STAGE_SORT_RANK|INBOX_STAGE_RANK|STAGE_PRIORITY)\b\s*[:=]/, what: 'stage 排序常量表' },
+  { re: /function\s+(sortActions|sortTodos|orderInbox|compareTodoOrder|orderTodos)\s*\(/, what: '待办排序函数' },
+  { re: /\.sort\([^)]{0,120}\bstageRank\b/, what: '就地 stage 比较器' },
+  // 形态覆盖（2026-11-04 第 3 轮补）：上面那条只匹配 `.sort(...)`，于是 Team.tsx 里
+  // 「for 循环 + 手写偏序」（`th.stageRank < best.stageRank || (相等 && lastActivity > ...)`）
+  // 从门禁底下走过去了，而且它的方向与契约相反。规则要按**语义形态**写，不能按某一种写法写。
+  { re: /\b\w*\.?stageRank\b\s*(<=|>=|<|>)\s*\w*\.?stageRank\b/, what: '就地 stage 偏序比较（非 .sort）' },
+];
+
+function checkTodoOrderSingleWriter(file, text) {
+  const relPath = rel(file);
+  if (TODO_ORDER_WRITER_FILES.has(relPath)) return [];
+  const out = [];
+  for (const { re, what } of TODO_ORDER_SECOND_WRITER) {
+    const m = re.exec(text);
+    if (!m) continue;
+    const line = text.slice(0, m.index).split('\n').length;
+    out.push({
+      rule: 'todo-order-single-writer',
+      line,
+      snippet: `${what}：${m[0].replace(/\s+/g, ' ').slice(0, 80)} → 请改用 @markus/shared 的 orderTodos / PRIORITY_RANK（唯一写者 packages/shared/src/types/todo-order.ts）`,
+    });
+  }
+  return out;
+}
+
 function loadAllowlist() {
   if (!existsSync(ALLOWLIST_FILE)) return { 'no-console': {}, 'no-empty-catch': {}, 'session-identity': {} };
   try {
@@ -468,6 +633,7 @@ for (const file of collectSources()) {
     ...checkSessionIdentity(file, text),
     ...checkEventReachability(file, text),
     ...checkShellWriteGate(file, text),
+    ...checkTodoOrderSingleWriter(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });

@@ -3,11 +3,9 @@ import {
   generateId,
   type MailboxItem,
   type MailboxItemType,
-  type MailboxPriority,
   type AttentionState,
   type AttentionDecision,
-  type DecisionType,
-  type DecisionContext,
+  type AttentionAction,
   type AgentMindState,
   type TriageContext,
   type TriageResult,
@@ -98,7 +96,7 @@ export interface AttentionDelegate {
   evaluateInterrupt(
     currentItem: MailboxItem,
     newItem: MailboxItem,
-  ): Promise<DecisionType>;
+  ): Promise<AttentionAction>;
   getTriageContext?(): Promise<TriageContext>;
   onTriageCompleted?(result: TriageResult | null): void;
   /** Full-session deliberation: the agent reasons over all queued items as itself. */
@@ -154,9 +152,9 @@ export interface DecisionPersistence {
 
 /**
  * Lightweight LLM judge for ambiguous attention decisions.
- * Receives a structured prompt and returns a DecisionType string.
+ * Receives a structured prompt and returns an AttentionAction string.
  */
-export type LLMDecisionJudge = (prompt: string) => Promise<DecisionType>;
+export type LLMDecisionJudge = (prompt: string) => Promise<AttentionAction>;
 
 
 /**
@@ -230,7 +228,7 @@ export class AttentionController {
   /** Set to true when a human_chat arrives during deliberation, causing early abort. */
   private deliberationAbortSignal = false;
   /** Tracks whether the last yield-point decision was 'cancel' vs 'preempt'. */
-  private lastYieldDecision?: DecisionType;
+  private lastYieldDecision?: AttentionAction;
   private unsubscribeNewItem?: () => void;
   private decisions: AttentionDecision[] = [];
   /** 冲突策略：auto=实体锁冲突时放回队列错开（默认）；report=冲突时上报并放回。 */
@@ -831,6 +829,13 @@ export class AttentionController {
    * **不同类型的 item**（如人类消息与后台回调）在同一份记忆会话里并发跑回合。
    * 声明式的实体维度永远推不出后者的存在（payload 里没有这个事实），所以由
    * delegate 用与 `resolveTurnSession` 同一套解析来表态。
+   *
+   * **2026-11 起这一维度降级为安全网**：`mailbox.entityKeysOf` 的主轴已经改成流标识
+   * （`thread-resolver.ts`，会读 `extra.sessionId` / `metadata.dbSessionId`），
+   * 所以「同一会话」通常已由主轴覆盖。这里继续保留是为了兜住**主轴推不出的情形**
+   * —— item 的流标识不是会话派生（如 `tsk_…`），但这一轮实际会跑进某个既有会话。
+   * 保留不动的原因是：删掉它属于「无法用现有用例证明安全」的行为变更，
+   * 而它的代价只是多一把键。要删必须先补一条「流标识与会话不重合」的回归用例。
    */
   private lockKeysFor(item: MailboxItem): string[] {
     const keys = this.mailbox.entityKeysOf(item);
@@ -1468,7 +1473,7 @@ export class AttentionController {
    * - 'merge' → item was absorbed into current work (caller may inject into session)
    */
   async checkYieldPoint(): Promise<{
-    decision: DecisionType;
+    decision: AttentionAction;
     item?: MailboxItem;
     reasoning?: string;
   }> {
@@ -1508,7 +1513,7 @@ export class AttentionController {
 
     this.setState('deciding');
 
-    let decisionType: DecisionType;
+    let decisionType: AttentionAction;
     try {
       decisionType = this.delegate
         ? await this.delegate.evaluateInterrupt(this.currentFocus, newItem)
@@ -1618,7 +1623,7 @@ export class AttentionController {
    * | R9   | New is mention, current priority >= normal      | preempt   |
    * | --   | Otherwise                                       | continue  |
    */
-  heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): DecisionType {
+  heuristicDecision(currentItem: MailboxItem, newItem: MailboxItem): AttentionAction {
     const isNewUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(newItem.sourceType);
     const isCurrentUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(currentItem.sourceType);
 
@@ -1732,7 +1737,7 @@ export class AttentionController {
   async evaluateWithLLMFallback(
     currentItem: MailboxItem,
     newItem: MailboxItem,
-  ): Promise<DecisionType> {
+  ): Promise<AttentionAction> {
     const heuristic = this.heuristicDecision(currentItem, newItem);
 
     // If heuristics produce a clear non-continue answer, use it
@@ -1746,7 +1751,7 @@ export class AttentionController {
     try {
       const prompt = this.buildJudgePrompt(currentItem, newItem);
       const llmDecision = await this.llmJudge(prompt);
-      const validDecisions: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+      const validDecisions: AttentionAction[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
       if (validDecisions.includes(llmDecision)) return llmDecision;
     } catch (err) {
       log.debug('LLM judge failed, falling back to heuristic', {
@@ -2087,7 +2092,7 @@ export class AttentionController {
   }
 
   private recordDecision(
-    type: DecisionType,
+    type: AttentionAction,
     item: MailboxItem,
     reasoning: string,
   ): AttentionDecision {
@@ -2121,7 +2126,7 @@ export class AttentionController {
   }
 
   private formatDecisionReasoning(
-    type: DecisionType,
+    type: AttentionAction,
     currentItem: MailboxItem,
     newItem: MailboxItem,
   ): string {

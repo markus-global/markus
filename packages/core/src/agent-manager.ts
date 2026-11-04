@@ -25,6 +25,7 @@ import {
   MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import { setThreadWakeDeliverer } from './thread-wake-bus.js';
 
 /**
  * Peer agent as seen by `askAgent` (the `agent_ask_agent` tool).
@@ -62,6 +63,7 @@ import { createA2ATools, type A2AContext } from './tools/a2a.js';
 import { createStructuredA2ATools } from './tools/a2a-structured.js';
 import { createAgentTaskTools, type AgentTaskContext } from './tools/task-tools.js';
 import { createProjectTools, type ProjectServiceBridge, type DeliverableServiceBridge, type ProjectToolsContext } from './tools/project-tools.js';
+import { buildResourceTools, type ResourceToolDeps } from './tools/resource-tools.js';
 import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
@@ -482,6 +484,8 @@ export class AgentManager {
   private sessionTitleUpdater?: (sessionId: string, title: string) => void;
   private taskService?: TaskServiceBridge;
   private projectService?: ProjectServiceBridge;
+  /** 责任域工具依赖提供者（由 org-manager 注入；未注入时四个工具不存在） */
+  private resourceToolDeps?: (ctx: { agentId: string; agentName: string; teamId?: string }) => ResourceToolDeps | undefined;
   private deliverableService?: DeliverableServiceBridge;
   private webUiBaseUrl?: string;
   private semanticSearch?: SemanticMemorySearch;
@@ -500,7 +504,12 @@ export class AgentManager {
   private escalationHandler?: (agentId: string, reason: string) => void;
   private approvalHandler?: (
     agentId: string,
-    request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+    request: {
+      toolName: string; toolArgs: Record<string, unknown>; reason: string;
+      taskId?: string; sessionId?: string; chatSessionId?: string;
+      /** 逐件事许可（Mandate）的载体，见 core/src/agent.ts ApprovalCallback */
+      resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+    }
   ) => Promise<{ approved: boolean; comment?: string }>;
   private stateChangeHandler?: (
     agentId: string,
@@ -671,8 +680,14 @@ export class AgentManager {
     skillRegistry?: SkillRegistry;
     taskService?: TaskServiceBridge;
     templateRegistry?: TemplateRegistry;
+    /**
+     * 责任域工具依赖提供者。core 不依赖 storage，所以由上层注入：
+     * 返回 undefined 时不注册这四个工具（而不是注册一组跑不动的空实现）。
+     */
+    resourceToolDeps?: (ctx: { agentId: string; agentName: string; teamId?: string }) => ResourceToolDeps | undefined;
   }) {
     this.llmRouter = options.llmRouter;
+    this.resourceToolDeps = options.resourceToolDeps;
     this.roleLoader = options.roleLoader ?? new RoleLoader();
     this.dataDir = options.dataDir ?? markusPath('agents');
     this.sharedDataDir = options.sharedDataDir;
@@ -717,6 +732,32 @@ export class AgentManager {
     this.feishuToolsConfig = options.feishuToolsConfig;
     this.skillRegistry = options.skillRegistry;
     this.taskService = options.taskService;
+
+    // 流事件 → rest 等待者的投递器（组合根注入一次）。
+    //
+    // 为什么放在这里：本类拥有 agents Map 和 `deliverCallback`，是唯一能满足
+    // 「从 agentId 找到实例并投递」的地方。放在 core 的其它地方都会变成环依赖。
+    //
+    // 投递失败静默：rest 是旁路，不能因为叫醒失败而影响业务写入 —— 但也不能假装
+    // 成功（`emitThreadWake` 会返回真实命中数，日志里能看出落差）。
+    setThreadWakeDeliverer((matched, event, payload) => {
+      const agent = this.agents.get(matched.agentId);
+      if (!agent) return;
+      try {
+        agent.deliverCallback({
+          callbackId: matched.id,
+          type: 'rest',
+          deliveryMode: matched.deliveryMode ?? 'in_session',
+          originSessionId: matched.originSessionId,
+          originScenario: matched.originScenario,
+          summary: `Rest condition met: ${event.summary}`,
+          content: payload,
+          correlationId: matched.correlationId,
+        });
+      } catch (err) {
+        log.warn('Thread wake delivery failed', { agentId: matched.agentId, error: String(err) });
+      }
+    });
 
     const embeddingApiKey = process.env['OPENAI_API_KEY'] ?? process.env['EMBEDDING_API_KEY'];
     if (embeddingApiKey) {
@@ -1211,6 +1252,15 @@ export class AgentManager {
     return mcpTools;
   }
 
+  /**
+   * 日常链路写 Thread 的注入点（core 不依赖 storage，由上层注入）。
+   * A2A 投递时回调 —— 同一次 DM 对话是一条流，不因方向不同裂成两条。
+   */
+  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string, text?: string) => void): void {
+    this.threadEnsurer = fn;
+  }
+  private threadEnsurer?: (a: string, b: string, actorAgentId?: string, text?: string) => void;
+
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
   }
@@ -1382,6 +1432,14 @@ export class AgentManager {
     // Route through a deterministic DM channel for persistent history and a
     // stable session: dm:a2a:{sorted_id_1}:{sorted_id_2}
     const dmChannelKey = this.getA2ADmChannelKey(fromId, targetId);
+    // A2A 进入 Thread（S3）。包 try：建流是派生行为，绝不得阻断消息投递。
+    try {
+      // 把正文一并交出去：它就在这里（`message`），没有理由让时间线只能写
+      // 「A → B 发了一条消息」而不写发了什么。
+      this.threadEnsurer?.(fromId, targetId, fromId, message);
+    } catch {
+      /* 派生视图失败不影响投递本身 */
+    }
     if (this.groupChatHandlers?.ensureDmChannel) {
       const target = this.getAgent(targetId);
       await this.groupChatHandlers.ensureDmChannel(
@@ -1445,6 +1503,40 @@ export class AgentManager {
       policy.builderArtifactsDir = builderArtifactsDir;
     }
     return policy;
+  }
+
+  /**
+   * 注册四个责任域工具。依赖由上层注入（core 不依赖 storage）；
+   * 未注入或返回 undefined 时**不注册**——宁可工具不存在，也不要注册一组跑不动的空实现。
+   */
+  private injectResourceTools(agent: Agent, id: string, config: { name?: string; teamId?: string }): void {
+    if (!this.resourceToolDeps) return;
+    const deps = this.resourceToolDeps({ agentId: id, agentName: config.name ?? id, teamId: config.teamId });
+    if (!deps) return;
+    for (const tool of buildResourceTools(deps)) agent.registerTool(tool);
+
+    // 责任域同时写进 system prompt 固定段（P1-⑤）：工具注册了但 agent 从不调用 = 等于不存在。
+    // 与 resource_status 工具同源（同一个 deps.bindings），不会出现两个口径。
+    agent.getResourceBindings = () => {
+      const mine = [
+        ...deps.bindings.listByHolder('agent', id),
+        ...(config.teamId ? deps.bindings.listByHolder('team', config.teamId) : []),
+      ];
+      return mine.map(b => ({
+        resource: b.resource,
+        scope: b.scope,
+        autonomy: b.autonomy,
+        grantedBy: `${b.grantedBy.kind}:${b.grantedBy.id}`,
+      }));
+    };
+
+    // 逐件事审批（Mandate）的读取器：执行闸门（Agent.enforceRedLine）靠它回答
+    // 「这件事批了没有」。未注入时一律 none —— 不知道就是没批，绝不猜成已批。
+    if (deps.mandates) {
+      const mandates = deps.mandates;
+      agent.getMandate = (resource, actionScope) =>
+        mandates.findMandate({ agentId: id, resource, actionScope }).state;
+    }
   }
 
   async createAgent(request: CreateAgentRequest): Promise<Agent> {
@@ -2122,6 +2214,8 @@ export class AgentManager {
 
       log.info(`Task tools injected for agent ${id}`);
     }
+
+    this.injectResourceTools(agent, id, config);
 
     // Workflow context + tools for manager agents
     if (request.agentRole === 'manager' && request.teamId) {
@@ -3040,6 +3134,7 @@ export class AgentManager {
       const ts2 = this.taskService;
       const rs2 = this.requirementService;
       const dvCallbacks2 = this.buildDeliverableCallbacks(id);
+      this.injectResourceTools(agent, id, config);
       for (const tool of createProjectTools({
         agentId: id,
         orgId: config.orgId,
@@ -3435,7 +3530,12 @@ export class AgentManager {
   setApprovalHandler(
     handler: (
       agentId: string,
-      request: { toolName: string; toolArgs: Record<string, unknown>; reason: string; taskId?: string; sessionId?: string; chatSessionId?: string }
+      request: {
+        toolName: string; toolArgs: Record<string, unknown>; reason: string;
+        taskId?: string; sessionId?: string; chatSessionId?: string;
+        /** 逐件事许可（Mandate）的载体，见 agent.ts ApprovalCallback */
+        resource?: string; actionScope?: import('@markus/shared').ResourceScope;
+      }
     ) => Promise<{ approved: boolean; comment?: string }>
   ): void {
     this.approvalHandler = handler;

@@ -110,18 +110,6 @@
     "mcp": "MCP: {{server}}"
   },
   "profilePage": {
-    "taskStatus": {
-      "pending": "Pending",
-      "assigned": "Assigned",
-      "in_progress": "In Progress",
-      "completed": "Completed",
-      "failed": "Failed",
-      "cancelled": "Cancelled",
-      "review": "Review",
-      "approved": "Approved",
-      "rejected": "Rejected",
-      "draft": "Draft"
-    },
     "loadingAgent": "Loading agent...",
     "chat": "Chat",
     "hub": "Hub",
@@ -174,6 +162,10 @@
         "memory": {
           "title": "Memory & Heartbeat",
           "hint": "Long-term memory · sessions · heartbeat rhythm"
+        },
+        "governance": {
+          "title": "Autonomy & Oversight",
+          "hint": "Autonomy level · owned resources · recent routing decisions"
         },
         "usage": {
           "title": "Usage & Storage",
@@ -511,9 +503,9 @@
         "4": "Background"
       },
       "attention": {
-        "idle": "STANDBY",
-        "focused": "FOCUSED",
-        "deciding": "DECIDING"
+        "idle": "AGENT STANDBY",
+        "focused": "AGENT FOCUSED",
+        "deciding": "AGENT DECIDING"
       },
       "mailbox": {
         "commentFrom": "Comment from {{name}}",
@@ -535,7 +527,8 @@
         "systemEvent": "System Event",
         "statusArrow": "{{from}} → {{to}}"
       }
-    }
+    },
+    "stream": "Stream"
   },
   "deliverables": {
     "empty": "No deliverables yet",

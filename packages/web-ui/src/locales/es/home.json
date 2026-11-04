@@ -112,6 +112,8 @@
   },
   "attention": {
     "title": "Necesita tu atención",
+    "tasksAndApprovals": "Tareas y aprobaciones",
+    "recentActivity": "Actividad reciente",
     "allClear": "Todo despejado - nada necesita tu atención ahora mismo.",
     "approvals": "a) Aprobaciones pendientes",
     "requirements": "requisito(s) para examinar",

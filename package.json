@@ -21,10 +21,11 @@
     "test:coverage:web-ui": "vitest run --config vitest.web-ui.coverage.config.ts",
     "coverage:node": "vitest run --project node --coverage --coverage.reporter=text-summary --coverage.reporter=json-summary --coverage.reportsDirectory=./coverage/node",
     "test:skipped-audit": "node scripts/report-skipped-tests.mjs coverage/vitest-report.json",
+    "check:design-ledger": "node scripts/check-design-ledger.mjs",
     "coverage:ratchet": "node scripts/check-coverage-ratchet.mjs",
     "coverage:ratchet:node": "node scripts/check-coverage-ratchet.mjs --project node",
     "typecheck": "tsc -b && tsc --noEmit -p packages/web-ui",
-    "quality": "npm run typecheck && node scripts/architecture-guard.mjs && npm run test",
+    "quality": "npm run typecheck && node scripts/architecture-guard.mjs && node scripts/check-design-ledger.mjs && npm run test",
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",
     "example:gui": "tsx examples/gui-automation-workflow.ts",
@@ -32,7 +33,8 @@
     "markus": "node packages/cli/dist/index.js",
     "build:publish": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus-global/cli build:bundle",
     "dev:desktop": "pnpm build && concurrently -n backend,vite,electron -c blue,green,magenta \"node packages/cli/dist/index.js start\" \"node scripts/wait-for-api.mjs && pnpm --filter @markus/web-ui dev\" \"wait-on http://localhost:8056/api/health && cd packages/desktop && ELECTRON_DEV=1 electron .\"",
-    "build:desktop": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus/desktop build:electron"
+    "build:desktop": "pnpm build && pnpm --filter @markus/web-ui build && pnpm --filter @markus/desktop build:electron",
+    "conformance": "node scripts/probe-superagent.mjs"
   },
   "engines": {
     "node": ">=22.0.0",

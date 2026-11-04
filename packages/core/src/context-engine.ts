@@ -477,6 +477,19 @@ export class ContextEngine {
       title: string;
       content: string;
     }>;
+    /**
+     * 该 agent / team 当前负责的外部资源（来自 resource_bind）。
+     *
+     * 为什么不靠 agent「自己想起来调 resource_status」：工具存在但从不被调用等于不存在。
+     * 「主动」的定义是**在没有任何提示的情况下知道自己在盯什么** —— 所以必须进固定段。
+     * P1-⑤（复审文档 §五）。
+     */
+    resourceBindings?: Array<{
+      resource: string;
+      scope: string;
+      autonomy?: string;
+      grantedBy?: string;
+    }>;
     recentFeedback?: Array<{
       authorName: string;
       priority: string;
@@ -1515,6 +1528,30 @@ export class ContextEngine {
     // tool LIVE vs catalog), plus provider afford guard.
     if (promptProfile === 'converse') {
       this.observeConverseSystemSize(stable, semiStable, dynamic, SYSTEM_PROMPT_BUDGET_CONVERSE);
+    }
+
+    // ── 你负责的资源（固定段：**永远输出**，count: 0 也写）────────────────────
+    // 缓存纪律：不让变量决定模板形状。缺少资源时省略整段 = 两种前缀 = 两个缓存条目，
+    // 命中率腰斩。宁可写「count: 0」，也不改模板结构。
+    stable.push('\n## 你负责的资源');
+    if (opts.resourceBindings && opts.resourceBindings.length > 0) {
+      stable.push(
+        `你当前对 ${opts.resourceBindings.length} 项外部资源负有责任。这些是你要**主动**盯的东西，` +
+          '不需要任何人提醒：',
+      );
+      for (const b of opts.resourceBindings) {
+        const autonomy = b.autonomy ? ` · 自主度 ${b.autonomy}` : '';
+        stable.push(`- \`${b.resource}\` · 权限 ${b.scope}${autonomy} · 由 ${b.grantedBy ?? '未知'} 授予`);
+      }
+      stable.push(
+        '收到这些资源上的信号（新评论 / 新 issue / CI 失败 / 被点名要求操作）时，' +
+          '先判断是否落在你的职责与权限内，再决定是否动手；需要最新状态时调用 `resource_status`。',
+      );
+    } else {
+      stable.push(
+        '你目前不负责任何外部资源（count: 0）。如果某个方向需要长期盯，用 `resource_bind` 声明 —— ' +
+          '声明之后这一段会列出它。',
+      );
     }
 
     // Build cache-aware segments: each tier becomes a segment with an

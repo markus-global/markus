@@ -128,27 +128,27 @@ const STATUS_TABLE: Record<string, AgentStatusPresentation> = {
   idle: {
     tone: 'ok', dotClass: 'bg-green-400', running: true,
     chipClass: 'bg-green-500/10 border border-green-500/20', textClass: 'text-green-600',
-    labelKey: 'common:status.idle',
+    labelKey: 'common:processStatus.idle',
   },
   working: {
     tone: 'busy', dotClass: 'bg-blue-400 animate-pulse', running: true,
     chipClass: 'bg-blue-500/10 border border-blue-500/20', textClass: 'text-blue-500',
-    labelKey: 'common:status.working',
+    labelKey: 'common:processStatus.working',
   },
   error: {
     tone: 'danger', dotClass: 'bg-red-400 animate-pulse', running: true,
     chipClass: 'bg-red-500/10 border border-red-500/20', textClass: 'text-red-500',
-    labelKey: 'common:status.error',
+    labelKey: 'common:processStatus.error',
   },
   paused: {
     tone: 'warn', dotClass: 'bg-amber-400', running: false,
     chipClass: 'bg-amber-500/10 border border-amber-500/20', textClass: 'text-amber-600',
-    labelKey: 'common:status.paused',
+    labelKey: 'common:processStatus.paused',
   },
   offline: {
     tone: 'muted', dotClass: 'bg-gray-400', running: false,
     chipClass: 'bg-gray-500/10 border border-border-default', textClass: 'text-fg-tertiary',
-    labelKey: 'common:status.offline',
+    labelKey: 'common:processStatus.offline',
   },
 };
 
@@ -278,7 +278,7 @@ export function splitRecentActivity<T extends { type: string }>(
  * `usage` 殿后。「用量」不是被删掉，是退到后面：首屏已经有一行紧凑的用量概览，
  * 需要细节时多点一次即可。
  */
-export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory' | 'usage';
+export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory' | 'usage' | 'governance';
 
 /**
  * Canonical order of the overview sub-tabs. The page maps over this array, so the
@@ -290,7 +290,7 @@ export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory'
  * 一旦各写一遍，迟早会出现「默认高亮的是第 4 个」这类只有肉眼能发现的错位。
  */
 export const OVERVIEW_SECTION_IDS: readonly OverviewSectionId[] = [
-  'files', 'mind', 'recent', 'tools', 'memory', 'usage',
+  'files', 'mind', 'recent', 'tools', 'memory', 'governance', 'usage',
 ];
 
 /** 打开概览时落在哪一组：与 `OVERVIEW_SECTION_IDS[0]` 同源，见上方注释。 */

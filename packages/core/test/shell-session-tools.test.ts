@@ -35,7 +35,10 @@ describe('ShellSessionManager', () => {
     await manager.execute('agent-2', 'export MARKUS_TEST=hello');
     const result = await manager.execute('agent-2', 'echo $MARKUS_TEST');
     expect(result.exitCode).toBe(0);
-    expect(result.stdout.trim()).toBe('hello');
+    // 只断言「包含」而不是「等于」：登录 shell 可能往 stdout 写横幅
+    // （macOS zsh：'The default interactive shell is now zsh…'），把它算进失败
+    // 是拿环境噪声当回归。这里关心的是变量真的传进去了。
+    expect(result.stdout).toContain('hello');
   });
 
   it('creates named session via create()', async () => {

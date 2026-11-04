@@ -359,7 +359,8 @@ describe('AttentionController 并发 worker 池（方案 A）', () => {
 
     // report 策略下应至少发出一次冲突事件（同实体并发必然有锁竞争）
     expect(conflicts.length).toBeGreaterThanOrEqual(1);
-    expect(conflicts[0].entityKey).toBe('task:tsk_RACE');
+    // 2026-11 起冲突上报的是**主轴**（流标识），不再是旧 `task:` 维度键
+    expect(conflicts[0].entityKey).toBe('tsk_RACE');
     // item 不丢：两个 item 最终都被处理
     expect(doneIds).toHaveLength(2);
     // 锁不泄漏
