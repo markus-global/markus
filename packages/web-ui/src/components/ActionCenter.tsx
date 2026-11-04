@@ -6,6 +6,8 @@ import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { STAGE_LABEL, formatDuration, formatRelativeAny, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { markNotificationRead } from '../lib/notifyRead.ts';
+import { MarkdownMessage } from './MarkdownMessage.tsx';
+import { publishUnreadCount } from '../lib/attentionCount.ts';
 
 /**
  * 概览页的「行动台」—— 取代原先并列的两块（独立收件箱卡片 + Needs Your Attention 聚合块）。
@@ -149,6 +151,8 @@ export function ActionCenter({
 
   const sorted = sortActions(items);
   const visibleActions = showAllActions ? sorted : sorted.slice(0, ACTION_CAP);
+  /** 「等你处理」标题旁的数字 = **待审批**数（不是全部行动项，也不是未读）。 */
+  const approvalCount = sorted.filter(a => a.kind === 'approval').length;
   const hiddenActions = sorted.length - visibleActions.length;
   /**
    * 只有**未读且高优先级**的通知才进概览（Owner 2026-11-02）。
@@ -179,7 +183,10 @@ export function ActionCenter({
         .then(d => {
           if (!alive) return;
           setNotices(d.notifications ?? []);
-          setUnread((d as { unreadCount?: number }).unreadCount ?? 0);
+          const n = (d as { unreadCount?: number }).unreadCount ?? 0;
+          setUnread(n);
+          // 未读计入导航徽标（Owner 2026-11-04：未读也要算进同一个数字）
+          publishUnreadCount(n);
         })
         .catch(() => undefined);
     };
@@ -204,9 +211,12 @@ export function ActionCenter({
           <div className="flex items-center gap-2 min-w-0">
             <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${sorted.length > 0 ? 'bg-amber-500 animate-pulse' : 'bg-green-500'}`} />
             <h3 className="text-sm font-semibold text-fg-primary">等你处理</h3>
-            {sorted.length > 0 && (
+            {/* 这个数字 = **待审批**数（Owner 2026-11-04）。
+                「等你处理」这一块的核心是审批；未读消息已经由右上角的「未读消息（x条）」单独承担，
+                两边各算各的，不混成一个数。 */}
+            {approvalCount > 0 && (
               <span className="text-[11px] font-semibold text-amber-600 bg-amber-500/10 px-1.5 py-0.5 rounded tabular-nums">
-                {sorted.length}
+                {approvalCount}
               </span>
             )}
           </div>
@@ -219,7 +229,7 @@ export function ActionCenter({
             onClick={() => setShowHistory(true)}
             className="shrink-0 flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
           >
-            历史
+            未读消息{unread > 0 ? `（${unread}条）` : ''}
             {unread > 0 && (
               <span className="text-[10px] font-semibold text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded-full tabular-nums">
                 {unread > 99 ? '99+' : unread}
@@ -406,8 +416,14 @@ export function ActionCenter({
                   </span>
                 )}
               </div>
+              {/* 正文是 markdown（任务描述/需求描述里常带标题、列表、表格、代码）。
+                  以前用 whitespace-pre-wrap 直接吐纯文本 —— 于是 `## 标题`、`| 表 |` 原样显示。
+                  Owner 2026-11-04：这里应该 markdown 渲染。用全应用同一份 MarkdownMessage，
+                  不另写第二套解析器。 */}
               {detail.detail ? (
-                <p className="mt-3 text-[12px] text-fg-secondary leading-relaxed whitespace-pre-wrap">{detail.detail}</p>
+                <div className="mt-3 text-[12px] text-fg-secondary leading-relaxed">
+                  <MarkdownMessage content={detail.detail} />
+                </div>
               ) : (
                 <p className="mt-3 text-[11px] text-fg-muted">没有更多说明，点下面的按钮去处理。</p>
               )}

@@ -119,8 +119,8 @@ export function HistoryModal({
   /** 未读数取**服务端**口径（与铃铛、概览一致）。本地数分页列表必然偏小。 */
   const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
-  /** 「只看未读」筛选（Owner 2026-11-04：顶部「x 条未读」应该能点，点了只展示未读）。 */
-  const [unreadOnly, setUnreadOnly] = useState(false);
+  /** 默认只看未读（Owner 2026-11-04：这个入口叫「未读消息」，打开就该是未读）。 */
+  const [unreadOnly, setUnreadOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
