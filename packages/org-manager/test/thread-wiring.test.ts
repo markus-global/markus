@@ -21,6 +21,7 @@ import {
   reportThreadEnsureFailure,
   taskRef,
   a2aRef,
+  wireA2AThreads,
 } from '../src/thread-ensure.js';
 import { observeThreadEvent } from '../src/thread-observe.js';
 import { resetThreadWiringHealth, threadWiringHealth } from '../src/thread-wiring-metrics.js';
@@ -314,6 +315,41 @@ describe('a2a 链路 — 投递时建流', () => {
   });
 });
 
+describe('a2a 完整接线（wireA2AThreads）— 组合根不可能把它 guard 掉', () => {
+  /**
+   * 存在的原因是一次真实事故（评审打回项 ①）：注册被包在 `if (storage?.threadRepo)` 里，
+   * 于是 storage 存在、threadRepo 缺失时 ensurer 压根不注册，闭包里那条上报**不可达**
+   * —— 缺失重新变成静默。现在「真缺失」的两种形态都是可测的行为了。
+   */
+  it('storage 为 null（initStorage 失败）→ no-thread-repo 且计数可见', () => {
+    resetThreadWiringHealth();
+    const wire = wireA2AThreads(null);
+    expect(wire('agt_a', 'agt_b', 'agt_a', 'hi')).toBe('no-thread-repo');
+    expect(threadWiringHealth().ensure['no-thread-repo']).toBe(1);
+  });
+
+  it('storage 存在但未挂 threadRepo（正是 guard 当年藏住的场景）→ no-thread-repo', () => {
+    resetThreadWiringHealth();
+    const wire = wireA2AThreads({ triggerRepo: storage.triggerRepo } as unknown as StorageBridge);
+    expect(wire('agt_a', 'agt_b', 'agt_a', 'hi')).toBe('no-thread-repo');
+    expect(threadWiringHealth().ensure['no-thread-repo']).toBe(1);
+  });
+
+  it('正常存储 → ensured，且 threads / triggers 各落一行（含正文摘要）', () => {
+    resetThreadWiringHealth();
+    const wire = wireA2AThreads(storage);
+    expect(wire('agt_a', 'agt_b', 'agt_a', '你好，这是正文')).toBe('ensured');
+
+    expect(threadCount(a2aRef('agt_a', 'agt_b'))).toBe(1);
+    const row = db
+      .prepare(`SELECT summary FROM triggers WHERE kind = 'a2a'`)
+      .get() as { summary: string } | undefined;
+    expect(row?.summary).toBe('你好，这是正文');
+    // 正常路径不得产生任何「缺失」计数（否则巡检会被假警报淹没）
+    expect(threadWiringHealth().ensure).toMatchObject({ ensured: 1, 'no-thread-repo': 0, failed: 0 });
+  });
+});
+
 describe('chat 回合级事件 — 一次回合一条，且不含正文', () => {
   const makeServer2 = () => {
     const srv = Object.create(APIServer.prototype) as APIServer;
@@ -416,6 +452,7 @@ describe('影子判定（observe）— 有结论、零写入', () => {
       kind: 'comment',
       actor: 'agt_writer',
       summary: 'a comment',
+      idempotencyKey: 'evt:obs-1',
     });
 
     expect(obs).not.toBeNull();
@@ -429,9 +466,47 @@ describe('影子判定（observe）— 有结论、零写入', () => {
 
   it('流不存在 → unknown-thread（观测不负责造对象）', () => {
     const before = rowCounts();
-    const obs = observeThreadEvent(storage, { ref: 'tsk_absent', kind: 'comment', actor: 'agt_x', summary: 'x' });
+    const obs = observeThreadEvent(storage, {
+      ref: 'tsk_absent',
+      kind: 'comment',
+      actor: 'agt_x',
+      summary: 'x',
+      idempotencyKey: 'evt:absent-1',
+    });
     expect(obs!.status).toBe('unknown-thread');
     expect(rowCounts()).toEqual(before);
+  });
+
+  /**
+   * 影子键必须与真路由用的是**同一个**键，否则 `duplicate` 恒为 0。
+   *
+   * 守护的是「切换卡拿去判定的那列数据是不是真的」：影子曾经自己算
+   * `sha1Like(ref|kind|summary)`，而真键是 `evt:<eventId>`，两套键 ⇒ 影子永远看不出
+   * 「这条已处置过」，于是「切了会不会重复」能给出一个恒为「不会」的假答案。
+   *
+   * 测的是行为不是源码：先让真路由写一条真处置（触发 id = 落库键），
+   * 再把同一个键喂给影子 → 必须报 `duplicate`。
+   */
+  it('同一幂等键：真路由已处置过 → 影子报 duplicate（不是恒 0）', () => {
+    ensureThread(storage, 'tsk_dup_shadow');
+    const threadId = String(
+      (db.prepare(`SELECT id FROM threads WHERE ref = ?`).get('tsk_dup_shadow') as { id: string }).id,
+    );
+    // 一个回合的真实处置（router 判重的唯一依据：countByTrigger）
+    (storage.dispositionRepo as {
+      record: (d: { triggerId: string; threadId: string; action: string; reason: string }) => boolean;
+    }).record({ triggerId: 'evt:turn-shared-1', threadId, action: 'ignore', reason: '已处理' });
+
+    const obs = observeThreadEvent(storage, {
+      ref: 'tsk_dup_shadow',
+      kind: 'chat',
+      actor: 'agt_writer',
+      summary: '回合结束 · 1.2k tokens · 3 次工具',
+      idempotencyKey: 'evt:turn-shared-1',
+    });
+
+    expect(obs!.status).toBe('duplicate');
+    expect(obs!.verdict).toBe('duplicate');
   });
 });
 

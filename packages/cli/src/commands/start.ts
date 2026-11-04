@@ -87,9 +87,8 @@ import {
   type InstanceStoreDeps,
   ensureThread,
   recordThreadEvent,
-  reportThreadEnsureFailure,
   taskRef,
-  a2aRef,
+  wireA2AThreads,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
@@ -100,36 +99,6 @@ import { scheduleBackgroundMaintenance } from '../background-maintenance.js';
 import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
-
-/**
- * A2A 消息摘要：正文优先，真没正文才退回「谁发给谁」。
- *
- * 投递的 `message` 可能是纯文本，也可能是 JSON 信封（如 status_broadcast）。
- * 直接截 JSON 前 80 字会在时间线上显示成 `{"type":...`——那比不写更糟，
- * 所以信封里找可读字段；找不到就只写类型名，不编造内容。
- */
-function a2aSummary(text: string | undefined, a: string, b: string): string {
-  const fallback = `${a} → ${b} 发了一条消息`;
-  const raw = (text ?? '').trim();
-  if (!raw) return fallback;
-  let readable = raw;
-  if (raw.startsWith('{')) {
-    try {
-      const env = JSON.parse(raw) as Record<string, unknown>;
-      const payload = (env.payload ?? {}) as Record<string, unknown>;
-      const candidate = [payload.text, payload.message, env.text, env.message].find(
-        v => typeof v === 'string' && v.trim(),
-      );
-      if (typeof candidate === 'string') readable = candidate;
-      else if (typeof env.type === 'string') readable = `[${env.type}]`;
-    } catch {
-      // 不是合法 JSON：当纯文本用，不编造。
-    }
-  }
-  const oneLine = readable.replace(/\s+/g, ' ').trim();
-  if (!oneLine) return fallback;
-  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
-}
 
 // ─── Manifest-driven platform startup (issue #340) ────────────────────────────
 //
@@ -900,24 +869,17 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   });
 
   // S3：A2A 投递即建流（同一次 DM 对话一条流，与方向无关）。
-  // 未拿到 storage 时不注入 —— 不注册一个跑不动的空实现。
-  if (storage?.threadRepo) {
-    agentManager.setThreadEnsurer((a, b, _actor, text) => {
-      const ref = a2aRef(a, b);
-      // 返回值必须被检查：本卡之前这里丢弃了它，`storage` 没挂 threadRepo 时
-      // 「a2a 流没建」只有一条无人看的 warn（且 warn 本身当时也不存在）。
-      // core 报不了这句话（文案与计数只在 thread-ensure 一处），所以由这里报。
-      const ensurer = ensureThread(storage, ref, a);
-      if (ensurer !== 'ensured') reportThreadEnsureFailure(ensurer, ref, 'a2a.deliver');
-      // S6：A2A DM 写入时间线（D1.4）。
-      //
-      // 【更正 2026-11-03】原先这里写「投递回调拿不到正文，所以只记粗粒度」——那是错的：
-      // `deliverA2AMessage` 的 `message` 就在手上，只是没往下传。现在传递并提取可读摘要。
-      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, actorKind: 'agent', summary: a2aSummary(text, a, b) });
-      // 返回值是注入点的契约（`ThreadEnsureOutcome`）：a2a 链路的上报刚刚在上面做完。
-      return ensurer;
-    });
-  }
+  //
+  // 【2026-11-04 · 返修】这里**不再**把注册包在 `if (storage?.threadRepo)` 里，也不再写行内闭包。
+  //
+  // 那个 guard 恰好把「真实缺失」场景挡在上报路径之外：storage 存在但没挂 threadRepo 时
+  // ensurer 根本不注册 → `agent-manager.ts` 的 `this.threadEnsurer?.(...)` 直接短路 →
+  // 闭包里那条 `reportThreadEnsureFailure` **不可达**，a2a 依旧零日志零计数。
+  // guard 把「guard 要防的东西」藏了起来 —— 与原始 bug 同一族（只是静默点换了个位置）。
+  //
+  // 现在只有一句赋值：没有 guard 可加、没有「注入了哪个实现」的分支；
+  // 「storage 缺失时会怎样」成为一个可被单测直接问的问题（`wireA2AThreads`）。
+  agentManager.setThreadEnsurer(wireA2AThreads(storage));
 
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;

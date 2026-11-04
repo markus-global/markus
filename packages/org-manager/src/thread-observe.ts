@@ -102,8 +102,23 @@ export function linkOfRef(ref: string): ObserveLink {
  *   存储没挂 thread repo / 流不存在时返回 `null`（不抛 —— 埋点是附加设施）。
  */
 export function observeThreadEvent(
-  storage: StorageBridge | undefined,
-  event: { ref: string; kind: string; actor?: string; actorKind?: ActorKind; summary: string },
+  storage: StorageBridge | null | undefined,
+  event: {
+    ref: string;
+    kind: string;
+    actor?: string;
+    actorKind?: ActorKind;
+    summary: string;
+    /**
+     * **调用方已用于落库的那个**幂等键（唯一正确来源）。
+     *
+     * 为什么不在这里自己算：影子要回答的是「若真走 router 会怎样」，而 router 判重读的是
+     * `dispositions.countByTrigger(triggerId)` —— triggerId 就是落库用的键。
+     * 自己再算一份（曾经是 `sha1Like(ref|kind|summary)`）会让影子里的 `duplicate` 恒为 0，
+     * 而「会不会重复」恰好是切换前最需要看的一列。**同一事实只能有一个键。**
+     */
+    idempotencyKey: string;
+  },
 ): EventObservation | null {
   if (!storage) return null;
   const ingress = ingressFor(storage);
@@ -112,9 +127,8 @@ export function observeThreadEvent(
   const link = linkOfRef(event.ref);
   const normalized: NormalizedEvent = {
     kind: event.kind as NormalizedEvent['kind'],
-    // 影子键必须与 `recordThreadEvent` 落的幂等键**同一个**：否则「这条事件处置过没有」
-    // 在影子里永远是 false，而且两份键会让日志没法互相印证。
-    idempotencyKey: event.summary ? sha1Like(`${event.ref}|${event.kind}|${event.summary}`) : `${event.ref}|${event.kind}`,
+    // 原样使用调用方落库的键（唯一事实源）。
+    idempotencyKey: event.idempotencyKey,
     ref: event.ref,
     actorKind: actorKindOf(event.actor, event.actorKind),
     actorId: event.actor ?? 'system',
@@ -140,12 +154,3 @@ export function observeThreadEvent(
   return observation;
 }
 
-/** 稳定的影子幂等键（不需要密码学强度，只需要「同一逻辑输入同一字节序列」）。 */
-function sha1Like(s: string): string {
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return `internal:${(h >>> 0).toString(36)}`;
-}

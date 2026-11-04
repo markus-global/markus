@@ -96,7 +96,7 @@ export function reportThreadEventFailure(
  * @returns `ensured` = 流已存在或已创建；`no-thread-repo` / `failed` = 没建成（调用方
  *   **必须**交给 `reportThreadEnsureFailure`，不要自己分支——那是文案的第二写者）
  */
-export function ensureThread(storage: StorageBridge | undefined, ref: string, actorAgentId?: string): ThreadEnsureOutcome {
+export function ensureThread(storage: StorageBridge | null | undefined, ref: string, actorAgentId?: string): ThreadEnsureOutcome {
   const threads = storage?.threadRepo;
   if (!threads) {
     bumpEnsure('no-thread-repo');
@@ -151,7 +151,7 @@ export function ensureThread(storage: StorageBridge | undefined, ref: string, ac
  *   没给则按 id 前缀推断，见 `actorKindOf`。
  */
 export function recordThreadEvent(
-  storage: StorageBridge | undefined,
+  storage: StorageBridge | null | undefined,
   ref: string,
   event: { kind: string; actor?: string; actorKind?: ActorKind; summary: string; eventId?: string },
 ): ThreadEventOutcome {
@@ -160,13 +160,19 @@ export function recordThreadEvent(
     bumpEvent('no-trigger-repo');
     return 'no-trigger-repo';
   }
+  // 幂等键：调用方给了稳定 id 就用它（重投安全）；否则每次调用都是**一件新事实**
+  // （一条新消息就该是新行），所以不带内容哈希——两条相同内容的消息是两件事。
+  //
+  // 只算一次：这个键同时喂给 `triggers` 与影子判定。两处各算一份必然漂移，
+  // 而漂移的后果很具体 —— 影子里的 `duplicate` 会恒为 0，切换卡据此判定「不会重复」。
+  const idempotencyKey = event.eventId
+    ? `evt:${event.eventId}`
+    : `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`;
   let outcome: ThreadEventOutcome = 'recorded';
   try {
     const res = triggers.insertOrGet({
       kind: event.kind,
-      // 幂等键：调用方给了稳定 id 就用它（重投安全）；否则每次调用都是**一件新事实**
-      // （一条新消息就该是新行），所以不带内容哈希——两条相同内容的消息是两件事。
-      idempotencyKey: event.eventId ? `evt:${event.eventId}` : `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+      idempotencyKey,
       actorId: event.actor ?? null,
       summary: event.summary,
       threadRefs: [ref],
@@ -183,7 +189,16 @@ export function recordThreadEvent(
   // 重投（duplicate）不再观测：同一个事实第二次不产生新信息，只会污染计数。
   if (outcome === 'recorded') {
     try {
-      observeThreadEvent(storage, { ref, kind: event.kind, actor: event.actor, actorKind: event.actorKind, summary: event.summary });
+      // 传入**刚刚用过的同一个**幂等键：影子问的是「这条事件若真走 router 会怎样」，
+      // 而 router 判重的唯一依据就是这个键（`dispositions.countByTrigger`）。
+      observeThreadEvent(storage, {
+        ref,
+        kind: event.kind,
+        actor: event.actor,
+        actorKind: event.actorKind,
+        summary: event.summary,
+        idempotencyKey,
+      });
     } catch (err) {
       // 观测是纯附加设施：它坏了不能影响时间线本身。
       log.warn('observeThreadEvent failed', { ref, kind: event.kind, error: String(err) });
@@ -238,8 +253,75 @@ function formatCount(n: number): string {
   return `${(n / 1000).toFixed(1)}k`;
 }
 
-/** 任务流的 ref 形态：`tsk_<taskId>`。集中在一处，避免各调用点各拼一个。 */
-export const taskRef = (taskId: string): string => (taskId.startsWith('tsk_') ? taskId : `tsk_${taskId}`);
+/**
+ * A2A 消息摘要：正文优先，真没正文才退回「谁发给谁」。
+ *
+ * 投递的 `message` 可能是纯文本，也可能是 JSON 信封（如 status_broadcast）。
+ * 直接截 JSON 前 80 字会在时间线上显示成 `{"type":...`——那比不写更糟，
+ * 所以信封里找可读字段；找不到就只写类型名，不编造内容。
+ */
+export function a2aSummary(text: string | undefined, a: string, b: string): string {
+  const fallback = `${a} → ${b} 发了一条消息`;
+  const raw = (text ?? '').trim();
+  if (!raw) return fallback;
+  let readable = raw;
+  if (raw.startsWith('{')) {
+    try {
+      const env = JSON.parse(raw) as Record<string, unknown>;
+      const payload = (env.payload ?? {}) as Record<string, unknown>;
+      const candidate = [payload.text, payload.message, env.text, env.message].find(
+        v => typeof v === 'string' && v.trim(),
+      );
+      if (typeof candidate === 'string') readable = candidate;
+      else if (typeof env.type === 'string') readable = `[${env.type}]`;
+    } catch {
+      // 不是合法 JSON：当纯文本用，不编造。
+    }
+  }
+  const oneLine = readable.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return fallback;
+  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+}
+
+/**
+ * A2A → Thread 的完整接线，注册给 `AgentManager.setThreadEnsurer`。
+ *
+ * 为什么做成工厂而不是留在 start.ts 的行内闭包：行内闭包**只能靠人眼保证它被注册了**。
+ * 实际发生过的事故（评审打回项 ①）：整个 `setThreadEnsurer(...)` 被包在
+ * `if (storage?.threadRepo)` 里 —— storage 存在但没挂 repo 时 ensurer 根本不注册，
+ * 里面那条 `reportThreadEnsureFailure` 成了不可达代码，于是「真实缺失」重新变成静默。
+ * guard 把「guard 要防的东西」藏了起来。
+ *
+ * 现在组合根只有一句 `setThreadEnsurer(wireA2AThreads(storage))`：
+ * 没有 guard 可加，也没有「注入了哪个实现」的分支；而「storage 缺失时会怎样」
+ * 变成一个单测可以直接问的问题（见 thread-wiring.test.ts 的 a2a 缺失用例）。
+ */
+export function wireA2AThreads(
+  storage: StorageBridge | null | undefined,
+): (a: string, b: string, actorAgentId?: string, text?: string) => ThreadEnsureOutcome {
+  return (a, b, _actor, text) => {
+    const ref = a2aRef(a, b);
+    // 三种结局都可达：`ensured` / `no-thread-repo`（装配缺失）/ `failed`（抛错）。
+    const ensured = ensureThread(storage, ref, a);
+    if (ensured !== 'ensured') reportThreadEnsureFailure(ensured, ref, 'a2a.deliver');
+
+    // 时间线：同一次 DM 对话一条流，与方向无关。
+    // 正文就在这里（`text`），所以写得出「发了什么」而不只是「发了一条」。
+    const recorded = recordThreadEvent(storage, ref, {
+      kind: 'a2a',
+      actor: a,
+      actorKind: 'agent',
+      summary: a2aSummary(text, a, b),
+    });
+    // 只修建流不修记事件 = 让「时间线空了」继续是个盲区，两条都报。
+    if (recorded !== 'recorded' && recorded !== 'duplicate') {
+      reportThreadEventFailure(recorded, ref, 'a2a.deliver');
+    }
+    return ensured;
+  };
+}
+
+/** 任务流的 ref 形态：`tsk_<taskId>`。集中在一处，避免各调用点各拼一个。 */export const taskRef = (taskId: string): string => (taskId.startsWith('tsk_') ? taskId : `tsk_${taskId}`);
 
 /**
  * A2A 流的 ref：两个 agent 之间的 DM 是一条流，**与方向无关**（按 id 排序）。

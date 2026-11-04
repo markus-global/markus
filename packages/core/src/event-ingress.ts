@@ -50,12 +50,6 @@ export interface IngressResult {
  *
  * 之所以要复用而不是另造一套：两套词汇就意味着一份翻译表，而翻译表必然会漂移。
  */
-/**
- * 影子判定的结论。`status` **复用 `IngressStatus` 的词汇**：它说的就是
- * 「切换成真路由后，`ingest()` 会返回这个 status」。
- *
- * 之所以要复用而不是另造一套：两套词汇就意味着一份翻译表，而翻译表必然会漂移。
- */
 export interface EventObservation {
   /** `unknown-thread` = 这条流还不存在（调用方应先 ensureThread）。 */
   status: IngressStatus | 'unknown-thread';

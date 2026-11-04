@@ -10,6 +10,8 @@ export {
   reportThreadEventFailure,
   taskRef,
   a2aRef,
+  a2aSummary,
+  wireA2AThreads,
 } from './thread-ensure.js';
 export { threadWiringHealth } from './thread-wiring-metrics.js';
 export { APIServer } from './api-server.js';
