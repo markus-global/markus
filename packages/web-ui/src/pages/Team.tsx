@@ -4172,6 +4172,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (fileArr.length === 0) return;
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) continue;
+
+      // ── 非图片文件绝不能进 `pendingImages`（Owner 2026-11-04 实测报错）──
+      // `pendingImages` 是**以 images 字段发给 LLM** 的，只允许真图片。
+      // 以前所有文件都走同一条 dataUrl 分支 → PDF/Word 被当成图片发给模型，
+      // API 直接报错；而文件的名字/路径也从未进过消息。
+      // 现在：非图片先上传，把「名字 + 路径」写进正文（人就该看到这个，模型也读得懂）。
+      if (!file.type.startsWith('image/')) {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          api.uploads
+            .upload([{ dataUrl, name: file.name }], 'chat')
+            .then(res => {
+              const f = res.files?.[0];
+              const line = f ? `📎 ${f.name} — ${f.url}` : `📎 ${file.name}（上传未返回路径）`;
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}${line}`);
+            })
+            .catch(() => {
+              // 失败要说出来，不能假装发出去了
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name}（上传失败，未发送）`);
+            });
+        };
+        reader.readAsDataURL(file);
+        continue;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
