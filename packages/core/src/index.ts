@@ -403,6 +403,7 @@ export {
   ThreadService,
   type RouteInput,
   type RouteResult,
+  type RoutePreview,
   type ThreadStoreLike,
   type DispositionStoreLike,
   type ThreadRowLike,
@@ -425,6 +426,7 @@ export {
   type IngressResult,
   type IngressDeps,
   type DispatchTarget,
+  type EventObservation,
 } from './event-ingress.js';
 export {
   admitEvent,

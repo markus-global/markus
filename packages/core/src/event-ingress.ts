@@ -11,6 +11,7 @@ import { ThreadService } from './thread-service.js';
 import type { RouteInput } from './thread-service.js';
 import type { NormalizedEvent, RawEvent, SourceRegistry } from './event-source.js';
 import type { Admission, AdmissionRule } from './source-admission.js';
+import type { GateVerdict } from '@markus/shared';
 
 export type IngressStatus =
   | 'unknown-source' // 前缀没有注册适配器
@@ -49,6 +50,25 @@ export interface IngressResult {
  *
  * 之所以要复用而不是另造一套：两套词汇就意味着一份翻译表，而翻译表必然会漂移。
  */
+/**
+ * 影子判定的结论。`status` **复用 `IngressStatus` 的词汇**：它说的就是
+ * 「切换成真路由后，`ingest()` 会返回这个 status」。
+ *
+ * 之所以要复用而不是另造一套：两套词汇就意味着一份翻译表，而翻译表必然会漂移。
+ */
+export interface EventObservation {
+  /** `unknown-thread` = 这条流还不存在（调用方应先 ensureThread）。 */
+  status: IngressStatus | 'unknown-thread';
+  reason: string;
+  /** Gate 结论（`duplicate` / `dispatch` / `direct-through` / `attach` / `ignore-ended` / `assess`）。 */
+  verdict?: GateVerdict;
+  matchedRule?: string;
+  /** 切换后会投递给谁；`undefined` = 不会投递。 */
+  wouldDeliver?: string;
+  threadId?: string;
+  filteredBy?: AdmissionRule;
+}
+
 export interface DispatchTarget {
   threadRef: string;
   agentId: string;
@@ -140,6 +160,81 @@ export class EventIngress {
       if (last.status === 'unauthorized' || last.status === 'unknown-source') break;
     }
     return { ...last, events: events.length, results };
+  }
+
+  /**
+   * **进程内事件的埋点入口**（chat 回合 / task 评论 / a2a 投递）。
+   *
+   * 为什么需要它：`ingest()` 只接受带前缀的 *webhook* 原始字节（verify → normalize）。
+   * 进程内事件既没有 webhook 前缀，也没有 HMAC —— 让它们伪造一份原始字节去避适配器，
+   * 就是把「内部事件」伪装成「外部推送」。那层伪装哪天真被当真，就是最贵的一类错。
+   *
+   * 所以这里直接吃已经归一化的 `NormalizedEvent`，**但共用同一套顺序与同一套语义**：
+   * 准入判定（`admission`）→ 路由判定（`service.previewRoute`，与 `route()` 同一份 gate）。
+   *
+   * 边界（本卡明确不做的事）：**只读**。不登 trigger、不写处置、不投递、不唤醒。
+   * 一旦写处置，`dispositions.countByTrigger` 就会在真事件到来时回 `duplicate` ——
+   * 埋点会**改变行为**，这是不能接受的。
+   *
+   * 切换到真路由 = 把调用点改成走 `ingestOne(ev)`（一个可独立回滚的提交）。
+   */
+  observe(ev: NormalizedEvent): EventObservation {
+    const verdictAdmission = this.deps.admission(ev);
+    if (!verdictAdmission.admitted) {
+      return { status: 'filtered', reason: verdictAdmission.reason, filteredBy: verdictAdmission.rule };
+    }
+
+    const preview = this.deps.service.previewRoute(this.routeInputOf(ev));
+    if (!preview) {
+      return {
+        status: 'unknown-thread',
+        reason: `流 ${ev.ref} 还不存在：调用方应先 ensureThread（观测不负责造对象）`,
+      };
+    }
+
+    const found = { verdict: preview.verdict, matchedRule: preview.matchedRule, threadId: preview.threadId };
+    switch (preview.verdict) {
+      case 'duplicate':
+        return { ...found, status: 'duplicate', reason: '幂等命中：该事件已处置过' };
+      case 'direct-through': {
+        if (preview.delivery === 'drop') {
+          return { ...found, status: 'ignored', reason: '自主档位为 off：只记录事件，不投递' };
+        }
+        if (preview.delivery === 'record-only') {
+          return { ...found, status: 'ignored', reason: '自主档位为 observe：会记判断但不会自动化' };
+        }
+        const owner = this.deps.service.directThrough(ev.ref);
+        const agentId = owner?.owners[0] ?? owner?.subscriptions[0]?.agentId;
+        return {
+          ...found,
+          status: 'direct-through',
+          reason: `流已有主/订阅 → 直通（ticket=${preview.ticketId ?? 'thread'}）`,
+          wouldDeliver: agentId,
+        };
+      }
+      case 'dispatch': {
+        const decided = preview.decision;
+        return {
+          ...found,
+          status: 'dispatched',
+          reason: decided?.reason ?? '人已指定处理者',
+          wouldDeliver: decided && decided.action === 'dispatch' ? decided.agentId : undefined,
+        };
+      }
+      case 'attach':
+        return { ...found, status: 'attached', reason: preview.decision?.reason ?? '挂到既有流' };
+      case 'ignore-ended':
+        return { ...found, status: 'ignored', reason: preview.decision?.reason ?? '流已结束，只留痕' };
+      case 'assess':
+      default:
+        return {
+          ...found,
+          status: 'deferred',
+          reason: preview.needsAssessment
+            ? 'needs-assessment：会进入研判引擎（影子模式不代跑）'
+            : '无处置决定',
+        };
+    }
   }
 
   private ingestOne(ev: NormalizedEvent): IngressResult {

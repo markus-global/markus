@@ -26,6 +26,23 @@ export interface SubscriptionLike {
   purpose: 'own' | 'context';
 }
 
+/**
+ * 只读投影的结论。字段与 `RouteResult` 同源（同一套 verdict / decision / delivery），
+ * 只是**没有副作用**、且多一个 `needsAssessment` 说明「这一条会在切换后真的去研判」。
+ */
+export interface RoutePreview {
+  verdict: GateVerdict;
+  threadId: string;
+  matchedRule: MatchedRule | 'duplicate' | 'direct-through';
+  /** 确定性规则给出的处置（assess / duplicate 时没有）。 */
+  decision?: Disposition;
+  /** 直通时的四档投影结论：`drop` / `record-only` / `deliver`。 */
+  delivery?: 'deliver' | 'record-only' | 'drop';
+  ticketId?: string;
+  /** 命中规则 6（待研判）：切换后会调用研判引擎，影子模式不代跑。 */
+  needsAssessment?: boolean;
+}
+
 export interface ThreadStoreLike {
   upsert(ref: string, now?: number): { thread: ThreadRowLike; created: boolean };
   getByRef(ref: string): ThreadRowLike | null;
@@ -280,6 +297,43 @@ export class ThreadService {
       entityRef: input.entityRef,
       directTargetAgentId: input.directTargetAgentId,
     });
+  }
+
+  /**
+   * **只读投影**：问「这条事件若真的走 router，会得到什么结论」，**不产生任何副作用**
+   * （不 upsert 流、不写处置、不唤醒、不调研判引擎）。
+   *
+   * 为什么需要它：进程内事件（chat / task 评论 / a2a）已经在写时间线，但还**没有**走
+   * router。切换之前必须能回答「切了会变成什么」，否则切换就是一次没有数据的赌博。
+   *
+   * 为什么复用 `gateFor` / `decisionFor` 而不是自己再写一遍判断：影子判定若与真路由
+   * 是两份实现，「预告」与「实际」必然分叉 —— 那时这个埋点的全部价值就是负的。
+   *
+   * 返回 `null` = 这条流还不存在（调用方应先 ensureThread；观测不负责造对象，H1）。
+   * `needsAssessment: true` = 会进入 LLM 研判段，影子模式**不代跑**（会烧钱且不可复现）。
+   */
+  previewRoute(input: RouteInput): RoutePreview | null {
+    const thread = this.deps.threads.getByRef(input.ref);
+    if (!thread) return null;
+    const subscriptions = this.deps.threads.listSubscriptions(thread.id);
+    const verdict = this.gateFor(input, subscriptions);
+
+    if (verdict === 'duplicate') {
+      return { verdict, threadId: thread.id, matchedRule: 'duplicate' };
+    }
+    if (verdict === 'direct-through') {
+      const ticketId = subscriptions[0]?.ticketId ?? thread.id;
+      const gate = this.deliveryForOwner(input.ref, subscriptions);
+      return { verdict, threadId: thread.id, matchedRule: 'direct-through', ticketId, delivery: gate?.delivery };
+    }
+    if (verdict === 'assess') {
+      // 唯一不代算的分支：规则 6 要调研判引擎，影子模式没有可复现的答案，只报告「会走到这里」。
+      return { verdict, threadId: thread.id, matchedRule: 'assess', needsAssessment: true };
+    }
+    // dispatch / attach / ignore-ended：`decisionFor` 这三个分支不触碰 assessment（有测试守着零调用），
+    // 所以它们在这里是纯的，可以直接复用同一份产出。
+    const { decision, matchedRule } = this.decisionFor(verdict, input, thread.id);
+    return { verdict, threadId: thread.id, matchedRule, decision };
   }
 
   /**

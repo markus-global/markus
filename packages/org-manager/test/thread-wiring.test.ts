@@ -11,7 +11,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { openSqlite, closeSqlite } from '@markus/storage';
 import { SqliteThreadRepo, SqliteDispositionRepo, SqliteChatSessionRepo, SqliteTriggerRepo } from '@markus/storage';
-import { AgentManager } from '@markus/core';
+import { AgentManager, ThreadService } from '@markus/core';
 import { TaskService } from '../src/task-service.js';
 import { APIServer } from '../src/api-server.js';
 import {
@@ -22,6 +22,7 @@ import {
   taskRef,
   a2aRef,
 } from '../src/thread-ensure.js';
+import { observeThreadEvent } from '../src/thread-observe.js';
 import { resetThreadWiringHealth, threadWiringHealth } from '../src/thread-wiring-metrics.js';
 import type { StorageBridge } from '../src/storage-bridge.js';
 
@@ -392,5 +393,69 @@ describe('静默降级必须消灭 — outcome 可判定 + 计数可见', () => 
     expect(recordThreadEvent(storage, 'tsk_dup', e)).toBe('recorded');
     expect(recordThreadEvent(storage, 'tsk_dup', e)).toBe('duplicate');
     expect(threadWiringHealth().event).toMatchObject({ recorded: 1, duplicate: 1 });
+  });
+});
+
+describe('影子判定（observe）— 有结论、零写入', () => {
+  const rowCounts = () => ({
+    threads: Number((db.prepare(`SELECT COUNT(*) AS n FROM threads`).get() as { n: number }).n),
+    triggers: Number((db.prepare(`SELECT COUNT(*) AS n FROM triggers`).get() as { n: number }).n),
+    // 走仓储 API 而不是裸 SQL：表是否建、什么时候建是 storage 的事，测试只关心「有多少行」。
+    dispositions: Number(
+      (storage.dispositionRepo as { countByTrigger: (t: string) => number }).countByTrigger('__any__'),
+    ),
+  });
+
+  it('给出判定，但不造流 / 不登 trigger / 不写处置', () => {
+    ensureThread(storage, 'tsk_obs');
+    resetThreadWiringHealth();
+    const before = rowCounts();
+
+    const obs = observeThreadEvent(storage, {
+      ref: 'tsk_obs',
+      kind: 'comment',
+      actor: 'agt_writer',
+      summary: 'a comment',
+    });
+
+    expect(obs).not.toBeNull();
+    // 无主无订阅无 entityRef → 规则 6（待研判）；影子模式不代跑研判引擎
+    expect(obs!.verdict).toBe('assess');
+    expect(obs!.status).toBe('deferred');
+    // 零写入 —— 埋点不得改变行为（尤其不得写处置，否则真事件会被误判为 duplicate）
+    expect(rowCounts()).toEqual(before);
+    expect(threadWiringHealth().observed['task.comment']).toMatchObject({ deferred: 1 });
+  });
+
+  it('流不存在 → unknown-thread（观测不负责造对象）', () => {
+    const before = rowCounts();
+    const obs = observeThreadEvent(storage, { ref: 'tsk_absent', kind: 'comment', actor: 'agt_x', summary: 'x' });
+    expect(obs!.status).toBe('unknown-thread');
+    expect(rowCounts()).toEqual(before);
+  });
+});
+
+describe('影子与真路由不得分叉', () => {
+  /**
+   * 这条用例守护的是「埋点有意义」这个前提：preview 与 route 若各自实现一套判断，
+   * 预告就会和实际不一致 —— 那时切换依据的数据全是假的。
+   */
+  it('同一输入：previewRoute.verdict === route.verdict', () => {
+    ensureThread(storage, 'tsk_prev');
+    const svc = new ThreadService({ threads: storage.threadRepo, dispositions: storage.dispositionRepo } as never);
+    const input = {
+      triggerId: 'trg_prev_1',
+      kind: 'comment' as const,
+      ref: 'tsk_prev',
+      actorKind: 'agent' as const,
+      addressing: 'direct' as const,
+    };
+
+    const preview = svc.previewRoute(input);
+    const routed = svc.route(input);
+
+    expect(preview).not.toBeNull();
+    expect(preview!.verdict).toBe(routed.verdict);
+    expect(preview!.threadId).toBe(routed.threadId);
   });
 });

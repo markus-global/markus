@@ -18,6 +18,7 @@ import { ThreadService, emitThreadWake } from '@markus/core';
 import type { ActorKind, ThreadEnsureOutcome, ThreadEventOutcome } from '@markus/shared';
 import { createLogger } from '@markus/shared';
 import type { StorageBridge } from './storage-bridge.js';
+import { observeThreadEvent } from './thread-observe.js';
 import { bumpEnsure, bumpEvent } from './thread-wiring-metrics.js';
 
 const log = createLogger('thread-ensure');
@@ -177,6 +178,17 @@ export function recordThreadEvent(
     return 'failed';
   }
   bumpEvent(outcome);
+
+  // 影子判定：只读地跑一遍「若真路由会怎样」，绝不投递 / 不写处置 / 不唤醒。
+  // 重投（duplicate）不再观测：同一个事实第二次不产生新信息，只会污染计数。
+  if (outcome === 'recorded') {
+    try {
+      observeThreadEvent(storage, { ref, kind: event.kind, actor: event.actor, actorKind: event.actorKind, summary: event.summary });
+    } catch (err) {
+      // 观测是纯附加设施：它坏了不能影响时间线本身。
+      log.warn('observeThreadEvent failed', { ref, kind: event.kind, error: String(err) });
+    }
+  }
   return outcome;
 }
 
