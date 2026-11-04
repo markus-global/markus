@@ -108,6 +108,8 @@ export function HistoryModal({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [total, setTotal] = useState(0);
+  /** 未读数取**服务端**口径（与铃铛、概览一致）。本地数分页列表必然偏小。 */
+  const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
@@ -128,6 +130,7 @@ export function HistoryModal({
           return [...prev, ...got.filter(x => !seen.has(x.id))].slice(0, MAX_ROWS);
         });
         setTotal(d.totalCount ?? 0);
+        setUnreadTotal((d as { unreadCount?: number }).unreadCount ?? null);
         // 终止条件：本页不满 / 空页 / 已到 DOM 上限
         if (got.length === 0 || got.length < PAGE_SIZE || stateRef.current.count + got.length >= MAX_ROWS) {
           setDone(true);
@@ -141,6 +144,25 @@ export function HistoryModal({
     },
     [userId],
   );
+
+  // 别处（铃铛 / 概览）标了已读 → 弹窗里的未读点与计数必须跟着变，
+  // 否则弹窗开着时永远看不到自己刚点掉的那条变灰。
+  useEffect(() => {
+    if (!open || !userId) return;
+    const onChanged = () => {
+      void loadPage(0);
+      api.approvals
+        .list()
+        .then(r => setApprovals((r.approvals ?? []).filter(a => a.status === 'pending')))
+        .catch(() => undefined);
+    };
+    window.addEventListener('markus:notifications-changed', onChanged);
+    window.addEventListener('markus:data-changed', onChanged);
+    return () => {
+      window.removeEventListener('markus:notifications-changed', onChanged);
+      window.removeEventListener('markus:data-changed', onChanged);
+    };
+  }, [open, userId, loadPage]);
 
   // 打开时重置并拉第一页（每次都重取，避免看到过期数据）
   useEffect(() => {
@@ -195,7 +217,7 @@ export function HistoryModal({
   }, [approvals, notices, tab]);
 
   const resolvedCount = approvals.length;
-  const unread = notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
+  const unread = unreadTotal ?? notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
 
   // 弹窗开着时锁住背后的滚动容器（否则滚轮会滚到 Overview 上）
   useBackgroundScrollLock(open);
@@ -301,6 +323,8 @@ export function HistoryModal({
                       // 铃铛一直这么做，历史弹窗只标点中那一条 → 徽标残留、得挨个点。
                       const marked = markNotificationThreadRead(row.notice, notices);
                       setNotices(prev => prev.map(x => (marked.has(x.id) ? { ...x, read: true } : x)));
+                      // 点完就走：弹窗留着会遮住刚跳到的页面（铃铛是 popover，导航即关）。
+                      onClose();
                       go();
                     } : undefined}
                   >
