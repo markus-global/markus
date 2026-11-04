@@ -4173,17 +4173,37 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) continue;
 
-      // ── 非图片文件：**不上传**，只把名字 + 本地路径写进正文 ──
+      // ── 非图片文件：给 Agent 一个**它真能读到的**路径 ──
       //
-      // Owner 2026-11-04：除了模型真要做识别/图像生成（那只有图片需要），其余情况
-      // 有本地路径就够了，不要往服务器上传文件。
-      // 好处不只是省流量：不上传就没有第二个副本，也不会把用户文件发到服务端。
-      // Electron 的 File 对象带 `.path`；普通浏览器出于安全不暴露真实路径，
-      // 那时只能给文件名 —— 这是浏览器的硬限制，不编一个假路径。
+      // 两种环境能力不同，不能一刀切：
+      //   · 桌面端（Electron）：File 带 `.path`，和 Agent 同机 → 直接用，**一个字节都不上传**；
+      //   · 浏览器：沙箱不暴露本地路径。只发文件名对 Agent 毫无意义（Owner 2026-11-04：
+      //     “只发文件名没意义，Agent 也不知道文件在哪里”）。所以转存到**本机**的
+      //     LocalFileStorage（服务端 `fileStorage` 就是它，落盘不是云存储），
+      //     再把服务端返回的绝对路径写进消息。
       if (!file.type.startsWith('image/')) {
         const localPath = (file as File & { path?: string }).path;
-        const line = localPath ? `📎 ${file.name} — ${localPath}` : `📎 ${file.name}`;
-        setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}${line}`);
+        if (localPath) {
+          setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name} — ${localPath}`);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          api.uploads
+            .upload([{ dataUrl, name: file.name }], 'chat')
+            .then(res => {
+              const f = res.files?.[0] as { name?: string; url?: string; path?: string } | undefined;
+              const where = f?.path ?? f?.url;
+              if (!where) throw new Error('no path');
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${f?.name ?? file.name} — ${where}`);
+            })
+            .catch(() => {
+              // 拿不到可读路径就不要装成功——否则 Agent 又拿到一个它无能为力的名字。
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name}（未能转存，Agent 无法读取此文件）`);
+            });
+        };
+        reader.readAsDataURL(file);
         continue;
       }
 
