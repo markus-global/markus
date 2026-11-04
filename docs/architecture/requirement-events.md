@@ -40,3 +40,13 @@
 - 拒绝是**显式错误**（`COMMENT_RATE_LIMITED` / `REQUIREMENT_TERMINAL`），调用方拿到可行动提示，不做静默丢弃。
 - **残余**：评论速率阈值（5 / 10 分钟）是经验值，不是从数据推导出的最优解；若出现合法的密集协作（多人同时对同一需求讨论），需要按**作者 + 会话**细分而不是整体放宽。触发条件：出现被拒绝后确实需要继续写入的合法场景。
 - **残余**：`task_status_update` 的部分行 `dedup_key` 为空（实测 20 条里多数为空），说明某些发射路径没传 `extra.from/to`（`mailboxDedupKey` 因此返回 `undefined`）。这是同一族的**下一个**缺口，未在本轮修复。
+
+## 6. 决定通知（decision notice）——同族的第二个载荷
+
+审批结果通知（`notifyCreatorOnDecision`）曾经只带 `extra: { actionRequired: true }`，**不声明事件种类**，因此幂等键对它返回 `undefined` = 完全不去重；更糟的是它的载荷形状与「全部任务已终态」**字节级相同**，事后无法区分是谁发的。
+
+实测：`req_319b0b66` 于 `12:52:32Z` 审批通过，却在 `14:51:09Z` 又产生一条同形状 `requirement_update`（`status=dropped`）。**需求本身不可能被批两次**——`approveRequirement()` 有 `status !== 'pending'` 硬守卫——所以重放发生在通知侧。
+
+修法：声明 `event: "decision:<approved|rejected|changes_requested>"` + 稳定指纹（`approved` 用 `req.approvedAt`：同一决定的重放被抑制；重新提交后再审批产生新的 `approvedAt` = 新事实，照常通知）。
+
+**通用规则**：任何会唤醒 agent 的投递都必须声明 `extra.event`。没有事件种类的 `actionRequired` 载荷 = 无法去重的隐藏风险，而不仅是“少一个字段”。
