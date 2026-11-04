@@ -17,6 +17,7 @@ import { APIServer } from '../src/api-server.js';
 import {
   ensureThread,
   recordThreadEvent,
+  recordChatTurn,
   reportThreadEnsureFailure,
   taskRef,
   a2aRef,
@@ -309,6 +310,63 @@ describe('a2a 链路 — 投递时建流', () => {
       .all() as Array<{ kind: string; actor_id: string }>;
     expect(trg).toHaveLength(1);
     expect(trg[0]!.actor_id).toBe('agt_a');
+  });
+});
+
+describe('chat 回合级事件 — 一次回合一条，且不含正文', () => {
+  const makeServer2 = () => {
+    const srv = Object.create(APIServer.prototype) as APIServer;
+    (srv as unknown as { storage: StorageBridge }).storage = storage;
+    // ws 只需要存在：回合事件在广播**之前**就已经落库，但不应被广播的缺失绊倒。
+    (srv as unknown as { ws: { broadcastUnreadUpdate: () => void } }).ws = { broadcastUnreadUpdate: () => {} };
+    return srv;
+  };
+
+  const chatTriggers = () =>
+    db.prepare(`SELECT summary, idempotency_key FROM triggers WHERE kind = 'chat' ORDER BY received_at`).all() as Array<{
+      summary: string;
+      idempotency_key: string;
+    }>;
+
+  it('一次 persistChatTurn → 恰好 1 行，摘要只有 tokens / 工具次数', async () => {
+    const srv = makeServer2();
+    await (
+      srv as unknown as {
+        persistChatTurn: (a: string, u: string, r: string, s?: string, t?: number, m?: unknown) => Promise<void>;
+      }
+    ).persistChatTurn('agt_turn', 'zhe shi yi ju hua', 'shou dao', undefined, 1234, { toolCalls: 3 });
+
+    const rows = chatTriggers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.summary).toBe('回合结束 · 1.2k tokens · 3 次工具');
+    // 红线：转写内容的家只有会话本身（Owner 2026-11-03）
+    expect(rows[0]!.summary).not.toContain('zhe shi yi ju hua');
+  });
+
+  it('同一助手消息重放 → 仍只有 1 行（幂等键 = turn:<msgId>）', async () => {
+    const srv = makeServer2();
+    const turn = (
+      srv as unknown as {
+        persistAssistantMessage: (s: string, a: string, r: string, t?: number, m?: unknown) => Promise<void>;
+      }
+    ).persistAssistantMessage.bind(srv);
+    const sessions = storage.chatSessionRepo as { createSession: (a: string) => Promise<{ id: string }> };
+    const session = await sessions.createSession('agt_turn2');
+
+    await turn(session.id, 'agt_turn2', 'reply', 10, { streamId: 's1' });
+    // upsertStreamingAssistantMessage 会复用同一行 → 同一 msgId → 同一个幂等键
+    await turn(session.id, 'agt_turn2', 'reply (final)', 10, { streamId: 's1' });
+
+    const rows = chatTriggers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.idempotency_key.startsWith('evt:turn:')).toBe(true);
+  });
+
+  it('0 tokens / 0 工具 → 摘要形状不变（不省略那一段）', () => {
+    recordChatTurn(storage, { sessionRef: 'cs_shape', agentId: 'agt_s', assistantMessageId: 'm_shape' });
+    const rows = chatTriggers();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.summary).toBe('回合结束 · 0 tokens · 0 次工具');
   });
 });
 

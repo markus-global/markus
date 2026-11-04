@@ -86,7 +86,7 @@ import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
-import { ensureThread, recordThreadEvent, reportThreadEnsureFailure } from './thread-ensure.js';
+import { ensureThread, recordThreadEvent, recordChatTurn, reportThreadEnsureFailure } from './thread-ensure.js';
 import { threadWiringHealth } from './thread-wiring-metrics.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
@@ -2293,7 +2293,16 @@ export class APIServer {
         tokensUsed,
         metadata
       );
-      // 一个回合 = 一条聚合事件（**不是**每条消息一条）见下一个提交。
+      // 一个回合 = 一条聚合事件（**不是**每条消息一条）。
+      // Owner 2026-11-03 的决定仍然是硬约束：转写内容的家只有会话本身，
+      // 时间线只回答「这件事经历了几次处理」（tokens / 工具次数），不带正文。
+      recordChatTurn(this.storage, {
+        sessionRef: session.id,
+        agentId,
+        assistantMessageId: assistantMsg?.id,
+        tokensUsed,
+        toolCalls: toolCallsOf(metadata),
+      });
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2613,8 +2622,16 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
-      // 流式聊天（线上真实路径）的回合级事件在下一个提交里接。
+      // 流式聊天（线上真实路径）的回合级事件：一条回合一条，幂等键 = 助手消息 id。
+      // 【仍然不写】助手回复的「消息级」事件（Owner 2026-11-03 决定，见 persistChatTurn 注释）。
       if (msg?.id) {
+        recordChatTurn(this.storage, {
+          sessionRef: sessionId,
+          agentId,
+          assistantMessageId: msg.id,
+          tokensUsed,
+          toolCalls: toolCallsOf(meta),
+        });
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
     } catch (err) {

@@ -180,6 +180,52 @@ export function recordThreadEvent(
   return outcome;
 }
 
+/**
+ * 一个聊天回合的聚合事实 —— **不是**每条消息。
+ *
+ * Owner 2026-11-03 的决定（写在 `api-server.ts` 的 `persistChatTurn` 注释里）：
+ * 聊天消息不再逐条写时间线事件。理由是时间线回答「这件事经历了几次处理」，
+ * 不是「聊天记录」；转写内容的家只有一个：会话本身。
+ *
+ * 所以这里写的是**回合级**一行：一次对话处理 = 一条，摘要只含 tokens / 工具次数，
+ * 不含任何正文。粒度信息放在幂等键里（`turn:<assistantMessageId>`）—— 分类轴不能混进
+ * `kind` 列（`kind` 回答的是「事件从哪来」，答案是 `chat`；「多粗」是另一个问题）。
+ */
+export interface ChatTurnFacts {
+  /** 会话本身即流的 ref（`cs_*`），与 `ensureChatThread` 同一口径。 */
+  sessionRef: string;
+  agentId: string;
+  /** 助手消息 id：同一回合重放（reattach / 重试）不会写出第二行。缺省则不幂等。 */
+  assistantMessageId?: string;
+  tokensUsed?: number;
+  toolCalls?: number;
+}
+
+/**
+ * 一个回合一条聚合事件。
+ *
+ * 摘要形状**固定**（两个数字永远都在，哪怕是 0）：同一语义只有一种拼装方式，
+ * 否则「工具 0 次时省略那一段」会让同一个逻辑输入产生两种字节序列。
+ */
+export function recordChatTurn(storage: StorageBridge | undefined, turn: ChatTurnFacts): ThreadEventOutcome {
+  const tokens = turn.tokensUsed ?? 0;
+  const tools = turn.toolCalls ?? 0;
+  return recordThreadEvent(storage, turn.sessionRef, {
+    kind: 'chat',
+    actor: turn.agentId,
+    actorKind: 'agent',
+    summary: `回合结束 · ${formatCount(tokens)} tokens · ${tools} 次工具`,
+    // `turn:` 前缀把它与「消息级」事件在同一个幂等键空间里明确区分开。
+    eventId: turn.assistantMessageId ? `turn:${turn.assistantMessageId}` : undefined,
+  });
+}
+
+/** `1200` → `1.2k`；到不了 k 就原样（避免 `0.0k` 这种看不出量级的写法）。 */
+function formatCount(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
+}
+
 /** 任务流的 ref 形态：`tsk_<taskId>`。集中在一处，避免各调用点各拼一个。 */
 export const taskRef = (taskId: string): string => (taskId.startsWith('tsk_') ? taskId : `tsk_${taskId}`);
 

@@ -5,6 +5,7 @@ export { TaskService } from './task-service.js';
 export {
   ensureThread,
   recordThreadEvent,
+  recordChatTurn,
   reportThreadEnsureFailure,
   reportThreadEventFailure,
   taskRef,
