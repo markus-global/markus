@@ -76,9 +76,13 @@ function wire(autonomy: Autonomy) {
     grantedBy: 'human:owner',
   });
   expect(bound.ok).toBe(true);
+  if (bound.ok) expect(bound.subscribed).toBe(true);
 
-  const { thread } = threads.upsert(REF);
-  threads.subscribe(thread.id, thread.id, AGENT, 'own');
+  // 订阅由 `bind()` 一处产生（唯一写者）。这里**不再**手动 `threads.subscribe()` ——
+  // 手动补一行会让「两个写者」在测试里显得无害，而那正是生产上真实发生过的 bug：
+  // 仓储建一份、工具注入再建一份，team 绑定上两者语义还相反。
+  const thread = threads.getByRef(REF)!;
+  expect(thread).toBeTruthy();
 
   const delivered: DispatchTarget[] = [];
   const service = new ThreadService({

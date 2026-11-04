@@ -12,6 +12,8 @@ import type { Autonomy, ResourceBinding, ResourceScope } from '@markus/shared';
 
 class FakeBindings {
   rows: ResourceBinding[] = [];
+  /** 订阅由仓储建（与 `SqliteResourceBindingRepo.ensureSubscription` 同语义） */
+  subscribeCalls = 0;
   private n = 0;
 
   bind(b: {
@@ -20,12 +22,14 @@ class FakeBindings {
     scope: ResourceScope;
     autonomy?: Autonomy;
     grantedBy: string;
-  }): { ok: true; binding: ResourceBinding } | { ok: false; reason: string } {
+  }): { ok: true; binding: ResourceBinding; subscribed: boolean } | { ok: false; reason: string } {
     const existing = this.findByHolder(b.holder.kind, b.holder.id, b.resource);
+    const subscribed = b.holder.kind === 'agent';
+    if (subscribed) this.subscribeCalls += 1;
     if (existing) {
       existing.scope = b.scope;
       existing.autonomy = b.autonomy ?? existing.autonomy;
-      return { ok: true, binding: existing };
+      return { ok: true, binding: existing, subscribed };
     }
     if (b.scope === 'admin') {
       const taken = this.listByResource(b.resource).find(x => x.scope === 'admin');
@@ -49,7 +53,7 @@ class FakeBindings {
       grantedBy: { kind: gKind === 'agent' ? 'agent' : 'human', id: gRest.join(':') },
     };
     this.rows.push(binding);
-    return { ok: true, binding };
+    return { ok: true, binding, subscribed };
   }
   findByHolder(kind: 'agent' | 'team', id: string, resource: string) {
     return this.rows.find(r => r.holder.kind === kind && r.holder.id === id && r.resource === resource) ?? null;
@@ -68,7 +72,6 @@ class FakeBindings {
 }
 
 let bindings: FakeBindings;
-let subscribed: string[];
 let deps: ResourceToolDeps;
 let tools: ReturnType<typeof buildResourceTools>;
 
@@ -77,13 +80,11 @@ const run = async (name: string, args: Record<string, unknown> = {}) => JSON.par
 
 beforeEach(() => {
   bindings = new FakeBindings();
-  subscribed = [];
   deps = {
     agentId: 'agt_me',
     agentName: '内容高手',
     teamId: 'team_content',
     bindings,
-    subscribe: resource => subscribed.push(resource),
   };
   tools = buildResourceTools(deps);
 });
@@ -112,7 +113,17 @@ describe('resource_bind', () => {
     expect(r.status).toBe('bound');
     expect(r.autonomy).toBe('observe');
     expect(r.subscribed).toBe(true);
-    expect(subscribed).toEqual(['xhs:brand_01']);
+    // 订阅的创建只发生一次，且发生在仓储的 bind() 里 —— 工具不再自己订阅。
+    // （曾经两处都写：仓储写一份、工具写一份，team 绑定上两者语义还相反。）
+    expect(bindings.subscribeCalls).toBe(1);
+  });
+
+  it('team 绑定：如实回 subscribed=false（不替团队编一个 agent）', async () => {
+    const r = await run('resource_bind', { resource: 'xhs:brand_01', scope: 'read', for_team: true });
+    expect(r.status).toBe('bound');
+    expect(r.subscribed).toBe(false);
+    expect(String(r.next)).toContain('团队绑定不产生 agent 订阅');
+    expect(bindings.subscribeCalls).toBe(0);
   });
 
   it('autonomy=auto 且无审批通道 → pending_approval，且**不写库**（不许撒谎）', async () => {
@@ -120,7 +131,7 @@ describe('resource_bind', () => {
     expect(r.status).toBe('pending_approval');
     expect(r.effective).toBe(false);
     expect(bindings.rows).toHaveLength(0);
-    expect(subscribed).toHaveLength(0);
+    expect(bindings.subscribeCalls).toBe(0);
   });
 
   it('审批被拒 → rejected，且不写库', async () => {
