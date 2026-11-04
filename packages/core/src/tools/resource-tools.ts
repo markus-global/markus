@@ -25,14 +25,19 @@ export interface ResourceToolDeps {
       scope: ResourceScope;
       autonomy?: Autonomy;
       grantedBy: string;
-    }): { ok: true; binding: ResourceBinding } | { ok: false; reason: string };
+    }): { ok: true; binding: ResourceBinding; subscribed: boolean } | { ok: false; reason: string };
     findByHolder(kind: 'agent' | 'team', id: string, resource: string): ResourceBinding | null;
     listByHolder(kind: 'agent' | 'team', id: string): ResourceBinding[];
     listByResource(resource: string): ResourceBinding[];
     unbind(id: string): boolean;
   };
-  /** 绑定即订阅：由调用方注入（core 不直接依赖 thread 存储） */
-  subscribe(resource: string, agentId: string): void;
+  // 这里**没有** `subscribe` 依赖。
+  //
+  // 曾经有：工具在 bind 之后自己再订阅一次。于是同一件事有了两个写者
+  // （仓储的 `ensureSubscription` + 这里的注入），而且两处对 **team 绑定** 的
+  // 语义相反：工具替**调用者 agent** 订阅，仓储则认为团队没指定 agent、不订阅。
+  // 结果就是「同一个动作，走工具面会收事件、走 API 路径不会」。
+  // 现在订阅的唯一写者在仓储里（建与销都在同一个类），工具只回报它实际做了什么。
   /** 升档审批通道。缺失时工具**不得**假装已生效，只能回 pending_approval。 */
   requestApproval?: (req: { agentId: string; resource: string; scope: ResourceScope; autonomy: Autonomy }) => Promise<boolean>;
   /**
@@ -142,9 +147,8 @@ export function buildResourceTools(deps: ResourceToolDeps): AgentToolHandler[] {
           return JSON.stringify({ status: 'conflict', effective: false, resource, reason: result.reason });
         }
 
-        // 绑定即订阅：后续事件直通，不需要再单独订阅一次
-        deps.subscribe(resource, holder.kind === 'agent' ? holder.id : deps.agentId);
-
+        // 不在这里写订阅。订阅由绑定仓储在同一次 `bind()` 里完成（唯一写者），
+        // 这里只把「它到底有没有建」如实回报 —— 工具结果是 agent 唯一的反馈通道。
         return JSON.stringify({
           status: 'bound',
           effective: true,
@@ -153,9 +157,10 @@ export function buildResourceTools(deps: ResourceToolDeps): AgentToolHandler[] {
           scope,
           autonomy,
           exclusive: scope === L3_SCOPE,
-          subscribed: true,
-          next:
-            autonomy === 'observe'
+          subscribed: result.subscribed,
+          next: !result.subscribed
+            ? '团队绑定不产生 agent 订阅：事件不会自动投给某个 agent。需要有人接时，请由具体 agent 各自绑定，或由人指派。'
+            : autonomy === 'observe'
               ? '你现在会收到该资源的事件并留痕，但不会自动动手。确认判断稳定后可以升到 auto（需人批）。'
               : '事件会直接投给你，按 autonomy 档位执行。',
         });

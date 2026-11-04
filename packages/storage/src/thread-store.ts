@@ -371,11 +371,14 @@ export class SqliteResourceBindingRepo {
    * 只对 **agent** holder 生效：订阅是「哪个 agent 被叫醒」这件事，
    * team 绑定没有指定具体 agent，不能替它编一个。
    */
-  private ensureSubscription(resource: string, holder: { kind: 'agent' | 'team'; id: string }): void {
-    if (holder.kind !== 'agent') return;
+  private ensureSubscription(resource: string, holder: { kind: 'agent' | 'team'; id: string }): boolean {
+    // team 绑定不产生订阅：订阅回答的是「哪个 agent 被叫醒」，替团队编一个 agent
+    // 就是编事实。返回 false 而不是静默 no-op —— 调用方（工具）要把它如实告诉 agent。
+    if (holder.kind !== 'agent') return false;
     const threads = new SqliteThreadRepo(this.db);
     const { thread } = threads.upsert(resource);
     threads.subscribe(thread.id, thread.id, holder.id, 'own');
+    return true;
   }
 
   bind(b: {
@@ -386,7 +389,7 @@ export class SqliteResourceBindingRepo {
     autonomy?: Autonomy;
     grantedBy: string;
     since?: number;
-  }): { ok: true; binding: ResourceBinding } | { ok: false; reason: string } {
+  }): { ok: true; binding: ResourceBinding; subscribed: boolean } | { ok: false; reason: string } {
     const existing = this.findByHolder(b.holder.kind, b.holder.id, b.resource);
     if (existing) {
       const written = this.writeTranslatingL3(b.resource, () =>
@@ -399,8 +402,8 @@ export class SqliteResourceBindingRepo {
       if (!updated) throw new Error(`BINDING_VANISHED: ${existing.id}`);
       // 已存在绑定也要补订阅：它可能是本次修复之前（或经 API 路径）创建的，
       // 库里那批「绑了却没订阅」的存量靠这一句自愈，不需要写迁移脚本。
-      this.ensureSubscription(b.resource, b.holder);
-      return { ok: true, binding: updated };
+      const subscribed = this.ensureSubscription(b.resource, b.holder);
+      return { ok: true, binding: updated, subscribed };
     }
 
     // 刻意**没有**「先查有没有别的 admin，再插入」的预检：
@@ -421,8 +424,8 @@ export class SqliteResourceBindingRepo {
     const created = this.findById(id);
     if (!created) throw new Error(`BINDING_INSERT_FAILED: ${id}`);
     // 绑定即订阅：同一次调用里完成，调用方不需要记得补。
-    this.ensureSubscription(b.resource, b.holder);
-    return { ok: true, binding: created };
+    const subscribed = this.ensureSubscription(b.resource, b.holder);
+    return { ok: true, binding: created, subscribed };
   }
 
   /**

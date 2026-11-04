@@ -849,11 +849,9 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
         mandates: s.approvalRepo
           ? { findMandate: (q: { agentId: string; resource: string; actionScope: ResourceScope; eventKey?: string }) => s.approvalRepo!.findMandate(q) }
           : undefined,
-        // 绑定即订阅：后续该资源的事件天然直通给绑定者（v1 里 ticket 就是 thread 本身）
-        subscribe: (resource: string, holderAgentId: string) => {
-          const { thread } = s.threadRepo.upsert(resource);
-          s.threadRepo.subscribe(thread.id, thread.id, holderAgentId, 'own');
-        },
+        // 不注入 subscribe：订阅的唯一写者是 `SqliteResourceBindingRepo.bind()`
+        // （内部调 `ensureSubscription`，解绑在同一个类里对称清理）。
+        // 这里再注入一份就是第二个写者，而且对 team 绑定的语义与仓储相反。
         // 「我盯的资源最近发生了什么」：取该流最近的处置记录。
         // 读不到时返回 undefined —— 工具会回 recentUnknown:true，而不是编一个空数组说「没事发生」。
         recentActivity: (resource: string) => {
