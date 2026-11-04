@@ -24,11 +24,19 @@ import { formatRelativeAny } from '../lib/threadPresentation.ts';
  * 历史只放已结束的审批 —— `pending` 的不在这里，它们在概览「等你处理」里。
  * 两边不重叠：概览 = 现在要我动手的，历史 = 已经结束的。
  */
+/**
+ * 审批结果的呈现：**已结束的事要沉下去，不要抢眼**。
+ *
+ * Owner 2026-11-04：“既然已经审批了，为什么字体颜色还是像新的通知一样”。
+ * 旧写法是满饱和的绿/红圆点 + text-fg-primary 粗体标题 —— 和未读通知一个视觉分量，
+ * 等于告诉用户「这条还需要你注意」。历史里只有「结论」值得看，警示色只留给需要动作的东西。
+ * 现在：圆点一律弱化（结果由 chip 文字承担），chip 降一档对比度。
+ */
 const APPROVAL_STATUS = {
-  approved: { label: '已批准', dot: 'bg-green-500', chip: 'bg-green-500/10 text-green-600' },
-  rejected: { label: '已拒绝', dot: 'bg-red-500', chip: 'bg-red-500/10 text-red-500' },
-  cancelled: { label: '已取消', dot: 'bg-fg-muted/40', chip: 'bg-surface-overlay text-fg-tertiary' },
-  expired: { label: '已过期', dot: 'bg-amber-500/60', chip: 'bg-amber-500/10 text-amber-600' },
+  approved: { label: '已批准', dot: 'bg-fg-muted/30', chip: 'bg-green-500/8 text-green-600/70' },
+  rejected: { label: '已拒绝', dot: 'bg-fg-muted/30', chip: 'bg-red-500/8 text-red-500/70' },
+  cancelled: { label: '已取消', dot: 'bg-fg-muted/25', chip: 'bg-surface-overlay text-fg-tertiary' },
+  expired: { label: '已过期', dot: 'bg-fg-muted/25', chip: 'bg-amber-500/8 text-amber-600/70' },
 } as const;
 
 type ResolvedStatus = keyof typeof APPROVAL_STATUS;
@@ -311,7 +319,7 @@ export function HistoryModal({
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${st.chip}`}>{st.label}</span>
-                        <span className="text-xs font-medium text-fg-primary truncate">{row.approval.title}</span>
+                        <span className="text-xs text-fg-secondary truncate">{row.approval.title}</span>
                       </div>
                       <div className="text-[11px] text-fg-tertiary mt-0.5 truncate">
                         {row.approval.agentName} · {formatRelativeAny(at)}
