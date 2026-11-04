@@ -46,6 +46,8 @@ import {
   stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
+  type ThreadEnsureOutcome,
+  type ThreadEventOutcome,
 } from '@markus/shared';
 import {
   shouldDistillTask,
@@ -70,6 +72,7 @@ import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
 import { isTerminalTaskStatus, resolveCommentAttention, shouldInjectIntoSession, type CommentAuthorType } from './task-attention.js';
+import { reportThreadEnsureFailure, reportThreadEventFailure, taskRef } from './thread-ensure.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -283,14 +286,14 @@ export class TaskService implements ApprovalTargetPort {
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   /** 日常链路写 Thread 的注入点（org-manager 不直接 new service，由组合根注入）。 */
-  private threadEnsurer?: (taskId: string, actorAgentId?: string) => void;
+  private threadEnsurer?: (taskId: string, actorAgentId?: string) => ThreadEnsureOutcome;
   /**
    * 向任务流的时间线追加一条事件。
    *
    * 为什么注入而不是 import：task-service 不持有 storage（只有各个 repo），
    * 注入也让测试里一个 spy 就能验「评论后事件真的写了」，不用构造整个 storage。
    */
-  private threadEventRecorder?: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void;
+  private threadEventRecorder?: (taskId: string, e: { kind: string; actor?: string; summary: string }) => ThreadEventOutcome;
   private taskLogRepo?: TaskLogRepo;
   /** The platform-wide single execution point for approval outcomes. */
   private approvalApplier?: ApprovalApplier;
@@ -463,11 +466,11 @@ export class TaskService implements ApprovalTargetPort {
    * 为什么不在这里直接 import ensureThread：那会让 task-service 绑死 storage 具体形状，
    * 也会让「ref 怎么拼」散到第二个地方。拼 ref 的知识只留在 thread-ensure.ts。
    */
-  setThreadEnsurer(fn: (taskId: string, actorAgentId?: string) => void): void {
+  setThreadEnsurer(fn: (taskId: string, actorAgentId?: string) => ThreadEnsureOutcome): void {
     this.threadEnsurer = fn;
   }
 
-  setThreadEventRecorder(fn: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void): void {
+  setThreadEventRecorder(fn: (taskId: string, e: { kind: string; actor?: string; summary: string }) => ThreadEventOutcome): void {
     this.threadEventRecorder = fn;
   }
 
@@ -701,13 +704,16 @@ export class TaskService implements ApprovalTargetPort {
 
     // 时间线（S6）：评论也是一条「发生了什么」。
     // 放在落库之后 —— 先有评论事实，再派生事件；事件写失败不应回滚评论。
-    try {
-      this.threadEventRecorder?.(taskId, {
-        kind: 'comment',
-        actor: authorId,
-        summary: `${authorName}: ${content.replace(/\s+/g, ' ').slice(0, 80)}`,
-      });
-    } catch { /* 读模型失败不影响评论本身 */ }
+    //
+    // 【2026-11-04】不再 `try { … } catch { 吞掉 }` 也不再丢弃返回值：吞掉之后「评论有了、
+    // 时间线没行」在日志里查不到任何痕迹（这正是「机制在、没人用」的可观测根因）。
+    // 现在把结论交给**唯一**的上报点（文案与计数只在 thread-ensure 一处）。
+    const recorded = this.threadEventRecorder?.(taskId, {
+      kind: 'comment',
+      actor: authorId,
+      summary: `${authorName}: ${content.replace(/\s+/g, ' ').slice(0, 80)}`,
+    });
+    if (recorded) reportThreadEventFailure(recorded, taskRef(taskId), 'task.comment');
 
     // Compute reply-to context for WS broadcast (denormalized for frontend)
     let replyToAuthor: string | undefined;
@@ -2837,7 +2843,11 @@ export class TaskService implements ApprovalTargetPort {
     // 动作人 = 指派对象？不是。这里传 `undefined`：createTask 请求里没有可靠的
     // 「谁发起的」字段（agent 建卡和人在 UI 建卡都走同一个入口）。
     // 宁可少排除一次自激，也不要传一个看似有意义的错值——后者会让自激排除悄悄失效。
-    this.threadEnsurer?.(task.id);
+    //
+    // 【2026-11-04】返回值必须被检查：本卡之前的写法是 `this.threadEnsurer?.(task.id);`
+    // —— `storage` 没挂 threadRepo 时「流没建」既没日志也没计数，业务照跑。
+    const ensured = this.threadEnsurer?.(task.id);
+    if (ensured) reportThreadEnsureFailure(ensured, taskRef(task.id), 'task.create');
     this.emitTaskEvent({
       type: 'created',
       taskId: task.id,

@@ -136,6 +136,24 @@ export type TriggerKind =
 export type ActorKind = 'human' | 'agent' | 'bot' | 'system';
 export type Addressing = 'direct' | 'mention' | 'ambient';
 
+/**
+ * 日常链路建流的**结论**（`ensureThread` 的返回）。刻意不是 boolean。
+ *
+ * 三者的「该怎么办」完全不同：
+ * - `ensured`：正常（含幂等重入）。
+ * - `no-thread-repo`：**装配缺失**（storage 没挂 threadRepo）—— 去修装配，不是业务错误。
+ * - `failed`：抛了（数据/约束），看 warn 里的 error。
+ *
+ * 合成为一个 `false`，就是把「去改哪里」这条可行动信息丢掉。
+ *
+ * 放在 shared 而不是 org-manager：`AgentManager`（core）与 `TaskService`（org-manager）
+ * 都要在自己的注入点契约里写这个类型 —— 两份同名 union 就是两份会漂移的事实。
+ */
+export type ThreadEnsureOutcome = 'ensured' | 'no-thread-repo' | 'failed';
+
+/** 往流上记一件事的结论。`duplicate` 是正常情况（重投 / 重连），不是失败。 */
+export type ThreadEventOutcome = 'recorded' | 'duplicate' | 'no-trigger-repo' | 'failed';
+
 export interface Trigger {
   id: string;
   kind: TriggerKind;

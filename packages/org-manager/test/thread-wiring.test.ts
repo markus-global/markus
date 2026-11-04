@@ -14,7 +14,14 @@ import { SqliteThreadRepo, SqliteDispositionRepo, SqliteChatSessionRepo, SqliteT
 import { AgentManager } from '@markus/core';
 import { TaskService } from '../src/task-service.js';
 import { APIServer } from '../src/api-server.js';
-import { ensureThread, recordThreadEvent, taskRef, a2aRef } from '../src/thread-ensure.js';
+import {
+  ensureThread,
+  recordThreadEvent,
+  reportThreadEnsureFailure,
+  taskRef,
+  a2aRef,
+} from '../src/thread-ensure.js';
+import { resetThreadWiringHealth, threadWiringHealth } from '../src/thread-wiring-metrics.js';
 import type { StorageBridge } from '../src/storage-bridge.js';
 
 let dir: string;
@@ -67,14 +74,16 @@ function makeService(): TaskService {
 
 describe('ensureThread — 唯一收口', () => {
   it('建流并可重复调用（幂等，不新增行）', () => {
-    expect(ensureThread(storage, 'tsk_abc')).toBe(true);
-    expect(ensureThread(storage, 'tsk_abc')).toBe(true);
+    expect(ensureThread(storage, 'tsk_abc')).toBe('ensured');
+    expect(ensureThread(storage, 'tsk_abc')).toBe('ensured');
     expect(threadCount('tsk_abc')).toBe(1);
   });
 
-  it('存储未挂 threadRepo 时返回 false，且不抛', () => {
-    expect(ensureThread(undefined, 'tsk_abc')).toBe(false);
-    expect(ensureThread({} as StorageBridge, 'tsk_abc')).toBe(false);
+  it('存储未挂 threadRepo 时返回可判定 outcome，且不抛', () => {
+    // 2026-11-04：返回值从 boolean 改为 `ThreadEnsureOutcome` —— `false` 把
+    // 「装配缺失」与「抛错」合成一个值，调用方无法给出可行动提示（静默降级的根）。
+    expect(ensureThread(undefined, 'tsk_abc')).toBe('no-thread-repo');
+    expect(ensureThread({} as StorageBridge, 'tsk_abc')).toBe('no-thread-repo');
   });
 
   it('ref 拼接集中在 helper 里（不散到各调用点）', () => {
@@ -271,5 +280,59 @@ describe('a2a 链路 — 投递时建流', () => {
       (db.prepare(`SELECT COUNT(*) AS n FROM threads WHERE ref LIKE 'a2a_%'`).get() as { n: number }).n,
     );
     expect(n).toBe(1);
+  });
+
+  /**
+   * 与 `start.ts` 的注入实现同款的闭环：建流 + 时间线各一行。
+   * 把两者写在一起是因为它们在生产代码里就是同一个回调 —— 只测其中一半，
+   * 另一半消失了测试依旧绿。
+   */
+  it('a2a 接线闭环（与 start.ts 同款）：threads / triggers 各落一行', async () => {
+    const mgr = new AgentManager({ llmRouter: {} as never });
+    mgr.setThreadEnsurer((a, b, _actor, text) => {
+      const ref = a2aRef(a, b);
+      const outcome = ensureThread(storage, ref, a);
+      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, actorKind: 'agent', summary: text ?? '' });
+      return outcome;
+    });
+    const deliver = (
+      mgr as unknown as {
+        deliverA2AMessage: (args: { targetId: string; message: string; fromId: string; fromName: string }) => Promise<string>;
+      }
+    ).deliverA2AMessage.bind(mgr);
+
+    await expect(deliver({ targetId: 'agt_b', message: 'ni hao', fromId: 'agt_a', fromName: 'A' })).rejects.toThrow();
+
+    expect(threadCount(a2aRef('agt_a', 'agt_b'))).toBe(1);
+    const trg = db
+      .prepare(`SELECT kind, actor_id FROM triggers WHERE kind = 'a2a'`)
+      .all() as Array<{ kind: string; actor_id: string }>;
+    expect(trg).toHaveLength(1);
+    expect(trg[0]!.actor_id).toBe('agt_a');
+  });
+});
+
+describe('静默降级必须消灭 — outcome 可判定 + 计数可见', () => {
+  it('缺 threadRepo → no-thread-repo（不是不声不响的 false）', () => {
+    resetThreadWiringHealth();
+    expect(ensureThread(undefined, 'tsk_no_repo')).toBe('no-thread-repo');
+    expect(threadWiringHealth().ensure['no-thread-repo']).toBe(1);
+    // 上报本身不得抛（业务不能因为派生视图失败而中断）
+    expect(() => reportThreadEnsureFailure('no-thread-repo', 'tsk_no_repo', 'task.create')).not.toThrow();
+  });
+
+  it('缺 triggerRepo → no-trigger-repo，且计数可见', () => {
+    resetThreadWiringHealth();
+    const bare = { threadRepo: storage.threadRepo } as unknown as StorageBridge;
+    expect(recordThreadEvent(bare, 'tsk_bare', { kind: 'comment', summary: 'x' })).toBe('no-trigger-repo');
+    expect(threadWiringHealth().event['no-trigger-repo']).toBe(1);
+  });
+
+  it('重复登记同一个 eventId → duplicate（重投是正常情况，不是失败）', () => {
+    resetThreadWiringHealth();
+    const e = { kind: 'comment', summary: 'same', eventId: 'evt_fixed_1' };
+    expect(recordThreadEvent(storage, 'tsk_dup', e)).toBe('recorded');
+    expect(recordThreadEvent(storage, 'tsk_dup', e)).toBe('duplicate');
+    expect(threadWiringHealth().event).toMatchObject({ recorded: 1, duplicate: 1 });
   });
 });

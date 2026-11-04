@@ -87,6 +87,7 @@ import {
   type InstanceStoreDeps,
   ensureThread,
   recordThreadEvent,
+  reportThreadEnsureFailure,
   taskRef,
   a2aRef,
 } from '@markus/org-manager';
@@ -766,6 +767,8 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
     // S3：任务建卡即建流。流是「这条任务卡在谁那儿」的存储级答案。
+    // 返回值原样透传：上报点在 `TaskService.createTask`（最靠近入口的那一层），
+    // 每类入口只有一个上报点，不在这里重复。
     taskService.setThreadEnsurer((taskId) => ensureThread(storage, taskRef(taskId)));
     // S6：任务评论写入时间线（D1.3）。注入而不是让 task-service import storage。
     taskService.setThreadEventRecorder((taskId, e) => recordThreadEvent(storage, taskRef(taskId), e));
@@ -901,12 +904,18 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (storage?.threadRepo) {
     agentManager.setThreadEnsurer((a, b, _actor, text) => {
       const ref = a2aRef(a, b);
-      ensureThread(storage, ref, a);
+      // 返回值必须被检查：本卡之前这里丢弃了它，`storage` 没挂 threadRepo 时
+      // 「a2a 流没建」只有一条无人看的 warn（且 warn 本身当时也不存在）。
+      // core 报不了这句话（文案与计数只在 thread-ensure 一处），所以由这里报。
+      const ensurer = ensureThread(storage, ref, a);
+      if (ensurer !== 'ensured') reportThreadEnsureFailure(ensurer, ref, 'a2a.deliver');
       // S6：A2A DM 写入时间线（D1.4）。
       //
       // 【更正 2026-11-03】原先这里写「投递回调拿不到正文，所以只记粗粒度」——那是错的：
       // `deliverA2AMessage` 的 `message` 就在手上，只是没往下传。现在传递并提取可读摘要。
-      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: a2aSummary(text, a, b) });
+      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, actorKind: 'agent', summary: a2aSummary(text, a, b) });
+      // 返回值是注入点的契约（`ThreadEnsureOutcome`）：a2a 链路的上报刚刚在上面做完。
+      return ensurer;
     });
   }
 

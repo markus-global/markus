@@ -86,7 +86,8 @@ import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
-import { ensureThread, recordThreadEvent } from './thread-ensure.js';
+import { ensureThread, recordThreadEvent, reportThreadEnsureFailure } from './thread-ensure.js';
+import { threadWiringHealth } from './thread-wiring-metrics.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -2250,11 +2251,13 @@ export class APIServer {
    * 所以不会产生第二条流；但这不等于「只写一处」——真正的单一执行点是 repo 的唯一约束。
    */
   private ensureChatThread(sessionRef: string, agentId: string): void {
-    // 统一走 ThreadService.ensure()（§7.3.1 唯一写者）。
+    // 统一走 ThreadService.ensure（）（§7.3.1 唯一写者）。
     // 此前这里直接调 repo.upsert()，是绕过 service 的第二条写路径。
-    if (!ensureThread(this.storage, sessionRef, agentId)) {
-      log.warn('Chat thread not ensured (no thread repo)', { sessionRef, agentId });
-    }
+    //
+    // 【2026-11-04】失败不再只打一条本地的 warn：上交到唯一上报点（含计数），
+    // 否则「流没建」只存在于日志里，而 `/api/health` 看不出任何异常。
+    const outcome = ensureThread(this.storage, sessionRef, agentId);
+    reportThreadEnsureFailure(outcome, sessionRef, 'chat.turn');
   }
 
   private async persistChatTurn(
@@ -2290,7 +2293,7 @@ export class APIServer {
         tokensUsed,
         metadata
       );
-      // 【已删】助手回复也不再单独进时间线（同上：对话是一条，不是 N 条消息）。
+      // 一个回合 = 一条聚合事件（**不是**每条消息一条）见下一个提交。
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2610,7 +2613,7 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
-      // 【已删】助手回复不单独进时间线（同上）。
+      // 流式聊天（线上真实路径）的回合级事件在下一个提交里接。
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
@@ -12259,6 +12262,10 @@ EXPLANATION_END`;
         status: 'ok',
         version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
+        // Thread / Trigger 接线体检：`no-thread-repo` / `no-trigger-repo` / `failed`
+        // 任何一个非 0，就说明装配缺了一节 —— 不再需要靠 grep 源码才发发现。
+        // `observed` 是影子判定（chat/task/a2a 切换前预告）的分布。
+        threadWiring: threadWiringHealth(),
       };
       // Non-blocking update check — cached, so normally instant after first call
       try {
@@ -15013,6 +15020,27 @@ EXPLANATION_END`;
       return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
     }
   }
+}
+
+/**
+ * 回合里发生了几次工具调用。
+ *
+ * 为什么从 metadata 里取而不是另建一个计数器：`metadata` 是持久化层已有的回合级载荷
+ * （流式回合写的就是它），另建计数就是同一个事实的第二个写者。取不到就是 0 ——
+ * **不省略那一段**（同一语义只能有一种摘要形状，否则同一个回合会产出两种字节序列）。
+ */
+function toolCallsOf(metadata: unknown): number {
+  if (!metadata || typeof metadata !== 'object') return 0;
+  const m = metadata as Record<string, unknown>;
+  for (const key of ['toolCalls', 'toolCallCount', 'toolCount'] as const) {
+    const v = m[key];
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+  }
+  const segments = m['segments'];
+  if (Array.isArray(segments)) {
+    return segments.filter((s) => !!s && typeof s === 'object' && (s as { type?: unknown }).type === 'tool').length;
+  }
+  return 0;
 }
 
 function stripHtmlTags(value: string): string {

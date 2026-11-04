@@ -215,16 +215,7 @@ export class ThreadService {
     const { thread } = this.ensure(input.ref);
     const subscriptions = this.deps.threads.listSubscriptions(thread.id);
 
-    const verdict = gateVerdict(input.kind, {
-      alreadyHandled: this.deps.dispositions.countByTrigger(input.triggerId) > 0,
-      actorKind: input.actorKind,
-      addressing: input.addressing,
-      hasOwner: subscriptions.some(s => s.purpose === 'own'),
-      hasSubscriptions: subscriptions.length > 0,
-      threadEnded: !!input.threadEnded,
-      entityRef: input.entityRef,
-      directTargetAgentId: input.directTargetAgentId,
-    });
+    const verdict = this.gateFor(input, subscriptions);
 
     if (verdict === 'duplicate') {
       // 不重复写审计（UNIQUE 也会挡），只回报判定结果
@@ -275,6 +266,20 @@ export class ThreadService {
     this.record(input.triggerId, thread.id, decision, matchedRule, 'gate');
     this.notifyWake(input);
     return { verdict, threadId: thread.id, decision, matchedRule };
+  }
+
+  /** Gate 规则 1–5 的唯一计算点（纯函数 + 两个只读查询）。 */
+  private gateFor(input: RouteInput, subscriptions: SubscriptionLike[]): GateVerdict {
+    return gateVerdict(input.kind, {
+      alreadyHandled: this.deps.dispositions.countByTrigger(input.triggerId) > 0,
+      actorKind: input.actorKind,
+      addressing: input.addressing,
+      hasOwner: subscriptions.some(s => s.purpose === 'own'),
+      hasSubscriptions: subscriptions.length > 0,
+      threadEnded: !!input.threadEnded,
+      entityRef: input.entityRef,
+      directTargetAgentId: input.directTargetAgentId,
+    });
   }
 
   /**

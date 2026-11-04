@@ -23,6 +23,7 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
+  type ThreadEnsureOutcome,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import { setThreadWakeDeliverer } from './thread-wake-bus.js';
@@ -1255,11 +1256,14 @@ export class AgentManager {
   /**
    * 日常链路写 Thread 的注入点（core 不依赖 storage，由上层注入）。
    * A2A 投递时回调 —— 同一次 DM 对话是一条流，不因方向不同裂成两条。
+   *
+   * 返回值是**可判定结论**（不是 void）：注入实现必须自己对 `no-thread-repo` / `failed`
+   * 做可行动上报。core 不复制那段文案 —— 两处文案必然漂移。
    */
-  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string, text?: string) => void): void {
+  setThreadEnsurer(fn: (a: string, b: string, actorAgentId?: string, text?: string) => ThreadEnsureOutcome): void {
     this.threadEnsurer = fn;
   }
-  private threadEnsurer?: (a: string, b: string, actorAgentId?: string, text?: string) => void;
+  private threadEnsurer?: (a: string, b: string, actorAgentId?: string, text?: string) => ThreadEnsureOutcome;
 
   setTaskService(taskService: TaskServiceBridge): void {
     this.taskService = taskService;
@@ -1436,6 +1440,9 @@ export class AgentManager {
     try {
       // 把正文一并交出去：它就在这里（`message`），没有理由让时间线只能写
       // 「A → B 发了一条消息」而不写发了什么。
+      //
+      // 返回值由**注入实现**（start.ts）上报：`no-thread-repo`（装配缺失）/ `failed`（抛错）
+      // 的可行动文案只能有一处（thread-ensure），core 不复制。
       this.threadEnsurer?.(fromId, targetId, fromId, message);
     } catch {
       /* 派生视图失败不影响投递本身 */
