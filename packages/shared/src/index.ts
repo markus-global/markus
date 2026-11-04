@@ -16,6 +16,7 @@ export * from './types/connector.js';
 export * from './types/integration.js';
 export * from './types/file-storage.js';
 export * from './types/mailbox.js';
+export * from './types/wakeup-events.js';
 export * from './types/workflow-template.js';
 export * from './types/model-catalog.js';
 export * from './types/license.js';

@@ -138,7 +138,8 @@ describe('Agent mailbox item routing', () => {
       summary: 'Req approved',
       content: 'Requirement was approved — take action',
       requirementId: 'req_2',
-      extra: { actionRequired: true },
+      // 唤醒型投递必须声明登记过的事件（L2 fail-closed）；本用例验的是路由，不是去重。
+      extra: { actionRequired: true, event: 'all_tasks_terminal' },
     });
 
     expect(reply).toContain('Handled');
@@ -168,7 +169,8 @@ describe('Agent mailbox item routing', () => {
     const reply = await processViaMailbox(agent, 'workflow_update', {
       summary: 'Workflow step',
       content: 'Complete the deployment step',
-      extra: { actionRequired: true, event: 'step_complete' },
+      // 事件名必须取自 WAKEUP_EVENTS（旧的 'step_complete' 未登记 → 会被投递层拒绝）
+      extra: { actionRequired: true, event: 'run_completed', runId: 'wfrun_fixture', runNumber: 1 },
     });
 
     expect(reply).toContain('Handled');

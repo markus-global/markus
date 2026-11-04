@@ -152,7 +152,7 @@ export type {
 } from './review-service.js';
 export { EventBus } from './events.js';
 export { decideTurnReply, shouldComposeAnswer, type TurnReply, type TurnReplyInput } from './turn-completion.js';
-export { AgentMailbox, mailboxDedupKey, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
+export { AgentMailbox, mailboxDedupKey, assertWakeupDedupable, MailboxUndedupableWakeupError, type EnqueueOptions, type MailboxPersistence } from './mailbox.js';
 export {
   AttentionController,
   type AttentionDelegate,
