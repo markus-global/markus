@@ -20,3 +20,42 @@ export function markNotificationRead(n: NotificationInfo): void {
   // 各自持有自己的副本，没有事件就只能靠重新挂载才刷新。
   window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
 }
+
+/** 一条通知指向的实体键（用于「同一条事实的多条通知一起标已读」）。 */
+function entityKey(n: NotificationInfo): string | null {
+  const m = (n.metadata ?? {}) as Record<string, unknown>;
+  const s = (v: unknown) => (typeof v === 'string' && v.length > 0 ? v : undefined);
+  const task = s(m['taskId']);
+  const req = s(m['requirementId']);
+  if (task) return `task:${task}`;
+  if (req) return `req:${req}`;
+  return null;
+}
+
+/**
+ * 点开一条通知：它自己 + **同一任务/需求的其它未读通知**一起标已读，返回被标已读的 id 集合。
+ *
+ * 为什么必须连坐（铃铛早就是这么做的，历史弹窗漏了）：同一件事会先后发多条通知
+ * （建卡 / 进 review / 批准），它们指向同一个 taskId。只标点中的那一条，剩下几条
+ * 继续顶着未读——用户点完了、徽标还在，只能挨个再点一次。
+ *
+ * 不按标题/正文匹配（那是载荷匹配），只看 metadata 里的实体 id。
+ */
+export function markNotificationThreadRead(
+  n: NotificationInfo,
+  all: readonly NotificationInfo[],
+): Set<string> {
+  const marked = new Set<string>();
+  const key = entityKey(n);
+  const targets = key
+    ? all.filter(x => !x.read && x.type !== 'agent_report' && entityKey(x) === key)
+    : [n];
+  for (const x of targets) {
+    if (x.read || x.type === 'agent_report') continue;
+    marked.add(x.id);
+  }
+  if (!n.read && n.type !== 'agent_report') marked.add(n.id);
+  for (const id of marked) api.notifications.markRead(id).catch(() => undefined);
+  if (marked.size > 0) window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
+  return marked;
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ApprovalInfo, type NotificationInfo } from '../api.ts';
 import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
-import { markNotificationRead } from '../lib/notifyRead.ts';
+import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/threadPresentation.ts';
@@ -297,10 +297,10 @@ export function HistoryModal({
                     title={go ? undefined : '这条通知没有关联的任务 / 需求 / 会话，仅作告知'}
                     className={`flex items-start gap-2.5 px-2.5 py-2.5 rounded-xl transition-colors ${go ? 'hover:bg-surface-overlay/50 cursor-pointer' : ''}`}
                     onClick={go ? () => {
-                      // 点开 = 读过。这里曾经只跳转不标已读（与铃铛不一致），于是
-                      // 「点完任务待评审→Work→回来还是未读」（Owner 2026-11-04）。
-                      markNotificationRead(row.notice);
-                      setNotices(prev => prev.map(x => (x.id === row.notice.id ? { ...x, read: true } : x)));
+                      // 与铃铛对齐：点一条，就把**同一任务/需求**的其它未读通知一起标已读。
+                      // 铃铛一直这么做，历史弹窗只标点中那一条 → 徽标残留、得挨个点。
+                      const marked = markNotificationThreadRead(row.notice, notices);
+                      setNotices(prev => prev.map(x => (marked.has(x.id) ? { ...x, read: true } : x)));
                       go();
                     } : undefined}
                   >
