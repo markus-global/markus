@@ -119,6 +119,8 @@ export function HistoryModal({
   /** 未读数取**服务端**口径（与铃铛、概览一致）。本地数分页列表必然偏小。 */
   const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
+  /** 「只看未读」筛选（Owner 2026-11-04：顶部「x 条未读」应该能点，点了只展示未读）。 */
+  const [unreadOnly, setUnreadOnly] = useState(false);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -219,10 +221,13 @@ export function HistoryModal({
     const a: Row[] = approvals.map(x => ({ kind: 'approval', at: x.respondedAt ?? x.requestedAt, approval: x }));
     const n: Row[] = notices.map(x => ({ kind: 'notice', at: x.createdAt, notice: x }));
     const all = [...a, ...n].sort((p, q) => (q.at ?? '').localeCompare(p.at ?? ''));
+    // 「只看未读」优先于 tab：「未读」这个词只对通知成立，
+    // 审批结果都是已结束的事，没有未读概念，所以这一档不掺审批行。
+    if (unreadOnly) return all.filter(r => r.kind === 'notice' && !r.notice.read);
     if (tab === 'approvals') return all.filter(r => r.kind === 'approval');
     if (tab === 'notices') return all.filter(r => r.kind === 'notice');
     return all;
-  }, [approvals, notices, tab]);
+  }, [approvals, notices, tab, unreadOnly]);
 
   const resolvedCount = approvals.length;
   const unread = unreadTotal ?? notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
@@ -246,9 +251,26 @@ export function HistoryModal({
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-fg-primary">历史</h3>
             {unread > 0 && (
-              <span className="text-[10px] font-semibold text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded-full tabular-nums">
+              <button
+                onClick={() => setUnreadOnly(v => !v)}
+                aria-pressed={unreadOnly}
+                title={unreadOnly ? '显示全部' : '只看未读'}
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full tabular-nums transition-colors ${
+                  unreadOnly
+                    ? 'bg-brand-500 text-white'
+                    : 'text-brand-400 bg-brand-500/10 hover:bg-brand-500/20'
+                }`}
+              >
                 {unread} 条未读
-              </span>
+              </button>
+            )}
+            {unreadOnly && unread === 0 && (
+              <button
+                onClick={() => setUnreadOnly(false)}
+                className="text-[10px] font-semibold text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded-full"
+              >
+                已全部读完·看全部
+              </button>
             )}
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay text-fg-tertiary" aria-label="关闭">
