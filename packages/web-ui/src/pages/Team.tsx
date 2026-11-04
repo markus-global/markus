@@ -4173,28 +4173,17 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) continue;
 
-      // ── 非图片文件绝不能进 `pendingImages`（Owner 2026-11-04 实测报错）──
-      // `pendingImages` 是**以 images 字段发给 LLM** 的，只允许真图片。
-      // 以前所有文件都走同一条 dataUrl 分支 → PDF/Word 被当成图片发给模型，
-      // API 直接报错；而文件的名字/路径也从未进过消息。
-      // 现在：非图片先上传，把「名字 + 路径」写进正文（人就该看到这个，模型也读得懂）。
+      // ── 非图片文件：**不上传**，只把名字 + 本地路径写进正文 ──
+      //
+      // Owner 2026-11-04：除了模型真要做识别/图像生成（那只有图片需要），其余情况
+      // 有本地路径就够了，不要往服务器上传文件。
+      // 好处不只是省流量：不上传就没有第二个副本，也不会把用户文件发到服务端。
+      // Electron 的 File 对象带 `.path`；普通浏览器出于安全不暴露真实路径，
+      // 那时只能给文件名 —— 这是浏览器的硬限制，不编一个假路径。
       if (!file.type.startsWith('image/')) {
-        const reader = new FileReader();
-        reader.onload = () => {
-          const dataUrl = reader.result as string;
-          api.uploads
-            .upload([{ dataUrl, name: file.name }], 'chat')
-            .then(res => {
-              const f = res.files?.[0];
-              const line = f ? `📎 ${f.name} — ${f.url}` : `📎 ${file.name}（上传未返回路径）`;
-              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}${line}`);
-            })
-            .catch(() => {
-              // 失败要说出来，不能假装发出去了
-              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name}（上传失败，未发送）`);
-            });
-        };
-        reader.readAsDataURL(file);
+        const localPath = (file as File & { path?: string }).path;
+        const line = localPath ? `📎 ${file.name} — ${localPath}` : `📎 ${file.name}`;
+        setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}${line}`);
         continue;
       }
 
