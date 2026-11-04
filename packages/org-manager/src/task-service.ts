@@ -19,6 +19,7 @@ import {
   type TaskSortField,
   isValidTaskTransition,
   TERMINAL_STATUSES,
+  TERMINAL_REQUIREMENT_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
   PROMPT_DEP_NOTES_MAX,
@@ -866,6 +867,38 @@ export class TaskService implements ApprovalTargetPort {
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
   async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
+
+    // ── 刷屏硬闸门（2026-11-04 实测事故）──────────────────────────────
+    // req_319b0b66 在 3 小时内收到 256 条评论，全部由同一个 agent 写成：
+    // 每次被唤醒都把「卡1 completed、卡3 返修中…」重新叙述一遍，一轮十几条。
+    // 原有的软提示（内容里写「考虑 end_turn」）已被证明无效——这里改成**写入被拒绝**：
+    // 状态事实属于卡面（task_update），讨论每条只需一条消息。
+    if ((opts?.authorType ?? 'agent') === 'agent') {
+      const COMMENT_WINDOW_MS = 10 * 60 * 1000;
+      const COMMENT_LIMIT = 5;
+      let recentMine = 0;
+      try {
+        recentMine = this.requirementCommentRepo
+          .getByRequirement(requirementId)
+          .filter(c => c.authorId === authorId)
+          .filter(
+            c =>
+              Date.now() - new Date(c.createdAt as unknown as string).getTime() <
+              COMMENT_WINDOW_MS,
+          ).length;
+      } catch { /* 统计失败不阻断写评论 */ }
+      if (recentMine >= COMMENT_LIMIT) {
+        throw new TaskServiceError(
+          'COMMENT_RATE_LIMITED',
+          `Refusing to post: you already posted ${recentMine} comments on this requirement in the last 10 minutes ` +
+            `(limit ${COMMENT_LIMIT}). Status narration is not discussion — put the facts on the task cards ` +
+            `(task_update) or the requirement card, then end the turn (end_turn). ` +
+            `Comment again only when a human replies or there is genuinely new information.`,
+          { requirementId, recentComments: recentMine, limit: COMMENT_LIMIT, windowMinutes: 10 },
+        );
+      }
+    }
+
     const comment = await this.requirementCommentRepo.add({
       requirementId,
       authorId,
@@ -2673,6 +2706,22 @@ export class TaskService implements ApprovalTargetPort {
       // Only validate reviewer as agent if reviewerType is not 'human'
       if (request.reviewerType !== 'human' && !this.agentManager.hasAgent(request.reviewerId)) {
         throw new Error(`Task creation failed: reviewer agent not found: ${request.reviewerId}`);
+      }
+    }
+
+    // ── 需求终态闸门：终态需求不再接受新任务 ──
+    // 否则会造出「需求已完成、但名下还有 pending 卡」的破口（卡6 复核时实测遇到）。
+    // 拒绝 + 可行动提示，而不是默默允许后由下游猜测。
+    if (request.requirementId && this.requirementService) {
+      const req = this.requirementService.getRequirement(request.requirementId);
+      if (req && TERMINAL_REQUIREMENT_STATUSES.has(req.status)) {
+        throw new TaskServiceError(
+          'REQUIREMENT_TERMINAL',
+          `Cannot create a task under requirement "${req.title}" (${req.id}): it is already ${req.status}. ` +
+            `Terminal requirements accept no new work. If more work is genuinely needed, ` +
+            `propose a new requirement (requirement_propose) instead of reopening this one.`,
+          { requirementId: req.id, requirementStatus: req.status },
+        );
       }
     }
 

@@ -1,6 +1,7 @@
 import {
   createLogger,
   requirementId as genRequirementId,
+  TERMINAL_REQUIREMENT_STATUSES,
   type Requirement,
   type RequirementStatus,
   type RequirementSource,
@@ -681,6 +682,9 @@ export class RequirementService implements ApprovalTargetPort {
               userId ? `Updated by: ${userId}` : '',
             ].filter(Boolean).join('\n'),
             requirementId: id,
+            // 同一需求同一方向的状态迁移只通知一次；来回拉锯（blocked→in_progress→blocked）
+            // 是不同事实，各自一条。
+            extra: { event: 'status_transition', factFingerprint: `${oldStatus}->${newStatus}` },
           }, {
             metadata: { senderName: 'System', senderRole: 'manager' },
           });
@@ -788,7 +792,10 @@ export class RequirementService implements ApprovalTargetPort {
    */
   checkCompletion(requirementId: string, taskStatuses: Map<string, string>): boolean {
     const req = this.requirements.get(requirementId);
-    if (!req || req.status === 'completed' || req.status === 'cancelled') return false;
+    // 终态需求（completed / rejected / cancelled / archived）不再发任何行动型提醒：
+    // 「全部任务已终态」对一个已结束的需求不是待办，而是一句过时的催促。
+    // （旧实现只挡 completed/cancelled，于是 rejected 需求会永远被催。）
+    if (!req || TERMINAL_REQUIREMENT_STATUSES.has(req.status)) return false;
     if (req.taskIds.length === 0) return false;
 
     const allDone = req.taskIds.every(tid => {
@@ -802,15 +809,23 @@ export class RequirementService implements ApprovalTargetPort {
         if (agent) {
           agent.enqueueToMailbox('requirement_update', {
             summary: `All tasks for requirement "${req.title}" are done — review needed`,
-            content: [
-              `[REQUIREMENT REVIEW NEEDED] All linked tasks for "${req.title}" (ID: ${requirementId}) have reached terminal state.`,
+            content: [              `[REQUIREMENT REVIEW NEEDED] All linked tasks for "${req.title}" (ID: ${requirementId}) have reached terminal state.`,
               '',
               'Please review the results and decide:',
               `1. If the requirement is fully satisfied, complete it: requirement_update_status(requirement_id="${requirementId}", status="completed")`,
               `2. If more work is needed, create additional tasks with task_create(requirement_id="${requirementId}", ...)`,
             ].join('\n'),
             requirementId,
-            extra: { actionRequired: true },
+            // 事实指纹：只由结构化数据（任务 id + 终态）构成。与 mailboxDedupKey 配合，
+            // 同一事实只投递一次；链接了新任务 → 指纹变 → 新一轮可以再通知。
+            extra: {
+              actionRequired: true,
+              event: 'all_tasks_terminal',
+              factFingerprint: req.taskIds
+                .map(tid => `${tid}:${taskStatuses.get(tid) ?? 'unknown'}`)
+                .sort()
+                .join(','),
+            },
           }, {
             priority: 2,
             metadata: { senderName: 'System', senderRole: 'manager' },

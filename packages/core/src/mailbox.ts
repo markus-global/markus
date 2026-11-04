@@ -127,6 +127,20 @@ export function mailboxDedupKey(
     return `task_status_update:${taskId}:${round ?? '-'}:${from}->${to}`;
   }
 
+  // 需求级事实（2026-11-04 实测缺口：req_319b0b66 的「全部任务已终态」提醒可无限次投递）。
+  // 键只取**结构化字段**：事件种类由发射方在 `extra.event` 声明，事实指纹由发射方计算，
+  // 绝不从 content 文本解析。事实不变 → 键不变 → 投递层抑制；事实真变了（新链接了任务）
+  // → 指纹变 → 新一轮仍可通知。幂等 ≠ 永久静音。
+  if (item.sourceType === 'requirement_update') {
+    const requirementId =
+      item.payload.requirementId ?? (meta?.requirementId as string | undefined);
+    const event = typeof extra?.event === 'string' ? extra.event : undefined;
+    if (!requirementId || !event) return undefined;
+    const factFingerprint =
+      typeof extra?.factFingerprint === 'string' ? extra.factFingerprint : '-';
+    return `requirement_update:${requirementId}:${event}:${factFingerprint}`;
+  }
+
   if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
   if (!taskId || round === undefined) return undefined;
   return `${item.sourceType}:${taskId}:${round}`;
