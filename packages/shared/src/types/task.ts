@@ -77,6 +77,22 @@ export interface SubTask {
   completedAt?: string;
 }
 
+/**
+ * 进入 `blocked` 的**原因**（判别位，落库）。
+ *
+ * 为什么必须有：`blocked` 原本同时表示两件性质完全不同的事——
+ *   (a) `deps`：上游依赖没满足。这是**可计算的派生事实**，没有人"决定"过它；
+ *   (b) `hold`：人/agent **声明的挂起**（点暂停、agent 声明「停在这里等重启」）。这是意图。
+ *
+ * 两者共用一个状态值又没有判别位时，依赖引擎只能靠"谁写的/有没有 pausedAt"去猜，
+ * 于是把挂起当成等依赖，每轮扫描以「Dependency satisfied」翻回 in_progress
+ * （2026-11-03 生产事故，实测多轮拉锯）。判据一旦落进**记录**，读者（引擎）就不需要推断。
+ *
+ * 兼容：该字段出现之前的旧行是 NULL → 按 `deps` 处理，与旧版本行为完全一致；
+ * 旧版本代码不认识本列，直接忽略。见 docs/architecture/state-machines.md §2.1。
+ */
+export type BlockedReason = 'deps' | 'hold';
+
 export interface Task {
   id: string;
   orgId: string;
@@ -88,13 +104,11 @@ export interface Task {
   assignedAgentId: string;
   subtasks: SubTask[];
   /** Current execution round (increments on revision rejection, reopen, scheduled rerun) */
+  /** 进入 blocked 的原因（判别位）。判定只读它，不再从 pausedAt / 写入者身份推断。 */
+  blockedReason?: BlockedReason;
   /**
-   * 主动暂停的标记（人/agent 叫停），**不是**「等依赖」。
-   *
-   * 为什么要单独记：`blocked` 这一个状态值同时被用作「等上游依赖」与「主动暂停」，
-   * 而依赖引擎只看 blockedBy 是否满足，于是主动暂停的任务每轮扫描都会被
-   * 以「Dependency satisfied」理由自动恢复成 in_progress（2026-11-03 实测反复拉锯）。
-   * 存在本字段 = 这是有意停的，任何自动逻辑不得推翻；`resumeTask()` 会清掉它。
+   * 挂起的时间与发起者——**审计信息，不是判定依据**（判定只看 `blockedReason`）。
+   * 进入 `hold` 时由 `updateTaskStatus()` 自动填写，`resumeTask()` 清空。
    */
   pausedAt?: string;
   pausedBy?: string;

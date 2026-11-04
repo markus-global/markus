@@ -186,6 +186,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- 主动暂停标记（与「等依赖」区分）。存在即有意停的，依赖引擎不得自动恢复。
   paused_at TEXT,
   paused_by TEXT,
+  blocked_reason TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -1026,6 +1027,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'paused_at', sql: "ALTER TABLE tasks ADD COLUMN paused_at TEXT" },
     { table: 'tasks', column: 'paused_by', sql: "ALTER TABLE tasks ADD COLUMN paused_by TEXT" },
+    { table: 'tasks', column: 'blocked_reason', sql: "ALTER TABLE tasks ADD COLUMN blocked_reason TEXT" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
     { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
@@ -1761,9 +1763,9 @@ export class SqliteTaskRepo {
    * 只看 blockedBy 是否满足 → 暂停后每轮扫描都被自动恢复成 in_progress。
    * 且用户常常「暂停 → 重启应用 → 继续」，所以内存标记不够，必须落库。
    */
-  async updatePause(id: string, at: string | null, by: string | null) {
-    this.db.prepare('UPDATE tasks SET paused_at = ?, paused_by = ?, updated_at = ? WHERE id = ?')
-      .run(at, by, now(), id);
+  async updateBlockState(id: string, at: string | null, by: string | null, reason: string | null) {
+    this.db.prepare('UPDATE tasks SET paused_at = ?, paused_by = ?, blocked_reason = ?, updated_at = ? WHERE id = ?')
+      .run(at, by, reason, now(), id);
   }
 
   async assign(id: string, agentId: string, updatedBy?: string) {

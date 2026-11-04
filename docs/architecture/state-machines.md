@@ -10,7 +10,7 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 |--------|-------|:-----:|:------------:|-------------|
 | `pending` | Pending | ✓ | ✓ | Created, awaiting human approval |
 | `in_progress` | In Progress | ✓ | ✓ | Approved, work is active |
-| `blocked` | Blocked | ✓ | ○ | On hold (dependencies, manual pause) |
+| `blocked` | Blocked | ✓ | ○ | On hold — **two distinct causes, discriminated by `blockedReason`**: `deps` (blockers unresolved, auto-resumable) / `hold` (declared suspension by a human or agent, only `resumeTask()` may lift it) |
 | `review` | In Review | ✓ | ○ | Execution done, awaiting reviewer evaluation |
 | `completed` | Completed | ✓ | ✓ | Successfully finished |
 | `failed` | Failed | ✓ | ○ | Unrecoverable error after retry exhaustion |
@@ -63,7 +63,8 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `in_progress` | `blocked` | User pauses task | API `POST /tasks/:id/pause` |
 | `in_progress` | `failed` | Error + retries exhausted | Auto (retry logic) |
 | `in_progress` | `cancelled` | User cancels | `cancelTask()` |
-| `blocked` | `in_progress` | User resumes, or all blockers satisfied | `resumeTask` / `checkDependentTasks()` |
+| `blocked` (`blockedReason='deps'`) | `in_progress` | All blockers satisfied | `checkDependentTasks()` / `evaluateBlockedDependent()` — both gated by `mayAutoResume()` |
+| `blocked` (`blockedReason='hold'`) | `in_progress` | **Only** an explicit resume — no automatic path may move it | `resumeTask()` |
 | `blocked` | `cancelled` | User cancels / cascade cancel | `cancelTask()` |
 | `blocked` | `failed` | Blocker failed → cascade fail (dead dependency) | `autoFailBlockedDependent()` |
 | `review` | `completed` | Reviewer approves | `acceptTask()` |
@@ -76,8 +77,26 @@ Tasks and requirements share a **single status enum** (`ItemStatus`). Not every 
 | `cancelled` | `archived` | Manual archival | `archiveTask()` |
 | `rejected` | `archived` | Manual archival | `archiveTask()` |
 
-### Side Effects in `updateTaskStatus()`
+### 2.1 `blocked` 的两个原因：`blockedReason` 判别位
 
+`blocked` 一个状态值承载两种**性质不同**的事物，必须靠**落库的判别位**区分，而不是靠「谁写的」或「有没有 pausedAt」去推断：
+
+| 原因 | 含义 | 谁决定 | 能否自动解除 |
+|---|---|---|---|
+| `deps` | 上游 `blockedBy` 未满足——**可计算的派生事实** | 没有人决定，它是图的性质 | 能：`mayAutoResume()` 为真时（依赖全部满足，**或依赖被清空**） |
+| `hold` | 人/agent **声明的挂起**（点暂停、agent 声明「停在这里等重启/等外部条件」） | 人 / agent | **不能**，唯一通道 `resumeTask()` |
+
+**判定唯一执行点**：`TaskService.mayAutoResume()`（`packages/org-manager/src/task-service.ts`）。
+依赖引擎的四个入口（`checkDependentTasks` / `reevaluateBlockedStatus` / `evaluateBlockedDependent` / 启动修复 `reconcileBlockedTasksAfterLoad`）全部经由它放行，**不得各自另写守卫**——历史事故就是因为一份不变量散在多个函数里，漏一处就复发。
+
+**写入时机**：`updateTaskStatus()` 进入 `blocked` 时**由数据算出**——`blockedBy` 非空且未满足 → `deps`；否则 → `hold`（状态机永远不会因为「没有依赖」而 blocked，所以落到 blocked 且无未满期依赖，必然是有人叫停）。因此 agent 通过 `task_update` 置 blocked **不需要传任何参数**，也不会再被引擎翻回去。
+
+**兼容（旧数据）**：本列出现之前的行是 `NULL`。
+- 读：`NULL` → 按 `deps` 处理，与引入本字段之前的行为**完全一致**；
+- 写：旧版本代码不认识 `blocked_reason`，忽略即可 → 可安全回滚；
+- **不搬迁旧行**（平台不替用户搬运数据）；只有此后发生的状态变更会写入判别位。
+
+### Side Effects in `updateTaskStatus()`
 | Trigger | Side Effect |
 |---------|-------------|
 | → `in_progress` (from non-`in_progress`) | Auto-start: `runTask()` via `setImmediate` |
