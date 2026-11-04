@@ -235,18 +235,52 @@ describe('thread_dispositions — I3 幂等 / I4 理由必填', () => {
     expect(repo.listByThread(thread.id)).toHaveLength(0);
   });
 
-  it('wouldAccept 落库为布尔而不是 1/0 泄漏到调用方', () => {
+  it('wouldAccept 三态回环：true→1 / false→0 / 不适用→NULL，读回语义一致', () => {
+    // 为什么断言三态而不是「布尔不泄漏」：这条列曾经把 undefined 压成 0，
+    // 于是 dispatch / attach / stop 这些**没问过**「若放行会不会接」的处置
+    // 被读成 false，UI 对着它们说「当时判定不该来」。
+    // 把任一方向的映射写反（encode 反过来 / decode 用 `!== 0`），这个用例必红。
     const { thread } = threads.upsert('tsk_abc');
     const repo = new SqliteDispositionRepo(db);
-    repo.record({
-      triggerId: 'trg_obs',
-      threadId: thread.id,
-      action: 'ignore',
-      reason: 'observe 模式：本该接受',
-      wouldAccept: true,
-      actor: 'gate',
-    });
-    expect(repo.listByThread(thread.id)[0]?.wouldAccept).toBe(true);
+
+    repo.record({ triggerId: 'trg_accept', threadId: thread.id, action: 'ignore', reason: 'observe：本会接', wouldAccept: true });
+    repo.record({ triggerId: 'trg_reject', threadId: thread.id, action: 'ignore', reason: '流已结束，本不会接', wouldAccept: false });
+    repo.record({ triggerId: 'trg_dispatch', threadId: thread.id, action: 'dispatch', reason: '人已指定处理者，不问「会不会接」' });
+
+    const raw = db
+      .prepare(`SELECT trigger_id, would_accept FROM thread_dispositions`)
+      .all() as Array<{ trigger_id: string; would_accept: number | null }>;
+    const fromDb = Object.fromEntries(raw.map(r => [r.trigger_id, r.would_accept]));
+    // DB 快照名：三态各自可辨认（1 / 0 / NULL）
+    expect(fromDb).toEqual({ trg_accept: 1, trg_reject: 0, trg_dispatch: null });
+
+    const readBack = repo.listByThread(thread.id);
+    const fromApi = Object.fromEntries(readBack.map(d => [d.triggerId, d.wouldAccept]));
+    // TS 字段名：与 DB 列语义一致——NULL 不许变成 false
+    expect(fromApi).toEqual({ trg_accept: true, trg_reject: false, trg_dispatch: null });
+  });
+
+  it('matched_rule 回环：写入的 Gate 规则 id 原样读回；未记录 → NULL（B1）', () => {
+    // 「为什么走了这条」必须可查询：写 dispatch/attach/assess 三条，再按 trigger 读回，
+    // 值必须原样（不能丢、不能被 when 滤成空）。未记录匹配规则的处置 → NULL。
+    const { thread } = threads.upsert('tsk_abc');
+    const repo = new SqliteDispositionRepo(db);
+
+    repo.record({ triggerId: 'trg_d', threadId: thread.id, action: 'dispatch', reason: 'r1', matchedRule: 'dispatch' });
+    repo.record({ triggerId: 'trg_a', threadId: thread.id, action: 'attach', reason: 'r2', matchedRule: 'attach' });
+    repo.record({ triggerId: 'trg_s', threadId: thread.id, action: 'ignore', reason: 'r3', matchedRule: 'assess', wouldAccept: true });
+    repo.record({ triggerId: 'trg_n', threadId: thread.id, action: 'accept', reason: 'r4' }); // 未记录 → NULL
+
+    const fromDb = Object.fromEntries(
+      (db.prepare('SELECT trigger_id, matched_rule FROM thread_dispositions').all() as Array<{
+        trigger_id: string;
+        matched_rule: string | null;
+      }>).map(r => [r.trigger_id, r.matched_rule]),
+    );
+    expect(fromDb).toEqual({ trg_d: 'dispatch', trg_a: 'attach', trg_s: 'assess', trg_n: null });
+
+    const fromApi = Object.fromEntries(repo.listByThread(thread.id).map(d => [d.triggerId, d.matchedRule]));
+    expect(fromApi).toEqual({ trg_d: 'dispatch', trg_a: 'attach', trg_s: 'assess', trg_n: null });
   });
 });
 
@@ -320,20 +354,22 @@ describe('event_sources — 来源配置与健康位', () => {
   it('同一 org 同一前缀 upsert = 合并 config/health，不新增行', () => {
     const repo = new SqliteEventSourceRepo(db);
     repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { repos: ['a/b'] }, secret: 's3cr3t' });
-    repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { events: ['push'] }, health: { cursor: 42 } });
+    repo.upsert({ orgId: 'org_1', prefix: 'gh', config: { events: ['push'] }, health: { fails: 0 } });
     const src = repo.getByPrefix('org_1', 'gh')!;
     expect(src.config).toEqual({ repos: ['a/b'], events: ['push'] });
-    expect(src.health).toEqual({ cursor: 42 });
+    expect(src.health).toEqual({ fails: 0 });
     // secret 未被第二次 upsert 抹掉
     expect(src.secret).toBe('s3cr3t');
     expect(repo.listByOrg('org_1')).toHaveLength(1);
   });
 
-  it('updateHealth 增量合并，历史位点不丢', () => {
+  it('updateHealth 增量合并，历史观测不丢', () => {
     const repo = new SqliteEventSourceRepo(db);
-    const src = repo.upsert({ orgId: 'org_1', prefix: 'xhs', health: { cursor: 1 } });
-    repo.updateHealth(src.id, { cursor: 2, lastError: 'boom' });
+    // 刻意**不**用 `cursor` 当健康位示例：它是 `event_sources.cursor` 这两列的专名，
+    // 放进 health 就是同一个事实两个位置（B2 要治的正是这个病）。
+    const src = repo.upsert({ orgId: 'org_1', prefix: 'xhs', health: { fails: 1 } });
+    repo.updateHealth(src.id, { fails: 2, lastError: 'boom' });
     const after = repo.getById(src.id)!;
-    expect(after.health).toEqual({ cursor: 2, lastError: 'boom' });
+    expect(after.health).toEqual({ fails: 2, lastError: 'boom' });
   });
 });

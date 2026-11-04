@@ -1,22 +1,27 @@
 import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type ChangeEvent } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI } from '../api.ts';
+import { api, wsClient, hubApi, kebab, fetchResourceBindings, fetchRecentDispositions, fetchThreads, fetchThreadEvents, fetchThreadDispositions, type ResourceBindingAPI, type DispositionAPI, type EnrichedMailboxItem, type ThreadEventAPI } from '../api.ts';
+import { timelineView, sourceForRef, type TimelineNode, type TimelineSource } from '../lib/threadTimeline.ts';
+import { EventNode, DecisionNode } from '../components/threadTimelineNodes.tsx';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { entityNavTarget } from '../lib/threadNav.ts';
 import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
-import { refDisplay, actionLabel } from '../lib/threadPresentation.ts';
-import { groupMailboxByThread } from '../lib/mailboxToThread.ts';
+import { refDisplay, refKindLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { taskStatusLabel, processStatusLabel, attentionStateLabel } from '../lib/stateVocabulary.ts';
+import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
 import { friendlyAgentError, ProcessTimeline } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
@@ -62,9 +67,10 @@ export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'deliverables', icon: '📦' },
 ];
 
-function taskStatusLabel(status: string, t: TFunction): string {
-  return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
-}
+// 治理态 / 注意力 / 进程态的词表唯一写者是 lib/stateVocabulary.ts（A3）。
+// 这里曾经自己拼 `agent:profilePage.taskStatus.*`，与 `common:status.*` 并存——
+// 同一治理状态两个说法（review = 待审核 / 评审中），且还有 assigned/approved/draft
+// 三个枚举里根本不存在的位置。
 
 /**
  * Label for a process status, delegated to the shared presentation table so this
@@ -138,10 +144,17 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
   const localLegacySection = LEGACY_TAB_SECTION[tab];
 
+  // 「来龙去脉」的入口与弹层**已删除**（Owner 2026-11-03）。
+  //
+  // 原实现：页头一个按钮 → 开一个 fixed 浮层，里面再塞一份 ThreadTimeline。
+  // Owner 评价：浮窗里内容零乱、还带报错，而「运行与注意力」tab 本来就就地渲染
+  // 同一份时间线 —— 那就是第二套呈现，同一事实两个来源。
+  // 现在只有一处：tab 内的「来龙去脉」区块。
+
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
-        <div className="p-5">
+        <div className="p-3 sm:p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
@@ -205,7 +218,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           ))}
         </div>
       </div>
-      <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
+      <div className="p-3 sm:p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {bodyTabFor(tab) === 'overview' && (
           <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
@@ -393,7 +406,7 @@ function GovernanceTab({ agentId }: { agentId: string }) {
                 <div className="flex flex-wrap items-center gap-1.5 text-fg-tertiary">
                   <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-fg-secondary">{d.action}</span>
                   <span>{new Date(d.createdAt).toLocaleString('zh-CN', { hour12: false })}</span>
-                  {d.wouldAccept === false && (
+                  {wouldAcceptVerdict(d) === 'reject' && (
                     <span className="rounded bg-amber-500/15 px-1 py-0.5 text-amber-600">当时判定不该接</span>
                   )}
                 </div>
@@ -548,7 +561,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
 
         <Card title={t('agent:profilePage.overview.connectionStatus')}>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={externalInfo.connected ? t('common:status.online') : t('common:status.offline')} color={externalInfo.connected ? 'green' : 'gray'} />
+            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={processStatusLabel(externalInfo.connected ? 'online' : 'offline', t)} color={externalInfo.connected ? 'green' : 'gray'} />
             <StatBox label={t('agent:profilePage.overview.labels.platform')} value={t('agent:profilePage.overview.openClaw')} />
             <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
             <StatBox label={t('agent:profilePage.overview.labels.lastSync')} value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
@@ -2492,15 +2505,17 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [loading, setLoading] = useState(true);
   const [catFilter, setCatFilter] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
-  const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
+  // 展开 / 丢弃是**投递条目自己**的交互，随投递一起并进 thread 详情。
+  // （我一度把它们当死代码删掉——那是对的判断、错的前提：它们不是死了，是我把宿主删了。）
+  const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const [notebookExpanded, setNotebookExpanded] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
   const QUEUE_COLLAPSE_THRESHOLD = 3;
-  const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   // ── 来龙去脉（Thread 视图进这个 tab）──────────────────────────────────────
   // Owner 的要求：用户想看清"这件事到底怎么了"时看的就是它，所以要能在这里
@@ -2511,12 +2526,25 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   // 内部机械（心跳/记忆整理/回调）不算"事"，已在派生时排除。
   const [threadTitleByRef, setThreadTitleByRef] = useState<Record<string, string>>({});
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
-  // 一条 thread 的来龙去脉 = 事件（Triggers）+ 判断（Decisions），合流按时间排。
-  // 参考实现 docs/005-panel.md：「Each Thread shows its Triggers newest first, Decisions and Subscriptions」。
-  const [threadNodes, setThreadNodes] = useState<Array<{
-    id: string; at: number; kind: 'event' | 'decision'; label: string; summary: string; actor?: string;
-  }>>([]);
-  const [eventsLoading, setEventsLoading] = useState(false);
+  // 一条 thread 的来龙去脉 = 事件 ∪ 判断 ∪ 投递，合流按时间排（`lib/threadTimeline.ts` 是唯一实现）。
+  //
+  // 三个来源各自记住自己的读取状态：**「读取失败」与「确实没有」是两件事**。
+  // 这里曾经是 `.catch(() => ({ events: [] }))` 外加一句断言「这件事还没有正式事件记录」
+  // —— 抓取失败被伪装成空态，读者拿到的是一句假的确定性陈述（缺陷 B / 契约 R2）。
+  // 「有没有东西」只由 `timelineView()` 回答（单一判据），UI 不再自己数 length。
+  // **初始态必须是 loading，不能是「已读完且为空」**。
+  //
+  // 踩过：初值写成 { state:'ok', items: [] } 时，首帧的 timelineView() 算出
+  // `empty: true` —— 取数的 effect 要等首帧渲染完才跑，于是用户先看到一闪而过的
+  // 空态，再看到「读取中…」，最后才是真内容。
+  // 「还没读」和「确实没有」是两件事，不能用同一个值表示（契约 R2）。
+  const [threadEvents, setThreadEvents] = useState<TimelineSource<ThreadEventAPI>>({ state: 'loading', items: [] });
+  const [threadDispositions, setThreadDispositions] = useState<TimelineSource<DispositionAPI>>({ state: 'loading', items: [] });
+  const [threadDeliveries, setThreadDeliveries] = useState<TimelineSource<EnrichedMailboxItem>>({ state: 'loading', items: [] });
+  /** 当前这份数据是「哪条流」的。≠ activeRef 时，手上这份就是上一条流的旧数据，一律当没读。 */
+  const [loadedForRef, setLoadedForRef] = useState<string | null>(null);
+  /** 重试计数：改它等于让下面的 effect 重跑一次（失败后的「重试」按钮用它，不另开机制）。 */
+  const [timelineTick, setTimelineTick] = useState(0);
   // 参考实现 docs/005-panel.md 的 Trigger 页签按状态过滤 thread
   // （Subscribed / Evaluating / New Triggers in 24h / All）。这里先落能算的两种：
   // 「全部」与「24h 内有动静」。「订阅中 / 研判中」需要按 thread 查订阅，
@@ -2539,7 +2567,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     setLoading(false);
   }, [agentId, catFilter, statusFilter]);
 
-  /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——对齐后端的 mailbox:dropped 审计。 */
+  /** 丢弃单条投递（带理由，可回溯）——对齐后端 mailbox:dropped 审计。 */
   const handleDrop = useCallback(async (itemId: string) => {
     setActionBusyId(itemId);
     try {
@@ -2548,17 +2576,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     } catch { /* ignore */ }
     finally { setActionBusyId(null); }
   }, [agentId, load]);
-
-  const loadMore = useCallback(async () => {
-    if (!mailbox) return;
-    const catParam = catFilter === 'all' ? undefined : catFilter;
-    const statusParam = statusFilter === 'all' ? undefined : statusFilter;
-    try {
-      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
-      setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
-      setHasMore((mb.history?.length ?? 0) >= PAGE);
-    } catch { /* ignore */ }
-  }, [agentId, mailbox, catFilter, statusFilter]);
 
   // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
   // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
@@ -2571,7 +2588,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   }, [agentId, load]);
 
   useEffect(() => {
-    setExpandedId(highlightId ?? null);
     setHighlightedId(highlightId ?? null);
     load();
   }, [load, highlightId]);
@@ -2591,35 +2607,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return () => { alive = false; };
   }, [agentId]);
 
-  /** 选中某件事 → 就地取它的来龙去脉。 */
-  useEffect(() => {
-    if (!selectedRef) { setThreadNodes([]); return; }
-    let alive = true;
-    setEventsLoading(true);
-    (async () => {
-      // 参考实现（deepseek-ai/dsh-superagent-prototype docs/005-panel.md）明确：
-      // 「Each Thread shows its Triggers newest first, **Decisions** and Subscriptions」
-      // —— 所以这里必须把判断（dispositions）和事件合流，只显示事件是残的。
-      const [ev, dp] = await Promise.all([
-        fetchThreadEvents(selectedRef).catch(() => ({ events: [] as never[] })),
-        fetchThreadDispositions(selectedRef).catch(() => ({ dispositions: [] as never[] })),
-      ]);
-      if (!alive) return;
-      const nodes = [
-        ...(ev.events ?? []).map(e => ({
-          id: `e-${e.id}`, at: e.createdAt, kind: 'event' as const,
-          label: '', summary: e.summary, actor: e.actor ?? undefined,
-        })),
-        ...(dp.dispositions ?? []).map(d => ({
-          id: `d-${d.id}`, at: d.createdAt, kind: 'decision' as const,
-          label: actionLabel(d.action), summary: d.reason, actor: d.actor ?? undefined,
-        })),
-      ].sort((a, b) => a.at - b.at);
-      setThreadNodes(nodes);
-    })().finally(() => { if (alive) setEventsLoading(false); });
-    return () => { alive = false; };
-  }, [selectedRef]);
-
   /** 这个 agent 经手的事：从邮箱条目派生（内部机械已排除，见 lib/mailboxToThread.ts）。 */
   const workItems = useMemo(
     () => groupMailboxByThread(mailbox?.history, ref => threadTitleByRef[ref], 20),
@@ -2632,6 +2619,144 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return workItems.filter(w => new Date(w.latestAt).getTime() >= cutoff);
   }, [workItems, listFilter]);
   const activeRef = selectedRef ?? visibleItems.find(w => w.ref)?.ref ?? null;
+
+  // 这件事的来龙去脉：事件（triggers 派生）/ 判断（dispositions）/ 投递（这个 agent 的邮箱条目）
+  // **三路并行、各自记状态**，最后交给 `timelineView()` 合流。
+  //
+  // 为什么要读全部投递而不是从已加载页过滤：一条 thread 可能有上百条投递，而邮箱一页 50 条，
+  // 那样详情会静默少显示——分组写 N 条、列表只渲染 M 条。
+  useEffect(() => {
+    if (!activeRef) {
+      setThreadEvents({ state: 'ok', items: [] });
+      setThreadDispositions({ state: 'ok', items: [] });
+      setThreadDeliveries({ state: 'ok', items: [] });
+      setLoadedForRef(null);
+      return;
+    }
+    let alive = true;
+    setThreadEvents({ state: 'loading', items: [] });
+    setThreadDispositions({ state: 'loading', items: [] });
+    setThreadDeliveries({ state: 'loading', items: [] });
+    const pEvents = fetchThreadEvents(activeRef)
+      .then(r => { if (alive) setThreadEvents({ state: 'ok', items: r.events ?? [] }); })
+      .catch(() => { if (alive) setThreadEvents({ state: 'error', items: [] }); });
+    const pDispositions = fetchThreadDispositions(activeRef)
+      .then(r => { if (alive) setThreadDispositions({ state: 'ok', items: r.dispositions ?? [] }); })
+      .catch(() => { if (alive) setThreadDispositions({ state: 'error', items: [] }); });
+    const pDeliveries = api.agents.getMailbox(agentId, { limit: 2000, ref: activeRef })
+      .then(r => { if (alive) setThreadDeliveries({ state: 'ok', items: r.history ?? [] }); })
+      .catch(() => { if (alive) setThreadDeliveries({ state: 'error', items: [] }); });
+    // 三路都落定才标记「这份数据属于哪条流」——否则先到的那路会让另外两路看起来已经读完。
+    void Promise.allSettled([pEvents, pDispositions, pDeliveries])
+      .then(() => { if (alive) setLoadedForRef(activeRef); });
+    return () => { alive = false; };
+  }, [agentId, activeRef, timelineTick]);
+
+  const timeline = useMemo(
+    () => timelineView({
+      // 数据还不属于当前选中的流（刚切过来 / 首次挂载）→ 当作在读取，
+      // 不把上一条流的内容或空态先闪一下。判据在 lib 里，不在这里重复三遗。
+      events: sourceForRef(activeRef, loadedForRef, threadEvents),
+      dispositions: sourceForRef(activeRef, loadedForRef, threadDispositions),
+      deliveries: sourceForRef(activeRef, loadedForRef, threadDeliveries),
+    }),
+    [threadEvents, threadDispositions, threadDeliveries, loadedForRef, activeRef],
+  );
+
+  /**
+   * 时间线的一行 —— 三种来源共用**同一个渲染入口**。
+   *
+   * 行怎么排、有哪些行由 `lib/threadTimeline.ts` 决定（单一判据），这里只决定长相：
+   *   - 事件 / 判断：复用 `threadTimelineNodes.tsx`（与全局检索页、任务详情共用一份）；
+   *   - 投递：保留展开正文 / 决策链 / 执行过程 / 丢弃，因为投递的**正文**
+   *     才是「这件事到底怎么了」的实质 —— 只给摘要就是把证据换成标题。
+   */
+  const renderTimelineRow = (n: TimelineNode) => {
+    if (n.kind === 'event') return <EventNode key={`e-${n.event.id}`} e={n.event} />;
+    if (n.kind === 'decision') return <DecisionNode key={`d-${n.decision.id}`} d={n.decision} />;
+    const item = n.delivery;
+    const isExpanded = expandedId === item.id;
+    const display = getMailboxItemDisplay(item, t);
+    // 状态点以权威事实为准：DB 记为 processing，但已不是当前 focus
+    // 或 agent 已停 → stale，不谎称"在处理"。
+    const rowDisplayStatus = deriveMailboxRowDisplayStatus({
+      itemStatus: item.status,
+      agentRunning,
+      currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
+      itemId: item.id,
+    });
+    const senderName = item.metadata?.senderName as string | undefined;
+    const senderRole = item.metadata?.senderRole as string | undefined;
+    return (
+      <li key={`m-${item.id}`} data-timeline-kind="delivery" className="bg-surface-elevated rounded-lg border border-border-subtle">
+        <button
+          className="w-full px-2.5 py-2 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
+          onClick={() => setExpandedId(isExpanded ? null : item.id)}
+        >
+          <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
+          <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
+          <span className="text-sm">{mailboxTypeIcon(item.sourceType)}</span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <span className="rounded bg-surface-overlay px-1.5 py-0.5 text-[10px] text-fg-secondary shrink-0">投递</span>
+              <span className="text-xs font-medium text-fg-primary truncate">{display.title}</span>
+              {display.badge && <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>}
+            </div>
+            <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
+              <span>{new Date(item.queuedAt).toLocaleString()}</span>
+              {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
+              {item.activity && item.activity.totalTokens > 0 && <span>{fmtNum(item.activity.totalTokens)} tokens</span>}
+              {item.activity && item.activity.totalTools > 0 && <span>{item.activity.totalTools} 次工具</span>}
+            </div>
+          </div>
+        </button>
+        {isExpanded && (
+          <div className="border-t border-border-subtle px-2.5 py-2 space-y-2">
+            {senderName && (
+              <div className="text-[10px] text-fg-tertiary">
+                来自 <span className="text-fg-secondary">{senderName}</span>
+                {senderRole && <span> ({senderRole})</span>}
+              </div>
+            )}
+            {/* 正文是「来龙去脉」的实质：只给摘要就是把证据换成标题 */}
+            {item.payload?.content && (
+              <div className="max-h-60 overflow-y-auto whitespace-pre-wrap break-words rounded-md bg-surface-primary/50 p-2 text-xs text-fg-secondary">
+                {item.payload.content}
+              </div>
+            )}
+            {item.decisions && item.decisions.length > 0 && (
+              <div className="space-y-1">
+                {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
+                  <div key={d.id} className="flex items-start gap-2 text-[11px]">
+                    <span className={`shrink-0 rounded px-1.5 py-0.5 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
+                    <span className="flex-1 text-fg-secondary">{d.reasoning}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            {item.activity ? (
+              item.activity.type === 'task' && item.payload?.taskId ? (
+                <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
+              ) : (
+                <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
+              )
+            ) : rowDisplayStatus === 'processing' ? (
+              <div className="py-1 text-[11px] text-fg-tertiary animate-pulse">处理中…</div>
+            ) : rowDisplayStatus === 'stale' ? (
+              <div className="py-1 text-[11px] text-amber-600">库记为处理中，但已不是当前 focus（陈旧）——可用上方「恢复」清理。</div>
+            ) : null}
+            {canManageAgents && (
+              <button
+                disabled={actionBusyId === item.id}
+                onClick={() => { void handleDrop(item.id); }}
+                className="rounded-md bg-red-500/15 px-2 py-0.5 text-[10px] font-medium text-red-400 transition-colors hover:bg-red-500/25 disabled:opacity-40"
+              >丢弃这一条</button>
+            )}
+          </div>
+        )}
+      </li>
+    );
+  };
 
   // Auto-load more history until the highlighted item appears, then scroll to it
   const autoLoadingForHighlightRef = useRef(false);
@@ -2721,7 +2846,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             </span>
           ) : (
             <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
-              {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
+              {attentionStateLabel(effectiveAttentionState, t)}
             </span>
           )}
           {!agentRunning ? (
@@ -2831,93 +2956,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         })()}
       </section>
 
-      {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
-          Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
-          所以必须能在这里**就地**看到经过，不跳页。
-          左边：它经手的事（从邮箱条目派生，内部机械已排除）。
-          右边：选中那件事的时间线（thread_events，只追加的历史事实）。 */}
-      <section>
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>
-          <span className="text-[10px] text-fg-muted">
-            最近 {mailbox?.history?.length ?? 0} 条里涉及 {workItems.filter(w => w.ref).length} 件事
-          </span>
-          {/* 过滤档位对齐参考实现 Trigger 页签（Subscribed / Evaluating / New Triggers in 24h / All）。
-              这里只落能算的两档；「订阅中 / 研判中」需要按 thread 查订阅（N+1），
-              等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑档位。 */}
-          <div className="ml-auto flex gap-1">
-            {([['all', '全部'], ['active24h', '24h 内有动静']] as const).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setListFilter(k)}
-                className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
-                  listFilter === k
-                    ? 'bg-surface-overlay text-fg-primary'
-                    : 'text-fg-tertiary hover:text-fg-secondary'
-                }`}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-        {visibleItems.length === 0 ? (
-          <p className="text-xs text-fg-tertiary">
-            还没读到它经手的事（心跳、记忆整理等自身运转不算）。
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2 md:flex-row md:items-start">
-            <ul className="w-full shrink-0 space-y-1 md:w-64">
-              {visibleItems.map(w => {
-                const active = activeRef === w.ref;
-                return (
-                  <li key={w.ref ?? '__orphan'}>
-                    <button
-                      onClick={() => setSelectedRef(w.ref)}
-                      className={`w-full rounded-md border px-2 py-1.5 text-left transition-colors ${
-                        active
-                          ? 'border-selected-border bg-selected-bg'
-                          : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
-                      }`}
-                    >
-                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`}>
-                        {w.ref ? (threadTitleByRef[w.ref] ?? w.latestSummary ?? w.ref) : '未关联到某件事'}
-                      </span>
-                      <span className="mt-0.5 block text-[10px] text-fg-tertiary">
-                        {w.ref ? refDisplay(w.ref) : '—'} · {w.count} 条
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
-              {eventsLoading ? (
-                <p className="text-xs text-fg-tertiary">读取中…</p>
-              ) : threadNodes.length === 0 ? (
-                <p className="text-xs text-fg-tertiary">这件事还没有时间线记录。</p>
-              ) : (
-                <ol className="space-y-2">
-                  {threadNodes.map(n => (
-                    <li key={n.id} className="flex items-start gap-2">
-                      <span className={`mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full ${n.kind === 'decision' ? 'bg-brand-500' : 'bg-fg-secondary'}`} />
-                      <div className="min-w-0 flex-1">
-                        <div className="flex flex-wrap items-center gap-1.5 text-[10px] text-fg-tertiary">
-                          {n.kind === 'decision' && (
-                            <span className="rounded bg-surface-overlay px-1 py-px text-fg-secondary">判断 · {n.label}</span>
-                          )}
-                          <span>{new Date(n.at).toLocaleString()}</span>
-                          {n.actor && <span>· {n.actor}</span>}
-                        </div>
-                        <p className="whitespace-pre-wrap text-xs text-fg-primary">{n.summary || '（未记录理由）'}</p>
-                      </div>
-                    </li>
-                  ))}
-                </ol>
-              )}
-            </div>
-          </div>
-        )}
-      </section>
-
       {/* ── Notebook (Cognitive Workspace) ── */}
       {(mind?.notebook?.length ?? 0) > 0 && (() => {
         const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
@@ -2963,6 +3001,114 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           </section>
         );
       })()}
+
+      {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
+          Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
+          所以必须能在这里**就地**看到经过，不跳页。
+          左边：它经手的事（从邮箱条目派生，内部机械已排除）。
+          右边：选中那件事的时间线（历史事实，从 triggers 派生）。 */}
+      <section>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>
+          <span className="text-[10px] text-fg-muted">
+            最近 {mailbox?.history?.length ?? 0} 条里涉及 {workItems.filter(w => w.ref).length} 件事
+          </span>
+          {/* 过滤档位对齐参考实现 Trigger 页签（Subscribed / Evaluating / New Triggers in 24h / All）。
+              这里只落能算的两档；「订阅中 / 研判中」需要按 thread 查订阅（N+1），
+              等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑档位。 */}
+          <div className="ml-auto flex gap-1">
+            {([['all', '全部'], ['active24h', '24h 内有动静']] as const).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setListFilter(k)}
+                className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
+                  listFilter === k
+                    ? 'bg-surface-overlay text-fg-primary'
+                    : 'text-fg-tertiary hover:text-fg-secondary'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {visibleItems.length === 0 ? (
+          <p className="text-xs text-fg-tertiary">
+            还没读到它经手的事（心跳、记忆整理等自身运转不算）。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2 md:flex-row md:items-start">
+            {/* 左列（经手的事）自管滚动：列表可能十几条，以前会把整页拉得很长，
+                右侧时间线被顶出视口 —— 手机上尤其难用（要滑很久才看到详情）。
+                现在列表自己滚，右侧详情停在原地。 */}
+            <ul className="w-full shrink-0 space-y-1 overflow-y-auto pr-1 max-h-[38vh] md:w-64 md:max-h-[60vh]">
+              {visibleItems.map(w => {
+                const active = activeRef === w.ref;
+                // Owner 2026-11-03：标题要能认人。
+                // 旧行为是「threads 表没标题就拿最新一条消息当标题」——于是卡片上写的是
+                // 「A2A message from Secretary」这种一眼看不出是哪件事的句子。
+                // 现在：实体标题 → 按 ref 种类给出可认知的名字（任务/会话/需求…）→ 最后才退回 ref。
+                // **不再拿最新消息冒充标题**。
+                const title = w.ref
+                  ? (threadTitleByRef[w.ref] ?? refKindLabel(w.ref))
+                  : '未关联到某件事';
+                const target = entityNavTarget(w.ref);
+                return (
+                  <li key={w.ref ?? '__orphan'} className="flex items-stretch gap-1 min-w-0">
+                    <button
+                      onClick={() => setSelectedRef(w.ref)}
+                      className={`min-w-0 flex-1 rounded-md border px-2 py-1.5 text-left transition-colors ${
+                        active
+                          ? 'border-selected-border bg-selected-bg'
+                          : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
+                      }`}
+                    >
+                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`} title={title}>
+                        {title}
+                      </span>
+                      <span className="mt-0.5 flex items-center gap-1 min-w-0 text-[10px] text-fg-tertiary">
+                        {/* 长 ref（如 channel:dm:a2a:agt_xxx:agt_yyy）曾经直接撑破卡片边框：
+                            这里强制单行截断，完整值放 title。 */}
+                        <span className="truncate font-mono" title={w.ref ?? ''}>
+                          {w.ref ? refDisplay(w.ref) : '—'}
+                        </span>
+                        <span className="shrink-0">· {w.count} 条</span>
+                      </span>
+                    </button>
+                    {target && (
+                      <button
+                        onClick={() => navBus.navigate(target.page as Parameters<typeof navBus.navigate>[0], target.params)}
+                        title={`打开${refKindLabel(w.ref!)}`}
+                        className="shrink-0 self-center rounded-md border border-border-subtle px-1.5 py-1 text-[10px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-elevated transition-colors"
+                      >↗</button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="min-w-0 w-full flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
+              {/* 三态分开：还在读 / 读失败 / 真的空。失败绝不渲染成「没有」。 */}
+              {timeline.loading && <p className="text-xs text-fg-tertiary">读取这件事的来龙去脉…</p>}
+              {timeline.failures.length > 0 && (
+                <div data-timeline-error className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-rose-500/10 px-2 py-1 text-[11px] text-rose-600">
+                  <span>{timeline.failures.join('、')}读取失败 —— 这不等于「没有记录」。</span>
+                  <button
+                    onClick={() => setTimelineTick(n => n + 1)}
+                    className="rounded bg-rose-500/15 px-1.5 py-0.5 font-medium hover:bg-rose-500/25"
+                  >重试</button>
+                </div>
+              )}
+              {/* 行怎么排、有哪些行由 lib/threadTimeline.ts 决定；这里只按行渲染（含来源标签）。 */}
+              <ol className="space-y-2" data-timeline-rows={timeline.rows.length}>
+                {timeline.rows.map(renderTimelineRow)}
+              </ol>
+              {timeline.empty && (
+                <p data-timeline-empty className="text-xs text-fg-tertiary">
+                  这件事还没有任何记录（没有事件、判断或投递）。
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (
@@ -3013,204 +3159,12 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         );
       })()}
 
-      {/* ── Mailbox History ── */}
-      <section>
-        <div className="flex items-center gap-2 mb-2">
-          <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.mailboxHistory')}</h3>
-          <div className="flex gap-1 ml-auto flex-wrap">
-            {CATEGORY_FILTER_KEYS.map(key => {
-              const stc = mailbox?.sourceTypeCounts;
-              const catCount = key === 'all'
-                ? (stc ? Object.values(stc).reduce((a, b) => a + b, 0) : undefined)
-                : (stc ? (MAILBOX_CATEGORY_TYPES[key as keyof typeof MAILBOX_CATEGORY_TYPES] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
-              return (
-                <button key={key} onClick={() => setCatFilter(key)}
-                  className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
-                    catFilter === key
-                      ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                      : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
-                  }`}
-                >{t(`agent:profilePage.mind.categoryFilters.${key}`)}{catCount != null && catCount > 0 && <span className="ml-1 opacity-60">{catCount}</span>}</button>
-              );
-            })}
-          </div>
-        </div>
-        <div className="flex gap-1 mb-2 flex-wrap">
-          {[
-            { key: 'all', dot: '' },
-            { key: 'queued', dot: 'bg-amber-400' },
-            { key: 'processing', dot: 'bg-blue-400' },
-            { key: 'completed', dot: 'bg-green-500' },
-            { key: 'merged', dot: 'bg-brand-400' },
-            { key: 'deferred', dot: 'bg-purple-400' },
-            { key: 'dropped', dot: 'bg-red-500' },
-          ].map(f => {
-            const sc = mailbox?.statusCounts;
-            const cnt = f.key === 'all'
-              ? (sc ? Object.values(sc).reduce((a, b) => a + b, 0) : undefined)
-              : sc?.[f.key];
-            return (
-              <button key={f.key} onClick={() => setStatusFilter(f.key)}
-                className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
-                  statusFilter === f.key
-                    ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
-                    : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
-                }`}
-              >{f.dot && <span className={`w-1.5 h-1.5 rounded-full ${f.dot}`} />}{t(`agent:profilePage.mind.statusFilters.${f.key}`)}{cnt != null && cnt > 0 && <span className="ml-1 opacity-60">{cnt}</span>}</button>
-            );
-          })}
-        </div>
-
-        {(!mailbox?.history || mailbox.history.length === 0) && !loading && (
-          <div className="text-center text-fg-tertiary text-sm py-8">{t('agent:profilePage.mind.noHistory')}</div>
-        )}
-
-        <div className="space-y-1">
-          {mailbox?.history?.map(item => {
-            const isExpanded = expandedId === item.id;
-            const icon = mailboxTypeIcon(item.sourceType);
-            const display = getMailboxItemDisplay(item, t);
-            // 【2d 收敛】行状态点的"处理中"以在途流为权威：DB processing 但
-            // 不是当前 focus / agent 已停止 → stale（不再蓝色脉冲谎称在处理）。
-            const rowDisplayStatus = deriveMailboxRowDisplayStatus({
-              itemStatus: item.status,
-              agentRunning,
-              currentFocusMailboxItemId: mind?.currentFocus?.mailboxItemId ?? null,
-              itemId: item.id,
-            });
-            const senderName = item.metadata?.senderName as string | undefined;
-            const senderRole = item.metadata?.senderRole as string | undefined;
-            const isHighlighted = highlightedId === item.id;
-            return (
-              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-elevated rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
-                <button
-                  className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
-                  onClick={() => setExpandedId(isExpanded ? null : item.id)}
-                >
-                  <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
-                  <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
-                  <span className="text-sm">{icon}</span>
-                  <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{display.title}</span>
-                      {display.badge && (
-                        <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>
-                      )}
-                      <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: '' })}</span>
-                    </div>
-                    {display.subtitle && (
-                      <div className={`text-[11px] text-fg-secondary mt-0.5 ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
-                    )}
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
-                      <span>{new Date(item.queuedAt).toLocaleString()}</span>
-                      {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
-                      {item.activity && (
-                        <>
-                          {item.activity.totalTokens > 0 && <span>{t('agent:profilePage.mind.tokensCount', { count: fmtNum(item.activity.totalTokens) })}</span>}
-                          {item.activity.totalTools > 0 && <span>{t('agent:profilePage.mind.toolsCount', { count: item.activity.totalTools })}</span>}
-                        </>
-                      )}
-                    </div>
-                  </div>
-                  <span className="text-[10px] text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
-                  {canManageAgents && canCancelMailboxItem({
-                    agentRunning,
-                    itemId: item.id,
-                    currentFocusId: mind?.currentFocus?.mailboxItemId ?? null,
-                    itemStatus: item.status,
-                  }) && (
-                    <button
-                      onClick={(e) => { e.stopPropagation(); setCancelConfirmId(item.id); }}
-                      className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-500 hover:bg-red-500/25 transition-colors shrink-0"
-                    >
-                      ✕ {t('agent:profilePage.mind.cancelCurrentBtn')}
-                    </button>
-                  )}
-                </button>
-
-                {isExpanded && (
-                  <div className="border-t border-border-subtle px-3 py-3 space-y-3">
-                    {/* Sender & contextual metadata */}
-                    {senderName && (
-                      <div className="text-[10px] text-fg-tertiary">
-                        {t('agent:profilePage.mind.from')} <span className="text-fg-secondary">{senderName}</span>
-                        {senderRole && <span className="text-fg-tertiary"> ({senderRole})</span>}
-                      </div>
-                    )}
-
-                    {/* Full content for message-type items (chat, a2a, comments, reviews) */}
-                    {item.payload?.content && ['human_chat', 'a2a_message', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'mention'].includes(item.sourceType) && (
-                      <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
-                        {item.payload.content}
-                      </div>
-                    )}
-
-                    {/* Decisions for this item */}
-                    {item.decisions && item.decisions.length > 0 && (
-                      <div>
-                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.mind.decisions')}</h5>
-                        <div className="space-y-1">
-                          {item.decisions.map((d: import('../api.ts').MailboxHistoryDecision) => (
-                            <div key={d.id} className="flex items-start gap-2 text-xs">
-                              <span className={`px-1.5 py-0.5 rounded shrink-0 ${DECISION_COLORS[d.decisionType] ?? 'bg-gray-500/20 text-gray-500'}`}>{d.decisionType}</span>
-                              <span className="text-fg-secondary flex-1">{d.reasoning}</span>
-                              <span className="text-fg-tertiary shrink-0">{new Date(d.createdAt).toLocaleTimeString()}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* 操作：丢弃这一条（停止/打断走已有的 ✕ 按钮）——不必离开本页 */}
-                    {canManageAgents && (
-                      <div className="space-y-2">
-                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.actions')}</h5>
-                        <div className="flex gap-2">
-                          <button
-                            disabled={actionBusyId === item.id}
-                            onClick={() => { void handleDrop(item.id); }}
-                            className="px-2 py-0.5 text-[10px] font-medium rounded-md bg-red-500/15 text-red-400 hover:bg-red-500/25 disabled:opacity-40 transition-colors"
-                          >{t('agent:profilePage.mind.dropBtn')}</button>
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Activity log */}
-                    {item.activity ? (
-                      <div>
-                        <h5 className="text-[10px] font-medium text-fg-tertiary uppercase tracking-wider mb-1">
-                          {t('agent:profilePage.mind.activityHeading', { label: item.activity.label })}
-                          <span className={`ml-2 inline-block px-1 py-0 rounded text-[9px] ${item.activity.success ? 'bg-green-500/15 text-green-500' : 'bg-red-500/15 text-red-500'}`}>
-                            {item.activity.success ? t('agent:profilePage.mind.success') : t('agent:profilePage.mind.failed')}
-                          </span>
-                        </h5>
-                        {item.activity.type === 'task' && item.payload?.taskId ? (
-                          <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
-                        ) : (
-                          <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
-                        )}
-                      </div>
-                    ) : rowDisplayStatus === 'processing' ? (
-                      <div className="text-xs text-fg-tertiary text-center py-2 animate-pulse">{t('agent:profilePage.mind.processing')}</div>
-                    ) : rowDisplayStatus === 'stale' ? (
-                      <div className="text-xs text-amber-600 text-center py-2">{t('agent:profilePage.mind.staleProcessingWarning')}</div>
-                    ) : item.status === 'completed' ? (
-                      <div className="text-xs text-fg-tertiary text-center py-2">{t('agent:profilePage.mind.noActivityLog')}</div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {hasMore && (mailbox?.history?.length ?? 0) > 0 && (
-          <div className="text-center mt-3">
-            <button onClick={loadMore} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">{t('agent:profilePage.mind.loadEarlier')}</button>
-          </div>
-        )}
-      </section>
-
+      {/* ── 邮箱历史已拆除 ────────────────────────────────────────────────
+          它本质是**投递流水**（「这个 agent 收到过哪些工作单元」），不是
+          「这件事怎么了」。有了 thread 之后，正确单位是 thread：
+          顶上的「来龙去脉」给事，点进去给 Trigger + Decision 的时间线。
+          投递条目本身没有丢——它作为该 thread 下的 Trigger 出现在时间线里；
+          过滤/分页/丢弃这些运维动作，属于「诊断」层，不再是主视图。 */}
       {cancelConfirmId && (
         <ConfirmModal
           title={t('agent:profilePage.mind.cancelConfirmTitle')}

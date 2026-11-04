@@ -92,26 +92,24 @@
     "cancelled": "已取消",
     "expired": "已过期"
   },
-  "status": {
+  "taskStatus": {
     "pending": "待处理",
-    "approved": "已批准",
     "inProgress": "进行中",
+    "blocked": "已阻塞",
+    "review": "评审中",
     "completed": "已完成",
     "failed": "失败",
-    "blocked": "已阻塞",
-    "review": "待审核",
     "rejected": "已拒绝",
     "cancelled": "已取消",
-    "active": "活跃",
+    "archived": "已归档"
+  },
+  "processStatus": {
     "idle": "空闲",
     "working": "工作中",
+    "online": "在线",
     "offline": "离线",
     "paused": "已暂停",
-    "error": "错误",
-    "online": "在线",
-    "verified": "已验证",
-    "outdated": "已过期",
-    "expired": "已过期"
+    "error": "错误"
   },
   "priority": {
     "urgent": "紧急",

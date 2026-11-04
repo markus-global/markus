@@ -604,6 +604,72 @@ export async function handleTasksRoutes(
       return true;
     }
 
+    // Task review sessions — every review_request dispatched for this task.
+    //
+    // Why a dedicated endpoint instead of letting the client filter the board:
+    // 「这张卡正在被谁审 / 历史上谁审过几轮」是一个**任务级事实**，它由评审投递行
+    // （`mailbox_items` where source_type='review_request'）唯一表达。客户端要判断
+    // 它就只能要么全量拉邮箱（分页，必然漏），要么读正文文本（载荷当结构）。
+    // 这里把判定收在服务端一次完成，UI 只消费结论。
+    //
+    // 同一个任务可能被多人/多轮投递，每一行就是一次**审核 session**：
+    //   queued     → 已派发，等审核人开始（status='queued'）
+    //   reviewing  → 正在审核（status='processing'，且能挂上 activity 拿实时日志）
+    //   completed  → 已审完（status='completed'）
+    //   dropped    → 未完成即失效（status='dropped'，如任务离开 review 状态）
+    if (path.match(/^\/api\/tasks\/[^/]+\/reviews$/) && req.method === 'GET') {
+      const taskId = path.split('/')[3]!;
+      const mailboxRepo = server.storage?.mailboxRepo;
+      if (!mailboxRepo?.getReviewRequestsByTask) {
+        server.json(res, 200, { reviews: [] });
+        return true;
+      }
+      try {
+        const rows = mailboxRepo.getReviewRequestsByTask(taskId) as Array<{
+          id: string; agentId: string; status: string;
+          payload: Record<string, unknown>; queuedAt: string;
+          startedAt: string | null; completedAt: string | null;
+        }>;
+        const activityRepo = server.storage?.activityRepo;
+        const activities: Map<string, { id: string; startedAt: string; endedAt: string | null }> =
+          activityRepo?.getByMailboxItemIds
+            ? activityRepo.getByMailboxItemIds(rows.map(r => r.id))
+            : new Map();
+        let names = new Map<string, string>();
+        try {
+          names = new Map(server.orgService.getAgentManager().listAgents().map(a => [a.id, a.name]));
+        } catch { /* 名册不可用时退回 id，不因为显示名缺失让接口失败 */ }
+
+        const REVIEW_STATUS: Record<string, string> = {
+          queued: 'queued', processing: 'reviewing', completed: 'completed',
+          dropped: 'dropped', merged: 'dropped',
+        };
+        const reviews = rows.map(r => {
+          const extra = (r.payload['extra'] ?? {}) as Record<string, unknown>;
+          const round = typeof extra['round'] === 'number' ? extra['round'] : null;
+          const activity = activities.get(r.id);
+          return {
+            /** mailbox item id —— 一次审核投递的唯一身份 */
+            id: r.id,
+            round,
+            reviewerId: r.agentId,
+            reviewerName: names.get(r.agentId) ?? r.agentId,
+            status: REVIEW_STATUS[r.status] ?? r.status,
+            queuedAt: r.queuedAt,
+            startedAt: r.startedAt ?? activity?.startedAt ?? null,
+            completedAt: r.completedAt ?? null,
+            activityId: activity?.id ?? null,
+          };
+        });
+        // 正在审的那一条（同一任务理论上至多一条处于 reviewing/queued）。
+        const active = reviews.find(r => r.status === 'reviewing') ?? reviews.find(r => r.status === 'queued') ?? null;
+        server.json(res, 200, { reviews, active });
+      } catch (err) {
+        server.json(res, 500, { error: String(err) });
+      }
+      return true;
+    }
+
     // Task execution logs — optionally filtered by round
     if (path.match(/^\/api\/tasks\/[^/]+\/logs$/) && req.method === 'GET') {
       const taskId = path.split('/')[3]!;

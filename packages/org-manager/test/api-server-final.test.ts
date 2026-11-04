@@ -323,6 +323,7 @@ describe('APIServer final coverage batch', () => {
       ['POST', `/api/tasks/${taskId}/comments`, { text: 'note', authorId: 'user-1', authorName: 'User' }],
       ['GET', `/api/tasks/${taskId}/logs`, undefined],
       ['GET', `/api/tasks/${taskId}/logs/summary`, undefined],
+      ['GET', `/api/tasks/${taskId}/reviews`, undefined],
       ['GET', `/api/tasks/${taskId}/dependents`, undefined],
       ['POST', `/api/tasks/${taskId}/reject`, { reason: 'bad' }],
       ['POST', `/api/tasks/${taskId}/retry`, {}],

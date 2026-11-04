@@ -1091,6 +1091,26 @@ export interface RoundSummary {
   status: string;
 }
 
+/**
+ * 一次**审核 session** —— 一条投递给审核人的 `review_request`。
+ *
+ * 判定归服务端：客户端只消费 `status`，不再读正文猜「有没有人在审」。
+ * 「待审核」状态下「某 Agent 正在审批」这层感知的唯一数据来源。
+ */
+export interface TaskReviewSession {
+  /** mailbox item id —— 一次审核投递的唯一身份 */
+  id: string;
+  round: number | null;
+  reviewerId: string;
+  reviewerName: string;
+  status: 'queued' | 'reviewing' | 'completed' | 'dropped';
+  queuedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  /** 该轮审核的执行 activity id —— 非空即可展开完整的审核执行流 */
+  activityId: string | null;
+}
+
 export interface TaskComment {
   id: string;
   taskId: string;
@@ -1497,13 +1517,16 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; ref?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
+      // 按 thread ref 取「这件事的全部投递」：邮箱是分页的，
+      // 前端在已加载页里过滤会让详情静默少显示。
+      if (opts?.ref) params.set('ref', opts.ref);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
     },
@@ -1799,6 +1822,9 @@ export const api = {
     run: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/run`, { method: 'POST' }),
     getLogs: (id: string, round?: number) => request<{ logs: TaskLogEntry[] }>(`/tasks/${id}/logs${round !== null && round !== undefined ? `?round=${round}` : ''}`),
     getLogsSummary: (id: string) => request<{ rounds: RoundSummary[] }>(`/tasks/${id}/logs/summary`),
+    /** 这张卡的历次审核 session（含「正在审」的那一条）。判定归服务端。 */
+    getReviews: (id: string) =>
+      request<{ reviews: TaskReviewSession[]; active: TaskReviewSession | null }>(`/tasks/${id}/reviews`),
     accept: (id: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/accept`, { method: 'POST', body: JSON.stringify({ reviewerId: reviewerId ?? 'human' }) }),
     revision: (id: string, reason: string, reviewerId?: string) => request<{ task: TaskInfo }>(`/tasks/${id}/revision`, { method: 'POST', body: JSON.stringify({ reason, reviewerId: reviewerId ?? 'human' }) }),
     archive: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/archive`, { method: 'POST' }),
@@ -3773,6 +3799,17 @@ export interface ThreadAPI {
   /** partial = 部分事实未接线（缺 pendingApproval/openQuestion） */
   stageBasis: 'partial' | 'threadOnly';
   missingFacts: string[];
+  /**
+   * **主体是「流挂载的那个对象」，不是这条流自己。**
+   *
+   * 一条流可以挂在任务 / 需求 / 会话 / 外部资源上（见 `ref` 前缀）；这里说的是**那个对象**
+   * 的治理态（`TaskStatus`）。流自己的态是上面那个 `stage`（`ThreadStage`，派生、不落库），
+   * 两者是两个主语，允许不一致（`stage` = 等你验收，而挂载的任务仍是 `in_progress`）。
+   *
+   * 为什么必须写在这里：UI 曾把它渲染成流那一行上的「任务 评审中」，于是 `req_…` / `cs_…`
+   * 的流也被贴上「任务」二字，读者自然把「这条流在等你」读成「任务在等你」。
+   * 展示时请用 `refDisplay(ref)` 决定对象类别，不要写死「任务」。
+   */
   taskStatus: string | null;
   /** 以下由服务端聚合带出，前端不再各查 task/approval 表（避免第二写者） */
   title?: string | null;
@@ -3789,7 +3826,10 @@ export interface DispositionAPI {
   threadId: string;
   action: string;
   reason: string;
-  wouldAccept: boolean;
+  /** 命中的 Gate 规则（契约 §5；B1）。null = 处置非 Gate 规则产生。 */
+  matchedRule: string | null;
+  /** 三态：true 会接 / false 不会接 / null 没问过（dispatch·attach·stop）。 */
+  wouldAccept: boolean | null;
   actor: string;
   createdAt: number;
 }
@@ -3821,6 +3861,42 @@ function toEpochMs(v: unknown): number {
   return 0;
 }
 
+/**
+ * **只给 ref** 读一条流的头部事实（B4：入口倒置的读取面）。
+ *
+ * 为什么不用 `fetchThreads()` 再按 id 找：那要求调用方先拿到全局列表——
+ * 任务详情 / 票据详情 / agent 详情手里只有一个实体 id，为它渲染一条流
+ * 不该先去拉一份目录。三处入口共用本函数，是「组件只依赖 ref」的前提。
+ */
+export async function fetchThreadByRef(ref: string): Promise<{ thread: ThreadAPI }> {
+  const r = await request<{ thread: ThreadAPI }>(`/threads/one?ref=${encodeURIComponent(ref)}`);
+  return { thread: { ...r.thread, lastActivity: toEpochMs(r.thread.lastActivity) } };
+}
+
+/** 票据（C1 建立的独立对象）。票不驱动执行，但它是「这件事的凭据」。 */
+export interface TicketAPI {
+  id: string;
+  orgId: string;
+  kind: string;
+  sourceRef: string | null;
+  subject: string;
+  assignee: string | null;
+  taskId: string | null;
+  status: string;
+  createdAt?: string | number;
+  updatedAt?: string | number;
+}
+
+/** 某张任务卡名下的票据。没有票时返回空数组，不是 404。 */
+export function fetchTaskTickets(taskId: string): Promise<{ tickets: TicketAPI[] }> {
+  return request(`/tasks/${encodeURIComponent(taskId)}/tickets`);
+}
+
+/** 单张票。票不存在时后端回 404 + 可行动提示（页面要能区分「没内容」与「没这张票」）。 */
+export function fetchTicket(ticketId: string): Promise<{ ticket: TicketAPI }> {
+  return request(`/tickets/${encodeURIComponent(ticketId)}`);
+}
+
 export function fetchThreadDispositions(threadId: string): Promise<{ dispositions: DispositionAPI[] }> {
   return request(`/threads/${encodeURIComponent(threadId)}/dispositions`);
 }
@@ -3832,7 +3908,6 @@ export interface ThreadEventAPI {
   kind: string;
   actor?: string;
   summary: string;
-  payload: Record<string, unknown>;
   createdAt: number;
 }
 

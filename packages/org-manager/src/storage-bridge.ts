@@ -59,7 +59,6 @@ export interface StorageBridge {
   // Thread / Trigger / Router（设计见 workspace/markus-superagent-02-*.md §2）
   threadRepo?: any;
   dispositionRepo?: any;
-  threadEventRepo?: any;
   resourceBindingRepo?: any;
   eventSourceRepo?: any;
   /**
@@ -68,6 +67,8 @@ export interface StorageBridge {
    * 同一条链断了三节：仓储没装配 → 没注入 ingress → 没人写。
    */
   triggerRepo?: any;
+  /** 票的仓储（`tickets` 表唯一写入者；见 docs/architecture/ticket.md）。 */
+  ticketRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
   pendingCallbackRepo?: any;
@@ -267,8 +268,8 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       executionStreamRepo: new storage.SqliteExecutionStreamRepo(db),
       mailboxRepo: new storage.SqliteMailboxRepo(db),
       threadRepo: new storage.SqliteThreadRepo(db),
+      ticketRepo: new storage.SqliteTicketRepo(db),
       dispositionRepo: new storage.SqliteDispositionRepo(db),
-      threadEventRepo: new storage.SqliteThreadEventRepo(db),
       resourceBindingRepo: new storage.SqliteResourceBindingRepo(db),
       eventSourceRepo: new storage.SqliteEventSourceRepo(db),
       triggerRepo: new storage.SqliteTriggerRepo(db),

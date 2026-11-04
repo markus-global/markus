@@ -27,13 +27,36 @@ export function publishAttentionCount(count: number): void {
 }
 
 export function readAttentionCount(): number {
+  return readNum(STORAGE_KEY) + readNum(UNREAD_KEY);
+}
+
+/**
+ * 未读通知数单独存一份，但**对外是同一个数字**（Owner 2026-11-04：未读也要算进去）。
+ *
+ * 为什么分开存、合并读：两个来源确实不同（待办=要你动手，未读=还没读的消息），
+ * 但用户看到的徽标就一个。分开存保证两边各自更新时不会互相覆盖；
+ * 合并只发生在 readAttentionCount 这一个出口。
+ */
+const UNREAD_KEY = 'markus_unread_count';
+
+function readNum(key: string): number {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY);
+    const raw = localStorage.getItem(key);
     const n = raw === null ? 0 : Number(raw);
     return Number.isFinite(n) && n > 0 ? n : 0;
   } catch {
     return 0;
   }
+}
+
+/** 未读数变化时调用（概览右栏每次取完通知都会调）。 */
+export function publishUnreadCount(count: number): void {
+  try {
+    localStorage.setItem(UNREAD_KEY, String(Math.max(0, count)));
+  } catch {
+    /* 隐私模式下 localStorage 不可用 —— 事件仍然有效 */
+  }
+  window.dispatchEvent(new CustomEvent(EVENT, { detail: { count: readAttentionCount() } }));
 }
 
 export function subscribeAttentionCount(cb: (count: number) => void): () => void {

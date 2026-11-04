@@ -116,7 +116,7 @@ export function AvatarPopover({ agent, anchorRect, onClose, onViewProfile }: {
     : agent.status === 'working' ? 'bg-blue-400 animate-pulse'
     : agent.status === 'error' ? 'bg-red-400'
     : 'bg-gray-500';
-  const statusLabel = agent.status === 'idle' ? t('common:status.online') : agent.status === 'working' ? t('common:status.working') : agent.status === 'error' ? t('common:status.error') : t('common:status.offline');
+  const statusLabel = agent.status === 'idle' ? t('common:processStatus.online') : agent.status === 'working' ? t('common:processStatus.working') : agent.status === 'error' ? t('common:processStatus.error') : t('common:processStatus.offline');
 
   const adjustRef = useCallback((el: HTMLDivElement | null) => {
     if (!el) return;

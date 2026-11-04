@@ -46,6 +46,8 @@ import {
   stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
+  type ThreadEnsureOutcome,
+  type ThreadEventOutcome,
 } from '@markus/shared';
 import {
   shouldDistillTask,
@@ -70,6 +72,7 @@ import type { AuditService } from './audit-service.js';
 import type { DeliverableService } from './deliverable-service.js';
 import type { OrganizationService } from './org-service.js';
 import { isTerminalTaskStatus, resolveCommentAttention, shouldInjectIntoSession, type CommentAuthorType } from './task-attention.js';
+import { reportThreadEnsureFailure, reportThreadEventFailure, taskRef } from './thread-ensure.js';
 import type { ProjectService } from './project-service.js';
 import type { RequirementService, RequirementCommentKind } from './requirement-service.js';
 import { mkdirSync, writeFileSync, readFileSync, existsSync, cpSync } from 'node:fs';
@@ -283,14 +286,14 @@ export class TaskService implements ApprovalTargetPort {
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
   /** 日常链路写 Thread 的注入点（org-manager 不直接 new service，由组合根注入）。 */
-  private threadEnsurer?: (taskId: string, actorAgentId?: string) => void;
+  private threadEnsurer?: (taskId: string, actorAgentId?: string) => ThreadEnsureOutcome;
   /**
    * 向任务流的时间线追加一条事件。
    *
    * 为什么注入而不是 import：task-service 不持有 storage（只有各个 repo），
    * 注入也让测试里一个 spy 就能验「评论后事件真的写了」，不用构造整个 storage。
    */
-  private threadEventRecorder?: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void;
+  private threadEventRecorder?: (taskId: string, e: { kind: string; actor?: string; summary: string }) => ThreadEventOutcome;
   private taskLogRepo?: TaskLogRepo;
   /** The platform-wide single execution point for approval outcomes. */
   private approvalApplier?: ApprovalApplier;
@@ -463,11 +466,11 @@ export class TaskService implements ApprovalTargetPort {
    * 为什么不在这里直接 import ensureThread：那会让 task-service 绑死 storage 具体形状，
    * 也会让「ref 怎么拼」散到第二个地方。拼 ref 的知识只留在 thread-ensure.ts。
    */
-  setThreadEnsurer(fn: (taskId: string, actorAgentId?: string) => void): void {
+  setThreadEnsurer(fn: (taskId: string, actorAgentId?: string) => ThreadEnsureOutcome): void {
     this.threadEnsurer = fn;
   }
 
-  setThreadEventRecorder(fn: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void): void {
+  setThreadEventRecorder(fn: (taskId: string, e: { kind: string; actor?: string; summary: string }) => ThreadEventOutcome): void {
     this.threadEventRecorder = fn;
   }
 
@@ -701,13 +704,16 @@ export class TaskService implements ApprovalTargetPort {
 
     // 时间线（S6）：评论也是一条「发生了什么」。
     // 放在落库之后 —— 先有评论事实，再派生事件；事件写失败不应回滚评论。
-    try {
-      this.threadEventRecorder?.(taskId, {
-        kind: 'comment',
-        actor: authorId,
-        summary: `${authorName}: ${content.replace(/\s+/g, ' ').slice(0, 80)}`,
-      });
-    } catch { /* 读模型失败不影响评论本身 */ }
+    //
+    // 【2026-11-04】不再 `try { … } catch { 吞掉 }` 也不再丢弃返回值：吞掉之后「评论有了、
+    // 时间线没行」在日志里查不到任何痕迹（这正是「机制在、没人用」的可观测根因）。
+    // 现在把结论交给**唯一**的上报点（文案与计数只在 thread-ensure 一处）。
+    const recorded = this.threadEventRecorder?.(taskId, {
+      kind: 'comment',
+      actor: authorId,
+      summary: `${authorName}: ${content.replace(/\s+/g, ' ').slice(0, 80)}`,
+    });
+    if (recorded) reportThreadEventFailure(recorded, taskRef(taskId), 'task.comment');
 
     // Compute reply-to context for WS broadcast (denormalized for frontend)
     let replyToAuthor: string | undefined;
@@ -2544,6 +2550,9 @@ export class TaskService implements ApprovalTargetPort {
           reviewerId: (row as any).reviewerId ?? (row as any).reviewer_agent_id ?? '',
           reviewerType: ((row as any).reviewerType ?? (row as any).reviewer_type ?? 'agent') as 'agent' | 'human',
           executionRound: (row as any).executionRound ?? (row as any).execution_round ?? 1,
+          // 主动暂停标记：有值即「人/agent 有意叫停」，依赖引擎不得自动恢复。
+          pausedAt: (row as any).pausedAt ?? (row as any).paused_at ?? undefined,
+          pausedBy: (row as any).pausedBy ?? (row as any).paused_by ?? undefined,
           requirementId: (row as any).requirementId ?? undefined,
           subtasks,
           blockedBy,
@@ -2834,7 +2843,11 @@ export class TaskService implements ApprovalTargetPort {
     // 动作人 = 指派对象？不是。这里传 `undefined`：createTask 请求里没有可靠的
     // 「谁发起的」字段（agent 建卡和人在 UI 建卡都走同一个入口）。
     // 宁可少排除一次自激，也不要传一个看似有意义的错值——后者会让自激排除悄悄失效。
-    this.threadEnsurer?.(task.id);
+    //
+    // 【2026-11-04】返回值必须被检查：本卡之前的写法是 `this.threadEnsurer?.(task.id);`
+    // —— `storage` 没挂 threadRepo 时「流没建」既没日志也没计数，业务照跑。
+    const ensured = this.threadEnsurer?.(task.id);
+    if (ensured) reportThreadEnsureFailure(ensured, taskRef(task.id), 'task.create');
     this.emitTaskEvent({
       type: 'created',
       taskId: task.id,
@@ -3145,6 +3158,11 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'in_progress') {
       throw new Error(`Cannot pause task in ${task.status} status`);
     }
+    // 标记「有意叫停」：blocked 同时被用作「等依赖」，不标记就会被依赖引擎
+    // 当成「已满足 → 自动恢复」每 30s 翻回 in_progress（2026-11-03 实测）。
+    task.pausedAt = new Date().toISOString();
+    task.pausedBy = updatedBy ?? updatedByType ?? 'unknown';
+    this.persistPause(task);
     return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType);
   }
 
@@ -3172,7 +3190,19 @@ export class TaskService implements ApprovalTargetPort {
         { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
       );
     }
+    // 恢复 = 清掉暂停标记，交还给正常流程（否则依赖引擎永远不碰它）。
+    task.pausedAt = undefined;
+    task.pausedBy = undefined;
+    this.persistPause(task);
     return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
+  }
+
+  /** 暂停标记落库（restart 后仍然有效）。失败只记 warn，不阻断状态机。 */
+  private persistPause(task: Task): void {
+    const repo = this.taskRepo as unknown as { updatePause?: (id: string, at: string | null, by: string | null) => Promise<void> };
+    if (!repo?.updatePause) return;
+    repo.updatePause(task.id, task.pausedAt ?? null, task.pausedBy ?? null)
+      .catch(err => log.warn('Failed to persist task pause marker', { taskId: task.id, error: String(err) }));
   }
 
   getTask(id: string): Task | undefined {
@@ -3661,6 +3691,8 @@ export class TaskService implements ApprovalTargetPort {
             guidance ? `\nAction: ${guidance}` : '',
           ].filter(Boolean).join('\n'),
           taskId: task.id,
+          // 迁移对写进结构化字段：幂等键需要它，且**不得**从 content 文本里反解析。
+          extra: { taskId: task.id, from, to },
         }, {
           metadata: { taskId: task.id },
         });
@@ -4276,7 +4308,27 @@ export class TaskService implements ApprovalTargetPort {
     assertValidProjectReference(this.projectService, projectId, 'task');
   }
 
-  private reevaluateBlockedStatus(task: Task): void {    const shouldBeBlocked = task.blockedBy?.length && !this.areBlockersSatisfied(task);
+  /**
+   * 依赖变化后，按**依赖**重算 blocked / in_progress。
+   *
+   * ── 为什么必须区分「两种 blocked」（2026-11-03 生产事故）───────────────
+   * `blocked` 这一个值同时承担了两个问题：
+   *   (a) 「等上游依赖」——依赖满足就该自己跑；
+   *   (b) 「人/agent 主动叫停」——依赖跟它没关系，不该被任何自动逻辑动。
+   *
+   * 旧实现只看依赖：`const shouldBeBlocked = task.blockedBy?.length && !satisfied`。
+   * 于是「主动暂停」的任务（blockedBy 为空）算出 shouldBeBlocked=false，
+   * 被下面第一行无条件翻回 `in_progress` —— 用户暂停一次被推翻一次，反复多次，
+   * 看起来像「系统跟我抢方向盘」。实测：blocked→in_progress 自动回弹，pause 无效。
+   *
+   * 判据：只有**依赖导致的** blocked 才由依赖引擎解除（blockedBy 非空且已满足）；
+   * 主动暂停没有 blockedBy，不属于本函数的职权范围，一律不碰。
+   * 恢复通道仍然存在：`resumeTask()`（人）或重新设置 blockedBy。
+   */
+  private reevaluateBlockedStatus(task: Task): void {
+    // 主动暂停的任务不被依赖重算影响（否则人一按暂停就被推翻）。
+    if (task.pausedAt) return;
+    const shouldBeBlocked = (task.blockedBy?.length ?? 0) > 0 && !this.areBlockersSatisfied(task);
     if (task.status === 'blocked' && !shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
@@ -4415,6 +4467,10 @@ export class TaskService implements ApprovalTargetPort {
    * enforceable by construction.
    */
   private evaluateBlockedDependent(task: Task): void {
+    // 主动暂停（人/agent 叫停）不是「等依赖」，依赖引擎无权解除。
+    // 实测事故：暂停后每 30s 被以「Dependency satisfied」翻回 in_progress，
+    // 与用户抢方向盘。恢复通道 = resumeTask()（显式动作）。
+    if (task.pausedAt) return;
     if (!task.blockedBy?.length) return;
     const verdicts = task.blockedBy.map(id => this.blockerVerdict(id));
 

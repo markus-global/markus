@@ -4172,6 +4172,41 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (fileArr.length === 0) return;
     for (const file of fileArr) {
       if (file.size > MAX_FILE_SIZE) continue;
+
+      // ── 非图片文件：给 Agent 一个**它真能读到的**路径 ──
+      //
+      // 两种环境能力不同，不能一刀切：
+      //   · 桌面端（Electron）：File 带 `.path`，和 Agent 同机 → 直接用，**一个字节都不上传**；
+      //   · 浏览器：沙箱不暴露本地路径。只发文件名对 Agent 毫无意义（Owner 2026-11-04：
+      //     “只发文件名没意义，Agent 也不知道文件在哪里”）。所以转存到**本机**的
+      //     LocalFileStorage（服务端 `fileStorage` 就是它，落盘不是云存储），
+      //     再把服务端返回的绝对路径写进消息。
+      if (!file.type.startsWith('image/')) {
+        const localPath = (file as File & { path?: string }).path;
+        if (localPath) {
+          setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name} — ${localPath}`);
+          continue;
+        }
+        const reader = new FileReader();
+        reader.onload = () => {
+          const dataUrl = reader.result as string;
+          api.uploads
+            .upload([{ dataUrl, name: file.name }], 'chat')
+            .then(res => {
+              const f = res.files?.[0] as { name?: string; url?: string; path?: string } | undefined;
+              const where = f?.path ?? f?.url;
+              if (!where) throw new Error('no path');
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${f?.name ?? file.name} — ${where}`);
+            })
+            .catch(() => {
+              // 拿不到可读路径就不要装成功——否则 Agent 又拿到一个它无能为力的名字。
+              setInput(prev => `${prev}${prev.trim() ? '\n\n' : ''}📎 ${file.name}（未能转存，Agent 无法读取此文件）`);
+            });
+        };
+        reader.readAsDataURL(file);
+        continue;
+      }
+
       const reader = new FileReader();
       reader.onload = () => {
         const dataUrl = reader.result as string;
@@ -4769,7 +4804,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <div className="flex-1 min-w-0 text-left">
                           <div className="text-sm font-medium text-fg-primary truncate flex items-center gap-1.5">
                             {agent.name}
-                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:status.offline')}</span>}
+                            {isStopped && <span className="text-[8px] px-1 py-0 rounded bg-gray-500/20 text-gray-400 font-medium leading-relaxed">{t('common:processStatus.offline')}</span>}
                           </div>
                           <div className="text-[10px] text-fg-tertiary truncate">{agent.role || agent.status}</div>
                         </div>
@@ -4992,9 +5027,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const headerDesc = chatMode === 'direct' ? (currentAgent?.role || '') : chatMode === 'channel' ? (activeTeam?.description || '') : '';
             const headerAvatarUrl = chatMode === 'direct' ? currentAgent?.avatarUrl : undefined;
             const headerAvatarName = headerName || 'U';
-            // 当前 agent 的「在等谁」角标。取不到就 null，header 里什么都不渲染（不占位、
-            // 不显示「未知」）——header 是高频扫读区，宁缺勿滥。
-            const headerStage = chatMode === 'direct' && agentStage ? stageLabel(agentStage.stage) : null;
+            // 当前 agent 的「在等谁」角标已删除（Owner 2026-11-03）：chip 不可点、无信息。
+            const headerStage = null;
             const showEntityInfo = (chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId);
 
             return (
@@ -5100,13 +5134,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {chatMode === 'direct' && currentAgent && (
                         <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
-                      {/* 和 AgentStatusBadge 并排：状态徽标回答「这个人是谁/在不在」，
-                          stage 回答「他现在卡在什么事上」。两者不同维度，所以不合并。 */}
-                      {headerStage && (
-                        <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ${headerStage.cls}`} title={headerStage.hint}>
-                          {headerStage.label}
-                        </span>
-                      )}
+                      {/* Owner 2026-11-03：删掉这个「在等谁」stage 小 chip（如「等你批准」）。
+                          它不可点、不可展开、也不告诉你到底卡在哪件事上 —— 高频扫读区里
+                          放一个「只能看、不能做」的信号，只会让人反复点它、反复失望。
+                          真正要看的卡在哪，去 agent 详情的「运行与注意力」。 */}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
                       editingHeaderDesc ? (
@@ -5280,8 +5311,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     // pulsing dot, shown only while this session is generating.
                     <span
                       className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-pulse shrink-0"
-                      title={t('common:status.working')}
-                      aria-label={t('common:status.working')}
+                      title={t('common:processStatus.working')}
+                      aria-label={t('common:processStatus.working')}
                       data-testid="session-tab-streaming"
                     />
                   )}

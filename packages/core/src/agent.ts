@@ -19,7 +19,7 @@ import {
   type MailboxPayload,
   type MailboxPriority,
   type AttentionDecision,
-  type DecisionType,
+  type AttentionAction,
   type AgentMindState,
   type TriageResult,
   type DeliberationResult,
@@ -53,11 +53,14 @@ import {
   cancelExecutionToken,
   type ExecutionStopReason,
   type ExecutionCancelToken,
+  type MandateState,
+  type ResourceScope,
+  type Autonomy,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { contextGateRefusal } from './context-gate.js';
-import { isRedLineTool, redLineRefusal, logRedLineDecision } from './action-gate.js';
+import { isRedLineTool, redLineRefusal, logRedLineDecision, authorizeToolCall, authorizationRefusal } from './action-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
@@ -179,6 +182,24 @@ const TASK_MUTATING_TOOLS = new Set([
 const log = createLogger('agent');
 
 /**
+ * 绑定管理类工具 —— **授权判定的 bootstrap 豁免**（A4）。
+ *
+ * 为什么必须豁免：`authorizeAction()` 在没有绑定时拒绝一切动作，而「创建绑定」本身
+ * 就是没有绑定时的动作 —— 不豁免就永远无法认领第一块地（死锁，不是收紧）。
+ * 它们的闸门在别处：升档需人批（`autonomyNeedsApproval`）、L3 唯一性由数据库约束守（I8）。
+ *
+ * 为什么是名字白名单而不是"看有没有 resource 参数"：白名单是**默认拒绝**的开关
+ * （新增工具自动受判定覆盖），而后者会让任何一个碰巧带 `resource` 参数的
+ * 新工具静默逃逸授权判定。
+ */
+const RESOURCE_CLAIM_TOOLS: ReadonlySet<string> = new Set([
+  'resource_bind',
+  'resource_release',
+  'resource_owners',
+  'resource_status',
+]);
+
+/**
  * 把文件路径归一化为稳定的锁键（供资源域锁使用）。
  *
  * 目的：`/a/b.ts`、`./b.ts`、`/a/./b.ts` 指向同一文件时必须落到**同一个**锁键，
@@ -282,6 +303,16 @@ export type ApprovalCallback = (request: {
    * "this id looks foreign, so hide the approval".
    */
   chatSessionId?: string;
+  /**
+   * 这次审批针对的**资源**与动作档位（A4）。带上是为了让审批单成为一张真正的
+   * **逐件事许可（Mandate）**：消费者据此把 `type` 记为 `resource_action`、
+   * `details` 记下 `{resource, actionScope}`，于是下一次同样的动作能被判定点
+   * 直接认作「已批」——否则批准完还得再问一遍，审批就永远只是噪音。
+   *
+   * 不带（`undefined`）= 这次审批与责任域无关（普通红线动作 / 工具确认）。
+   */
+  resource?: string;
+  actionScope?: ResourceScope;
 }) => Promise<{ approved: boolean; comment?: string }>;
 
 export interface TaskProjectContext {
@@ -590,6 +621,11 @@ export class Agent {
    * 用途是把责任域写进 system prompt 固定段（P1-⑤）——否则 agent 永远不会主动去查。
    */
   getResourceBindings?: () => Array<{ resource: string; scope: string; autonomy?: string; grantedBy?: string }>;
+  /**
+   * 逐件事审批（Mandate）的读取器 —— 由 AgentManager 注入（core 不依赖 storage）。
+   * 缺省 = `none`：不知道就是没批，绝不猜成已批。
+   */
+  getMandate?: (resource: string, actionScope: ResourceScope) => MandateState;
   private semanticSearch?: SemanticMemorySearch;
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
@@ -1413,6 +1449,14 @@ export class Agent {
   }
 
   /**
+   * 撤回某需求下尚未消费的行动型条目（需求转终态时调用）。
+   * 见 `AgentMailbox.withdrawActionableFor` 的说明。
+   */
+  withdrawActionableFor(requirementId: string, reason: string): number {
+    return this.mailbox.withdrawActionableFor(requirementId, reason);
+  }
+
+  /**
    * Route a message through the mailbox and return a promise that resolves
    * when the agent finishes processing it.  This is the external replacement
    * for direct `handleMessage` calls — callers await the returned promise
@@ -1770,7 +1814,7 @@ export class Agent {
    * Returns decision info so the tool loop can act on preemption or merges.
    */
   async checkAttentionYieldPoint(): Promise<{
-    decision: DecisionType;
+    decision: AttentionAction;
     item?: MailboxItem;
     reasoning?: string;
   }> {
@@ -9130,9 +9174,102 @@ export class Agent {
    *   · 红线 = 不可**自主**，不等于永远做不到：有人工审批通道时发审批卡，
    *     人批了就执行。硬失败会把 Agent 逼进死胡同，也会逼人把机制整个关掉。
    */
+  /**
+   * 这次工具调用点名的资源键。没有 → `undefined`（= 不适用责任域授权）。
+   *
+   * 只认显式的 `resource` / `resource_key` 参数：从别的字段（仓库名、路径）
+   * 猜资源键就是「从载荷推断结构」（R3），猜错的方向永远是"以为自己在别的地上办事"。
+   *
+   * **绑定管理类工具被显式豁免**（`RESOURCE_CLAIM_TOOLS`）—— 这不是漏网的洞，是
+   * **bootstrap 规则**：不能要求"先有绑定"才能创建绑定，否则第一次认领永远不可能发生。
+   * 它们的闸门在别处且更严：升档要人批（`autonomyNeedsApproval` + 审批通道），
+   * 同一资源的 L3 唯一性由数据库约束守（I8）。豁免写在名字上、只此一处，
+   * 新增工具时**默认会被授权判定覆盖**（fail-closed），只有显式加进这个集合才豁免。
+   */
+  private static resourceOfToolCall(toolCall: LLMToolCall): string | undefined {
+    if (RESOURCE_CLAIM_TOOLS.has(toolCall.name)) return undefined;
+    const args = toolCall.arguments ?? {};
+    const raw = args['resource'] ?? args['resource_key'] ?? args['resourceKey'];
+    return typeof raw === 'string' && raw.trim() ? raw.trim() : undefined;
+  }
+
+  /**
+   * 这个 agent 在某资源上的绑定 —— 自己优先，其次团队（更具体的先算）。
+   *
+   * 返回 `null` 与返回 `{scope:'read'}` 是两件不同的事：前者是「这块地跟你没关系」，
+   * 后者是「你有授权，但只有最低档」。混为一谈就会把"没有任何绑定"判成"只读"。
+   */
+  private bindingForResource(resource: string): { scope: ResourceScope; autonomy: Autonomy } | null {
+    const mine = this.getResourceBindings?.() ?? [];
+    const hit = mine.find(b => b.resource === resource);
+    if (!hit) return null;
+    return { scope: hit.scope as ResourceScope, autonomy: (hit.autonomy ?? 'observe') as Autonomy };
+  }
+
+  /**
+   * 动作闸门：**授权边界 + 红线**的唯一执行入口（A4）。
+   *
+   * 返回 `undefined` = 放行；返回字符串 = 拒绝结果（直接作为工具返回值）。
+   *
+   * 两个问题在这里被同时回答，但用的不是同一份数据：
+   *   · **逐资源**（ResourceBinding）：这个 agent 在这块地上被授权到哪一档、自主到什么程度；
+   *   · **逐件事**（Mandate）：这**一件**不可撤回的事，人签字了没有。
+   * 判定本身不在这里写 —— 全部交给 `authorizeAction()`（shared/types/thread.ts），
+   * 本方法只负责取数据（绑定 + 审批状态）并把结论翻译成拒绝载荷。
+   *
+   * 语义（与 `gateAction` 单一事实源一致）：
+   *   · 红线 ⟺ `gateAction(scope, 'trusted') === 'deny'` —— 连最高档都过不去，
+   *     说明拒绝来自动作本身（admin），不是来自授权不足。
+   *   · 红线 = 不可**自主**，不等于永远做不到：已有人为这件事签字 → 直接放行；
+   *     还没有 → 有人工审批通道就发审批卡（那正是取得 mandate 的方式），人批了就执行。
+   */
   private async enforceRedLine(toolCall: LLMToolCall, sessionId?: string): Promise<string | undefined> {
-    const decision = isRedLineTool(toolCall.name);
-    if (decision.allow) return undefined;
+    // 只有**点名了资源**的调用才落进责任域的授权空间；平台实体（tsk_/proj_）
+    // 由任务/需求/审查那条链授权，硬套绑定会把没有绑定的 agent 全判死。
+    const resource = Agent.resourceOfToolCall(toolCall);
+    const decision = authorizeToolCall({
+      toolName: toolCall.name,
+      resource,
+      binding: resource ? this.bindingForResource(resource) : undefined,
+      mandateFor: resource && this.getMandate ? (r, s) => this.getMandate!(r, s) : undefined,
+    });
+
+    // 3.4：拒绝是**动作审计**事件，不是流上的路由处置。
+    // `thread_dispositions` 要求 trigger_id/thread_id，而一次工具调用没有 trigger，
+    // 硬塞进去既是滥用表结构，也会因缺列落不了库 —— 结果就是"拒绝了但只有一条日志"。
+    // 所以走既有的审计通道（emitAudit）：它本来就在记录"谁做了什么、成不成、为什么"。
+    const audit = (success: boolean, detail: string) => {
+      try {
+        this.emitAudit({ type: 'red_line_action', action: toolCall.name, success, detail });
+      } catch { /* 审计写失败不能反过来阻断拒绝本身 */ }
+    };
+
+    const authz = decision.authz;
+    if (authz && authz.verdict !== 'allow') {
+      // `mandate-required`（还没有人为这件事签字）且红线且**有**审批通道 →
+      // 不在这里拒绝：下面的审批流正是取得 mandate 的唯一途径。其余一律就地拒绝，
+      // 因为它们都不是「问一次人就能解决」的（缺 binding / 越上限 / 已拒绝）。
+      const acquireMandateNow =
+        authz.code === 'mandate-required' && decision.redLine && Boolean(this.approvalCallback);
+      if (!acquireMandateNow) {
+        audit(false, `authorization ${authz.code}: ${authz.reason}`);
+        return authorizationRefusal(toolCall.name, decision.action, authz);
+      }
+    }
+
+    if (!decision.redLine) return undefined;
+
+    // 红线但**已有逐件事的许可**（mandate=approved）：不再重复问同一个人第二遍。
+    // 不写这一句，审批就永远只是噪音 —— 人批过之后每次动手还被拦一次，
+    // 那会训练出「关掉这个机制」的动机，比不设闸门更坏。
+    if (authz?.code === 'allowed') {
+      logRedLineDecision({
+        toolName: toolCall.name, action: decision.action,
+        agentId: this.id, sessionId, outcome: 'approved',
+      });
+      audit(true, `approved by mandate (${resource}): ${decision.action.why}`);
+      return undefined;
+    }
 
     const hasApprovalChannel = Boolean(this.approvalCallback);
     if (!hasApprovalChannel) {
@@ -9140,6 +9277,7 @@ export class Agent {
         toolName: toolCall.name, action: decision.action,
         agentId: this.id, sessionId, outcome: 'no-channel',
       });
+      audit(false, `denied (no approval channel): ${decision.action.why}`);
       return redLineRefusal(toolCall.name, decision.action, { hasApprovalChannel: false });
     }
 
@@ -9156,6 +9294,10 @@ export class Agent {
       taskId: this.getCurrentTaskId(),
       sessionId: this.currentSessionId,
       chatSessionId: this.getDbSessionId() ?? undefined,
+      // 逐件事许可的载体：带上资源与档位，消费者才能把这张单记成
+      // `resource_action` 的 mandate，下一次同样的动作直接被判定点认作已批。
+      resource,
+      actionScope: decision.action.scope,
     });
 
     if (!result.approved) {
@@ -9163,6 +9305,7 @@ export class Agent {
         toolName: toolCall.name, action: decision.action,
         agentId: this.id, sessionId, outcome: 'denied-by-human',
       });
+      audit(false, `denied by human${result.comment ? `: ${result.comment}` : ''}`);
       return redLineRefusal(toolCall.name, decision.action, {
         deniedByHuman: true,
         comment: result.comment,
@@ -9174,6 +9317,7 @@ export class Agent {
       toolName: toolCall.name, action: decision.action,
       agentId: this.id, sessionId, outcome: 'approved',
     });
+    audit(true, `approved by human: ${decision.action.why}`);
     return undefined;
   }
 

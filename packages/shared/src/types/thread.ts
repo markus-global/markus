@@ -44,14 +44,33 @@ export function hasRegisteredPrefix(ref: ThreadRef, prefixes: readonly string[])
 // 轴 3：它在等谁（派生，不存储）—— 唯一合法的闭集之一
 // ─────────────────────────────────────────────────────────────
 
+/**
+ * 「在等谁」的闭集。**每个值都以「谁的回合」开头**，这是刻意的结构约束，不是命名风格：
+ *
+ *   person:*  人在等你（批 / 回话 / 验收 / 解锁）—— 唯一会消耗人的注意力的四类
+ *   system:*  系统在推进（排队等资源）
+ *   agent:*   agent 在推进（分配正在跑）
+ *   none:*    没人的回合（回合结束、等事件）
+ *
+ * 为什么必须带前缀：`idle` / `working` 这两个裸值**同时**出现在
+ * `AttentionState`（`packages/shared/src/types/mailbox.ts`，agent 循环此刻在干什么）里。
+ * 两个不同概念共用一个字面值，展示层就会互相喂错（`stageLabel(attentionState)` 编译通过、
+ * 运行期静默返回另一个概念的文案）。值域命名空间化之后，
+ * `Extract<ThreadStage, AttentionState>` 是 `never`——这条不变量能被编译器守住，
+ * 见 `thread.test.ts` 的编译期断言与 `stateVocabulary.test.ts` 的字面互斥测试。
+ *
+ * 这个类型回答的问题与另外两个「状态」不同：它是**派生量，不落库**（`threads` 表没有
+ * stage 列）。治理态是 `TaskStatus`（落库），运行时注意力是 `AttentionState`（内存）。
+ * 三者的来源与边界见 `docs/architecture/state-machines.md` §16。
+ */
 export type ThreadStage =
-  | 'person:approval' // 等人批
-  | 'person:answer' // 等人回话
-  | 'person:review' // 等人验收
-  | 'person:blocked' // 等人解锁
-  | 'system:queued' // 排队等资源
-  | 'idle' // 回合结束、等事件
-  | 'working'; // 正在跑
+  | 'person:approval' // 人的回合：等人批
+  | 'person:answer' // 人的回合：等人回话
+  | 'person:review' // 人的回合：等人验收
+  | 'person:blocked' // 人的回合：等人解锁
+  | 'system:queued' // 系统回合：排队等资源
+  | 'agent:working' // agent 回合：分配正在跑
+  | 'none:idle'; // 没人的回合：回合结束、等事件
 
 export interface StageFacts {
   pendingApproval: boolean;
@@ -69,8 +88,8 @@ export function deriveStage(f: StageFacts): ThreadStage {
   if (f.submittedReview) return 'person:review';
   if (f.reportedBlockedSinceHuman) return 'person:blocked';
   if (f.assignment?.state === 'pending') return 'system:queued';
-  if (!f.assignment || f.assignment.state === 'ended') return 'idle';
-  return 'working';
+  if (!f.assignment || f.assignment.state === 'ended') return 'none:idle';
+  return 'agent:working';
 }
 
 /** 「在等人」的四类 stage，顺序即 UI 排序。 */
@@ -93,9 +112,9 @@ export function stageSortRank(stage: ThreadStage): number {
       return 3;
     case 'system:queued':
       return 4;
-    case 'working':
+    case 'agent:working':
       return 5;
-    case 'idle':
+    case 'none:idle':
       return 6;
   }
 }
@@ -117,6 +136,24 @@ export type TriggerKind =
 export type ActorKind = 'human' | 'agent' | 'bot' | 'system';
 export type Addressing = 'direct' | 'mention' | 'ambient';
 
+/**
+ * 日常链路建流的**结论**（`ensureThread` 的返回）。刻意不是 boolean。
+ *
+ * 三者的「该怎么办」完全不同：
+ * - `ensured`：正常（含幂等重入）。
+ * - `no-thread-repo`：**装配缺失**（storage 没挂 threadRepo）—— 去修装配，不是业务错误。
+ * - `failed`：抛了（数据/约束），看 warn 里的 error。
+ *
+ * 合成为一个 `false`，就是把「去改哪里」这条可行动信息丢掉。
+ *
+ * 放在 shared 而不是 org-manager：`AgentManager`（core）与 `TaskService`（org-manager）
+ * 都要在自己的注入点契约里写这个类型 —— 两份同名 union 就是两份会漂移的事实。
+ */
+export type ThreadEnsureOutcome = 'ensured' | 'no-thread-repo' | 'failed';
+
+/** 往流上记一件事的结论。`duplicate` 是正常情况（重投 / 重连），不是失败。 */
+export type ThreadEventOutcome = 'recorded' | 'duplicate' | 'no-trigger-repo' | 'failed';
+
 export interface Trigger {
   id: string;
   kind: TriggerKind;
@@ -131,12 +168,18 @@ export interface Trigger {
 }
 
 // ─────────────────────────────────────────────────────────────
-// 路由决定：唯一审计事实
+// 一次路由的**处置**（disposition）：唯一审计事实
+//
+// 原名 `RouteDecision`（2026-11-03 改名，见 docs/architecture/concept-naming.md）。
+// 为什么改：`Decision` 当时同时被邮箱的注意力仲裁用着，一个名字指两件事。
+// 新名字与它落库的地方同名 —— `thread_dispositions` 一行 = 一次处置，
+// 这样「决定」与「记录」不再有两种叫法。旧名只在历史说明里出现。
+//
+// 顺带删除零引用的 `RouteAction`：动作标签已由本联合类型的 `action` 字段穷举表达，
+// 留一个没人用的同步枚举 = 第二个写者。
 // ─────────────────────────────────────────────────────────────
 
-export type RouteAction = 'accept' | 'attach' | 'dispatch' | 'stop' | 'ignore' | 'defer';
-
-export type RouteDecision =
+export type Disposition =
   | { action: 'accept'; threadRef: ThreadRef; newThread?: boolean; ticketId?: string; reason: string }
   | { action: 'attach'; threadRef: ThreadRef; ticketId: string; reason: string }
   | { action: 'dispatch'; threadRef: ThreadRef; agentId: string; sessionId?: string; reason: string }
@@ -229,6 +272,217 @@ export interface ResourceBinding {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 授权：逐件事的 Mandate × 逐资源的 ResourceBinding
+//
+// 两种「授权」长期被混为一路（A4），而它们在回答**两个不同的问题**：
+//
+//   | 概念              | 回答                                   | 粒度   |
+//   | ----------------- | -------------------------------------- | ------ |
+//   | Mandate（审批）    | 这**一件事**能不能做                    | 逐件事 |
+//   | ResourceBinding   | 在这块地上我能**自主到什么程度**        | 逐资源 |
+//
+// 混用的两个方向都必须被拒，且都必须有可行动提示：
+//   ① autonomy=trusted 但这件事没批 → 不得当成已批准（"我权限大" ≠ "这件事批了"）
+//   ② 这件事批了但 binding=observe → 不得越过 observe 上限（"批了" ≠ "我有这个权")
+//
+// **为什么判定顺序是 先 binding(scope) → 再 autonomy → 最后 mandate**：
+// binding 是能力上限，mandate 是单次许可。反序（先问审批）会让人去批一件
+// 他根本授权不到的事 —— 白花人的注意力，而注意力是这套平台最贵的资源（Q4）。
+// 顺序在这一处写死，调用方无从选择，也就无从漂移。
+//
+// **I5（直通不改变授权）为什么在结构上成立**：本函数的入参里**没有**
+// 「这个事件是直通来的 / 是研判来的」这一位。想让直通减免授权，必须先改签名
+// —— 那是评审看得见的改动，不可能顺手做掉。
+// ─────────────────────────────────────────────────────────────
+
+/**
+ * 一件事的审批状态（mandate）。
+ *
+ * 刻意**不是**闭集枚举的第二个写者：它直接对应 `approvals.status` 的既有取值
+ * （pending / approved / rejected / expired），只把 rejected 收敛成 denied ——
+ * 因为在「能不能做」这个问题上，被拒和过期是同一个答案。
+ */
+export type MandateState = 'none' | 'pending' | 'approved' | 'denied';
+
+/**
+ * 逐件事许可（Mandate）在审批行上的**结构判据**：`details.resource` 与
+ * `details.actionScope` 同时存在。
+ *
+ * 为什么不用一个新的 `approvals.type` 枚举值：那个联合类型是 UI 面（标签、i18n、
+ * 渲染分支）的输入，为一张新单子加一个枚举值会牵动一整条渲染链；而"这张单是给
+ * 哪块地上的哪一档动作签的字"这件事，本来就已经被两个 details 字段**唯一**表达。
+ * 判据留在数据里，不新增概念。
+ */
+
+
+/** 判定结论的机器可读原因。人话在 `reason` / `hint` 里。 */
+export type AuthorizationCode =
+  /** 放行 */
+  | 'allowed'
+  /** 没有绑定：这块地你根本没有授权（缺 binding） */
+  | 'no-binding'
+  /** 动作超出绑定授予的 scope 上限（缺档位） */
+  | 'above-binding-scope'
+  /** autonomy=off：连读都不做 */
+  | 'autonomy-off'
+  /** autonomy=observe：只记录判断，不执行 */
+  | 'autonomy-observe'
+  /** 红线动作（L3/admin），必须有人为**这一件事**签字，而当前没有 */
+  | 'mandate-required'
+  /** 审批还在等人 */
+  | 'mandate-pending'
+  /** 审批被拒/过期 */
+  | 'mandate-denied';
+
+export interface AuthorizationQuery {
+  /**
+   * 逐资源：该 agent 在这块地上的绑定。
+   * `null` = 没有绑定 —— 没有授权空间（不是「默认放行」）。
+   */
+  binding: { scope: ResourceScope; autonomy: Autonomy } | null;
+  /** 这一件事的动作有多难撤回（由 `classifyToolAction` / 调用方给出） */
+  actionScope: ResourceScope;
+  /** 逐件事：这一件事的审批状态 */
+  mandate: MandateState;
+  /** 仅用于拼可行动提示（不参与判定） */
+  resource?: ThreadRef;
+  /** 谁有权批（人名/角色），仅用于提示「需要谁批」 */
+  approver?: string;
+}
+
+export interface AuthorizationResult {
+  /**
+   * `allow` 执行 / `record-only` 记下"本会做"但不做（would-accept）/
+   * `deny` 拒绝。
+   *
+   * `record-only` 也是**拒绝执行**：observe 档的语义正是「看得到、提建议、不代你动手」，
+   * 所以它不能返回 allow；但它也不能返回 deny —— 那会把设计要求的 would-accept
+   * 记录一起丢掉（§7.8）。
+   */
+  verdict: 'allow' | 'record-only' | 'deny';
+  code: AuthorizationCode;
+  /** 为什么（人话；I4 的同一精神：没有理由的判定等于没有审计） */
+  reason: string;
+  /** 可行动提示：缺谁批 / 缺哪个档位。deny 与 record-only 必有。 */
+  hint?: string;
+}
+
+/**
+ * **唯一判定点**：某 agent 现在能不能对某资源执行某动作。
+ *
+ * 唯一事实源的分工（三者各占一个入参位，任何两者合并都编译不过）：
+ *   · `actionScope`  ← `classifyToolAction()`（动作多难撤回）
+ *   · `binding`      ← `resource_bindings` 一行（逐资源上限 + 自主档）
+ *   · `mandate`      ← `approvals` 一条（逐件事批没批）
+ *
+ * 中间那层的档位语义不在这里重写，直接调用 `gateAction` —— 否则就是
+ * 第二个「四档语义」写者。
+ */
+export function authorizeAction(q: AuthorizationQuery): AuthorizationResult {
+  const where = q.resource ? `资源 ${q.resource}` : '该资源';
+  const who = q.approver ?? '人';
+
+  // ① 逐资源上限：没有绑定 = 没有授权空间。
+  //    「没绑定」绝不等于「默认允许」—— 默认值是 observe（§7.8），而 observe
+  //    至少还要一条绑定才谈得上"负责这块地"。
+  if (!q.binding) {
+    return {
+      verdict: 'deny',
+      code: 'no-binding',
+      reason: `${where} 上没有这个 agent（或它的团队）的责任域绑定，因此没有任何授权空间。`,
+      hint: `缺 binding：先用 resource_bind 声明负责 ${where} 到哪一档（read/draft/publish），再谈能不能做。`
+        + '没有绑定时的默认不是 observe 而是「无授权」，所以不能靠「应该没事」开工。',
+    };
+  }
+
+  // ② 动作是否在绑定授予的档位之内（逐资源上限）。
+  //    这一句是此前完全缺失的一半：`gateAction` 只吃 autonomy，不看 binding.scope，
+  //    于是「绑定只给到 read、autonomy=auto」会放行 publish。
+  if (!scopeAtLeast(q.binding.scope, q.actionScope)) {
+    return {
+      verdict: 'deny',
+      code: 'above-binding-scope',
+      reason: `${where} 的绑定只到 ${q.binding.scope} 档，而这个动作是 ${q.actionScope} 档 —— 越过逐资源上限。`
+        + 'autonomy 再高也不能越过它：autonomy 回答「不问就做还是先报」，不回答「允许到哪一档」。',
+      hint: `缺档位：请 ${who} 把 ${where} 的绑定从 ${q.binding.scope} 升到 ${q.actionScope}（或更高），`
+        + '或者把这件事交给已持有该档位的人。不要用换工具名、拆步骤的方式绕过。',
+    };
+  }
+
+  // ③ 自主档位 × 动作：语义只在 gateAction 一处，这里不重写。
+  const autonomyVerdict = gateAction(q.actionScope, q.binding.autonomy);
+  if (autonomyVerdict === 'deny') {
+    // gateAction 对 admin 恒 deny —— 放行只能来自逐件事的审批（见 ④）。
+    // 若这是 admin，走 mandate 分支；否则是 autonomy=off。
+    if (q.actionScope !== L3_SCOPE) {
+      return {
+        verdict: 'deny',
+        code: 'autonomy-off',
+        reason: `${where} 的自主档位是 off：只记录事件，不投递、也不动手。`,
+        hint: `请 ${who} 把 autonomy 从 off 升到至少 observe（升到 auto/trusted 需人批一次）。`,
+      };
+    }
+  } else if (autonomyVerdict === 'record-only') {
+    // ② 方向的反例守卫：**审批不能把 observe 抬上去**。
+    // 这里刻意不看 mandate —— 即使这件事已经批了，observe 的上限仍然是"只记录"。
+    return {
+      verdict: 'record-only',
+      code: 'autonomy-observe',
+      reason: `${where} 的自主档位是 observe：本次只记录判断（would-accept），不执行 ${q.actionScope} 动作。`
+        + (q.mandate === 'approved'
+          ? '注意：这件事的审批已通过，但审批不改变逐资源上限 —— 它授的是「这件事可以做」，不是「这个 agent 可以自主做」。'
+          : ''),
+      hint: `要真正执行，需要两步且缺一不可：① ${who} 把 autonomy 升到 auto（升档需人批一次）；`
+        + '② 这次动作本身仍需在档位允许范围内。只批其中一样都不够。',
+    };
+  }
+
+  // ④ 逐件事：红线（L3/admin）动作在任何档位都不可自主 —— 只能靠 mandate。
+  //    判断依据不是「新加一张红线表」，而是 gateAction 的推论：连 trusted 都过不去，
+  //    说明拒绝来自动作本身（admin），不是来自授权不足。
+  if (q.actionScope === L3_SCOPE) {
+    switch (q.mandate) {
+      case 'approved':
+        return {
+          verdict: 'allow',
+          code: 'allowed',
+          reason: `${q.actionScope} 档动作不可撤回，但${where}上这件事已由人批准。`,
+        };
+      case 'pending':
+        return {
+          verdict: 'deny',
+          code: 'mandate-pending',
+          reason: `${q.actionScope} 档动作需要人为**这一件事**签字，审批还在等（pending）。`,
+          hint: `等 ${who} 在审批里给出结论；不要换写法重试同一件事 —— 那是绕过，不是推进。`,
+        };
+      case 'denied':
+        return {
+          verdict: 'deny',
+          code: 'mandate-denied',
+          reason: `${q.actionScope} 档动作的审批被拒（或已过期）。`,
+          hint: `不要重复请求同一条。若确有新理由，先向 ${who} 说明新的依据，再重新发起审批。`,
+        };
+      case 'none':
+        return {
+          verdict: 'deny',
+          code: 'mandate-required',
+          reason: `${q.actionScope} 档动作（不可撤回 / 改规则本身）在**任何**自主档位都不可自主：`
+            + `当前 autonomy=${q.binding.autonomy} 不构成批准 —— 「权限大」不等于「这件事批了」。`,
+          hint: `需要 ${who} 为这一件事签字（Mandate）。请发起审批并说明：要做什么、为什么、影响范围、如何撤回。`
+            + '这是逐件事的许可，不会被下次同类动作复用。',
+        };
+    }
+  }
+
+  // ⑤ 五条都过了：放行。
+  return {
+    verdict: 'allow',
+    code: 'allowed',
+    reason: `${where}：绑定 ${q.binding.scope}/${q.binding.autonomy} 覆盖本次 ${q.actionScope} 动作。`,
+  };
+}
+
+// ─────────────────────────────────────────────────────────────
 // 四档在「要不要叫醒这个人」上的投影
 // ─────────────────────────────────────────────────────────────
 
@@ -309,7 +563,37 @@ export type GateVerdict =
   | 'direct-through' // 命中已有主/订阅 → 直通，不产生 Decision
   | 'attach' // 明确指向既有实体 → 挂到那条流
   | 'ignore-ended' // 已结束的卡 + 非人事件 → 只记录，不唤醒
-  | 'assess'; // 判不了 → 延后（v1 记录 reason，不上 LLM）
+  | 'assess'; // 判不了 → 进入 assessment（v1 无引擎时降级 needs-assessment）
+
+/**
+ * `matchedRule` = 一次处置命中的**哪条 Gate 规则**（契约 §5 六条，逐字对齐）。
+ *
+ * 与 `action`/`reason` 的分工：`action` 是「做了什么决定」，`reason` 是「人话为什么」，
+ * `matchedRule` 是「哪一条确定性规则命中」——它是**可解释性**的机器可读载体，
+ * 让 `SELECT matched_rule GROUP BY` 就能回答「Eval 为什么走了这条」（B1 的目标）。
+ *
+ * 每个值对应 §5 的一条规则：
+ *  · duplicate        → 规则 1（幂等命中）
+ *  · dispatch         → 规则 2（人已指定，不研判）
+ *  · direct-through   → 规则 3（命中已订阅 Thread，直通不产生 Decision）
+ *  · attach           → 规则 4（带 tsk_/req_/cs_ id 或资源键）
+ *  · ignore-ended     → 规则 5（bot/CI 事件 + thread 已结束，只记录不唤醒）
+ *  · assess           → 规则 6（其余 → 进入 assessment；未命中任何确定性规则）
+ *
+ * 「未命中任何规则」时 `assess` 作为兜底规则 id 仍被记录——这不是「命中了规则 6」，
+ * 而是「规则 1–5 全部未命中，进入了第 2 段 assessment」，语义在「降级矩阵」文档里写死。
+ */
+export type MatchedRule = GateVerdict;
+
+/** 六条规则各自的人话解释（用于 matchedRule 的可解释展示 / 审计可读化）。 */
+export const MATCHED_RULE_LABEL: Record<MatchedRule, string> = {
+  duplicate: '幂等命中：该事件已处置过',
+  dispatch: '人已指定处理者，不研判',
+  'direct-through': '命中已订阅 Thread，直通',
+  attach: '明确指向既有实体，挂载',
+  'ignore-ended': '流已结束 + 非人事件，只留痕不唤醒',
+  assess: '规则 1–5 未命中，进入 assessment',
+};
 
 export interface GateFacts {
   alreadyHandled: boolean;

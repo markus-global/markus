@@ -20,7 +20,7 @@ import type { DispositionAPI } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 
-import { actionLabel, formatRelative, refDisplay, refKindLabel, shortRef, isWouldAccept } from '../lib/threadPresentation.ts';
+import { actionLabel, formatRelative, refDisplay, refKindLabel, shortRef, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { entityNavTarget } from '../lib/threadNav.ts';
 
 export function RouterDeskPage() {
@@ -55,10 +55,10 @@ export function RouterDeskPage() {
   useEffect(() => { void load(); }, [load]);
 
   const shown = useMemo(
-    () => (onlyObserve ? rows.filter(r => isWouldAccept(r)) : rows),
+    () => (onlyObserve ? rows.filter(r => wouldAcceptVerdict(r) === 'accept') : rows),
     [rows, onlyObserve],
   );
-  const observeCount = useMemo(() => rows.filter(r => isWouldAccept(r)).length, [rows]);
+  const observeCount = useMemo(() => rows.filter(r => wouldAcceptVerdict(r) === 'accept').length, [rows]);
 
   const toggle = async (r: DispositionAPI) => {
     if (openId === r.id) { setOpenId(null); return; }
@@ -150,7 +150,7 @@ export function RouterDeskPage() {
                     {r.actor} · {formatRelative(r.createdAt)}
                   </span>
                 </span>
-                {isWouldAccept(r) && (
+                {wouldAcceptVerdict(r) === 'accept' && (
                   <span className="shrink-0 rounded-full bg-amber-500/15 px-2 py-0.5 text-[11px] text-amber-600">本可接单</span>
                 )}
               </button>

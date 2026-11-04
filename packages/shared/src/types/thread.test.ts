@@ -5,6 +5,7 @@ import {
   RESOURCE_SCOPES,
   SCOPE_RANK,
   autonomyNeedsApproval,
+  authorizeAction,
   contentHashIdempotencyKey,
   deriveStage,
   gateAction,
@@ -23,6 +24,9 @@ import {
   type Autonomy,
   type ResourceScope,
 } from './thread.js';
+// 仅用于 A3 的编译期互斥断言：这三个类型必须两两不相交。
+import type { AttentionState } from './mailbox.js';
+import type { TaskStatus } from './task.js';
 
 const base: StageFacts = {
   pendingApproval: false,
@@ -56,18 +60,42 @@ describe('deriveStage — 第一个命中胜出', () => {
   });
 
   it('无分配 → idle', () => {
-    expect(deriveStage({ ...base, assignment: undefined })).toBe('idle');
+    expect(deriveStage({ ...base, assignment: undefined })).toBe('none:idle');
   });
 
-  it('分配已结束 → idle', () => {
-    expect(deriveStage({ ...base, assignment: { state: 'ended' } })).toBe('idle');
+  it('分配已结束 → none:idle', () => {
+    expect(deriveStage({ ...base, assignment: { state: 'ended' } })).toBe('none:idle');
   });
 
-  it('正在跑', () => {
-    expect(deriveStage(base)).toBe('working');
+  it('正在跑 → agent:working', () => {
+    expect(deriveStage(base)).toBe('agent:working');
   });
 
-  it('任意事实组合恰有一个 stage，且七个值都可达（穷举 64 种）', () => {
+  /**
+   * I7：`deriveStage` 对任意事实集**恰有一个值**。
+   *
+   * 穷举空间 = StageFacts 的 4 个布尔 × 4 种 assignment（pending / running / ended / 缺失）
+   * = 64 种。契约 I7 写的是「7 个布尔组合（64 种）」，7 个布尔是 128 种，对不上；
+   * 64 恰好等于 4×4，所以按 4×4 穷举并在断言里用**独立 oracle** 比对，
+   * 而不是只断言「返回值在闭集里」（那只证明它没崩，不证明它答对）。
+   */
+  it('I7 穷举 64 种事实集：每个组合都等于独立 oracle 的首个命中值，且七个值都可达', () => {
+    // 有序「条件 → stage」表。刻意不用 if 链，避免用被测试的同一种写法自证。
+    const priority: ReadonlyArray<readonly [(f: StageFacts) => boolean, ThreadStage]> = [
+      [f => f.pendingApproval, 'person:approval'],
+      [f => f.openQuestion, 'person:answer'],
+      [f => f.submittedReview, 'person:review'],
+      [f => f.reportedBlockedSinceHuman, 'person:blocked'],
+      [f => f.assignment?.state === 'pending', 'system:queued'],
+      [f => !f.assignment || f.assignment.state === 'ended', 'none:idle'],
+      [() => true, 'agent:working'],
+    ];
+    const oracle = (f: StageFacts): ThreadStage => {
+      const hit = priority.find(([pred]) => pred(f));
+      if (!hit) throw new Error('oracle 缺兜底分支');
+      return hit[1];
+    };
+
     const seen = new Set<ThreadStage>();
     for (let mask = 0; mask < 64; mask++) {
       const facts: StageFacts = {
@@ -80,10 +108,37 @@ describe('deriveStage — 第一个命中胜出', () => {
         ],
       };
       const stage = deriveStage(facts);
-      expect(typeof stage).toBe('string');
+      expect(stage).toBe(oracle(facts)); // 恰有一个值 = 与独立 oracle 完全一致
       seen.add(stage);
     }
-    expect(seen.size).toBe(7);
+    expect(seen.size).toBe(7); // 七个值都可达，没有死分支
+  });
+});
+
+/**
+ * 编译期守卫：三种「状态」的值域必须两两不相交。
+ *
+ * `MutuallyExclusive<A, B>` 只有在 `Extract<A, B>` 为空时才是 `true`；
+ * 把 `true` 赋给可能为 `false` 的类型会被 tsc 拒绝。于是——有人把 `idle` / `working`
+ * 加回 `ThreadStage`（或让 `TaskStatus` 借用 stage 词）时，**编译失败而不是运行期文案错乱**。
+ * 这是 A3 的结构修复：让「两个概念共用一个字面值」在类型上无法表达。
+ */
+type MutuallyExclusive<A extends string, B extends string> = Extract<A, B> extends never ? true : false;
+
+describe('A3 · 三种状态的类型互斥（编译期断言，改值域即红）', () => {
+  it('在等谁（ThreadStage）∩ 运行时注意力（AttentionState）= ∅', () => {
+    const disjoint: MutuallyExclusive<ThreadStage, AttentionState> = true;
+    expect(disjoint).toBe(true);
+  });
+
+  it('在等谁（ThreadStage）∩ 治理态（TaskStatus）= ∅', () => {
+    const disjoint: MutuallyExclusive<ThreadStage, TaskStatus> = true;
+    expect(disjoint).toBe(true);
+  });
+
+  it('治理态（TaskStatus）∩ 运行时注意力（AttentionState）= ∅', () => {
+    const disjoint: MutuallyExclusive<TaskStatus, AttentionState> = true;
+    expect(disjoint).toBe(true);
   });
 });
 
@@ -93,12 +148,12 @@ describe('stageSortRank / isPersonStage', () => {
     expect(stageSortRank('person:answer')).toBeLessThan(stageSortRank('person:review'));
     expect(stageSortRank('person:review')).toBeLessThan(stageSortRank('person:blocked'));
     expect(stageSortRank('person:blocked')).toBeLessThan(stageSortRank('system:queued'));
-    expect(stageSortRank('idle')).toBe(6);
+    expect(stageSortRank('none:idle')).toBe(6);
   });
 
   it('isPersonStage 只认 person: 前缀', () => {
     expect(isPersonStage('person:blocked')).toBe(true);
-    expect(isPersonStage('working')).toBe(false);
+    expect(isPersonStage('agent:working')).toBe(false);
   });
 });
 
@@ -292,5 +347,114 @@ describe('gateAction — 执行前闸门（四档 × 四级真值表）', () => 
     // 把这两句当成同一件事，就会出现「auto 也要每次审批」或「observe 也能直接发」两种错。
     expect(gateAction('publish', 'auto')).toBe('allow');
     expect(gateAction('publish', 'observe')).toBe('record-only');
+  });
+});
+
+describe('authorizeAction — 授权边界唯一判定点（A4：逐件事 × 逐资源）', () => {
+  const q = (over: Partial<Parameters<typeof authorizeAction>[0]>) => ({
+    binding: { scope: 'publish' as ResourceScope, autonomy: 'auto' as Autonomy },
+    actionScope: 'publish' as ResourceScope,
+    mandate: 'none' as const,
+    resource: 'gh:o/r',
+    ...over,
+  });
+
+  it('方向① 反例：autonomy=trusted 但没有 mandate → 拒绝，且提示指向「需要人为这一件事签字」', () => {
+    const r = authorizeAction(q({
+      binding: { scope: 'admin', autonomy: 'trusted' },
+      actionScope: 'admin',
+      mandate: 'none',
+    }));
+    expect(r.verdict).toBe('deny');
+    expect(r.code).toBe('mandate-required');
+    // 提示必须说清「权限大 ≠ 这件事批了」，并指向审批而非换个写法
+    expect(r.reason).toContain('不构成批准');
+    expect(r.hint).toContain('签字');
+    // 把这一条改成「trusted 即放行」→ 上面两句立刻变红
+    expect(r.verdict).not.toBe('allow');
+  });
+
+  it('方向② 反例：这件事批了但 binding=observe → 不得越过 observe 上限（审批 ≠ 授权）', () => {
+    const r = authorizeAction(q({
+      binding: { scope: 'publish', autonomy: 'observe' },
+      actionScope: 'publish',
+      mandate: 'approved',
+    }));
+    expect(r.verdict).toBe('record-only'); // observe 的拒绝形式是 record-only（保留 would-accept）
+    expect(r.verdict).not.toBe('allow');
+    expect(r.code).toBe('autonomy-observe');
+    expect(r.reason).toContain('审批不改变逐资源上限');
+    expect(r.hint).toContain('autonomy');
+    // 把 record-only 改成 allow → 前两句变红
+  });
+
+  it('逐资源上限：动作比绑定高两档 → 即使已批准也拒绝，且先报「缺档位」而不是审批问题（顺序钉住）', () => {
+    const r = authorizeAction(q({
+      binding: { scope: 'read', autonomy: 'trusted' },
+      actionScope: 'admin',
+      mandate: 'approved',
+    }));
+    expect(r.verdict).toBe('deny');
+    expect(r.code).toBe('above-binding-scope');
+    expect(r.hint).toContain('缺档位');
+    // 顺序证据：如果先问 mandate，这里会是 allowed（审批通过）
+  });
+
+  it('没有绑定 = 没有授权空间（不是默认放行，也不是默认 observe）', () => {
+    const r = authorizeAction(q({ binding: null, actionScope: 'read' }));
+    expect(r.verdict).toBe('deny');
+    expect(r.code).toBe('no-binding');
+    expect(r.hint).toContain('缺 binding');
+  });
+
+  it('autonomy=off：连读都不做', () => {
+    const r = authorizeAction(q({ binding: { scope: 'read', autonomy: 'off' }, actionScope: 'read' }));
+    expect(r.verdict).toBe('deny');
+    expect(r.code).toBe('autonomy-off');
+  });
+
+  it('observe 下「读」是允许的（收紧不误伤只读路径）', () => {
+    const r = authorizeAction(q({ binding: { scope: 'read', autonomy: 'observe' }, actionScope: 'read' }));
+    expect(r.verdict).toBe('allow');
+  });
+
+  it('admin 档：四种 mandate 状态各得其所，只有 approved 放行', () => {
+    const base = { binding: { scope: 'admin' as ResourceScope, autonomy: 'trusted' as Autonomy }, actionScope: 'admin' as ResourceScope };
+    const table: Array<[Parameters<typeof authorizeAction>[0]['mandate'], 'allow' | 'deny']> = [
+      ['approved', 'allow'],
+      ['pending', 'deny'],
+      ['denied', 'deny'],
+      ['none', 'deny'],
+    ];
+    for (const [mandate, expected] of table) {
+      expect(authorizeAction({ ...base, mandate }).verdict, mandate).toBe(expected);
+    }
+    expect(authorizeAction({ ...base, mandate: 'pending' }).code).toBe('mandate-pending');
+    expect(authorizeAction({ ...base, mandate: 'denied' }).code).toBe('mandate-denied');
+  });
+
+  it('非红线动作：auto/trusted 不需要 mandate（mandate 只管逐件事的不可撤回动作）', () => {
+    for (const autonomy of ['auto', 'trusted'] as const) {
+      const r = authorizeAction(q({ binding: { scope: 'publish', autonomy }, actionScope: 'publish', mandate: 'none' }));
+      expect(r.verdict, autonomy).toBe('allow');
+    }
+  });
+
+  it('每条拒绝都带 hint —— 平台只守硬不变量：越界必须给可行动提示，不得只返回 false', () => {
+    const denials = [
+      q({ binding: null }),
+      q({ binding: { scope: 'read', autonomy: 'auto' }, actionScope: 'publish' }),
+      q({ binding: { scope: 'read', autonomy: 'off' }, actionScope: 'read' }),
+      q({ binding: { scope: 'admin', autonomy: 'trusted' }, actionScope: 'admin', mandate: 'none' }),
+      q({ binding: { scope: 'admin', autonomy: 'trusted' }, actionScope: 'admin', mandate: 'pending' }),
+      q({ binding: { scope: 'admin', autonomy: 'trusted' }, actionScope: 'admin', mandate: 'denied' }),
+      q({ binding: { scope: 'publish', autonomy: 'observe' }, actionScope: 'publish', mandate: 'approved' }),
+    ];
+    for (const d of denials) {
+      const r = authorizeAction(d);
+      expect(r.verdict, r.code).not.toBe('allow');
+      expect(r.hint, r.code).toBeTruthy();
+      expect(r.reason.length, r.code).toBeGreaterThan(0);
+    }
   });
 });

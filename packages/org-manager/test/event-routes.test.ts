@@ -19,10 +19,11 @@ import {
   SqliteEventSourceRepo,
   SqliteTaskRepo,
   SqliteApprovalRepo,
-  SqliteThreadEventRepo,
   SqliteTriggerRepo,
+  SqliteTicketRepo,
 } from '@markus/storage';
 import { handleEventRoutes } from '../src/event-routes.js';
+import { recordThreadEvent } from '../src/thread-ensure.js';
 
 let dir: string;
 let db: ReturnType<typeof openSqlite>;
@@ -31,9 +32,9 @@ let repos: {
   dispositionRepo: SqliteDispositionRepo;
   resourceBindingRepo: SqliteResourceBindingRepo;
   eventSourceRepo: SqliteEventSourceRepo;
-  threadEventRepo?: SqliteThreadEventRepo;
   taskRepo?: SqliteTaskRepo;
   approvalRepo?: SqliteApprovalRepo;
+  ticketRepo?: SqliteTicketRepo;
 };
 
 beforeEach(() => {
@@ -44,12 +45,12 @@ beforeEach(() => {
     dispositionRepo: new SqliteDispositionRepo(db),
     resourceBindingRepo: new SqliteResourceBindingRepo(db),
     eventSourceRepo: new SqliteEventSourceRepo(db),
-    // 与 storage-bridge 的真实装配保持一致：生产有这条仓库，测试就必须也有，
-    // 否则 `/events` 恒返回 [] ——测出来的「绿」是假绿。
-    threadEventRepo: new SqliteThreadEventRepo(db),
+    // 时间线不再是独立表：它从 triggerRepo 派生（见 CONCEPT-CLARITY §8）。
     // 触发器登记：`IngressDeps.triggers` 是必填（见 event-ingress.ts 的说明），
     // 夹具缺它 → 运行时 `insertOrGet` 空指针，事件根本无法入链。
     triggerRepo: new SqliteTriggerRepo(db),
+    // 票仓储：票轴的事件写者用例需要它（缺它 → `/api/tickets` 回 501，不是「票功能没做完」）。
+    ticketRepo: new SqliteTicketRepo(db),
   };
 });
 
@@ -93,7 +94,15 @@ function fakeRes(): FakeRes {
 async function call(req: IncomingMessage, path: string) {
   const res = fakeRes();
   const handled = await handleEventRoutes(
-    { orgId: 'default', repos: repos as any, deliver: null, now: () => 1000 },
+    {
+      orgId: 'default',
+      repos: repos as any,
+      deliver: null,
+      // 票轴事件走**真实的** recordThreadEvent（triggers 的唯一写入者），
+      // 而不是在夹具里再拼一份 SQL —— 夹具复制实现就等于把被测对象换成假的。
+      recordEvent: (ref, event) => recordThreadEvent({ triggerRepo: repos.triggerRepo } as any, ref, event),
+      now: () => 1000,
+    },
     req,
     res,
     path,
@@ -266,7 +275,7 @@ describe('/api/threads — stage 派生（真实 repo）', () => {
     const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads' }), '/api/threads');
     const byRef = Object.fromEntries(res.body.threads.map((t: any) => [t.ref, t]));
     expect(byRef['tsk_t2'].stage).toBe('person:blocked');
-    expect(byRef['tsk_t3'].stage).toBe('idle');
+    expect(byRef['tsk_t3'].stage).toBe('none:idle');
   });
 
   it('能精确归属到这条流的待批 → person:approval', async () => {
@@ -392,6 +401,99 @@ describe('/api/threads — 存量视角（threads 表为空）', () => {
 });
 
 /**
+ * `GET /api/threads/one?ref=` —— B4 的读取面：**只给 ref** 就能拿到一条流的头部事实。
+ *
+ * 这组用例存在的理由：入口倒置之后，任务详情 / 票据详情 / agent 详情手里只有
+ * 一个实体 id，不能为了渲染一条流去拉全局列表再按 id 找。所以单读必须：
+ *   ① 在 threads 表为空时也能回答（日常主链路不建 thread）；
+ *   ② 与列表**同一个构造点**给出一致的 stage/taskStatus/title（否则同一事实两个口径）；
+ *   ③ 不编造它不知道的事实（只有 ref 时 title 必须是 null，不是「流 xxx」）。
+ */
+describe('/api/threads/one — 只给 ref 的单流读取', () => {
+  const insertTask = (id: string, status: string, title = `任务 ${id}`) =>
+    db
+      .prepare(
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      )
+      .run(id, 'default', title, 'd', status, 'medium', 'agt_test', 'agt_test');
+
+  beforeEach(() => {
+    db.exec('PRAGMA foreign_keys = OFF');
+    repos.taskRepo = new SqliteTaskRepo(db);
+    repos.approvalRepo = new SqliteApprovalRepo(db);
+    repos.ticketRepo = new SqliteTicketRepo(db);
+  });
+
+  const one = async (ref: string) => {
+    const { res } = await call(
+      fakeReq({ method: 'GET', url: `/api/threads/one?ref=${encodeURIComponent(ref)}` }),
+      '/api/threads/one',
+    );
+    return res;
+  };
+
+  it('缺 ref → 400，且提示能直接抄（不是 500/空数组）', async () => {
+    const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads/one' }), '/api/threads/one');
+    expect(res.status).toBe(400);
+    expect(res.body.error).toContain('ref');
+    expect(res.body.hint).toContain('tsk_');
+  });
+
+  it('threads 表为空 + in_progress 任务 → 仍能读到这条流（不依赖全局列表）', async () => {
+    expect(repos.threadRepo.list(10)).toHaveLength(0);
+    insertTask('tsk_one1', 'in_progress', '修登录超时');
+
+    const res = await one('tsk_one1');
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe('tsk_one1');
+    // id = ref：调用方手里就是这个值，不要求它去换一套内部 id
+    expect(res.body.thread.id).toBe('tsk_one1');
+    expect(res.body.thread.title).toBe('修登录超时');
+    expect(res.body.thread.taskStatus).toBe('in_progress');
+    // ThreadStage 自 A3 起值域命名空间化（idle→none:idle、working→agent:working），
+    // 目的是让「流在等谁」与「agent 回合在干什么」在编译期互斥、不再同字面撞车。
+    // 本行原写 'working' 是 A3 合并前留下的旧字面量。
+    expect(res.body.thread.stage).toBe('agent:working');
+    expect(res.body.thread.ownerAgent).toBe('agt_test');
+  });
+
+  it('单读与列表同一个构造点：同一 ref 的 stage/taskStatus/title 必须一致', async () => {
+    insertTask('tsk_one2', 'review', '待验收的事');
+
+    const single = await one('tsk_one2');
+    const { res: listRes } = await call(fakeReq({ method: 'GET', url: '/api/threads' }), '/api/threads');
+    const row = listRes.body.threads.find((x: any) => x.ref === 'tsk_one2');
+    expect(row).toBeDefined();
+    for (const k of ['stage', 'stageRank', 'taskStatus', 'title']) {
+      expect(single.body.thread[k]).toEqual(row[k]);
+    }
+  });
+
+  it('票据 ref → 标题取票的 subject（票也是「这件事」的凭据）', async () => {
+    const ticket = repos.ticketRepo!.create({
+      orgId: 'default',
+      kind: 'review-comment',
+      sourceRef: 'tsk_x',
+      subject: '验收意见：补齐边界用例',
+    });
+    const res = await one(ticket.id);
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe(ticket.id);
+    expect(res.body.thread.title).toBe('验收意见：补齐边界用例');
+  });
+
+  it('只有 ref、没有任何业务事实 → title 为 null（不编一个标题骗人）', async () => {
+    const res = await one('agent:agt_ghost');
+    expect(res.status).toBe(200);
+    expect(res.body.thread.ref).toBe('agent:agt_ghost');
+    expect(res.body.thread.title).toBeNull();
+    // 同上：A3 起 idle 在流这一层写作 none:idle（与 agent 回合的 AttentionState 互斥）。
+    expect(res.body.thread.stage).toBe('none:idle');
+  });
+});
+
+/**
  * S6 时间线：**两种身份都能取到同一条流的事件**。
  *
  * 这组用例存在的理由（实测踩到，2026-11-02）：
@@ -405,22 +507,36 @@ describe('/api/threads — 存量视角（threads 表为空）', () => {
  */
 describe('/api/threads/:key/events — 身份解析（id 或 ref 等价）', () => {
   it('按 ref 查能取到事件（这是 Thread 视图的真实调用形态）', async () => {
-    const thread = (repos.threadRepo.upsert('tsk_evt1') as any).thread;
-    new SqliteThreadEventRepo(db).append({
-      threadId: thread.id,
+    (repos.threadRepo.upsert('tsk_evt1') as any).thread;
+    new SqliteTriggerRepo(db).insertOrGet({
       kind: 'comment',
+      idempotencyKey: 'evt:tsk_evt1:1',
       summary: '有人在任务上评论了',
+      threadRefs: ['tsk_evt1'],
     });
 
     const { res } = await call(fakeReq({ method: 'GET', url: '/api/threads/tsk_evt1/events' }), '/api/threads/tsk_evt1/events');
     expect(res.status).toBe(200);
     expect(res.body.events).toHaveLength(1);
     expect(res.body.events[0].summary).toContain('评论');
+    // 对外形状是前端 `ThreadEventAPI`，不是仓储的 TriggerRow：
+    // 时间线换数据源（表 → 派生）时，这条断言是前端的保险。
+    expect(res.body.events[0]).toMatchObject({
+      kind: 'comment',
+      threadId: 'tsk_evt1',
+      summary: '有人在任务上评论了',
+    });
+    expect(typeof res.body.events[0].createdAt).toBe('number');
   });
 
   it('按内部 id 查同样取得到（两种身份等价，不能只认一种）', async () => {
     const thread = (repos.threadRepo.upsert('tsk_evt2') as any).thread;
-    new SqliteThreadEventRepo(db).append({ threadId: thread.id, kind: 'chat', summary: '聊了两句' });
+    new SqliteTriggerRepo(db).insertOrGet({
+      kind: 'chat',
+      idempotencyKey: 'evt:tsk_evt2:1',
+      summary: '聊了两句',
+      threadRefs: ['tsk_evt2'],
+    });
 
     const { res } = await call(
       fakeReq({ method: 'GET', url: `/api/threads/${thread.id}/events` }),
@@ -436,5 +552,71 @@ describe('/api/threads/:key/events — 身份解析（id 或 ref 等价）', () 
     );
     expect(res.status).toBe(200);
     expect(res.body.events).toEqual([]);
+  });
+});
+
+/**
+ * 票轴的事件写者（B4-3 缺陷 C 的裁定）：票是「一件事」，建票与流转都是**发生过的事**。
+ *
+ * 这组用例存在的理由：`triggers` 的写者此前只有 task 评论 / chat / a2a / 外部 ingress，
+ * `tkt_…` 这条轴在生产里**从来没有一行** —— 于是「票据详情 → 来龙去脉」永远是空面板，
+ * 而空面板会被读成「什么都没发生」（不是「没有数据源」）。
+ *
+ * 把实现怎么改坏会让它变红：删掉 `event-routes.ts` 里 `deps.recordEvent?.()` 的任一调用，
+ * 对应用例立刻读不到那条事实（时间线少一条，不是少一行日志）。
+ */
+describe('票轴事件：建票 / 流转都要登进同一条时间线', () => {
+  async function eventsOf(ref: string) {
+    const { res } = await call(fakeReq({ method: 'GET', url: `/api/threads/${ref}/events` }), `/api/threads/${ref}/events`);
+    return res.body.events as Array<{ id: string; kind: string; summary: string; createdAt: number }>;
+  }
+
+  it('POST /api/tickets → 该票的 /events 能读到「创建」这一条', async () => {
+    const { res } = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '补齐边界用例' } }),
+      '/api/tickets',
+    );
+    expect(res.status).toBe(201);
+    const id = res.body.ticket.id as string;
+    expect(id.startsWith('tkt_')).toBe(true);
+
+    const events = await eventsOf(id);
+    expect(events.map(e => e.kind)).toEqual(['ticket']);
+    expect(events[0]!.summary).toContain('补齐边界用例');
+    expect(events[0]!.createdAt).toBeGreaterThan(0);
+  });
+
+  it('POST /api/tickets/:id/transition → 时间线多一条状态流转，且不重复', async () => {
+    const created = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '验收意见' } }),
+      '/api/tickets',
+    );
+    const id = created.res.body.ticket.id as string;
+    expect(await eventsOf(id)).toHaveLength(1);
+
+    const moved = await call(
+      fakeReq({ method: 'POST', url: `/api/tickets/${id}/transition`, parsed: { status: 'ended' } }),
+      `/api/tickets/${id}/transition`,
+    );
+    expect(moved.res.status).toBe(200);
+
+    const events = await eventsOf(id);
+    expect(events).toHaveLength(2);
+    expect(events.some(e => e.summary.includes('ended'))).toBe(true);
+  });
+
+  it('非法流转被拒时不写事件（失败的动作不是「发生过的事」）', async () => {
+    const created = await call(
+      fakeReq({ method: 'POST', url: '/api/tickets', parsed: { kind: 'comment', subject: '会被拒的票' } }),
+      '/api/tickets',
+    );
+    const id = created.res.body.ticket.id as string;
+
+    const bad = await call(
+      fakeReq({ method: 'POST', url: `/api/tickets/${id}/transition`, parsed: { status: 'not-a-status' } }),
+      `/api/tickets/${id}/transition`,
+    );
+    expect(bad.res.status).toBe(400);
+    expect(await eventsOf(id)).toHaveLength(1);
   });
 });

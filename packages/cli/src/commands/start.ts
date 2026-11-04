@@ -25,7 +25,8 @@ import {
   resolveJwtSecret,
   resolveGatewaySecret,
   type LLMProviderConfig,
-  type DecisionType,
+  type AttentionAction,
+  type ResourceScope,
   type MarkusConfig,
   pickOrgSecretary,
   setEnvValue,
@@ -87,7 +88,7 @@ import {
   ensureThread,
   recordThreadEvent,
   taskRef,
-  a2aRef,
+  wireA2AThreads,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
@@ -735,6 +736,8 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   if (storage) {
     taskService.setTaskRepo(storage.taskRepo);
     // S3：任务建卡即建流。流是「这条任务卡在谁那儿」的存储级答案。
+    // 返回值原样透传：上报点在 `TaskService.createTask`（最靠近入口的那一层），
+    // 每类入口只有一个上报点，不在这里重复。
     taskService.setThreadEnsurer((taskId) => ensureThread(storage, taskRef(taskId)));
     // S6：任务评论写入时间线（D1.3）。注入而不是让 task-service import storage。
     taskService.setThreadEventRecorder((taskId, e) => recordThreadEvent(storage, taskRef(taskId), e));
@@ -840,6 +843,12 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
         agentName,
         teamId,
         bindings: s.resourceBindingRepo,
+        // 逐件事审批（Mandate）唯一读取点：执行闸门问「这件事批了没有」时用它。
+        // storage 没有 approvalRepo 时干脆不注入 —— 判定点会按 none 处理（需要人批），
+        // 而不是把一个"查不到"当成"已批"。
+        mandates: s.approvalRepo
+          ? { findMandate: (q: { agentId: string; resource: string; actionScope: ResourceScope; eventKey?: string }) => s.approvalRepo!.findMandate(q) }
+          : undefined,
         // 绑定即订阅：后续该资源的事件天然直通给绑定者（v1 里 ticket 就是 thread 本身）
         subscribe: (resource: string, holderAgentId: string) => {
           const { thread } = s.threadRepo.upsert(resource);
@@ -860,18 +869,17 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   });
 
   // S3：A2A 投递即建流（同一次 DM 对话一条流，与方向无关）。
-  // 未拿到 storage 时不注入 —— 不注册一个跑不动的空实现。
-  if (storage?.threadRepo) {
-    agentManager.setThreadEnsurer((a, b) => {
-      const ref = a2aRef(a, b);
-      ensureThread(storage, ref, a);
-      // S6：A2A DM 写入时间线（D1.4）。
-      //
-      // 摘要只能到「谁给谁发了消息」这一层：投递回调拿不到正文，而为了拿正文
-      // 去改 A2A 的签名得不偿失。宁要一个诚实的粗粒度事件，也不要一条编造的详细记录。
-      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: `${a} → ${b} 发了一条消息` });
-    });
-  }
+  //
+  // 【2026-11-04 · 返修】这里**不再**把注册包在 `if (storage?.threadRepo)` 里，也不再写行内闭包。
+  //
+  // 那个 guard 恰好把「真实缺失」场景挡在上报路径之外：storage 存在但没挂 threadRepo 时
+  // ensurer 根本不注册 → `agent-manager.ts` 的 `this.threadEnsurer?.(...)` 直接短路 →
+  // 闭包里那条 `reportThreadEnsureFailure` **不可达**，a2a 依旧零日志零计数。
+  // guard 把「guard 要防的东西」藏了起来 —— 与原始 bug 同一族（只是静默点换了个位置）。
+  //
+  // 现在只有一句赋值：没有 guard 可加、没有「注入了哪个实现」的分支；
+  // 「storage 缺失时会怎样」成为一个可被单测直接问的问题（`wireA2AThreads`）。
+  agentManager.setThreadEnsurer(wireA2AThreads(storage));
 
   if (config.agent?.maxToolIterations) {
     agentManager.maxToolIterations = config.agent.maxToolIterations;
@@ -1373,30 +1381,18 @@ async function startServerCore(
           });
         }
       }
-      hitlService.notify({
-        targetUserId: 'all',
-        type: 'system',
-        // unstarted_task 的提醒已移除（Owner 2026-11-02）：未批准任务常驻概览「等你处理」。
-        // branch_diverged 原先被错误地落到 else 分支显示 "Unstarted task"，现在用中性标题。
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Stale task',
-        body: item.message,
-        priority: item.type === 'review_stale' ? 'high' : 'normal',
-        actionType: item.taskId ? 'navigate' : 'none',
-        actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: {
-          taskId: item.taskId,
-          agentId: item.agentId,
-          staleType: item.type,
-          // The title and body as structure: the detector knows *what* to say,
-          // this is the only place that knows the sentence's key.
-          i18n: {
-            titleKey:
-              item.type === 'review_stale'
-                ? 'notifications.titles.staleReview'
-                : 'notifications.titles.stuckTask',
-            ...(item.i18n ?? {}),
-          },
-        },
+      // 【已删】不再把 task 陈旧状态推成人通知（Owner 2026-11-04：「系统不应该再发出类似
+      // Unstarted task 这种通知了」）。
+      //
+      // 理由不是文案不好，是这类通知没有新的信息量：
+      //   · 未批准 / 待评审 的任务常驻概览「等你处理」，人本来就看得到；
+      //   · 定时重复推 同一个任务（实测同一秒 12–13 条、累计 4902 条）只训练人忽略铃铛；
+      //   · 审核提醒本来就发给 review_reminder 指定的**评审人**（上面的分支），
+      //     发给所有人等于把「该谁做」的信号摊平成噪音。
+      // 需要任务陈旧状态的地方（例如概览统计）直接读任务本身，不靠通知回放。
+      log.info('Stale task reminder suppressed (notifications for stale tasks are retired)', {
+        taskId: item.taskId,
+        staleType: item.type,
       });
     }
   });
@@ -2159,10 +2155,22 @@ async function startServerCore(
     const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
+      // 带资源与档位 = 这是一张**逐件事许可（Mandate）**：`details.resource` +
+      // `details.actionScope` 两个字段就是判据（不新增 approvals.type 枚举值，
+      // 那个联合类型是 UI 渲染链的输入，为一张新单子加值会牵动整条链）。
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId, chatSessionId: request.chatSessionId },
+      details: {
+        ...request.toolArgs,
+        toolName: request.toolName,
+        agentId,
+        taskId: request.taskId,
+        taskTitle,
+        sessionId: request.sessionId,
+        chatSessionId: request.chatSessionId,
+        ...(request.resource ? { resource: request.resource, actionScope: request.actionScope } : {}),
+      },
       targetUserId: ownerUserId,
     });
     auditService.record({
@@ -2428,6 +2436,9 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // dropPendingByEntity：需求转终态时撤回「请审阅」类行动项，止住重复投递。
+          dropPendingByEntity: (aid: string, entityId: string, reason: string) =>
+            mbRepo.dropPendingByEntity(aid, entityId, reason),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
@@ -2466,8 +2477,8 @@ async function startServerCore(
             // real limit; the one-word answer stops the generation naturally.
           }, triageProvider);
           const raw = response.content.trim().toLowerCase();
-          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
+          const valid: AttentionAction[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+          return valid.includes(raw as AttentionAction) ? (raw as AttentionAction) : 'continue';
         });
       } catch { /* agent not found */ }
     };

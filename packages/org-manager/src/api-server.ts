@@ -49,6 +49,8 @@ import {
   aggregateCacheHitRate,
   computeReplayRatio,
 } from '@markus/core';
+// 归属解析的唯一来源（设计原文：「全仓库只有这里能产出 ref」）
+import { resolveThreadRef } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
@@ -84,7 +86,8 @@ import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
-import { ensureThread, recordThreadEvent } from './thread-ensure.js';
+import { ensureThread, recordThreadEvent, recordChatTurn, reportThreadEnsureFailure } from './thread-ensure.js';
+import { threadWiringHealth } from './thread-wiring-metrics.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -2248,11 +2251,13 @@ export class APIServer {
    * 所以不会产生第二条流；但这不等于「只写一处」——真正的单一执行点是 repo 的唯一约束。
    */
   private ensureChatThread(sessionRef: string, agentId: string): void {
-    // 统一走 ThreadService.ensure()（§7.3.1 唯一写者）。
+    // 统一走 ThreadService.ensure（）（§7.3.1 唯一写者）。
     // 此前这里直接调 repo.upsert()，是绕过 service 的第二条写路径。
-    if (!ensureThread(this.storage, sessionRef, agentId)) {
-      log.warn('Chat thread not ensured (no thread repo)', { sessionRef, agentId });
-    }
+    //
+    // 【2026-11-04】失败不再只打一条本地的 warn：上交到唯一上报点（含计数），
+    // 否则「流没建」只存在于日志里，而 `/api/health` 看不出任何异常。
+    const outcome = ensureThread(this.storage, sessionRef, agentId);
+    reportThreadEnsureFailure(outcome, sessionRef, 'chat.turn');
   }
 
   private async persistChatTurn(
@@ -2272,16 +2277,15 @@ export class APIServer {
       }
       // 主干接通：每一条真实聊天会话都必须是一条流（否则 Thread 视图 / 路由台永远是空壳）。
       this.ensureChatThread(session.id, agentId);
-      // 时间线（S6）：记下「这条消息发生过」。只追加，不提供修改路径——
-      // 历史事实不应被后来的写者覆盖。
-      recordThreadEvent(this.storage, session.id, {
-        kind: 'chat',
-        actor: senderId ?? agentId,
-        summary: userMessage.slice(0, 80),
-      });
+      // 【已删】不再把聊天消息写成时间线事件（Owner 2026-11-03）。
+      //
+      // 原来每条用户消息 / 助手回复都 recordThreadEvent → triggers 一行。后果：
+      // agent 的「来龙去脉」里会出现一串「会话消息」碎片（原始 markdown、裸 user id），
+      // 而同一段对话已经有更准的一行——「投递 · 来自 Jason Carter 的对话 · 3.1M tokens · 8 次工具」。
+      // 时间线回答的是「这件事经历了几次处理」，不是「聊天记录」；转写内容的家只有一个：会话本身。
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(
+      const assistantMsg = await this.storage.chatSessionRepo.appendMessage(
         session.id,
         agentId,
         'assistant',
@@ -2289,6 +2293,16 @@ export class APIServer {
         tokensUsed,
         metadata
       );
+      // 一个回合 = 一条聚合事件（**不是**每条消息一条）。
+      // Owner 2026-11-03 的决定仍然是硬约束：转写内容的家只有会话本身，
+      // 时间线只回答「这件事经历了几次处理」（tokens / 工具次数），不带正文。
+      recordChatTurn(this.storage, {
+        sessionRef: session.id,
+        agentId,
+        assistantMessageId: assistantMsg?.id,
+        tokensUsed,
+        toolCalls: toolCallsOf(metadata),
+      });
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2550,12 +2564,7 @@ export class APIServer {
       // 现在挂在这里：session 已确定，是落库路径必经的最小公共点。
       // ensure 幂等，所以 persistChatTurn 里保留的同名调用不会产生第二条流。
       this.ensureChatThread(session!.id, agentId);
-      // 流式聊天的落库路径也必须写时间线，否则「发了消息但时间线是空的」。
-      recordThreadEvent(this.storage, session!.id, {
-        kind: 'chat',
-        actor: senderId ?? agentId,
-        summary: userMessage.slice(0, 80),
-      });
+      // 【已删】流式路径也不再逐条写时间线（理由同 persistChatTurn）。
       const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       // base64 不再进库：字节落附件存储，行里只留 imageRefs。
@@ -2613,7 +2622,16 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      // 流式聊天（线上真实路径）的回合级事件：一条回合一条，幂等键 = 助手消息 id。
+      // 【仍然不写】助手回复的「消息级」事件（Owner 2026-11-03 决定，见 persistChatTurn 注释）。
       if (msg?.id) {
+        recordChatTurn(this.storage, {
+          sessionRef: sessionId,
+          agentId,
+          assistantMessageId: msg.id,
+          tokensUsed,
+          toolCalls: toolCallsOf(meta),
+        });
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
     } catch (err) {
@@ -2856,6 +2874,8 @@ export class APIServer {
     if (
       path.startsWith('/api/threads') ||
       path.startsWith('/api/resources/bindings') ||
+      path.startsWith('/api/tickets') ||
+      /^\/api\/tasks\/[^/]+\/tickets$/.test(path) ||
       path.startsWith('/api/events')
     ) {
       if (!this.storage) {
@@ -2882,13 +2902,10 @@ export class APIServer {
             eventSourceRepo: this.storage.eventSourceRepo,
             // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
             triggerRepo: this.storage.triggerRepo,
-            // 事件时间线（S6）：**漏传这一个的后果是「页面空白且不报错」**。
-            // 读取端 `const repo = deps.repos.threadEventRepo` 拿到 undefined 就直接
-            // 回 `{ events: [] }`（那是有意的：空白与端点不存在要能区分）——
-            // 于是 41 条事件在库、接口恒空、UI 一片空白，全部静默。
-            // 之所以容易漏：EventRouteDeps 里它是 `optional`，漏传不报类型错。
-            threadEventRepo: this.storage.threadEventRepo,
+            ticketRepo: this.storage.ticketRepo,
             taskRepo: this.storage.taskRepo,
+            requirementRepo: this.storage.requirementRepo,
+            chatSessionRepo: this.storage.chatSessionRepo,
             approvalRepo: this.storage.approvalRepo,
           },
           deliver: target => {
@@ -2904,6 +2921,9 @@ export class APIServer {
               },
             });
           },
+          // 票轴的事件写者：**只**指向 triggers 的唯一写入者 `recordThreadEvent`。
+          // 不在这里拼 SQL、不直接调 triggerRepo —— 那是同一件事的第二个写者。
+          recordEvent: (ref, event) => recordThreadEvent(this.storage, ref, event),
         },
         req,
         res,
@@ -3601,7 +3621,7 @@ export class APIServer {
         return;
       }
       const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
-      const results: Array<{ url: string; key: string; name: string }> = [];
+      const results: Array<{ url: string; key: string; name: string; path?: string }> = [];
       for (const file of files) {
         if (!file.dataUrl || typeof file.dataUrl !== 'string') continue;
         const m = file.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -3614,7 +3634,13 @@ export class APIServer {
           contentType,
           prefix,
         });
-        results.push({ ...result, name: file.name });
+        // 带上**落盘绝对路径**：浏览器端拿不到本地路径（沙箱），但文件已经在本机磁盘上，
+        // 这个路径就是 Agent 能直接 read 的那个。不返回它，调用方只能告诉用户一个文件名 ——
+        // 而「只发文件名」对 Agent 毫无意义（Owner 2026-11-04 指出）。
+        const resolved = typeof (this.fileStorage as { resolve?: (k: string) => string }).resolve === 'function'
+          ? (this.fileStorage as { resolve: (k: string) => string }).resolve(result.key)
+          : undefined;
+        results.push({ ...result, name: file.name, ...(resolved ? { path: resolved } : {}) });
       }
       this.json(res, 200, { files: results });
       return;
@@ -5526,6 +5552,7 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      const refFilter = url.searchParams.get('ref') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -5541,7 +5568,20 @@ export class APIServer {
 
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
-          const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          // 归属解析只用**唯一解析点**（core/thread-resolver.ts）。
+          // 我一度在这里手写了一份 payload 解析，前端另有一份 —— 那是同一事实的三个写者。
+          // 而且手写版把「一条 Trigger 可属多个 Thread」压成了单值，语义也错了。
+          const refOfItem = (it: Record<string, unknown>) => resolveThreadRef(it as never, agentId);
+
+          const fetched = this.storage.mailboxRepo.getHistory(agentId, {
+            limit: refFilter ? 2000 : limit,
+            offset: refFilter ? 0 : offset,
+            sourceTypes,
+            status,
+          });
+          const raw = refFilter
+            ? fetched.filter((it: Record<string, unknown>) => refOfItem(it).ref === refFilter)
+            : fetched;
           const itemIds = raw.map((item: { id: string }) => item.id);
 
           const decisionsMap = this.storage?.decisionRepo
@@ -5553,6 +5593,12 @@ export class APIServer {
 
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
+            // 归属由服务端用唯一解析点算好，随条目下发。
+            // 前端只读这个字段 —— 浏览器不该再解析一遍 payload（那是第二个写者）。
+            const resolved = refOfItem(item);
+            enriched.threadRef = resolved.ref;
+            enriched.threadAxis = resolved.axis;
+            enriched.threadLegacyKeys = resolved.legacyKeys;
             enriched.decisions = decisionsMap.get(item.id) ?? [];
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {
@@ -12233,6 +12279,10 @@ EXPLANATION_END`;
         status: 'ok',
         version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
+        // Thread / Trigger 接线体检：`no-thread-repo` / `no-trigger-repo` / `failed`
+        // 任何一个非 0，就说明装配缺了一节 —— 不再需要靠 grep 源码才发发现。
+        // `observed` 是影子判定（chat/task/a2a 切换前预告）的分布。
+        threadWiring: threadWiringHealth(),
       };
       // Non-blocking update check — cached, so normally instant after first call
       try {
@@ -13825,6 +13875,11 @@ EXPLANATION_END`;
 
       // ── Tasks ───────────────────────────────────────────────────────────
       exact('/api/tasks', 'GET', 'POST'),
+      // 票（执行侧工作单位）：独立资源 + 「某任务的票」子资源
+      exact('/api/tickets', 'POST'),
+      regex(/^\/api\/tickets\/[^/]+$/, 'GET', 'PATCH'),
+      regex(/^\/api\/tickets\/[^/]+\/transition$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/tickets$/, 'GET'),
       exact('/api/tasks/scheduled', 'GET'),
       exact('/api/tasks/deliverables', 'GET'),
       exact('/api/tasks/dashboard', 'GET'),
@@ -13857,6 +13912,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/reviews$/, 'GET'),
 
       // ── Execution ────────────────────────────────────────────────────────
       exact('/api/execution-logs', 'GET'),
@@ -14981,6 +15037,27 @@ EXPLANATION_END`;
       return { valid: false, error: err instanceof Error ? err.message : String(err), models: [] };
     }
   }
+}
+
+/**
+ * 回合里发生了几次工具调用。
+ *
+ * 为什么从 metadata 里取而不是另建一个计数器：`metadata` 是持久化层已有的回合级载荷
+ * （流式回合写的就是它），另建计数就是同一个事实的第二个写者。取不到就是 0 ——
+ * **不省略那一段**（同一语义只能有一种摘要形状，否则同一个回合会产出两种字节序列）。
+ */
+function toolCallsOf(metadata: unknown): number {
+  if (!metadata || typeof metadata !== 'object') return 0;
+  const m = metadata as Record<string, unknown>;
+  for (const key of ['toolCalls', 'toolCallCount', 'toolCount'] as const) {
+    const v = m[key];
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+  }
+  const segments = m['segments'];
+  if (Array.isArray(segments)) {
+    return segments.filter((s) => !!s && typeof s === 'object' && (s as { type?: unknown }).type === 'tool').length;
+  }
+  return 0;
 }
 
 function stripHtmlTags(value: string): string {

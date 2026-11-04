@@ -17,9 +17,9 @@ import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   openSqlite, closeSqlite,
-  SqliteThreadRepo, SqliteThreadEventRepo, SqliteDispositionRepo, SqliteResourceBindingRepo,
+  SqliteThreadRepo, SqliteTriggerRepo, SqliteDispositionRepo, SqliteResourceBindingRepo,
 } from '@markus/storage';
-import { ThreadService, EventIngress, SourceRegistry } from '@markus/core';
+import { ThreadService, EventIngress, SourceRegistry, admitEvent } from '@markus/core';
 import type { SourceAdapter, NormalizedEvent, DispatchTarget } from '@markus/core';
 import type { Autonomy } from '@markus/shared';
 
@@ -31,7 +31,7 @@ let db: ReturnType<typeof openSqlite>;
 let threads: SqliteThreadRepo;
 let dispositions: SqliteDispositionRepo;
 let bindings: SqliteResourceBindingRepo;
-let events: SqliteThreadEventRepo;
+let triggers: SqliteTriggerRepo;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'markus-e2e-'));
@@ -39,7 +39,7 @@ beforeEach(() => {
   threads = new SqliteThreadRepo(db);
   dispositions = new SqliteDispositionRepo(db);
   bindings = new SqliteResourceBindingRepo(db);
-  events = new SqliteThreadEventRepo(db);
+  triggers = new SqliteTriggerRepo(db);
 });
 
 afterEach(() => {
@@ -105,7 +105,11 @@ function wire(autonomy: Autonomy) {
     },
   };
 
-  const ingress = new EventIngress({ registry, service, deliver: t => delivered.push(t), triggers });
+  const ingress = new EventIngress({
+    registry, service, deliver: t => delivered.push(t), triggers,
+    // 无策略 = 全收（自激保护见 source-admission.test.ts）
+    admission: ev => admitEvent(ev, {}),
+  });
 
   return { service, ingress, delivered, thread, triggers };
 }
@@ -154,20 +158,27 @@ describe('端到端 · off 档：既不叫醒，也不留判断', () => {
   });
 });
 
-describe('端到端 · 三张表都留痕（F2.2 的机制层判据）', () => {
-  it('threads / thread_dispositions / thread_events 在同一轮里都有行', () => {
-    const { ingress, thread } = wire('observe');
+describe('端到端 · 事实 / 执行态 / 时间线（F2.2 的机制层判据）', () => {
+  it('threads / thread_dispositions 有行，且时间线能从 triggers 派生', () => {
+    const { ingress } = wire('observe');
 
     ingress.ingest({ prefix: 'gh', headers: {}, rawBody: Buffer.from('{}'), secret: null });
-    // 时间线是独立的读模型：路由完之后追加一条「发生了什么」
-    events.append({ threadId: thread.id, kind: 'comment', actor: 'human:owner', summary: '有人在 issue 下评论了' });
+    // 时间线不再是独立表（2026-11-03 删除）：追加一件事 = 登记一条 trigger。
+    triggers.insertOrGet({
+      kind: 'comment',
+      idempotencyKey: 'evt:e2e:1',
+      actorId: 'human:owner',
+      summary: '有人在 issue 下评论了',
+      threadRefs: [REF],
+    });
 
     const n = (t: string) =>
       Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n);
 
     expect(n('threads')).toBeGreaterThan(0);
     expect(n('thread_dispositions')).toBeGreaterThan(0);
-    expect(n('thread_events')).toBeGreaterThan(0);
+    // 判据不是「有一张事件表」，而是「时间线读得出来」——表删了这条仍然必须绿。
+    expect(triggers.listByThreadRef(REF).map(e => e.summary)).toContain('有人在 issue 下评论了');
   });
 
   it('幂等：同一个 trigger 重投 3 次，处置仍然只有 1 行', () => {
@@ -177,5 +188,64 @@ describe('端到端 · 三张表都留痕（F2.2 的机制层判据）', () => {
       ingress.ingest({ prefix: 'gh', headers: {}, rawBody: Buffer.from('{}'), secret: null });
     }
     expect(countDispositions()).toBe(1);
+  });
+});
+
+/**
+ * B3 的度量：一次真实路由写下的 DB 列 `would_accept` 与读出的 TS 字段 `wouldAccept`
+ * 必须语义一致；且必须**三态**——「没问过」不得伪装成「不会接」。
+ *
+ * 为什么必须跑真库：这条断言的全部意义在「SQLite 把布尔写成 1/0/NULL」这个边界上。
+ * fake repo 直接存布尔，边界根本不存在，测出来的绿是假的。
+ * 把编解码任一方向写反（`WouldAccept.encode` 反过来，或 decode 用 `!== 0`），三条用例必红。
+ */
+describe('B3 · would-accept 三态回环（DB 列 ↔ TS 字段，术语映射表见 docs/architecture/concept-naming.md）', () => {
+  const rawWouldAccept = (triggerId: string) => {
+    const row = db
+      .prepare('SELECT would_accept FROM thread_dispositions WHERE trigger_id = ?')
+      .get(triggerId) as { would_accept: number | null } | undefined;
+    expect(row, `没有写下 trigger=${triggerId} 的处置`).toBeDefined();
+    return row!.would_accept;
+  };
+
+  const readWouldAccept = (triggerId: string) =>
+    dispositions.listRecent(100).find(d => d.triggerId === triggerId)?.wouldAccept;
+
+  it('record-only（observe 档）：DB 1 ↔ TS true', () => {
+    const { service } = wire('observe');
+    service.route({ triggerId: 'trg_b3_observe', kind: 'comment', ref: REF, actorKind: 'human', addressing: 'ambient' });
+
+    expect(rawWouldAccept('trg_b3_observe')).toBe(1);
+    expect(readWouldAccept('trg_b3_observe')).toBe(true);
+  });
+
+  it('ignore-ended（流已结束的机器人事件）：DB 0 ↔ TS false', () => {
+    const { service } = wire('observe');
+    service.route({
+      triggerId: 'trg_b3_ended',
+      kind: 'task',
+      ref: 'tsk_b3_done',
+      actorKind: 'agent',
+      addressing: 'ambient',
+      threadEnded: true,
+    });
+
+    expect(rawWouldAccept('trg_b3_ended')).toBe(0);
+    expect(readWouldAccept('trg_b3_ended')).toBe(false);
+  });
+
+  it('dispatch（人已指定处理者）：DB NULL ↔ TS null —— 没问过不等于不会接', () => {
+    const { service } = wire('observe');
+    service.route({
+      triggerId: 'trg_b3_dispatch',
+      kind: 'chat',
+      ref: 'cs_b3_dispatch',
+      actorKind: 'human',
+      addressing: 'direct',
+      directTargetAgentId: AGENT,
+    });
+
+    expect(rawWouldAccept('trg_b3_dispatch')).toBeNull();
+    expect(readWouldAccept('trg_b3_dispatch')).toBeNull();
   });
 });
