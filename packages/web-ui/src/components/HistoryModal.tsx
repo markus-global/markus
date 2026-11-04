@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ApprovalInfo, type NotificationInfo } from '../api.ts';
 import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
+import { markNotificationRead } from '../lib/notifyRead.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/threadPresentation.ts';
@@ -291,7 +292,13 @@ export function HistoryModal({
                   <div
                     key={`n:${row.notice.id}`}
                     className={`flex items-start gap-2.5 px-2.5 py-2.5 rounded-xl transition-colors ${go ? 'hover:bg-surface-overlay/50 cursor-pointer' : ''}`}
-                    onClick={go ?? undefined}
+                    onClick={go ? () => {
+                      // 点开 = 读过。这里曾经只跳转不标已读（与铃铛不一致），于是
+                      // 「点完任务待评审→Work→回来还是未读」（Owner 2026-11-04）。
+                      markNotificationRead(row.notice);
+                      setNotices(prev => prev.map(x => (x.id === row.notice.id ? { ...x, read: true } : x)));
+                      go();
+                    } : undefined}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${row.notice.read ? 'bg-fg-muted/40' : 'bg-brand-500'}`} />
                     <div className="flex-1 min-w-0">

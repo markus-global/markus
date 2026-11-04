@@ -5,6 +5,7 @@ import { navigateForNotification, notificationHasTarget } from '../lib/notifyNav
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { STAGE_LABEL, formatDuration, formatRelativeAny, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { markNotificationRead } from '../lib/notifyRead.ts';
 
 /**
  * 概览页的「行动台」—— 取代原先并列的两块（独立收件箱卡片 + Needs Your Attention 聚合块）。
@@ -172,16 +173,24 @@ export function ActionCenter({
     // 右栏要「最近发生了什么」——含已读。若只取未读，用户把通知点完那一刻
     // 整块动态就会突然消失（看起来像功能坏了）。未读数由同一次响应给出，
     // 不在前端数列表（列表是分页的，数出来必然少）。
-    api.notifications
-      .list(userId, false, { limit: 5 })
-      .then(d => {
-        if (!alive) return;
-        setNotices(d.notifications ?? []);
-        setUnread((d as { unreadCount?: number }).unreadCount ?? 0);
-      })
-      .catch(() => undefined);
+    const load = () => {
+      api.notifications
+        .list(userId, false, { limit: 5 })
+        .then(d => {
+          if (!alive) return;
+          setNotices(d.notifications ?? []);
+          setUnread((d as { unreadCount?: number }).unreadCount ?? 0);
+        })
+        .catch(() => undefined);
+    };
+    load();
+    // 别处（铃铛、历史弹窗）标了已读 → 这里的未读数必须跟着变，
+    // 否则从 Work 回到概览仍显示旧数字（Owner 2026-11-04）。
+    const onChanged = () => load();
+    window.addEventListener('markus:notifications-changed', onChanged);
     return () => {
       alive = false;
+      window.removeEventListener('markus:notifications-changed', onChanged);
     };
   }, [userId]);
 
@@ -330,9 +339,8 @@ export function ActionCenter({
                     // 与 NotificationBell 一致：agent_report 要在 Chat 里显示「知道了」确认卡，
                     // 提前标已读会把那张卡抹掉，所以它留到 Chat 那边处理。
                     if (n.type !== 'agent_report') {
-                      api.notifications.markRead(n.id).catch(() => undefined);
+                      markNotificationRead(n);
                       setNotices(prev => prev.map(x => (x.id === n.id ? { ...x, read: true } : x)));
-                      window.dispatchEvent(new CustomEvent('markus:notifications-changed'));
                     }
                     navigateForNotification(n);
                   }}
