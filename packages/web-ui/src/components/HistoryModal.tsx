@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ApprovalInfo, type NotificationInfo } from '../api.ts';
-import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
+import { navigateForApproval, navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
 import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
@@ -293,7 +293,20 @@ export function HistoryModal({
                 const st = APPROVAL_STATUS[row.approval.status as ResolvedStatus] ?? APPROVAL_STATUS.cancelled;
                 const at = row.approval.respondedAt ?? row.approval.requestedAt;
                 return (
-                  <div key={`a:${row.approval.id}`} className="flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay/50 transition-colors">
+                  <div
+                    key={`a:${row.approval.id}`}
+                    // 审批行**曾经没有任何 onClick**（Owner 2026-11-04：“已批准或已拒绝为什么
+                    // 不可点击跳转！！！”）：通知行有跳转，审批行只画了个 hover 样式，点了没反应。
+                    // id 一直在（details.taskId / requirementId / agentId），只是没人接上。
+                    // 落点交给已有的 navigateForApproval——它是审批落点的唯一实现，
+                    // 这里不再写第三套“什么类型跳哪里”。
+                    onClick={() => {
+                      onClose();
+                      navigateForApproval(row.approval);
+                    }}
+                    title="打开对应的任务 / 需求 / 会话"
+                    className="flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay/50 transition-colors cursor-pointer"
+                  >
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${st.dot}`} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
