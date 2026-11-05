@@ -73,6 +73,8 @@ function createMockPackageContext(overrides?: Partial<PackageToolsContext>): Pac
     listArtifacts: () => listArtifactsFn,
     searchHub: () => searchHubFn,
     downloadAndInstall: () => downloadAndInstallFn,
+    // 默认假设「审批已通过」；要验 fail-closed 的显式传 undefined。
+    requestApproval: async () => ({ approved: true }),
     ...overrides,
   };
 }

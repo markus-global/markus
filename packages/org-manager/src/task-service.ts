@@ -282,6 +282,15 @@ export class TaskService implements ApprovalTargetPort {
   private agentManager?: AgentManager;
   private ws?: WSBroadcaster;
   private taskRepo?: TaskRepo;
+  /** 日常链路写 Thread 的注入点（org-manager 不直接 new service，由组合根注入）。 */
+  private threadEnsurer?: (taskId: string, actorAgentId?: string) => void;
+  /**
+   * 向任务流的时间线追加一条事件。
+   *
+   * 为什么注入而不是 import：task-service 不持有 storage（只有各个 repo），
+   * 注入也让测试里一个 spy 就能验「评论后事件真的写了」，不用构造整个 storage。
+   */
+  private threadEventRecorder?: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void;
   private taskLogRepo?: TaskLogRepo;
   /** The platform-wide single execution point for approval outcomes. */
   private approvalApplier?: ApprovalApplier;
@@ -447,6 +456,19 @@ export class TaskService implements ApprovalTargetPort {
 
   setTaskRepo(repo: TaskRepo): void {
     this.taskRepo = repo;
+  }
+
+  /**
+   * 注入「任务 → 流」的建流回调。
+   * 为什么不在这里直接 import ensureThread：那会让 task-service 绑死 storage 具体形状，
+   * 也会让「ref 怎么拼」散到第二个地方。拼 ref 的知识只留在 thread-ensure.ts。
+   */
+  setThreadEnsurer(fn: (taskId: string, actorAgentId?: string) => void): void {
+    this.threadEnsurer = fn;
+  }
+
+  setThreadEventRecorder(fn: (taskId: string, e: { kind: string; actor?: string; summary: string }) => void): void {
+    this.threadEventRecorder = fn;
   }
 
   setTaskLogRepo(repo: TaskLogRepo): void {
@@ -676,6 +698,16 @@ export class TaskService implements ApprovalTargetPort {
       activityId,
       replyToId: opts?.replyToId,
     });
+
+    // 时间线（S6）：评论也是一条「发生了什么」。
+    // 放在落库之后 —— 先有评论事实，再派生事件；事件写失败不应回滚评论。
+    try {
+      this.threadEventRecorder?.(taskId, {
+        kind: 'comment',
+        actor: authorId,
+        summary: `${authorName}: ${content.replace(/\s+/g, ' ').slice(0, 80)}`,
+      });
+    } catch { /* 读模型失败不影响评论本身 */ }
 
     // Compute reply-to context for WS broadcast (denormalized for frontend)
     let replyToAuthor: string | undefined;
@@ -2797,6 +2829,12 @@ export class TaskService implements ApprovalTargetPort {
     }
 
     this.ws?.broadcastTaskCreate(task.id, task.title, { assignedAgentId: task.assignedAgentId });
+    // 任务进入 Thread（S3）：一行一个流，让「这条任务现在卡在谁那儿」有存储级答案。
+    // 放在落库之后：先有任务事实，再派生流；流写失败不影响任务本身。
+    // 动作人 = 指派对象？不是。这里传 `undefined`：createTask 请求里没有可靠的
+    // 「谁发起的」字段（agent 建卡和人在 UI 建卡都走同一个入口）。
+    // 宁可少排除一次自激，也不要传一个看似有意义的错值——后者会让自激排除悄悄失效。
+    this.threadEnsurer?.(task.id);
     this.emitTaskEvent({
       type: 'created',
       taskId: task.id,

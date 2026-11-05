@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { approvalBlock } from './approval.js';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('manager-tools');
@@ -142,8 +143,8 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           const skillImpactLow = type === 'skill' && impactRaw === 'low';
           const needsApproval = !skillImpactLow;
 
-          if (needsApproval && ctx.requestApproval) {
-            const { approved, comment } = await ctx.requestApproval({
+          if (needsApproval) {
+            const blocked = await approvalBlock(ctx.requestApproval, {
               toolName: 'package_install',
               toolArgs: {
                 type,
@@ -154,8 +155,8 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
                 impact: impactRaw === 'low' || impactRaw === 'high' ? impactRaw : type === 'skill' ? 'high' : undefined,
               },
               reason: `Agent wants to install ${type} "${name}" into the organization`,
-            });
-            if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied package installation' });
+            }, 'User denied package installation');
+            if (blocked) return blocked;
           }
 
           if (type === 'agent') {
@@ -255,13 +256,13 @@ export function createPackageTools(ctx: PackageToolsContext): AgentToolHandler[]
           const itemId = (args['item_id'] as string | undefined)?.trim();
           if (!itemId) return JSON.stringify({ status: 'error', error: 'item_id is required — use hub_search to find available items first' });
 
-          if (ctx.requestApproval) {
-            const { approved, comment } = await ctx.requestApproval({
+          {
+            const blocked = await approvalBlock(ctx.requestApproval, {
               toolName: 'hub_install',
               toolArgs: { item_id: itemId },
               reason: `Agent wants to download and install Hub item "${itemId}" into the organization`,
-            });
-            if (!approved) return JSON.stringify({ status: 'rejected', reason: comment || 'User denied Hub installation' });
+            }, 'User denied Hub installation');
+            if (blocked) return blocked;
           }
 
           const result = await downloadAndInstall(itemId);

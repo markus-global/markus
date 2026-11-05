@@ -11,7 +11,24 @@ import { createLogger } from '@markus/shared';
 const log = createLogger('pending-callback');
 
 /** Kinds of async operation that report back through the mailbox. */
-export type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
+import { matchRestConditions, type WakeEvent } from './rest-wake.js';
+
+export type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply' | 'rest';
+
+/**
+ * `rest` 的唤醒条件：**任一命中即唤醒**（OR，不是 AND）。
+ *
+ * 为什么是 OR：等待的语义是「有值得我回来处理的事」——任意一件发生就值得回来。
+ * AND 语义会让 agent 在只满足部分条件时永远等下去，那比不挂起更糟。
+ *
+ * `timeout` 不是一种"轮询"，而是**有界性兑底**：没它，一个写错的 filter 能让会话
+ * 永久静默，而人看不到任何信号。
+ */
+export type RestWakeCondition =
+  | { kind: 'trigger'; threadRef?: string }
+  | { kind: 'stage'; threadRef: string; stage: string }
+  | { kind: 'timeout'; ms: number }
+  | { kind: 'dependency'; taskId: string };
 
 /**
  * How a resolved callback is delivered:
@@ -53,6 +70,18 @@ export interface PendingCallback {
   wakeAt?: number;
   /** For recurring wakeups: re-arm interval in ms after firing. */
   recurringMs?: number;
+  /**
+   * For `rest`: the conditions that should wake this session. `timeout` entries are
+   * also folded into `wakeAt` at registration so the existing time sweep keeps working
+   * without a second scheduler — one timer is enough.
+   */
+  restWakeOn?: RestWakeCondition[];
+  /**
+   * How many consecutive `rest` cycles this session has done. Used to enforce the
+   * "must be bounded" rule: an agent that rests forever is just a busy-wait with
+   * extra steps. Reset when the session does real work.
+   */
+  restStreak?: number;
   registeredAt: number;
   timeoutMs: number;
 }
@@ -84,6 +113,8 @@ export interface PersistedCallback {
   originScenario?: string;
   wakeAt?: number;
   recurringMs?: number;
+  restWakeOn?: RestWakeCondition[];
+  restStreak?: number;
   registeredAt: number;
   timeoutMs: number;
 }
@@ -130,6 +161,23 @@ export class PendingCallbackRegistry {
 
   getByAgentId(agentId: string): PendingCallback[] {
     return [...this.callbacks.values()].filter(cb => cb.agentId === agentId);
+  }
+
+  /** 所有类型为 rest 的等待者（跨 agent）——事件命中需要全局视角。 */
+  getAllRests(): PendingCallback[] {
+    return [...this.callbacks.values()].filter(cb => cb.type === 'rest');
+  }
+
+  /**
+   * 取出被该事件命中的 rest 等待者（命中即 resolve，返回给调用方投递）。
+   *
+   * 为什么在这里而不是在调用方：匹配、取走、返回必须是一个原子动作。
+   * 拆成「先查再删」会让两个并发事件同时命中同一个等待者，叫醒它两次。
+   */
+  takeRestMatches(event: WakeEvent): PendingCallback[] {
+    const matched = matchRestConditions(this.getAllRests(), event);
+    for (const m of matched) this.resolve(m.id);
+    return matched;
   }
 
   /** Find a callback by its correlation id (conversation_id) for a specific agent. */

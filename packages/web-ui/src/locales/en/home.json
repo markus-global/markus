@@ -112,6 +112,8 @@
   },
   "attention": {
     "title": "Needs Your Attention",
+    "tasksAndApprovals": "Tasks & approvals",
+    "recentActivity": "Recent activity",
     "allClear": "All clear — nothing needs your attention right now.",
     "approvals": "approval(s) waiting",
     "requirements": "requirement(s) to review",

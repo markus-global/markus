@@ -57,6 +57,7 @@ import {
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 import { contextGateRefusal } from './context-gate.js';
+import { isRedLineTool, redLineRefusal, logRedLineDecision } from './action-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
@@ -97,7 +98,8 @@ import { resolveOutputReserve } from './context-budgets.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
-import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
+import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery, type RestWakeCondition } from './pending-callback.js';
+import { planRest, REST_MAX_STREAK } from './rest-plan.js';
 import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
@@ -583,6 +585,11 @@ export class Agent {
   private userNotifier?: (opts: { type: string; title: string; body: string; priority?: string; actionType?: string; actionTarget?: string; metadata?: Record<string, unknown> }) => void;
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
+  /**
+   * 由 AgentManager 在 injectResourceTools 时注入：该 agent/team 当前负责的外部资源。
+   * 用途是把责任域写进 system prompt 固定段（P1-⑤）——否则 agent 永远不会主动去查。
+   */
+  getResourceBindings?: () => Array<{ resource: string; scope: string; autonomy?: string; grantedBy?: string }>;
   private semanticSearch?: SemanticMemorySearch;
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
@@ -1053,6 +1060,15 @@ export class Agent {
       // patrol can wait; conversational progress must not be interrupted.
       if (this.shouldDeferHeartbeatForHumanChat()) {
         log.info('Heartbeat trigger deferred — human chat is focused or queued', {
+          agentId: this.id,
+          triggeredAt,
+        });
+        return;
+      }
+      // 正在 rest → 心跳不该再跑一轮 LLM。rest 会自己到期/被条件唤醒，
+      // 心跳再醒一次就是「空转」本身：付了 token 但没有任何新信息。
+      if (this.hasActiveRest()) {
+        log.info('Heartbeat skipped — agent is resting, its condition will wake it', {
           agentId: this.id,
           triggeredAt,
         });
@@ -4802,6 +4818,7 @@ export class Agent {
         memory: this.memory,
         scenario: 'chat',
         viewerContext: this.runtimeViewerContext,
+        resourceBindings: this.getResourceBindings?.() ?? [],
         ...this.getTeamContextParams(),
       });
 
@@ -5308,6 +5325,7 @@ export class Agent {
       concurrentContext: this.getConcurrentContext(),
       workflowContext: isLightweight ? undefined : this.workflowContextFetcher?.(),
       cognitiveContext,
+      resourceBindings: this.getResourceBindings?.() ?? [],
       ...this.getTeamContextParams(),
     });
     const { volatile } = systemPromptBuild;
@@ -7966,11 +7984,120 @@ export class Agent {
    * Runs on a coarse ~1-minute sweep — precise enough for human-scale follow-ups
    * while keeping the agent idle (token-free) in between.
    */
+  /**
+   * 连续 rest 次数上限。超过就升级给人。
+   * 实际值在 rest-plan.ts（唯一源），这里引用以免两处漂移。
+   */
+  /** 连续 rest 计数。任何真实工具调用会重置它（见 resetRestStreak）。 */
+  private restStreak = 0;
+
+  /** 做了一件实事 → 连续 rest 计数归零。 */
+  private resetRestStreak(): void {
+    this.restStreak = 0;
+  }
+
+  /**
+   * `rest` 工具实现：挂起会话直到任一条件命中。
+   *
+   * 三条设计约束全部落实在这里，而不是靠调用方自觉：
+   * 1. **必须有界** —— 未指定 timeout 时自动补兜底，且任何 timeout 有硬上限。
+   * 2. **必须可打断** —— 走 pendingCallbackRegistry，外部可用 cancel 解除。
+   * 3. **不得无限** —— 连续 rest 超上限直接拒绝，并指向升级路径。
+   */
+  private handleRestTool(args: Record<string, unknown>, sessionId?: string): string {
+    // 解析与边界判定全在 planRest（纯函数、可单测）。这里只负责副作用。
+    const result = planRest(args['wake_on'], this.restStreak);
+    if (!result.ok) {
+      if (result.status === 'refused') {
+        return JSON.stringify({
+          status: 'refused',
+          reason: result.message,
+          next_steps: [
+            '把「等到之后要做什么」直接做掉（很可能你现在就能推进一部分）',
+            '若确实只能等人：用 request_user_input 明确提出你需要什么，而不是无限等',
+            '若只需要稍后再看：用 schedule_wakeup 定时，它同样省 token 但也会有上限',
+          ],
+          rest_streak: result.restStreak,
+          max_streak: REST_MAX_STREAK,
+        });
+      }
+      return JSON.stringify({ status: 'error', message: result.message, ignored: result.ignored });
+    }
+
+    const { conditions, ignored, boundedMs, fallbackAdded } = result.plan;
+    const wakeAt = Date.now() + boundedMs;
+
+    const note = ((args['note'] as string | undefined) ?? '').trim();
+    const id = `rest_${this.id}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    this.restStreak += 1;
+    pendingCallbackRegistry.register({
+      id,
+      agentId: this.id,
+      originSessionId: sessionId ?? this.currentSessionId ?? '',
+      type: 'rest',
+      // in_session：醒来后接着这个会话继续，上下文不丢。
+      deliveryMode: 'in_session',
+      note: note || 'Rest completed — a condition fired.',
+      originScenario: this.activeScenario,
+      restWakeOn: conditions,
+      restStreak: this.restStreak,
+      wakeAt,
+      registeredAt: Date.now(),
+      timeoutMs: boundedMs,
+    });
+    log.info('Agent resting', {
+      agentId: this.id,
+      id,
+      conditions: conditions.length,
+      wakeAt: new Date(wakeAt).toISOString(),
+      fallbackAdded,
+    });
+
+    return JSON.stringify({
+      status: 'ok',
+      rest_id: id,
+      wake_at: new Date(wakeAt).toISOString(),
+      bounded_ms: boundedMs,
+      fallback_timeout_added: fallbackAdded,
+      conditions,
+      ignored,
+      rest_streak: this.restStreak,
+      max_streak: REST_MAX_STREAK,
+      message: fallbackAdded
+        ? `已挂起，等任一条件命中；因未指定 timeout 已自动补 ${Math.round(boundedMs / 60000)} 分钟兜底。`
+        : '已挂起，等任一条件命中。',
+    });
+  }
+
+  /** 该 agent 是否正在 rest（已挂起、等条件命中）。 */
+  private hasActiveRest(): boolean {
+    return pendingCallbackRegistry.getByAgentId(this.id).some(cb => cb.type === 'rest');
+  }
+
   private sweepDueWakeups(): void {
     const now = Date.now();
     for (const cb of pendingCallbackRegistry.getByAgentId(this.id)) {
-      if (cb.type !== 'wakeup' || cb.wakeAt === undefined || cb.wakeAt > now) continue;
+      if (cb.wakeAt === undefined || cb.wakeAt > now) continue;
+      // rest 与 wakeup 共用同一个到期扇描：一个定时器够了，不引入第二套调度。
+      if (cb.type !== 'wakeup' && cb.type !== 'rest') continue;
       pendingCallbackRegistry.resolve(cb.id);
+
+      if (cb.type === 'rest') {
+        // 到期只是「有界性兜底」触发，不代表条件真的命中了。摘要必须说清楚，
+        // 否则 agent 醒来会误以为事情发生了。
+        this.deliverCallback({
+          callbackId: cb.id,
+          type: 'rest',
+          deliveryMode: cb.deliveryMode ?? 'in_session',
+          originSessionId: cb.originSessionId,
+          originScenario: asAgentScenario(cb.originScenario),
+          summary: `Rest ended${cb.note ? `: ${cb.note.slice(0, 80)}` : ''}`,
+          content: `[REST ENDED] ${cb.note ?? 'The wait you registered has ended.'}\nReason: timeout fallback reached at ${new Date(now).toISOString()} (a watched condition may NOT have fired — check before acting).`,
+          correlationId: cb.correlationId,
+        });
+        continue;
+      }
+
       this.deliverCallback({
         callbackId: cb.id,
         type: 'wakeup',
@@ -8770,6 +8897,7 @@ export class Agent {
     agent_model_set_default:     { domain: 'llm-config' },
     agent_model_reset_default:   { domain: 'llm-config' },
     schedule_wakeup:             { domain: 'schedule' },
+    rest:                        { domain: 'schedule' },
     set_heartbeat_interval:      { domain: 'schedule' },
     // ── 任务 / 目标：按任务实体细分（缺参 → 整域独占）
     task_create:              { domain: 'task', arg: ['task_id', 'taskId'] },
@@ -8991,6 +9119,64 @@ export class Agent {
     return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall, this.dataDir), fn);
   }
 
+  /**
+   * 红线动作闸门（删除 / 对外发布 / 支付）。
+   *
+   * 返回 `undefined` = 放行；返回字符串 = 拒绝结果（直接作为工具返回值）。
+   *
+   * 语义（与 shared/types/thread.ts 的 gateAction 单一事实源一致）：
+   *   · 红线 ⟺ `gateAction(scope, 'trusted') === 'deny'` —— 连最高档都过不去，
+   *     说明拒绝来自动作本身（admin），不是来自授权不足。
+   *   · 红线 = 不可**自主**，不等于永远做不到：有人工审批通道时发审批卡，
+   *     人批了就执行。硬失败会把 Agent 逼进死胡同，也会逼人把机制整个关掉。
+   */
+  private async enforceRedLine(toolCall: LLMToolCall, sessionId?: string): Promise<string | undefined> {
+    const decision = isRedLineTool(toolCall.name);
+    if (decision.allow) return undefined;
+
+    const hasApprovalChannel = Boolean(this.approvalCallback);
+    if (!hasApprovalChannel) {
+      logRedLineDecision({
+        toolName: toolCall.name, action: decision.action,
+        agentId: this.id, sessionId, outcome: 'no-channel',
+      });
+      return redLineRefusal(toolCall.name, decision.action, { hasApprovalChannel: false });
+    }
+
+    logRedLineDecision({
+      toolName: toolCall.name, action: decision.action,
+      agentId: this.id, sessionId, outcome: 'requested-approval',
+    });
+    const result = await this.approvalCallback!({
+      agentId: this.id,
+      agentName: this.config.name,
+      toolName: toolCall.name,
+      toolArgs: toolCall.arguments,
+      reason: `红线动作，需要人工确认：${decision.action.why}`,
+      taskId: this.getCurrentTaskId(),
+      sessionId: this.currentSessionId,
+      chatSessionId: this.getDbSessionId() ?? undefined,
+    });
+
+    if (!result.approved) {
+      logRedLineDecision({
+        toolName: toolCall.name, action: decision.action,
+        agentId: this.id, sessionId, outcome: 'denied-by-human',
+      });
+      return redLineRefusal(toolCall.name, decision.action, {
+        deniedByHuman: true,
+        comment: result.comment,
+        hasApprovalChannel: true,
+      });
+    }
+
+    logRedLineDecision({
+      toolName: toolCall.name, action: decision.action,
+      agentId: this.id, sessionId, outcome: 'approved',
+    });
+    return undefined;
+  }
+
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
     // Hard context gate first, before the write lock: a refused call must not
     // queue behind a lock it is never going to use. This is the single
@@ -9001,6 +9187,14 @@ export class Agent {
       this.contextEngine.getMeasuredUsagePercent(sessionId),
     );
     if (gated) return gated;
+
+    // Red-line gate: 删除 / 对外发布 / 支付 在任何自主档位都不可自主执行。
+    // 同样在写锁之前 —— 一个要等人批的调用不该攥着资源锁等人（那会把整个
+    // Agent 的写操作冻结到人类回话为止）。
+    // 放在这里而不是各工具内部：这是所有 loop 变体的唯一收口，
+    // 新增工具不需要「记得」调用闸门，它天然被拦。
+    const redLineRefused = await this.enforceRedLine(toolCall, sessionId);
+    if (redLineRefused) return redLineRefused;
 
     // 写语义工具跨 worker 互斥（所有外部调用走这里）：
     //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
@@ -9212,6 +9406,11 @@ export class Agent {
       return JSON.stringify(cb
         ? { status: 'ok', message: 'Wakeup cancelled.' }
         : { status: 'not_found', message: 'No scheduled wakeup with that id.' });
+    }
+
+    // Handle rest: suspend until a condition fires (instead of waking on a timer).
+    if (toolCall.name === 'rest') {
+      return this.handleRestTool(toolCall.arguments, sessionId);
     }
 
     // Handle set_heartbeat_interval: adjust the periodic safety-net cadence.

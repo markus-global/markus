@@ -3758,3 +3758,157 @@ export function kebab(s: string, fallback?: string): string {
   for (let i = 0; i < s.length; i++) hash = ((hash << 5) - hash + s.charCodeAt(i)) | 0;
   return `pkg-${Math.abs(hash).toString(36)}`;
 }
+
+// ── Thread / Inbox（设计见 workspace/markus-superagent-0{1,2}-*.md）───────────
+
+export interface ThreadAPI {
+  id: string;
+  ref: string;
+  ownerAgent: string | null;
+  ownerSession: string | null;
+  lastActivity: number;
+  /** 派生的「在等谁」 */
+  stage: string;
+  stageRank: number;
+  /** partial = 部分事实未接线（缺 pendingApproval/openQuestion） */
+  stageBasis: 'partial' | 'threadOnly';
+  missingFacts: string[];
+  taskStatus: string | null;
+  /** 以下由服务端聚合带出，前端不再各查 task/approval 表（避免第二写者） */
+  title?: string | null;
+  detail?: string | null;
+  priority?: string | null;
+  approvalId?: string | null;
+  approvalHint?: string;
+  ownerAgentName?: string | null;
+}
+
+export interface DispositionAPI {
+  id: string;
+  triggerId: string;
+  threadId: string;
+  action: string;
+  reason: string;
+  wouldAccept: boolean;
+  actor: string;
+  createdAt: number;
+}
+
+export async function fetchThreads(): Promise<{ threads: ThreadAPI[] }> {
+  // 注意：request() 内部会拼 `${BASE}${path}`，BASE = '/api'。
+  // 这里只能传**相对 BASE 的路径** —— 写成 '/api/threads' 会变成 '/api/api/threads' → 404。
+  const r = await request<{ threads: ThreadAPI[] }>('/threads');
+  // ── 边界归一化：lastActivity 在线上可能是任何东西 ────────────────────────
+  // 后端把 Date 直接丢进 JSON，序列化后就是 ISO 字符串；而 ThreadAPI 声明的是
+  // epoch 毫秒（number）。**两个写者描述同一个事实**，消费方按声明算减法就拿到 NaN。
+  //
+  // 为什么修在这里而不是每个显示函数：这是唯一知道「线上长什么样」的地方。
+  // 在 ThreadView 里Number.isFinite 兼容是打补丁 —— 下一个消费 lastActivity 的
+  // 人（排序、筛选、告警阈值）照样踩坑。这里一次转干净，下游只认 number。
+  return {
+    threads: (r.threads ?? []).map(t => ({ ...t, lastActivity: toEpochMs(t.lastActivity) })),
+  };
+}
+
+/** 宽容地把 ISO 字符串 / Date / 数字统一成 epoch 毫秒；拿不到就给 0（下游自己判空）。 */
+function toEpochMs(v: unknown): number {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : 0;
+  if (v instanceof Date) return v.getTime();
+  if (typeof v === 'string') {
+    const n = Date.parse(v);
+    return Number.isNaN(n) ? 0 : n;
+  }
+  return 0;
+}
+
+export function fetchThreadDispositions(threadId: string): Promise<{ dispositions: DispositionAPI[] }> {
+  return request(`/threads/${encodeURIComponent(threadId)}/dispositions`);
+}
+
+/** 一条流上真实发生过的事（S6）。只追加，不存在修改路径。 */
+export interface ThreadEventAPI {
+  id: string;
+  threadId: string;
+  kind: string;
+  actor?: string;
+  summary: string;
+  payload: Record<string, unknown>;
+  createdAt: number;
+}
+
+export function fetchThreadEvents(threadId: string): Promise<{ events: ThreadEventAPI[] }> {
+  return request(`/threads/${encodeURIComponent(threadId)}/events`);
+}
+
+/**
+ * 全局路由决定 —— 路由台的数据源（实现文档 §5.4）。
+ *
+ * 与上面按流查的区别：路由台要看「系统做过什么决定」的全貌，
+ * 尤其是 observe 模式下 `wouldAccept=false` 的行 —— 那是
+ * 「如果放开权限会自动接哪些活」的唯一可观测面。
+ */
+export function fetchRecentDispositions(limit = 200): Promise<{ dispositions: DispositionAPI[] }> {
+  return request(`/threads/dispositions/recent?limit=${limit}`);
+}
+
+/** 撤销一条错误的 attach（§5.4：「人喊停」必须由路由层记录）。 */
+export function unsubscribeThread(threadId: string, ticketId: string): Promise<{ status: string }> {
+  return request(
+    `/threads/${encodeURIComponent(threadId)}/subscriptions/${encodeURIComponent(ticketId)}`,
+    { method: 'DELETE' },
+  );
+}
+
+/**
+ * 某条流的订阅（撤销 attach 的依据）。
+ *
+ * 撤销的对象是 **subscription** 而不是 disposition —— 后者只是审计记录，
+ * `thread_dispositions` 表里没有 ticket_id，拿它撤销会无从落点。
+ */
+export function fetchThreadSubscriptions(threadId: string): Promise<{
+  subscriptions: Array<{ ticketId: string; agentId: string; purpose: 'own' | 'context' }>;
+}> {
+  return request(`/threads/${encodeURIComponent(threadId)}/subscriptions`);
+}
+
+// ── 责任域 / 来源（Settings「主动模式」三组 + AgentProfile 的数据源）──────────
+
+export interface EventSourceAPI {
+  id: string;
+  prefix: string;
+  /** 只告诉“配了没有”，secret 明文永不出服务端 */
+  hasSecret: boolean;
+  config?: Record<string, unknown>;
+  health?: Record<string, unknown>;
+  createdAt?: number;
+}
+
+export interface ResourceBindingAPI {
+  id: string;
+  holder: { kind: 'agent' | 'team'; id: string };
+  resource: string;
+  scope: string;
+  autonomy: string;
+  since: number;
+  grantedBy: string;
+}
+
+/** 外部事件来源（谁在往平台送信号）。 */
+export function fetchEventSources(): Promise<{ sources: EventSourceAPI[] }> {
+  return request('/events/sources');
+}
+
+/**
+ * 责任域绑定。
+ *
+ * `holder` 不传时后端返回**全量** —— Settings 要靠它一眼看全「谁管哪个资源到哪一档」，
+ * 只看单个 agent 无法回答监督问题。
+ */
+export function fetchResourceBindings(params?: { holder?: string; resource?: string }): Promise<{ bindings: ResourceBindingAPI[] }> {
+  const qs = params?.holder
+    ? `?holder=${encodeURIComponent(params.holder)}`
+    : params?.resource
+      ? `?resource=${encodeURIComponent(params.resource)}`
+      : '';
+  return request(`/resources/bindings${qs}`);
+}

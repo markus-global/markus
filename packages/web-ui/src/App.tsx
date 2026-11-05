@@ -11,7 +11,8 @@ const StorePage = lazy(() => import('./pages/Store.tsx').then(m => ({ default: m
 const AgentBuilder = lazy(() => import('./pages/AgentBuilder.tsx').then(m => ({ default: m.AgentBuilder })));
 const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.WorkPage })));
 const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
-const NotificationsPage = lazy(() => import('./pages/Notifications.tsx').then(m => ({ default: m.NotificationsPage })));
+const RouterDeskPage = lazy(() => import('./pages/RouterDesk.tsx').then(m => ({ default: m.RouterDeskPage })));
+const ThreadViewPage = lazy(() => import('./pages/ThreadView.tsx').then(m => ({ default: m.ThreadViewPage })));
 const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
@@ -886,8 +887,9 @@ export function App() {
         [PAGE.SETTINGS]: <Settings theme={theme.mode} onThemeChange={theme.setMode} authUser={currentUser} onLogout={() => { api.auth.logout().catch(() => {}); clearHubAuth(); setAuthUser(null); }} onUserUpdated={(u) => setAuthUser(u)} />,
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
-        [PAGE.NOTIFICATIONS]: <NotificationsPage authUser={currentUser} />,
         [PAGE.SEARCH]: <SearchPage />,
+        [PAGE.ROUTER]: <RouterDeskPage />,
+        [PAGE.THREAD]: <ThreadViewPage />,
       };
     }
     return {
@@ -898,6 +900,8 @@ export function App() {
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
       [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
+      [PAGE.ROUTER]: <RouterDeskPage />,
+      [PAGE.THREAD]: <ThreadViewPage />,
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);

@@ -737,7 +737,17 @@ export function NotificationBell({ collapsed, userId, embeddedMode, onClose, sid
    */
   const unreadNotificationCount = sortedUnreadNotifications.length;
   const pendingApprovals = pendingApprovalIds.size;
-  const badgeCount = unreadNotificationCount + pendingApprovals;
+  /**
+   * 规则 1（设计 §5.1）：**审批不再在铃铛里独立产生未读**。
+   *
+   * 之前是 `unreadNotificationCount + pendingApprovals` —— 同一批待批既算在铃铛上、
+   * 又算在概览「等你处理」里，两处红点同时闪，用户要猜「这两个数字是不是同一件事」。
+   * 注意力预算上这是净亏损：多一个入口，却没多一份信息。
+   *
+   * 现在铃铛只承载**非审批类**通知；审批统一归入概览行动台（Inbox）。
+   * 「审批」标签页本身保留，作用是**入口**（点过去处理），不再自带数字。
+   */
+  const badgeCount = unreadNotificationCount;
 
   useEffect(() => {
     if (prevPendingRef.current !== null && pendingApprovals > prevPendingRef.current) {

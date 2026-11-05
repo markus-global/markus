@@ -5,11 +5,11 @@ import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import type { TFunction } from 'i18next';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import {
-  api, wsClient, invalidateApiCache,
+  api, wsClient, invalidateApiCache, fetchThreads,
   type AgentInfo, type AgentActivityInfo, type HumanUserInfo, type ExternalAgentInfo,
   type ChatMessageInfo, type ChatSessionInfo, type ChannelMessageInfo, type ChannelMsgMetadata,
   type TaskInfo, type TeamInfo, type AuthUser, type ApprovalInfo, type UserInputAnswer,
-  type NotificationInfo, type SearchResult,
+  type NotificationInfo, type SearchResult, type ThreadAPI,
 } from '../api.ts';
 import { MarkdownMessage, ImagePreviewModal } from '../components/MarkdownMessage.tsx';
 import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
@@ -17,6 +17,8 @@ import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
 import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
+// stage 的文案/配色只认 InboxCard 那一套（单一事实源），别在 Team 页再手写一份
+import { stageLabel } from '../components/InboxCard.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
@@ -670,6 +672,35 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     () => previewData?.activeChannel ?? localStorage.getItem('markus_chat_channel') ?? '#general'
   );
   const [activeDmUserId, setActiveDmUserId] = useState<string>('');
+
+  // ── 会话头 stage 角标（实现文档 §5.5）─────────────────────────────────────
+  // 为什么要单独拉 /threads：agent 现在到底在干活、还是卡在等我们批准，是最想
+  // 一眼看到的，但这件事不在 agents 表里 —— 后端只能从线程聚合算出来（stage）。
+  // 失败必须静默：这是个附加接口，挂了也只是少一个角标，不能让整个 Team 页报错；
+  // 同理不接 loading/error 状态，避免把局部失败放大成整页空态。
+  const [threads, setThreads] = useState<ThreadAPI[]>([]);
+  useEffect(() => {
+    if (previewMode) return; // 预览态没有真实后端，不去打空请求
+    let cancelled = false;
+    void fetchThreads()
+      .then(({ threads: rows }) => { if (!cancelled) setThreads(rows); })
+      .catch(() => { /* 静默降级：拿不到就不显示 stage */ });
+    return () => { cancelled = true; };
+  }, [previewMode, isActive]); // isActive：切回 Team 页时刷一次，否则角标会停在旧 stage
+
+  // 一个 agent 可能同时压着多条线程（多个任务），而我们只有一个位置放一个角标。
+  // 选「谁最该被人处理」而不是顺抹：stageRank 是服务端定的优先级（person:* 从小到大），
+  // 同 rank 再用 lastActivity 取最新的。这样角标是确定的，不会随接口返回顺序跳动。
+  const agentStage = useMemo(() => {
+    if (!selectedAgent) return null;
+    let best: ThreadAPI | null = null;
+    for (const th of threads) {
+      if (th.ownerAgent !== selectedAgent) continue;
+      if (!best || th.stageRank < best.stageRank
+        || (th.stageRank === best.stageRank && th.lastActivity > best.lastActivity)) best = th;
+    }
+    return best;
+  }, [threads, selectedAgent]);
 
   // ── Deduplication: track server message IDs we already inserted via HTTP ─────
   const MAX_RECENT_MSG_IDS = 500;
@@ -1586,6 +1617,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   useEffect(() => {
     if (previewMode) return;
     const handleNav = (e: Event) => {
+      /**
+       * 必须在这里**遮蔽**外层的 isMobile。
+       *
+       * Owner 2026-11-02 报告：从概览点一条通知/审批，跳过去只落到 Team 列表，
+       * 没进具体的 agent 对话（移动端）。
+       *
+       * 根因：这个 handler 注册在 `useEffect(..., [previewMode])` 里，依赖里没有 isMobile，
+       * 所以闭包捕获的 isMobile 永远停在注册那一刻的值。视口从宽变窄（或反过来）后不更新，
+       * `if (isMobile) enterMobileDetail()` 就永远不执行 —— hash 停在 #team，停在列表页。
+       * 遮蔚后，本函数体内后续所有 isMobile 判定（包含下面对 localStorage
+       * markus_nav_agentId 的消费）都是派发时的真实视口宽度。
+       */
+      const isMobile = window.matchMedia('(max-width: 767px)').matches;
       const detail = (e as CustomEvent<{ page: string; params?: Record<string, string> }>).detail;
       if (resolvePageId(detail.page) === PAGE.TEAM) {
         if (detail.params?.agentId) {
@@ -4840,6 +4884,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <AgentStatusDot agent={currentAgent} />
                   )}
                 </div>
+                {/* 移动端：新对话独立成一个显眼按钮，不再藏在更多菜单里（Owner 2026-11-02） */}
+                {chatMode === 'direct' && currentAgent && !isProfileTab(mainTab) && (
+                  <button
+                    onClick={newConversation}
+                    className="shrink-0 flex items-center gap-1 text-[11px] font-semibold text-white bg-brand-600 hover:bg-brand-700 px-2.5 py-1.5 rounded-lg shadow-sm transition-colors"
+                  >
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+                      <path d="M12 5v14M5 12h14" />
+                    </svg>
+                    {t('page.newChat')}
+                  </button>
+                )}
                 <button
                   onClick={() => setShowMoreMenu(o => !o)}
                   aria-label={t('page.moreActions', { defaultValue: '更多操作' })}
@@ -4872,15 +4928,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" /></svg>
                       {t('page.findInConversation')}
                     </button>
-                    {chatMode === 'direct' && !isProfileTab(mainTab) && (
-                      <button
-                        onClick={() => { setShowMoreMenu(false); newConversation(); }}
-                        className="w-full flex items-center gap-2 px-3 py-2 text-xs text-fg-secondary hover:bg-surface-overlay text-left"
-                      >
-                        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M12 5v14M5 12h14" /></svg>
-                        {t('page.newChat')}
-                      </button>
-                    )}
                     {chatMode === 'direct' && !isProfileTab(mainTab) && (
                       <button
                         ref={historyBtnRef}
@@ -4945,6 +4992,9 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             const headerDesc = chatMode === 'direct' ? (currentAgent?.role || '') : chatMode === 'channel' ? (activeTeam?.description || '') : '';
             const headerAvatarUrl = chatMode === 'direct' ? currentAgent?.avatarUrl : undefined;
             const headerAvatarName = headerName || 'U';
+            // 当前 agent 的「在等谁」角标。取不到就 null，header 里什么都不渲染（不占位、
+            // 不显示「未知」）——header 是高频扫读区，宁缺勿滥。
+            const headerStage = chatMode === 'direct' && agentStage ? stageLabel(agentStage.stage) : null;
             const showEntityInfo = (chatMode === 'direct' && selectedAgent) || (chatMode === 'channel' && activeTeamId);
 
             return (
@@ -5050,6 +5100,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                       {chatMode === 'direct' && currentAgent && (
                         <AgentStatusBadge agent={currentAgent} tasks={tasks} onViewProfile={handleViewProfile} />
                       )}
+                      {/* 和 AgentStatusBadge 并排：状态徽标回答「这个人是谁/在不在」，
+                          stage 回答「他现在卡在什么事上」。两者不同维度，所以不合并。 */}
+                      {headerStage && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 ${headerStage.cls}`} title={headerStage.hint}>
+                          {headerStage.label}
+                        </span>
+                      )}
                     </div>
                     {(chatMode === 'direct' || (chatMode === 'channel' && activeTeamId)) && (
                       editingHeaderDesc ? (
@@ -5092,7 +5149,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <button
                       onClick={newConversation}
                       title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                      className="text-xs font-semibold text-white bg-brand-600 hover:bg-brand-700 px-3.5 py-1.5 rounded-lg shadow-sm transition-colors flex items-center gap-1"
                     >
                       {t('page.newChatButton')}
                     </button>

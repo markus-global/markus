@@ -1,7 +1,10 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, fetchThreads, type ThreadAPI, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+// stage 角标必须和收件箱共用同一套文案/配色（InboxCard 是唯一事实源），
+// 否则同一个 stage 会在「收件箱」和「任务板」上是两种颜色、两套说法。
+import { StageChip } from '../components/InboxCard.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -3467,9 +3470,10 @@ function QuickAddRow({
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, stageByRef, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
+  stageByRef?: Map<string, string>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
   onRowDragStart: (e: React.DragEvent, idx: number) => void; onRowDragEnd: (e: React.DragEvent) => void;
   handleStatusChange: (row: BacklogRow, val: string) => Promise<void>;
@@ -3484,6 +3488,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   const priorityBadges = useMemo(() => buildPriorityBadges(t), [t]);
   const status = row.data.status;
   const priority = row.data.priority;
+  const stage = stageByRef?.get(row.data.id);
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = (() => {
     const p = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
@@ -3508,6 +3513,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
           {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500">⚠</span>}
+          <StageChip stage={stage} />
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
@@ -3556,6 +3562,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
         <span className="truncate">{row.data.title}</span>
         {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500 shrink-0">⚠</span>}
+        <StageChip stage={stage} />
       </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
@@ -3600,11 +3607,13 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   );
 }
 
-function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask }: {
+function BacklogTable({ tasks, requirements, agents, projects, stageByRef, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask }: {
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
   agents: AgentInfo[];
   projects: ProjectInfo[];
+  /** 任务/需求 id → 线程 stage（看板卡片与列表行共用同一份角标数据源） */
+  stageByRef?: Map<string, string>;
   onTaskClick: (t: TaskInfo) => void;
   onReqClick: (r: RequirementInfo) => void;
   onRefresh: () => void;
@@ -3791,7 +3800,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} stageByRef={stageByRef} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
                 ))}
                 {/* Quick-capture placeholder — pinned to the bottom of the 待办 group. */}
                 {groupId === 'todo' && (
@@ -3802,7 +3811,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} stageByRef={stageByRef} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
           ))
         )}
         {rows.length === 0 && (
@@ -4948,6 +4957,35 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
   const [allRequirements, setAllRequirements] = useState<RequirementInfo[]>(previewData?.allRequirements ?? []);
   const [loading, setLoading] = useState(previewData ? false : true);
+
+  // ── 任务卡片上的 stage 角标（实现文档 §5.5）───────────────────────────────
+  // 为什么要单独拉一次 /threads，而不复用 InboxCard 的 useThreads：
+  //   useThreads 自带 loading/error 状态，用它就等于把「线程聚合接口挂了」放大成
+  //   整页 loading/报错。而 stage 角标是**附加信息**——拿不到就该退回原来的卡片，
+  //   绝不能因为一个锦上添花的接口把任务板本身拖到不可用。所以这里自己维护一份，
+  //   失败 catch 掉、静默退化（没有角标 = 老样子）。
+  // 用 Map<ref, thread> 而不是每次渲染 filter：卡片列表很长，O(1) 查一次就够。
+  const [threadByRef, setThreadByRef] = useState<Map<string, ThreadAPI>>(new Map());
+  useEffect(() => {
+    if (previewMode) return; // 预览态没有真实后端，别去打空请求
+    let cancelled = false;   // 组件卸载/切页后别再 setState（React 会警告，也会覆盖新数据）
+    void fetchThreads()
+      .then(({ threads: rows }) => {
+        if (cancelled) return;
+        // thread.ref 就是 task.id（形如 tsk_xxx），所以直接按 ref 建索引
+        setThreadByRef(new Map(rows.map(th => [th.ref, th])));
+      })
+      .catch(() => { /* 静默：角标拿不到就不显示，不影响任务板 */ });
+    return () => { cancelled = true; };
+  }, [previewMode, isActive]); // isActive：切回任务页时重新取一次，避免角标显示陈旧的 stage
+  // 从 threadByRef 派生出「id → stage」的只读视图，交给列表行渲染器。
+  // 为什么不直接把整个 ThreadAPI 传下去：列表行只关心 stage 一个字段，
+  // 传大对象会让「谁是 stage 的写者」变模糊；这里只有一处派生、一处消费。
+  const stageByRef = useMemo(() => {
+    const m = new Map<string, string>();
+    for (const [ref, th] of threadByRef) m.set(ref, th.stage);
+    return m;
+  }, [threadByRef]);
   const [flash, setFlash] = useState('');
   const openCreateReq = useCallback(() => {
     setReqProjectId(selectedProjectId ?? '');
@@ -6586,6 +6624,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             requirements={filteredReqs}
             agents={agents}
             projects={projects}
+            stageByRef={stageByRef}
             onTaskClick={task => handleSelectTask(task)}
             onReqClick={req => handleSelectReq(req)}
             onRefresh={() => { refreshBoard(); refreshRequirements(); }}
@@ -6753,6 +6792,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                               const dep = boardTaskMap.get(id);
                               return dep && dep.status === 'completed';
                             }));
+                            // stage 角标只显示「在等人」的四类（person:*）。
+                            // working/idle 对一张任务卡没有信息量，反而会让**每**张卡都挂一个
+                            // 灰标签，把真正需要人处理的信号洗掉——只突出要人动的那些。
+                            const taskThread = threadByRef.get(task.id);
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
@@ -6771,6 +6814,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
                                   {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
+                                  {/* 等谁动 —— 唯一渲染点是 StageChip，看板卡片与列表行共用，不在这里另算 */}
+                                  <StageChip stage={taskThread?.stage} />
                                   {cardAbnormalBlocked && <span className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0 bg-red-500/15 text-red-500 font-medium">⚠</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>

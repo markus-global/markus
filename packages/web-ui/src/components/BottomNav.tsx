@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, MOBILE_TABS } from '../routes.ts';
 import { api, type NotificationInfo } from '../api.ts';
 import { useUnreadCounts, sumTeamChatUnread } from '../hooks/useUnreadCounts.ts';
+import { readAttentionCount, subscribeAttentionCount } from '../lib/attentionCount.ts';
 
 interface Props {
   currentPage: PageId;
@@ -28,7 +29,7 @@ const TOP_ALWAYS_VISIBLE_PX = 56;
 
 export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   const { t } = useTranslation('nav');
-  const [unreadCount, setUnreadCount] = useState(0);
+  const [unreadCount, setUnreadCount] = useState(readAttentionCount);
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
 
@@ -72,25 +73,10 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   // 而不是全量 counts 求和——孤儿 session / 无映射会话不再污染徽标数字。
   const teamUnread = useMemo(() => sumTeamChatUnread(chatUnreadCounts, sessionAgentMap), [chatUnreadCounts, sessionAgentMap]);
 
-  const fetchUnread = useCallback(async () => {
-    try {
-      const n = await api.notifications.list(userId, false);
-      setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
-    } catch { /* */ }
-  }, [userId]);
-
-  useEffect(() => {
-    fetchUnread();
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchUnread();
-    }, 30_000);
-    const onChanged = () => fetchUnread();
-    window.addEventListener('markus:notifications-changed', onChanged);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('markus:notifications-changed', onChanged);
-    };
-  }, [fetchUnread]);
+  // 概览徽标：订阅概览页发布的待办数（唯一计算点）。
+  // 之前这里只拉「未读通知」—— 用户把通知点完那一刻徽标就永远空了，
+  // 而真正等他的待批审批在审批表里，根本不在通知里。
+  useEffect(() => subscribeAttentionCount(setUnreadCount), []);
 
   return (
     <nav
@@ -101,7 +87,7 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
     >
       {MOBILE_TABS.map(tab => {
         const isActive = tab.group.includes(currentPage);
-        const isNotif = tab.id === PAGE.NOTIFICATIONS;
+        const isHome = tab.id === PAGE.HOME;
         const isTeam = tab.id === PAGE.TEAM;
 
         return (
@@ -126,7 +112,8 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
               >
                 <path d={PAGE_ICONS[tab.id]!} />
               </svg>
-              {isNotif && unreadCount > 0 && (
+              {/* 未读数挂在概览 tab（通知页已移除） */}
+              {isHome && unreadCount > 0 && (
                 <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full leading-none">
                   {unreadCount > 99 ? '99+' : unreadCount}
                 </span>

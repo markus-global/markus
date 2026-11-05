@@ -93,6 +93,8 @@ export { computeCacheHitRate, aggregateCacheHitRate, computeReplayRatio } from '
 export { MemoryStore, parseNotebook, serializeNotebook, loadNotebook, saveNotebook } from './memory/store.js';
 export type { NotebookEntry, NotebookEntryManaged } from './memory/store.js';
 export { PendingCallbackRegistry, pendingCallbackRegistry } from './pending-callback.js';
+export { setThreadWakeDeliverer, emitThreadWake, hasThreadWakeDeliverer } from './thread-wake-bus.js';
+export type { ThreadWakeDeliverer } from './thread-wake-bus.js';
 export type { PendingCallback, CallbackResult, CallbackPersistence } from './pending-callback.js';
 export type { IMemoryStore, MemoryEntry, ConversationSession } from './memory/types.js';
 
@@ -388,3 +390,39 @@ export {
   type TurnSessionRestorePayload,
   type TurnSessionHintInput,
 } from './session-hint.js';
+
+// ── Thread / Trigger / Router（设计见 workspace/markus-superagent-0{1,2}-*.md）────
+export {
+  resolveThreadRef,
+  threadEntityKeys,
+  isExternalRef,
+  type ResolvedThread,
+  type ResolvableItem,
+} from './thread-resolver.js';
+export {
+  ThreadService,
+  type RouteInput,
+  type RouteResult,
+  type ThreadStoreLike,
+  type DispositionStoreLike,
+  type ThreadRowLike,
+  type SubscriptionLike,
+} from './thread-service.js';
+export {
+  SourceRegistry,
+  verifyHmac,
+  signatureFromHeader,
+  sourceIdempotencyKey,
+  createGenericWebhookAdapter,
+  type SourceAdapter,
+  type RawEvent,
+  type NormalizedEvent,
+  type GenericWebhookPayload,
+} from './event-source.js';
+export {
+  EventIngress,
+  type IngressStatus,
+  type IngressResult,
+  type IngressDeps,
+  type DispatchTarget,
+} from './event-ingress.js';

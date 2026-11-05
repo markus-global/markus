@@ -1,7 +1,8 @@
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
-import { type AuthUser } from '../api.ts';
-import { NotificationBell } from './NotificationBell.tsx';
+import { api, type AuthUser } from '../api.ts';
+import { readAttentionCount, subscribeAttentionCount } from '../lib/attentionCount.ts';
 import { UserAccountMenu } from './UserAccountMenu.tsx';
 
 interface Props {
@@ -29,6 +30,10 @@ export function Sidebar({
   keyboardFocusPageId, keyboardPaneActive,
 }: Props) {
   const { t } = useTranslation(['nav', 'common']);
+  // 待办数只有一个计算点：概览页的 actionItems.length（见 lib/attentionCount）。
+  // 这里只订阅，不再自己算「未读 + 待批」—— 曾经三个口径各算各的，移动端因此永远是 0。
+  const [noticeCount, setNoticeCount] = useState(readAttentionCount);
+  useEffect(() => subscribeAttentionCount(setNoticeCount), []);
 
   return (
     <aside data-keyboard-pane="l0" className="markus-app-sidebar h-dvh bg-surface-secondary flex flex-col shrink-0 overflow-hidden">
@@ -62,19 +67,6 @@ export function Sidebar({
                 )}
                 {collapsed && si > 0 && <div className="my-3" />}
                 {items.map((item) => {
-                  if (item.id === PAGE.NOTIFICATIONS) {
-                    return (
-                      <NotificationBell
-                        key={item.id}
-                        sidebarMode
-                        collapsed={collapsed}
-                        userId={authUser?.id}
-                        label={t(item.id)}
-                        iconPath={PAGE_ICONS[item.id]}
-                        isActive={currentPage === item.id}
-                      />
-                    );
-                  }
                   const isActive = currentPage === item.id;
                   const isKbFocus = keyboardPaneActive && keyboardFocusPageId === item.id;
                   return (
@@ -83,7 +75,7 @@ export function Sidebar({
                       data-l0-page-id={item.id}
                       onClick={() => onNavigate(item.id)}
                       title={collapsed ? t(item.id) : undefined}
-                      className={`w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-lg text-[13px] font-medium mb-0.5 transition-colors text-fg-primary ${
+                      className={`relative w-full flex items-center ${collapsed ? 'flex-col justify-center px-1 py-1.5 gap-0.5' : 'gap-3 px-3 py-[7px]'} rounded-lg text-[13px] font-medium mb-0.5 transition-colors text-fg-primary ${
                         isKbFocus
                           ? 'bg-brand-500/25 ring-1 ring-inset ring-brand-500/40'
                           : isActive
@@ -96,6 +88,18 @@ export function Sidebar({
                         ? <span className="text-[9px] leading-tight truncate w-full text-center">{t(item.id)}</span>
                         : <span className="truncate">{t(item.id)}</span>
                       }
+                      {item.id === PAGE.HOME && noticeCount > 0 && (
+                        collapsed ? (
+                          /* 收起态：数字角标钉在图标右上角——收起时也不能丢未读数 */
+                          <span className="absolute top-0.5 right-1.5 min-w-[13px] h-[13px] px-[3px] rounded-full bg-red-500 text-white text-[8px] font-bold flex items-center justify-center tabular-nums">
+                            {noticeCount > 9 ? '9+' : noticeCount}
+                          </span>
+                        ) : (
+                          <span className="ml-auto shrink-0 text-[10px] px-1.5 py-0.5 rounded-full bg-red-500 text-white font-semibold">
+                            {noticeCount > 99 ? '99+' : noticeCount}
+                          </span>
+                        )
+                      )}
                     </button>
                   );
                 })}

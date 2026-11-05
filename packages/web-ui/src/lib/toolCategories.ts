@@ -31,6 +31,10 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
   { id: 'reasoning', prefixes: ['decide'] },
+  // 责任域工具（resource_bind / resource_release / resource_owners）：agent 自己声明
+  // 「我长期盯哪个外部资源、到哪一档」。不归到这里就会掉进「其他」——
+  // 而「它自己能动什么」正是监督时需要一眼看到的那组，不能隐在杂项里。
+  { id: 'resources', prefixes: ['resource_'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents', 'invoke_coding_tool', 'coding_tool_apply'] },
   { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },

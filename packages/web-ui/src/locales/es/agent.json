@@ -239,6 +239,10 @@
           "title": "Memoria y latido",
           "hint": "Memoria a largo plazo · sesiones · ritmo de latido"
         },
+        "governance": {
+          "title": "Autonomía y supervisión",
+          "hint": "Nivel de autonomía · recursos asignados · decisiones recientes de enrutamiento"
+        },
         "usage": {
           "title": "Uso y almacenamiento",
           "hint": "Tokens de por vida · solicitudes · uso de disco",

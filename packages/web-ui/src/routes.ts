@@ -15,6 +15,19 @@ export const PAGE = {
   SETTINGS: 'settings',
   NOTIFICATIONS: 'notifications',
   SEARCH: 'search',
+  /**
+   * 路由台：系统做过什么决定、以及理由（实现文档 §5.4）。
+   *
+   * 它是 **审计面**，不是待办清单 ——
+   *   行动台（Inbox）= 「现在要我做什么」；路由台 = 「系统替我做/没做什么决定」。
+   * 两者语义不同，才需要两个面。不占侧栅导航（Owner 砍过导航密度），从概览进入。
+   */
+  ROUTER: 'router',
+  /**
+   * Thread 视图（实现文档 §5.3）：把「一条流的来龙去脉」合成一条按时间排序的流。
+   * 与路由台的区别：路由台是**全局**决定清单（谁被接单/忽略），这里只回答**单条流**经历了什么。
+   */
+  THREAD: 'thread',
 } as const;
 
 export type PageId = (typeof PAGE)[keyof typeof PAGE];
@@ -54,6 +67,8 @@ const PAGE_HASH: Record<PageId, string> = {
   [PAGE.SETTINGS]: 'settings',
   [PAGE.NOTIFICATIONS]: 'notifications',
   [PAGE.SEARCH]: 'search',
+  [PAGE.ROUTER]: 'router',
+  [PAGE.THREAD]: 'thread',
 };
 
 const HASH_TO_PAGE: Record<string, PageId> = Object.fromEntries(
@@ -109,6 +124,10 @@ export const PAGE_ICONS: Record<string, string> = {
   [PAGE.STORE]:        'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88Z',
   [PAGE.SETTINGS]:      'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
   [PAGE.NOTIFICATIONS]: 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0',
+  // 路由台 → 分流节点（一条信号去了谁那儿）
+  [PAGE.ROUTER]:        'M6 3v12 M18 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M6 21a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M18 9a9 9 0 0 1-9 9',
+  // Thread 视图 → 竖时间线（一条流沿途的节点）
+  [PAGE.THREAD]:        'M8 3v18 M8 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M8 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M8 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4z M13 5h8 M13 12h8 M13 19h5',
 };
 
 // ── Desktop sidebar structure ───────────────────────────────────────────────
@@ -121,9 +140,10 @@ export const SIDEBAR_SECTIONS = [
 ] as const;
 
 export const SIDEBAR_NAV: Array<{ id: PageId; label: string; section: string }> = [
-  { id: PAGE.NOTIFICATIONS, label: 'Notifications', section: 'quick' },
+  // 通知不再占任何导航：桌面与移动端均已移除，内容在概览「等你处理」+ 历史弹窗（Owner 2026-11-02）。
   { id: PAGE.HOME,         label: 'Overview',     section: 'workspace' },
   { id: PAGE.TEAM,         label: 'Team',         section: 'workspace' },
+  // 收件箱已整合进概览页（Owner 2026-11-02）：独立页已删除，不占导航。
   { id: PAGE.WORK,         label: 'Tasks',        section: 'workspace' },
   { id: PAGE.DELIVERABLES, label: 'Output',       section: 'workspace' },
   { id: PAGE.BUILDER,      label: 'Builder',      section: 'build' },
@@ -155,7 +175,8 @@ export type MobileTabId = PageId;
 export const MOBILE_TABS: Array<{ id: MobileTabId; label: string; group: PageId[] }> = [
   { id: PAGE.HOME,          label: 'Overview',      group: [PAGE.HOME] },
   { id: PAGE.TEAM,          label: 'Team',          group: [PAGE.TEAM] },
-  { id: PAGE.NOTIFICATIONS, label: 'Notifications', group: [PAGE.NOTIFICATIONS] },
+  // 通知页已彻底移除（Owner 2026-11-02）：桌面早已无入口，内容在概览「等你处理」+ 历史弹窗里。
+  // 未读数改由概览 tab 的徽标承载。
   { id: PAGE.WORK,          label: 'Tasks',         group: [PAGE.WORK] },
   { id: PAGE.DELIVERABLES,  label: 'Output',        group: [PAGE.DELIVERABLES] },
 ];

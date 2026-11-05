@@ -56,6 +56,18 @@ export interface StorageBridge {
   auditRepo?: any;
   statusTransitionRepo?: any;
   readCursorRepo?: any;
+  // Thread / Trigger / Router（设计见 workspace/markus-superagent-02-*.md §2）
+  threadRepo?: any;
+  dispositionRepo?: any;
+  threadEventRepo?: any;
+  resourceBindingRepo?: any;
+  eventSourceRepo?: any;
+  /**
+   * 触发器登记。之前这里根本没有它 —— `SqliteTriggerRepo` 有实现、有导出，
+   * 但装配层从来没创建过实例，于是 `triggers` 表永远是 0 行。
+   * 同一条链断了三节：仓储没装配 → 没注入 ingress → 没人写。
+   */
+  triggerRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
   pendingCallbackRepo?: any;
@@ -254,6 +266,12 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       activityRepo: new storage.SqliteActivityRepo(db),
       executionStreamRepo: new storage.SqliteExecutionStreamRepo(db),
       mailboxRepo: new storage.SqliteMailboxRepo(db),
+      threadRepo: new storage.SqliteThreadRepo(db),
+      dispositionRepo: new storage.SqliteDispositionRepo(db),
+      threadEventRepo: new storage.SqliteThreadEventRepo(db),
+      resourceBindingRepo: new storage.SqliteResourceBindingRepo(db),
+      eventSourceRepo: new storage.SqliteEventSourceRepo(db),
+      triggerRepo: new storage.SqliteTriggerRepo(db),
       decisionRepo: new storage.SqliteDecisionRepo(db),
       notificationRepo: new storage.SqliteNotificationRepo(db),
       approvalRepo: new storage.SqliteApprovalRepo(db),
