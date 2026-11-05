@@ -22,6 +22,7 @@ import {
   type UserInputQuestion,
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
+  isTerminal,
   MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
@@ -132,7 +133,7 @@ function resolveCurrentTaskId(
   // Clean up stale local activeTasks entries
   for (const t of activeTasks) {
     const task = ts.getTask(t.taskId);
-    if (task && ['completed', 'failed', 'cancelled', 'archived'].includes(task.status)) {
+    if (task && isTerminal(task.status)) {
       log.warn('Removing stale task from agent activeTasks', { agentId, taskId: t.taskId, status: task.status });
       agentObj?.removeActiveTask(t.taskId);
     }
@@ -3367,11 +3368,7 @@ export class AgentManager {
           log.warn('Task not found during rehydration, skipping', { agentId, taskId });
           continue;
         }
-        if (
-          task.status === 'completed' ||
-          task.status === 'cancelled' ||
-          task.status === 'failed'
-        ) {
+        if (isTerminal(task.status)) {
           log.debug('Task already terminal, skipping rehydration', {
             agentId,
             taskId,

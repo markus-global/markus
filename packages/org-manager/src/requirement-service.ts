@@ -695,7 +695,7 @@ export class RequirementService implements ApprovalTargetPort {
     // 转终态 = 此前投出的「请审阅 / 请处理」不再为真 → 就在**这一个迁移点**撤回。
     // 不放到投递侧做二次判定：那会变成第二个执行点，两处迟早漂移。
     if (
-      (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') &&
+      TERMINAL_REQUIREMENT_STATUSES.has(newStatus) &&
       req.createdBy && this.agentManager
     ) {
       try {
@@ -710,7 +710,7 @@ export class RequirementService implements ApprovalTargetPort {
     // req_2c9595…completed），于是待办列表给一条已完成的需求挂着「待审批」徽标 ——
     // 界面没有撒谎，库里就是留了一条本该关掉的记录。
     // 与上面撤回同一时机、同一判据：终态只在这一个迁移点发生。
-    if (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') {
+    if (TERMINAL_REQUIREMENT_STATUSES.has(newStatus)) {
       if (this.hitlService) {
         try {
           this.hitlService.cancelApprovalsByDetail(
@@ -814,8 +814,6 @@ export class RequirementService implements ApprovalTargetPort {
               'Please review the results and decide:',
               `1. If the requirement is fully satisfied, complete it: requirement_update_status(requirement_id="${requirementId}", status="completed")`,
               `2. If more work is needed, create additional tasks with task_create(requirement_id="${requirementId}", ...)`,
-              '',
-              '**Stop condition:** make the single decision above, then call `end_turn`. At most ONE notification; no process narration.',
             ].join('\n'),
             requirementId,
             // 事实指纹：只由结构化数据（任务 id + 终态）构成。与 mailboxDedupKey 配合，
@@ -1005,15 +1003,6 @@ export class RequirementService implements ApprovalTargetPort {
         parts.push(`[REQUIREMENT APPROVED] Your proposed requirement "${req.title}" (ID: ${req.id}) has been approved.`);
         parts.push('');
         parts.push(`The requirement is now **in progress**. You should create tasks to fulfill it.`);
-        parts.push('');
-        // 止损条件（2026-11-04 实测事故）：审批唤醒没有「做到哪算完」的约束，
-        // 于是一次唤醒里连发 4 条 notify_user（含相互矛盾的中间态 + 自我更正）。
-        // 工具是有的（end_turn），缺的是判据——把它写进载荷，而不是指望 agent 自觉。
-        parts.push('**Stop condition — do not skip:**');
-        parts.push('1. Create (or confirm) the task cards, then call `end_turn`. Your work for this wake-up is DONE at that moment.');
-        parts.push('2. Do NOT narrate the process. At most ONE notification, and only to report the final card set.');
-        parts.push('3. If you think you need an extra card, fold it into an existing card — do not add cards and re-announce.');
-        parts.push('4. If your own judgement was wrong, fix the card directly; never send an "I was wrong" notification.');
         parts.push('');
         parts.push(`**Title:** ${req.title}`);
         parts.push(`**Description:** ${req.description}`);

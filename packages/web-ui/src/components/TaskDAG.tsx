@@ -1,5 +1,6 @@
 import { useMemo, useCallback, useState, useEffect, useRef, useSyncExternalStore } from 'react';
 import { useTranslation } from 'react-i18next';
+import { TERMINAL_STATUSES, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
 import {
   ReactFlow,
   Background,
@@ -328,7 +329,7 @@ const DAG_FILTER_GROUPS = [
   { id: 'todo',        statuses: new Set(['pending']),                                           color: { bg: 'bg-blue-500/10', border: 'border-blue-500/30', text: 'text-blue-500' } },
   { id: 'in_progress', statuses: new Set(['in_progress', 'blocked']),                           color: { bg: 'bg-amber-500/10', border: 'border-amber-500/30', text: 'text-amber-600' } },
   { id: 'review',      statuses: new Set(['review']),                                           color: { bg: 'bg-brand-500/10', border: 'border-brand-500/30', text: 'text-brand-500' } },
-  { id: 'done',        statuses: new Set(['completed', 'failed', 'rejected', 'cancelled', 'archived']),     color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
+  { id: 'done',        statuses: new Set<string>(TERMINAL_STATUSES),            color: { bg: 'bg-green-500/10', border: 'border-green-500/30', text: 'text-green-600' } },
 ] as const;
 
 const ALL_DAG_GROUP_IDS = new Set(DAG_FILTER_GROUPS.map(g => g.id));
@@ -539,9 +540,8 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     // requirement must NOT disappear just because the "done" group is
     // unchecked). This keeps the full dependency picture of an in-flight
     // requirement intact for a better visualization experience.
-    const CLOSED_REQ_STATUSES = new Set(['completed', 'rejected', 'cancelled', 'archived']);
     const anchorReqIds = new Set(
-      filteredReqs.filter(r => !CLOSED_REQ_STATUSES.has(r.status)).map(r => r.id),
+      filteredReqs.filter(r => !TERMINAL_REQUIREMENT_STATUSES.has(r.status)).map(r => r.id),
     );
     const anchorTaskIds = new Set<string>();
     for (const r of requirements) {

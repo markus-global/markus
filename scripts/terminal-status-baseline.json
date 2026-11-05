@@ -1,0 +1,74 @@
+{
+  "version": 1,
+  "note": "终态裸比较存量基线（P3 / tsk_1e766b22）。门禁 terminal-status-predicate 双向棘轮：现状比这里多 → 红；比这里少 → 也红（同一次提交里删掉条目或跑 --prune-terminal-baseline）。每条的 why 必须回答『这个 status 判断的是哪个问题』。新代码一律用 isTerminal(status)；只有当这里确实是『某个具体状态』而不是『是否已结束』时才允许登记。",
+  "files": {
+    "packages/core/src/agent-manager.ts": {
+      "count": 8,
+      "why": "按**具体状态**分桶（completed 数 / failed 数）与 remind 分流（rejected / cancelled 各自通知文案），不是『结束了吗』；计数口径还含 P0 登记的 accepted 兼容分支。"
+    },
+    "packages/core/src/agent-metrics.ts": {
+      "count": 4,
+      "why": "指标按具体状态分桶计数（completed / failed / cancelled / 完成耗时），每个桶各自回答一个业务问题，合并会丢区分度。"
+    },
+    "packages/core/src/tools/task-tools.ts": {
+      "count": 6,
+      "why": "工具层按具体状态分支：只有 completed 才算『已完成』、cancelled|failed 才发通知、cancelled 才回滚 pending 卡；子任务计数同样只数 completed。"
+    },
+    "packages/org-manager/src/api-server.ts": {
+      "count": 5,
+      "why": "路由守卫按**特定状态子集**禁动作：archived/rejected 是不可 resume/run 的『关闭后不可再驱动』集合，completed 允许重跑 —— 与 isTerminal 不是同一个问题。"
+    },
+    "packages/org-manager/src/archive-service.ts": {
+      "count": 1,
+      "why": "归档保留天数按状态分档（completed 与 failed 不同阈值），是策略参数不是终态判定。"
+    },
+    "packages/org-manager/src/event-routes.ts": {
+      "count": 1,
+      "why": "actionable 事件按 blocked|failed 判定『是否需要人介入』，blocked 不是终态，这个组合本身就不是终态集。"
+    },
+    "packages/org-manager/src/report-service.ts": {
+      "count": 3,
+      "why": "日报统计按具体状态分桶（完成任务数 / 失败数 / 有耗时数据的完成数）。"
+    },
+    "packages/org-manager/src/requirement-service.ts": {
+      "count": 7,
+      "why": "checkCompletion 的 allDone 用 completed|cancelled|archived 判『已成功收尾』（failed/rejected 不算），这是需求侧独立议题（P0 已登记残余），不是终态判定；另含按具体状态的迁移分支。"
+    },
+    "packages/org-manager/src/scheduled-task-runner.ts": {
+      "count": 3,
+      "why": "状态集合混入非终态（in_progress/review/blocked/pending），判定的是『可重置 / 可推进』，不是『已结束』。"
+    },
+    "packages/org-manager/src/task-service.ts": {
+      "count": 32,
+      "why": "blockerVerdict 与子任务/统计分支按具体状态区分语义：completed|archived = satisfied、cancelled = dead、failed 走可恢复判定 —— 三者的动作不同，压成 isTerminal() 会抹掉『依赖满足 vs 依赖判死』的区别。"
+    },
+    "packages/storage/src/sqlite-storage.ts": {
+      "count": 3,
+      "why": "completed_at 只在真正跑完的三种状态落库（rejected/archived 没有执行过程，不该有完成时间戳），是持久层字段语义。"
+    },
+    "packages/web-ui/src/components/ProjectSidebar.tsx": {
+      "count": 3,
+      "why": "排序与可见性只关心 archived 这一个状态（归档项目排后面 / 默认隐藏）。"
+    },
+    "packages/web-ui/src/components/SearchModal.tsx": {
+      "count": 2,
+      "why": "搜索结果按具体状态给徽标配色（rejected 红 / completed 绿），展示分类。"
+    },
+    "packages/web-ui/src/components/TaskDAG.tsx": {
+      "count": 3,
+      "why": "节点配色按具体状态区分（completed 绿 / blocked|failed 红），并且要保留 P0 登记的 accepted 兼容分支。"
+    },
+    "packages/web-ui/src/pages/Home.tsx": {
+      "count": 6,
+      "why": "首页图标的每个状态各自一枚图形（completed 勾 / failed|rejected 叉 / cancelled 横线），展示分类。"
+    },
+    "packages/web-ui/src/pages/Search.tsx": {
+      "count": 2,
+      "why": "搜索结果徽标配色按具体状态（同 SearchModal）。"
+    },
+    "packages/web-ui/src/pages/Work.tsx": {
+      "count": 38,
+      "why": "展示层按具体状态给图标/颜色/文案，以及『依赖已满足』『子任务完成计数』『项目按 archived 排序』等具体问题；真·终态判定（要求是否可编辑、依赖候选过滤）已在本轮改用 isTerminal()。"
+    }
+  }
+}

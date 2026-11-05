@@ -4,6 +4,7 @@ import {
   ARCHIVE_TERMINAL_AFTER_DAYS,
   ARCHIVE_REQUIREMENT_AFTER_DAYS,
   ARCHIVE_SCAN_INTERVAL_MS,
+  TERMINAL_STATUSES,
   type ArchivePolicy,
 } from '@markus/shared';
 import type { TaskService } from './task-service.js';
@@ -12,8 +13,13 @@ import type { RequirementService } from './requirement-service.js';
 
 const log = createLogger('archive-service');
 
-/** Statuses eligible for auto-archive (all terminal except archived itself). */
-const ARCHIVABLE_STATUSES = new Set(['completed', 'failed', 'rejected', 'cancelled']);
+/**
+ * Statuses eligible for auto-archive: every terminal status except `archived` itself.
+ * Derived from the single terminal constant so a newly added terminal status cannot
+ * be silently un-archivable (and vice versa).
+ */
+const ARCHIVABLE_STATUSES: ReadonlySet<string> =
+  new Set([...TERMINAL_STATUSES].filter((s) => s !== 'archived'));
 
 /** If any comment is newer than this threshold, the item has active discussion. */
 const ACTIVE_DISCUSSION_DAYS = 7;

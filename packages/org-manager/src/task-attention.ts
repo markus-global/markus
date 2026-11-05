@@ -21,6 +21,8 @@
  * comment never enters another agent's context while that agent is working.
  */
 
+import { isTerminal } from '@markus/shared';
+
 export type CommentAuthorType = 'agent' | 'human';
 
 export interface CommentAttentionInput {
@@ -56,10 +58,16 @@ export interface CommentAttentionDecision {
   reason: WakeReason;
 }
 
-const TERMINAL_STATUSES = new Set(['completed', 'accepted', 'archived', 'failed', 'rejected', 'cancelled']);
-
+/**
+ * 终态判定的唯一入口是 `@markus/shared#isTerminal` —— 本函数只是它在本模块里的名字。
+ *
+ * 这里曾经有一份私有字面量，其中包含一个 FSM 里根本不存在的 `'accepted'`：它咬不到
+ * 任何真实状态（于是既不保护什么），又让人误以为「这里已经判过终态了」。
+ * 保留函数名是为了让调用方（`task-service.ts` 的注释注入分派）和测试继续用同一个
+ * 词表述意图，而不是让每个调用方去重新拼一个集合。
+ */
 export function isTerminalTaskStatus(status: string | undefined): boolean {
-  return !!status && TERMINAL_STATUSES.has(status);
+  return isTerminal(status);
 }
 
 /**

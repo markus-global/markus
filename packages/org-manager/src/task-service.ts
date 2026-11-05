@@ -19,6 +19,7 @@ import {
   type TaskSortField,
   isValidTaskTransition,
   TERMINAL_STATUSES,
+  isTerminal,
   TERMINAL_REQUIREMENT_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
@@ -84,8 +85,10 @@ const log = createLogger('task-service');
  * Board buckets that accumulate unbounded over an org's lifetime (archived tasks
  * alone can reach tens of MB). The board endpoint caps these; active buckets
  * (pending/in_progress/blocked/review) stay complete.
+ *
+ * 分桶直接用 `TERMINAL_STATUSES`（`@markus/shared`）。这里曾经有一份逐字相同的
+ * 第二定义 —— 两份定义只要一份被改，分页就会静静错位。
  */
-const TERMINAL_BOARD_STATUSES: ReadonlyArray<TaskStatus> = ['completed', 'failed', 'rejected', 'cancelled', 'archived'];
 
 /** Format a Date as local time with timezone, e.g. "2026-03-17 22:45:59 (Asia/Shanghai, UTC+08:00)" */
 function formatLocalTimestamp(d: Date = new Date()): string {
@@ -2337,7 +2340,6 @@ export class TaskService implements ApprovalTargetPort {
           if (entry.type === 'status') {
             if (entry.content === 'completed' || entry.content === 'execution_finished') {
               const currentTask = this.tasks.get(taskId);
-              const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived', 'blocked'].includes(currentTask.status);
               const didSubmit = this.tasksSubmittedForReview.has(taskId);
               if (didSubmit) {
                 this.tasksSubmittedForReview.delete(taskId);
@@ -2346,9 +2348,12 @@ export class TaskService implements ApprovalTargetPort {
               // If execution finished but agent didn't submit, auto-retry so the agent
               // gets another chance to call task_submit_review.
               // Skip retry if submitForReview was actually called (task may be back in
-              // in_progress due to a fast reviewer calling requestRevision) or if the
-              // task is in a terminal/blocked state.
-              if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
+              // in_progress due to a fast reviewer calling requestRevision).
+              //
+              // 旧的 `alreadyTerminal` 守卫把 review / blocked 也列进来，但紧随其后的条件
+              // 要求 `status === 'in_progress'` —— 那些成员永远不可能为真。它是一份没有
+              // 效果的「终态」第二定义，所以删除；终态唯一的判据是 `@markus/shared#isTerminal`。
+              if (!didSubmit && currentTask && currentTask.status === 'in_progress') {
                 const nextAttempt = _retryAttempt + 1;
                 // ── no-submit 预算：只数「agent 正常收尾却没提交」这件事 ──
                 // 旧实现把这份计数与「provider 瞬时错误 / 执行报错」共用同一个
@@ -2674,33 +2679,19 @@ export class TaskService implements ApprovalTargetPort {
     log.info(`Resuming ${inProgressTasks.length} in_progress task(s) after restart`);
 
     for (const task of inProgressTasks) {
-      // 执行权只能有一个主人（2026-11-05）：若该任务仍有排队/在途的 mailbox 条目，
-      // 说明执行已由那条目拥有——再 resume 就是第二个执行者，同一步会跑两遍。
-      const agent = task.assignedAgentId
-        ? (this.agentManager?.getAgent(task.assignedAgentId) as unknown as
-            | { hasLiveItemsForTask?: (id: string) => boolean }
-            | undefined)
-        : undefined;
-      if (agent?.hasLiveItemsForTask?.(task.id)) {
-        log.info('Skipping resume: a live mailbox item already owns this task', {
-          taskId: task.id,
-          title: task.title,
-          agentId: task.assignedAgentId,
-        });
-        continue;
-      }
-
       try {
         await this.runTask(task.id, 0, undefined, 'resume');
         log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title, priority: task.priority });
       } catch (err) {
-        // 启动期失败**不是**「不可恢复」的证据。旧实现直接判 failed，等于把一次重启抖动
-        // 变成永久死刑；保持 in_progress，交给 stale 检测 / 下一次重启处理。
-        log.warn(`Resume after restart failed; keeping task in_progress`, {
+        log.warn(`Failed to resume task on startup`, {
           taskId: task.id,
           title: task.title,
           error: String(err),
         });
+        this.updateTaskStatus(
+          task.id, 'failed', undefined, false, false, 'system',
+          `Resume after restart failed: ${String(err)}`,
+        );
       }
     }
   }
@@ -4131,7 +4122,7 @@ export class TaskService implements ApprovalTargetPort {
     // buckets stay complete. `counts` still reports the true totals.
     const limit = filters?.terminalLimit ?? 0;
     if (limit > 0) {
-      for (const status of TERMINAL_BOARD_STATUSES) {
+      for (const status of TERMINAL_STATUSES) {
         const bucket = board[status];
         if (bucket.length > limit) {
           bucket.sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? ''));
@@ -4998,7 +4989,7 @@ export class TaskService implements ApprovalTargetPort {
       const activeTasks = [...this.tasks.values()].filter(
         t =>
           t.orgId === request.orgId &&
-          !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
+          !isTerminal(t.status)
       );
       if (activeTasks.length >= policy.maxTotalActiveTasks) {
         return {
@@ -5022,7 +5013,7 @@ export class TaskService implements ApprovalTargetPort {
       const agentTasks = [...this.tasks.values()].filter(
         t =>
           t.assignedAgentId === request.assignedAgentId &&
-          !['completed', 'failed', 'cancelled', 'archived'].includes(t.status)
+          !isTerminal(t.status)
       );
       if (agentTasks.length >= effectiveAgentCap) {
         return {
@@ -6314,13 +6305,14 @@ export class TaskService implements ApprovalTargetPort {
           }
           if (entry.type === 'status' && (entry.content === 'execution_finished' || entry.content === 'completed')) {
             const currentTask = this.tasks.get(taskId);
-            const alreadyTerminal = currentTask && ['review', 'completed', 'failed', 'cancelled', 'archived', 'blocked'].includes(currentTask.status);
             const didSubmit = this.tasksSubmittedForReview.has(taskId);
             if (didSubmit) {
               this.tasksSubmittedForReview.delete(taskId);
               log.info('Fresh retry finished after submitForReview — skipping no-submit retry', { taskId });
             }
-            if (!alreadyTerminal && !didSubmit && currentTask && currentTask.status === 'in_progress') {
+            // 同上：`alreadyTerminal` 里的 review / blocked 在 `status === 'in_progress'`
+            // 前置条件下不可达，故删除这份没有效果的终态第二定义。
+            if (!didSubmit && currentTask && currentTask.status === 'in_progress') {
               // _retryAttempt not available in this closure — always uses first delay
               // since runTask is called with attempt=1 on the next line
               const delayMs = withJitter(TaskService.RETRY_DELAYS_MS[0] ?? 60_000);
