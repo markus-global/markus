@@ -235,18 +235,29 @@ describe('thread_dispositions — I3 幂等 / I4 理由必填', () => {
     expect(repo.listByThread(thread.id)).toHaveLength(0);
   });
 
-  it('wouldAccept 落库为布尔而不是 1/0 泄漏到调用方', () => {
+  it('wouldAccept 三态回环：true→1 / false→0 / 不适用→NULL，读回语义一致', () => {
+    // 为什么断言三态而不是「布尔不泄漏」：这条列曾经把 undefined 压成 0，
+    // 于是 dispatch / attach / stop 这些**没问过**「若放行会不会接」的处置
+    // 被读成 false，UI 对着它们说「当时判定不该来」。
+    // 把任一方向的映射写反（encode 反过来 / decode 用 `!== 0`），这个用例必红。
     const { thread } = threads.upsert('tsk_abc');
     const repo = new SqliteDispositionRepo(db);
-    repo.record({
-      triggerId: 'trg_obs',
-      threadId: thread.id,
-      action: 'ignore',
-      reason: 'observe 模式：本该接受',
-      wouldAccept: true,
-      actor: 'gate',
-    });
-    expect(repo.listByThread(thread.id)[0]?.wouldAccept).toBe(true);
+
+    repo.record({ triggerId: 'trg_accept', threadId: thread.id, action: 'ignore', reason: 'observe：本会接', wouldAccept: true });
+    repo.record({ triggerId: 'trg_reject', threadId: thread.id, action: 'ignore', reason: '流已结束，本不会接', wouldAccept: false });
+    repo.record({ triggerId: 'trg_dispatch', threadId: thread.id, action: 'dispatch', reason: '人已指定处理者，不问「会不会接」' });
+
+    const raw = db
+      .prepare(`SELECT trigger_id, would_accept FROM thread_dispositions`)
+      .all() as Array<{ trigger_id: string; would_accept: number | null }>;
+    const fromDb = Object.fromEntries(raw.map(r => [r.trigger_id, r.would_accept]));
+    // DB 快照名：三态各自可辨认（1 / 0 / NULL）
+    expect(fromDb).toEqual({ trg_accept: 1, trg_reject: 0, trg_dispatch: null });
+
+    const readBack = repo.listByThread(thread.id);
+    const fromApi = Object.fromEntries(readBack.map(d => [d.triggerId, d.wouldAccept]));
+    // TS 字段名：与 DB 列语义一致——NULL 不许变成 false
+    expect(fromApi).toEqual({ trg_accept: true, trg_reject: false, trg_dispatch: null });
   });
 });
 

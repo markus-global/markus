@@ -9,10 +9,9 @@
  * storage 包：core 不依赖 sqlite，测试里也就不用建库。
  */
 import {
-  gateVerdict, deliveryFor, auditsEveryAction,
-  type ActorKind, type Addressing, type Autonomy, type GateVerdict, type ThreadRef, type TriggerKind,
+  gateVerdict, deliveryFor,
+  type ActorKind, type Addressing, type Autonomy, type Disposition, type GateVerdict, type ThreadRef, type TriggerKind,
 } from '@markus/shared';
-import type { RouteDecision } from '@markus/shared';
 import type { WakeEvent } from './rest-wake.js';
 
 export interface ThreadRowLike {
@@ -66,7 +65,7 @@ export interface RouteResult {
   verdict: GateVerdict;
   threadId: string;
   /** null = 直通：命中已有主/订阅，不产生处置记录（流本身就是证据） */
-  decision: RouteDecision | null;
+  decision: Disposition | null;
   /** 直通时命中的 ticket（v1 里 ticket 就是 thread 本身） */
   ticketId?: string;
   /**
@@ -248,7 +247,7 @@ export class ThreadService {
    * 落一条处置。`reason` 由 repo 强制非空（I4）—— 这里不兜底，
    * 因为「没有理由的处置」不该被静默补一句 `'n/a'` 混过去。
    */
-  record(triggerId: string, threadId: string, decision: RouteDecision, actor = 'router'): boolean {
+  record(triggerId: string, threadId: string, decision: Disposition, actor = 'router'): boolean {
     return this.deps.dispositions.record({
       triggerId,
       threadId,
@@ -260,7 +259,7 @@ export class ThreadService {
     });
   }
 
-  private decisionFor(verdict: GateVerdict, input: RouteInput, threadId: string): RouteDecision {
+  private decisionFor(verdict: GateVerdict, input: RouteInput, threadId: string): Disposition {
     switch (verdict) {
       case 'dispatch':
         return {

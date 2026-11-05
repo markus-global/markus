@@ -25,7 +25,7 @@ import {
   resolveJwtSecret,
   resolveGatewaySecret,
   type LLMProviderConfig,
-  type DecisionType,
+  type AttentionAction,
   type MarkusConfig,
   pickOrgSecretary,
   setEnvValue,
@@ -2496,8 +2496,8 @@ async function startServerCore(
             // real limit; the one-word answer stops the generation naturally.
           }, triageProvider);
           const raw = response.content.trim().toLowerCase();
-          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
+          const valid: AttentionAction[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
+          return valid.includes(raw as AttentionAction) ? (raw as AttentionAction) : 'continue';
         });
       } catch { /* agent not found */ }
     };

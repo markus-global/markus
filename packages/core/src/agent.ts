@@ -19,7 +19,7 @@ import {
   type MailboxPayload,
   type MailboxPriority,
   type AttentionDecision,
-  type DecisionType,
+  type AttentionAction,
   type AgentMindState,
   type TriageResult,
   type DeliberationResult,
@@ -1770,7 +1770,7 @@ export class Agent {
    * Returns decision info so the tool loop can act on preemption or merges.
    */
   async checkAttentionYieldPoint(): Promise<{
-    decision: DecisionType;
+    decision: AttentionAction;
     item?: MailboxItem;
     reasoning?: string;
   }> {

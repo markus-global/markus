@@ -45,7 +45,14 @@ export interface DispositionRow {
   threadId: string;
   action: string;
   reason: string;
-  wouldAccept: boolean;
+  /**
+   * 「若闸门放行，他会不会接」。三态：
+   *   true      会接
+   *   false     不会接
+   *   null      本次处置**没问过**这个问题（dispatch / attach / stop）
+   * 不要把它当布尔用：`null` 读成 `false` 会让「没问过」伪装成「拒绝」。
+   */
+  wouldAccept: boolean | null;
   actor: string;
   createdAt: number;
 }
@@ -107,13 +114,44 @@ const toThread = (r: RawThread): ThreadRow => ({
   lastActivity: r.last_activity,
 });
 
+/**
+ * `would_accept` 列的**唯一转换点**（B3，2026-11-03；术语映射表见
+ * `docs/architecture/concept-naming.md`）。
+ *
+ * SQLite 没有布尔类型，这条边界必须存在；但**实现只能有一份**。改之前：
+ * encode 在 `record()`、decode 在 `toDisposition()` 各写一句（`? 1 : 0` / `=== 1`），
+ * 两处各自猜测「缺失值算什么」——于是 `undefined`（dispatch / attach / stop 这些
+ * 本来就没问过「若放行会不会接」的处置）被压成 `false`，UI 的「当时判定不该来」
+ * 徽章对这些行亮起。一次转换两处实现 = 一个事实两个写者（契约 H7）。
+ *
+ * 三个状态各自有唯一编码，且互为反函数（回环测试：
+ * `packages/storage/test/thread-store.test.ts` / `thread-e2e-autonomy.test.ts`）：
+ *   true       → 1
+ *   false      → 0
+ *   undefined  → NULL（没问过 / 不适用，**不等于**不会接）
+ *
+ * 调用方一律走这两个函数，**不得自拼** `? 1 : 0` 或 `=== 1`。
+ */
+export const WouldAccept = {
+  /** TS 三态 → DB 三态。`null` 与 `undefined` 都表达「没问过」。 */
+  encode(v: boolean | null | undefined): 0 | 1 | null {
+    if (v === null || v === undefined) return null;
+    return v ? 1 : 0;
+  },
+  /** DB 三态 → TS 三态。NULL → null（不是 false）。 */
+  decode(v: number | null): boolean | null {
+    if (v === null || v === undefined) return null;
+    return v === 1;
+  },
+} as const;
+
 const toDisposition = (r: RawDisposition): DispositionRow => ({
   id: r.id,
   triggerId: r.trigger_id,
   threadId: r.thread_id,
   action: r.action,
   reason: r.reason,
-  wouldAccept: r.would_accept === 1,
+  wouldAccept: WouldAccept.decode(r.would_accept),
   actor: r.actor,
   createdAt: r.created_at,
 });
@@ -234,6 +272,7 @@ export class SqliteDispositionRepo {
     threadId: string;
     action: string;
     reason: string;
+    /** 三态：见 `WouldAccept`。缺省 = 本次处置没问过这个问题 → 落 NULL。 */
     wouldAccept?: boolean;
     actor?: string;
     createdAt?: number;
@@ -253,7 +292,7 @@ export class SqliteDispositionRepo {
         d.threadId,
         d.action,
         d.reason,
-        d.wouldAccept ? 1 : 0,
+        WouldAccept.encode(d.wouldAccept),
         d.actor ?? 'router',
         d.createdAt ?? Date.now(),
       );
