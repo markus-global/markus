@@ -3792,6 +3792,8 @@ export interface DispositionAPI {
   threadId: string;
   action: string;
   reason: string;
+  /** 命中的 Gate 规则（契约 §5；B1）。null = 处置非 Gate 规则产生。 */
+  matchedRule: string | null;
   /** 三态：true 会接 / false 不会接 / null 没问过（dispatch·attach·stop）。 */
   wouldAccept: boolean | null;
   actor: string;

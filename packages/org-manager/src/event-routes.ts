@@ -13,8 +13,9 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { EventIngress } from '@markus/core';
 import { createGenericWebhookAdapter, SourceRegistry } from '@markus/core';
 import { ThreadService } from '@markus/core';
+import { admitEvent, policyOf, validateSourcePolicy, consumeBatch } from '@markus/core';
 import type { DispatchTarget } from '@markus/core';
-import { deriveStage, stageSortRank } from '@markus/shared';
+import { authorizeAction, deriveStage, isScope, RESOURCE_SCOPES, stageSortRank } from '@markus/shared';
 
 export interface EventRouteDeps {
   orgId: string;
@@ -312,6 +313,9 @@ export async function handleEventRoutes(
       hasSecret: !!s.secret,
       config: s.config,
       health: s.health,
+      // 位点：可观测的一等事实（「读到哪儿」不该只能靠猜 health 里的某个键）
+      cursor: s.cursor ?? null,
+      lastPolledAt: s.lastPolledAt ?? null,
       createdAt: s.createdAt,
     }));
     json(res, 200, { sources });
@@ -325,14 +329,125 @@ export async function handleEventRoutes(
       json(res, 400, { error: 'prefix 必填' });
       return true;
     }
+    // 写入路径做一次严格校验：`policyOf()` 在读路径必须宽容（不能因为一条配置写错
+    // 就让整条来源收不了事件），宽容的代价是「写错了不报」。所以问题必须在登记
+    // 这一刻说出来 —— 否则「规则静默不生效」是最难查的一类故障。
+    const config = (body['config'] as Record<string, unknown>) ?? {};
+    const problems = validateSourcePolicy(config);
+    if (problems.length > 0) {
+      json(res, 400, { error: '来源策略配置有误', problems });
+      return true;
+    }
     const row = deps.repos.eventSourceRepo.upsert({
       orgId: deps.orgId,
       prefix,
       secret: body['secret'] === undefined ? undefined : String(body['secret']),
-      config: (body['config'] as Record<string, unknown>) ?? {},
+      config,
     });
-    json(res, 200, { id: row.id, prefix: row.prefix, hasSecret: !!row.secret });
+    json(res, 200, {
+      id: row.id,
+      prefix: row.prefix,
+      hasSecret: !!row.secret,
+      // 位点不属于配置：新建来源恒为 null（推送式来源根本没有位点）
+      cursor: row.cursor ?? null,
+    });
     return true;
+  }
+
+  /**
+   * 入口构造：webhook 与批量拉取**共用同一套** registry / 准入 / 触发器登记。
+   *
+   * 为什么必须共用：三个入口若各建一份 `EventIngress`，准入规则就会出现「这个入口有、
+   * 那个入口没有」的偏差 —— 自激循环正是从那种偏差里漏回来的。
+   */
+  const ingressFor = (source: any): EventIngress => {
+    const policy = policyOf(source.config);
+    return new EventIngress({
+      registry: buildRegistry(deps),
+      service: serviceOf(deps),
+      deliver: target => deps.deliver?.(target),
+      // 准入（什么算事件）：**唯一判定点**在 core 的 `admitEvent()`，
+      // 这里只把「这条来源的策略」喂进去，不复制任何规则。
+      admission: ev => admitEvent(ev, policy, deps.now ? deps.now() : Date.now()),
+      // 触发器登记：`triggers` 表的**唯一写入点**。
+      // 之前这里也没有它 —— 仓储实现了、导出了，但生产零使用，
+      // 于是 A4.2/A4.3（真实触发写入 trigger + 幂等）永远验不了。
+      // 现在它是必填字段，漏传 = 编译错误。
+      triggers: deps.repos.triggerRepo,
+      now: deps.now,
+    });
+  };
+
+  // ── 拉取侧的批量入口 + 位点提交（B2）────────────────────────────────────
+  //
+  // 为什么需要它：位点只在**拉取**语义下有意义。推送式来源（webhook）没有「读到哪儿」，
+  // 所以它不写 cursor；拉取者（脚本 / RSS 轮询 / agent）需要「我从 X 读到这一批」的协议，
+  // 而「全部消费成功才提交位点」由平台保证。平台**不实现 fetcher**（取数是适配器的事），
+  // 只拥有**位置** —— 这正是「位点只有一个推进点」能成立的前提（H2：加实例不改核心）。
+  //
+  // 必须在 webhook 前缀分支**之前**匹配，否则 `/api/events/<prefix>/batch` 会被当成
+  // 一个叫 `<prefix>/batch` 的来源前缀。
+  {
+    const m = /^\/api\/events\/([^/]+)\/batch$/.exec(path);
+    if (m && req.method === 'POST') {
+      const prefix = decodeURIComponent(m[1]!);
+      const rawBody: Buffer | undefined = (req as any).__rawBody__;
+      if (!rawBody) {
+        json(res, 400, { error: '原始请求体不可用（需在 body 解析阶段保存 __rawBody__）' });
+        return true;
+      }
+      const source = deps.repos.eventSourceRepo.getByPrefix(deps.orgId, prefix);
+      if (!source) {
+        json(res, 404, { error: `未登记的来源 ${prefix}：请先在 event_sources 里登记` });
+        return true;
+      }
+      const body = ((req as any).__parsedBody__ ?? {}) as Record<string, unknown>;
+      // `nextCursor` 必须**显式**给出（含显式的 null = 上游已到末尾）。
+      // 缺省不推进：否则调用方忘传一次就会把位点重置成 null → 下次全量重拉。
+      if (!('nextCursor' in body)) {
+        json(res, 400, {
+          error: 'nextCursor 必填',
+          hint: '提交本批之后上游读到哪儿；若上游已到末尾请显式传 null',
+        });
+        return true;
+      }
+      const nextCursor = body['nextCursor'] === null ? null : String(body['nextCursor']);
+
+      const result = consumeBatch(
+        { sources: deps.repos.eventSourceRepo, ingress: ingressFor(source), now: deps.now },
+        {
+          sourceId: source.id,
+          raw: {
+            prefix,
+            headers: req.headers as Record<string, string | string[] | undefined>,
+            rawBody,
+            secret: source.secret ?? null,
+          },
+          nextCursor,
+        },
+      );
+
+      const first = result.results?.[0];
+      const status =
+        result.status === 'missing-source' || first?.status === 'unknown-source'
+          ? 404
+          : // 签名不对仍然是 401：把「你没权限」混进 409「稍后重试」会让调用方重试到天荒地老
+            first?.status === 'unauthorized'
+            ? 401
+            : result.status === 'not-committed'
+              ? 409
+              : 200;
+      json(res, status, result);
+      deps.repos.eventSourceRepo.updateHealth(source.id, {
+        lastEventAt: Date.now(),
+        lastStatus: result.status,
+        lastCursor: result.cursor,
+        // 被准入规则丢掉时留下「为什么」（批量入口与单条入口同一口径）
+        lastFiltered: result.results?.find(r => r.filteredBy)?.filteredBy,
+        lastError: status >= 400 ? result.reason : undefined,
+      });
+      return true;
+    }
   }
 
   // ── webhook 入站（前缀匹配，必须排在所有精确路径之后）──────────────────────
@@ -349,25 +464,15 @@ export async function handleEventRoutes(
       return true;
     }
 
-    const registry = buildRegistry(deps);
     if (!source) {
       json(res, 404, { error: `未登记的来源 ${prefix}：请先在 event_sources 里登记` });
       return true;
     }
 
-    const ingress = new EventIngress({
-      registry,
-      service: serviceOf(deps),
-      deliver: target => deps.deliver?.(target),
-      // 触发器登记：`triggers` 表的**唯一写入点**。
-      // 之前这里也没有它 —— 仓储实现了、导出了，但生产零使用，
-      // 于是 A4.2/A4.3（真实触发写入 trigger + 幂等）永远验不了。
-      // 现在它是必填字段，漏传 = 编译错误。
-      triggers: deps.repos.triggerRepo,
-      now: deps.now,
-    });
-
-    const result = ingress.ingest({
+    // 推送式来源**刻意不写位点**：它没有「读到哪儿」这件事。
+    // 一个列只回答一个问题 —— 若这里也推进 cursor，那一列就同时承载
+    // 「拉取位置」与「最后一条推送」，两种语义迟早互相踩。
+    const result = ingressFor(source).ingest({
       prefix,
       headers: req.headers as Record<string, string | string[] | undefined>,
       rawBody,
@@ -384,6 +489,9 @@ export async function handleEventRoutes(
     deps.repos.eventSourceRepo.updateHealth(source.id, {
       lastEventAt: Date.now(),
       lastStatus: result.status,
+      // 被准入规则丢掉时留下「为什么」：否则「事件没进来」永远只能靠翻日志
+      lastFiltered: result.filteredBy,
+      lastFilterReason: result.filteredBy ? result.reason : undefined,
       lastError: status >= 400 ? result.reason : undefined,
     });
     return true;
@@ -509,6 +617,64 @@ export async function handleEventRoutes(
       bindings = deps.repos.resourceBindingRepo.listAll();
     }
     json(res, 200, { bindings });
+    return true;
+  }
+
+  /**
+   * 授权判定的**唯一 HTTP 读取面**：某 agent 现在能不能对某资源执行某档动作。
+   *
+   * 为什么它必须是只读的：判定是纯函数（`authorizeAction`），写入一律发生在
+   * 各自的领域路径（绑定写 `resource_bindings`、审批写 `approvals`）。
+   * 如果这里也写，就会出现「查询顺便改状态」的第二个写者 —— 那正是本需求要收口的东西。
+   *
+   * 为什么需要它：判定点如果只活在 core 的执行路径里，人和 UI 就无法回答
+   * 「他现在到底有没有这个权」，只能靠猜或去读两张表自己拼 —— 两个口径。
+   */
+  if (path === '/api/resources/authorization' && req.method === 'GET') {
+    const url = new URL(req.url ?? '/', 'http://local');
+    const agentId = url.searchParams.get('agent') ?? '';
+    const resource = url.searchParams.get('resource') ?? '';
+    const actionScope = url.searchParams.get('action') ?? 'read';
+    const holderKind = url.searchParams.get('holderKind') === 'team' ? 'team' : 'agent';
+    if (!agentId || !resource) {
+      json(res, 400, { error: 'agent 与 resource 必填（例：?agent=agt_x&resource=gh:o/r&action=publish）' });
+      return true;
+    }
+    if (!isScope(actionScope)) {
+      json(res, 400, { error: `action 只能是 ${RESOURCE_SCOPES.join(' / ')}，收到 "${actionScope}"` });
+      return true;
+    }
+
+    const binding = deps.repos.resourceBindingRepo?.findByHolder
+      ? deps.repos.resourceBindingRepo.findByHolder(holderKind, agentId, resource)
+      : null;
+    // 逐件事审批：查不到就等于没批（不是"可能批了"）
+    const mandate = deps.repos.approvalRepo?.findMandate
+      ? deps.repos.approvalRepo.findMandate({ agentId, resource, actionScope }).state
+      : 'none';
+
+    const authz = authorizeAction({
+      binding: binding ? { scope: binding.scope, autonomy: binding.autonomy } : null,
+      actionScope,
+      mandate,
+      resource,
+    });
+
+    json(res, 200, {
+      agentId,
+      holderKind,
+      resource,
+      actionScope,
+      // 输入也回显：判定必须可复核 —— 否则又是一次"结论没有依据"
+      inputs: {
+        binding: binding ? { scope: binding.scope, autonomy: binding.autonomy, holder: binding.holder } : null,
+        mandate,
+      },
+      verdict: authz.verdict,
+      code: authz.code,
+      reason: authz.reason,
+      hint: authz.hint ?? null,
+    });
     return true;
   }
 

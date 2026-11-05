@@ -19,7 +19,7 @@ import {
   openSqlite, closeSqlite,
   SqliteThreadRepo, SqliteTriggerRepo, SqliteDispositionRepo, SqliteResourceBindingRepo,
 } from '@markus/storage';
-import { ThreadService, EventIngress, SourceRegistry } from '@markus/core';
+import { ThreadService, EventIngress, SourceRegistry, admitEvent } from '@markus/core';
 import type { SourceAdapter, NormalizedEvent, DispatchTarget } from '@markus/core';
 import type { Autonomy } from '@markus/shared';
 
@@ -105,7 +105,11 @@ function wire(autonomy: Autonomy) {
     },
   };
 
-  const ingress = new EventIngress({ registry, service, deliver: t => delivered.push(t), triggers });
+  const ingress = new EventIngress({
+    registry, service, deliver: t => delivered.push(t), triggers,
+    // 无策略 = 全收（自激保护见 source-admission.test.ts）
+    admission: ev => admitEvent(ev, {}),
+  });
 
   return { service, ingress, delivered, thread, triggers };
 }

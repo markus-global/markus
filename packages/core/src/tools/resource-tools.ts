@@ -12,7 +12,7 @@
  */
 import type { AgentToolHandler } from '../agent.js';
 import { autonomyNeedsApproval, isScope, L3_SCOPE, RESOURCE_SCOPES } from '@markus/shared';
-import type { Autonomy, ResourceBinding, ResourceScope } from '@markus/shared';
+import type { Autonomy, MandateState, ResourceBinding, ResourceScope } from '@markus/shared';
 
 export interface ResourceToolDeps {
   agentId: string;
@@ -35,6 +35,15 @@ export interface ResourceToolDeps {
   subscribe(resource: string, agentId: string): void;
   /** 升档审批通道。缺失时工具**不得**假装已生效，只能回 pending_approval。 */
   requestApproval?: (req: { agentId: string; resource: string; scope: ResourceScope; autonomy: Autonomy }) => Promise<boolean>;
+  /**
+   * 逐件事审批（Mandate）的读取器。缺失 = 一律 'none'（不知道就是没批）。
+   *
+   * 为什么放在这里而不是 core 自己查：core 不依赖 storage。为什么 agent 需要它：
+   * 执行闸门（`Agent.enforceRedLine`）要回答「这件事批了没有」，答案只能来自审批库。
+   */
+  mandates?: {
+    findMandate(q: { agentId: string; resource: string; actionScope: ResourceScope; eventKey?: string }): { state: MandateState };
+  };
   /** 资源最近发生了什么（可选；缺失时明说「未知」，不编） */
   recentActivity?: (resource: string) => string[] | undefined;
 }

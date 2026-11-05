@@ -26,6 +26,7 @@ import {
   resolveGatewaySecret,
   type LLMProviderConfig,
   type AttentionAction,
+  type ResourceScope,
   type MarkusConfig,
   pickOrgSecretary,
   setEnvValue,
@@ -870,6 +871,12 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
         agentName,
         teamId,
         bindings: s.resourceBindingRepo,
+        // 逐件事审批（Mandate）唯一读取点：执行闸门问「这件事批了没有」时用它。
+        // storage 没有 approvalRepo 时干脆不注入 —— 判定点会按 none 处理（需要人批），
+        // 而不是把一个"查不到"当成"已批"。
+        mandates: s.approvalRepo
+          ? { findMandate: (q: { agentId: string; resource: string; actionScope: ResourceScope; eventKey?: string }) => s.approvalRepo!.findMandate(q) }
+          : undefined,
         // 绑定即订阅：后续该资源的事件天然直通给绑定者（v1 里 ticket 就是 thread 本身）
         subscribe: (resource: string, holderAgentId: string) => {
           const { thread } = s.threadRepo.upsert(resource);
@@ -2189,10 +2196,22 @@ async function startServerCore(
     const result = await hitlService.requestApprovalAndWait({
       agentId,
       agentName,
+      // 带资源与档位 = 这是一张**逐件事许可（Mandate）**：`details.resource` +
+      // `details.actionScope` 两个字段就是判据（不新增 approvals.type 枚举值，
+      // 那个联合类型是 UI 渲染链的输入，为一张新单子加值会牵动整条链）。
       type: 'action',
       title,
       description: request.reason,
-      details: { ...request.toolArgs, toolName: request.toolName, agentId, taskId: request.taskId, taskTitle, sessionId: request.sessionId, chatSessionId: request.chatSessionId },
+      details: {
+        ...request.toolArgs,
+        toolName: request.toolName,
+        agentId,
+        taskId: request.taskId,
+        taskTitle,
+        sessionId: request.sessionId,
+        chatSessionId: request.chatSessionId,
+        ...(request.resource ? { resource: request.resource, actionScope: request.actionScope } : {}),
+      },
       targetUserId: ownerUserId,
     });
     auditService.record({

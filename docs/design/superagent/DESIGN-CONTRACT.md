@@ -175,13 +175,13 @@
 
 | # | 概念（super-agent） | Markus 现状对应物 | 关系判定 | 差距 | 修复卡 | 状态 | 提交号 |
 |---|---|---|---|---|---|---|---|
-| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 无「什么算事件」「读到位点」「进领域前过滤」 | 任务四 | 未开始 | — |
+| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 已在传输层之上补领域层：读取位点（`event_sources.cursor`，单一推进点）+ 准入规则（`admitEvent()`，含丢自激）+ 监听范围；详见 `docs/architecture/sources.md` | 任务四 | 已完成 | 62655742 |
 | 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 内容轴已切走：正文唯一在 `triggers`，`mailbox_items` 只留执行态 + `trigger_id`（`docs/architecture/mailbox.md`）；枚举里剩下的来源/类别/优先级轴归任务四 | 任务八 | 已完成 | 3d828666 |
 | 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
-| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 决策不落库、无 reason、无 matched rule | 任务五 | 未开始 | — |
+| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 已补齐两段：gate 命中记 `matched_rule`（新列，值为六条规则 id，SQL 可查分布），未命中进 assessment（`deps.assess` 可插拔，无引擎/判不了→降级 `needs-assessment` 不静默放行）；单一决策点 `ThreadService.decisionFor()`；降级矩阵见 `docs/architecture/eval.md` | 任务五 | 已完成 | 14d5d1bb |
 | 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定（那层叫 `Disposition`，同名问题已在任务一收口） | 任务一 | 已完成 | b4e7dfd6 |
 | 6 | **Ticket** | `tickets` 表（`tkt_`）+ `SqliteTicketRepo` | 形似神不同 | 已补齐「执行侧的工作单位」：与 task 可选关联（`ON DELETE SET NULL`），唯一写入点 + 三态自有状态机；票不驱动执行 | 任务三 | 已完成 | a59daf1e |
-| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 双层授权 vs 单层；与 ResourceBinding 边界未强制 | 任务六 | 未开始 | — |
+| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee + **逐件事许可（`approvals` + `details.resource`/`actionScope`）** | Markus 更强 | 边界已由代码强制：唯一判定点 `authorizeAction()` 三入参（binding / actionScope / mandate）不可互替 | 任务六 | 已完成 | 524062d6 |
 | 8 | **Assignment** | 会话绑定 + 并发 worker 槽位 | 部分对应 | 无「一个工作单位 ↔ 一个执行实例」的显式绑定与报告回传 | 未排期 | 范围外 | 理由：本需求 8 卡不含执行实例绑定；触发条件＝出现「同一工作单位被两个执行体同时认领」的真实事故 |
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
 | 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 无法回答「卡在谁那儿」 | 任务二 | 未开始 | — |
@@ -195,9 +195,9 @@
 |---|---|---|---|---|---|
 | A2 | `Decision` 指两件事 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
 | A3 | 三种「状态」混用 | 任务二 | 未开始 | — | 未更新 |
-| A4 | 两种「授权」不可互替 | 任务六 | 未开始 | — | 未更新 |
-| B1 | Eval 只做了一半 | 任务五 | 未开始 | — | 未更新 |
-| B2 | Source 不是适配器 | 任务四 | 未开始 | — | 未更新 |
+| A4 | 两种「授权」不可互替 | 任务六 | 已完成 | 524062d6 | 已更新 |
+| B1 | Eval 只做了一半 | 任务五 | 已完成 | 14d5d1bb | 已更新 |
+| B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
 | B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
