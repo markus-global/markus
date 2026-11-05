@@ -1,7 +1,8 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { RequirementService } from '../src/requirement-service.js';
 import { TaskService } from '../src/task-service.js';
-import { mailboxDedupKey } from '@markus/core';
+import { mailboxDedupKey, assertWakeupDedupable } from '@markus/core';
+import { WAKEUP_EVENTS, wakeupDedupKey } from '@markus/shared';
 
 /**
  * Regression suite for the requirement-event amplification family.
@@ -28,7 +29,13 @@ import { mailboxDedupKey } from '@markus/core';
 describe('1 · mailboxDedupKey covers requirement events', () => {
   const item = (extra: Record<string, unknown>) => ({
     sourceType: 'requirement_update' as const,
-    payload: { summary: '', content: '', requirementId: 'req_1', extra } as never,
+    // 唤醒型投递 = 告知 agent「有事要你做」——这类才必须可去重。
+    payload: {
+      summary: '',
+      content: '',
+      requirementId: 'req_1',
+      extra: { actionRequired: true, ...extra },
+    } as never,
     metadata: {} as never,
   });
 
@@ -153,6 +160,84 @@ describe('3 · comment spam gate', () => {
         authorType: 'human',
       }),
     ).resolves.toBeTruthy();
+  });
+});
+
+describe('6 · wake-up dedup invariant: registry (L0) + fail-closed (L2)', () => {
+  it('every registered event can compute a key (registry completeness)', () => {
+    for (const [event, spec] of Object.entries(WAKEUP_EVENTS)) {
+      const extra: Record<string, unknown> = { actionRequired: true, event };
+      for (const field of spec.fingerprint) extra[field] = 'x';
+      const payload: Record<string, unknown> = { summary: '', content: '', extra };
+      payload[spec.entity[0]] = 'ent_1';
+      const key = wakeupDedupKey(payload as never);
+      expect(key, `event ${event} must be deduplicable`).toContain(event);
+    }
+  });
+
+  it('a free-form event name is rejected — `event: "whatever"` cannot sneak past', () => {
+    expect(
+      wakeupDedupKey({
+        requirementId: 'req_1',
+        extra: { actionRequired: true, event: 'whatever' },
+      } as never),
+    ).toBeUndefined();
+  });
+
+  it('the delivery layer refuses an undedupable wake-up instead of letting it through', () => {
+    expect(() =>
+      assertWakeupDedupable('requirement_update', {
+        summary: '',
+        content: '',
+        requirementId: 'req_1',
+        extra: { actionRequired: true },
+      } as never),
+    ).toThrow(/undedupable wake-up/);
+
+    // The error must be actionable: it names the registry to extend.
+    expect(() =>
+      assertWakeupDedupable('requirement_update', {
+        summary: '',
+        content: '',
+        extra: { actionRequired: true },
+      } as never),
+    ).toThrow(/WAKEUP_EVENTS/);
+  });
+
+  it('workflow notifications became deduplicable without editing their call sites', () => {
+    const base = {
+      summary: '',
+      content: '',
+      extra: {
+        actionRequired: true,
+        event: 'step_failed',
+        runId: 'wfrun_1',
+        taskId: 'tsk_1',
+        reason: 'timeout',
+      },
+    };
+    const same = wakeupDedupKey(base as never);
+    expect(same).toBeTruthy();
+    expect(wakeupDedupKey(base as never)).toBe(same);
+
+    // A different reason is a *different fact* and must not be suppressed.
+    const otherReason = wakeupDedupKey({
+      ...base,
+      extra: { ...base.extra, reason: 'output_contract' },
+    } as never);
+    expect(otherReason).toBeTruthy();
+    expect(otherReason).not.toBe(same);
+  });
+
+  it('never blocks a non-wake-up notification (informational items stay cheap)', () => {
+    expect(() =>
+      assertWakeupDedupable('requirement_update', {
+        summary: '',
+        content: '',
+        requirementId: 'req_1',
+        extra: { somethingElse: true },
+      } as never),
+    ).not.toThrow();
   });
 });
 

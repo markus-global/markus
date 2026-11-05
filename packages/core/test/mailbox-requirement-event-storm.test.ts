@@ -81,7 +81,7 @@ describe('withdrawActionableFor · 需求转终态时撤回未消费的行动项
       summary: 'review needed',
       content: 'c',
       requirementId: 'req_1',
-      extra: { actionRequired: true },
+      extra: { actionRequired: true, event: 'all_tasks_terminal' },
     });
     const plain = mb.enqueue('requirement_update', {
       summary: 'status changed',
@@ -103,7 +103,7 @@ describe('withdrawActionableFor · 需求转终态时撤回未消费的行动项
       summary: 'review needed',
       content: 'c',
       requirementId: 'req_2',
-      extra: { actionRequired: true },
+      extra: { actionRequired: true, event: 'all_tasks_terminal' },
     });
     mb.withdrawActionableFor('req_1', 'whatever');
     expect(statuses.get(other.id)).toBeUndefined();

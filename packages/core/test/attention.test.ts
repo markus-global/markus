@@ -949,7 +949,7 @@ describe('triage and deliberation scheduling', () => {
       summary: 'Requirement action needed',
       content: 'approve or adjust',
       requirementId: 'req_1',
-      extra: { actionRequired: true },
+      extra: { actionRequired: true, event: 'all_tasks_terminal' },
     });
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
     mailbox.enqueue('a2a_message', { summary: 'msg B', content: 'B body' });

@@ -11,6 +11,8 @@ import {
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
+  WAKEUP_EVENTS,
+  wakeupDedupKey,
   isStrictStateItem,
 } from '@markus/shared';
 import { threadEntityKeys } from './thread-resolver.js';
@@ -127,23 +129,50 @@ export function mailboxDedupKey(
     return `task_status_update:${taskId}:${round ?? '-'}:${from}->${to}`;
   }
 
-  // 需求级事实（2026-11-04 实测缺口：req_319b0b66 的「全部任务已终态」提醒可无限次投递）。
-  // 键只取**结构化字段**：事件种类由发射方在 `extra.event` 声明，事实指纹由发射方计算，
-  // 绝不从 content 文本解析。事实不变 → 键不变 → 投递层抑制；事实真变了（新链接了任务）
-  // → 指纹变 → 新一轮仍可通知。幂等 ≠ 永久静音。
-  if (item.sourceType === 'requirement_update') {
-    const requirementId =
-      item.payload.requirementId ?? (meta?.requirementId as string | undefined);
-    const event = typeof extra?.event === 'string' ? extra.event : undefined;
-    if (!requirementId || !event) return undefined;
-    const factFingerprint =
-      typeof extra?.factFingerprint === 'string' ? extra.factFingerprint : '-';
-    return `requirement_update:${requirementId}:${event}:${factFingerprint}`;
-  }
+  // 唤醒型投递（actionRequired）：统一走登记表 WAKEUP_EVENTS。事件名必须登记过，
+  // 指纹字段由登记表规定 —— 不再由发射点临时决定，也不接受自由字符串
+  //（`event: 'whatever'` 会让两个不同事实共用一个键 = 误抑制，比重复更危险）。
+  const wakeKey = wakeupDedupKey(item.payload);
+  if (wakeKey) return wakeKey;
+  // actionRequired 但算不出键 → 不可去重 → 由 assertWakeupDedupable() 拒绝（fail-closed）。
+  if (item.payload?.extra?.actionRequired === true) return undefined;
 
   if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
   if (!taskId || round === undefined) return undefined;
   return `${item.sourceType}:${taskId}:${round}`;
+}
+
+/** 唤醒型投递无法去重时抛出：宁可拒绝，也不静默放行。 */
+export class MailboxUndedupableWakeupError extends Error {
+  constructor(sourceType: string, reason: string) {
+    super(
+      `Refusing to deliver an undedupable wake-up (sourceType=${sourceType}): ${reason}. ` +
+        `A wake-up must be deduplicable: declare \`extra.event\` with a registered name ` +
+        `[${Object.keys(WAKEUP_EVENTS).join(', ')}], and include the entity id + fingerprint fields that event requires. ` +
+        `New wake-up events are registered in @markus/shared#wakeup-events (WAKEUP_EVENTS).`,
+    );
+    this.name = 'MailboxUndedupableWakeupError';
+  }
+}
+
+/**
+ * 「唤醒必须可去重」的唯一执行点（L2 · fail-closed）。
+ * 调用点在 enqueue()：算不出键就拒绝，而不是放行——历史事故的根因正是「算不出 → 放行」。
+ */
+export function assertWakeupDedupable(
+  sourceType: MailboxItemType,
+  payload: MailboxPayload,
+): void {
+  if (payload?.extra?.actionRequired !== true) return;
+  if (wakeupDedupKey(payload)) return;
+
+  const event = typeof payload.extra.event === 'string' ? payload.extra.event : undefined;
+  const reason = !event
+    ? 'extra.event is missing'
+    : !WAKEUP_EVENTS[event]
+      ? `event "${event}" is not registered`
+      : 'entity id or fingerprint fields are missing';
+  throw new MailboxUndedupableWakeupError(sourceType, reason);
 }
 
 export interface EnqueueOptions {
@@ -738,6 +767,8 @@ export class AgentMailbox {
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）
     // 即「同一 (agent, sourceType, taskId, round) 已投递过」——此时**不入队**，
     // 让「不产生重复投递」成为显式语义，而不是靠后续「无 DB 行 → 认领失败」间接兜住。
+    // L2 fail-closed：唤醒型投递必须可去重（唯一执行点 assertWakeupDedupable）。
+    assertWakeupDedupable(sourceType, payload);
     const dedupKey = mailboxDedupKey(item);
 
     // P1.x (c)：先按幂等键读既有行状态，再走**唯一判定函数**（而非直接 `save()`）：

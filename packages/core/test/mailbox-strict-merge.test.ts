@@ -41,7 +41,7 @@ describe('P1-2 · consolidateByEntity 不吞掉严格状态项', () => {
   it('requirement_update[actionRequired] 与同名 informational 共存 → 两者都保留', () => {
     const mb = new AgentMailbox('agt_t', new EventBus());
     mb.enqueue('requirement_update', { summary: 'req info', content: 'informational', requirementId: 'req_1' });
-    mb.enqueue('requirement_update', { summary: 'req action', content: 'do it', requirementId: 'req_1', extra: { actionRequired: true } });
+    mb.enqueue('requirement_update', { summary: 'req action', content: 'do it', requirementId: 'req_1', extra: { actionRequired: true, event: 'all_tasks_terminal' } });
     expect(mb.getQueuedItems()).toHaveLength(2);
 
     const removed = mb.consolidateByEntity();

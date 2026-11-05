@@ -3333,6 +3333,17 @@ export class Agent {
   }
 
   /** Returns true if the agent is currently processing a mailbox item (streaming or otherwise). */
+  /**
+   * 该任务是否已有排队/在途的 mailbox 条目——「谁拥有这次执行」的唯一判据。
+   *
+   * 重启恢复时用它决定是否还该 resume：已有条目 ⇒ 执行归条目所有，
+   * 再拉起一个执行者就会同一步跑两遍（2026-11-05 实测：重启后仍有 11 条 processing
+   * + 45 条 queued，而 resumeInProgressTasks 无条件重跑所有 in_progress）。
+   */
+  hasLiveItemsForTask(taskId: string): boolean {
+    return this.mailbox.findByTaskId(taskId) !== undefined;
+  }
+
   isProcessing(): boolean {
     return this.state.status === 'working' || !!this.processingMailboxItemId;
   }

@@ -109,7 +109,8 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
   it('陈旧但携带 actionRequired ⇒ 不得回收', () => {
     withFakeClock(() => {
       const mailbox = makeMailbox();
-      mailbox.enqueue('heartbeat', { summary: 'h', content: 'h', extra: { actionRequired: true } } as never);
+      // 夹具只关心「带动作的条目」；事件名/实体取自登记表，只为满足可去重不变量。
+      mailbox.enqueue('heartbeat', { summary: 'h', content: 'h', extra: { actionRequired: true, event: 'all_tasks_terminal', requirementId: 'req_fixture' } } as never);
       vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
       expect(mailbox.purgeStaleItems()).toBe(0);
       expect(mailbox.getQueuedItems()).toHaveLength(1);
@@ -139,7 +140,7 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
       const mailbox = makeMailbox();
       // 用不同 sourceType，避免心跳「折叠」干扰本用例的意图
       mailbox.enqueue('task_status_update', { summary: 'plain', content: 'plain' } as never);
-      mailbox.enqueue('daily_report', { summary: 'act', content: 'act', extra: { actionRequired: true } } as never);
+      mailbox.enqueue('daily_report', { summary: 'act', content: 'act', extra: { actionRequired: true, event: 'all_tasks_terminal', requirementId: 'req_fixture' } } as never);
       mailbox.enqueue('memory_consolidation', { summary: 'rep', content: 'rep' } as never);
       vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
 
@@ -190,7 +191,7 @@ describe('enqueue 心跳折叠 · 不得吞掉带动作的心跳', () => {
   it('带 actionRequired 的心跳不得被折叠（否则待办动作静默消失）', () => {
     const mailbox = makeMailbox();
     mailbox.enqueue('heartbeat', { summary: 'h1', content: 'h1' } as never);
-    mailbox.enqueue('heartbeat', { summary: 'act', content: 'act', extra: { actionRequired: true } } as never);
+    mailbox.enqueue('heartbeat', { summary: 'act', content: 'act', extra: { actionRequired: true, event: 'all_tasks_terminal', requirementId: 'req_fixture' } } as never);
     expect(mailbox.depth).toBe(2);
   });
 
