@@ -1410,30 +1410,18 @@ async function startServerCore(
           });
         }
       }
-      hitlService.notify({
-        targetUserId: 'all',
-        type: 'system',
-        // unstarted_task 的提醒已移除（Owner 2026-11-02）：未批准任务常驻概览「等你处理」。
-        // branch_diverged 原先被错误地落到 else 分支显示 "Unstarted task"，现在用中性标题。
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Stale task',
-        body: item.message,
-        priority: item.type === 'review_stale' ? 'high' : 'normal',
-        actionType: item.taskId ? 'navigate' : 'none',
-        actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
-        metadata: {
-          taskId: item.taskId,
-          agentId: item.agentId,
-          staleType: item.type,
-          // The title and body as structure: the detector knows *what* to say,
-          // this is the only place that knows the sentence's key.
-          i18n: {
-            titleKey:
-              item.type === 'review_stale'
-                ? 'notifications.titles.staleReview'
-                : 'notifications.titles.stuckTask',
-            ...(item.i18n ?? {}),
-          },
-        },
+      // 【已删】不再把 task 陈旧状态推成人通知（Owner 2026-11-04：「系统不应该再发出类似
+      // Unstarted task 这种通知了」）。
+      //
+      // 理由不是文案不好，是这类通知没有新的信息量：
+      //   · 未批准 / 待评审 的任务常驻概览「等你处理」，人本来就看得到；
+      //   · 定时重复推 同一个任务（实测同一秒 12–13 条、累计 4902 条）只训练人忽略铃铛；
+      //   · 审核提醒本来就发给 review_reminder 指定的**评审人**（上面的分支），
+      //     发给所有人等于把「该谁做」的信号摊平成噪音。
+      // 需要任务陈旧状态的地方（例如概览统计）直接读任务本身，不靠通知回放。
+      log.info('Stale task reminder suppressed (notifications for stale tasks are retired)', {
+        taskId: item.taskId,
+        staleType: item.type,
       });
     }
   });
@@ -2477,6 +2465,9 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // dropPendingByEntity：需求转终态时撤回「请审阅」类行动项，止住重复投递。
+          dropPendingByEntity: (aid: string, entityId: string, reason: string) =>
+            mbRepo.dropPendingByEntity(aid, entityId, reason),
         });
         const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
         if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });

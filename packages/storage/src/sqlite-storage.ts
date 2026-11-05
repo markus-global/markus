@@ -183,6 +183,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   schedule_config TEXT,
   open_question TEXT,
   decisions TEXT DEFAULT '[]',
+  -- 主动暂停标记（与「等依赖」区分）。存在即有意停的，依赖引擎不得自动恢复。
+  paused_at TEXT,
+  paused_by TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   due_at TEXT
@@ -1021,6 +1024,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'channel_messages', column: 'metadata', sql: "ALTER TABLE channel_messages ADD COLUMN metadata TEXT DEFAULT '{}'" },
     { table: 'task_logs', column: 'execution_round', sql: "ALTER TABLE task_logs ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
     { table: 'tasks', column: 'execution_round', sql: "ALTER TABLE tasks ADD COLUMN execution_round INTEGER NOT NULL DEFAULT 1" },
+    { table: 'tasks', column: 'paused_at', sql: "ALTER TABLE tasks ADD COLUMN paused_at TEXT" },
+    { table: 'tasks', column: 'paused_by', sql: "ALTER TABLE tasks ADD COLUMN paused_by TEXT" },
     { table: 'tasks', column: 'reviewer_agent_id', sql: "ALTER TABLE tasks ADD COLUMN reviewer_agent_id TEXT NOT NULL DEFAULT ''" },
     { table: 'tasks', column: 'reviewer_type', sql: "ALTER TABLE tasks ADD COLUMN reviewer_type TEXT DEFAULT 'agent'" },
     { table: 'tasks', column: 'subtasks', sql: "ALTER TABLE tasks ADD COLUMN subtasks TEXT DEFAULT '[]'" },
@@ -1747,6 +1752,18 @@ export class SqliteTaskRepo {
     }
     vals.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+  }
+
+  /**
+   * 主动暂停标记（与「等依赖」区分）。
+   *
+   * 为什么需要它持久化：`blocked` 同时被用作「等依赖」与「主动叫停」，依赖引擎
+   * 只看 blockedBy 是否满足 → 暂停后每轮扫描都被自动恢复成 in_progress。
+   * 且用户常常「暂停 → 重启应用 → 继续」，所以内存标记不够，必须落库。
+   */
+  async updatePause(id: string, at: string | null, by: string | null) {
+    this.db.prepare('UPDATE tasks SET paused_at = ?, paused_by = ?, updated_at = ? WHERE id = ?')
+      .run(at, by, now(), id);
   }
 
   async assign(id: string, agentId: string, updatedBy?: string) {
@@ -5337,6 +5354,28 @@ export class SqliteMailboxRepo {
   }
 
   /**
+   * 撤回某实体下尚未消费的**行动型**条目（需求转终态时调用）。
+   *
+   * 只动 `payload.extra.actionRequired = 1` 的行：普通状态流水保留，历史可查。
+   * `processing` 也一并撤回 —— 正在被读取的那一条同样是「已不成立的请求」。
+   */
+  dropPendingByEntity(agentId: string, entityId: string, reason: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'dropped',
+                completed_at = ?,
+                metadata = json_set(coalesce(metadata, '{}'), '$.dropReason', ?)
+          WHERE agent_id = ?
+            AND status IN ('queued', 'processing')
+            AND json_extract(payload, '$.requirementId') = ?
+            AND json_extract(payload, '$.extra.actionRequired') = 1`
+      )
+      .run(new Date().toISOString(), reason, agentId, entityId);
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  /**
    * 回收过期租约（P0 · 运行期看门狗）：把 `processing` 且租约已过期的 item 退回 `queued`，
    * 使崩溃或超时的 worker 不会永久占位。返回回收条数。
    *
@@ -5488,6 +5527,28 @@ export class SqliteMailboxRepo {
     return (this.db
       .prepare(`${MAILBOX_ROW_SELECT} WHERE ${conditions.join(' AND ')} ORDER BY m.queued_at DESC LIMIT ? OFFSET ?`)
       .all(...params) as Record<string, unknown>[]).map(r => this.mapRow(r));
+  }
+
+  /**
+   * 某个任务的**历次评审投递**（`review_request`）——「谁在哪一轮审过 / 正在审」的唯一读面。
+   *
+   * 判据是**结构键**，不是正文：任务归属读 `payload.taskId`（拆轴后 taskId 属执行态/路由提示，
+   * 仍留在本表），旧行读轮次化幂等键前缀 `review_request:<taskId>:`。
+   * 两者取并集是因为历史行里有一部分正文已被 blob 化、payload 里没有 taskId，
+   * 只能靠幂等键认领 —— 少认一条就等于 UI 少显示一轮审核。
+   *
+   * `substr(...) = ?` 而不是 `LIKE 'review_request:<taskId>:%'`：任务 id 含 `_`，
+   * 而 `_` 在 LIKE 里是单字符通配符 —— 用 LIKE 会把别的任务的行算成这个任务的。
+   */
+  getReviewRequestsByTask(taskId: string): MailboxItemRow[] {
+    const dedupPrefix = `review_request:${taskId}:`;
+    return (this.db
+      .prepare(`${MAILBOX_ROW_SELECT}
+         WHERE m.source_type = 'review_request'
+           AND (json_extract(m.payload, '$.taskId') = ?
+                OR (m.dedup_key IS NOT NULL AND substr(m.dedup_key, 1, ?) = ?))
+         ORDER BY m.queued_at ASC`)
+      .all(taskId, dedupPrefix.length, dedupPrefix) as Record<string, unknown>[]).map(r => this.mapRow(r));
   }
 
   /**

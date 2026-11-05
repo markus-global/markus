@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api, type ApprovalInfo, type NotificationInfo } from '../api.ts';
-import { navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
+import { navigateForApproval, navigateForNotification, notificationHasTarget } from '../lib/notifyNavigate.ts';
+import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/threadPresentation.ts';
@@ -23,11 +24,19 @@ import { formatRelativeAny } from '../lib/threadPresentation.ts';
  * 历史只放已结束的审批 —— `pending` 的不在这里，它们在概览「等你处理」里。
  * 两边不重叠：概览 = 现在要我动手的，历史 = 已经结束的。
  */
+/**
+ * 审批结果的呈现：**已结束的事要沉下去，不要抢眼**。
+ *
+ * Owner 2026-11-04：“既然已经审批了，为什么字体颜色还是像新的通知一样”。
+ * 旧写法是满饱和的绿/红圆点 + text-fg-primary 粗体标题 —— 和未读通知一个视觉分量，
+ * 等于告诉用户「这条还需要你注意」。历史里只有「结论」值得看，警示色只留给需要动作的东西。
+ * 现在：圆点一律弱化（结果由 chip 文字承担），chip 降一档对比度。
+ */
 const APPROVAL_STATUS = {
-  approved: { label: '已批准', dot: 'bg-green-500', chip: 'bg-green-500/10 text-green-600' },
-  rejected: { label: '已拒绝', dot: 'bg-red-500', chip: 'bg-red-500/10 text-red-500' },
-  cancelled: { label: '已取消', dot: 'bg-fg-muted/40', chip: 'bg-surface-overlay text-fg-tertiary' },
-  expired: { label: '已过期', dot: 'bg-amber-500/60', chip: 'bg-amber-500/10 text-amber-600' },
+  approved: { label: '已批准', dot: 'bg-fg-muted/30', chip: 'bg-green-500/8 text-green-600/70' },
+  rejected: { label: '已拒绝', dot: 'bg-fg-muted/30', chip: 'bg-red-500/8 text-red-500/70' },
+  cancelled: { label: '已取消', dot: 'bg-fg-muted/25', chip: 'bg-surface-overlay text-fg-tertiary' },
+  expired: { label: '已过期', dot: 'bg-fg-muted/25', chip: 'bg-amber-500/8 text-amber-600/70' },
 } as const;
 
 type ResolvedStatus = keyof typeof APPROVAL_STATUS;
@@ -107,7 +116,11 @@ export function HistoryModal({
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
   const [total, setTotal] = useState(0);
+  /** 未读数取**服务端**口径（与铃铛、概览一致）。本地数分页列表必然偏小。 */
+  const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
+  /** 默认只看未读（Owner 2026-11-04：这个入口叫「未读消息」，打开就该是未读）。 */
+  const [unreadOnly, setUnreadOnly] = useState(true);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +140,7 @@ export function HistoryModal({
           return [...prev, ...got.filter(x => !seen.has(x.id))].slice(0, MAX_ROWS);
         });
         setTotal(d.totalCount ?? 0);
+        setUnreadTotal((d as { unreadCount?: number }).unreadCount ?? null);
         // 终止条件：本页不满 / 空页 / 已到 DOM 上限
         if (got.length === 0 || got.length < PAGE_SIZE || stateRef.current.count + got.length >= MAX_ROWS) {
           setDone(true);
@@ -140,6 +154,25 @@ export function HistoryModal({
     },
     [userId],
   );
+
+  // 别处（铃铛 / 概览）标了已读 → 弹窗里的未读点与计数必须跟着变，
+  // 否则弹窗开着时永远看不到自己刚点掉的那条变灰。
+  useEffect(() => {
+    if (!open || !userId) return;
+    const onChanged = () => {
+      void loadPage(0);
+      api.approvals
+        .list()
+        .then(r => setApprovals((r.approvals ?? []).filter(a => a.status === 'pending')))
+        .catch(() => undefined);
+    };
+    window.addEventListener('markus:notifications-changed', onChanged);
+    window.addEventListener('markus:data-changed', onChanged);
+    return () => {
+      window.removeEventListener('markus:notifications-changed', onChanged);
+      window.removeEventListener('markus:data-changed', onChanged);
+    };
+  }, [open, userId, loadPage]);
 
   // 打开时重置并拉第一页（每次都重取，避免看到过期数据）
   useEffect(() => {
@@ -188,13 +221,16 @@ export function HistoryModal({
     const a: Row[] = approvals.map(x => ({ kind: 'approval', at: x.respondedAt ?? x.requestedAt, approval: x }));
     const n: Row[] = notices.map(x => ({ kind: 'notice', at: x.createdAt, notice: x }));
     const all = [...a, ...n].sort((p, q) => (q.at ?? '').localeCompare(p.at ?? ''));
+    // 「只看未读」优先于 tab：「未读」这个词只对通知成立，
+    // 审批结果都是已结束的事，没有未读概念，所以这一档不掺审批行。
+    if (unreadOnly) return all.filter(r => r.kind === 'notice' && !r.notice.read);
     if (tab === 'approvals') return all.filter(r => r.kind === 'approval');
     if (tab === 'notices') return all.filter(r => r.kind === 'notice');
     return all;
-  }, [approvals, notices, tab]);
+  }, [approvals, notices, tab, unreadOnly]);
 
   const resolvedCount = approvals.length;
-  const unread = notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
+  const unread = unreadTotal ?? notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
 
   // 弹窗开着时锁住背后的滚动容器（否则滚轮会滚到 Overview 上）
   useBackgroundScrollLock(open);
@@ -215,9 +251,26 @@ export function HistoryModal({
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-fg-primary">历史</h3>
             {unread > 0 && (
-              <span className="text-[10px] font-semibold text-brand-400 bg-brand-500/10 px-1.5 py-0.5 rounded-full tabular-nums">
+              <button
+                onClick={() => setUnreadOnly(v => !v)}
+                aria-pressed={unreadOnly}
+                title={unreadOnly ? '显示全部' : '只看未读'}
+                className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full tabular-nums transition-colors ${
+                  unreadOnly
+                    ? 'bg-brand-500 text-white'
+                    : 'text-brand-400 bg-brand-500/10 hover:bg-brand-500/20'
+                }`}
+              >
                 {unread} 条未读
-              </span>
+              </button>
+            )}
+            {unreadOnly && unread === 0 && (
+              <button
+                onClick={() => setUnreadOnly(false)}
+                className="text-[10px] font-semibold text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded-full"
+              >
+                已全部读完·看全部
+              </button>
             )}
           </div>
           <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay text-fg-tertiary" aria-label="关闭">
@@ -270,12 +323,25 @@ export function HistoryModal({
                 const st = APPROVAL_STATUS[row.approval.status as ResolvedStatus] ?? APPROVAL_STATUS.cancelled;
                 const at = row.approval.respondedAt ?? row.approval.requestedAt;
                 return (
-                  <div key={`a:${row.approval.id}`} className="flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay/50 transition-colors">
+                  <div
+                    key={`a:${row.approval.id}`}
+                    // 审批行**曾经没有任何 onClick**（Owner 2026-11-04：“已批准或已拒绝为什么
+                    // 不可点击跳转！！！”）：通知行有跳转，审批行只画了个 hover 样式，点了没反应。
+                    // id 一直在（details.taskId / requirementId / agentId），只是没人接上。
+                    // 落点交给已有的 navigateForApproval——它是审批落点的唯一实现，
+                    // 这里不再写第三套“什么类型跳哪里”。
+                    onClick={() => {
+                      onClose();
+                      navigateForApproval(row.approval);
+                    }}
+                    title="打开对应的任务 / 需求 / 会话"
+                    className="flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay/50 transition-colors cursor-pointer"
+                  >
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${st.dot}`} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
                         <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${st.chip}`}>{st.label}</span>
-                        <span className="text-xs font-medium text-fg-primary truncate">{row.approval.title}</span>
+                        <span className="text-xs text-fg-secondary truncate">{row.approval.title}</span>
                       </div>
                       <div className="text-[11px] text-fg-tertiary mt-0.5 truncate">
                         {row.approval.agentName} · {formatRelativeAny(at)}
@@ -290,13 +356,28 @@ export function HistoryModal({
                 return (
                   <div
                     key={`n:${row.notice.id}`}
+                    // 不能点的原因写在这里：不是“已读所以不能点”，而是这条通知没有关联对象。
+                    // Owner 2026-11-04 实测后直接问「有的没法点？还是已读的没法点？」——
+                    // 界面没解释，用户只能猜。
+                    title={go ? undefined : '这条通知没有关联的任务 / 需求 / 会话，仅作告知'}
                     className={`flex items-start gap-2.5 px-2.5 py-2.5 rounded-xl transition-colors ${go ? 'hover:bg-surface-overlay/50 cursor-pointer' : ''}`}
-                    onClick={go ?? undefined}
+                    onClick={go ? () => {
+                      // 与铃铛对齐：点一条，就把**同一任务/需求**的其它未读通知一起标已读。
+                      // 铃铛一直这么做，历史弹窗只标点中那一条 → 徽标残留、得挨个点。
+                      const marked = markNotificationThreadRead(row.notice, notices);
+                      setNotices(prev => prev.map(x => (marked.has(x.id) ? { ...x, read: true } : x)));
+                      // 点完就走：弹窗留着会遮住刚跳到的页面（铃铛是 popover，导航即关）。
+                      onClose();
+                      go();
+                    } : undefined}
                   >
                     <span className={`w-1.5 h-1.5 rounded-full mt-1.5 shrink-0 ${row.notice.read ? 'bg-fg-muted/40' : 'bg-brand-500'}`} />
                     <div className="flex-1 min-w-0">
                       <div className={`text-xs truncate ${row.notice.read ? 'text-fg-tertiary' : 'text-fg-primary font-medium'}`}>
                         {row.notice.title}
+                        {!go && (
+                          <span className="ml-1.5 align-middle text-[10px] font-normal text-fg-muted">仅告知</span>
+                        )}
                       </div>
                       {row.notice.body && (
                         <div className="text-[11px] text-fg-muted mt-0.5 line-clamp-2 leading-relaxed">{row.notice.body}</div>

@@ -6,13 +6,14 @@ import { timelineView, sourceForRef, type TimelineNode, type TimelineSource } fr
 import { EventNode, DecisionNode } from '../components/threadTimelineNodes.tsx';
 import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
+import { entityNavTarget } from '../lib/threadNav.ts';
 import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
-import { refDisplay, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
+import { refDisplay, refKindLabel, wouldAcceptVerdict } from '../lib/threadPresentation.ts';
 import { taskStatusLabel, processStatusLabel, attentionStateLabel } from '../lib/stateVocabulary.ts';
 import { groupMailboxByThread, refOf } from '../lib/mailboxToThread.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -96,8 +97,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   const [agent, setAgent] = useState<AgentDetail | null>(null);
   const [notice, setNotice] = useState<{ title: string; message: string; variant?: 'primary' | 'danger' } | null>(null);
   const [tab, setTab] = useState<ProfileTab>(defaultTab ?? 'overview');
-  /** agent 自己的来龙去脉（B4）：就地展开，不去全局页搜。 */
-  const [showStream, setShowStream] = useState(false);
   const effectiveTab = headless && externalTab ? externalTab : tab;
   const [externalInfo, setExternalInfo] = useState<ExternalAgentInfo | null>(null);
   const tabs = useMemo(() => TAB_DEF.map(tabDef => ({ ...tabDef, label: t(`agent:tabs.${tabDef.key}`) })), [t]);
@@ -145,40 +144,22 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
   // 内联（非 headless）页自带的 tab 栅也会传入 defaultTab，同样需要归一。
   const localLegacySection = LEGACY_TAB_SECTION[tab];
 
-  // 「来龙去脉」的**入口与弹层各一份**，两个渲染分支共用。
+  // 「来龙去脉」的入口与弹层**已删除**（Owner 2026-11-03）。
   //
-  // 桌面端走 headless（只渲染正文），而这段入口原先长在非 headless 的页头里 ——
-  // `if (headless) return` 在到达页头之前就返回，桌面**结构上**点不到它（B4-2 唯一 fail）。
-  // 修的是入口归属：入口跟着正文走，而不是给桌面再复制一套按钮。
-  const streamEntry = (
-    <button onClick={() => setShowStream(true)} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors" title="这个 agent 的来龙去脉">
-      {t('agent:profilePage.stream')}
-    </button>
-  );
-  const streamModal = showStream && (
-    <div
-      className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/40 p-4 sm:p-8"
-      onClick={() => setShowStream(false)}
-    >
-      <div className="w-full max-w-2xl" onClick={e => e.stopPropagation()}>
-        <ThreadTimeline refId={`agent:${agentId}`} onClose={() => setShowStream(false)} />
-      </div>
-    </div>
-  );
+  // 原实现：页头一个按钮 → 开一个 fixed 浮层，里面再塞一份 ThreadTimeline。
+  // Owner 评价：浮窗里内容零乱、还带报错，而「运行与注意力」tab 本来就就地渲染
+  // 同一份时间线 —— 那就是第二套呈现，同一事实两个来源。
+  // 现在只有一处：tab 内的「来龙去脉」区块。
 
   if (headless) {
     return (
       <div className="flex-1 overflow-y-auto bg-surface-primary">
-        <div className="flex items-center justify-end px-5 pt-3">
-          {streamEntry}
-        </div>
-        <div className="p-5">
+        <div className="p-3 sm:p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
             <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
           {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
-        {streamModal}
       </div>
     );
   }
@@ -199,10 +180,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            {/* 入口倒置（B4）：agent 也是「一条流」，就地看它经历过什么。
-                ref 用解析器的 agent 轴口径（`agent:<id>`），不是前端自造的另一种键。
-                按钮本身与 headless 分支共用同一份（见上方 streamEntry）。 */}
-            {streamEntry}
             {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             {canManageAgents && (
             <button onClick={async () => {
@@ -231,7 +208,6 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
           </div>
         </div>
-        {streamModal}
         <div ref={tabBarRef} className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto scrollbar-hide">
           {tabs.filter(tabRow => !externalInfo || tabRow.key === 'overview').map(tabRow => (
             <button key={tabRow.key} onClick={() => setTab(tabRow.key)} data-active={tab === tabRow.key}
@@ -242,7 +218,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
           ))}
         </div>
       </div>
-      <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
+      <div className="p-3 sm:p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {bodyTabFor(tab) === 'overview' && (
           <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
@@ -2980,90 +2956,6 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         })()}
       </section>
 
-      {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
-          Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
-          所以必须能在这里**就地**看到经过，不跳页。
-          左边：它经手的事（从邮箱条目派生，内部机械已排除）。
-          右边：选中那件事的时间线（历史事实，从 triggers 派生）。 */}
-      <section>
-        <div className="mb-2 flex flex-wrap items-center gap-2">
-          <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>
-          <span className="text-[10px] text-fg-muted">
-            最近 {mailbox?.history?.length ?? 0} 条里涉及 {workItems.filter(w => w.ref).length} 件事
-          </span>
-          {/* 过滤档位对齐参考实现 Trigger 页签（Subscribed / Evaluating / New Triggers in 24h / All）。
-              这里只落能算的两档；「订阅中 / 研判中」需要按 thread 查订阅（N+1），
-              等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑档位。 */}
-          <div className="ml-auto flex gap-1">
-            {([['all', '全部'], ['active24h', '24h 内有动静']] as const).map(([k, label]) => (
-              <button
-                key={k}
-                onClick={() => setListFilter(k)}
-                className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
-                  listFilter === k
-                    ? 'bg-surface-overlay text-fg-primary'
-                    : 'text-fg-tertiary hover:text-fg-secondary'
-                }`}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-        {visibleItems.length === 0 ? (
-          <p className="text-xs text-fg-tertiary">
-            还没读到它经手的事（心跳、记忆整理等自身运转不算）。
-          </p>
-        ) : (
-          <div className="flex flex-col gap-2 md:flex-row md:items-start">
-            <ul className="w-full shrink-0 space-y-1 md:w-64">
-              {visibleItems.map(w => {
-                const active = activeRef === w.ref;
-                return (
-                  <li key={w.ref ?? '__orphan'}>
-                    <button
-                      onClick={() => setSelectedRef(w.ref)}
-                      className={`w-full rounded-md border px-2 py-1.5 text-left transition-colors ${
-                        active
-                          ? 'border-selected-border bg-selected-bg'
-                          : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
-                      }`}
-                    >
-                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`}>
-                        {w.ref ? (threadTitleByRef[w.ref] ?? w.latestSummary ?? w.ref) : '未关联到某件事'}
-                      </span>
-                      <span className="mt-0.5 block text-[10px] text-fg-tertiary">
-                        {w.ref ? refDisplay(w.ref) : '—'} · {w.count} 条
-                      </span>
-                    </button>
-                  </li>
-                );
-              })}
-            </ul>
-            <div className="min-w-0 flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
-              {/* 三态分开：还在读 / 读失败 / 真的空。失败绝不渲染成「没有」。 */}
-              {timeline.loading && <p className="text-xs text-fg-tertiary">读取这件事的来龙去脉…</p>}
-              {timeline.failures.length > 0 && (
-                <div data-timeline-error className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-rose-500/10 px-2 py-1 text-[11px] text-rose-600">
-                  <span>{timeline.failures.join('、')}读取失败 —— 这不等于「没有记录」。</span>
-                  <button
-                    onClick={() => setTimelineTick(n => n + 1)}
-                    className="rounded bg-rose-500/15 px-1.5 py-0.5 font-medium hover:bg-rose-500/25"
-                  >重试</button>
-                </div>
-              )}
-              {/* 行怎么排、有哪些行由 lib/threadTimeline.ts 决定；这里只按行渲染（含来源标签）。 */}
-              <ol className="space-y-2" data-timeline-rows={timeline.rows.length}>
-                {timeline.rows.map(renderTimelineRow)}
-              </ol>
-              {timeline.empty && (
-                <p data-timeline-empty className="text-xs text-fg-tertiary">
-                  这件事还没有任何记录（没有事件、判断或投递）。
-                </p>
-              )}
-            </div>
-          </div>
-        )}
-      </section>
-
       {/* ── Notebook (Cognitive Workspace) ── */}
       {(mind?.notebook?.length ?? 0) > 0 && (() => {
         const nb = sliceNotebookForDisplay(mind!.notebook, notebookExpanded);
@@ -3109,6 +3001,114 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           </section>
         );
       })()}
+
+      {/* ── 来龙去脉：这个 agent 经手的那些事 ──────────────────────────────────
+          Owner 的明确要求：用户想看清"这件事到底怎么了"时看的就是它，
+          所以必须能在这里**就地**看到经过，不跳页。
+          左边：它经手的事（从邮箱条目派生，内部机械已排除）。
+          右边：选中那件事的时间线（历史事实，从 triggers 派生）。 */}
+      <section>
+        <div className="mb-2 flex flex-wrap items-center gap-2">
+          <h3 className="text-xs font-medium uppercase tracking-wider text-fg-tertiary">来龙去脉</h3>
+          <span className="text-[10px] text-fg-muted">
+            最近 {mailbox?.history?.length ?? 0} 条里涉及 {workItems.filter(w => w.ref).length} 件事
+          </span>
+          {/* 过滤档位对齐参考实现 Trigger 页签（Subscribed / Evaluating / New Triggers in 24h / All）。
+              这里只落能算的两档；「订阅中 / 研判中」需要按 thread 查订阅（N+1），
+              等 /api/agents/:id/threads 端点补上再加 —— 不拿假数据凑档位。 */}
+          <div className="ml-auto flex gap-1">
+            {([['all', '全部'], ['active24h', '24h 内有动静']] as const).map(([k, label]) => (
+              <button
+                key={k}
+                onClick={() => setListFilter(k)}
+                className={`rounded px-2 py-0.5 text-[10px] transition-colors ${
+                  listFilter === k
+                    ? 'bg-surface-overlay text-fg-primary'
+                    : 'text-fg-tertiary hover:text-fg-secondary'
+                }`}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {visibleItems.length === 0 ? (
+          <p className="text-xs text-fg-tertiary">
+            还没读到它经手的事（心跳、记忆整理等自身运转不算）。
+          </p>
+        ) : (
+          <div className="flex flex-col gap-2 md:flex-row md:items-start">
+            {/* 左列（经手的事）自管滚动：列表可能十几条，以前会把整页拉得很长，
+                右侧时间线被顶出视口 —— 手机上尤其难用（要滑很久才看到详情）。
+                现在列表自己滚，右侧详情停在原地。 */}
+            <ul className="w-full shrink-0 space-y-1 overflow-y-auto pr-1 max-h-[38vh] md:w-64 md:max-h-[60vh]">
+              {visibleItems.map(w => {
+                const active = activeRef === w.ref;
+                // Owner 2026-11-03：标题要能认人。
+                // 旧行为是「threads 表没标题就拿最新一条消息当标题」——于是卡片上写的是
+                // 「A2A message from Secretary」这种一眼看不出是哪件事的句子。
+                // 现在：实体标题 → 按 ref 种类给出可认知的名字（任务/会话/需求…）→ 最后才退回 ref。
+                // **不再拿最新消息冒充标题**。
+                const title = w.ref
+                  ? (threadTitleByRef[w.ref] ?? refKindLabel(w.ref))
+                  : '未关联到某件事';
+                const target = entityNavTarget(w.ref);
+                return (
+                  <li key={w.ref ?? '__orphan'} className="flex items-stretch gap-1 min-w-0">
+                    <button
+                      onClick={() => setSelectedRef(w.ref)}
+                      className={`min-w-0 flex-1 rounded-md border px-2 py-1.5 text-left transition-colors ${
+                        active
+                          ? 'border-selected-border bg-selected-bg'
+                          : 'border-border-subtle bg-surface-secondary hover:bg-surface-elevated'
+                      }`}
+                    >
+                      <span className={`block truncate text-xs ${active ? 'text-fg-primary' : 'text-fg-secondary'}`} title={title}>
+                        {title}
+                      </span>
+                      <span className="mt-0.5 flex items-center gap-1 min-w-0 text-[10px] text-fg-tertiary">
+                        {/* 长 ref（如 channel:dm:a2a:agt_xxx:agt_yyy）曾经直接撑破卡片边框：
+                            这里强制单行截断，完整值放 title。 */}
+                        <span className="truncate font-mono" title={w.ref ?? ''}>
+                          {w.ref ? refDisplay(w.ref) : '—'}
+                        </span>
+                        <span className="shrink-0">· {w.count} 条</span>
+                      </span>
+                    </button>
+                    {target && (
+                      <button
+                        onClick={() => navBus.navigate(target.page as Parameters<typeof navBus.navigate>[0], target.params)}
+                        title={`打开${refKindLabel(w.ref!)}`}
+                        className="shrink-0 self-center rounded-md border border-border-subtle px-1.5 py-1 text-[10px] text-fg-tertiary hover:text-fg-primary hover:bg-surface-elevated transition-colors"
+                      >↗</button>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+            <div className="min-w-0 w-full flex-1 rounded-md border border-border-subtle bg-surface-secondary p-2.5">
+              {/* 三态分开：还在读 / 读失败 / 真的空。失败绝不渲染成「没有」。 */}
+              {timeline.loading && <p className="text-xs text-fg-tertiary">读取这件事的来龙去脉…</p>}
+              {timeline.failures.length > 0 && (
+                <div data-timeline-error className="mb-2 flex flex-wrap items-center gap-2 rounded-md bg-rose-500/10 px-2 py-1 text-[11px] text-rose-600">
+                  <span>{timeline.failures.join('、')}读取失败 —— 这不等于「没有记录」。</span>
+                  <button
+                    onClick={() => setTimelineTick(n => n + 1)}
+                    className="rounded bg-rose-500/15 px-1.5 py-0.5 font-medium hover:bg-rose-500/25"
+                  >重试</button>
+                </div>
+              )}
+              {/* 行怎么排、有哪些行由 lib/threadTimeline.ts 决定；这里只按行渲染（含来源标签）。 */}
+              <ol className="space-y-2" data-timeline-rows={timeline.rows.length}>
+                {timeline.rows.map(renderTimelineRow)}
+              </ol>
+              {timeline.empty && (
+                <p data-timeline-empty className="text-xs text-fg-tertiary">
+                  这件事还没有任何记录（没有事件、判断或投递）。
+                </p>
+              )}
+            </div>
+          </div>
+        )}
+      </section>
 
       {/* ── Live Deliberation Activity ── */}
       {mind?.deliberationActivity && (

@@ -2274,13 +2274,12 @@ export class APIServer {
       }
       // 主干接通：每一条真实聊天会话都必须是一条流（否则 Thread 视图 / 路由台永远是空壳）。
       this.ensureChatThread(session.id, agentId);
-      // 时间线（S6）：记下「这条消息发生过」。只追加，不提供修改路径——
-      // 历史事实不应被后来的写者覆盖。
-      recordThreadEvent(this.storage, session.id, {
-        kind: 'chat',
-        actor: senderId ?? agentId,
-        summary: userMessage.slice(0, 80),
-      });
+      // 【已删】不再把聊天消息写成时间线事件（Owner 2026-11-03）。
+      //
+      // 原来每条用户消息 / 助手回复都 recordThreadEvent → triggers 一行。后果：
+      // agent 的「来龙去脉」里会出现一串「会话消息」碎片（原始 markdown、裸 user id），
+      // 而同一段对话已经有更准的一行——「投递 · 来自 Jason Carter 的对话 · 3.1M tokens · 8 次工具」。
+      // 时间线回答的是「这件事经历了几次处理」，不是「聊天记录」；转写内容的家只有一个：会话本身。
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       const assistantMsg = await this.storage.chatSessionRepo.appendMessage(
@@ -2291,15 +2290,7 @@ export class APIServer {
         tokensUsed,
         metadata
       );
-      // 时间线的另一半。此前只记了用户那句，助手回复从未进流——
-      // 那不是「残余」，是「发生过的事」少记了一半。
-      // 幂等键用 message id：同一条消息被重试落库不会在时间线里长出第二条。
-      recordThreadEvent(this.storage, session.id, {
-        kind: 'chat',
-        actor: agentId,
-        summary: reply.slice(0, 80),
-        eventId: assistantMsg?.id,
-      });
+      // 【已删】助手回复也不再单独进时间线（同上：对话是一条，不是 N 条消息）。
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2561,12 +2552,7 @@ export class APIServer {
       // 现在挂在这里：session 已确定，是落库路径必经的最小公共点。
       // ensure 幂等，所以 persistChatTurn 里保留的同名调用不会产生第二条流。
       this.ensureChatThread(session!.id, agentId);
-      // 流式聊天的落库路径也必须写时间线，否则「发了消息但时间线是空的」。
-      recordThreadEvent(this.storage, session!.id, {
-        kind: 'chat',
-        actor: senderId ?? agentId,
-        summary: userMessage.slice(0, 80),
-      });
+      // 【已删】流式路径也不再逐条写时间线（理由同 persistChatTurn）。
       const title = !session!.title ? deriveSessionTitle(titleSource, userMessage) : undefined;
       const meta: Record<string, unknown> = { ...(extraMeta ?? {}) };
       // base64 不再进库：字节落附件存储，行里只留 imageRefs。
@@ -2624,15 +2610,7 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
-      // 助手回复进时间线。幂等键 = message id：流式重写 / 重连重存都只会有一行。
-      if (msg?.id) {
-        recordThreadEvent(this.storage, sessionId, {
-          kind: 'chat',
-          actor: agentId,
-          summary: reply.slice(0, 80),
-          eventId: msg.id,
-        });
-      }
+      // 【已删】助手回复不单独进时间线（同上）。
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
@@ -2906,6 +2884,8 @@ export class APIServer {
             triggerRepo: this.storage.triggerRepo,
             ticketRepo: this.storage.ticketRepo,
             taskRepo: this.storage.taskRepo,
+            requirementRepo: this.storage.requirementRepo,
+            chatSessionRepo: this.storage.chatSessionRepo,
             approvalRepo: this.storage.approvalRepo,
           },
           deliver: target => {
@@ -13902,6 +13882,7 @@ EXPLANATION_END`;
       regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/reviews$/, 'GET'),
 
       // ── Execution ────────────────────────────────────────────────────────
       exact('/api/execution-logs', 'GET'),
