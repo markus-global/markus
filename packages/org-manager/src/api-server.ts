@@ -3601,7 +3601,7 @@ export class APIServer {
         return;
       }
       const prefix = typeof body['prefix'] === 'string' ? body['prefix'] : undefined;
-      const results: Array<{ url: string; key: string; name: string }> = [];
+      const results: Array<{ url: string; key: string; name: string; path?: string }> = [];
       for (const file of files) {
         if (!file.dataUrl || typeof file.dataUrl !== 'string') continue;
         const m = file.dataUrl.match(/^data:([^;]+);base64,(.+)$/);
@@ -3614,7 +3614,13 @@ export class APIServer {
           contentType,
           prefix,
         });
-        results.push({ ...result, name: file.name });
+        // 带上**落盘绝对路径**：浏览器端拿不到本地路径（沙箱），但文件已经在本机磁盘上，
+        // 这个路径就是 Agent 能直接 read 的那个。不返回它，调用方只能告诉用户一个文件名 ——
+        // 而「只发文件名」对 Agent 毫无意义（Owner 2026-11-04 指出）。
+        const resolved = typeof (this.fileStorage as { resolve?: (k: string) => string }).resolve === 'function'
+          ? (this.fileStorage as { resolve: (k: string) => string }).resolve(result.key)
+          : undefined;
+        results.push({ ...result, name: file.name, ...(resolved ? { path: resolved } : {}) });
       }
       this.json(res, 200, { files: results });
       return;

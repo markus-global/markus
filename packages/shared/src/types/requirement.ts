@@ -2,6 +2,17 @@ import type { TaskPriority, ItemStatus } from './task.js';
 
 export type RequirementStatus = ItemStatus;
 
+/**
+ * 需求终态：不再发出任何行动型提醒，也不再接受新任务。
+ * 单一事实源——需求服务与任务服务共用，不得各自内联一份字符串数组。
+ */
+export const TERMINAL_REQUIREMENT_STATUSES: ReadonlySet<RequirementStatus> = new Set<RequirementStatus>([
+  'completed',
+  'rejected',
+  'cancelled',
+  'archived',
+]);
+
 /** @deprecated Use ItemStatus. Kept for backward compat during migration. */
 export type LegacyRequirementStatus = 'pending_review' | 'approved' | RequirementStatus;
 

@@ -19,6 +19,7 @@ import {
   type TaskSortField,
   isValidTaskTransition,
   TERMINAL_STATUSES,
+  TERMINAL_REQUIREMENT_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
   PROMPT_DEP_NOTES_MAX,
@@ -866,6 +867,38 @@ export class TaskService implements ApprovalTargetPort {
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
   async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
+
+    // ── 刷屏硬闸门（2026-11-04 实测事故）──────────────────────────────
+    // req_319b0b66 在 3 小时内收到 256 条评论，全部由同一个 agent 写成：
+    // 每次被唤醒都把「卡1 completed、卡3 返修中…」重新叙述一遍，一轮十几条。
+    // 原有的软提示（内容里写「考虑 end_turn」）已被证明无效——这里改成**写入被拒绝**：
+    // 状态事实属于卡面（task_update），讨论每条只需一条消息。
+    if ((opts?.authorType ?? 'agent') === 'agent') {
+      const COMMENT_WINDOW_MS = 10 * 60 * 1000;
+      const COMMENT_LIMIT = 5;
+      let recentMine = 0;
+      try {
+        recentMine = this.requirementCommentRepo
+          .getByRequirement(requirementId)
+          .filter(c => c.authorId === authorId)
+          .filter(
+            c =>
+              Date.now() - new Date(c.createdAt as unknown as string).getTime() <
+              COMMENT_WINDOW_MS,
+          ).length;
+      } catch { /* 统计失败不阻断写评论 */ }
+      if (recentMine >= COMMENT_LIMIT) {
+        throw new TaskServiceError(
+          'COMMENT_RATE_LIMITED',
+          `Refusing to post: you already posted ${recentMine} comments on this requirement in the last 10 minutes ` +
+            `(limit ${COMMENT_LIMIT}). Status narration is not discussion — put the facts on the task cards ` +
+            `(task_update) or the requirement card, then end the turn (end_turn). ` +
+            `Comment again only when a human replies or there is genuinely new information.`,
+          { requirementId, recentComments: recentMine, limit: COMMENT_LIMIT, windowMinutes: 10 },
+        );
+      }
+    }
+
     const comment = await this.requirementCommentRepo.add({
       requirementId,
       authorId,
@@ -2544,7 +2577,9 @@ export class TaskService implements ApprovalTargetPort {
           reviewerId: (row as any).reviewerId ?? (row as any).reviewer_agent_id ?? '',
           reviewerType: ((row as any).reviewerType ?? (row as any).reviewer_type ?? 'agent') as 'agent' | 'human',
           executionRound: (row as any).executionRound ?? (row as any).execution_round ?? 1,
-          // 主动暂停标记：有值即「人/agent 有意叫停」，依赖引擎不得自动恢复。
+          // 进入 blocked 的**原因**（判别位）：判定只读它，不再从 pausedAt / 写入者身份推断。
+          // NULL = 本列出现之前的旧行 → 按 deps 处理（与旧版本行为一致）。见 state-machines.md §2.1
+          blockedReason: this.resolveBlockedReason(row as unknown as Record<string, unknown>),
           pausedAt: (row as any).pausedAt ?? (row as any).paused_at ?? undefined,
           pausedBy: (row as any).pausedBy ?? (row as any).paused_by ?? undefined,
           requirementId: (row as any).requirementId ?? undefined,
@@ -2671,6 +2706,22 @@ export class TaskService implements ApprovalTargetPort {
       // Only validate reviewer as agent if reviewerType is not 'human'
       if (request.reviewerType !== 'human' && !this.agentManager.hasAgent(request.reviewerId)) {
         throw new Error(`Task creation failed: reviewer agent not found: ${request.reviewerId}`);
+      }
+    }
+
+    // ── 需求终态闸门：终态需求不再接受新任务 ──
+    // 否则会造出「需求已完成、但名下还有 pending 卡」的破口（卡6 复核时实测遇到）。
+    // 拒绝 + 可行动提示，而不是默默允许后由下游猜测。
+    if (request.requirementId && this.requirementService) {
+      const req = this.requirementService.getRequirement(request.requirementId);
+      if (req && TERMINAL_REQUIREMENT_STATUSES.has(req.status)) {
+        throw new TaskServiceError(
+          'REQUIREMENT_TERMINAL',
+          `Cannot create a task under requirement "${req.title}" (${req.id}): it is already ${req.status}. ` +
+            `Terminal requirements accept no new work. If more work is genuinely needed, ` +
+            `propose a new requirement (requirement_propose) instead of reopening this one.`,
+          { requirementId: req.id, requirementStatus: req.status },
+        );
       }
     }
 
@@ -3148,11 +3199,11 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'in_progress') {
       throw new Error(`Cannot pause task in ${task.status} status`);
     }
-    // 标记「有意叫停」：blocked 同时被用作「等依赖」，不标记就会被依赖引擎
-    // 当成「已满足 → 自动恢复」每 30s 翻回 in_progress（2026-11-03 实测）。
+    // 挂起是**声明**，不是推断：直接写判别位，依赖引擎不会碰它（只能 resumeTask）。
+    task.blockedReason = 'hold';
     task.pausedAt = new Date().toISOString();
     task.pausedBy = updatedBy ?? updatedByType ?? 'unknown';
-    this.persistPause(task);
+    this.persistBlockState(task);
     return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType);
   }
 
@@ -3180,19 +3231,52 @@ export class TaskService implements ApprovalTargetPort {
         { dependencies: unresolved, dependencyTitles: unresolved.map(d => this.tasks.get(d)?.title).filter(Boolean) },
       );
     }
-    // 恢复 = 清掉暂停标记，交还给正常流程（否则依赖引擎永远不碰它）。
+    // 恢复 = 清掉挂起标记，交还给正常流程。
+    task.blockedReason = undefined;
     task.pausedAt = undefined;
     task.pausedBy = undefined;
-    this.persistPause(task);
+    this.persistBlockState(task);
     return this.updateTaskStatus(id, 'in_progress', updatedBy, false, false, updatedByType);
   }
 
-  /** 暂停标记落库（restart 后仍然有效）。失败只记 warn，不阻断状态机。 */
-  private persistPause(task: Task): void {
-    const repo = this.taskRepo as unknown as { updatePause?: (id: string, at: string | null, by: string | null) => Promise<void> };
-    if (!repo?.updatePause) return;
-    repo.updatePause(task.id, task.pausedAt ?? null, task.pausedBy ?? null)
-      .catch(err => log.warn('Failed to persist task pause marker', { taskId: task.id, error: String(err) }));
+  /**
+   * 判别位的落库写入口（唯一）。同时写入审计信息 paused_at/paused_by。
+   * 失败只记 warn，不阻断状态机（标记丢失只会退回旧版本的推断行为）。
+   */
+  private persistBlockState(task: Task): void {
+    const repo = this.taskRepo as unknown as {
+      updateBlockState?: (id: string, at: string | null, by: string | null, reason: string | null) => Promise<void>;
+    };
+    if (!repo?.updateBlockState) return;
+    repo.updateBlockState(task.id, task.pausedAt ?? null, task.pausedBy ?? null, task.blockedReason ?? null)
+      .catch(err => log.warn('Failed to persist task blocked state', { taskId: task.id, error: String(err) }));
+  }
+
+  /**
+   * 读判别位：旧行没有该列（或值为无效）时，按旧版本的语义回退——
+   * 有 paused_at 即「挂起」，否则「等依赖」。这一手只用于**兼容读**，不做推断式判定。
+   */
+  private resolveBlockedReason(row: Record<string, unknown>): Task['blockedReason'] {
+    const raw = (row.blockedReason ?? row.blocked_reason) as string | undefined;
+    if (raw === 'deps' || raw === 'hold') return raw;
+    return (row.pausedAt ?? row.paused_at) ? 'hold' : undefined;
+  }
+
+  /**
+   * 「这个 blocked 能不能被自动解除」——**全仓唯一判定点**。
+   * 依赖引擎 / 依赖重算 / 启动修复 / 看板统计全部问它，不再各自写守卫。
+   *
+   * 只看落库的判别位，不看是谁写的、不看调用栈、不看有没有 pausedAt：
+   *   hold → 绝不由任何自动逻辑解除（唯一通道：resumeTask）；
+   *   deps → 无可等的依赖（blockedBy 被清空）或全部满足 → 可解除；
+   *   缺失（旧行）→ 按 deps，与旧版本行为一致。
+   */
+  private mayAutoResume(task: Task): boolean {
+    if (task.status !== 'blocked') return false;
+    if (task.blockedReason === 'hold') return false;
+    // 依赖被清空 = 没东西可等了（旧版本就是这个行为，不能因为加了判别位而退回）。
+    if (!task.blockedBy?.length) return true;
+    return this.areBlockersSatisfied(task);
   }
 
   getTask(id: string): Task | undefined {
@@ -3226,6 +3310,22 @@ export class TaskService implements ApprovalTargetPort {
     const result = this.validateAndApplyTransition(id, status, updatedBy, _internal, byType);
     if (!result) return this.tasks.get(id)!; // no-op (same status)
 
+    // 进入 blocked 时把「为什么被 blocked」算成判别位并落库——**判据来自数据，不来自写入者身份**：
+    // 有未满足的 blockedBy → deps（依赖引擎可以解除）；否则 → hold（机器永不因无依赖而 blocked，必是有人叫停）。
+    // 读者是 30 秒后、甚至重启后的引擎，所以必须落库，不能只做函数参数。
+    if (status === 'blocked' && result.task.blockedReason === undefined) {
+      const depsPending = (result.task.blockedBy?.length ?? 0) > 0 && !this.areBlockersSatisfied(result.task);
+      result.task.blockedReason = depsPending ? 'deps' : 'hold';
+      if (!depsPending && !result.task.pausedAt) {
+        result.task.pausedAt = new Date().toISOString();
+        result.task.pausedBy = updatedBy ?? byType;
+      }
+      this.persistBlockState(result.task);
+    } else if (status !== 'blocked' && result.task.blockedReason !== undefined) {
+      // 离开 blocked：清判别位，避免下次进入时沿用上一次的原因。
+      result.task.blockedReason = undefined;
+      this.persistBlockState(result.task);
+    }
     // Record transition history
     this.recordTaskTransition(id, result.prevStatus, status, updatedBy, byType, reason);
 
@@ -4316,10 +4416,10 @@ export class TaskService implements ApprovalTargetPort {
    * 恢复通道仍然存在：`resumeTask()`（人）或重新设置 blockedBy。
    */
   private reevaluateBlockedStatus(task: Task): void {
-    // 主动暂停的任务不被依赖重算影响（否则人一按暂停就被推翻）。
-    if (task.pausedAt) return;
+    // 挂起（人/agent 声明）不参与依赖重算——依赖跟它没关系，只能由 resumeTask 解除。
+    if (task.blockedReason === 'hold') return;
     const shouldBeBlocked = (task.blockedBy?.length ?? 0) > 0 && !this.areBlockersSatisfied(task);
-    if (task.status === 'blocked' && !shouldBeBlocked) {
+    if (this.mayAutoResume(task)) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'blocked', undefined, true);
@@ -4457,10 +4557,9 @@ export class TaskService implements ApprovalTargetPort {
    * enforceable by construction.
    */
   private evaluateBlockedDependent(task: Task): void {
-    // 主动暂停（人/agent 叫停）不是「等依赖」，依赖引擎无权解除。
-    // 实测事故：暂停后每 30s 被以「Dependency satisfied」翻回 in_progress，
-    // 与用户抢方向盘。恢复通道 = resumeTask()（显式动作）。
-    if (task.pausedAt) return;
+    // 挂起（人/agent 叫停）不是「等依赖」，依赖引擎无权处置——连级联取消也不碰。
+    // 判定只读落库的判别位，见 mayAutoResume()。
+    if (task.blockedReason === 'hold') return;
     if (!task.blockedBy?.length) return;
     const verdicts = task.blockedBy.map(id => this.blockerVerdict(id));
 
