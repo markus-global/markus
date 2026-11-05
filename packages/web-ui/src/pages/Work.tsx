@@ -7446,7 +7446,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               <div className="min-w-0">
                 <MultiSearchableSelect
                   options={Object.values(board).flat()
-                    .filter(tk => tk.status !== 'completed' && tk.status !== 'cancelled')
+                    .filter(tk => !isTerminal(tk.status))
                     .map(tk => ({ value: tk.id, label: tk.title }))}
                   selected={taskBlockedBy}
                   onAdd={id => setTaskBlockedBy([...taskBlockedBy, id])}
@@ -7945,7 +7945,7 @@ function RequirementDetailPanel({
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
+  const reqTerminal = isTerminal(req.status);
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -7999,12 +7999,12 @@ function RequirementDetailPanel({
               />
             ) : (
               <span
-                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!isTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
-                onClick={!isTerminal ? () => setEditingTitle(true) : undefined}
-                role={!isTerminal ? 'button' : undefined}
-                tabIndex={!isTerminal ? 0 : undefined}
-                onKeyDown={!isTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
-                title={!isTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
+                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!reqTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
+                onClick={!reqTerminal ? () => setEditingTitle(true) : undefined}
+                role={!reqTerminal ? 'button' : undefined}
+                tabIndex={!reqTerminal ? 0 : undefined}
+                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
+                title={!reqTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
               >
                 {req.title}
               </span>
@@ -8079,11 +8079,11 @@ function RequirementDetailPanel({
             ) : (
               <div
                 ref={descRef}
-                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
-                onClick={!isTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
-                role={!isTerminal ? 'button' : undefined}
-                tabIndex={!isTerminal ? 0 : undefined}
-                onKeyDown={!isTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
+                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!reqTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
+                onClick={!reqTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
+                role={!reqTerminal ? 'button' : undefined}
+                tabIndex={!reqTerminal ? 0 : undefined}
+                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
               >
                 {req.description ? (
                   <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />

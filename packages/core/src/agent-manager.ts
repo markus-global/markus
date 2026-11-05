@@ -3368,11 +3368,7 @@ export class AgentManager {
           log.warn('Task not found during rehydration, skipping', { agentId, taskId });
           continue;
         }
-        if (
-          task.status === 'completed' ||
-          task.status === 'cancelled' ||
-          task.status === 'failed'
-        ) {
+        if (isTerminal(task.status)) {
           log.debug('Task already terminal, skipping rehydration', {
             agentId,
             taskId,
