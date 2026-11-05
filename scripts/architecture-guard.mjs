@@ -219,6 +219,49 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  {
+    id: 'thread-presentation-single-source',
+    title: 'Thread 展示层单一实现（STAGE_LABEL / ACTION_LABEL / 时间格式化只许一份）',
+    checks: [
+      {
+        file: 'packages/web-ui/src/lib/threadPresentation.ts',
+        label: '唯一实现存在（导出 STAGE_LABEL / ACTION_LABEL / formatRelative / formatDuration）',
+        hint: '单一实现文件消失 → 各页面会各自长回本地副本，文案与时间口径随即分叉',
+        detect: t =>
+          /export const STAGE_LABEL/.test(t) &&
+          /export const ACTION_LABEL/.test(t) &&
+          /export function formatRelative\b/.test(t) &&
+          /export function formatDuration\b/.test(t),
+        fixtures: {
+          ok: "export const STAGE_LABEL = {}; export const ACTION_LABEL = {}; export function formatRelative(ms) {} export function formatDuration(ms) {}",
+          bad: "export const STAGE_LABEL = {};",
+        },
+      },
+      // 已知消费方：这些文件曾经各带一份副本，历史上真的分叉过
+      // （概览说「等你回话」、Thread 视图说「等你回答」）。
+      // 局限：只管这 5 个文件，新增文件不受约束——所以 S3 同时把它们改成 import。
+      ...[
+        'src/components/InboxCard.tsx',
+        'src/pages/ThreadView.tsx',
+        'src/pages/RouterDesk.tsx',
+        'src/components/HistoryModal.tsx',
+        'src/components/ActionCenter.tsx',
+      ].map(rel => ({
+        file: `packages/web-ui/${rel}`,
+        label: `${rel} 不再自带 stage/action/时间副本，改为引用 lib/threadPresentation`,
+        hint: '该文件重新长出本地 STAGE_LABEL / relTime / relAge / humanDuration → 第二个写者回来了，文案会再次分叉',
+        detect: t =>
+          !/const STAGE_LABEL\s*:/.test(t) &&
+          !/const ACTION_LABEL\s*:/.test(t) &&
+          !/function\s+(relTime|relAge|humanDuration)\s*\(/.test(t) &&
+          /from '\.\.\/lib\/threadPresentation\.ts'/.test(t),
+        fixtures: {
+          ok: "import { stageLabel } from '../lib/threadPresentation.ts';",
+          bad: "const STAGE_LABEL: Record<string,string> = { idle: '空闲' };",
+        },
+      })),
+    ],
+  },
 ];
 
 /** 门禁自检：每条检测器都必须「命中违规样本、放过合规样本」。 */
