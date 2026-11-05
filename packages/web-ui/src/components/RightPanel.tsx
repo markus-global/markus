@@ -15,7 +15,19 @@ import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.t
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import TabScrollRail from './TabScrollRail.tsx';
-import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
+import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
+import {
+  clearBrowserHistory,
+  historyEntryKey,
+  historyVisitForPanel,
+  loadBrowserHistory,
+  recordHistoryVisit,
+  removeHistoryEntry,
+  subscribeBrowserHistory,
+  type BrowserHistoryEntry,
+} from '../lib/browserHistory.ts';
+import { reopenHistoryEntry } from '../lib/historyReopen.ts';
+import { useLayout, type RightPanelMode, type RightPanelPayload, type RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
 
@@ -152,8 +164,13 @@ export function RightPanel({
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
   const [editorDirty, setEditorDirty] = useState(false);
+  /** Visit-history dropdown opened from the panel chrome (file / deliverable modes). */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<BrowserHistoryEntry[]>(() => loadBrowserHistory());
+  const layout = useLayout();
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
+  const historyWrapRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
   const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
   const editorDirtyRef = useRef(false);
@@ -165,6 +182,38 @@ export function RightPanel({
       t('common:fileEditor.discardConfirm', { defaultValue: 'Discard unsaved changes?' }),
     );
   }, [t]);
+
+  // Keep the chrome dropdown in step with the shared history (records made by the
+  // address bar, removes, clear-all, and other windows' writes).
+  useEffect(() => subscribeBrowserHistory(setHistoryItems), []);
+
+  // Click-away closes the chrome dropdown (it sits above the preview body, so an
+  // outside click is usually "I am done with the menu").
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (historyWrapRef.current?.contains(target)) return;
+      setHistoryOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [historyOpen]);
+
+  // Directory listings open files / subfolders *inside* the current tab, so no
+  // `openRightPanel` call happens and the visit history would otherwise skip
+  // them. Recording every in-panel navigation keeps the list equal to what was
+  // actually read.
+  useEffect(() => {
+    if (!dirNavPath) return;
+    const visit = historyVisitForPanel({
+      kind: 'file',
+      path: dirNavPath,
+      title: dirNavPath.split(/[/\\]/).pop() || dirNavPath,
+    });
+    if (visit) recordHistoryVisit(visit);
+  }, [dirNavPath]);
 
   // Hydrate + live-update which agent currently owns each embedded-browser pageId.
   useEffect(() => {
@@ -380,7 +429,7 @@ export function RightPanel({
   }, [contentKey, payload, activePath, reference, title]);
 
   // Reset in-panel directory navigation when the payload / active tab changes.
-  useEffect(() => { setDirNavPath(null); }, [contentKey]);
+  useEffect(() => { setDirNavPath(null); setHistoryOpen(false); }, [contentKey]);
 
   const sourceLabel = title || activePath;
 
@@ -877,6 +926,43 @@ export function RightPanel({
               refresh or an auto-refresh toggle — the preview re-reads whenever the
               payload / tab changes, and nothing polls /api/files/stat on a timer. */}
           <div data-no-drag data-panel-actions className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
+            {/* 最近访问：文件 / 产出物预览没有地址栏，历史入口在面板操作区。
+                url 模式不重复提供 —— 那里的地址栏本身就是入口。 */}
+            {(payload.kind === 'file' || payload.kind === 'deliverable') && (
+              <div ref={historyWrapRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(v => !v)}
+                  title={t('common:browserHistoryRecent', { defaultValue: '最近访问' })}
+                  aria-label={t('common:browserHistoryRecent', { defaultValue: '最近访问' })}
+                  aria-haspopup="listbox"
+                  aria-expanded={historyOpen}
+                  className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                    historyOpen ? 'text-brand-500 bg-brand-500/10' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                  }`}
+                >
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 4 3 10 9 10" /><polyline points="12 8 12 12 15 14" />
+                  </svg>
+                </button>
+                {historyOpen && (
+                  <BrowserHistoryMenu
+                    items={historyItems}
+                    query=""
+                    activeIndex={-1}
+                    onHover={() => { /* chrome menu has no keyboard highlight */ }}
+                    onPick={entry => {
+                      setHistoryOpen(false);
+                      void reopenHistoryEntry(entry, { openPanel: layout?.openRightPanel });
+                    }}
+                    onRemove={entry => setHistoryItems(removeHistoryEntry(historyEntryKey(entry)))}
+                    onClear={() => { clearBrowserHistory(); setHistoryOpen(false); }}
+                    anchorClassName="right-0 top-full mt-1 w-72"
+                    keyboardHint={false}
+                  />
+                )}
+              </div>
+            )}
             {payload.kind === 'terminal' && onAddToChat && (
               <button
                 type="button"

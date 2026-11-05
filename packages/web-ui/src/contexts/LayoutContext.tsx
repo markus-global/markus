@@ -2,6 +2,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { DeliverableInfo } from '../api.ts';
 import { forgetTerminalId, rememberTerminalId } from '../lib/known-terminals.ts';
 import { isEphemeralAuthBrowserUrl } from '../lib/browserAuthUrl.ts';
+import { deliverableTarget, historyVisitForPanel, recordHistoryVisit } from '../lib/browserHistory.ts';
 
 /**
  * Payload describing what the right-side panel should display.
@@ -73,10 +74,9 @@ function payloadKey(payload: RightPanelPayload): string {
   if (payload.kind === 'file') return `file:${payload.path}`;
   if (payload.kind === 'url') return `url:${payload.browserId || payload.url}`;
   if (payload.kind === 'terminal') return `terminal:${payload.terminalId}`;
-  const d = payload.deliverable;
-  // Prefer stable ids; fall back to reference+title so distinct markdown
-  // deliverables with the same generic title don't collapse into one tab.
-  return `deliverable:${d.id || `${d.reference || ''}|${d.title || ''}|${d.summary?.slice(0, 48) || ''}` || 'unknown'}`;
+  // Identity comes from the shared helper so the tab key and the visit-history
+  // key can never disagree about "is this the same deliverable?".
+  return `deliverable:${deliverableTarget(payload.deliverable) || 'unknown'}`;
 }
 
 function payloadTitle(payload: RightPanelPayload): string {
@@ -560,6 +560,14 @@ export function LayoutProvider({ children }: { children: React.ReactNode }) {
     const key = payloadKey(payload);
     const newId = newTabId();
     const isTerm = isTerminalPayload(payload);
+
+    // Visit history: the single write point for file / deliverable opens — every
+    // entry path in the app funnels through here (chat file links, deliverable
+    // cards, entity cards, markdown links inside a preview). Recording before the
+    // tab bookkeeping means re-opening an already-open target still refreshes its
+    // recency (dedupe + bump happen inside recordHistoryVisit).
+    const visit = historyVisitForPanel(payload);
+    if (visit) recordHistoryVisit(visit);
 
     // Compute next tabs + active id synchronously via refs.
     // (React 18 does not run useState updaters inline, so assigning nextActiveId

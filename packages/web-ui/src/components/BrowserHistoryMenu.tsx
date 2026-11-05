@@ -1,12 +1,21 @@
 import { useTranslation } from 'react-i18next';
-import { displayHistoryUrl, type BrowserHistoryEntry } from '../lib/browserHistory.ts';
+import {
+  displayHistoryTarget,
+  historyEntryKey,
+  type BrowserHistoryEntry,
+  type HistoryEntryKind,
+} from '../lib/browserHistory.ts';
 
 /**
- * Address-bar history dropdown for the embedded browser.
+ * Visit-history dropdown — shared by the address bar and the panel chrome.
  *
  * Purely presentational: the parent owns query / highlight state and decides
- * when the menu is visible. Items are picked with click, or with ↑/↓ + Enter
- * (the parent wires those keys on the address input).
+ * when the menu is visible. Items are picked with click, or (address bar only)
+ * with ↑/↓ + Enter — the parent wires those keys on the address input.
+ *
+ * Rows span every recordable kind (web page / local file / deliverable), so the
+ * icon is the only thing distinguishing them: the destination line already says
+ * whether it is a URL, a path or a reference.
  *
  * Row removal + "clear all" are handled here so the parent stays small; both
  * fire `onMouseDown` with `preventDefault()` upstream so the input never loses
@@ -20,6 +29,8 @@ export function BrowserHistoryMenu({
   onPick,
   onRemove,
   onClear,
+  anchorClassName = 'left-0 right-0 top-full mt-1',
+  keyboardHint = true,
 }: {
   items: BrowserHistoryEntry[];
   /** Current address-bar text — decides the empty-state copy. */
@@ -27,8 +38,12 @@ export function BrowserHistoryMenu({
   activeIndex: number;
   onHover: (index: number) => void;
   onPick: (entry: BrowserHistoryEntry) => void;
-  onRemove: (url: string) => void;
+  onRemove: (entry: BrowserHistoryEntry) => void;
   onClear: () => void;
+  /** Positioning relative to the trigger wrapper (address bar vs. chrome button). */
+  anchorClassName?: string;
+  /** Only the address bar implements ↑↓ / Ctrl+N/P — do not advertise it elsewhere. */
+  keyboardHint?: boolean;
 }) {
   const { t } = useTranslation('common');
   const heading = query.trim()
@@ -39,7 +54,7 @@ export function BrowserHistoryMenu({
     return (
       <div
         role="listbox"
-        className="absolute left-0 right-0 top-full mt-1 z-50 rounded-lg border border-border-default bg-surface-elevated shadow-xl overflow-hidden"
+        className={`absolute z-50 rounded-lg border border-border-default bg-surface-elevated shadow-xl overflow-hidden ${anchorClassName}`}
       >
         <div className="px-2.5 py-3 text-[11px] text-fg-tertiary text-center">
           {query.trim()
@@ -54,22 +69,25 @@ export function BrowserHistoryMenu({
     <div
       role="listbox"
       aria-label={heading}
-      className="absolute left-0 right-0 top-full mt-1 z-50 rounded-lg border border-border-default bg-surface-elevated shadow-xl overflow-hidden"
+      className={`absolute z-50 rounded-lg border border-border-default bg-surface-elevated shadow-xl overflow-hidden ${anchorClassName}`}
     >
       <div className="flex items-center gap-2 px-2.5 py-1.5 text-[10px] uppercase tracking-wide text-fg-muted border-b border-border-default/60 select-none">
         <span>{heading}</span>
-        <span
-          className="ml-auto normal-case tracking-normal text-fg-tertiary/80 truncate"
-          title={t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
-        >
-          {t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
-        </span>
+        {keyboardHint && (
+          <span
+            className="ml-auto normal-case tracking-normal text-fg-tertiary/80 truncate"
+            title={t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
+          >
+            {t('browserHistoryKeyboardHint', { defaultValue: '↑↓ 或 Ctrl+N/P 选择 · Enter 打开' })}
+          </span>
+        )}
       </div>
       <ul className="max-h-72 overflow-y-auto scrollbar-thin py-0.5">
         {items.map((entry, index) => {
           const active = index === activeIndex;
+          const location = displayHistoryTarget(entry);
           return (
-            <li key={entry.url}>
+            <li key={historyEntryKey(entry)}>
               <div
                 role="option"
                 aria-selected={active}
@@ -85,19 +103,13 @@ export function BrowserHistoryMenu({
                   onPick(entry);
                 }}
               >
-                <svg
-                  className={`shrink-0 ${active ? 'text-brand-500' : 'text-fg-muted'}`}
-                  width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round" aria-hidden
-                >
-                  <circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 14" />
-                </svg>
+                <HistoryKindIcon kind={entry.kind} active={active} />
                 <div className="min-w-0 flex-1">
                   {entry.title && (
                     <div className="text-[11px] text-fg-primary truncate leading-tight">{entry.title}</div>
                   )}
                   <div className={`truncate leading-tight ${entry.title ? 'text-[10px] text-fg-tertiary' : 'text-[11px] text-fg-secondary'}`}>
-                    {displayHistoryUrl(entry.url)}
+                    {location}
                   </div>
                 </div>
                 <button
@@ -108,7 +120,7 @@ export function BrowserHistoryMenu({
                   onMouseDown={e => {
                     e.preventDefault();
                     e.stopPropagation();
-                    onRemove(entry.url);
+                    onRemove(entry);
                   }}
                 >
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden>
@@ -131,5 +143,43 @@ export function BrowserHistoryMenu({
         {t('browserHistoryClear', { defaultValue: '清除全部历史记录' })}
       </button>
     </div>
+  );
+}
+
+/** Clock = web page, document = local file, box = deliverable. */
+function HistoryKindIcon({ kind, active }: { kind: HistoryEntryKind; active: boolean }) {
+  const stroke = active ? 'text-brand-500' : 'text-fg-muted';
+  if (kind === 'file') {
+    return (
+      <svg
+        className={`shrink-0 ${stroke}`}
+        width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden
+      >
+        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
+        <polyline points="14 2 14 8 20 8" />
+      </svg>
+    );
+  }
+  if (kind === 'deliverable') {
+    return (
+      <svg
+        className={`shrink-0 ${stroke}`}
+        width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+        strokeLinecap="round" strokeLinejoin="round" aria-hidden
+      >
+        <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+        <polyline points="3.27 6.96 12 12.01 20.73 6.96" /><line x1="12" y1="22.08" x2="12" y2="12" />
+      </svg>
+    );
+  }
+  return (
+    <svg
+      className={`shrink-0 ${stroke}`}
+      width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" /><polyline points="12 7 12 12 15.5 14" />
+    </svg>
   );
 }
