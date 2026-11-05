@@ -52,32 +52,31 @@ export function ensureThread(storage: StorageBridge | undefined, ref: string, ac
 }
 
 /**
- * 往一条流的时间线追加一条事件。
+ * 往一条流上记一件事 —— 写进 `triggers`（「发生过什么」的唯一事实源）。
  *
- * 为什么单独一个函数而不是塞进 `ensureThread`：建流和「发生了什么」是两件事。
- * 一条流可以建一次、往里写很多条事件；合成一个函数会让「只是建了流」这件事
- * 看起来像「发生了一件事」，时间线就变成一条假数据。
+ * 2026-11-03 改变：这里以前写 `thread_events` 表。那张表存的是 `triggers` 内容的副本，
+ * 也就是同一件事的第二个写者——两个写者必然会在某天不一致，而时间线恰好是「证据」，
+ * 错了最难发现。现在表已删除，时间线改为对 `triggers.thread_refs` 的派生查询。
  *
- * 失败不抛：时间线是读模型，不能因为写不进事件而丢用户消息。
- * 但没建流时直接跳过（懒创建）—— 不为一条不存在的事件新建流。
+ * 失败不抛：这是旁路记账，不能因为记不上而丢用户消息 / 任务。
+ * 但必须留 warn —— 否则「时间线空了」会变成查不到的盲区。
  */
 export function recordThreadEvent(
   storage: StorageBridge | undefined,
   ref: string,
-  event: { kind: string; actor?: string; summary: string; payload?: Record<string, unknown> },
+  event: { kind: string; actor?: string; summary: string; eventId?: string },
 ): void {
-  const events = (storage as any)?.threadEventRepo;
-  const threads = storage?.threadRepo;
-  if (!events || !threads) return;
+  const triggers = storage?.triggerRepo;
+  if (!triggers) return;
   try {
-    const thread = threads.getByRef(ref);
-    if (!thread) return; // 懒创建：流不存在就不为它凭空造时间线
-    events.append({
-      threadId: thread.id,
+    triggers.insertOrGet({
       kind: event.kind,
-      actor: event.actor,
+      // 幂等键：调用方给了稳定 id 就用它（重投安全）；否则每次调用都是**一件新事实**
+      // （一条新消息就该是新行），所以不带内容哈希——两条相同内容的消息是两件事。
+      idempotencyKey: event.eventId ? `evt:${event.eventId}` : `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+      actorId: event.actor ?? null,
       summary: event.summary,
-      payload: event.payload,
+      threadRefs: [ref],
     });
   } catch (err) {
     log.warn('recordThreadEvent failed', { ref, kind: event.kind, error: String(err) });

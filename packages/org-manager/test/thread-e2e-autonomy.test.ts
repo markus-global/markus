@@ -17,7 +17,7 @@ import { tmpdir } from 'node:os';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import {
   openSqlite, closeSqlite,
-  SqliteThreadRepo, SqliteThreadEventRepo, SqliteDispositionRepo, SqliteResourceBindingRepo,
+  SqliteThreadRepo, SqliteTriggerRepo, SqliteDispositionRepo, SqliteResourceBindingRepo,
 } from '@markus/storage';
 import { ThreadService, EventIngress, SourceRegistry } from '@markus/core';
 import type { SourceAdapter, NormalizedEvent, DispatchTarget } from '@markus/core';
@@ -31,7 +31,7 @@ let db: ReturnType<typeof openSqlite>;
 let threads: SqliteThreadRepo;
 let dispositions: SqliteDispositionRepo;
 let bindings: SqliteResourceBindingRepo;
-let events: SqliteThreadEventRepo;
+let triggers: SqliteTriggerRepo;
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), 'markus-e2e-'));
@@ -39,7 +39,7 @@ beforeEach(() => {
   threads = new SqliteThreadRepo(db);
   dispositions = new SqliteDispositionRepo(db);
   bindings = new SqliteResourceBindingRepo(db);
-  events = new SqliteThreadEventRepo(db);
+  triggers = new SqliteTriggerRepo(db);
 });
 
 afterEach(() => {
@@ -154,20 +154,27 @@ describe('端到端 · off 档：既不叫醒，也不留判断', () => {
   });
 });
 
-describe('端到端 · 三张表都留痕（F2.2 的机制层判据）', () => {
-  it('threads / thread_dispositions / thread_events 在同一轮里都有行', () => {
-    const { ingress, thread } = wire('observe');
+describe('端到端 · 事实 / 执行态 / 时间线（F2.2 的机制层判据）', () => {
+  it('threads / thread_dispositions 有行，且时间线能从 triggers 派生', () => {
+    const { ingress } = wire('observe');
 
     ingress.ingest({ prefix: 'gh', headers: {}, rawBody: Buffer.from('{}'), secret: null });
-    // 时间线是独立的读模型：路由完之后追加一条「发生了什么」
-    events.append({ threadId: thread.id, kind: 'comment', actor: 'human:owner', summary: '有人在 issue 下评论了' });
+    // 时间线不再是独立表（2026-11-03 删除）：追加一件事 = 登记一条 trigger。
+    triggers.insertOrGet({
+      kind: 'comment',
+      idempotencyKey: 'evt:e2e:1',
+      actorId: 'human:owner',
+      summary: '有人在 issue 下评论了',
+      threadRefs: [REF],
+    });
 
     const n = (t: string) =>
       Number((db.prepare(`SELECT COUNT(*) AS n FROM ${t}`).get() as { n: number }).n);
 
     expect(n('threads')).toBeGreaterThan(0);
     expect(n('thread_dispositions')).toBeGreaterThan(0);
-    expect(n('thread_events')).toBeGreaterThan(0);
+    // 判据不是「有一张事件表」，而是「时间线读得出来」——表删了这条仍然必须绿。
+    expect(triggers.listByThreadRef(REF).map(e => e.summary)).toContain('有人在 issue 下评论了');
   });
 
   it('幂等：同一个 trigger 重投 3 次，处置仍然只有 1 行', () => {

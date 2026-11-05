@@ -5,7 +5,7 @@
  * 不合并、不改写正文** —— 消掉「追一件事要来回切三个界面」的成本。
  *
  * 三个来源：
- *   thread_events → 真实发生过的事（chat / comment / a2a），只追加不可改
+ *   events        → 真实发生过的事（chat / comment / a2a），从 triggers 派生（不落表）
  *   dispositions  → 系统做过的判断（action + reason + actor）
  *   threads       → 当前状态（stage + taskStatus），派生快照，不是事件
  *
@@ -38,7 +38,7 @@ const EVENT_KIND_LABEL: Record<string, string> = {
   a2a: 'Agent 对话',
 };
 
-/** 时间线节点：真实发生过的一件事（thread_events）。只追加，不可修改。 */
+/** 时间线节点：真实发生过的一件事（来自 triggers，只追加不可修改）。 */
 function EventNode({ e }: { e: ThreadEventAPI }) {
   return (
     <li className="relative border-l border-border-subtle pl-3">
@@ -223,7 +223,7 @@ export function ThreadViewPage() {
         <p className="mt-1 text-sm text-fg-secondary">一条流的来龙去脉，按时间合成一条流。</p>
       </header>
 
-      {/* 时间线已接 thread_events（S6）——原来的「尚未落库」告示已移除。
+      {/* 时间线数据源是 `triggers` 的派生查询（thread_events 表已于 2026-11-03 删除）。
           没事件时不再挂一条全页告示，而是在时间线位置就地说明「这条流还没有事件」。 */}
 
       {loading && <div className="text-sm text-fg-tertiary">加载中…</div>}

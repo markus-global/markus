@@ -49,6 +49,8 @@ import {
   aggregateCacheHitRate,
   computeReplayRatio,
 } from '@markus/core';
+// 归属解析的唯一来源（设计原文：「全仓库只有这里能产出 ref」）
+import { resolveThreadRef } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
 import { persistChatImages } from './chat-attachments.js';
@@ -2281,7 +2283,7 @@ export class APIServer {
       });
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
-      await this.storage.chatSessionRepo.appendMessage(
+      const assistantMsg = await this.storage.chatSessionRepo.appendMessage(
         session.id,
         agentId,
         'assistant',
@@ -2289,6 +2291,15 @@ export class APIServer {
         tokensUsed,
         metadata
       );
+      // 时间线的另一半。此前只记了用户那句，助手回复从未进流——
+      // 那不是「残余」，是「发生过的事」少记了一半。
+      // 幂等键用 message id：同一条消息被重试落库不会在时间线里长出第二条。
+      recordThreadEvent(this.storage, session.id, {
+        kind: 'chat',
+        actor: agentId,
+        summary: reply.slice(0, 80),
+        eventId: assistantMsg?.id,
+      });
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2613,6 +2624,15 @@ export class APIServer {
             metadata,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
+      // 助手回复进时间线。幂等键 = message id：流式重写 / 重连重存都只会有一行。
+      if (msg?.id) {
+        recordThreadEvent(this.storage, sessionId, {
+          kind: 'chat',
+          actor: agentId,
+          summary: reply.slice(0, 80),
+          eventId: msg.id,
+        });
+      }
       if (msg?.id) {
         this.ws.broadcastUnreadUpdate(`session:${sessionId}`, msg.id);
       }
@@ -2882,12 +2902,6 @@ export class APIServer {
             eventSourceRepo: this.storage.eventSourceRepo,
             // 触发器登记：`triggers` 表唯一写入路径的装配端（缺它 → 永远 0 行）
             triggerRepo: this.storage.triggerRepo,
-            // 事件时间线（S6）：**漏传这一个的后果是「页面空白且不报错」**。
-            // 读取端 `const repo = deps.repos.threadEventRepo` 拿到 undefined 就直接
-            // 回 `{ events: [] }`（那是有意的：空白与端点不存在要能区分）——
-            // 于是 41 条事件在库、接口恒空、UI 一片空白，全部静默。
-            // 之所以容易漏：EventRouteDeps 里它是 `optional`，漏传不报类型错。
-            threadEventRepo: this.storage.threadEventRepo,
             taskRepo: this.storage.taskRepo,
             approvalRepo: this.storage.approvalRepo,
           },
@@ -5526,6 +5540,7 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      const refFilter = url.searchParams.get('ref') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -5541,7 +5556,20 @@ export class APIServer {
 
         let history: Array<Record<string, unknown>> = [];
         if (this.storage?.mailboxRepo) {
-          const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
+          // 归属解析只用**唯一解析点**（core/thread-resolver.ts）。
+          // 我一度在这里手写了一份 payload 解析，前端另有一份 —— 那是同一事实的三个写者。
+          // 而且手写版把「一条 Trigger 可属多个 Thread」压成了单值，语义也错了。
+          const refOfItem = (it: Record<string, unknown>) => resolveThreadRef(it as never, agentId);
+
+          const fetched = this.storage.mailboxRepo.getHistory(agentId, {
+            limit: refFilter ? 2000 : limit,
+            offset: refFilter ? 0 : offset,
+            sourceTypes,
+            status,
+          });
+          const raw = refFilter
+            ? fetched.filter((it: Record<string, unknown>) => refOfItem(it).ref === refFilter)
+            : fetched;
           const itemIds = raw.map((item: { id: string }) => item.id);
 
           const decisionsMap = this.storage?.decisionRepo
@@ -5553,6 +5581,12 @@ export class APIServer {
 
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
+            // 归属由服务端用唯一解析点算好，随条目下发。
+            // 前端只读这个字段 —— 浏览器不该再解析一遍 payload（那是第二个写者）。
+            const resolved = refOfItem(item);
+            enriched.threadRef = resolved.ref;
+            enriched.threadAxis = resolved.axis;
+            enriched.threadLegacyKeys = resolved.legacyKeys;
             enriched.decisions = decisionsMap.get(item.id) ?? [];
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {

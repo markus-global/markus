@@ -99,6 +99,36 @@ import { StartupProgress } from '../utils/startupProgress.js';
 
 const log = createLogger('cli');
 
+/**
+ * A2A 消息摘要：正文优先，真没正文才退回「谁发给谁」。
+ *
+ * 投递的 `message` 可能是纯文本，也可能是 JSON 信封（如 status_broadcast）。
+ * 直接截 JSON 前 80 字会在时间线上显示成 `{"type":...`——那比不写更糟，
+ * 所以信封里找可读字段；找不到就只写类型名，不编造内容。
+ */
+function a2aSummary(text: string | undefined, a: string, b: string): string {
+  const fallback = `${a} → ${b} 发了一条消息`;
+  const raw = (text ?? '').trim();
+  if (!raw) return fallback;
+  let readable = raw;
+  if (raw.startsWith('{')) {
+    try {
+      const env = JSON.parse(raw) as Record<string, unknown>;
+      const payload = (env.payload ?? {}) as Record<string, unknown>;
+      const candidate = [payload.text, payload.message, env.text, env.message].find(
+        v => typeof v === 'string' && v.trim(),
+      );
+      if (typeof candidate === 'string') readable = candidate;
+      else if (typeof env.type === 'string') readable = `[${env.type}]`;
+    } catch {
+      // 不是合法 JSON：当纯文本用，不编造。
+    }
+  }
+  const oneLine = readable.replace(/\s+/g, ' ').trim();
+  if (!oneLine) return fallback;
+  return oneLine.length > 80 ? `${oneLine.slice(0, 80)}…` : oneLine;
+}
+
 // ─── Manifest-driven platform startup (issue #340) ────────────────────────────
 //
 // `markus start` no longer branches per platform: it walks `PLATFORM_MANIFESTS`
@@ -862,14 +892,14 @@ export async function createServices(config: ReturnType<typeof loadConfig>) {
   // S3：A2A 投递即建流（同一次 DM 对话一条流，与方向无关）。
   // 未拿到 storage 时不注入 —— 不注册一个跑不动的空实现。
   if (storage?.threadRepo) {
-    agentManager.setThreadEnsurer((a, b) => {
+    agentManager.setThreadEnsurer((a, b, _actor, text) => {
       const ref = a2aRef(a, b);
       ensureThread(storage, ref, a);
       // S6：A2A DM 写入时间线（D1.4）。
       //
-      // 摘要只能到「谁给谁发了消息」这一层：投递回调拿不到正文，而为了拿正文
-      // 去改 A2A 的签名得不偿失。宁要一个诚实的粗粒度事件，也不要一条编造的详细记录。
-      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: `${a} → ${b} 发了一条消息` });
+      // 【更正 2026-11-03】原先这里写「投递回调拿不到正文，所以只记粗粒度」——那是错的：
+      // `deliverA2AMessage` 的 `message` 就在手上，只是没往下传。现在传递并提取可读摘要。
+      recordThreadEvent(storage, ref, { kind: 'a2a', actor: a, summary: a2aSummary(text, a, b) });
     });
   }
 

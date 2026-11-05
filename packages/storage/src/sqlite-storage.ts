@@ -849,24 +849,6 @@ CREATE TABLE IF NOT EXISTS thread_dispositions (
 );
 CREATE INDEX IF NOT EXISTS idx_disp_thread ON thread_dispositions(thread_id, created_at DESC);
 
--- 事件时间线：一条流上「发生了什么」。
---
--- 为什么必须只追加：「发生了什么」是历史事实，不是当前状态。
--- 状态可以被覆盖（任务从 pending 变成 review），但「3 点 12 分有人评论了」不能。
--- 一旦允许 UPDATE，时间线就不再是证据，只是「最后写者说了什么」。
--- 结构性保证：仓储层只提供 insert / list，不提供 update / delete。
--- 测试 D1.5 直接断言「全仓无 UPDATE thread_events」。
-CREATE TABLE IF NOT EXISTS thread_events (
-  id         TEXT PRIMARY KEY,
-  thread_id  TEXT NOT NULL REFERENCES threads(id),
-  kind       TEXT NOT NULL,
-  actor      TEXT,
-  summary    TEXT NOT NULL,
-  payload    TEXT,
-  created_at INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_evt_thread ON thread_events(thread_id, created_at DESC);
-
 -- 责任域绑定：agent/team 负责某个外部资源到某一档（read < draft < publish < admin）
 CREATE TABLE IF NOT EXISTS resource_bindings (
   id          TEXT PRIMARY KEY,
@@ -915,6 +897,11 @@ CREATE TABLE IF NOT EXISTS triggers (
   UNIQUE(idempotency_key)
 );
 CREATE INDEX IF NOT EXISTS idx_triggers_kind ON triggers(kind, received_at DESC);
+-- 时间线派生查询的索引（2026-11-03 实测决定，不是预设优化）：
+-- 无此索引时 10 万条 triggers 取一条流需 14.7ms（踩在一帧 16ms 边上）；
+-- 有了它 0.24ms。它不索引 JSON 数组（索引不了），而是让 ORDER BY received_at
+-- 直接走索引顺序，省掉 json_each 之后的 TEMP B-TREE 排序。
+CREATE INDEX IF NOT EXISTS idx_trg_received ON triggers(received_at DESC);
 `;
 
 // ─── Open / close ────────────────────────────────────────────────────────────
