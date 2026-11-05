@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, lazy, Suspense, useMemo } from 'react';
+import type { CopyVariant } from './MarkdownMessage.tsx';
 
 const LazyMarkdownMessage = lazy(() =>
   import('./MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage }))
@@ -19,6 +20,12 @@ interface ContentRendererProps {
   basePath?: string;
   /** Called when user selects text inside an HTML preview iframe */
   onHtmlSelection?: (data: HtmlSelectionData) => void;
+  /**
+   * Copy-button density for the markdown branch, forwarded verbatim to
+   * `MarkdownMessage`. The caller owns this fact: a panel preview passes
+   * `'preview'`, anything left alone keeps the chat default (`'inline'`).
+   */
+  copyVariant?: CopyVariant;
 }
 
 const CODE_EXTS = new Set([
@@ -266,7 +273,7 @@ function JsonPreview({ content, className }: { content: string; className?: stri
   );
 }
 
-export function ContentRenderer({ content, format, className, basePath, onHtmlSelection }: ContentRendererProps) {
+export function ContentRenderer({ content, format, className, basePath, onHtmlSelection, copyVariant }: ContentRendererProps) {
   switch (format) {
     case 'html':
       return <HtmlPreview content={content} className={className} onSelection={onHtmlSelection} />;
@@ -287,7 +294,7 @@ export function ContentRenderer({ content, format, className, basePath, onHtmlSe
     default:
       return (
         <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
-          <LazyMarkdownMessage content={content} className={className ?? 'text-sm'} basePath={basePath} />
+          <LazyMarkdownMessage content={content} className={className ?? 'text-sm'} basePath={basePath} copyVariant={copyVariant} />
         </Suspense>
       );
   }

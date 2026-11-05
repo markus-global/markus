@@ -461,6 +461,7 @@
   },
   "markdown": {
     "copyContent": "复制内容",
+    "copy": "复制",
     "copyMdSource": "复制 Markdown 原文",
     "copyMdSourceShort": "Md 原文",
     "copyHtmlLight": "复制 HTML（浅色）",

@@ -1258,6 +1258,7 @@ export function RightPanel({
                   className="text-fg-secondary text-sm"
                   onHtmlSelection={handleHtmlSelection}
                   basePath={basePath}
+                  copyVariant="preview"
                 />
               </div>
             );
@@ -1265,7 +1266,7 @@ export function RightPanel({
 
           {preview.mode === 'artifact' && (
             <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
-              <ContentRenderer content={preview.summary} format="markdown" className="text-fg-secondary text-sm" />
+              <ContentRenderer content={preview.summary} format="markdown" className="text-fg-secondary text-sm" copyVariant="preview" />
             </div>
           )}
 

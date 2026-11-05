@@ -452,6 +452,7 @@
   },
   "markdown": {
     "copyContent": "Copiar el contenido",
+    "copy": "Copiar",
     "copyMdSource": "Copia de código fuente",
     "copyMdSourceShort": "Md Source",
     "copyHtmlLight": "Copiar HTML (Light))",
