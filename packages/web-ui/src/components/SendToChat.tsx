@@ -242,7 +242,7 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
               type="button"
               onClick={handleSend}
               disabled={!target}
-              className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
             >
               {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
             </button>

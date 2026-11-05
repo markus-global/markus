@@ -224,7 +224,7 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
                     } ${readOnly ? 'cursor-default' : ''} ${readOnly && !selected ? 'opacity-50' : ''}`}
                   >
                     <span className={`w-6 h-6 rounded-full flex items-center justify-center text-[11px] font-bold shrink-0 mt-0.5 ${
-                      selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'
+                      selected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-tertiary'
                     }`}>
                       {selected
                         ? <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M20 6L9 17l-5-5" /></svg>
@@ -289,7 +289,7 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
               <button
                 disabled={!readOnly && !isAnswered(current)}
                 onClick={() => setStep(s => Math.min(questions.length - 1, s + 1))}
-                className="px-5 py-2 text-sm font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors"
+                className="px-5 py-2 text-sm font-medium bg-brand-600 text-on-brand rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors"
               >
                 {t('team:userInput.next', { defaultValue: 'Next' })}
               </button>
@@ -304,7 +304,7 @@ export function UserInputModal({ approval, submitting, readOnly, onClose, onSubm
               <button
                 disabled={submitting || !allAnswered}
                 onClick={handleSubmit}
-                className="px-5 py-2 text-sm font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors inline-flex items-center gap-2"
+                className="px-5 py-2 text-sm font-medium bg-brand-600 text-on-brand rounded-lg hover:bg-brand-700 disabled:opacity-50 transition-colors inline-flex items-center gap-2"
               >
                 {submitting && (
                   <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">

@@ -131,7 +131,7 @@ export function NewProjectModal({ orgId, onCreated, onClose }: Props) {
           <button
             type="submit"
             disabled={!name.trim() || creating}
-            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white"
+            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-on-brand"
           >
             {creating ? t('common:creating') : t('project.createProject')}
           </button>

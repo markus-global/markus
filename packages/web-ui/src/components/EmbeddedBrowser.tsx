@@ -571,7 +571,7 @@ export function EmbeddedBrowser({
                   .catch(() => httpApi.files.reveal(directoryPath))
                   .finally(() => setOpeningFolder(false));
               }}
-              className="px-3.5 py-2 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white transition-colors"
+              className="px-3.5 py-2 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand transition-colors"
             >
               {openingFolder ? t('browserFolderOpening') : t('browserFolderOpen', { app: folderAppLabel })}
             </button>

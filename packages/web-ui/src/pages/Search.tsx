@@ -139,7 +139,7 @@ export function SearchPage() {
               key={cat.id}
               onClick={() => setCategory(cat.id)}
               className={`px-3 py-1.5 text-xs rounded-lg whitespace-nowrap transition-colors ${
-                category === cat.id ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:text-fg-primary'
+                category === cat.id ? 'bg-brand-600 text-on-brand' : 'bg-surface-elevated text-fg-secondary hover:text-fg-primary'
               }`}
             >
               {cat.label}

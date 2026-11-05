@@ -1354,7 +1354,7 @@ export function RightPanel({
         >
           <button
             onMouseDown={e => { e.preventDefault(); e.stopPropagation(); commitSelection(selectionToolbar.text, selectionToolbar.htmlMeta); }}
-            className="px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+            className="px-3 py-1.5 text-xs font-medium text-on-brand hover:bg-brand-500 transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

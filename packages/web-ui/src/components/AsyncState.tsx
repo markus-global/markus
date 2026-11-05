@@ -129,7 +129,7 @@ export function EmptyState({
             'mt-3 px-3 py-1.5 rounded-md text-xs font-medium transition-colors',
             action.variant === 'secondary'
               ? 'border border-border-default text-fg-secondary hover:bg-surface-elevated'
-              : 'bg-brand-600 hover:bg-brand-500 text-white',
+              : 'bg-brand-600 hover:bg-brand-500 text-on-brand',
           )}
         >
           {action.label}

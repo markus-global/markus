@@ -92,7 +92,7 @@ export function ClaimFreeCreditsModal({ onClose, onClaimed }: Props) {
             <button
               type="button"
               onClick={onClose}
-              className="w-full py-2.5 text-sm font-medium rounded-xl bg-brand-500 text-white hover:bg-brand-600"
+              className="w-full py-2.5 text-sm font-medium rounded-xl bg-brand-500 text-on-brand hover:bg-brand-600"
             >
               {t('common:close')}
             </button>
@@ -107,7 +107,7 @@ export function ClaimFreeCreditsModal({ onClose, onClaimed }: Props) {
             <button
               type="button"
               onClick={openHubClaim}
-              className="w-full py-2.5 text-sm font-medium rounded-xl bg-brand-500 text-white hover:bg-brand-600"
+              className="w-full py-2.5 text-sm font-medium rounded-xl bg-brand-500 text-on-brand hover:bg-brand-600"
             >
               {t('claim.openHub')}
             </button>

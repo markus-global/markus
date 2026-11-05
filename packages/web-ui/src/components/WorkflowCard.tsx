@@ -301,7 +301,7 @@ export function WorkflowCard({
         <button
           type="button"
           onClick={onRun}
-          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+          className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-on-brand transition-colors hover:bg-brand-500 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
         >
           {t('work:task.workflowRun', '运行')}
         </button>

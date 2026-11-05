@@ -175,7 +175,7 @@ export function OfficePreviewer({ data, reference, onFallback }: {
                 <div className="flex gap-2 mt-1">
                   <button
                     onClick={() => setRenderKey(k => k + 1)}
-                    className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors"
+                    className="px-3 py-1.5 text-xs bg-brand-600 text-on-brand rounded-lg hover:bg-brand-500 transition-colors"
                   >{t('officeRetry')}</button>
                   <button
                     onClick={handleOpenSystem}
@@ -207,7 +207,7 @@ function FallbackView({ format, size, onOpenSystem, onDownload }: {
       <div className="flex gap-2">
         <button
           onClick={onOpenSystem}
-          className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors"
+          className="px-3 py-1.5 text-xs bg-brand-600 text-on-brand rounded-lg hover:bg-brand-500 transition-colors"
         >{t('officeOpenSystem')}</button>
         <button
           onClick={onDownload}

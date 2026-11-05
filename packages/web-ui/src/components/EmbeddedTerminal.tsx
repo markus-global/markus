@@ -548,7 +548,7 @@ export function EmbeddedTerminal({
         <button
           type="button"
           onClick={jumpToBottom}
-          className="absolute bottom-3 right-3 z-10 text-[11px] px-2.5 py-1 rounded-md bg-brand-600 text-white shadow-lg hover:bg-brand-500"
+          className="absolute bottom-3 right-3 z-10 text-[11px] px-2.5 py-1 rounded-md bg-brand-600 text-on-brand shadow-lg hover:bg-brand-500"
         >
           {t('terminal.jumpToBottom')}
         </button>

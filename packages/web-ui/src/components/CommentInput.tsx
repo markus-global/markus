@@ -568,7 +568,7 @@ export function CommentInput({ agents, humans, onSubmit, placeholder, replyTo, o
           <button
             onClick={handleSend}
             disabled={(!text.trim() && pendingImages.length === 0) || sending}
-            className="px-3 py-1 text-[11px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1 text-[11px] font-medium bg-brand-500 text-on-brand rounded-md hover:bg-brand-600 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {sending ? t('commentInput.sending') : t('commentInput.submit')}
           </button>

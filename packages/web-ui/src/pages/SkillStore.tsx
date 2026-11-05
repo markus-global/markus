@@ -192,7 +192,7 @@ function HubSkillInstallButton({ item, installedSkills, purchased, onMsg, onRefr
 
   return (
     <button onClick={() => void handleInstall()} disabled={installing}
-      className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50">
+      className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg disabled:opacity-50">
       {installing ? t('card.installing') : t('card.install')}
     </button>
   );
@@ -576,7 +576,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
           {TABS.map(tb => (
             <button key={tb.id} onClick={() => setTab(tb.id)}
               className={`px-3 py-1.5 text-xs rounded-lg transition-colors shrink-0 ${
-                tab === tb.id ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
+                tab === tb.id ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}>
               {t(tb.labelKey)}
             </button>
@@ -715,7 +715,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
             />
             <button
               onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
-              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg shrink-0"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg shrink-0"
             >
               Search
             </button>
@@ -759,7 +759,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                         <button
                           onClick={() => void installSkillhub(skill)}
                           disabled={installing.has(skill.name)}
-                          className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
+                          className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg disabled:opacity-50"
                         >
                           {installing.has(skill.name) ? '...' : t('card.install')}
                         </button>
@@ -802,7 +802,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
             />
             <button
               onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
-              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg shrink-0"
+              className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg shrink-0"
             >
               Search
             </button>
@@ -842,7 +842,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                       <button
                         onClick={() => void installSkillssh(skill)}
                         disabled={installing.has(skill.name)}
-                        className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-50"
+                        className="px-2.5 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg disabled:opacity-50"
                       >
                         {installing.has(skill.name) ? '...' : t('card.install')}
                       </button>

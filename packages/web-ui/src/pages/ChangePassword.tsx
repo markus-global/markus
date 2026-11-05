@@ -100,7 +100,7 @@ export function ChangePassword({ onComplete, isFirstTime }: Props) {
           <button
             type="submit"
             disabled={loading || !next || !confirm}
-            className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-colors"
+            className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand text-sm font-medium rounded-xl transition-colors"
           >
             {loading ? t('changePassword.saving') : isFirstTime ? t('changePassword.setPasswordAndContinue') : t('changePassword.changePassword')}
           </button>

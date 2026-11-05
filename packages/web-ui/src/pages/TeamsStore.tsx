@@ -276,7 +276,7 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
               <button
                 onClick={() => void handleDeploy(selected)}
                 disabled={deploying}
-                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors font-medium disabled:opacity-50"
+                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors font-medium disabled:opacity-50"
               >
                 {deploying ? t('teamStore.deploying') : t('teamStore.deployTeam')}
               </button>
@@ -460,7 +460,7 @@ function HubTeamCard({ item, localInfo, purchased, onStatusChange, highlight, on
         </button>
       ) : (
         <button onClick={e => void handleInstall(e)} disabled={installing}
-          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
+          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors disabled:opacity-50">
           {installing ? t('card.installing') : t('card.install')}
         </button>
       )}

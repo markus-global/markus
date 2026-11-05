@@ -213,7 +213,7 @@ export function ShortcutLessonModal({ open, userId, onClose, onCompleted }: Prop
           <button
             type="button"
             onClick={onClose}
-            className={`px-4 py-2 text-sm rounded-xl transition-colors font-medium ${allChecked ? 'bg-green-600 hover:bg-green-500 text-white' : 'bg-brand-600 hover:bg-brand-500 text-white'}`}
+            className={`px-4 py-2 text-sm rounded-xl transition-colors font-medium ${allChecked ? 'bg-green-600 hover:bg-green-500 text-on-brand' : 'bg-brand-600 hover:bg-brand-500 text-on-brand'}`}
           >
             {allChecked ? t('checklist.shortcutLesson.done') : t('common:close')}
           </button>

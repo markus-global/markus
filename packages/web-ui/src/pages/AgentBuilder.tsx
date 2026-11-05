@@ -527,7 +527,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     onClick={() => setFilterType(ft)}
                     className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
                       filterType === ft
-                        ? 'bg-brand-600 text-white'
+                        ? 'bg-brand-600 text-on-brand'
                         : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                     }`}
                   >
@@ -550,7 +550,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     onClick={() => setOrgFilterType(ft)}
                     className={`text-xs px-2.5 py-1 rounded-lg transition-colors ${
                       orgFilterType === ft
-                        ? 'bg-brand-600 text-white'
+                        ? 'bg-brand-600 text-on-brand'
                         : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                     }`}
                   >
@@ -673,7 +673,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                     </button>
                   ) : (
                     <button onClick={() => setInstallTarget(art)} disabled={!!busyAction}
-                      className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 inline-flex items-center gap-1">
+                      className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-50 inline-flex items-center gap-1">
                       <svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                       {busyAction === 'install' ? t('common:installing') : t('common:install')}
                     </button>
@@ -868,7 +868,7 @@ export function AgentBuilder({ authUser }: { authUser?: AuthUser } = {}) {
                 </button>
                 <button
                   onClick={() => { const art = sharePrompt; setSharePrompt(null); navigateToDetail(art); }}
-                  className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
+                  className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors">
                   {t('share.addImagesFirst')}
                 </button>
               </div>
@@ -1016,7 +1016,7 @@ function VisibilitySelect({ onCancel, onConfirm }: {
         </button>
         <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined, isPublicLike && priceCents > 0 ? priceCents : undefined, isPublicLike ? donationsEnabled : undefined)}
           disabled={selected === 'org' && !selectedOrgId}
-          className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+          className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
           {t('shareMode.share')}
         </button>
       </div>
@@ -1062,7 +1062,7 @@ function ShareModeSelect({ isUpdate, onCancel, onConfirm }: {
           {t('common:cancel')}
         </button>
         <button onClick={() => onConfirm(selectedPrice > 0 ? 'paid' : 'free', selectedPrice)}
-          className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
+          className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors">
           {isUpdate ? t('shareMode.update') : t('shareMode.share')}
         </button>
       </div>

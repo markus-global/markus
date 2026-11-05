@@ -268,7 +268,7 @@ export function RemoteAccessSection() {
             </span>
             <button
               onClick={() => void handleLogin()}
-              className="ml-auto px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors"
+              className="ml-auto px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors"
             >
               {t('settings:remoteAccess.signIn')}
             </button>
@@ -430,7 +430,7 @@ export function RemoteAccessSection() {
                         {kind && (
                           <button
                             type="button"
-                            className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-white hover:bg-brand-500 disabled:opacity-50"
+                            className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-on-brand hover:bg-brand-500 disabled:opacity-50"
                             disabled={busy || !targets || targets.agents.length === 0}
                             onClick={() => void handOffToAgentChat()}
                           >
@@ -688,11 +688,11 @@ function WizardProgress({ t, phase }: { t: TFn; phase: WizardPhase }) {
               <span
                 className={`w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-medium shrink-0 ${
                   isError
-                    ? 'bg-red-500 text-white'
+                    ? 'bg-red-500 text-on-brand'
                     : done
-                      ? 'bg-green-500 text-white'
+                      ? 'bg-green-500 text-on-brand'
                       : active
-                        ? 'bg-brand-600 text-white'
+                        ? 'bg-brand-600 text-on-brand'
                         : 'bg-surface-secondary text-fg-tertiary'
                 }`}
               >
@@ -802,7 +802,7 @@ function CommandsPanel({
             type="button"
             onClick={() => onPlatform(p)}
             className={`px-2 py-1 text-xs rounded-md transition-colors ${
-              platform === p ? 'bg-brand-600 text-white' : 'bg-surface-secondary text-fg-secondary hover:text-fg-primary'
+              platform === p ? 'bg-brand-600 text-on-brand' : 'bg-surface-secondary text-fg-secondary hover:text-fg-primary'
             }`}
           >
             {t(PLATFORM_LABEL[p])}
@@ -842,7 +842,7 @@ function CommandsPanel({
         type="button"
         onClick={onDone}
         disabled={busy}
-        className="w-full px-3 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-60"
+        className="w-full px-3 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors disabled:opacity-60"
       >
         {t('settings:remoteAccess.commandsDone')}
       </button>
@@ -880,7 +880,7 @@ function AddressPrompt({
           type="button"
           onClick={onSubmit}
           disabled={busy || !value.trim()}
-          className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-60"
+          className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg disabled:opacity-60"
         >
           {t('settings:remoteAccess.errorManualSubmit')}
         </button>
@@ -941,7 +941,7 @@ function ErrorNotice({
             type="button"
             onClick={onManualSubmit}
             disabled={busy || !manualUrl.trim()}
-            className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg disabled:opacity-60"
+            className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg disabled:opacity-60"
           >
             {t('settings:remoteAccess.errorManualSubmit')}
           </button>
@@ -952,7 +952,7 @@ function ErrorNotice({
         <button
           type="button"
           onClick={onRetry}
-          className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white rounded-lg"
+          className="px-3 py-1.5 text-xs font-medium bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg"
         >
           {t('settings:remoteAccess.errorRetry')}
         </button>

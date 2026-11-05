@@ -186,7 +186,7 @@ export function InstalledStore() {
               key={f}
               onClick={() => setFilterType(f)}
               className={`px-3 py-1 text-xs rounded-md transition-colors ${
-                filterType === f ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
+                filterType === f ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
               }`}
             >
               {t(`installedTab.filter${f === 'all' ? 'All' : f === 'agent' ? 'Agents' : f === 'team' ? 'Teams' : 'Skills'}`)}

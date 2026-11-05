@@ -115,7 +115,7 @@ function PageError({ error, onRetry, docScroll }: { error: Error; onRetry: () =>
         <button
           type="button"
           onClick={onRetry}
-          className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium"
+          className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium"
         >
           {t('pageErrorRetry')}
         </button>

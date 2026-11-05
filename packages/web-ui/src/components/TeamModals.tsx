@@ -56,7 +56,7 @@ export function NewTeamModal({ onClose, onCreate }: { onClose: () => void; onCre
         </div>
         <div className="flex justify-end gap-3 pt-2">
           <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
-          <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-white">
+          <button onClick={() => name.trim() && onCreate(name.trim(), description.trim() || undefined)} disabled={!name.trim()} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 rounded-lg text-on-brand">
             {t('team:modals.createTeam.createTeam')}
           </button>
         </div>
@@ -126,7 +126,7 @@ export function AddHumanModal({
                 <div className="text-xs text-fg-primary break-all font-mono select-all">{inviteLink}</div>
               </div>
               <button onClick={doCopy}
-                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied ? 'bg-green-600 text-white' : 'bg-brand-700 hover:bg-brand-600 text-white'}`}
+                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied ? 'bg-green-600 text-on-brand' : 'bg-brand-700 hover:bg-brand-600 text-on-brand'}`}
               >{copied ? t('common:copied') : t('team:modals.addHuman.copyInviteLink')}</button>
             </>
           ) : (
@@ -205,7 +205,7 @@ export function AddExistingModal({
                 onClick={() => onAdd(m.id, m.type)}
                 className="w-full flex items-center gap-3 px-4 py-3 rounded-lg border border-border-default hover:border-brand-500 hover:bg-brand-500/10 text-left transition-all"
               >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-white ${m.type === 'agent' ? 'bg-brand-600' : 'bg-green-600'}`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center text-xs font-bold text-on-brand ${m.type === 'agent' ? 'bg-brand-600' : 'bg-green-600'}`}>
                   {m.name.charAt(0)}
                 </div>
                 <div className="flex-1">
@@ -298,7 +298,7 @@ export function OpenClawImportModal({ onClose, onConnected }: { onClose: () => v
                 {t('team:modals.openClaw.copyInstruction')}
               </div>
               <button onClick={() => doCopy(connectionPrompt, 'prompt')}
-                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied === 'prompt' ? 'bg-green-600 text-white' : 'bg-brand-700 hover:bg-brand-600 text-white'}`}
+                className={`w-full py-2.5 text-sm font-medium rounded-lg transition-colors ${copied === 'prompt' ? 'bg-green-600 text-on-brand' : 'bg-brand-700 hover:bg-brand-600 text-on-brand'}`}
               >{copied === 'prompt' ? t('common:copied') : t('team:modals.openClaw.copyPrompt')}</button>
             </div>
 
@@ -319,7 +319,7 @@ export function OpenClawImportModal({ onClose, onConnected }: { onClose: () => v
             {error && <div className="text-xs text-red-500 bg-red-500/10 border border-red-500/30 rounded-lg px-3 py-2">{error}</div>}
             <div className="flex justify-end gap-3 pt-2">
               <button onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
-              <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-white disabled:opacity-50">
+              <button onClick={handleRegister} disabled={loading} className="px-4 py-2 text-sm bg-brand-700 hover:bg-brand-600 rounded-lg text-on-brand disabled:opacity-50">
                 {loading ? t('team:modals.openClaw.connecting') : t('team:modals.openClaw.importAgent')}
               </button>
             </div>

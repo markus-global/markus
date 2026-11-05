@@ -258,7 +258,7 @@ export function SearchModal({ onClose, currentPage }: { onClose: () => void; cur
                 key={cat.id}
                 onClick={() => { setCategory(cat.id); setFocusIdx(-1); }}
                 className={`px-3 py-1.5 text-xs rounded-lg whitespace-nowrap transition-colors ${
-                  category === cat.id ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:text-fg-primary'
+                  category === cat.id ? 'bg-brand-600 text-on-brand' : 'bg-surface-elevated text-fg-secondary hover:text-fg-primary'
                 }`}
               >
                 {cat.label}

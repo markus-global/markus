@@ -165,7 +165,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
             <div className="text-xs text-fg-tertiary truncate">{agent.role}{agent.roleDescription ? ` — ${agent.roleDescription}` : ''}</div>
           </div>
           <div className="flex gap-1.5 shrink-0">
-            {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
+            {!inline && <button onClick={() => navBus.navigate(PAGE.TEAM, { agentId })} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors flex items-center gap-1"><span>◈</span> {t('agent:profilePage.chat')}</button>}
             {canManageAgents && (
             <button onClick={async () => {
               if (!agent) return;
@@ -1025,7 +1025,7 @@ function FilesTab({ agentId }: { agentId: string }) {
             </div>
           </div>
           <button onClick={() => sendUpdateToAgent()}
-            className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors shrink-0"
+            className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors shrink-0"
           >{t('agent:profilePage.filesTab.sendToAgent')}</button>
         </div>
       )}
@@ -1068,7 +1068,7 @@ function FilesTab({ agentId }: { agentId: string }) {
                       {diffView?.file === selected ? t('agent:profilePage.filesTab.hideDiff') : t('agent:profilePage.filesTab.viewDiff')}
                     </button>
                     <button onClick={() => sendUpdateToAgent(selected)}
-                      className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors"
+                      className="px-2.5 py-1 text-[11px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors"
                       title={t('agent:profilePage.filesTab.sendToAgentTitle')}
                     >{t('agent:profilePage.filesTab.sendToAgent')}</button>
                   </>

@@ -236,7 +236,7 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
           actionSlot={
             <button
               onClick={() => setShowHireModal(true)}
-              className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors font-medium"
+              className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors font-medium"
             >
               {t('agentStore.hireAgent')}
             </button>
@@ -588,7 +588,7 @@ function HubAgentCard({ item, localInfo, purchased, onStatusChange, highlight, o
         </button>
       ) : (
         <button onClick={e => void handleInstall(e)} disabled={installing}
-          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors disabled:opacity-50">
+          className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors disabled:opacity-50">
           {installing ? t('card.installing') : t('card.install')}
         </button>
       )}

@@ -46,7 +46,7 @@ export function SidebarPreview({ activePage }: { activePage: string }) {
                   key={item.id}
                   className={`w-full flex flex-col items-center justify-center px-1 py-1.5 gap-0.5 rounded-xl text-[13px] mb-0.5 transition-all ${
                     isActive
-                      ? 'bg-brand-600 text-white shadow-sm shadow-brand-900/30 font-medium'
+                      ? 'bg-brand-600 text-on-brand shadow-sm shadow-brand-900/30 font-medium'
                       : 'text-fg-secondary'
                   }`}
                 >

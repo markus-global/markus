@@ -711,7 +711,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   {t('checklist.setup.update')}
                 </button>
               ) : !step.done ? (
-                <button onClick={step.onClick} className="shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors opacity-80 group-hover:opacity-100">
+                <button onClick={step.onClick} className="shrink-0 text-[11px] px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand font-medium transition-colors opacity-80 group-hover:opacity-100">
                   {step.action}
                 </button>
               ) : null}

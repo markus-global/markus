@@ -58,6 +58,17 @@
   --color-selected-border: oklch(0.46 0.11 258);
   --color-selected-fg: oklch(0.84 0.09 250);
 
+  /* Foreground ON a solid brand surface (a `bg-brand-500/600/700` fill).
+     ONE token, ONE fact: whatever sits on a brand fill reads `text-on-brand`,
+     never a hardcoded `text-white`. Mono maps brand-500..700 to white, so a
+     hardcoded white turned every brand button into white-on-white; the old
+     fix was a per-selector list (`.btn-primary, .bg-brand-600, .bg-brand-500`)
+     that could never cover hover states, opacity variants or new components.
+     Tailwind only emits `text-on-brand` if the name is declared here, so the
+     default (dark) palette MUST carry it too — the theme classes below
+     override the value, not the name. */
+  --color-on-brand: oklch(1 0 0);
+
   --font-sans: 'SF Pro Display', 'SF Pro Text', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
 
@@ -88,6 +99,7 @@ html.light {
   --color-selected-bg: oklch(0.95 0.035 265);
   --color-selected-border: oklch(0.80 0.09 265);
   --color-selected-fg: oklch(0.42 0.19 268);
+  --color-on-brand: oklch(1 0 0);
 }
 
 @media (prefers-color-scheme: light) {
@@ -114,6 +126,7 @@ html.light {
     --color-selected-bg: oklch(0.95 0.035 265);
     --color-selected-border: oklch(0.80 0.09 265);
     --color-selected-fg: oklch(0.42 0.19 268);
+    --color-on-brand: oklch(1 0 0);
   }
 }
 
@@ -147,6 +160,7 @@ html.cyberpunk {
   --color-selected-bg: oklch(0.25 0.08 330);
   --color-selected-border: oklch(0.48 0.16 330);
   --color-selected-fg: oklch(0.86 0.14 330);
+  --color-on-brand: oklch(1 0 0);
 }
 
 html.mono {
@@ -181,11 +195,12 @@ html.mono {
   --color-selected-bg: oklch(0.25 0 0);
   --color-selected-border: oklch(0.72 0 0);
   --color-selected-fg: oklch(1 0 0);
-}
-html.mono .btn-primary,
-html.mono .bg-brand-600,
-html.mono .bg-brand-500 {
-  color: oklch(0 0 0);
+  /* Mono paints brand-500..700 as WHITE, so the foreground on a brand fill
+     must be black (same logic as the switch knob right above). This token is
+     the ONLY place that fact lives — there is no per-selector patch list
+     anymore, because such a list is structurally unable to cover hover
+     states, opacity variants (`bg-brand-600/90`) or newly added components. */
+  --color-on-brand: oklch(0 0 0);
 }
 
 html, body, #root {
@@ -267,7 +282,7 @@ body {
 }
 
 .btn-primary {
-  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-sm font-medium transition-all shadow-sm shadow-black/20 hover:shadow-md hover:shadow-black/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
+  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg text-sm font-medium transition-all shadow-sm shadow-black/20 hover:shadow-md hover:shadow-black/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
 }
 
 .btn-secondary {

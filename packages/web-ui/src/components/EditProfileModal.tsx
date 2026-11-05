@@ -66,7 +66,7 @@ export function EditProfileModal({ authUser, onClose, onSaved, onUserUpdated }: 
         </div>
         <div className="flex justify-end gap-3 mt-5">
           <button type="button" onClick={onClose} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated">{t('cancel')}</button>
-          <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white rounded-lg">{saving ? t('saving') : t('save')}</button>
+          <button type="submit" disabled={saving} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand rounded-lg">{saving ? t('saving') : t('save')}</button>
         </div>
       </form>
     </div>

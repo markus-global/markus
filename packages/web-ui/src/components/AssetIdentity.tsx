@@ -187,10 +187,10 @@ export function CreatorAvatar({
       />
       {verified && (
         <span
-          className="absolute -right-0.5 -bottom-0.5 flex items-center justify-center rounded-full bg-brand-500 ring-2 ring-surface-primary"
+          className="absolute -right-0.5 -bottom-0.5 flex items-center justify-center rounded-full bg-brand-500 text-on-brand ring-2 ring-surface-primary"
           style={{ width: size * 0.42, height: size * 0.42 }}
         >
-          <svg viewBox="0 0 24 24" width="60%" height="60%" fill="white" aria-hidden>
+          <svg viewBox="0 0 24 24" width="60%" height="60%" fill="currentColor" aria-hidden>
             <path d="M9 16.2l-3.5-3.5 1.4-1.4L9 13.4l7.1-7.1 1.4 1.4z" />
           </svg>
         </span>
