@@ -10,7 +10,7 @@
 
 | 判据 | 结果 | 证据 |
 |---|---|---|
-| 终态判定只有**一个**入口 | ✅ `isTerminal()`（服务端 `@markus/shared`；浏览器侧 `lib/taskStatus.ts` 是它的投影，写入者仍是 shared） | `packages/shared/src/types/task.ts:35-60` |
+| 终态判定只有**一个**入口 | ✅ `isTerminal()`（服务端 `@markus/shared`；浏览器侧 `lib/taskStatus.ts` 是它的投影，写入者仍是 shared） | `packages/shared/src/types/task.ts:58` |
 | **新增**终态裸比较会被提交前拦住 | ✅ 默认拦全仓，不靠白名单 | 真实树三态取证：`exit 1 → 0 → 0` |
 | 非终态比较（`running/in_progress/pending/blocked/review`）**不**被误伤 | ✅ 有测试专门钉住 | `architecture-guard.test.ts` ·「非终态比较 → 放行」 |
 | **具名**终态集合（`const T=['completed',…]; T.includes(x)`）也被拦 | ✅ 判据是「集合纯度」+ 反例回归 | `architecture-guard.test.ts` ·「具名终态集合 → 必红」 |
@@ -19,6 +19,23 @@
 | 本轮存量 | **142 → 135 处**（19 个文件） | 清理 15 处（§4）；另因覆盖具名集合 +8 处被正确纳入普查 |
 
 一句话：**「这件工作结束了吗？」这个问题从今天起有唯一答案入口，而且第二个答案写不进仓库。**
+
+**「唯一入口」的 grep 证明（评审可直接复跑）**：
+
+```bash
+# ① 没有任何地方再拿一串字面量拼终态定义（含本轮删除的 Work.tsx:2468）
+grep -rn "const isTerminal" packages/*/src          # → 空
+grep -rn "= isCompleted || isFailed" packages/*/src # → 空
+
+# ② 谓词的定义只有两处：SSOT 本体 + 浏览器投影
+grep -rn "export function isTerminal\b" packages/*/src
+#   packages/shared/src/types/task.ts:58      ← 唯一写入者
+#   packages/web-ui/src/lib/taskStatus.ts:31  ← 投影（有镜像测试钉住一致性）
+
+# ③ 两个「同名近似」不是第二份定义，列出以免误读：
+#   org-manager/task-attention.ts:69  isTerminalTaskStatus() → 函数体只有 `return isTerminal(status);`
+#   web-ui/contexts/LayoutContext.tsx:64 isTerminalPayload()  → 判右栏 payload 的域，不判任务状态
+```
 
 ---
 
