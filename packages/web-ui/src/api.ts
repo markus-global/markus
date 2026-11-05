@@ -2400,6 +2400,22 @@ export const api = {
       request<{ sessions: ChatSessionInfo[]; total: number; page: number; pageSize: number; hasMore: boolean }>(
         `/agents/${agentId}/sessions?page=${page}&limit=${limit}`
       ),
+    /**
+     * 一次取回多个 agent 各自的最新一条消息 —— 侧栏预览专用。
+     *
+     * 替代原先「每个 agent 两次请求」的 N+1：实测首次进入 Team 打 99 次
+     * sessions?limit=1（59 个 agent，单次约 1.2 秒），在 6 条连接上排队
+     * 就是用户看到的十几秒白屏。本接口在服务端一次循环查完。
+     *
+     * 返回的 content 是原始内容（含 think/invoke 块），剥离由调用方用 stripMarkup 做。
+     */
+    lastMessagesByAgents: (agentIds: string[]) =>
+      request<{
+        messages: Record<string, {
+          sessionId: string; sessionUpdatedAt: string;
+          messageId: string; createdAt: string; content: string;
+        }>;
+      }>(`/agents/last-messages?ids=${encodeURIComponent(agentIds.join(','))}`),
     renameTitle: (sessionId: string, title: string) =>
       request<{ ok: boolean; session: ChatSessionInfo }>(
         `/sessions/${sessionId}/title`,
@@ -2654,6 +2670,17 @@ export const api = {
     getCounts: () => request<{ counts: Record<string, number>; sessionAgentMap: Record<string, string> }>('/unread'),
     markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
       request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
+    /**
+     * 批量推进已读游标：一次写多个会话。
+     *
+     * 原先前端在 _fetchCounts 的收敛循环里逐 key 连发，实测首次进入 Team 打
+     * 97 次 mark-read —— 97 个 HTTP 往返只为写 97 行游标。合并成一次。
+     */
+    markReadMany: (keys: string[], lastReadAt: string) =>
+      request<{ success: boolean; count: number }>('/unread/mark-read', {
+        method: 'POST',
+        body: JSON.stringify({ keys, lastReadAt }),
+      }),
     markAllRead: () =>
       request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
   },

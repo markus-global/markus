@@ -30,10 +30,10 @@ import { CommentInput, type PendingImage } from '../components/CommentInput.tsx'
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
-import { PAGE, resolvePageId, hashPath } from '../routes.ts';
+import { PAGE, resolvePageId, hashPath, getPageFromHash } from '../routes.ts';
 import { registerRingSubSource, onRingSubRequest } from '../lib/navRing.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { usePageActive } from '../hooks/usePageActive.ts';
+import { useWhilePageActive } from '../hooks/usePageActive.ts';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
@@ -5178,7 +5178,10 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
 
 export function WorkPage({ authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: WorkPreviewData } = {}) {
   const { t } = useTranslation(['work', 'common']);
-  const isActive = usePageActive(PAGE.WORK);
+  // 不用 usePageActive：那会让整个 WorkPage 在每次切页时重算整棵树。
+  // 实测 `work → home` 的 React 段 93ms，而同样「进入 Home」的 `builder → home` 只有 7ms
+  // —— 差值就是离场页这一遍重算，而 isActive 在本页渲染输出里一处都没被读到
+  // （全部在 effect / 依赖数组）。详见 hooks/usePageActive.ts。
   const boardColumns = useMemo(() => BOARD_COLUMNS_BASE.map(c => ({ ...c, label: t(`work:boardColumn.${c.id}`) })), [t]);
   const subStatusBadges = useMemo(() => buildSubStatusBadges(t), [t]);
   const reqStatusBadges = useMemo(() => buildReqStatusBadges(t), [t]);
@@ -5285,7 +5288,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   //   失败 catch 掉、静默退化（没有角标 = 老样子）。
   // 用 Map<ref, thread> 而不是每次渲染 filter：卡片列表很长，O(1) 查一次就够。
   const [threadByRef, setThreadByRef] = useState<Map<string, ThreadAPI>>(new Map());
-  useEffect(() => {
+  useWhilePageActive(PAGE.WORK, () => {
     if (previewMode) return; // 预览态没有真实后端，别去打空请求
     let cancelled = false;   // 组件卸载/切页后别再 setState（React 会警告，也会覆盖新数据）
     void fetchThreads()
@@ -5296,7 +5299,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       })
       .catch(() => { /* 静默：角标拿不到就不显示，不影响任务板 */ });
     return () => { cancelled = true; };
-  }, [previewMode, isActive]); // isActive：切回任务页时重新取一次，避免角标显示陈旧的 stage
+  }, [previewMode]); // 激活时重取一次，避免角标显示陈旧的 stage
   // 从 threadByRef 派生出「id → stage」的只读视图，交给列表行渲染器。
   // 为什么不直接把整个 ThreadAPI 传下去：列表行只关心 stage 一个字段，
   // 传大对象会让「谁是 stage 的写者」变模糊；这里只有一处派生、一处消费。
@@ -5602,9 +5605,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     return () => window.removeEventListener('popstate', handler);
   }, [isMobile]);
 
-  useEffect(() => {
+  useWhilePageActive(PAGE.WORK, () => {
     if (previewMode) return;
-    if (!isActive) return;
     refreshBoard(); refreshAgents(); refreshRequirements();
     const pollMs = selectedTaskRef.current ? 120000 : 45000;
     const i = setInterval(() => { refreshBoard(); refreshAgents(); refreshRequirements(); }, pollMs);
@@ -5681,7 +5683,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     };
     window.addEventListener('markus:data-changed', onDataChanged);
     return () => { clearInterval(i); unsub(); unsubTaskCreate(); reqUnsubs.forEach(u => u()); window.removeEventListener('markus:data-changed', onDataChanged); if (boardDebounce) clearTimeout(boardDebounce); if (reqDebounce) clearTimeout(reqDebounce); };
-  }, [previewMode, isActive, refreshBoard, refreshAgents, refreshRequirements]);
+  }, [previewMode, refreshBoard, refreshAgents, refreshRequirements]);
 
   // Refs for event handlers that need current state without re-registering
   const boardRef = useRef(board);
@@ -5824,10 +5826,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         msg(t('work:task.notFound', { id: navTaskId }));
       });
     }
-  }, [board, forceOpenTask, ensureProjectVisible, isActive, msg, t]);
+  }, [board, forceOpenTask, ensureProjectVisible, msg, t]);
 
   const pendingOpenReqRef = useRef<string | null>(null);
-  useEffect(() => {
+  useWhilePageActive(PAGE.WORK, () => {
     const navReqId = pendingOpenReqRef.current || localStorage.getItem('markus_nav_openRequirement');
     if (!navReqId) return;
     const req = allRequirements.find(r => r.id === navReqId);
@@ -5847,7 +5849,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         }
       }).catch(() => { pendingOpenReqRef.current = null; });
     }
-  }, [allRequirements, forceOpenReq, ensureProjectVisible, isActive]);
+  }, [allRequirements, forceOpenReq, ensureProjectVisible]);
 
   const selectProject = useCallback((projectId: string, opts?: { keepItemDetail?: boolean }) => {
     setProjectFilter(new Set());
@@ -5985,8 +5987,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       }
     };
     window.addEventListener('markus:navigate', handler);
-    window.addEventListener('hashchange', onHashChange);
-    return () => { window.removeEventListener('markus:navigate', handler); window.removeEventListener('hashchange', onHashChange); };
+    // 只在 hash 真的落回本页时才解析子路由。
+    // App 每次导航都会**自己合成**一个 hashchange 广播出去，而每个已挂载页面都在监听；
+    // 不复位判断的话，切到任何别的页面都会让 Work 重新解析一次 hash 并 setState
+    // （实测：隐藏页在每次切页时改 150–470 次 DOM，形成约 150ms 的固定长任务）。
+    const onWorkHash = () => { if (getPageFromHash() !== PAGE.WORK) return; onHashChange(); };
+    window.addEventListener('hashchange', onWorkHash);
+    return () => { window.removeEventListener('markus:navigate', handler); window.removeEventListener('hashchange', onWorkHash); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode]);
 
@@ -6463,8 +6470,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   // Entering L1 from L0 (App H/L): expand project rail only on pane *entry* — never fight Cmd+B.
   const keyboardPane = layout?.keyboardPane ?? 'content';
   const prevWorkKeyboardPaneRef = useRef(keyboardPane);
-  useEffect(() => {
-    if (previewMode || isMobile || !isActive) return;
+  useWhilePageActive(PAGE.WORK, () => {
+    if (previewMode || isMobile) return;
     const prev = prevWorkKeyboardPaneRef.current;
     prevWorkKeyboardPaneRef.current = keyboardPane;
     if (keyboardPane !== 'l1') return;
@@ -6474,11 +6481,11 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
       setL1CollapsedPersisted(false);
       layout?.setLeftCollapsed(false);
     }
-  }, [keyboardPane, previewMode, isMobile, isActive, setL1CollapsedPersisted, layout]);
+  }, [keyboardPane, previewMode, isMobile, setL1CollapsedPersisted, layout]);
 
   // Tasks-page keyboard: Cmd+J/L, Ctrl+Tab, H/L focus panes (content↔L1↔L0), j/k navigation
-  useEffect(() => {
-    if (previewMode || isMobile || !isActive) return;
+  useWhilePageActive(PAGE.WORK, () => {
+    if (previewMode || isMobile) return;
     const isMac = navigator.platform.toUpperCase().includes('MAC');
     const onKey = (e: KeyboardEvent) => {
       // L0 app-rail owns j/k/h/l while focused
@@ -6622,7 +6629,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     document.addEventListener('keydown', onKey, true);
     return () => document.removeEventListener('keydown', onKey, true);
   }, [
-    previewMode, isMobile, isActive, toggleProjectDetail, openItemDetailOrEmpty,
+    previewMode, isMobile, toggleProjectDetail, openItemDetailOrEmpty,
     selectProject, selectAllProjects, openItemDetail, setL1CollapsedPersisted, layout,
   ]);
 
@@ -7446,7 +7453,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               <div className="min-w-0">
                 <MultiSearchableSelect
                   options={Object.values(board).flat()
-                    .filter(tk => !isTerminal(tk.status))
+                    .filter(tk => tk.status !== 'completed' && tk.status !== 'cancelled')
                     .map(tk => ({ value: tk.id, label: tk.title }))}
                   selected={taskBlockedBy}
                   onAdd={id => setTaskBlockedBy([...taskBlockedBy, id])}
@@ -7945,7 +7952,7 @@ function RequirementDetailPanel({
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const reqTerminal = isTerminal(req.status);
+  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -7999,12 +8006,12 @@ function RequirementDetailPanel({
               />
             ) : (
               <span
-                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!reqTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
-                onClick={!reqTerminal ? () => setEditingTitle(true) : undefined}
-                role={!reqTerminal ? 'button' : undefined}
-                tabIndex={!reqTerminal ? 0 : undefined}
-                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
-                title={!reqTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
+                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!isTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
+                onClick={!isTerminal ? () => setEditingTitle(true) : undefined}
+                role={!isTerminal ? 'button' : undefined}
+                tabIndex={!isTerminal ? 0 : undefined}
+                onKeyDown={!isTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
+                title={!isTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
               >
                 {req.title}
               </span>
@@ -8079,11 +8086,11 @@ function RequirementDetailPanel({
             ) : (
               <div
                 ref={descRef}
-                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!reqTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
-                onClick={!reqTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
-                role={!reqTerminal ? 'button' : undefined}
-                tabIndex={!reqTerminal ? 0 : undefined}
-                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
+                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
+                onClick={!isTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
+                role={!isTerminal ? 'button' : undefined}
+                tabIndex={!isTerminal ? 0 : undefined}
+                onKeyDown={!isTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
               >
                 {req.description ? (
                   <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />

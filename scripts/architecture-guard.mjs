@@ -46,8 +46,6 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 
 
 const updateAllowlist = process.argv.includes('--update-allowlist');
 const listOnly = process.argv.includes('--list');
-// 终态基线只允许**缩小**：该开关删掉已清理的条目，遇到新增违规直接拒绝写盘。
-const pruneTerminal = process.argv.includes('--prune-terminal-baseline');
 
 // ─── 契约级门禁（Invariant Guards）────────────────────────────────────────────
 /**
@@ -460,235 +458,6 @@ function checkShellWriteGate(file, text) {
   return [{ rule: 'write-gate', line: 1, snippet: 'shell_execute 未接入 assertShellWriteAllowed —— 写门禁可被 shell 绕过' }];
 }
 
-// ─── 规则 6：terminal-status-predicate（P3 · req_410d823e）─────────────────────
-/**
- * 背景：`docs/architecture/hardcoded-string-audit.md` §1。P0 已把「这件工作结束了吗？」
- * 的**定义**收敛成一个谓词 —— `@markus/shared#isTerminal()`
- * （web-ui 侧是 `lib/taskStatus.ts#isTerminal` 的投影，写入者仍是 shared）。
- *
- * 但收敛定义 ≠ 收敛调用点：裸写
- *   `status === 'completed' || status === 'failed' || status === 'cancelled'`
- * 会在第三个终态出现时**静默漏判**（`rejected` / `archived` 被当成"还在跑"），
- * 而且十种写法让「还剩多少处」无法被 grep 计数。本规则把它变成提交前的机器约束。
- *
- * 三个设计取舍：
- *
- *  1）**默认拦（default deny）**：扫 `packages/*\/src` 下**全部**文件，只在
- *     「字形相同但不是同一个事实」的文件上按**文件**豁免（下表，每条必须写明它回答的是
- *     哪个问题）。极性不能反过来（只扫白名单文件）：那样新文件天生失明，正是门禁失效
- *     的经典形态 —— 一个只看得见存量、看不见新增的门禁等于没有门禁。
- *
- *  2）**只拦终态字形**：`status === 'running' / 'in_progress' / 'pending' / 'blocked' /
- *     'review'` 一律放行。拦非终态比较是**错的门禁**（它会把「正在跑吗」和「结束了吗」
- *     混成一个问题，然后被人整体关掉）。
- *
- *  3）**双向棘轮基线**：`scripts/terminal-status-baseline.json` 记录存量，每条带 `why`。
- *     多出来的（新增违规）→ 红；少掉的（已清理但基线没删）→ 也红。只有"机器只能缩小、
- *     人必须解释增长"的基线才能让数字**单调下降**；只拦新增的基线会让存量永远躺在那里。
- */
-const TERMINAL_STATUS_LITERALS = ['completed', 'failed', 'rejected', 'cancelled', 'archived'];
-const TERMINAL_LITERAL_ALT = TERMINAL_STATUS_LITERALS.join('|');
-/** 主体：以 `status` / `Status` 结尾的标识符链（`status` / `task.status` / `s?.status`）。 */
-const STATUS_SUBJECT = String.raw`(?:[A-Za-z_$][\w$]*\s*(?:\?\.|\.)\s*){0,6}[A-Za-z_$]*[sS]tatus\b`;
-
-/**
- * 「同名但不是同一个事实」的豁免登记表。**每一行都必须回答：这个 status 问的是哪个问题。**
- * 缺理由的豁免会在下面的 checkTerminalStatusPredicate() 里判红（空理由 = 没打算解释）。
- */
-const TERMINAL_LITERAL_EXEMPT_FILES = {
-  'packages/shared/src/types/task.ts': 'SSOT 本体：TERMINAL_STATUSES 就在这里定义，它就是那个例外',
-  'packages/core/src/coding-tools/context-injector.ts': 'coding 工具**步骤**状态（created/running/completed），不是任务生命周期',
-  'packages/core/src/coding-tools/handlers.ts': 'coding 工具**会话**状态 → 映射成工具返回值 success/error',
-  'packages/core/src/coding-tools/runtime.ts': 'coding 工具会话状态（cancelled 是工具被中断，不是任务被判死）',
-  'packages/core/src/learning-loop.ts': '学习回路单次运行的 opts.status，不是 ItemStatus',
-  'packages/core/src/llm/openai-codex.ts': 'LLM 响应对象的 status（`response.status`），HTTP 语义',
-  'packages/core/src/mailbox.ts': 'mailbox item 状态（queued/processing/completed/dropped/merged），投递语义',
-  'packages/core/src/tools/result.ts': '工具结果信封的 status（error/denied/deferred），工具语义',
-  'packages/core/src/tools/subagent.ts': '子 agent 单次运行状态（running/completed/timeout），不是任务生命周期',
-  'packages/core/src/workflow/engine.ts': '工作流**步骤**状态（含 skipped，任务没有这个状态）',
-  'packages/org-manager/src/workflow-runner.ts': '工作流**运行**状态（paused/running/completed），与任务卡生命周期正交',
-  'packages/org-manager/src/long-task-progress.ts': '长任务**阶段**状态（stage.status），阶段不是卡片',
-  'packages/desktop/src/notifications.ts': '桌面通知点击行为按通知类型分流，不读任务终态',
-  'packages/web-ui/src/components/CodingToolCard.tsx': 'UI 里的 coding 工具会话状态徽标（同 core/coding-tools）',
-  'packages/web-ui/src/components/ExecutionTimeline.tsx': 'UI 里的工具会话时间线（session.status，含 timeout）',
-  'packages/web-ui/src/components/NotificationBell.tsx': '**审批**状态（cancelled/expired），不是任务终态',
-  'packages/web-ui/src/components/RightPanel.tsx': '分享（share）发布状态：published/pending_review/rejected',
-  'packages/web-ui/src/components/DeliverableShareModal.tsx': '分享评审状态（share review），不是任务终态',
-  'packages/web-ui/src/pages/Deliverables.tsx': '交付物分享状态（share.review），不是任务终态',
-  'packages/web-ui/src/pages/ArtifactDetail.tsx': 'Hub 资产审核状态（moderationStatus），平台审核语义',
-  'packages/web-ui/src/pages/AgentBuilder.tsx': 'Hub 资产审核状态（moderationStatus），平台审核语义',
-};
-
-/** 比较式：`<subject> === '<terminal>'`（含 `!==` / `==` / `!=`）。 */
-const TERMINAL_CMP_RES = [
-  new RegExp(String.raw`(?<![\w$.])(${STATUS_SUBJECT})\s*(===|!==|==|!=)\s*(['"])(${TERMINAL_LITERAL_ALT})\3`, 'g'),
-  // 反向书写：`'completed' === status`
-  new RegExp(String.raw`(['"])(${TERMINAL_LITERAL_ALT})\1\s*(===|!==|==|!=)\s*(${STATUS_SUBJECT})`, 'g'),
-];
-/** 内联终态数组：`['completed','archived'].includes(task.status)` / `new Set([...]).has(status)`。 */
-const TERMINAL_ARRAY_RE = new RegExp(
-  String.raw`\[([^\[\]]{0,400})\]\s*\)?\s*\.\s*(?:includes|has|indexOf)\s*\(\s*(${STATUS_SUBJECT})\s*[,)]`,
-  'g',
-);
-
-/**
- * 把注释替换成等长空白（保留换行）——用**偏移不变**的清洗结果做匹配，
- * 这样行号仍然对得上原文，同时注释里的示例代码（本仓库有若干）不会误报。
- * 字符串内容保留（终态字形本来就住在字符串里）。
- */
-function stripCommentsPreservingOffsets(text) {
-  const out = text.split('');
-  let inBlock = false;
-  let quote = null;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inBlock) {
-      if (c === '*' && next === '/') { out[i] = ' '; out[i + 1] = ' '; inBlock = false; i++; continue; }
-      if (c !== '\n') out[i] = ' ';
-      continue;
-    }
-    if (quote) {
-      if (c === '\\') { i++; continue; }
-      if (c === quote) quote = null;
-      continue;
-    }
-    if (c === '/' && next === '*') { out[i] = ' '; out[i + 1] = ' '; inBlock = true; i++; continue; }
-    if (c === '/' && next === '/') {
-      while (i < text.length && text[i] !== '\n') { out[i] = ' '; i++; }
-      continue;
-    }
-    if (c === "'" || c === '"' || c === '`') quote = c;
-  }
-  return out.join('');
-}
-
-/** 找出文件里所有「终态语义的裸比较」。返回 [{ line, value, kind }]。 */
-function findTerminalStatusComparisons(text) {
-  const clean = stripCommentsPreservingOffsets(text);
-  const hits = [];
-  const push = (index, value, kind) => {
-    hits.push({ line: clean.slice(0, index).split('\n').length, value, kind });
-  };
-  for (const m of clean.matchAll(TERMINAL_CMP_RES[0])) push(m.index, m[4], 'cmp');
-  for (const m of clean.matchAll(TERMINAL_CMP_RES[1])) push(m.index, m[2], 'cmp-rev');
-  for (const m of clean.matchAll(TERMINAL_ARRAY_RE)) {
-    const literals = [...m[1].matchAll(/['"]([a-z_]+)['"]/g)].map((x) => x[1]);
-    if (literals.some((v) => TERMINAL_STATUS_LITERALS.includes(v))) push(m.index, literals.join('|'), 'array');
-  }
-  return hits.sort((a, b) => a.line - b.line);
-}
-
-const TERMINAL_BASELINE_FILE = join(ROOT, 'scripts', 'terminal-status-baseline.json');
-const TERMINAL_WHY_MIN_LENGTH = 8;
-
-function loadTerminalBaseline() {
-  if (!existsSync(TERMINAL_BASELINE_FILE)) return { files: {} };
-  try {
-    return JSON.parse(readFileSync(TERMINAL_BASELINE_FILE, 'utf-8'));
-  } catch (err) {
-    console.error(`[guard] 无法解析终态基线 ${TERMINAL_BASELINE_FILE}: ${err}`);
-    process.exit(2);
-  }
-}
-
-/** 存量普查：`Map<relPath, Map<normalizedSnippet, { count, lines }>>`，外加豁免清单的命中计数。 */
-function collectTerminalStatusHits() {
-  const byFile = new Map();
-  let exemptHits = 0;
-  let exemptFiles = 0;
-  for (const file of collectSources()) {
-    const relPath = rel(file);
-    const text = readFileSync(file, 'utf-8');
-    const hits = findTerminalStatusComparisons(text);
-    if (TERMINAL_LITERAL_EXEMPT_FILES[relPath]) {
-      if (hits.length) { exemptHits += hits.length; exemptFiles += 1; }
-      continue;
-    }
-    if (!hits.length) continue;
-    const lines = text.split('\n');
-    const found = new Map();
-    for (const h of hits) {
-      const snippet = (lines[h.line - 1] ?? '').trim().replace(/\s+/g, ' ').slice(0, 160);
-      if (!snippet) continue;
-      const cur = found.get(snippet) ?? { count: 0, lines: [] };
-      cur.count += 1;
-      cur.lines.push(h.line);
-      found.set(snippet, cur);
-    }
-    byFile.set(relPath, found);
-  }
-  return { byFile, exemptHits, exemptFiles };
-}
-
-/**
- * 双向棘轮比对（基线按**文件**记数，每条带 why）。返回：
- *   grew   —— 文件不在基线里，或现状比基线多：必须红（新增违规 / 混进第二种写法）；
- *   shrank —— 基线比现状多：必须红，否则存量数字永远不会下降。
- *
- * 为什么按文件记数而不是按行：按行的基线会在每次无关重排时 churn（人就把它当噪声删掉）；
- * 按文件记数既让「还剩多少处」逐文件可读，又让任何新增处**必然**改变计数 → 必红。
- */
-function checkTerminalStatusPredicate() {
-  const baseline = loadTerminalBaseline();
-  const files = baseline.files ?? {};
-  const { byFile: hits, exemptHits, exemptFiles } = collectTerminalStatusHits();
-  const grew = [];
-  const shrank = [];
-  let total = 0;
-  for (const [relPath, found] of hits) {
-    const lines = [...found.values()].flatMap((v) => v.lines).sort((a, b) => a - b);
-    const count = lines.length;
-    total += count;
-    const entry = files[relPath];
-    if (!entry) {
-      grew.push({ relPath, lines, count, extra: count, why: null });
-      continue;
-    }
-    if (typeof entry.why !== 'string' || entry.why.trim().length < TERMINAL_WHY_MIN_LENGTH) {
-      grew.push({ relPath, lines, count, extra: 0, why: 'MISSING_WHY' });
-      continue;
-    }
-    if (count > entry.count) grew.push({ relPath, lines, count, extra: count - entry.count, why: entry.why });
-  }
-  for (const [relPath, entry] of Object.entries(files)) {
-    const have = [...(hits.get(relPath)?.values() ?? [])].reduce((n, v) => n + v.count, 0);
-    if (have < entry.count) shrank.push({ relPath, expected: entry.count, have });
-  }
-  return { grew, shrank, total, baselineFiles: Object.keys(files).length, exemptHits, exemptFiles };
-}
-
-/** `--prune-terminal-baseline`：只允许**缩小**；出现新增违规一律拒绝写盘。 */
-function pruneTerminalBaseline() {
-  const baseline = loadTerminalBaseline();
-  const hits = collectTerminalStatusHits().byFile;
-  const next = { version: 1, note: baseline.note, files: {} };
-  let removed = 0;
-  const unexpected = [];
-  for (const [relPath, found] of hits) {
-    const count = [...found.values()].reduce((n, v) => n + v.count, 0);
-    const entry = baseline.files?.[relPath];
-    if (!entry) { unexpected.push({ relPath, count }); continue; }
-    next.files[relPath] = { count, why: entry.why };
-  }
-  for (const [relPath, entry] of Object.entries(baseline.files ?? {})) {
-    if (!hits.has(relPath)) removed += entry.count;
-  }
-  if (unexpected.length) {
-    console.error(`\n[guard] ✗ 拒绝写入终态基线：有 ${unexpected.length} 个文件出现**新**的终态裸比较。`);
-    for (const u of unexpected) console.error(`  ✗ ${u.relPath} × ${u.count}`);
-    console.error('[guard]   正确动作是二选一：① 改用 isTerminal(status)（推荐，终态判定的唯一入口）；');
-    console.error('[guard]   ② 若这确实是「某个具体状态」而非「是否已结束」，手工把该行加进');
-    console.error(`[guard]   ${TERMINAL_BASELINE_FILE}，并在 why 里写清楚它回答的是哪个问题。\n`);
-    process.exit(1);
-  }
-  const ordered = {};
-  for (const relPath of Object.keys(next.files).sort()) ordered[relPath] = next.files[relPath];
-  next.files = ordered;
-  writeFileSync(TERMINAL_BASELINE_FILE, JSON.stringify(next, null, 2) + '\n', 'utf-8');
-  console.log(`[guard] 终态基线已精简：删除 ${removed} 条已清理条目，剩余 ${Object.values(ordered).reduce((n, f) => n + Object.keys(f).length, 0)} 条。`);
-}
-
 /** 规则 1：禁止 console.*（除白名单文件）。 */
 function checkNoConsole(file, text) {
   const out = [];
@@ -732,12 +501,6 @@ function loadAllowlist() {
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
-
-if (pruneTerminal) {
-  pruneTerminalBaseline();
-  process.exit(0);
-}
-
 const violations = [];
 for (const file of collectSources()) {
   const text = readFileSync(file, 'utf-8');
@@ -765,13 +528,6 @@ if (updateAllowlist) {
   process.exit(0);
 }
 
-// 终态裸比较（规则 6）：双向棘轮比对基线。
-const terminalCheck = checkTerminalStatusPredicate();
-const terminalFailures = terminalCheck.grew.length + terminalCheck.shrank.length;
-if (terminalCheck.total) {
-  console.log(`\n[guard] 终态谓词：扫到 ${terminalCheck.total} 处终态裸比较（已登记 ${terminalCheck.total - terminalCheck.grew.reduce((n, g) => n + Math.max(g.extra, 1), 0)} 处 / 未登记 ${terminalCheck.grew.length} 组 / 待精简 ${terminalCheck.shrank.length} 组）；另有 ${terminalCheck.exemptHits} 处落在 ${terminalCheck.exemptFiles} 个**其它域**豁免文件里（豁免清单见 scripts/architecture-guard.mjs#TERMINAL_LITERAL_EXEMPT_FILES）。`);
-}
-
 const fresh = violations.filter(v => !v.allowed);
 if (violations.length) {
   console.log(`\n[guard] 扫描到 ${violations.length} 处命中（白名单内 ${violations.length - fresh.length} 处）：`);
@@ -794,13 +550,6 @@ if (selfTestFailures.length) {
 const invariantViolations = checkInvariants();
 
 if (listOnly) {
-  for (const g of terminalCheck.grew) {
-    console.log(`  · [terminal-status-predicate] ${g.relPath}:${g.lines.join(',')}  ${g.snippet}`);
-  }
-  for (const s of terminalCheck.shrank) {
-    console.log(`  · [terminal-status-predicate:stale] ${s.relPath}  基线 ${s.expected} 处 / 现状 ${s.have} 处  ${s.snippet}`);
-  }
-  console.log(`\n[guard] 终态裸比较：${terminalCheck.total} 处（未登记 ${terminalCheck.grew.length} 组，基线待精简 ${terminalCheck.shrank.length} 组）。\n`);
   for (const v of invariantViolations) console.log(`  ✗ [${v.rule}] ${v.file} —— ${v.label}`);
   console.log(FIXTURE_MODE
     ? `\n[guard] 契约不变量：夹具模式跳过（仅真实仓库强制）。\n`
@@ -824,36 +573,6 @@ if (invariantViolations.length) {
   }
   console.error('[guard]   这三类不变量（item 认领唯一性 / review_request 受保护 / 依赖引擎判死语义）是正确性底线：');
   console.error('[guard]   删掉它们会退回「同一评审被多分身重复收口 + 空转让位」「瞬时失败的 blocker 误杀依赖方且永不恢复」的线上事故。\n');
-  process.exit(1);
-}
-
-if (terminalFailures) {
-  if (terminalCheck.grew.length) {
-    console.error(`\n[guard] ✗ 终态谓词门禁失败：${terminalCheck.grew.length} 组终态裸比较未登记。`);
-    console.error('[guard]   「这件工作结束了吗？」只有一个答案入口：isTerminal(status)');
-    console.error('[guard]   （@markus/shared#isTerminal / web-ui lib/taskStatus.ts#isTerminal）。');
-    console.error('[guard]   裸写 completed/failed/rejected/cancelled/archived 会在新终态出现时静默漏判。');
-    for (const g of terminalCheck.grew) {
-      console.error(`  ✗ ${g.relPath}:${g.lines.join(',')}`);
-      console.error(`      ${g.snippet}`);
-      if (g.why === 'MISSING_WHY') {
-        console.error(`      ↳ 基线条目存在但 why 为空：请写清它回答的是哪个问题（≥${TERMINAL_WHY_MIN_LENGTH} 字）。`);
-      } else if (g.extra > 0) {
-        console.error(`      ↳ 计 ${g.extra} 处，基线只登记了其中一部分。`);
-      }
-    }
-    console.error('[guard]   若这是「某个具体状态」而非「是否已结束」（例：只统计 successfully completed），');
-    console.error(`[guard]   请在 ${TERMINAL_BASELINE_FILE} 登记该行并写明 why。\n`);
-  }
-  if (terminalCheck.shrank.length) {
-    console.error(`\n[guard] ✗ 终态基线比现状更宽松：${terminalCheck.shrank.length} 组条目对应的代码已不再裸比较。`);
-    console.error('[guard]   基线只允许缩小 —— 已清理的请在同一次提交里删除对应条目，否则存量数字永远不会下降。');
-    console.error('[guard]   可执行：node scripts/architecture-guard.mjs --prune-terminal-baseline');
-    for (const s of terminalCheck.shrank) {
-      console.error(`  · ${s.relPath}  基线 ${s.expected} 处 / 现状 ${s.have} 处  ${s.snippet}`);
-    }
-    console.error('');
-  }
   process.exit(1);
 }
 

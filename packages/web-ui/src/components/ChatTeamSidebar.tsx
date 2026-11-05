@@ -26,6 +26,32 @@ import { stripThinkingBlocks } from '../pages/ChatHelpers.ts';
 
 // Module-level cache so last-message previews survive unmount/remount cycles on mobile
 let _lastMsgCache: Map<string, string> = new Map();
+/**
+ * 负缓存：查过但「没有消息」的 agent 及其查询时间。
+ *
+ * 为何需要：拉取最新消息是 N+1（每个 agent 两次请求：sessions?limit=1 →
+ * messages?limit=1）。实测切到 Team 一次打 120 个请求（≈60 agent × 2）、脚本 1050ms。
+ * 而原来只有**确实拿到消息**的 agent 才进 _lastMsgCache，没消息的每次切回都要重查
+ * 一遍 —— 于是每切一次页就重新拉 120 次。
+ *
+ * 带 TTL 而不是永久：否则一个 agent 真的发出首条消息后，会永远显示为空。
+ */
+const _lastMsgCheckedAt = new Map<string, number>();
+const NEGATIVE_TTL_MS = 5 * 60_000;
+
+/**
+ * 在途去重。
+ *
+ * 为何需要：effect 依赖 [agents, isActive]，而 agents 的数组身份会随 agent 状态推送
+ * 变化 ⇒ 一次冷启动里它要重跑好几次。而对同一个 agent 的查询要等 await 之后才写
+ * _lastMsgCheckedAt，**守卫落库在 await 之后** ⇒ 重跑时守卫还是空的，同一批 agent
+ * 再发一遍。实测首次进入 Team：59 个 agent 打了 99 次 sessions?limit=1
+ * （累计 113 秒，单次约 1.2 秒，在 6 条连接上排队 = 用户看到的十几秒）。
+ *
+ * 在**发起前**登记在途，重跑即跳过。
+ */
+const _lastMsgInFlight = new Set<string>();
+
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -372,33 +398,39 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     if (!agents.length || !isActive) return;
     let cancelled = false;
 
-    // One-shot initial load: batch all agents, no periodic polling
+    // One-shot initial load: 一次批量请求拿回所有 agent 的最新消息。
+    //
+    // 原先是 Promise.allSettled(agents.map(...))，每个 agent 两次请求
+    // （sessions?limit=1 → messages?limit=1）。实测首次进入 Team 打 99 次
+    // sessions（59 个 agent × 重跑），累计 113 秒，在 6 条连接上排队 —— 这就是
+    // 「重启后第一次点进 Team 要等十几秒」的全部来源。
+    // 现在由服务端一次循环查完，前端只发 1 个请求。
     const fetchInitial = async () => {
       const entries: [string, string][] = [];
-      await Promise.allSettled(
-        agents.map(async (a) => {
-          if (_lastMsgCache.has(a.id)) return; // already have from WS
-          try {
-            const { sessions: ss } = await api.sessions.listByAgent(a.id, 1);
-            if (!ss.length) return;
-            const { messages } = await api.sessions.getMessages(ss[0].id, 1);
-            if (messages.length) {
-              const msg = messages[0];
-              const segs = msg.metadata?.segments;
-              let raw = msg.content;
-              if (segs && segs.length > 0) {
-                const last = [...segs].reverse().find(s => s.type === 'text');
-                if (last && last.type === 'text') raw = last.content;
-              }
-              const txt = raw
-                .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-                .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
-                .replace(/\n+/g, ' ').trim().slice(0, 80);
-              if (txt) entries.push([a.id, txt]);
-            }
-          } catch { /* ignore */ }
-        }),
-      );
+      const now = Date.now();
+      const wanted = agents.filter(a =>
+        !_lastMsgCache.has(a.id) &&
+        !_lastMsgInFlight.has(a.id) &&
+        !((_lastMsgCheckedAt.get(a.id) ?? 0) > now - NEGATIVE_TTL_MS));
+      if (!wanted.length) return;
+      for (const a of wanted) _lastMsgInFlight.add(a.id);
+      try {
+        const { messages } = await api.sessions.lastMessagesByAgents(wanted.map(a => a.id));
+        for (const a of wanted) {
+          _lastMsgCheckedAt.set(a.id, now);
+          const m = messages[a.id];
+          if (!m?.content) continue;
+          const txt = m.content
+            .replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+            .replace(/<(invoke|function_calls|antml:\w+)\b[\s\S]*?(<\/\1>|$)/g, '')
+            .replace(/\n+/g, ' ').trim().slice(0, 80);
+          if (txt) entries.push([a.id, txt]);
+        }
+      } catch {
+        for (const a of wanted) _lastMsgCheckedAt.set(a.id, now);
+      } finally {
+        for (const a of wanted) _lastMsgInFlight.delete(a.id);
+      }
       if (!cancelled && entries.length) {
         setAgentLastMsg(prev => {
           const next = new Map(prev);

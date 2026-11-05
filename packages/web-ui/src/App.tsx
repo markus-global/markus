@@ -250,6 +250,13 @@ export function App() {
     collapsedWidth: 64,
     storageKey: 'markus_sidebar',
   });
+  // 访问过的页面全部保留挂载（切走不卸载）：滚动位置/草稿/选中项/流式 UI 都要活下来。
+  //
+  // 曾经给它加过一个 LRU 上限（活跃页 + 最近 3 个），方向是错的，已撤回：实测限制
+  // 挂载页面数之后，7 次切页的 DOM 仍从 31 850 涨到 75 745、切页两帧中位仍是 124ms
+  // （最差 212ms，比不限制还差）。因为增长不在“挂了几个页面”，而在**单个页面内部
+  // 的无界集合渲染**（实测一个隐藏页独占 29 570 节点）。页面驻留本身是正常的，
+  // 前提是每页的 DOM 是有界的。
   const [mountedPages, setMountedPages] = useState<Set<PageId>>(() => new Set([initialPage()]));
   const [authUser, setAuthUser] = useState<AuthUser | null | 'loading'>('loading');
   const [showEditProfile, setShowEditProfile] = useState(false);

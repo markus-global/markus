@@ -11,6 +11,8 @@ import {
   packToolDefBudget,
   SCHEMA_INJECTED_TOOLS,
   TASK_EXECUTION_EXTRA_TOOLS,
+  TASK_EXECUTION_MANDATED_WORK_TOOLS,
+  missingMandatedWorkTools,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
 } from './capability-packs.js';
@@ -283,6 +285,10 @@ export class ToolSelector {
         // Prompt-mandated names that no keyword group can surface (see
         // TASK_EXECUTION_EXTRA_TOOLS): background_exec / process / deliverable_create.
         ...TASK_EXECUTION_EXTRA_TOOLS,
+        // The work tools the execution prompt *physically* requires (commit,
+        // tsc, regression). Force-included for the same reason: a round that
+        // mandates writes must never ship a read-only schema (2026-11-05).
+        ...TASK_EXECUTION_MANDATED_WORK_TOOLS,
       ]) {
         if (opts.allTools.has(name)) selected.add(name);
       }
@@ -737,6 +743,22 @@ export class ToolSelector {
       protectedNames,
       TOOL_DEF_CORE_KEEP,
     );
+    // 响亮守卫（2026-11-05 事故）：task_execution 轮次下发的 schema 必须能做
+    // 「改文件 + 跑命令」。缺任一项都是平台缺陷——那一轮会被强制要求 submit，
+    // 却在物理上做不到，然后按「没提交」记 strike。此前的失败完全隐形，
+    // 只有 agent 自己在回复里说出来才被人看到；现在由日志点名。
+    if (pack === 'execute') {
+      const missing = missingMandatedWorkTools(capped.map(t => t.name));
+      if (missing.length) {
+        log.warn('Execute pack shipped WITHOUT mandated work tools — round mandates work its schema cannot do', {
+          missing,
+          kept: capped.length,
+          budget,
+          absentFromRegistry: missing.filter(n => !opts.allTools.has(n)),
+        });
+      }
+    }
+
     // Afford.S2: catalog goes to system Tier 3 via consumeDeferredCatalog — NOT tool schema.
     this.lastDeferredCatalog = evicted.map((e) => ({
       name: e.name,

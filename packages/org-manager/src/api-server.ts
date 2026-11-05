@@ -3686,6 +3686,51 @@ export class APIServer {
       return;
     }
 
+    // 批量取「每个 agent 的最新一条消息」——侧栏预览。
+    //
+    // 为何存在：前端原先对每个 agent 各发两次请求（sessions?limit=1 → messages?limit=1），
+    // 实测首次进入 Team 打 99 次 sessions（59 个 agent，单次约 1.2 秒），在 6 条连接上
+    // 排队 = 用户看到的十几秒白屏。同一进程内的循环查库比 59 次 HTTP 往返便宜一个量级。
+    //
+    // 只回原样 content，不做 think/invoke 块的剥离 —— 那是展示层的事，前端已有一份
+    // stripMarkup 实现；放两份就是「同一事实两个写者」。
+    if (path === '/api/agents/last-messages' && req.method === 'GET') {
+      const authUser = await this.getAuthUser(req);
+      const rawIds = url.searchParams.get('ids') ?? '';
+      const ids = rawIds.split(',').map(s => s.trim()).filter(Boolean).slice(0, 200);
+      if (!this.storage || ids.length === 0) {
+        this.json(res, 200, { messages: {} });
+        return;
+      }
+      const messages: Record<string, {
+        sessionId: string; sessionUpdatedAt: string;
+        messageId: string; createdAt: string; content: string;
+      }> = {};
+      for (const agentId of ids) {
+        try {
+          const page = this.storage.chatSessionRepo.listSessionsPaginated(agentId, {
+            page: 1, pageSize: 1, userId: authUser?.userId,
+          });
+          const sess = page.sessions?.[0];
+          if (!sess) continue;
+          const got = await this.storage.chatSessionRepo.getMessages(sess.id, 1);
+          const msg = got.messages?.[0];
+          if (!msg) continue;
+          messages[agentId] = {
+            sessionId: sess.id,
+            sessionUpdatedAt: String(sess.updatedAt ?? ''),
+            messageId: msg.id,
+            createdAt: String(msg.createdAt ?? ''),
+            content: String(msg.content ?? ''),
+          };
+        } catch {
+          // 单个 agent 查询失败不该拖垮整批
+        }
+      }
+      this.json(res, 200, { messages });
+      return;
+    }
+
     if (path.match(/^\/api\/agents\/[^/]+\/sessions$/) && req.method === 'GET') {
       const authUser = await this.getAuthUser(req);
       const agentId = path.split('/')[3]!;
@@ -7283,12 +7328,25 @@ EXPLANATION_END`;
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const body = await this.readBody(req);
-      const { conversationKey, lastReadAt, lastReadId } = body as { conversationKey: string; lastReadAt: string; lastReadId?: string };
-      if (!conversationKey || !lastReadAt) { this.json(res, 400, { error: 'conversationKey and lastReadAt required' }); return; }
+      const { conversationKey, keys, lastReadAt, lastReadId } = body as {
+        conversationKey?: string; keys?: string[]; lastReadAt: string; lastReadId?: string;
+      };
+      // 批量形态：一次提交多个会话的已读位点。
+      // 原先前端在 _fetchCounts 的收敛循环里逐 key 连发，实测首次进入 Team 打 97 次
+      // mark-read —— 97 个 HTTP 往返只为了写 97 行游标，合并成一次即可。
+      const keyList = Array.isArray(keys)
+        ? keys.filter((k): k is string => typeof k === 'string' && k.length > 0)
+        : (conversationKey ? [conversationKey] : []);
+      if (keyList.length === 0 || !lastReadAt) {
+        this.json(res, 400, { error: 'conversationKey (or keys) and lastReadAt required' });
+        return;
+      }
       const repo = this.storage?.readCursorRepo;
-      if (!repo) { this.json(res, 200, { success: true }); return; }
-      repo.setReadCursor(authUser.userId, conversationKey, lastReadAt, lastReadId);
-      this.json(res, 200, { success: true });
+      if (!repo) { this.json(res, 200, { success: true, count: 0 }); return; }
+      for (const key of keyList.slice(0, 500)) {
+        repo.setReadCursor(authUser.userId, key, lastReadAt, lastReadId);
+      }
+      this.json(res, 200, { success: true, count: Math.min(keyList.length, 500) });
       return;
     }
 

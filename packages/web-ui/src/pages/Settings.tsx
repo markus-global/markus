@@ -5,7 +5,7 @@ import { THEME_OPTIONS, type ThemeMode } from '../hooks/useTheme.ts';
 import { ListLoading } from '../components/AsyncState.tsx';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
-import { PAGE } from '../routes.ts';
+import { PAGE, getPageFromHash } from '../routes.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -162,7 +162,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [confirmLogout, setConfirmLogout] = useState(false);
 
   useEffect(() => {
-    const onHashChange = () => setActiveTab(getSettingsTab());
+    // 只在 hash 仍落在 Settings 时才改 activeTab：App 每次导航都会合成 hashchange，
+    // 不分页判断的话，离开 Settings 会把 activeTab 重置成 null、切回来再设一次，
+    // 一个来回白渲染两遍 4000 行的页面。
+    const onHashChange = () => {
+      if (getPageFromHash() !== PAGE.SETTINGS) return;
+      setActiveTab(getSettingsTab());
+    };
     window.addEventListener('hashchange', onHashChange);
     return () => window.removeEventListener('hashchange', onHashChange);
   }, []);

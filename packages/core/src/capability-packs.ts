@@ -346,6 +346,52 @@ export const TASK_EXECUTION_EXTRA_TOOLS = [
 ] as const;
 
 /**
+ * The **work tools** a `task_execution` round physically needs.
+ *
+ * Why this list exists (2026-11-05 incident, tsk_093655c1496fae18223d44af):
+ * the execution prompt mandates "commit to the task branch / run `tsc -b` /
+ * run the regression" — yet a round shipped with `file_read` / `grep_search` /
+ * `glob_find` / `list_directory` + task tools ONLY (no `shell_execute`, no
+ * `file_write`). The round could not read a file's diff or write a fix, so it
+ * ended without `task_submit_review`; the runtime counted that as a *no-submit
+ * strike* and auto-retried — 3 strikes burned on rounds that were physically
+ * unable to comply, i.e. the platform punished the agent for the platform's own
+ * schema.
+ *
+ * The lesson is the same shape as `WORK_ENTITY_LIFECYCLE_TOOLS`: **a tool the
+ * round's flow requires must be guaranteed, not hoped for**. Selection by
+ * keyword group, group-name spelling (`shell` / `code` / `coding`) and the
+ * caller's registry are three separate inputs; any one of them drifting turns
+ * an execution round read-only *silently*. So:
+ *   • the set is declared here once (single source),
+ *   • it is force-included for `isTaskExecution` (see tool-selector),
+ *   • and {@link missingMandatedWorkTools} is the loud guard: if the shipped
+ *     schema is missing any of them, that is a WARN with the names, not a
+ *     silent read-only round.
+ */
+export const TASK_EXECUTION_MANDATED_WORK_TOOLS = [
+  'shell_execute',
+  'file_write',
+  'file_edit',
+  'apply_patch',
+  'file_read',
+  'grep_search',
+] as const;
+
+/**
+ * Which mandated work tools are **absent from the shipped schema**.
+ *
+ * Called after budget eviction, on the final tool list. Empty array = healthy.
+ * Non-empty = the round's own prompt asks for work the schema cannot do; the
+ * caller logs it loudly (this is the diagnostic that the 2026-11-05 incident
+ * lacked — the failure was invisible until a human read the agent's confession).
+ */
+export function missingMandatedWorkTools(shipped: Iterable<string>): string[] {
+  const have = new Set(shipped);
+  return TASK_EXECUTION_MANDATED_WORK_TOOLS.filter(n => !have.has(n));
+}
+
+/**
  * Tools an entity-bound **action** scenario is allowed to call.
  *
  * These scenarios are `converse` pack (so they do not get the execute pack's

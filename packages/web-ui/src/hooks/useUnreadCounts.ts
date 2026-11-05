@@ -93,6 +93,28 @@ function _advanceReadCursor(key: string, opts?: { force?: boolean }) {
   void api.unread.markRead(key, new Date().toISOString()).catch(() => { /* silent */ });
 }
 
+/**
+ * 批量推进已读游标：一次请求写多个会话。
+ *
+ * 原先是 `for (const key of staleActiveKeys) _advanceReadCursor(key)` —— 每个 key
+ * 一个 POST。实测首次进入 Team 打 97 次 mark-read，97 个 HTTP 往返只为写 97 行游标。
+ * 节流语义与单条版本完全一致（同一 key 在 AUTO_READ_THROTTLE_MS 内只发一次）。
+ */
+function _advanceReadCursors(keys: readonly string[]) {
+  const now = Date.now();
+  const due: string[] = [];
+  for (const key of keys) {
+    const last = _lastAutoReadAt.get(key) ?? 0;
+    if (now - last < AUTO_READ_THROTTLE_MS) continue;
+    _lastAutoReadAt.set(key, now);
+    delete _globalCounts[key];
+    due.push(key);
+  }
+  if (!due.length) return;
+  notify();
+  void api.unread.markReadMany(due, new Date(now).toISOString()).catch(() => { /* silent */ });
+}
+
 async function _fetchCounts() {
   try {
     const resp = await api.unread.getCounts();
@@ -101,7 +123,8 @@ async function _fetchCounts() {
     _globalSessionAgentMap = resp.sessionAgentMap ?? {};
     notify();
     // Converge the server on the screen state: an open conversation is read.
-    for (const key of staleActiveKeys) _advanceReadCursor(key);
+    // 一次批量提交，不逐 key 连发（见 _advanceReadCursors 注释）。
+    _advanceReadCursors(staleActiveKeys);
   } catch { /* silent */ }
 }
 

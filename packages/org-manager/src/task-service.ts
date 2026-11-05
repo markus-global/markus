@@ -2679,19 +2679,33 @@ export class TaskService implements ApprovalTargetPort {
     log.info(`Resuming ${inProgressTasks.length} in_progress task(s) after restart`);
 
     for (const task of inProgressTasks) {
+      // 执行权只能有一个主人（2026-11-05）：若该任务仍有排队/在途的 mailbox 条目，
+      // 说明执行已由那条目拥有——再 resume 就是第二个执行者，同一步会跑两遍。
+      const agent = task.assignedAgentId
+        ? (this.agentManager?.getAgent(task.assignedAgentId) as unknown as
+            | { hasLiveItemsForTask?: (id: string) => boolean }
+            | undefined)
+        : undefined;
+      if (agent?.hasLiveItemsForTask?.(task.id)) {
+        log.info('Skipping resume: a live mailbox item already owns this task', {
+          taskId: task.id,
+          title: task.title,
+          agentId: task.assignedAgentId,
+        });
+        continue;
+      }
+
       try {
         await this.runTask(task.id, 0, undefined, 'resume');
         log.info(`Resumed task execution after restart`, { taskId: task.id, title: task.title, priority: task.priority });
       } catch (err) {
-        log.warn(`Failed to resume task on startup`, {
+        // 启动期失败**不是**「不可恢复」的证据。旧实现直接判 failed，等于把一次重启抖动
+        // 变成永久死刑；保持 in_progress，交给 stale 检测 / 下一次重启处理。
+        log.warn(`Resume after restart failed; keeping task in_progress`, {
           taskId: task.id,
           title: task.title,
           error: String(err),
         });
-        this.updateTaskStatus(
-          task.id, 'failed', undefined, false, false, 'system',
-          `Resume after restart failed: ${String(err)}`,
-        );
       }
     }
   }

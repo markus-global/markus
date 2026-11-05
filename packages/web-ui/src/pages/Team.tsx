@@ -75,7 +75,7 @@ import {
 import { navigationOwnsSessionChoice, type NavigationFocus } from '../lib/navigationFocus.ts';
 import type { WindowBounds } from '../lib/ConversationBufferManager.ts';
 import { navBus } from '../navBus.ts';
-import { PAGE, resolvePageId, hashPath } from '../routes.ts';
+import { PAGE, resolvePageId, hashPath, getPageFromHash } from '../routes.ts';
 import { renderMentionText } from '../components/CommentInput.tsx';
 import { ChatTeamSidebar } from '../components/ChatTeamSidebar.tsx';
 import { TeamDetailPanel } from '../components/TeamDetailPanel.tsx';
@@ -169,7 +169,12 @@ const _hashSubs = new Set<() => void>();
 function _getHash() { return window.location.hash; }
 function _subHash(cb: () => void) { _hashSubs.add(cb); return () => { _hashSubs.delete(cb); }; }
 if (typeof window !== 'undefined') {
-  window.addEventListener('hashchange', () => _hashSubs.forEach(fn => fn()));
+  // 只在 hash 落在 Team 时才广播给订阅者。App 每次导航都会合成一个 hashchange，
+  // 不做页别判断的话，切到任何页面都会让 Team 的订阅者重新解析子路由并 setState。
+  window.addEventListener('hashchange', () => {
+    if (getPageFromHash() !== PAGE.TEAM) return;
+    _hashSubs.forEach(fn => fn());
+  });
 }
 
 export interface TeamPreviewData {

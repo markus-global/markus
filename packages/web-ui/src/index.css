@@ -405,11 +405,8 @@ html {
   color: transparent;
 }
 
-/* Loading skeleton shimmer */
-@keyframes skeleton-shimmer {
-  0% { background-position: -200% 0; }
-  100% { background-position: 200% 0; }
-}
+/* Loading skeleton shimmer —— 位置由 animationBudget 的 4Hz tick 驱动（--anim-p），
+   不再使用常驻 CSS 动画。原因见文件末尾 "Animation budget" 一节。 */
 .skeleton {
   background: linear-gradient(
     90deg,
@@ -418,14 +415,10 @@ html {
     var(--color-surface-secondary) 63%
   );
   background-size: 200% 100%;
-  animation: skeleton-shimmer 1.4s ease-in-out infinite;
+  background-position: calc(-200% + var(--anim-p, 0) * 400%) 0;
 }
 
-/* Running tool / thinking label — soft bright↔dim sweep */
-@keyframes activity-text-shimmer {
-  0% { background-position: 100% center; }
-  100% { background-position: -100% center; }
-}
+/* Running tool / thinking label — soft bright↔dim sweep（位置由 tick 驱动，见下方变量化规则） */
 .activity-text-shimmer {
   background-image: linear-gradient(
     90deg,
@@ -437,18 +430,12 @@ html {
   -webkit-background-clip: text;
   background-clip: text;
   color: transparent;
-  animation: activity-text-shimmer 1.6s ease-in-out infinite;
 }
 
 /* ─── 过程折叠行（ProcessRun）的「运行中」动效 ────────────────────────────────
    一道很淡的品牌色扫光横穿整行，外加一个呼吸的点。两者都只碰 transform /
    opacity，走合成层，不触发布局；窗口失焦时由上面 data-anim-paused 那条规则
    统一暂停（agents 常常在后台跑几个钟头，这正是那条规则要省的电）。 */
-
-@keyframes process-run-sweep {
-  0%   { transform: translateX(-120%); }
-  100% { transform: translateX(120%); }
-}
 
 .process-run-sweep {
   position: absolute;
@@ -461,16 +448,7 @@ html {
     transparent 100%
   );
   opacity: 0.22;
-  animation: process-run-sweep 1.9s linear infinite;
-}
-
-@keyframes process-run-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50%      { opacity: 0.3; transform: scale(0.7); }
-}
-
-.process-run-pulse {
-  animation: process-run-pulse 1.4s ease-in-out infinite;
+  transform: translateX(calc(-120% + var(--anim-p, 0) * 240%));
 }
 
 /* ─── Animation budget ──────────────────────────────────────────────────────
@@ -510,14 +488,16 @@ html[data-anim-paused='true'] *::after {
       The per-phase values live on :root as custom properties, so changing the tick
       only invalidates the handful of elements that read them - not the whole tree. */
 
-html[data-anim-tick='0'] { --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
-html[data-anim-tick='1'] { --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
-html[data-anim-tick='2'] { --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
-html[data-anim-tick='3'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
-html[data-anim-tick='4'] { --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
-html[data-anim-tick='5'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
-html[data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
-html[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
+/* `--anim-p` 是归一化进度（0 → 0.875 的锯齿），新加的动效一律用它 + calc() 派生，
+   不要再往这里堆新的具名变量，更不要新开一条 infinite 动画。 */
+html[data-anim-tick='0'] { --anim-p: 0;     --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
+html[data-anim-tick='1'] { --anim-p: 0.125; --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
+html[data-anim-tick='2'] { --anim-p: 0.25;  --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
+html[data-anim-tick='3'] { --anim-p: 0.375; --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
+html[data-anim-tick='4'] { --anim-p: 0.5;   --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
+html[data-anim-tick='5'] { --anim-p: 0.625; --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
+html[data-anim-tick='6'] { --anim-p: 0.75;  --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
+html[data-anim-tick='7'] { --anim-p: 0.875; --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
 
 .animate-pulse {
   animation: none !important;
@@ -543,7 +523,28 @@ html[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spi
   --border-angle: var(--anim-border, 0deg);
 }
 
-/* 3. Honour the OS "reduce motion" setting. */
+/* 3. `transition-all` 收窄。
+      Tailwind 的 `transition-all` 把**所有**可动画属性都纳入过渡，其中包含从
+      <html> 继承下来的 `scrollbar-color` —— 那是非合成属性：一旦参与过渡，每一次
+      取值变化都要重算样式并重绘滚动条。
+
+      实测（CDP 挂在真实桌面实例上）：页面完全静止、DOM 零变动、JS 只跑 0.14% 的
+      时候，style recalc 仍是 122 次/秒 —— 正好是 ProMotion 的一帧一次。成本全在
+      渲染管线，不在 JS。
+
+      这里把 `all` 就地收窄成"作者真正会用到的那一批"（颜色 + 合成属性 + 布局），
+      让「过渡一个非合成的继承属性」在结构上无法表达。需要别的属性请显式写
+      `transition-[width]`，比 `all` 精确。 */
+.transition-all {
+  transition-property: color, background-color, border-color, outline-color,
+    text-decoration-color, fill, stroke,
+    opacity, box-shadow, transform, translate, scale, rotate, filter, backdrop-filter,
+    width, height, min-width, min-height, max-width, max-height,
+    padding, margin, gap, top, right, bottom, left, inset,
+    grid-template-rows, grid-template-columns;
+}
+
+/* 4. Honour the OS "reduce motion" setting. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -634,13 +635,9 @@ html.electron-darwin .electron-mac-top-safe {
   initial-value: 0deg;
   inherits: false;
 }
-@keyframes border-rotate {
-  to { --border-angle: 360deg; }
-}
 .exec-card-active {
   border-image-source: conic-gradient(from var(--border-angle), oklch(0.50 0.04 250), oklch(0.65 0.03 250), oklch(0.50 0.04 250));
   border-image-slice: 1;
-  animation: border-rotate 4s linear infinite;
 }
 @keyframes pulse-subtle {
   0%, 100% { opacity: 1; }
@@ -708,11 +705,15 @@ html.electron-darwin .electron-mac-top-safe {
   -webkit-mask-composite: xor;
   mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   mask-composite: exclude;
-  animation: border-rotate 2.6s linear infinite;
+  /* 曾经是 `animation: border-rotate 2.6s infinite`——它动画的是注册过的
+     <angle> 自定义属性，属样式级动画：每一帧都要重算样式并重绘，且重算范围是整棵
+     子树。实测这类常驻动画让 style recalc 稳定在 122 次/秒（= ProMotion 一帧一次），
+     即使气泡里的文字一秒都没变。改为 tick 驱动的同一个 --anim-p。 */
+  --border-angle: calc(var(--anim-p, 0) * 360deg);
 }
 @media (prefers-reduced-motion: reduce) {
   .streaming-bubble::after {
-    animation: none;
+    --border-angle: 0deg;
     background: color-mix(in oklab, var(--color-brand-500) 45%, transparent);
   }
 }

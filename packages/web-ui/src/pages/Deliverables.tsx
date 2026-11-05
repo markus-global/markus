@@ -16,7 +16,7 @@ import { navBus } from '../navBus.ts';
 import { PAGE, resolvePageId } from '../routes.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
-import { usePageActive } from '../hooks/usePageActive.ts';
+import { useWhilePageActive } from '../hooks/usePageActive.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -99,7 +99,8 @@ export interface DeliverablesPreviewData {
 export function DeliverablesPage({ authUser: _authUser, previewMode, previewData }: { authUser?: AuthUser; previewMode?: boolean; previewData?: DeliverablesPreviewData } = {}) {
   const { t } = useTranslation(['deliverables', 'common']);
   const isMobile = useIsMobile();
-  const isActive = usePageActive(PAGE.DELIVERABLES);
+  // 不用 usePageActive：那会让整个页面在每次切页时重算整棵树。4 处用法全在 effect 里，
+  // 用 useWhilePageActive 只启停副作用，不重渲染宿主。
   const listPanel = useResizablePanel({ side: 'left', defaultWidth: 384, minWidth: 280, maxWidth: 600, storageKey: 'markus_deliverables_list' });
   const [mobileShowDetail, setMobileShowDetail] = useState(false);
   const mobileShowDetailRef = useRef(mobileShowDetail);
@@ -339,9 +340,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const selectedRef = useRef(selected);
   selectedRef.current = selected;
 
-  useEffect(() => {
+  useWhilePageActive(PAGE.DELIVERABLES, () => {
     if (previewMode) return;
-    if (!isActive) return;
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', (event) => {
       silentRefresh();
@@ -365,7 +365,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     });
     const unsub3 = wsClient.on('deliverable:removed', () => refresh());
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [silentRefresh, isActive, previewMode]);
+  }, [silentRefresh, previewMode]);
 
   // 页面级 Hub 分享状态同步：不依赖分享弹窗常驻，页面可见期间周期性从 Hub 拉取
   // 当前用户的全部分享状态，把 moderationStatus（pending/published/rejected）映射回
@@ -375,9 +375,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     () => createDeliverableShareService(getHubToken, hubApi.getUrl()),
     [],
   );
-  useEffect(() => {
+  useWhilePageActive(PAGE.DELIVERABLES, () => {
     if (previewMode) return;
-    if (!isActive) return;
     if (!getHubToken()) return; // 未登录 Hub 不轮询
     let cancelled = false;
     const run = async () => {
@@ -425,7 +424,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     run();
     const timer = setInterval(run, 30000);
     return () => { cancelled = true; clearInterval(timer); };
-  }, [shareSyncService, isActive, previewMode]);
+  }, [shareSyncService, previewMode]);
 
   // Handle deep navigation to a specific deliverable
   const pendingOpenRef = useRef<string | null>(null);
@@ -811,8 +810,8 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
   // Entering L1 from L0: expand only on pane *entry* — never fight Cmd+B.
   const prevDeliverablesKeyboardPaneRef = useRef(keyboardPane);
-  useEffect(() => {
-    if (previewMode || isMobile || !isActive) return;
+  useWhilePageActive(PAGE.DELIVERABLES, () => {
+    if (previewMode || isMobile) return;
     const prev = prevDeliverablesKeyboardPaneRef.current;
     prevDeliverablesKeyboardPaneRef.current = keyboardPane;
     if (keyboardPane !== 'l1' || prev === 'l1') return;
@@ -821,10 +820,10 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
       sidebarManualRef.current = true;
       setSidebarCollapsed(false);
     }
-  }, [keyboardPane, previewMode, isMobile, isActive, sidebarCollapsed]);
+  }, [keyboardPane, previewMode, isMobile, sidebarCollapsed]);
 
-  useEffect(() => {
-    if (previewMode || isMobile || !isActive) return;
+  useWhilePageActive(PAGE.DELIVERABLES, () => {
+    if (previewMode || isMobile) return;
     const handler = (e: KeyboardEvent) => {
       // Cmd/Ctrl 修饰键快捷键是全局命令，不受 keyboardPane 焦点区限制
       // （否则刚进入页面焦点默认在 L0 时 Cmd+B / Cmd+L / Cmd+F 全部被吞掉）。
@@ -923,7 +922,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     document.addEventListener('keydown', handler, true);
     return () => document.removeEventListener('keydown', handler, true);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [flatItems, selected, previewMode, isMobile, isActive, layout, sidebarCollapsed]);
+  }, [flatItems, selected, previewMode, isMobile, layout, sidebarCollapsed]);
 
   const pullStartRef = useRef<{ y: number; x: number } | null>(null);
   const handlePullStart = useCallback((e: React.TouchEvent) => {

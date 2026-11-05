@@ -9,6 +9,9 @@ import {
   formatEvictedToolCatalog,
   TOOL_DEF_PROTECTED,
   REFLEX_CORE_TOOLS,
+  TASK_EXECUTION_MANDATED_WORK_TOOLS,
+  missingMandatedWorkTools,
+  toolEvictionTier,
 } from '../src/capability-packs.js';
 import {
   TOOL_DEF_BUDGET_REFLEX,
@@ -209,5 +212,28 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
     expect(catalog).toMatch(/Deferred Tools/);
     // name-only / short: no multi-hundred-char descriptions
     expect(catalog).not.toMatch(/must not bloat tool defs after eviction/);
+  });
+});
+
+describe('task_execution 的承重工具守卫（2026-11-05 事故）', () => {
+  // 事故：执行轮下发的 schema 只有读工具 + 任务工具，没有 shell_execute / file_write，
+  // 而 prompt 强制要求「改文件 + 跑 tsc + commit」→ 物理上做不到 → 每轮都被记为
+  // 「没调 task_submit_review」的 strike。守卫必须**点名**缺了哪些，而不是静默。
+  it('一份只读 schema 必须被判定缺少承重工具', () => {
+    const shipped = ['file_read', 'grep_search', 'glob_find', 'list_directory', 'task_get', 'task_submit_review'];
+    const missing = missingMandatedWorkTools(shipped);
+    expect(missing).toContain('shell_execute');
+    expect(missing).toContain('file_write');
+    expect(missing.length).toBeGreaterThan(0);
+  });
+
+  it('承重工具齐全时判定为空（不误报）', () => {
+    expect(missingMandatedWorkTools(TASK_EXECUTION_MANDATED_WORK_TOOLS)).toEqual([]);
+  });
+
+  it('承重工具都属 core（tier ≤ 1）—— 不许降到「普通 builtin」桶里按体积被裁', () => {
+    for (const name of TASK_EXECUTION_MANDATED_WORK_TOOLS) {
+      expect(toolEvictionTier(name)).toBeLessThanOrEqual(1);
+    }
   });
 });
