@@ -11,12 +11,16 @@
       "why": "指标按具体状态分桶计数（completed / failed / cancelled / 完成耗时），每个桶各自回答一个业务问题，合并会丢区分度。"
     },
     "packages/core/src/tools/task-tools.ts": {
-      "count": 6,
-      "why": "工具层按具体状态分支：只有 completed 才算『已完成』、cancelled|failed 才发通知、cancelled 才回滚 pending 卡；子任务计数同样只数 completed。"
+      "count": 7,
+      "why": "工具层按具体状态分支：只有 completed 才算『已完成』、cancelled|failed 才发通知、cancelled 才回滚 pending 卡；子任务计数同样只数 completed。另含 REQUIREMENT_AGENT_STATUSES 具名白名单（cancelled/rejected/completed）——那是**入参校验**，不是终态判定。"
+    },
+    "packages/org-manager/src/agent-conservator.ts": {
+      "count": 1,
+      "why": "DEAD_DEP_STATUSES（failed/cancelled/archived）判的是『依赖已**死**』——终态的**真子集**：completed 是 Satisfied 不是 Dead。压成 isTerminal() 会把『依赖满足』误判成『依赖死了』并触发误告警。"
     },
     "packages/org-manager/src/api-server.ts": {
-      "count": 5,
-      "why": "路由守卫按**特定状态子集**禁动作：archived/rejected 是不可 resume/run 的『关闭后不可再驱动』集合，completed 允许重跑 —— 与 isTerminal 不是同一个问题。"
+      "count": 6,
+      "why": "路由守卫按**特定状态子集**禁动作：archived/rejected 是不可 resume/run 的『关闭后不可再驱动』集合，completed 允许重跑 —— 与 isTerminal 不是同一个问题。另含 resettable=['completed','cancelled','failed']（具名集合）：只有『跑完过』的任务才需要先 reset 再 rerun。"
     },
     "packages/org-manager/src/archive-service.ts": {
       "count": 1,
@@ -35,8 +39,8 @@
       "why": "checkCompletion 的 allDone 用 completed|cancelled|archived 判『已成功收尾』（failed/rejected 不算），这是需求侧独立议题（P0 已登记残余），不是终态判定；另含按具体状态的迁移分支。"
     },
     "packages/org-manager/src/scheduled-task-runner.ts": {
-      "count": 3,
-      "why": "状态集合混入非终态（in_progress/review/blocked/pending），判定的是『可重置 / 可推进』，不是『已结束』。"
+      "count": 4,
+      "why": "状态集合混入非终态（in_progress/review/blocked/pending），判定的是『可重置 / 可推进』，不是『已结束』；resettableStatuses 具名集合同理（completed/failed 才需 reset）。"
     },
     "packages/org-manager/src/task-service.ts": {
       "count": 32,
@@ -58,6 +62,10 @@
       "count": 3,
       "why": "节点配色按具体状态区分（completed 绿 / blocked|failed 红），并且要保留 P0 登记的 accepted 兼容分支。"
     },
+    "packages/web-ui/src/lib/workflow-view.ts": {
+      "count": 4,
+      "why": "工作流任务桶三分类 DONE_STATUSES（completed/archived）/ FAILED_STATUSES（failed/rejected）/ ACTIVE_STATUSES：界面要分别显示『完成 / 失败 / 进行中』三个桶，合并成 isTerminal() 会丢掉失败与完成的区分。"
+    },
     "packages/web-ui/src/pages/Home.tsx": {
       "count": 6,
       "why": "首页图标的每个状态各自一枚图形（completed 勾 / failed|rejected 叉 / cancelled 横线），展示分类。"
@@ -68,7 +76,7 @@
     },
     "packages/web-ui/src/pages/Work.tsx": {
       "count": 38,
-      "why": "展示层按具体状态给图标/颜色/文案，以及『依赖已满足』『子任务完成计数』『项目按 archived 排序』等具体问题；真·终态判定（要求是否可编辑、依赖候选过滤）已在本轮改用 isTerminal()。"
+      "why": "展示层按具体状态给图标/颜色/文案（isCompleted/isFailed/isRejected/isCancelled/isArchived 分别驱动不同按钮与配色），以及『依赖已满足 blockerDone』『子任务完成计数』『项目按 archived 排序』等具体问题。**本文件已无第二份终态定义**：终态谓词（要求可编辑、依赖候选过滤、任务可取消）一律走 isTerminal()。"
     }
   }
 }

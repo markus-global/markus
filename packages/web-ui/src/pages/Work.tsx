@@ -2465,7 +2465,9 @@ function TaskDetailPanel({
   const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
+  // 终态判定只走 shared 投影的 isTerminal()（web-ui: lib/taskStatus.ts）。
+  // 上面 5 个 isCompleted/isFailed/… 是**具体状态**展示用（按钮编排），不是第二份终态定义。
+  const taskTerminal = isTerminal(task.status);
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -2711,7 +2713,7 @@ function TaskDetailPanel({
                         <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>
                           <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
                           <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
-                          {!isTerminal && (
+                          {!taskTerminal && (
                             <button
                               onClick={async () => {
                                 const newBlockedBy = (task.blockedBy ?? []).filter(id => id !== blockerId);
@@ -2738,7 +2740,7 @@ function TaskDetailPanel({
                     <span>{t('work:task.abnormalBlockHint')}</span>
                   </div>
                 )}
-                {!isTerminal && (
+                {!taskTerminal && (
                   <DependencySearchSelect
                     options={allTasks
                       .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
@@ -3228,7 +3230,7 @@ function TaskDetailPanel({
               <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">{t('work:task.reopen')}</button>
             )}
             {/* ── Cancel (non-terminal, non-pending) — always requires confirmation ── */}
-            {!isTerminal && task.status !== 'pending' && (
+            {!taskTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
                 setCancelConfirm({ dependentCount: count });

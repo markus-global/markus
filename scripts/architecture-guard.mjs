@@ -497,6 +497,8 @@ const STATUS_SUBJECT = String.raw`(?:[A-Za-z_$][\w$]*\s*(?:\?\.|\.)\s*){0,6}[A-Z
  */
 const TERMINAL_LITERAL_EXEMPT_FILES = {
   'packages/shared/src/types/task.ts': 'SSOT 本体：TERMINAL_STATUSES 就在这里定义，它就是那个例外',
+  'packages/web-ui/src/lib/taskStatus.ts': 'web-ui 侧的**投影本体**：isTerminal/TERMINAL_STATUSES 就在这里，写入者仍是 shared（有镜像测试钉住）',
+  'packages/web-ui/src/lib/boardFilters.ts': '看板默认隐藏集（rejected/cancelled/archived）——**视图偏好**，不是「是否已结束」；completed 故意不在里面',
   'packages/core/src/coding-tools/context-injector.ts': 'coding 工具**步骤**状态（created/running/completed），不是任务生命周期',
   'packages/core/src/coding-tools/handlers.ts': 'coding 工具**会话**状态 → 映射成工具返回值 success/error',
   'packages/core/src/coding-tools/runtime.ts': 'coding 工具会话状态（cancelled 是工具被中断，不是任务被判死）',
@@ -563,6 +565,42 @@ function stripCommentsPreservingOffsets(text) {
   return out.join('');
 }
 
+/**
+ * **具名**终态集合的声明：`const A = ['completed', …]` / `new Set([...])`。
+ *
+ * 为什么必须单独处理：第 4 轮评审的探针 `const NAMED_TERM = ['completed','archived'];
+ * NAMED_TERM.includes(s)` 在旧检测器下**完全失明**——因为内联数组检测要求 `[` 紧邻
+ * `.includes(`。一行 `const` 就能绕过，「一网打尽」的措辞与「能被一行 const 绕过」不能
+ * 同时成立。所以：先收集本文件里含终态字形的具名集合，再匹配对它的 `includes/has/indexOf`。
+ *
+ * 局限（诚实登记，见报告 §5）：只认同**同一文件**内的声明与使用；跨文件 `import` 进来的
+ * 具名集合仍不在检测范围（那需要模块图，成本远超本卡）。
+ */
+const NAMED_LITERAL_COLLECTION_RE = new RegExp(
+  String.raw`\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=\n]{0,160})?=\s*(?:new\s+Set(?:<[^>\n]{0,80}>)?\s*\(\s*)?\[([^\[\]]{0,600})\]`,
+  'g',
+);
+const LITERAL_LIST_RE = /['"]([a-z_]+)['"]/g;
+
+/** 收集本文件里「值域**全是**终态字形」的具名集合名字。 */
+function collectTerminalCollectionNames(clean) {
+  const names = new Set();
+  for (const m of clean.matchAll(NAMED_LITERAL_COLLECTION_RE)) {
+    const literals = [...m[2].matchAll(LITERAL_LIST_RE)].map((x) => x[1]);
+    if (!literals.length) continue;
+    // 判据是**纯度**：集合里每一个字面量都是终态字形，才算「终态集合」。
+    //
+    // 为什么不能只要求「含至少一个」：`new Set(['reject','rejected'])`（审批 token）
+    // 含 `rejected` 但不是任务终态集合 —— 实测过一次误伤（web-ui/src/api.ts
+    // `APPROVAL_REJECT_TOKENS.has(token)`）。英文单词跨域重名，纯「含」判据会把
+    // 审批/资产审核之类的集合全拖进来，而**误伤一次，门禁就会被人整体关掉**。
+    // 反过来，纯活跃态集合（`['pending','in_progress','review']`）也必须放行 ——
+    // 它一个终态字形都没有，问的是「还在流程里吗」。
+    if (literals.every((v) => TERMINAL_STATUS_LITERALS.includes(v))) names.add(m[1]);
+  }
+  return names;
+}
+
 /** 找出文件里所有「终态语义的裸比较」。返回 [{ line, value, kind }]。 */
 function findTerminalStatusComparisons(text) {
   const clean = stripCommentsPreservingOffsets(text);
@@ -573,8 +611,16 @@ function findTerminalStatusComparisons(text) {
   for (const m of clean.matchAll(TERMINAL_CMP_RES[0])) push(m.index, m[4], 'cmp');
   for (const m of clean.matchAll(TERMINAL_CMP_RES[1])) push(m.index, m[2], 'cmp-rev');
   for (const m of clean.matchAll(TERMINAL_ARRAY_RE)) {
-    const literals = [...m[1].matchAll(/['"]([a-z_]+)['"]/g)].map((x) => x[1]);
+    const literals = [...m[1].matchAll(LITERAL_LIST_RE)].map((x) => x[1]);
     if (literals.some((v) => TERMINAL_STATUS_LITERALS.includes(v))) push(m.index, literals.join('|'), 'array');
+  }
+  for (const name of collectTerminalCollectionNames(clean)) {
+    // 判据是**集合的内容**，不是实参长什么样：一个值域含终态字形的具名集合，
+    // 它对任何实参做的 `includes/has/indexOf` 都是在问「是不是某个终态」。
+    // 若还要求实参保形如 `x.status`，`const T=[...]; T.includes(s)` 就又能绕过
+    // —— 第 4 轮评审那支探针正是这个形态。
+    const re = new RegExp(String.raw`\b${name}\s*\??\.\s*(?:includes|has|indexOf)\s*\(`, 'g');
+    for (const m of clean.matchAll(re)) push(m.index, name, 'named-collection');
   }
   return hits.sort((a, b) => a.line - b.line);
 }
@@ -669,6 +715,8 @@ function pruneTerminalBaseline() {
     const count = [...found.values()].reduce((n, v) => n + v.count, 0);
     const entry = baseline.files?.[relPath];
     if (!entry) { unexpected.push({ relPath, count }); continue; }
+    // 只允许缩小：现状比基线多 = 新增违规，绝不能借 `--prune` 把数字**改大**洗白。
+    if (count > entry.count) { unexpected.push({ relPath, count, baseline: entry.count }); continue; }
     next.files[relPath] = { count, why: entry.why };
   }
   for (const [relPath, entry] of Object.entries(baseline.files ?? {})) {

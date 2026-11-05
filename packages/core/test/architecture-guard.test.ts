@@ -241,4 +241,28 @@ describe('architecture-guard · terminal-status-predicate（P3）', () => {
     expect(res.ok).toBe(false);
     expect(res.out).toContain('why');
   });
+
+  /**
+   * 具名终态集合（第 4 轮评审的阻断项）：
+   * `const NAMED = ['completed','archived']; NAMED.includes(s)` —— 一行 const 就能绕过旧检测器。
+   * 这条测试就是评审那支探针的固化形态。
+   */
+  it('具名终态集合（const X = [...终态...]; X.includes(status)）→ 必红', () => {
+    for (const source of [
+      "const NAMED_TERM = ['completed', 'archived'];\nexport const f = (s: string) => NAMED_TERM.includes(s);\n",
+      "const T: ReadonlySet<string> = new Set(['failed', 'rejected']);\nexport const f = (s: string) => T.has(s);\n",
+      "let DONE: string[] = ['completed'];\nexport const f = (s: string) => DONE.indexOf(s) >= 0;\n",
+    ]) {
+      const res = runWithProbe(source);
+      expect(res.ok, source).toBe(false);
+      expect(res.out).toContain('终态谓词门禁失败');
+    }
+  });
+
+  it('具名**非终态**集合（如 STATUS_PIPELINE）→ 放行（不再误伤）', () => {
+    const res = runWithProbe(
+      "const STATUS_PIPELINE = ['pending', 'in_progress', 'review', 'blocked'];\nexport const f = (s: string) => STATUS_PIPELINE.includes(s);\n",
+    );
+    expect(res.ok).toBe(true);
+  });
 });
