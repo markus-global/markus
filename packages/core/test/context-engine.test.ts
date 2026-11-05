@@ -84,13 +84,16 @@ describe('buildSystemPrompt', () => {
         colleagues: [{ id: 'agt_peer', name: 'Peer', role: 'worker' }],
         projects: [{ name: 'Alpha', description: 'Main product' }],
       },
-      assignedTasks: [{
-        id: 'task_1',
-        title: 'Fix bug',
-        description: 'Resolve login issue',
-        status: 'in_progress',
-        priority: 'high',
-      }],
+      assignedTasks: {
+        state: 'ok' as const,
+        items: [{
+          id: 'task_1',
+          title: 'Fix bug',
+          description: 'Resolve login issue',
+          status: 'in_progress',
+          priority: 'high',
+        }],
+      },
     });
 
     expect(result.text).toContain('Acme Corp');

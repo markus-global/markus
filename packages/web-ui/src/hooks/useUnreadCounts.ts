@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, wsClient } from '../api.ts';
+// 三态类型复用 `lib/threadTimeline.ts` 的那一份（不另造同形联合类型）。
+import type { SourceState } from '../lib/threadTimeline.ts';
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -16,6 +18,16 @@ const AUTO_READ_THROTTLE_MS = 2_000;
 
 let _globalCounts: Record<string, number> = {};
 let _globalSessionAgentMap: Record<string, string> = {};
+/**
+ * 未读计数的**读取状态**。
+ *
+ * 旧写法是 `catch { /* silent *\/ }` —— 取数失败后连一个字节的状态都不变，于是每个读
+ * `counts` 的 UI（锟铛、徽标、概览）都继续拿旧快照当真（审计 §3 事故②：「历史弹窗未读数
+ * 不刷新」）。快照可以留着当「上次的值」，但**必须**同时声明它已经不是刚读到的了。
+ */
+let _countsState: SourceState = 'loading';
+/** 最后一次取数失败的原因（供 UI 显示可操作提示，不给就只说“读失败”）。 */
+let _countsError: string | null = null;
 const _listeners = new Set<() => void>();
 const _activeKeys = new Set<string>();
 let _graceUntil = 0;
@@ -121,11 +133,18 @@ async function _fetchCounts() {
     const { counts, staleActiveKeys } = reconcileServerCounts(resp.counts ?? {}, _activeKeys);
     _globalCounts = counts;
     _globalSessionAgentMap = resp.sessionAgentMap ?? {};
+    _countsState = 'ok';
+    _countsError = null;
     notify();
     // Converge the server on the screen state: an open conversation is read.
     // 一次批量提交，不逐 key 连发（见 _advanceReadCursors 注释）。
     _advanceReadCursors(staleActiveKeys);
-  } catch { /* silent */ }
+  } catch (e) {
+    // 失败**不是**「零未读」，也不是「跟上次一样」。只把状态升起来，让 UI 自己决定怎么说。
+    _countsState = 'error';
+    _countsError = e instanceof Error ? e.message : '读取失败';
+    notify();
+  }
 }
 
 function _startPolling() {
@@ -158,6 +177,8 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
   const enabled = opts?.enabled ?? true;
   const [counts, setCounts] = useState<Record<string, number>>(_globalCounts);
   const [sessionAgentMap, setSessionAgentMap] = useState<Record<string, string>>(_globalSessionAgentMap);
+  const [countsState, setCountsState] = useState<SourceState>(_countsState);
+  const [countsError, setCountsError] = useState<string | null>(_countsError);
 
   const refresh = useCallback(async () => {
     await _fetchCounts();
@@ -200,6 +221,8 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
 
     let _prevSessionAgentMap = _globalSessionAgentMap;
     const listener = () => {
+      setCountsState(_countsState);
+      setCountsError(_countsError);
       setCounts(prev => sameRecord(prev, _globalCounts) ? prev : { ..._globalCounts });
       if (_prevSessionAgentMap !== _globalSessionAgentMap) {
         _prevSessionAgentMap = _globalSessionAgentMap;
@@ -211,6 +234,8 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     // Sync initial state
     setCounts({ ..._globalCounts });
     setSessionAgentMap({ ..._globalSessionAgentMap });
+    setCountsState(_countsState);
+    setCountsError(_countsError);
 
     return () => {
       _listeners.delete(listener);
@@ -234,7 +259,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     return counts[`channel:${channelKey}`] ?? 0;
   }, [counts]);
 
-  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh, setActiveKey, clearActiveKey };
+  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh, setActiveKey, clearActiveKey, countsState, countsError };
 }
 
 /**

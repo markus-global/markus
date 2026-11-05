@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
 import { hubApi, type HubItem } from '../api.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
+import { listView, loadingResource, readList, type Resource } from '../lib/resourceState.ts';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
 import { CreatorAvatar } from '../components/AssetIdentity.tsx';
@@ -106,24 +108,28 @@ function RailSkeleton() {
 
 export function StoreDiscovery({ onOpenType }: StoreDiscoveryProps) {
   const { t } = useTranslation(['store', 'common']);
-  const [items, setItems] = useState<HubItem[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [catalog, setCatalog] = useState<Resource<HubItem>>(loadingResource<HubItem>());
+  const [nonce, setNonce] = useState(0);
+  const reload = useCallback(() => setNonce(n => n + 1), []);
 
   useEffect(() => {
     let cancelled = false;
-    (async () => {
-      setLoading(true);
-      try {
-        const res = await hubApi.search({ limit: 60, sort: 'popular' });
-        if (!cancelled) setItems(res.items ?? []);
-      } catch {
-        if (!cancelled) setItems([]);
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
+    void (async () => {
+      setCatalog(loadingResource<HubItem>());
+      // 取数失败落成 state:'error'（而不是 setItems([])，那会把失败写成「没有可安装的资产」）。
+      const res = await readList<HubItem>(async () => {
+        const r = await hubApi.search({ limit: 60, sort: 'popular' });
+        return r.items ?? [];
+      });
+      if (!cancelled) setCatalog(res);
     })();
     return () => { cancelled = true; };
-  }, []);
+  }, [nonce]);
+
+  /** 三态判据：**唯一**（`listView`）。 */
+  const view = listView(catalog);
+  const items = catalog.items;
+  const loading = view.loading;
 
   const featured = useMemo(() => {
     const f = items.filter((i) => i.featured);
@@ -158,6 +164,14 @@ export function StoreDiscovery({ onOpenType }: StoreDiscoveryProps) {
 
   return (
     <div className="flex-1 overflow-y-auto px-5 md:px-7 py-5 space-y-8">
+      {view.error && (
+        <ReadErrorNotice
+          subject="Hub 资产"
+          error={catalog.error ?? '读取失败'}
+          notEquals="没有可安装的资产"
+          onRetry={reload}
+        />
+      )}
       {/* Hero band */}
       <div className="hero-glow rounded-2xl border border-border-subtle bg-surface-secondary p-5 md:p-6">
         <h1 className="text-2xl font-bold text-gradient tracking-tight">{t('discover.title', 'Markus 广场')}</h1>
@@ -195,7 +209,7 @@ export function StoreDiscovery({ onOpenType }: StoreDiscoveryProps) {
           title={t('discover.trending', '热门趋势')}
           subtitle={t('discover.trendingSub', '社区中下载与评分增长最快的资产')}
         />
-        {loading ? <RailSkeleton /> : trending.length > 0 ? <Rail items={trending} onOpen={openItem} /> : <EmptyHint />}
+        {loading ? <RailSkeleton /> : trending.length > 0 ? <Rail items={trending} onOpen={openItem} /> : view.empty ? <EmptyHint /> : null}
       </section>
 
       {/* New arrivals */}

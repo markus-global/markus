@@ -73,7 +73,8 @@ export function recordThreadEvent(
       kind: event.kind,
       // 幂等键：调用方给了稳定 id 就用它（重投安全）；否则每次调用都是**一件新事实**
       // （一条新消息就该是新行），所以不带内容哈希——两条相同内容的消息是两件事。
-      idempotencyKey: event.eventId ? `evt:${event.eventId}` : `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`,
+      // key-clock-ok: 唯一性令牌（不是缓存/去重键）；稳定化会把两条相同内容折叠成一行、丢掉事实
+      idempotencyKey: event.eventId ? `evt:${event.eventId}` : `evt_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`, // key-clock-ok: 唯一性令牌（不是缓存/去重键），稳定化会把两条相同内容折叠成一行、丢掉事实
       actorId: event.actor ?? null,
       summary: event.summary,
       threadRefs: [ref],

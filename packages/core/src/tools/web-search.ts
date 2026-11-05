@@ -524,8 +524,9 @@ function parseSearchJson(content: string, count: number): SearchResult[] {
         snippet: String(r.snippet ?? r.description ?? ''),
         date: typeof r.date === 'string' ? r.date : undefined,
       }));
-  } catch {
-    return [];
+  } catch (err) {
+    // 不是「搜索没结果」，是「模型的回答解不开」。返 [] 会让 agent 以为世界很静。
+    throw new Error(`parseSearchJson: model output is not parseable JSON: ${String(err)}`);
   }
 }
 

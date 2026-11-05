@@ -665,13 +665,44 @@ describe('skill catalog and context helpers', () => {
     expect(agent.hasSkillInstructions('search')).toBe(false);
   });
 
-  it('setTasksFetcher injects assigned tasks into prompts', async () => {
+  it('setTasksFetcher（ok）注入任务板：断言 prompt 里真的出现任务标题', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    agent.setTasksFetcher(() => [{ id: 't1', title: 'Fix bug', status: 'in_progress' }]);
+    // 契约 = `FetchResult<T>`（`{ state:'ok', items }` / `{ state:'error', …, message }`）。
+    // 旧用例传的是裸数组 —— 那正是本卡要消灭的形状：裸数组无法区分「读到 0 条」与
+    // 「没读到」，改契约后 `.items` 为 undefined，sentinel 直接 TypeError。
+    agent.setTasksFetcher(() => ({
+      state: 'ok' as const,
+      items: [{ id: 't1', title: 'Fix bug', description: '', status: 'in_progress', priority: 'high' }],
+    }));
 
     await agent.handleMessage('What are my tasks?');
-    expect(router.chat).toHaveBeenCalled();
+    const req = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
+    // 断言对象是**整条请求**，不是只看 system 段：`context-engine.ts:1065`
+    // `const dynamic = volatile;` —— 任务板属 Tier-3 dynamic，走的是每轮可变的
+    // volatile 尾部块（role=user 的 `[SYSTEM] [Live context]` 里），不在稳定 system 段。
+    // 第一版断言只看 system 段，两次都红 —— 红得对，是断言位置错，不是实现错。
+    const all = req.messages.map(m => String(m.content)).join('\n');
+    // 断言行为（内容进了请求），不是「fetcher 被调用过」—— 后者在任务板被
+    // 整段吞掉时依然是绿的，属于不咬人的断言。
+    expect(all).toContain('Fix bug');
+    expect(all).not.toContain('Task board read FAILED');
+  });
+
+  it('setTasksFetcher（error）读失败必须说失败，不得落成「没有任务」', async () => {
+    const router = makeMockRouter();
+    const agent = createAgent(router);
+    // 本卡的核心断言：取数失败 ≠ 空任务板。两条断言各自咬一种改坏方式：
+    //   · error 分支被折成空数组      → 前半条红（没有 FAILED 文案）
+    //   · error 分支也落进空态文案    → 后半条红（出现 No tasks on the board.）
+    agent.setTasksFetcher(() => ({ state: 'error' as const, items: [], message: 'ECONNRESET' }));
+
+    await agent.handleMessage('What are my tasks?');
+    const req = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
+    const all = req.messages.map(m => String(m.content)).join('\n');
+    expect(all).toContain('Task board read FAILED');
+    expect(all).toContain('ECONNRESET');
+    expect(all).not.toContain('No tasks on the board.');
   });
 
   it('setWorkflowContextFetcher provides workflow context', async () => {

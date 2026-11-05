@@ -822,14 +822,47 @@ export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): Ch
 
 const _smartTimeCache = new Map<string, string>();
 const SMART_TIME_CACHE_MAX = 2000;
-export function formatSmartTime(isoOrLocale: string, rawCreatedAt?: string, labels?: { yesterday?: string }): string {
+
+/**
+ * 「档位」函数：把一个时刻折算成「天」档位（本地时区当天 00:00 的毫秒数）。
+ *
+ * 这是**唯一**把时钟折算成档位的地方。键里只允许出现档位，不允许出现时钟 ——
+ * 见 `smartTimeCacheKey`。
+ */
+export function dayBucketOf(now: Date): number {
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+/**
+ * 时间标签的缓存键。**纯函数**：只由入参构成，不读时钟。
+ *
+ * `dayBucket` 由调用方显式给出（`dayBucketOf(now)`）。「今天/昨天」的判定依赖档位，
+ * 所以档位必须进键（否则跨午夜会读到昨天的标签）；但档位是**入参**，不是构造点
+ * 自己拼出来的时间 —— 这样「同一逻辑输入 → 同一键」可测，跨时刻构造也稳定。
+ */
+export function smartTimeCacheKey(
+  isoOrLocale: string,
+  rawCreatedAt: string,
+  dayBucket: number,
+  yesterdayLabel: string,
+): string {
+  return `${rawCreatedAt}|${dayBucket}|${isoOrLocale}|${yesterdayLabel}`;
+}
+
+export function formatSmartTime(
+  isoOrLocale: string,
+  rawCreatedAt?: string,
+  labels?: { yesterday?: string },
+  dayBucket?: number,
+): string {
   const now = new Date();
-  const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  // 档位可由调用方钉住（测试 / 跨午夜一致性）；未给则按当前时刻折算。
+  const todayStart = dayBucket ?? dayBucketOf(now);
   // Cacheable only when the caller pins the instant (otherwise the label depends on "now"),
-  // and the today/yesterday branch depends on the wall clock — so the day bucket is part of
-  // the key. Folding the day bucket in is what makes this safe across midnight.
+  // and the today/yesterday branch depends on the day bucket — so the bucket is part of
+  // the key. Folding the bucket in is what makes this safe across midnight.
   const cacheKey = rawCreatedAt
-    ? `${rawCreatedAt}|${todayStart}|${isoOrLocale}|${labels?.yesterday ?? ''}`
+    ? smartTimeCacheKey(isoOrLocale, rawCreatedAt, todayStart, labels?.yesterday ?? '')
     : null;
   if (cacheKey) {
     const hit = _smartTimeCache.get(cacheKey);

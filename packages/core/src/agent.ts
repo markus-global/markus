@@ -45,6 +45,7 @@ import {
   SESSION_REQUEST_HISTORY_MIN,
   SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
+  isInBandMarkerSet,
   NOTEBOOK_MAX_ENTRIES,
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
@@ -77,7 +78,7 @@ import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normaliz
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { AgentMetricsCollector, type AgentMetricsSnapshot } from './agent-metrics.js';
-import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment } from './context-engine.js';
+import { ContextEngine, type OrgContext, type LLMSummarizer, type SystemPromptSegment, type FetchResult } from './context-engine.js';
 import { detectEnvironment, type EnvironmentProfile } from './environment-profile.js';
 import { ToolSelector } from './tool-selector.js';
 import {
@@ -693,7 +694,7 @@ export class Agent {
   }) => void;
   private escalationCallback?: (agentId: string, reason: string) => void;
   private approvalCallback?: ApprovalCallback;
-  private tasksFetcher?: () => Array<{
+  private tasksFetcher?: () => FetchResult<{
     id: string;
     title: string;
     description: string;
@@ -2544,7 +2545,7 @@ export class Agent {
         }
 
         case 'task_status_update': {
-          if (extra.triggerExecution && item.payload.taskId) {
+          if (isInBandMarkerSet(item, 'triggerExecution') && item.payload.taskId) {
             if (typeof extra.onLog !== 'function') {
               // Resurfaced from persistence after preemption/defer — closures (onLog,
               // cancelToken, responsePromise) were lost during JSON serialization.
@@ -2661,7 +2662,7 @@ export class Agent {
         }
 
         case 'requirement_update': {
-          if (extra.actionRequired) {
+          if (isInBandMarkerSet(item, 'actionRequired')) {
             const reqId = item.payload.requirementId ?? 'unknown';
             const reply = await this.handleMessage(
               item.payload.content,
@@ -2700,7 +2701,7 @@ export class Agent {
         }
 
         case 'workflow_update': {
-          if (extra.actionRequired) {
+          if (isInBandMarkerSet(item, 'actionRequired')) {
             const wfEvent = extra.event ?? 'update';
             const reply = await this.handleMessage(
               item.payload.content,
@@ -2911,7 +2912,7 @@ export class Agent {
     const extra = item.payload.extra ?? {};
     switch (item.sourceType) {
       case 'task_status_update':
-        return extra.triggerExecution ? 'executed' : 'noted (informational)';
+        return isInBandMarkerSet(item, 'triggerExecution') ? 'executed' : 'noted (informational)';
       case 'review_request':
         return 'reviewed';
       case 'a2a_message':
@@ -2925,7 +2926,7 @@ export class Agent {
       case 'requirement_comment':
         return 'responded to requirement comment';
       case 'requirement_update':
-        return (extra.actionRequired) ? 'processed (action required)' : 'noted (informational)';
+        return isInBandMarkerSet(item, 'actionRequired') ? 'processed (action required)' : 'noted (informational)';
       case 'heartbeat':
         return 'heartbeat processed';
       case 'session_reply':
@@ -5161,9 +5162,10 @@ export class Agent {
     });
   }
 
-  /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info) */
+  /** Inject a function that returns tasks for system prompt context (all org tasks with assignment info).
+   *  Returns `FetchResult`（ok / error），**不得**用空数组冒充「读失败」。 */
   setTasksFetcher(
-    fetcher: () => Array<{
+    fetcher: () => FetchResult<{
       id: string;
       title: string;
       description: string;

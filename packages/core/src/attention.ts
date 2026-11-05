@@ -23,6 +23,7 @@ import {
   WATCHDOG_DRIFT_THRESHOLD_MS,
   TRIAGE_BACKLOG_THRESHOLD,
   isStrictStateItem,
+  isInBandMarkerSet,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
@@ -1874,7 +1875,8 @@ export class AttentionController {
       // 不允许 inline 完成、defer、drop、或作为 batch item —— 它们只能留在队列中
       // 由正常出队路径单独执行，否则状态机/闭包会丢失。
       if (isStrictStateItem(it)) return true;
-      if (it.payload.extra?.directMention) return true;
+      // 读取点走登记表谓词（P2）：不在此另判 `extra.directMention` 字面量。
+      if (isInBandMarkerSet(it, 'directMention')) return true;
       return false;
     };
 

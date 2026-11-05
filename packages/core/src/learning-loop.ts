@@ -52,8 +52,10 @@ export function loadSkillStats(skillDir: string): SkillStats {
       avg_token_cost: raw.avg_token_cost ?? null,
       feedback: Array.isArray(raw.feedback) ? raw.feedback.map(String) : [],
     };
-  } catch {
-    return emptySkillStats();
+  } catch (err) {
+    // 统计文件读不了 ⇒ 抛。旧写法返回 emptySkillStats()，等于断言「这个 skill 从未用过」——
+    // 那是编造的事实，而且下一次 save 会拿零值覆盖掉真实的统计。
+    throw new Error(`loadSkillStats: cannot read ${p}: ${String(err)}`);
   }
 }
 

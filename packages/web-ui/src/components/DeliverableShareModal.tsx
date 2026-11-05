@@ -95,7 +95,13 @@ async function uploadMediaRefsToHub(
  *   3. 把原始路径替换为公网 URL，返回替换后的 content
  * 这样分享到 Hub 后，交付物中引用的图片在网站上也能正常显示。
  *
- * @returns 文本产出物返回 {content}；二进制类返回 {fileBase64}；读不到返回 {}。
+ * @returns 文本产出物返回 {content}；二进制类返回 {fileBase64}；
+ *          **没有内容可带**（目录 / 远程 URL）返回 {}；**读失败一律抛**。
+ *
+ * 为什么读失败不再返回 {}：Hub 强制要求 content/fileBase64 之一，「{}」会被当成
+ * 「这个交付物本来就没有内容」并继续发布 —— 用户看到的是「分享成功但打开是空的」，
+ * 而真相是我们没读到。抛出去由调用方（doPublish）显示可操作的错误，是本卡判据
+ * 「取数路径的 catch 不得返回空集合」的直接落地（报告 §4-R5）。
  */
 async function readDeliverableContent(
   reference: string,
@@ -142,8 +148,11 @@ async function readDeliverableContent(
       return { fileBase64: btoa(binary) };
     }
     return {};
-  } catch {
-    return {};
+  } catch (e) {
+    // 取数失败 ⇒ 抛。绝不用 `{}` 冒充「这个交付物没有内容」。
+    throw new DeliverableShareError(
+      `读取交付物内容失败：${e instanceof Error ? e.message : String(e)}（这不等于「它没有内容」，请重试）`,
+    );
   }
 }
 

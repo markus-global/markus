@@ -1,5 +1,10 @@
 // ─── Mailbox Types ──────────────────────────────────────────────────────────
 
+import {
+  assertInBandMarkersDeclared,
+  isInBandMarkerSet,
+} from './in-band-markers.js';
+
 export type MailboxItemType =
   | 'human_chat'
   | 'a2a_message'
@@ -264,19 +269,23 @@ export function isStrictStateItem(item: {
   sourceType: MailboxItemType;
   payload: MailboxPayload;
 }): boolean {
-  if (item.payload.extra?.triggerExecution) return true;
+  // 读侧 fail-closed（P2）：解释一条投递之前，先确认它携带的布尔标记**全部登记过**。
+  // 未登记的标记不会被「猜」成流水账 —— 那正是「载荷字段静默决定行为」的老毛病。
+  assertInBandMarkersDeclared(item, 'read');
+  if (isInBandMarkerSet(item, 'triggerExecution')) return true;
   if (item.sourceType === 'review_request') return true;
-  if (item.sourceType === 'requirement_update' && item.payload.extra?.actionRequired) return true;
-  if (item.sourceType === 'workflow_update' && item.payload.extra?.actionRequired) return true;
+  if (item.sourceType === 'requirement_update' && isInBandMarkerSet(item, 'actionRequired')) return true;
+  if (item.sourceType === 'workflow_update' && isInBandMarkerSet(item, 'actionRequired')) return true;
   return false;
 }
 
-/** 是否为「正式任务执行」item（triggerExecution）。是 isStrictStateItem 的特例。 */
+/** 是否为「正式任务执行」item（triggerExecution）。是 isStrictStateItem 的更窄问法。 */
 export function isTaskExecutionItem(item: {
   sourceType: MailboxItemType;
   payload: MailboxPayload;
 }): boolean {
-  return item.payload.extra?.triggerExecution === true;
+  assertInBandMarkersDeclared(item, 'read');
+  return isInBandMarkerSet(item, 'triggerExecution');
 }
 
 export interface MailboxPayload {

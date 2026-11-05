@@ -36,7 +36,7 @@ import type { ChatMsg, ChatMode } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 import type { ChatSessionInfo } from '../api.ts';
 
-export type ConvPhase = 'idle' | 'loading' | 'ready' | 'streaming';
+export type ConvPhase = 'idle' | 'loading' | 'ready' | 'streaming' | 'error';
 
 /**
  * READ-ONLY projection of the view pointer (`convKey → bufferId`).
@@ -185,6 +185,19 @@ export class ConversationBufferManager {
   completeLoad(key: string): void {
     if (this.getPhase(key) === 'loading') {
       this.phase.set(key, 'ready');
+    }
+  }
+
+  /**
+   * 本次取数**没读到**（不是「读到 0 条」）。
+   *
+   * 为什么是一个独立相位而不是继续用 `ready` + 空列表：后者把「不知道」写成了
+   * 「确实没有」，界面据此渲染空会话（审计 §8.4 R1 / R6）。错误相位同样是
+   * `isEmptyChat` 一类判据的输入，所以它必须在**状态里**，不能只在某个 setter 里。
+   */
+  failLoad(key: string): void {
+    if (this.getPhase(key) === 'loading') {
+      this.phase.set(key, 'error');
     }
   }
 

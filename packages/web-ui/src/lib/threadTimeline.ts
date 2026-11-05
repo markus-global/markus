@@ -16,6 +16,7 @@
  * `length === 0` —— 那是同一问题的第二份实现，迟早会和这里对不上。
  */
 import type { DispositionAPI, EnrichedMailboxItem, ThreadEventAPI } from '../api.ts';
+import { combineSources, listView, type SourceState } from './resourceState.ts';
 
 /**
  * 时间线节点的三种来源。取值集合固定：行形状由 `kind` 决定，
@@ -28,8 +29,11 @@ export type TimelineNode =
 
 export type TimelineKind = TimelineNode['kind'];
 
-/** 来源的读取状态。'error' 与「读到 0 条」是两件不同的事，绝不允许折叠成一个空数组。 */
-export type SourceState = 'loading' | 'ok' | 'error';
+/**
+ * 来源的读取状态：**唯一定义在 `lib/resourceState.ts`**，这里只做 re-export
+ * （4 处既有 import 不必改路径，但字面量联合类型不再有第二份）。
+ */
+export type { SourceState } from './resourceState.ts';
 
 export interface TimelineSource<T> {
   state: SourceState;
@@ -113,18 +117,19 @@ export function mergeTimeline(
  */
 export function timelineView(sources: TimelineSources): TimelineView {
   const order = ['events', 'dispositions', 'deliveries'] as const;
-  const failures: string[] = [];
-  let loading = false;
-  for (const key of order) {
-    const src = sources[key];
-    if (!src) continue;
-    if (src.state === 'loading') loading = true;
-    if (src.state === 'error') failures.push(SOURCE_LABEL[key]);
-  }
+  // 状态聚合与「有没有东西」都委托给 lib/resourceState.ts 的**同一实现**：
+  // 多来源聚合（combineSources）与单一判据（listView）在这里不再是第二份。
+  const agg = combineSources(
+    order.flatMap(key => {
+      const src = sources[key];
+      return src ? [{ label: SOURCE_LABEL[key], state: src.state }] : [];
+    }),
+  );
   const rows = mergeTimeline(
     sources.events.items,
     sources.dispositions.items,
     sources.deliveries?.items ?? [],
   );
-  return { loading, failures, rows, empty: !loading && failures.length === 0 && rows.length === 0 };
+  const view = listView<unknown>({ state: agg.state, items: rows, error: null });
+  return { loading: view.loading, failures: agg.failures, rows, empty: view.empty };
 }

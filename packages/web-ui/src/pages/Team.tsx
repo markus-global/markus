@@ -21,6 +21,7 @@ import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
 import { stageLabel } from '../components/InboxCard.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
+import { ReadErrorNotice } from '../components/ListState.tsx';
 import {
   ToolCallRow, ExecEntryRow, ThinkingDots,
   filterCompletedStarts, attachSubagentLogsToEntries,
@@ -83,6 +84,7 @@ import { RightPanel } from '../components/RightPanel.tsx';
 import { GroupMemberPanel, type PanelCandidate } from './teamPanels.tsx';
 import { ChatHistorySearch } from '../components/ChatHistorySearch.tsx';
 import { searchChatHistory } from '../lib/chatSearch.ts';
+import { errorMessage } from '../lib/resourceState.ts';
 import { collectJumpWindow, trimJumpWindow } from '../lib/jumpWindow.ts';
 import { scrollDebug } from '../lib/scrollDebug.ts';
 import { selectToolApprovals } from '../lib/toolApproval.ts';
@@ -826,6 +828,33 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // DB load, no-sessions, error) — see the conv-switch effect below.
   const [loadingChat, setLoadingChat] = useState(true);
   const [sessionsLoading, setSessionsLoading] = useState(true);
+  /**
+   * 会话列表的**读取失败**：与「真的一条会话都没有」分开存。
+   *
+   * 旧写法 `catch { setSessions([]); ... }` 把失败变成了 `[]`，于是历史面板安静地
+   * 说「还没有会话」——而实际上我们根本没读到（审计 §3：取数路径的 catch 里返回空集合）。
+   */
+  const [sessionsError, setSessionsError] = useState<string | null>(null);
+  /**
+   * 频道 / 群聊 / DM 消息的**读取失败**：与「这个会话真的没有消息」分开存。
+   *
+   * 旧写法 `catch { setMessages([]) }` 把失败变成了一个**空会话** —— 界面安静地
+   * 说「还没有消息」，而实际上我们根本没读到。这与历史面板的 `sessionsError`
+   * 是同一条谎话的第二个形态（审计 §3：取数路径的 catch 里返回空集合）。
+   *
+   * 写入者只有 `loadChannelMessages`（含 WS 重连的 `quiet` 补拉那条路径）——
+   * 补拉更隐蔽：连 loading 都不显示，失败时界面看起来"什么都没发生"。
+   */
+  const [chatError, setChatError] = useState<string | null>(null);
+  /**
+   * **会话消息**（direct 模式下的 DB transcript）读取失败。
+   *
+   * 与 `chatError`（频道/群聊消息、会话列表）分开存，因为两者的结论不同：
+   * direct 模式的 `chatError` 只能说「会话列表读不到」，而这里是「这个会话的消息读不到」。
+   * 旧写法在取数层 `catch { setMessages([]) }`，界面安静地渲染一个空会话
+   * —— 那是我们把「不知道」写成了「确实没有」（审计 §8.4 R1 / R6）。
+   */
+  const [sessionError, setSessionError] = useState<string | null>(null);
   // Monotonic switch counter: only the LATEST switchSession may clear loadingChat.
   // Rapid tab switching otherwise lets an older request's finally{} kill the
   // spinner of the session that is actually being viewed now.
@@ -1018,6 +1047,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [findQuery, setFindQuery] = useState('');
   const [findCursor, setFindCursor] = useState(-1);
   const [findServerResults, setFindServerResults] = useState<import('../api.ts').SearchResult[]>([]);
+  /**
+   * 服务端全文检索的**读取失败**：与「无命中」分开存（R7）。
+   * 搜索是用户主动查询，空结果的可信度依赖查询本身 —— 失败时不能安静地说「没有匹配」。
+   */
+  const [findServerError, setFindServerError] = useState<string | null>(null);
   const [findServerLoading, setFindServerLoading] = useState(false);
   const findServerDebounceRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
@@ -2761,17 +2795,37 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         hasMore: result.hasMore,
         oldestCursor: result.messages[0] ? new Date(result.messages[0].createdAt).toISOString() : null,
       });
-      if (currentConvKeyRef.current === key) setMessages(msgs);
-    } catch {
-      if (currentConvKeyRef.current === key) setMessages([]);
+      if (currentConvKeyRef.current === key) { setMessages(msgs); setChatError(null); }
+    } catch (e) {
+      // 清空列表是对的（旧列表属于上一个频道），但**必须同时**升起 error 态：
+      // 否则界面会把「没读到」渲染成「这个会话还没有消息」。`quiet` 补拉也走这里
+      // —— 它没有 spinner，失败时若不置 error，界面上什么都不会发生。
+      if (currentConvKeyRef.current === key) {
+        setMessages([]);
+        setChatError(e instanceof Error ? e.message : '读取失败');
+      }
     } finally {
       if (!opts?.quiet && currentConvKeyRef.current === key) setLoadingChat(false);
     }
-  }, [writeWindowBounds]);
+  }, [writeWindowBounds, authUser?.id]);
+
+  /** 「读取失败」提示上的重试 —— 走同一个取数口，不另开一条读路径。 */
+  const retryChannelMessages = useCallback(() => {
+    const ch = chatMode === 'dm'
+      ? makeDmChannel(authUser?.id ?? '', activeDmUserId ?? '')
+      : activeChannel;
+    if (!ch) return;
+    void loadChannelMessages(ch);
+  }, [chatMode, authUser?.id, activeDmUserId, activeChannel, loadChannelMessages]);
 
   // Load sessions list for agent (paginated — History panel loads 20 at a time)
-  const loadSessions = useCallback(async (agentId: string) => {
-    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); setSessionsLoading(false); return []; }
+  //
+  // 返回值是 `ChatSessionInfo[] | null`：**`null` = 没读到**。
+  // 旧契约返回裸数组，于是「读失败」的 `[]` 与「确实一条会话都没有」在三个调用点上
+  // 无法区分 —— 调用方会拿它去推断「没有会话」。改成 null 后，类型系统强制每个调用点
+  // 显式决定「没读到时不要动什么」，而不是默默把失败当成空列表。
+  const loadSessions = useCallback(async (agentId: string): Promise<ChatSessionInfo[] | null> => {
+    if (!agentId) { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); setSessionsLoading(false); setSessionsError(null); return []; }
     setSessionsLoading(true);
     try {
       const res = await api.sessions.listByAgent(agentId, 20, 1);
@@ -2779,8 +2833,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setSessionsTotal(res.total ?? res.sessions.length);
       setSessionsPage(res.page ?? 1);
       setSessionsHasMore(!!res.hasMore);
+      setSessionsError(null);
       return res.sessions;
-    } catch { setSessions([]); setSessionsTotal(0); setSessionsPage(1); setSessionsHasMore(false); return []; }
+    } catch (e) {
+      // 清空列表是对的（旧列表属于上一个 agent，不能冒充“现在的”），但**必须同时**
+      // 升起 error 态：否则 UI 会把「没读到」渲染成「还没有会话」。
+      setSessions([]);
+      setSessionsTotal(0);
+      setSessionsPage(1);
+      setSessionsHasMore(false);
+      setSessionsError(e instanceof Error ? e.message : '读取失败');
+      return null;
+    }
     finally { setSessionsLoading(false); }
   }, []);
 
@@ -2816,6 +2880,35 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   });
   const { send: hookSend, stopSending, tryReattachActiveStream, loadSessionMessages } = chatStream;
   sendRef.current = hookSend;
+
+  /**
+   * 会话消息取数结果的**唯一消费点**（R6）。
+   *
+   * 失败时必须同时做两件事：① 清掉视图里的旧内容（它属于上一个会话，留着是换一种谎话）；
+   * ② 升起 `sessionError`（否则界面会把「没读到」渲染成「这个会话没有消息」）。
+   * 只在视图**仍停在同一 convKey** 时生效 —— 旧请求的失败不得写进新视图。
+   */
+  const applySessionLoadResult = useCallback((convKey: string, loaded: { error: string | null }) => {
+    if (currentConvKeyRef.current !== convKey) return;
+    if (loaded.error) {
+      setMessages([]);
+      setSessionError(loaded.error);
+    } else {
+      setSessionError(null);
+    }
+  }, []);
+
+  /** 「会话消息读取失败」上的重试 —— 走同一个取数口，不另开一条读路径。 */
+  const retrySessionMessages = useCallback(() => {
+    const sid = activeSessionId;
+    if (!sid || sid === NEW_CHAT_PLACEHOLDER_ID) return;
+    const key = currentConvKeyRef.current;
+    setLoadingChat(true);
+    void loadSessionMessages(sid, key).then(r => {
+      setLoadingChat(false);
+      applySessionLoadResult(key, r);
+    });
+  }, [activeSessionId, loadSessionMessages, applySessionLoadResult]);
 
   /**
    * The composer's submit path (Enter key + Send button).
@@ -3068,6 +3161,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setFindOpen(false);
       setFindQuery('');
       setFindCursor(-1);
+      // 换会话 ⇒ 上一条流的那次「读失败」不再是关于眼前这个视图的事实。
+      // 不清就会变成粘住的横幅：它会一直挡着空态问候语（`isEmptyChat` 带 `!chatError`），
+      // 而用户早已切到一个好端端的会话上。清除的唯一执行点就是这里（换视图）。
+      setChatError(null);
     }
 
     // Restore displayed state from this conv's buffer
@@ -3148,7 +3245,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
         && !navOwnsView
       ) {
         if (!isSendingNow) {
-          void loadSessionMessages(savedActiveSession, newKey).then(() => {
+          void loadSessionMessages(savedActiveSession, newKey).then(r => {
+            applySessionLoadResult(newKey, r);
             if (currentConvKeyRef.current === newKey && selectedAgent) {
               void tryReattachActiveStream(selectedAgent, savedActiveSession, newKey);
             }
@@ -3175,6 +3273,23 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       } else if (chatMode === 'direct' && selectedAgent) {
         loadSessions(selectedAgent).then(s => {
           if (currentConvKeyRef.current !== newKey) return;
+          // `null` = 没读到。没读到时**不动 tab**：既不把上一次的 tab 列表当成
+          // 「这个 agent 的会话」，也不推断「他没有会话」。类型系统在这里强制每个
+          // 调用点显式做这个决定 —— 这就是契约改成 `T[] | null` 的全部意义。
+          //
+          // 但「不动 tab」不等于「什么都不做」。`loadingChat` 在上面已置 true，而聊天区
+          // 的渲染条件是 `loadingChat && visibleMessages.length === 0`（见下方 JSX 的
+          // `role="status"` 块）⇒ 裸 return 会让聊天区**永远转圈**：既不是 error
+          // （我们没说失败），也不是 empty（`isEmptyChat` 带 `!loadingChat`）。
+          // 这是同一句谎话的第四形态：从「假空态」变成「假加载中」，同样没有出口。
+          // 所以「没读到」必须**结束 loading 并说失败**。
+          // 失败原因已由 `loadSessions` 的 catch 记进 `sessionsError`（历史面板可见）；
+          // 此处只需要升起「说失败」这一事实，不重复编造原因。
+          if (!s) {
+            setLoadingChat(false);
+            setChatError('会话列表读取失败');
+            return;
+          }
           if (s.length > 0) {
             const mainSession = s.find(ss => ss.isMain);
             // Filter out sessions that the user explicitly closed
@@ -3221,7 +3336,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             scheduleScrollRestore(scrollMemoryKey(newKey, validId));
             setStoredActiveSession(selectedAgent!, validId);
             setOpenSessionTabs(initialTabs);
-            void loadSessionMessages(validId!, newKey).then(() => {
+            void loadSessionMessages(validId!, newKey).then(r => {
+              applySessionLoadResult(newKey, r);
               if (currentConvKeyRef.current === newKey && selectedAgent) {
                 void tryReattachActiveStream(selectedAgent, validId!, newKey);
               }
@@ -3234,8 +3350,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             setLoadingChat(false);
             if (!savedTabs || savedTabs.length === 0) setOpenSessionTabs([]);
           }
-        }).catch(() => {
-          if (currentConvKeyRef.current === newKey) setLoadingChat(false);
+        }).catch((err: unknown) => {
+          // 「没读到」的第二种形态。`loadSessions` 内部已经把**预期内**的失败折成 `null`
+          // （上面 `if (!s) return;` 已处理），所以这里接住的是**未预期抛出**。
+          // 旧写法只关 spinner ⇒ 视图停在一个空视图上，用户读到的是「这个 agent 还没有会话」
+          // ——一个我们并不知道的事实。只补 null 守卫而不改此处，用户仍会看到一次空视图。
+          if (currentConvKeyRef.current !== newKey) return;
+          setLoadingChat(false);
+          setChatError(err instanceof Error ? err.message : String(err));
         });
       } else {
         setLoadingChat(false);
@@ -3748,7 +3870,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // Only the most recent switch may clear loadingChat (rapid tab switching).
     if (currentConvKeyRef.current !== key) currentConvKeyRef.current = key;
     try {
-      await loadSessionMessages(s.id, key);
+      applySessionLoadResult(key, await loadSessionMessages(s.id, key));
     } finally {
       if (sessionSwitchSeqRef.current === switchSeq) setLoadingChat(false);
     }
@@ -3782,14 +3904,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // same panel covers the loaded transcript (instant, local) AND the whole
   // history (server). This replaces the old separate ChatSearchPanel.
   const runFindServerSearch = useCallback(async (q: string) => {
-    if (q.trim().length < 2) { setFindServerResults([]); return; }
+    if (q.trim().length < 2) { setFindServerResults([]); setFindServerError(null); return; }
     setFindServerLoading(true);
     try {
       const scope = chatMode === 'channel' ? 'channel' : chatMode === 'direct' ? 'direct' : 'all';
       const channel = chatMode === 'channel' ? activeChannel : undefined;
       const { results } = await api.messages.search(q, { scope, channel, limit: 30 });
       setFindServerResults(results);
-    } catch { setFindServerResults([]); }
+      setFindServerError(null);
+    } catch (err) {
+      // 失败 ≠ 无命中：清空结果是对的（旧结果属于上一个查询），但必须同时升起 error。
+      setFindServerResults([]);
+      setFindServerError(errorMessage(err));
+    }
     setFindServerLoading(false);
   }, [chatMode, activeChannel]);
 
@@ -4628,7 +4755,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       : activeDmUser?.name) || t('page.loadingChat', { defaultValue: 'Loading conversation…' });
   }, [chatMode, sessions, activeSessionId, currentAgent?.name, activeChannel, activeDmUserId, activeGroupChat?.name, activeDmUser?.name, t]);
 
-  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !loadingChat;
+  const isEmptyChat = mainTab === 'chat' && visibleMessages.length === 0 && !loadingChat && !chatError && !sessionError;
   // Non-empty sessions: Cursor-style single-line composer that grows with content.
   const compactComposer = mainTab === 'chat' && visibleMessages.length > 0;
   compactComposerRef.current = compactComposer;
@@ -5353,6 +5480,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               onClose={() => { setFindOpen(false); setFindCursor(-1); }}
               serverResults={findServerResults}
               serverLoading={findServerLoading}
+              serverError={findServerError}
+              onServerRetry={() => void runFindServerSearch(findQuery)}
               onServerResultClick={handleFindServerResultClick}
               labelFor={(m) => {
                 const msg = visibleMessages[m.messageIndex];
@@ -5424,7 +5553,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 <button onClick={() => setShowSessions(false)} className="text-fg-tertiary hover:text-fg-secondary text-xs">✕</button>
               </div>
               <div className="flex-1 overflow-y-auto p-2">
-                {sessionsLoading && sessions.length === 0 ? (
+                {sessionsError ? (
+                  // 「读失败」不能说成「还没有会话」——后者是一个我们不知道的事实。
+                  <div className="text-xs text-rose-600 text-center py-6 px-3">
+                    会话列表读取失败：{sessionsError}（这不等于「没有会话」）
+                  </div>
+                ) : sessionsLoading && sessions.length === 0 ? (
                   <ListLoading rows={3} variant="skeleton" className="px-2 py-2" />
                 ) : sessions.length === 0 ? (
                   <div className="text-xs text-fg-tertiary text-center py-6">{t('page.noConversationsYet')}</div>
@@ -5598,6 +5732,43 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 </span>
                 <span className="text-[11px] text-fg-muted max-w-[70%] truncate">{loadingChatLabel}</span>
               </div>
+            </div>
+          )}
+          {sessionError && (
+            // 取数层已把失败落成 error 相位，这里只负责**让它可见**（R6）：
+            // 没有这条，direct 模式读失败就是一个安静的空会话。
+            <ReadErrorNotice
+              subject="会话消息"
+              error={sessionError}
+              notEquals="这个会话没有消息"
+              onRetry={retrySessionMessages}
+            />
+          )}
+          {chatError && (
+            // 「读失败」不能说成「还没有消息」——后者是一个我们不知道的事实。
+            // 这里必须给可操作出口：重试走同一个取数口（loadChannelMessages）。
+            <div
+              className="flex items-center justify-between gap-3 px-4 py-2 border-b border-rose-500/30 bg-rose-500/10 shrink-0"
+              role="alert"
+            >
+              <span className="text-xs text-rose-500 truncate">
+                {chatMode === 'direct'
+                  ? `会话列表读取失败：${chatError}（这不等于「这个 Agent 还没有会话」）`
+                  : `消息读取失败：${chatError}（这不等于「这个会话没有消息」）`}
+              </span>
+              {chatMode === 'direct' ? (
+                // direct 模式的失败发生在「会话列表」这条取数口上，而「重试」按钮
+                // 走的是频道消息取数口 —— 复用它会**把频道消息写进 1:1 视图**，
+                // 比「没有出口」更坏（一个假出口）。所以这里只给真实的可操作指引。
+                <span className="text-xs text-fg-tertiary shrink-0">切到其它会话再切回，或刷新页面重试</span>
+              ) : (
+                <button
+                  onClick={retryChannelMessages}
+                  className="text-xs px-2.5 py-1 rounded-md border border-rose-500/40 text-rose-500 hover:bg-rose-500/15 shrink-0"
+                >
+                  重试
+                </button>
+              )}
             </div>
           )}
           {loadingMoreVisible && (

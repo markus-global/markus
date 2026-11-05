@@ -14,6 +14,8 @@ import {
   WAKEUP_EVENTS,
   wakeupDedupKey,
   isStrictStateItem,
+  isInBandMarkerSet,
+  assertInBandMarkersDeclared,
 } from '@markus/shared';
 import { threadEntityKeys } from './thread-resolver.js';
 import type { EventBus } from './events.js';
@@ -135,7 +137,7 @@ export function mailboxDedupKey(
   const wakeKey = wakeupDedupKey(item.payload);
   if (wakeKey) return wakeKey;
   // actionRequired 但算不出键 → 不可去重 → 由 assertWakeupDedupable() 拒绝（fail-closed）。
-  if (item.payload?.extra?.actionRequired === true) return undefined;
+  if (isInBandMarkerSet(item, 'actionRequired')) return undefined;
 
   if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
   if (!taskId || round === undefined) return undefined;
@@ -163,10 +165,11 @@ export function assertWakeupDedupable(
   sourceType: MailboxItemType,
   payload: MailboxPayload,
 ): void {
-  if (payload?.extra?.actionRequired !== true) return;
+  if (!isInBandMarkerSet({ payload }, 'actionRequired')) return;
   if (wakeupDedupKey(payload)) return;
 
-  const event = typeof payload.extra.event === 'string' ? payload.extra.event : undefined;
+  const extra = payload?.extra;
+  const event = typeof extra?.event === 'string' ? extra.event : undefined;
   const reason = !event
     ? 'extra.event is missing'
     : !WAKEUP_EVENTS[event]
@@ -672,6 +675,12 @@ export class AgentMailbox {
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
+    // ── 写侧 fail-closed（P2 · in-band 标记登记表）──────────────────────────
+    // 载荷里的**布尔标记**必须全部在 `IN_BAND_MARKERS` 登记过；未登记 → 当场拒绝，
+    // 并给可行动错误（去哪儿登记、登记什么）。放在合并/折叠/落库之前，
+    // 拒绝时才不会留下半截投递（队列、持久层都不动）。
+    assertInBandMarkersDeclared({ payload }, 'write');
+
     // 注意：显式复用（reuseItemId）不走内存合并 —— 调用方要求把**这一条在飞项**
     // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
     const reuseItemId = options?.reuseItemId;
@@ -720,8 +729,8 @@ export class AgentMailbox {
       && sourceType === 'heartbeat'
       // 【不得折叠带动作的心跳】折叠保留既有那条、丢弃本次这条；若本次携带
       // actionRequired / directMention，折叠就等于静默丢掉一个待办动作 → 只折叠纯巡检心跳。
-      && payload.extra?.actionRequired !== true
-      && payload.extra?.directMention !== true
+      && (!isInBandMarkerSet({ payload }, 'actionRequired'))
+      && (!isInBandMarkerSet({ payload }, 'directMention'))
     ) {
       const queuedHb = this.queue.find(
         i => i.sourceType === 'heartbeat' && i.status === 'queued',
@@ -1315,7 +1324,7 @@ export class AgentMailbox {
       const item = this.queue[i];
       if (item.sourceType !== 'requirement_update') continue;
       if (item.payload.requirementId !== requirementId) continue;
-      if (item.payload.extra?.actionRequired !== true) continue;
+      if (!isInBandMarkerSet(item, 'actionRequired')) continue;
       this.queue.splice(i, 1);
       item.status = 'dropped';
       this.persistence?.updateStatus(item.id, 'dropped');
@@ -1669,9 +1678,9 @@ export class AgentMailbox {
     if (isStrictStateItem(item)) return true;
     // callback_result carries a reply the user can see in the Team Chat bubble.
     if (item.sourceType === 'callback_result') return true;
-    const extra = item.payload?.extra;
-    if (extra?.actionRequired) return true;
-    if (extra?.directMention) return true;
+    // 读取点统一走登记表谓词（P2）：此处不得再自己判 `extra.<marker>` 字面量。
+    if (isInBandMarkerSet(item, 'actionRequired')) return true;
+    if (isInBandMarkerSet(item, 'directMention')) return true;
     return false;
   }
 

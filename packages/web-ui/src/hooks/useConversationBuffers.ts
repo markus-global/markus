@@ -12,6 +12,7 @@ import { useCallback, useRef, useState, useEffect } from 'react';
 import { ConversationBufferManager, type ConvPhase, makeConvKey } from '../lib/ConversationBufferManager.ts';
 import type { ChatMsg } from '../pages/ChatHelpers.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { errorMessage } from '../lib/resourceState.ts';
 // (chatStore 已删除：agent 存活性统一由 lib/sessionStreamState.ts 的服务端权威决定)
 
 export { type ConvPhase } from '../lib/ConversationBufferManager.ts';
@@ -92,6 +93,8 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
   // → reattach, session switch, retry) eventually calls clearStreamSession,
   // so the sidebar busy state cannot drift or leak.
   const getPhase = useCallback((key: string) => mgr.current.getPhase(key), []);
+  /** 取数失败的**唯一写入点**：失败落成 error 相位（不是「读到了 0 条」）。 */
+  const failLoad = useCallback((key: string) => mgr.current.failLoad(key), []);
   const beginLoad = useCallback((key: string) => mgr.current.beginLoad(key), []);
   const beginStream = useCallback((key: string) => {
     mgr.current.beginStream(key);
@@ -115,7 +118,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     mgr.current.deleteBuffer(key);
   }, []);
 
-  // Phase-aware async load
+  /**
+   * Phase-aware async load.
+   *
+   * 返回 `error` 而不是把失败折成「0 条」：`count: 0` 与「没读到」是两件事，
+   * 调用方（`loadSessionMessages` → Team）必须据此拉开 error 态。
+   */
   const loadAndDisplay = useCallback(async (
     sessionId: string,
     convKey: string,
@@ -127,13 +135,15 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
       const data = await fetchFn();
       const r = mgr.current.applyLoadResult(convKey, sessionId, data.messages);
       if (r.displayChanged && r.newMessages) setMessages(r.newMessages);
-      return { count: data.messages.length, hasMore: data.hasMore, oldestCursor: data.oldestCursor };
-    } catch {
+      return { count: data.messages.length, hasMore: data.hasMore, oldestCursor: data.oldestCursor, error: null };
+    } catch (err) {
+      // 只登记事实（这次没读到）；**不在这里写 UI** —— 清列表与升起 error 提示
+      // 是视图层（Team）的决定，取数层不替它臆断（上一版在 catch 里
+      // `setMessages([])` → 界面把失败渲染成空会话）。
       if (mgr.current.currentConvKey === convKey && mgr.current.getPhase(convKey) !== 'streaming') {
-        setMessages([]);
-        mgr.current.completeLoad(convKey);
+        mgr.current.failLoad(convKey);
       }
-      return { count: 0, hasMore: false, oldestCursor: null };
+      return { count: 0, hasMore: false, oldestCursor: null, error: errorMessage(err) };
     }
   }, []);
 
@@ -167,7 +177,7 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     },
     // Methods
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
-    getPhase, beginLoad, beginStream, endStream, resetConv,
+    getPhase, beginLoad, failLoad, beginStream, endStream, resetConv,
     abortStream,
     loadAndDisplay,
     // Route pinning (must mirror every setActiveSessionId transition so the

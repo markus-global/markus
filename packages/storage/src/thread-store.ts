@@ -183,8 +183,10 @@ function parseJson(v: string | null): Record<string, unknown> {
   try {
     const parsed = JSON.parse(v);
     return parsed && typeof parsed === 'object' ? (parsed as Record<string, unknown>) : {};
-  } catch {
-    return {};
+  } catch (err) {
+    // 列里存了坏 JSON 是**数据完整性问题**，不是「这个字段是空的」。
+    // 返回 {} 会把它渲染成一条没有细节的决定，且永远不会被察觉。
+    throw new Error(`thread-store: corrupt JSON column: ${String(err)}`);
   }
 }
 
@@ -720,8 +722,9 @@ function parseJsonArray(v: string | null): string[] {
   try {
     const parsed = JSON.parse(v);
     return Array.isArray(parsed) ? parsed.filter((x): x is string => typeof x === 'string') : [];
-  } catch {
-    return [];
+  } catch (err) {
+    // 同上：读不到 ≠ 没有 thread_refs。
+    throw new Error(`thread-store: corrupt JSON array column: ${String(err)}`);
   }
 }
 

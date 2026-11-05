@@ -20,6 +20,8 @@
  * - 键由 `wakeupDedupKey()` 统一计算，**不得在别处另写一份**。
  */
 
+import { isInBandMarkerSet } from './in-band-markers.js';
+
 export interface WakeupEventSpec {
   /** 实体标识字段名按序尝试（payload 顶层优先，其次 extra）。 */
   readonly entity: readonly string[];
@@ -66,7 +68,9 @@ export interface WakeupPayloadLike {
  */
 export function wakeupDedupKey(payload: WakeupPayloadLike): string | undefined {
   const extra = payload.extra;
-  if (extra?.actionRequired !== true) return undefined;
+  // in-band 标记只有一个判定实现：这里走登记表谓词，不自己比 `extra.actionRequired`。
+  if (!isInBandMarkerSet(payload, 'actionRequired')) return undefined;
+  if (!extra) return undefined;
 
   const event = typeof extra.event === 'string' ? extra.event : undefined;
   if (!event) return undefined;

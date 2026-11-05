@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   AUTONOMIES,
   AUTONOMY_RANK,
@@ -282,6 +282,25 @@ describe('幂等键兜底', () => {
     const c = contentHashIdempotencyKey('external', 'y', 60_000, 1_000_000);
     expect(a).not.toBe(b);
     expect(a).not.toBe(c);
+  });
+
+  // ─── P4：键构造函数禁时钟 ───────────────────────────────────────────────────
+  it('签名不再有 Date.now() 默认值（arity = 4，缺参即编译期报错）', () => {
+    // 有默认值时 arity 会退到 3 —— 这条断言把「构造函数自己读时钟」钉成红。
+    expect(contentHashIdempotencyKey.length).toBe(4);
+  });
+
+  it('跨时刻构造（同一显式 now）→ 键仍相同', () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-04T10:00:00Z'));
+      const a = contentHashIdempotencyKey('external', 'CI failed', 60_000, 1_000_000);
+      vi.setSystemTime(new Date('2026-11-04T18:00:00Z'));
+      const b = contentHashIdempotencyKey('external', 'CI failed', 60_000, 1_000_000);
+      expect(a).toBe(b);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

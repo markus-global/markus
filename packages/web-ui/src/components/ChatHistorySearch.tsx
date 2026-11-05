@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import type { ChatSearchMatch } from '../lib/chatSearch.ts';
 import type { SearchResult } from '../api.ts';
 import { formatExactTime, timeAgo } from '../lib/timeAgo.ts';
+import { ReadErrorNotice } from './ListState.tsx';
 
 /**
  * Find-in-conversation bar.
@@ -32,6 +33,13 @@ export interface ChatHistorySearchProps {
   /** Full-history results from the server FTS5 index (the merged second search). */
   serverResults?: readonly SearchResult[];
   serverLoading?: boolean;
+  /**
+   * 服务端全文检索的**读取失败**（与「无命中」是两件事）。
+   * 搜索是用户主动发起的查询，空结果的可信度依赖查询本身 —— 失败时不说清楚，
+   * 用户会把它读成「历史里确实没有」（审计 §8.4 R1 / R7）。
+   */
+  serverError?: string | null;
+  onServerRetry?: () => void;
   onServerResultClick?: (result: SearchResult) => void;
 }
 
@@ -64,7 +72,7 @@ function Snippet({ match }: { match: ChatSearchMatch }) {
 export function ChatHistorySearch({
   query, onQueryChange, matches, cursor, scanned, hasMore, loadingMore, truncated,
   onLoadEarlier, onJump, onClose, labelFor,
-  serverResults, serverLoading, onServerResultClick,
+  serverResults, serverLoading, serverError, onServerRetry, onServerResultClick,
 }: ChatHistorySearchProps) {
   const { t, i18n } = useTranslation(['team', 'common']);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -185,9 +193,18 @@ export function ChatHistorySearch({
       {/* Full-history server results (merged with find-in-conversation): when the
           local transcript scan is exhausted or the user wants older messages,
           the same panel also lists matches from the server FTS5 index. */}
-      {hasQuery && (serverLoading || (serverResults && serverResults.length > 0)) && (
+      {hasQuery && (serverError || serverLoading || (serverResults && serverResults.length > 0)) && (
         <div className="border-t border-border-default/60 mt-1 px-1">
           <div className="text-[10px] text-fg-tertiary font-medium py-0.5">{t('page.findServerResultsTitle')}</div>
+          {serverError ? (
+            <ReadErrorNotice
+              variant="inline"
+              subject="历史消息搜索"
+              error={serverError}
+              notEquals="没有匹配的消息"
+              {...(onServerRetry ? { onRetry: onServerRetry } : {})}
+            />
+          ) : null}
           {serverLoading && (
             <div className="text-xs text-fg-tertiary px-2.5 py-1">{t('page.searching')}</div>
           )}

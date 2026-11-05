@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   appendTextToSegments,
   appendThinkingToSegments,
@@ -14,6 +14,8 @@ import {
   finalizeLastStreamingBubble,
   clearGhostStreaming,
   formatSmartTime,
+  dayBucketOf,
+  smartTimeCacheKey,
   hasStreamingTail,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
@@ -593,6 +595,51 @@ describe('formatSmartTime', () => {
   it('keeps seconds for older messages, prefixed with the date', () => {
     const res = formatSmartTime('', noonOn(3), { yesterday: 'Yesterday' });
     expect(res).toMatch(/\d{1,2}:\d{2}:\d{2}$/);
+  });
+});
+
+// ─── P4：缓存键构造函数禁时钟 ─────────────────────────────────────────────────
+// 判据：时间参与「键的构成」→ 违规；时间参与「新旧的比较」→ 合法。
+// 这里锁的是「键构造函数是纯函数」：同一逻辑输入 → 同一键，跨时刻构造也稳定。
+describe('smartTimeCacheKey —— 键只由入参构成（P4）', () => {
+  const CREATED = '2026-11-04T02:00:00.000Z'; // 2026-11-04 10:00 +08:00
+  const BUCKET = 1762185600000; // 2026-11-04 00:00 +08:00
+
+  it('同一逻辑输入两次构造 → 键完全相同', () => {
+    const a = smartTimeCacheKey('10:00:00', CREATED, BUCKET, '昨天');
+    const b = smartTimeCacheKey('10:00:00', CREATED, BUCKET, '昨天');
+    expect(a).toBe(b);
+  });
+
+  it('跨时刻构造（不同 now，同一档位）→ 键仍相同', () => {
+    // 键构造函数不读时钟：把系统时间挪到同一天的两个不同时刻，键必须逐字相同。
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date('2026-11-04T00:00:01+08:00'));
+      const a = smartTimeCacheKey('10:00:00', CREATED, BUCKET, '昨天');
+      vi.setSystemTime(new Date('2026-11-04T23:59:59+08:00'));
+      const b = smartTimeCacheKey('10:00:00', CREATED, BUCKET, '昨天');
+      expect(a).toBe(b);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('dayBucketOf 是纯函数：同一天 → 同一档位；跨天 → 不同档位', () => {
+    const early = new Date('2026-11-04T00:00:00+08:00');
+    const late = new Date('2026-11-04T23:59:59+08:00');
+    const nextDay = new Date('2026-11-05T00:00:00+08:00');
+    expect(dayBucketOf(early)).toBe(dayBucketOf(late));
+    expect(dayBucketOf(early)).not.toBe(dayBucketOf(nextDay));
+  });
+
+  it('formatSmartTime 的档位可由调用方钉住（不读时钟）', () => {
+    const todayBucket = dayBucketOf(new Date('2026-11-04T12:00:00+08:00'));
+    const tomorrowBucket = dayBucketOf(new Date('2026-11-05T12:00:00+08:00'));
+    const asToday = formatSmartTime('10:00:00', CREATED, { yesterday: '昨天' }, todayBucket);
+    const asYesterday = formatSmartTime('10:00:00', CREATED, { yesterday: '昨天' }, tomorrowBucket);
+    expect(asToday).toMatch(/^\d{1,2}:\d{2}:\d{2}$/);
+    expect(asYesterday).toMatch(/^昨天 /);
   });
 });
 

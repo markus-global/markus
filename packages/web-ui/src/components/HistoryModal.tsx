@@ -5,6 +5,9 @@ import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/threadPresentation.ts';
+// 三态类型**复用** `lib/threadTimeline.ts` 的那一份（`SourceState` 已经是「来源的读取状态」
+// 的单一表示）。本文件不另造一个同形联合类型 —— 那会变成同一事实的第二个写者。
+import type { SourceState } from '../lib/threadTimeline.ts';
 
 /**
  * 概览「历史」弹窗 —— 自己设计，不套用通知页的面板。
@@ -118,6 +121,19 @@ export function HistoryModal({
   const [total, setTotal] = useState(0);
   /** 未读数取**服务端**口径（与铃铛、概览一致）。本地数分页列表必然偏小。 */
   const [unreadTotal, setUnreadTotal] = useState<number | null>(null);
+  /**
+   * 未读数的**读取状态** —— 「读到 0 条」与「没读到」是两件事。
+   *
+   * 事故②（审计 §3）：「历史弹窗未读数不刷新」= 取数失败被吞、UI 继续显示旧快照。
+   * 旧实现还有第二个谎话：`unreadTotal ?? notices.reduce(...)` —— 服务端数没拿到时
+   * 用**当前分页**折算一个数（分页必然偏小，正文注释自己写着）。两者都是对用户陈述
+   * 一个我们并不知道的事实。现在 error 态只说「不知道」，并给可操作的重试。
+   */
+  const [unreadState, setUnreadState] = useState<SourceState>('loading');
+  /** 审批历史是**第二个会失败的来源**：失败时同样不许渲染「还没有历史记录」。 */
+  const [approvalsState, setApprovalsState] = useState<SourceState>('loading');
+  /** 重试计数：改它让取数 effect 重跑（失败后的「重试」就用它，不另开机制）。 */
+  const [retryTick, setRetryTick] = useState(0);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   /** 默认只看未读（Owner 2026-11-04：这个入口叫「未读消息」，打开就该是未读）。 */
   const [unreadOnly, setUnreadOnly] = useState(true);
@@ -140,7 +156,10 @@ export function HistoryModal({
           return [...prev, ...got.filter(x => !seen.has(x.id))].slice(0, MAX_ROWS);
         });
         setTotal(d.totalCount ?? 0);
-        setUnreadTotal((d as { unreadCount?: number }).unreadCount ?? null);
+        // 服务端没给 unreadCount ⇒ 我们**不知道**未读数，不能说它等于当前分页里的未读条数。
+        const serverUnread = (d as { unreadCount?: number }).unreadCount;
+        setUnreadTotal(typeof serverUnread === 'number' ? serverUnread : null);
+        setUnreadState(typeof serverUnread === 'number' ? 'ok' : 'error');
         // 终止条件：本页不满 / 空页 / 已到 DOM 上限
         if (got.length === 0 || got.length < PAGE_SIZE || stateRef.current.count + got.length >= MAX_ROWS) {
           setDone(true);
@@ -148,6 +167,8 @@ export function HistoryModal({
         setError(null);
       } catch (e) {
         setError(e instanceof Error ? e.message : '读取失败');
+        // 读失败 ⇒ 未读数进入「不知道」，**不**沿用上一次的快照（事故②的原样复现）。
+        setUnreadState('error');
       } finally {
         setLoading(false);
       }
@@ -163,8 +184,12 @@ export function HistoryModal({
       void loadPage(0);
       api.approvals
         .list()
-        .then(r => setApprovals((r.approvals ?? []).filter(a => a.status === 'pending')))
-        .catch(() => undefined);
+        .then(r => {
+          setApprovals((r.approvals ?? []).filter(a => a.status === 'pending'));
+          setApprovalsState('ok');
+        })
+        // 取数失败不得静默：否则列表会安静地少一截，而用户以为那就是全部。
+        .catch(() => setApprovalsState('error'));
     };
     window.addEventListener('markus:notifications-changed', onChanged);
     window.addEventListener('markus:data-changed', onChanged);
@@ -174,6 +199,14 @@ export function HistoryModal({
     };
   }, [open, userId, loadPage]);
 
+  /** 失败不是死路：重试把两个来源都重新读一遍（`retryTick` 驱动下面的 effect）。 */
+  const retry = useCallback(() => {
+    setError(null);
+    setUnreadState('loading');
+    setApprovalsState('loading');
+    setRetryTick(t => t + 1);
+  }, []);
+
   // 打开时重置并拉第一页（每次都重取，避免看到过期数据）
   useEffect(() => {
     if (!open || !userId) return;
@@ -181,13 +214,18 @@ export function HistoryModal({
     setTotal(0);
     setDone(false);
     setError(null);
+    setUnreadState('loading');
+    setApprovalsState('loading');
     void loadPage(0);
     api.approvals
       // 历史 = 已结束的审批。拉全量取“非 pending”（实际有 35 批准 / 11 拒绝 / 2 取消）。
       .list(undefined, { limit: 100 })
-      .then(d => setApprovals((d.approvals ?? []).filter(a => a.status !== 'pending')))
-      .catch(() => undefined);
-  }, [open, userId, loadPage]);
+      .then(d => {
+        setApprovals((d.approvals ?? []).filter(a => a.status !== 'pending'));
+        setApprovalsState('ok');
+      })
+      .catch(() => setApprovalsState('error'));
+  }, [open, userId, loadPage, retryTick]);
 
   // 底部哨兵：进入视口即加载更早的通知
   useEffect(() => {
@@ -230,7 +268,11 @@ export function HistoryModal({
   }, [approvals, notices, tab, unreadOnly]);
 
   const resolvedCount = approvals.length;
-  const unread = unreadTotal ?? notices.reduce((n, x) => n + (x.read ? 0 : 1), 0);
+  /** 只有「读到了」才有一个数字。读失败/读取中一律是 `null` —— 不折算、不沿用旧值。 */
+  const unread = unreadState === 'ok' ? unreadTotal : null;
+  /** 两个来源都读到、且都没有行，才可以说是「还没有」；否则我们并不知道。 */
+  const historyEmpty = rows.length === 0 && !loading && !error
+    && approvalsState !== 'error' && unreadState !== 'error';
 
   // 弹窗开着时锁住背后的滚动容器（否则滚轮会滚到 Overview 上）
   useBackgroundScrollLock(open);
@@ -250,7 +292,16 @@ export function HistoryModal({
         <div className="flex items-center justify-between px-4 pt-3.5 pb-2 shrink-0">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold text-fg-primary">历史</h3>
-            {unread > 0 && (
+            {unreadState === 'error' && (
+              // 不显示数字 = 不陈述一个不知道的事实。可操作的出口在下面的「重试」。
+              <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-600">
+                未读数未知（读取失败）
+              </span>
+            )}
+            {unreadState === 'loading' && (
+              <span className="text-[10px] text-fg-muted">未读…</span>
+            )}
+            {unread !== null && unread > 0 && (
               <button
                 onClick={() => setUnreadOnly(v => !v)}
                 aria-pressed={unreadOnly}
@@ -264,7 +315,7 @@ export function HistoryModal({
                 {unread} 条未读
               </button>
             )}
-            {unreadOnly && unread === 0 && (
+            {unread !== null && unreadOnly && unread === 0 && (
               <button
                 onClick={() => setUnreadOnly(false)}
                 className="text-[10px] font-semibold text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded-full"
@@ -308,9 +359,26 @@ export function HistoryModal({
 
         {/* 列表 */}
         <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 pb-2">
-          {error && <div className="mx-1 mb-2 rounded-lg bg-rose-500/10 text-rose-600 text-[11px] px-3 py-2">{error}</div>}
+          {/* 错误必须**可见且可操作**：只报错不给出口，等于把死路当成状态。 */}
+          {(error || approvalsState === 'error') && (
+            <div className="mx-1 mb-2 rounded-lg bg-rose-500/10 text-rose-600 text-[11px] px-3 py-2 flex items-center gap-2">
+              {/* 单文本节点：错误文案是给人和测试看的**一条事实**，不拆成几段拼接。 */}
+              <span className="flex-1">
+                {[
+                  error ? `通知读取失败：${error}（这不等于「没有历史」）。` : null,
+                  approvalsState === 'error' ? '审批历史读取失败（不等于「没有审批」）。' : null,
+                ].filter(Boolean).join(' ')}
+              </span>
+              <button
+                onClick={retry}
+                className="shrink-0 rounded bg-rose-500/15 px-2 py-0.5 font-semibold hover:bg-rose-500/25"
+              >
+                重试
+              </button>
+            </div>
+          )}
 
-          {rows.length === 0 && !loading && (
+          {historyEmpty && (
             <div className="px-3 py-10 text-center">
               <div className="text-[12px] text-fg-secondary">还没有历史记录</div>
               <div className="text-[11px] text-fg-muted mt-1">团队开始工作后，审批和通知会出现在这里</div>

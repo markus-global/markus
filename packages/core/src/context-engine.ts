@@ -180,6 +180,21 @@ export function prepareKnowledgeForPrompt(
   return { text: text.trimEnd(), truncated };
 }
 
+/**
+ * 同步取数的二态结果：**读到了** 与 **没读到**。
+ *
+ * 为什么不能是裸数组：`[]` 同时表示「读到了，但确实是 0 条」与「根本没读到」。
+ * 后者一旦被当作前者渲染，读者（人或 agent）就拿到一句假的确定性陈述
+ * —— 审计 §3 的两起事故（时间线面板首帧空态、历史弹窗未读数不刷新）都是这个形状。
+ *
+ * 为什么只有两态：这些取数发生在**同步组装**路径上（拼 prompt），没有「还在读」可言；
+ * 异步 UI 的三态（loading/error/empty）由 `web-ui/lib/threadTimeline.ts#SourceState`
+ * 负责。两处表述的是同一条判据（别把「没读到」说成「确实没有」），只是各层的自然形状。
+ */
+export type FetchResult<T> =
+  | { state: 'ok'; items: readonly T[] }
+  | { state: 'error'; items: readonly T[]; message: string };
+
 export interface ContextConfig {
   memorySearchTopK: number;
   tokenCounter?: TokenCounter;
@@ -448,7 +463,14 @@ export class ContextEngine {
     senderIdentity?: { id: string; name: string; role: string; isFirstConversation?: boolean; locale?: string; timezone?: string };
     /** Fallback locale/timezone for autonomous runs with no interactive sender (e.g. owner preferences). */
     viewerContext?: { locale?: string; timezone?: string };
-    assignedTasks?: Array<{
+    /**
+     * 任务板快照。
+     *
+     * **不是裸数组**：裸数组没法区分「读到 0 条」与「没读到」，而后者一旦被渲染成
+     * 前者，agent 就会自认手上没活（审计 §3 的原样复现）。这里只有两态（同步取数
+     * 没有 loading）：`ok`（读到，可能 0 条）/ `error`（没读到，附原因）。
+     */
+    assignedTasks?: FetchResult<{
       id: string;
       title: string;
       description: string;
@@ -1172,13 +1194,20 @@ export class ContextEngine {
     // them on demand, saving ~400 tokens per call with minimal risk.
 
     if (!isDream) {
-      if (opts.assignedTasks && opts.assignedTasks.length > 0) {
+      if (opts.assignedTasks?.state === 'error') {
+        // 取数失败就**说失败**。不能落到下面的「No tasks on the board.」——
+        // 那是对 agent 陈述一个我们并不知道的事实。
+        dynamic.push('\n## Task Board');
+        dynamic.push(`Task board read FAILED: ${opts.assignedTasks.message}`);
+        dynamic.push('This does NOT mean "no tasks". Use `task_list` before concluding anything about your workload.');
+      } else if (opts.assignedTasks && opts.assignedTasks.items.length > 0) {
+        const board = opts.assignedTasks.items;
         const priorityOrder = ['critical', 'high', 'medium', 'low'];
         const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
-        const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
-        const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
+        const myTasks = board.filter(t => t.assignedAgentId === opts.agentId);
+        const otherTasks = board.filter(t => t.assignedAgentId !== opts.agentId);
 
         const myActive = myTasks.filter(t => !isTerminal(t.status)).sort(byPriority);
 

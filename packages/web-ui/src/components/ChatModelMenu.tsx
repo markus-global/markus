@@ -3,6 +3,8 @@ import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { isChatCapableModel } from '../lib/modelCapabilities';
 import { Switch } from './Switch';
+import { ReadErrorNotice } from './ListState.tsx';
+import { errorMessage } from '../lib/resourceState.ts';
 
 export interface ChatModelSelection {
   provider: string;
@@ -63,6 +65,11 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
   const [query, setQuery] = useState('');
   const [loading, setLoading] = useState(false);
   const [providers, setProviders] = useState<ProviderModels[]>([]);
+  /**
+   * 模型目录的**读取失败**（R16）：与「一个可用 provider 都没有」分开存。
+   * 旧写法 `catch { setProviders([]) }` 让菜单安静地说「没有可用的模型」。
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [globalDefault, setGlobalDefault] = useState<ChatModelSelection | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
 
@@ -118,6 +125,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
       }
       list.sort((a, b) => a.displayName.localeCompare(b.displayName));
       setProviders(list);
+      setLoadError(null);
 
       const inCatalog = (sel: ChatModelSelection | null | undefined): boolean => {
         if (!sel?.provider || !sel.model) return false;
@@ -159,8 +167,9 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
         }
       }
       setGlobalDefault(nextGlobal);
-    } catch {
+    } catch (err) {
       setProviders([]);
+      setLoadError(errorMessage(err));
     } finally {
       setLoading(false);
     }
@@ -295,7 +304,16 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
             {loading && (
               <div className="px-3 py-4 text-xs text-fg-tertiary">{t('common:loading', { defaultValue: 'Loading…' })}</div>
             )}
-            {!loading && filtered.length === 0 && (
+            {!loading && loadError && (
+              <ReadErrorNotice
+                variant="inline"
+                subject="模型目录"
+                error={loadError}
+                notEquals="没有可用的模型"
+                onRetry={() => void loadModels()}
+              />
+            )}
+            {!loading && !loadError && filtered.length === 0 && (
               <div className="px-3 py-4 text-xs text-fg-tertiary">
                 {t('chatModel.empty', { defaultValue: 'No enabled providers / models' })}
               </div>

@@ -607,8 +607,14 @@ export function gateVerdict(kind: TriggerKind, f: GateFacts): GateVerdict {
   return 'assess';
 }
 
-/** 幂等键兜底：某些来源给不出事件 id 时，用内容哈希 + 时间窗。 */
-export function contentHashIdempotencyKey(kind: TriggerKind, subject: string, windowMs = 60_000, now = Date.now()): string {
+/**
+ * 幂等键兜底：某些来源给不出事件 id 时，用内容哈希 + 时间窗。
+ *
+ * `windowMs` 与 `now` 都**必须由调用方显式给出**，不得默认 `Date.now()`：
+ * 键构造函数一旦读时钟，「同一逻辑输入 → 同一键」就不再可测，跨时刻构造也无法稳定
+ * （P4）。时间窗是「档位」语义 —— 由调用方决定用哪个时刻折算档位，构造函数只做纯计算。
+ */
+export function contentHashIdempotencyKey(kind: TriggerKind, subject: string, windowMs: number, now: number): string {
   const bucket = Math.floor(now / windowMs);
   let h = 2166136261;
   const s = `${kind}|${subject}|${bucket}`;

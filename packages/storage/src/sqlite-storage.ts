@@ -9,7 +9,7 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray, inBandMarkerJsonPath,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
   type MandateState, type ResourceScope,
 } from '@markus/shared';
@@ -5362,6 +5362,9 @@ export class SqliteMailboxRepo {
    * `processing` 也一并撤回 —— 正在被读取的那一条同样是「已不成立的请求」。
    */
   dropPendingByEntity(agentId: string, entityId: string, reason: string): number {
+    // 标记的 JSON 路径从登记表派生（P2）：SQL 里不再手写标记字面量，
+    // 改键名只需改 `IN_BAND_MARKERS`，SQL 与 TS 谓词不会各说一套。
+    const actionRequiredPath = inBandMarkerJsonPath('actionRequired');
     const res = this.db
       .prepare(
         `UPDATE mailbox_items
@@ -5371,7 +5374,7 @@ export class SqliteMailboxRepo {
           WHERE agent_id = ?
             AND status IN ('queued', 'processing')
             AND json_extract(payload, '$.requirementId') = ?
-            AND json_extract(payload, '$.extra.actionRequired') = 1`
+            AND json_extract(payload, '${actionRequiredPath}') = 1`
       )
       .run(new Date().toISOString(), reason, agentId, entityId);
     return Number((res as { changes?: number }).changes ?? 0);

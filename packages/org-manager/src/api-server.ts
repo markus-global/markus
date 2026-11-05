@@ -4035,7 +4035,12 @@ export class APIServer {
       const humanOnly = (body['humanOnly'] as boolean) === true;
       const isHumanChannel = humanOnly || channel.startsWith('notes:') || channel.startsWith('dm:');
 
-      // Build channel context — give agents enough history to understand the full discussion
+      // Build channel context — give agents enough history to understand the full discussion.
+      //
+      // **读失败不得返回空数组**（审计 §3 / P1「取数路径吞错」）：空数组会被装配成
+      // 「这个频道之前没有任何消息」，agent 就在完全不知道前情的情况下接着聊，而用户
+      // 看到的是一个自信的回答。本载荷能表达事实的记号只有「消息」，所以失败时显式
+      // 放一条 system 消息把「读失败 ≠ 没有消息」写进去（不伪造结构字段）。
       const buildChannelContext = async (): Promise<Array<{ role: string; content: string }>> => {
         if (!this.storage) return [];
         try {
@@ -4046,8 +4051,16 @@ export class APIServer {
               ? stripInternalBlocks(m.text)
               : `[${m.senderName}]: ${m.text}`,
           }));
-        } catch {
-          return [];
+        } catch (err) {
+          log.error('channel context read failed — agent will NOT see earlier messages (this is not "the channel is empty")', {
+            channel,
+            error: String(err),
+          });
+          return [{
+            role: 'system',
+            content: '[系统] 频道历史读取失败：本回合看不到更早的对话，这不等于频道里没有消息。'
+              + `原因：${err instanceof Error ? err.message : String(err)}`,
+          }];
         }
       };
 
@@ -5837,9 +5850,11 @@ export class APIServer {
                   archivedChars: h.archiveChars,
                   lastConsolidatedAt: h.lastConsolidatedAt,
                 }
-              : {};
-          } catch {
-            return {};
+              : { healthError: '记忆健康接口未实现（getMemoryHealth 不存在）' };
+          } catch (e) {
+            // 读失败 ≠ 没有健康数据：显式带出 healthError，前端据此显示「读不到」，
+            // 而不是把缺失字段当成 0（审计 §3 / 本卡报告 §4-R3）。
+            return { healthError: e instanceof Error ? e.message : String(e) };
           }
         })();
         this.json(res, 200, {

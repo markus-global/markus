@@ -2189,27 +2189,35 @@ export class AgentManager {
       // Wire tasks fetcher — show all org tasks so agents have full board visibility
       agent.setTasksFetcher(() => {
         try {
-          return ts.listTasks({ orgId }).map(t => ({
-            id: t.id,
-            title: t.title,
-            description: t.description,
-            status: t.status,
-            priority: t.priority,
-            assignedAgentId: t.assignedAgentId,
-            assignedAgentName: t.assignedAgentId
-              ? this.agents.get(t.assignedAgentId)?.config.name
-              : undefined,
-          }));
+          return {
+            state: 'ok' as const,
+            items: ts.listTasks({ orgId }).map(t => ({
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              status: t.status,
+              priority: t.priority,
+              assignedAgentId: t.assignedAgentId,
+              assignedAgentName: t.assignedAgentId
+                ? this.agents.get(t.assignedAgentId)?.config.name
+                : undefined,
+            })),
+          };
         } catch (err) {
-          log.debug('Failed to list tasks for agent context', { error: String(err) });
-          return [];
+          // **不返回裸数组**：`[]` 同时表示「确实没有任务」与「没读到」，后者会被
+          // context-engine 渲染成「No tasks on the board.」—— 对 agent 陈述一个我们
+          // 并不知道的事实。改为显式的 error 态，prompt 里也会把失败说出来。
+          log.error('assignedTasks read failed — prompt will say "read FAILED", not "no tasks"', { error: String(err) });
+          return { state: 'error' as const, items: [], message: String(err) };
         }
       });
 
       if (this.requirementService?.getActiveGoals) {
         const rs = this.requirementService;
         agent.setGoalFetcher(() => {
-          try { return rs.getActiveGoals!(orgId); } catch { return []; }
+          // 取数路径：不再吞。消费点（agent.ts 心跳 prompt 组装）已 try/catch，
+          // 所以抛出去是安全的；返回 [] 等于告诉 agent「你没有活跃目标」。
+          return rs.getActiveGoals!(orgId);
         });
       }
 
@@ -3099,27 +3107,34 @@ export class AgentManager {
       });
       agent.setTasksFetcher(() => {
         try {
-          return ts.listTasks({ orgId }).map(t => ({
-            id: t.id,
-            title: t.title,
-            description: t.description,
-            status: t.status,
-            priority: t.priority,
-            assignedAgentId: t.assignedAgentId,
-            assignedAgentName: t.assignedAgentId
-              ? this.agents.get(t.assignedAgentId)?.config.name
-              : undefined,
-          }));
+          return {
+            state: 'ok' as const,
+            items: ts.listTasks({ orgId }).map(t => ({
+              id: t.id,
+              title: t.title,
+              description: t.description,
+              status: t.status,
+              priority: t.priority,
+              assignedAgentId: t.assignedAgentId,
+              assignedAgentName: t.assignedAgentId
+                ? this.agents.get(t.assignedAgentId)?.config.name
+                : undefined,
+            })),
+          };
         } catch (err) {
-          log.debug('Failed to list tasks for restored agent context', { error: String(err) });
-          return [];
+          log.error('assignedTasks read failed (restored agent) — prompt will say "read FAILED", not "no tasks"', { error: String(err) });
+          return { state: 'error' as const, items: [], message: String(err) };
         }
       });
 
       if (this.requirementService?.getActiveGoals) {
         const rs = this.requirementService;
         agent.setGoalFetcher(() => {
-          try { return rs.getActiveGoals!(orgId); } catch { return []; }
+          // 取数路径：抛，不吞（消费点已有 try/catch）。
+          try { return rs.getActiveGoals!(orgId); } catch (err) {
+            log.error('activeGoals read failed — NOT reporting it as "no goals"', { error: String(err) });
+            throw err;
+          }
         });
       }
     }
@@ -3368,11 +3383,7 @@ export class AgentManager {
           log.warn('Task not found during rehydration, skipping', { agentId, taskId });
           continue;
         }
-        if (
-          task.status === 'completed' ||
-          task.status === 'cancelled' ||
-          task.status === 'failed'
-        ) {
+        if (isTerminal(task.status)) {
           log.debug('Task already terminal, skipping rehydration', {
             agentId,
             taskId,

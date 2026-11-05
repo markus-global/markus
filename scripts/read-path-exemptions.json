@@ -1,0 +1,30 @@
+{
+  "_rule": "两个扫描器（probe-catch-swallow.mjs 找 catch 体里的 `return 空集合`；probe-catch-setempty.py 找 `setX(空集合)`）命中后必须能在本表登记，否则计为「取数路径」——判据是 0 处。键 = probe + file + nth（该文件里命中的第几个，按行号升序，1-based）：行号会随改动漂移，所以不用行号；snippet 可选，用于命中体不同时额外校验。class：optional-probe（可选探测：失败即「没有这条可选信息」，界面不会据此断言主内容为空）/ write-fallback（写路径的回退，不是读）/ error-raised（同一 catch 内已同事升起 error 态；清空列表是「旧内容不属于本视图」，不是把失败冒充空）。【error-raised 必须带 raises（字面量）：探针在**同一条命中 catch 体**里 grep 它，缺失即计回取数路径 —— 否则「已修」这句话只是 JSON 里的自证，删掉升起语句后门禁仍然全绿（2026-11-05 实测踩过）。】登记项必须与实际代码同时更新：代码不再命中即「失效条目」，扫描器会报错要求删除。",
+  "_retired": "R9（AgentProfile 交付物搜索）/ R10（记忆会话消息）曾以 error-raised 登记。本轮把两处接线收敛到 hooks/useProfileReads.ts 的 useReadResource（内部走 readList），页面里**不再有** catch{setX([])}，因此登记项必须删除（探针会把不再命中的条目报成「失效登记项」）。这两处的错误态由 pages/AgentProfile.r9.test.tsx / r10.test.tsx 的行为测试咬住，不再依赖静态豁免。",
+  "entries": [
+    { "probe": "swallow", "file": "packages/core/src/llm/provider-helpers.ts", "nth": 1, "class": "optional-probe", "reason": "safeParseJson：非法 JSON → 空参数对象；调用方拿到的是「没有可选参数」，不是「读到 0 条数据」" },
+    { "probe": "swallow", "file": "packages/core/src/llm/proxy-fetch.ts", "nth": 1, "class": "optional-probe", "reason": "代理配置解析失败 → 视为未配置代理；配置探测，不驱动任何列表空态" },
+    { "probe": "swallow", "file": "packages/core/src/skills/codec/detect.ts", "nth": 1, "class": "optional-probe", "reason": "codec 探测器的 listDir：目录不可读 → 该目录没有可探测文件（探测语义）" },
+    { "probe": "swallow", "file": "packages/core/src/skills/codec/detect.ts", "nth": 2, "class": "optional-probe", "reason": "codec 探测器的 readFile：文件不可读 → 该文件不参与探测（探测语义）" },
+    { "probe": "swallow", "file": "packages/desktop/src/main.ts", "nth": 1, "class": "optional-probe", "reason": "端口占用探测（lsof）：命令不可用 → 没探测到 PID；探测失败不冒充「没有进程」" },
+    { "probe": "swallow", "file": "packages/gui/src/element-detector.ts", "nth": 1, "class": "optional-probe", "reason": "OCR 依赖缺失已 log.warn → 本轮没有文本结果；能力降级，不是读到 0 条数据" },
+    { "probe": "swallow", "file": "packages/org-manager/src/api-server.ts", "nth": 1, "class": "optional-probe", "reason": "读 feishu 集成配置失败 → 视为未配置；GET settings 的可选项，不驱动列表空态" },
+    { "probe": "swallow", "file": "packages/org-manager/src/api-server.ts", "nth": 2, "class": "optional-probe", "reason": "readRemoteIntent 读配置失败 → 视为未声明远端意向；配置探测" },
+    { "probe": "swallow", "file": "packages/org-manager/src/api-server.ts", "nth": 3, "class": "optional-probe", "reason": "远端实例能力发现：拉不到 → 无额外能力（附加信息，缺失即降级）" },
+    { "probe": "swallow", "file": "packages/org-manager/src/file-knowledge-store.ts", "nth": 1, "class": "optional-probe", "reason": "列举知识库子目录：目录不存在/不可读 → 该目录暂无子目录（结构性探测）" },
+    { "probe": "swallow", "file": "packages/remote/src/registry-client.ts", "nth": 1, "class": "optional-probe", "reason": "从 URL 推标签：非法 URL → 无标签；纯字符串解析，不是取数" },
+    { "probe": "swallow", "file": "packages/web-ui/src/lib/browserHistory.ts", "nth": 1, "class": "optional-probe", "reason": "localStorage 不可用（SSR/隐私模式/测试）→ 无本地历史；能力探测" },
+    { "probe": "swallow", "file": "packages/web-ui/src/lib/shortcut-lessons.ts", "nth": 1, "class": "optional-probe", "reason": "读本地提示记录：JSON 损坏 → 视为无记录（本地缓存快照，不是服务端取数）" },
+    { "probe": "swallow", "file": "packages/web-ui/src/lib/workflow-view.ts", "nth": 1, "class": "optional-probe", "reason": "读本地折叠状态快照：JSON 损坏 → 空集合（视图偏好缓存）" },
+    { "probe": "swallow", "file": "packages/web-ui/src/pages/AgentBuilder.tsx", "nth": 1, "class": "optional-probe", "reason": "读本地共享条目快照：JSON 损坏 → 空 Map（本地缓存）" },
+    { "probe": "swallow", "file": "packages/web-ui/src/pages/Team.tsx", "nth": 1, "class": "optional-probe", "reason": "读 localStorage 里「已关闭的会话 tab」：解析失败 → 没有关闭记录（视图偏好缓存）" },
+
+    { "probe": "setempty", "file": "packages/web-ui/src/components/ChatModelMenu.tsx", "nth": 1, "class": "error-raised", "raises": "setLoadError(errorMessage(err))", "reason": "R16：同一 catch 已升起 loadError，菜单显示「模型目录读取失败…」；清空的是旧目录" },
+    { "probe": "setempty", "file": "packages/web-ui/src/components/NotificationBell.tsx", "nth": 1, "class": "write-fallback", "reason": "markAllRead 是**写路径**；批量失败后逐条 markRead 是回退策略，不是把读失败当空集" },
+    { "probe": "setempty", "file": "packages/web-ui/src/pages/Deliverables.tsx", "nth": 1, "class": "error-raised", "raises": "setLoadError(errorMessage(err))", "reason": "R8：同一 catch 已升起 loadError（交付物搜索），界面出「读取失败」而不是「0 个交付物」" },
+    { "probe": "setempty", "file": "packages/web-ui/src/pages/Settings.tsx", "nth": 1, "class": "error-raised", "raises": "setAddProviderCatalogError(", "reason": "R14：同一 catch 已升起 addProviderCatalogError（provider 模型目录）" },
+    { "probe": "setempty", "file": "packages/web-ui/src/pages/Team.tsx", "nth": 1, "class": "error-raised", "raises": "setChatError(", "reason": "频道/DM 消息取数：同一 catch 已升起 chatError（P1 卡交付；quiet 补拉同一条路径）" },
+    { "probe": "setempty", "file": "packages/web-ui/src/pages/Team.tsx", "nth": 2, "class": "error-raised", "raises": "setSessionsError(", "reason": "会话列表取数：同一 catch 已升起 sessionsError（P1 卡交付，契约改为 T[] | null）" },
+    { "probe": "setempty", "file": "packages/web-ui/src/pages/Team.tsx", "nth": 3, "class": "error-raised", "raises": "setFindServerError(", "reason": "R7：同一 catch 已升起 findServerError（历史消息搜索），「无命中」不再冒充结论" }
+  ]
+}

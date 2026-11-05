@@ -8,6 +8,12 @@ import type { RoleTemplate } from '@markus/shared';
 
 let tempDir: string;
 
+/**
+ * 取数快照（与 core 的 `FetchResult` 同形）：**读到了 0 条 ≠ 没读到**。
+ * 这里只造「读到了」这一态；「没读到」由 `context-engine-swallow.test.ts` 覆盖。
+ */
+const ok = <T,>(items: readonly T[]) => ({ state: 'ok' as const, items });
+
 const MOCK_ROLE: RoleTemplate = {
   id: 'deep-role',
   name: 'Deep Role',
@@ -155,7 +161,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks,
+      assignedTasks: ok(assignedTasks),
     });
 
     expect(result.volatile).toContain('My Tasks');
@@ -175,7 +181,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks: [],
+      assignedTasks: { state: 'ok', items: [] },
       scenario: 'chat',
     });
     expect(chat.text).not.toContain('No tasks on the board');
@@ -186,7 +192,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks: [],
+      assignedTasks: { state: 'ok', items: [] },
       scenario: 'task_execution',
     });
     expect(execute.volatile).toContain('## Task Board');
@@ -229,7 +235,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks,
+      assignedTasks: ok(assignedTasks),
       scenario: 'chat',
     });
 
@@ -263,7 +269,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks,
+      assignedTasks: ok(assignedTasks),
       scenario: 'chat',
     });
 
@@ -283,7 +289,7 @@ describe('ContextEngine task board and mailbox', () => {
       agentName: 'Agent',
       role: MOCK_ROLE,
       memory,
-      assignedTasks,
+      assignedTasks: ok(assignedTasks),
       scenario: 'task_execution',
     });
 

@@ -2465,7 +2465,9 @@ function TaskDetailPanel({
   const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
+  // 终态判定只走 shared 投影的 isTerminal()（web-ui: lib/taskStatus.ts）。
+  // 上面 5 个 isCompleted/isFailed/… 是**具体状态**展示用（按钮编排），不是第二份终态定义。
+  const taskTerminal = isTerminal(task.status);
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -2711,7 +2713,7 @@ function TaskDetailPanel({
                         <span key={blockerId} className={`inline-flex items-center gap-1 text-[11px] px-2 py-1 rounded-full ${blockerDone ? 'bg-green-500/10 text-green-600' : 'bg-amber-500/10 text-amber-600'}`}>
                           <span className="text-[9px]">{blockerDone ? '✓' : '⏳'}</span>
                           <span className={`font-mono ${blockerDone ? 'line-through opacity-60' : ''}`}>{blockerTask ? blockerTask.title.slice(0, 30) : blockerId.slice(-8)}</span>
-                          {!isTerminal && (
+                          {!taskTerminal && (
                             <button
                               onClick={async () => {
                                 const newBlockedBy = (task.blockedBy ?? []).filter(id => id !== blockerId);
@@ -2738,7 +2740,7 @@ function TaskDetailPanel({
                     <span>{t('work:task.abnormalBlockHint')}</span>
                   </div>
                 )}
-                {!isTerminal && (
+                {!taskTerminal && (
                   <DependencySearchSelect
                     options={allTasks
                       .filter(t => t.id !== task.id && !(task.blockedBy ?? []).includes(t.id))
@@ -3228,7 +3230,7 @@ function TaskDetailPanel({
               <button onClick={() => void reopenTask()} disabled={actionInFlight} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary disabled:opacity-50">{t('work:task.reopen')}</button>
             )}
             {/* ── Cancel (non-terminal, non-pending) — always requires confirmation ── */}
-            {!isTerminal && task.status !== 'pending' && (
+            {!taskTerminal && task.status !== 'pending' && (
               <button onClick={async () => {
                 const { count } = await api.tasks.getDependentCount(task.id);
                 setCancelConfirm({ dependentCount: count });
@@ -7453,7 +7455,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               <div className="min-w-0">
                 <MultiSearchableSelect
                   options={Object.values(board).flat()
-                    .filter(tk => tk.status !== 'completed' && tk.status !== 'cancelled')
+                    .filter(tk => !isTerminal(tk.status))
                     .map(tk => ({ value: tk.id, label: tk.title }))}
                   selected={taskBlockedBy}
                   onAdd={id => setTaskBlockedBy([...taskBlockedBy, id])}
@@ -7952,7 +7954,7 @@ function RequirementDetailPanel({
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
+  const reqTerminal = isTerminal(req.status);
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -8006,12 +8008,12 @@ function RequirementDetailPanel({
               />
             ) : (
               <span
-                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!isTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
-                onClick={!isTerminal ? () => setEditingTitle(true) : undefined}
-                role={!isTerminal ? 'button' : undefined}
-                tabIndex={!isTerminal ? 0 : undefined}
-                onKeyDown={!isTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
-                title={!isTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
+                className={`align-middle rounded px-0.5 -mx-0.5 transition-colors ${!reqTerminal ? 'cursor-text hover:bg-surface-elevated/60' : ''}`}
+                onClick={!reqTerminal ? () => setEditingTitle(true) : undefined}
+                role={!reqTerminal ? 'button' : undefined}
+                tabIndex={!reqTerminal ? 0 : undefined}
+                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && setEditingTitle(true) : undefined}
+                title={!reqTerminal ? t('work:task.clickToEdit', { defaultValue: '点击编辑' }) : undefined}
               >
                 {req.title}
               </span>
@@ -8086,11 +8088,11 @@ function RequirementDetailPanel({
             ) : (
               <div
                 ref={descRef}
-                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
-                onClick={!isTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
-                role={!isTerminal ? 'button' : undefined}
-                tabIndex={!isTerminal ? 0 : undefined}
-                onKeyDown={!isTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
+                className={`group relative rounded-lg -mx-2 px-2 -my-1 py-1 transition-colors ${!reqTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
+                onClick={!reqTerminal ? (e: React.MouseEvent) => { if ((e.target as HTMLElement).closest('a, button, [data-entity-link]')) return; descHeightRef.current = Math.max(descRef.current?.offsetHeight ?? 80, 60); setDescDraft(req.description); setEditingDesc(true); } : undefined}
+                role={!reqTerminal ? 'button' : undefined}
+                tabIndex={!reqTerminal ? 0 : undefined}
+                onKeyDown={!reqTerminal ? e => e.key === 'Enter' && (setDescDraft(req.description), setEditingDesc(true)) : undefined}
               >
                 {req.description ? (
                   <MarkdownMessage content={req.description} className="text-sm text-fg-secondary leading-relaxed" />
@@ -8107,7 +8109,7 @@ function RequirementDetailPanel({
               <label className={ROW_LABEL_CLS}>{t('work:task.projectLabel')}</label>
               <SearchableSelect
                 size="sm"
-                disabled={isTerminal}
+                disabled={reqTerminal}
                 options={[{ value: '', label: t('work:task.noProject') }, ...projects.map(p => ({ value: p.id, label: p.name }))]}
                 value={req.projectId ?? ''}
                 onChange={v => void updateReq({ projectId: v || null })}
@@ -8119,7 +8121,7 @@ function RequirementDetailPanel({
               <PriorityChips value={req.priority} onChange={v => void updateReq({ priority: v })} />
 
               <label className={ROW_LABEL_CLS}>{t('work:task.tagsLabel')}</label>
-              {editingTags && !isTerminal ? (
+              {editingTags && !reqTerminal ? (
                 <input
                   autoFocus
                   value={tagsDraft}
@@ -8139,11 +8141,11 @@ function RequirementDetailPanel({
                 />
               ) : (
                 <div
-                  className={`flex flex-wrap items-center gap-1.5 rounded-lg -mx-2 px-2 py-1 transition-colors ${!isTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
-                  onClick={!isTerminal ? () => setEditingTags(true) : undefined}
-                  role={!isTerminal ? 'button' : undefined}
-                  tabIndex={!isTerminal ? 0 : undefined}
-                  onKeyDown={!isTerminal ? e => e.key === 'Enter' && setEditingTags(true) : undefined}
+                  className={`flex flex-wrap items-center gap-1.5 rounded-lg -mx-2 px-2 py-1 transition-colors ${!reqTerminal ? 'cursor-pointer hover:bg-surface-elevated/50' : ''}`}
+                  onClick={!reqTerminal ? () => setEditingTags(true) : undefined}
+                  role={!reqTerminal ? 'button' : undefined}
+                  tabIndex={!reqTerminal ? 0 : undefined}
+                  onKeyDown={!reqTerminal ? e => e.key === 'Enter' && setEditingTags(true) : undefined}
                 >
                   {req.tags && req.tags.length > 0 ? req.tags.map(tag => (
                     <span key={tag} className="text-[10px] bg-surface-elevated text-fg-secondary px-2 py-0.5 rounded-full">#{tag}</span>
@@ -8213,7 +8215,7 @@ function RequirementDetailPanel({
                     {t('work:task.saveAsWorkflow')}
                   </button>
                 )}
-                {!isTerminal && onCreateTask && (
+                {!reqTerminal && onCreateTask && (
                   <button onClick={() => onCreateTask(req.id, req.projectId)} className="text-[11px] text-amber-500 hover:text-amber-400 font-medium flex items-center gap-1">
                     <svg className="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
                     {t('work:requirement.createTask')}
@@ -8435,7 +8437,7 @@ function RequirementDetailPanel({
               <button onClick={() => onReject(req.id)} className="px-4 py-2 border border-red-500/30 hover:bg-red-500/10 text-red-500 text-sm rounded-lg font-medium transition-colors">{t('work:requirement.rejectRequirement')}</button>
             </>
           )}
-          {!needsReview && onStatusChange && !isTerminal && (
+          {!needsReview && onStatusChange && !reqTerminal && (
             <div className="relative">
               <button
                 type="button"
@@ -8493,7 +8495,7 @@ function RequirementDetailPanel({
               )}
             </div>
           )}
-          {isTerminal && onStatusChange && (
+          {reqTerminal && onStatusChange && (
             <button onClick={() => onStatusChange(req.id, 'in_progress')} className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-elevated rounded-lg text-fg-secondary transition-colors">{t('work:task.reopen')}</button>
           )}
           <div className="flex-1" />

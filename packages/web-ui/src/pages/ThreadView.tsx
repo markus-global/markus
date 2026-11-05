@@ -23,6 +23,8 @@ import { PAGE } from '../routes.ts';
 import { looksLikeRef, matchesThreadQuery } from '../lib/threadSearch.ts';
 import { refDisplay, stageLabel, stageTone, waitPhrase } from '../lib/threadPresentation.ts';
 import { entityNavTarget } from '../lib/threadNav.ts';
+// 「来源的读取状态」只复用 `lib/threadTimeline.ts` 的那一份，不另造同形联合类型。
+import type { SourceState } from '../lib/threadTimeline.ts';
 import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
 
 export function ThreadViewPage() {
@@ -33,6 +35,20 @@ export function ThreadViewPage() {
   /** ref 直解的结果：按 ref 读，与候选集无关。 */
   const [direct, setDirect] = useState<ThreadAPI | null>(null);
   const [directError, setDirectError] = useState<string | null>(null);
+  /**
+   * 手上这份直解结果**属于哪个 ref**（事故①：「还没有任何记录」在首帧闪现）。
+   *
+   * 旧判定是 `q && results.length === 0 && !directError` —— `results` 在请求**飞行中**
+   * 也是空数组，于是刚输入 ref 的那一帧就画出了「这条流还没有任何记录（也没有头部
+   * 事实可读）」。那不是「确实没有」，那是「还没读到」（审计 §3 事故①的原样复现）。
+   *
+   * 修法与 `lib/threadTimeline.ts#sourceForRef` 同一个形状：把数据绑在「它是给哪个 ref
+   * 读的」上。`directFor !== q` ⇒ 这份数据不是当前查询的，一律当作「在读」。
+   * 只靠 effect 里 `setState('loading')` 是堵不住那一帧的 —— effect 在首帧渲染之后才跑。
+   */
+  const [directFor, setDirectFor] = useState<string | null>(null);
+  /** 候选语料（检索面）的读取状态：同样不能拿「没读到」冒充「没命中」。 */
+  const [listState, setListState] = useState<SourceState>('loading');
   const [selectedRef, setSelectedRef] = useState<string | null>(null);
 
   const q = query.trim();
@@ -41,18 +57,30 @@ export function ThreadViewPage() {
   useEffect(() => {
     let alive = true;
     fetchThreads()
-      .then(r => { if (alive) { setCandidates(r.threads ?? []); setListError(null); } })
-      .catch(e => { if (alive) setListError(e instanceof Error ? e.message : String(e)); });
+      .then(r => { if (alive) { setCandidates(r.threads ?? []); setListError(null); setListState('ok'); } })
+      .catch(e => {
+        if (alive) {
+          setListError(e instanceof Error ? e.message : String(e));
+          setListState('error');
+        }
+      });
     return () => { alive = false; };
   }, []);
 
   // ref 直解：只给 ref 就够（同一读取面，任务详情/票据详情/agent 详情也用它）
   useEffect(() => {
-    if (!asRef) { setDirect(null); setDirectError(null); return; }
+    if (!asRef) { setDirect(null); setDirectError(null); setDirectFor(null); return; }
     let alive = true;
     fetchThreadByRef(q)
-      .then(r => { if (alive) { setDirect(r.thread); setDirectError(null); } })
-      .catch(e => { if (alive) { setDirect(null); setDirectError(e instanceof Error ? e.message : String(e)); } });
+      .then(r => { if (alive) { setDirect(r.thread); setDirectError(null); setDirectFor(q); } })
+      .catch(e => {
+        if (alive) {
+          setDirect(null);
+          setDirectError(e instanceof Error ? e.message : String(e));
+          // 失败也要认领这个 ref：否则 `directFor !== q` 会把它当成「还在读」，错误就永远上不了屏。
+          setDirectFor(q);
+        }
+      });
     return () => { alive = false; };
   }, [q, asRef]);
 
@@ -86,6 +114,19 @@ export function ThreadViewPage() {
 
   const selected = results.find(t => t.ref === selectedRef) ?? results[0] ?? null;
   const now = Date.now();
+
+  /** 直解来源的三态。`loading` 包含「手上这份数据不是给当前 ref 读的」。 */
+  const directState: SourceState = directFor !== q ? 'loading' : (directError ? 'error' : 'ok');
+  /**
+   * 「真的一条都没有」的**单一判据** —— 三个条件同时成立：
+   *   ① 有查询；② 对应来源已读完（`ok`）；③ 结果为空。
+   * 读取中 / 读失败时一律**不**渲染空态文案（那就是对用户陈述一个不知道的事实）。
+   */
+  const emptyByState = q !== ''
+    && (asRef ? directState === 'ok' : listState === 'ok')
+    && results.length === 0
+    && !directError;
+  const stillLoading = q !== '' && (asRef ? directState === 'loading' : listState === 'loading');
 
   return (
     // `flex-1 min-h-0 overflow-auto` 是滚动的前提：App 的 <main> 是 overflow-hidden，
@@ -137,7 +178,15 @@ export function ThreadViewPage() {
           </div>
         )}
 
-        {q && results.length === 0 && !directError && (
+        {/* 还在读：说在读，不说「没有」。这两件事曾被同一个空数组表示（事故①）。 */}
+        {stillLoading && (
+          <div className="rounded-lg border border-border-subtle bg-surface-secondary p-6 text-sm text-fg-tertiary">
+            正在读取这条流…
+          </div>
+        )}
+
+        {/* 确实读完了、确实为空 —— 只有这时才允许说「没有」。 */}
+        {emptyByState && (
           <div className="rounded-lg border border-border-subtle bg-surface-secondary p-6 text-sm text-fg-secondary">
             {asRef ? '这条流还没有任何记录（也没有头部事实可读）。' : `没有标题或 ref 命中的流：${q}`}
           </div>

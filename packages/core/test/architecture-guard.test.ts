@@ -145,3 +145,124 @@ describe('architecture-guard · write-gate（P1-6 / G1）', () => {
     rmSync(root, { recursive: true, force: true });
   });
 });
+
+/**
+ * 终态谓词门禁（P3 / tsk_1e766b22）
+ *
+ * 这一组测试就是卡面要求的「红/绿双态证据 + 不误伤证据」，只是把一次性验证固化成回归：
+ *   - 终态裸比较 → 必须红（漏报等于没门禁）
+ *   - 非终态比较（running/in_progress/blocked/review）→ 必须**放行**（误伤等于错门禁）
+ *   - isTerminal() / 注释里的示例代码 / 属它域的豁免文件 → 必须放行
+ *   - 基线只能缩小：比基线多 → 红；比基线少 → 也红（否则存量永不下降）
+ */
+describe('architecture-guard · terminal-status-predicate（P3）', () => {
+  const PROBE = 'packages/core/src/probe.ts';
+
+  function runWithProbe(source: string, baseline?: unknown): { ok: boolean; out: string } {
+    const root = mkdtempSync(join(tmpdir(), 'markus-guard-terminal-'));
+    writeFixture(root, PROBE, source);
+    if (baseline !== undefined) {
+      writeFixture(root, 'scripts/terminal-status-baseline.json', JSON.stringify(baseline));
+    }
+    const res = runGuard(root);
+    rmSync(root, { recursive: true, force: true });
+    return res;
+  }
+
+  it('终态裸比较（===）→ 门禁失败，并指向 isTerminal', () => {
+    const res = runWithProbe("export function f(status: string) { return status === 'completed'; }\n");
+    expect(res.ok).toBe(false);
+    expect(res.out).toContain('终态谓词门禁失败');
+    expect(res.out).toContain('isTerminal(status)');
+    expect(res.out).toContain(PROBE);
+  });
+
+  it('终态裸比较（!== / 反向书写 / 内联终态数组）→ 全部失败', () => {
+    for (const source of [
+      "export function f(status: string) { return status !== 'archived'; }\n",
+      "export function f(status: string) { return 'rejected' === status; }\n",
+      "export function f(status: string) { return ['completed', 'archived'].includes(status); }\n",
+    ]) {
+      const res = runWithProbe(source);
+      expect(res.ok, source).toBe(false);
+      expect(res.out).toContain('终态谓词门禁失败');
+    }
+  });
+
+  it('非终态比较（running / in_progress / blocked / review）→ 放行（不误伤）', () => {
+    const res = runWithProbe(
+      "export function f(status: string) { return status === 'running' || status === 'in_progress' || status === 'blocked' || status === 'review'; }\n",
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('isTerminal() 与注释里的示例代码 → 放行', () => {
+    const res = runWithProbe(
+      [
+        "import { isTerminal } from '@markus/shared';",
+        "// 反例（历史写法）：status === 'completed' —— 已收口到 isTerminal()",
+        '/* 同样：if (status === "failed") { ... } */',
+        'export function f(status: string) { return isTerminal(status); }',
+        '',
+      ].join('\n'),
+    );
+    expect(res.ok).toBe(true);
+  });
+
+  it('属其它域的豁免文件（mailbox item 状态）→ 放行', () => {
+    const root = mkdtempSync(join(tmpdir(), 'markus-guard-terminal-exempt-'));
+    writeFixture(root, 'packages/core/src/mailbox.ts', "export function f(status: string) { return status === 'completed'; }\n");
+    const res = runGuard(root);
+    rmSync(root, { recursive: true, force: true });
+    expect(res.ok).toBe(true);
+  });
+
+  it('基线棘轮：现状比基线多 → 失败；比基线少 → 也失败（要求删条目）', () => {
+    const source = "export function f(status: string) { return status === 'completed'; }\n";
+    const okBaseline = { version: 1, files: { [PROBE]: { count: 1, why: '这是测试夹具里登记过的具体状态判断' } } };
+    expect(runWithProbe(source, okBaseline).ok).toBe(true);
+
+    const tooTight = { version: 1, files: { [PROBE]: { count: 0, why: '故意写小，验证新增必红' } } };
+    const grown = runWithProbe(source, tooTight);
+    expect(grown.ok).toBe(false);
+    expect(grown.out).toContain('终态谓词门禁失败');
+
+    const tooLoose = { version: 1, files: { [PROBE]: { count: 3, why: '故意写大，验证存量未清理必红' } } };
+    const shrank = runWithProbe(source, tooLoose);
+    expect(shrank.ok).toBe(false);
+    expect(shrank.out).toContain('基线只允许缩小');
+  });
+
+  it('基线缺 why → 失败（豁免必须解释它回答的是哪个问题）', () => {
+    const res = runWithProbe("export function f(status: string) { return status === 'completed'; }\n", {
+      version: 1,
+      files: { [PROBE]: { count: 1, why: '' } },
+    });
+    expect(res.ok).toBe(false);
+    expect(res.out).toContain('why');
+  });
+
+  /**
+   * 具名终态集合（第 4 轮评审的阻断项）：
+   * `const NAMED = ['completed','archived']; NAMED.includes(s)` —— 一行 const 就能绕过旧检测器。
+   * 这条测试就是评审那支探针的固化形态。
+   */
+  it('具名终态集合（const X = [...终态...]; X.includes(status)）→ 必红', () => {
+    for (const source of [
+      "const NAMED_TERM = ['completed', 'archived'];\nexport const f = (s: string) => NAMED_TERM.includes(s);\n",
+      "const T: ReadonlySet<string> = new Set(['failed', 'rejected']);\nexport const f = (s: string) => T.has(s);\n",
+      "let DONE: string[] = ['completed'];\nexport const f = (s: string) => DONE.indexOf(s) >= 0;\n",
+    ]) {
+      const res = runWithProbe(source);
+      expect(res.ok, source).toBe(false);
+      expect(res.out).toContain('终态谓词门禁失败');
+    }
+  });
+
+  it('具名**非终态**集合（如 STATUS_PIPELINE）→ 放行（不再误伤）', () => {
+    const res = runWithProbe(
+      "const STATUS_PIPELINE = ['pending', 'in_progress', 'review', 'blocked'];\nexport const f = (s: string) => STATUS_PIPELINE.includes(s);\n",
+    );
+    expect(res.ok).toBe(true);
+  });
+});

@@ -695,7 +695,7 @@ export class RequirementService implements ApprovalTargetPort {
     // 转终态 = 此前投出的「请审阅 / 请处理」不再为真 → 就在**这一个迁移点**撤回。
     // 不放到投递侧做二次判定：那会变成第二个执行点，两处迟早漂移。
     if (
-      (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') &&
+      TERMINAL_REQUIREMENT_STATUSES.has(newStatus) &&
       req.createdBy && this.agentManager
     ) {
       try {
@@ -710,7 +710,7 @@ export class RequirementService implements ApprovalTargetPort {
     // req_2c9595…completed），于是待办列表给一条已完成的需求挂着「待审批」徽标 ——
     // 界面没有撒谎，库里就是留了一条本该关掉的记录。
     // 与上面撤回同一时机、同一判据：终态只在这一个迁移点发生。
-    if (newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') {
+    if (TERMINAL_REQUIREMENT_STATUSES.has(newStatus)) {
       if (this.hitlService) {
         try {
           this.hitlService.cancelApprovalsByDetail(

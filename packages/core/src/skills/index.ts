@@ -94,8 +94,10 @@ export function discoverSkillsInDir(dir: string): Array<{ manifest: SkillManifes
   let names: string[];
   try {
     names = readdirSync(dir);
-  } catch {
-    return [];
+  } catch (err) {
+    // 目录存在但列不出来（权限/IO）≠ 这个目录里没有技能。
+    // 返回 [] 会让「技能不见了」变成一个安静的空列表，调用方无从察觉。
+    throw new Error(`discoverSkillsInDir: cannot list ${dir}: ${String(err)}`);
   }
 
   for (const name of names) {

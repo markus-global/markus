@@ -667,7 +667,12 @@ export class MemoryStore implements IMemoryStore {
       const { entries, error } = parseRecords(readFileSync(this.longTermArchiveFile, 'utf-8'));
       if (error) log.error('knowledge-archive.json unreadable — NOT overwriting it', { error });
       return entries;
-    } catch { return []; }
+    } catch (err) {
+      // 取数路径：读不到 ≠ 没有归档记录。返回 [] 会让 search 安静地少一截，
+      // 调用方（memory_search）无法区分「确实没归档」与「文件读不了」。
+      log.error('knowledge-archive.json read failed — NOT reporting it as empty', { error: String(err) });
+      throw err;
+    }
   }
 
   /**
@@ -2020,8 +2025,10 @@ export class MemoryStore implements IMemoryStore {
       if (!existsSync(this.fragmentArchiveFile)) return [];
       return parseRecords(readFileSync(this.fragmentArchiveFile, 'utf-8')).entries
         .filter(e => e.type === 'conversation_fragment');
-    } catch {
-      return [];
+    } catch (err) {
+      // 同上：归档片段读不到 ⇒ 抛，不冒充「没有片段」。
+      log.error('fragment-archive.json read failed — NOT reporting it as empty', { error: String(err) });
+      throw err;
     }
   }
 
@@ -2221,8 +2228,9 @@ export class MemoryStore implements IMemoryStore {
       if (!obsMatch) return [];
       return this.parseEntryBlocks(obsMatch[1]!);
     } catch (err) {
-      log.warn('Failed to parse observations from knowledge.md', { error: String(err) });
-      return [];
+      // knowledge.md 读不了 ≠ 没有观察。返回 [] 等于给 agent 一句假的确定性陈述。
+      log.error('Failed to read observations from knowledge.md — NOT reporting an empty buffer', { error: String(err) });
+      throw err;
     }
   }
 

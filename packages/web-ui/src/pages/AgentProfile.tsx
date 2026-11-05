@@ -22,6 +22,9 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
+import { ReadErrorNotice } from '../components/ListState.tsx';
+import { listView, type Resource } from '../lib/resourceState.ts';
+import { useReadResource } from '../hooks/useProfileReads.ts';
 import { friendlyAgentError, ProcessTimeline } from './ChatComponents.tsx';
 import { DELIVERABLE_TYPE_META, DELIVERABLE_STATUS_META } from '../components/DeliverableDetailModal.tsx';
 import { getToolMeta } from '../components/execution-utils.ts';
@@ -1593,8 +1596,15 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [saving, setSaving] = useState(false);
   const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
-  const [sessionMessages, setSessionMessages] = useState<Array<{ role: string; content: string; toolCalls?: Array<{ id: string; name: string; arguments: string }>; toolCallId?: string }>>([]);
-  const [sessionLoading, setSessionLoading] = useState(false);
+  /**
+   * 展开会话的消息取数（R10）：走**同一份** `useReadResource`（与 R9 共享实现）。
+   * 未展开时 `enabled: false` 不发请求；`deps` 带会话 id，切会话即重新取数 ——
+   * 旧结果既不会冒充新会话，也不会被读成「这个会话没有消息」。
+   */
+  const sessionRead = useReadResource<MemorySessionMessage>(
+    () => api.agents.getMemorySession(agentId, expandedSessionId ?? '').then(r => r.messages as MemorySessionMessage[]),
+    { enabled: expandedSessionId !== null, deps: [agentId, expandedSessionId] },
+  );
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -1636,6 +1646,12 @@ function MemoryTab({ agentId }: { agentId: string }) {
 
   return (
     <div className="space-y-4">
+      {data.healthError && (
+        // 读失败 ≠ 没有健康数据：不画进度条、不把缺失字段渲染成 0，只陈述「没读到」。
+        <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-600">
+          记忆健康读取失败：{data.healthError}（这不等于「没有健康数据」）
+        </div>
+      )}
       {data.usedPercent != null && (
         <Card title={t('agent:profilePage.memoryTab.healthTitle', '记忆健康（knowledge.md）')}>
           <div className="space-y-2">
@@ -1721,16 +1737,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
             <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
               {data.sessions.map(s => {
                 const isExpanded = expandedSessionId === s.id;
-                const toggleSession = async () => {
-                  if (isExpanded) { setExpandedSessionId(null); setSessionMessages([]); return; }
-                  setExpandedSessionId(s.id);
-                  setSessionLoading(true);
-                  try {
-                    const res = await api.agents.getMemorySession(agentId, s.id);
-                    setSessionMessages(res.messages);
-                  } catch { setSessionMessages([]); }
-                  setSessionLoading(false);
-                };
+                // 展开/收起只切 key：取数由 `sessionRead` 一处负责（R10）。
+                const toggleSession = () => setExpandedSessionId(isExpanded ? null : s.id);
                 return (
                   <div key={s.id}>
                     <button
@@ -1744,55 +1752,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                     </button>
                     {isExpanded && (
                       <div className="mx-3 mt-1 mb-2 bg-surface-elevated/30 rounded-lg border border-border-default/20 max-h-96 overflow-y-auto">
-                        {sessionLoading ? (
-                          <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.loadingMessages')}</div>
-                        ) : sessionMessages.length === 0 ? (
-                          <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.noMessagesInSession')}</div>
-                        ) : (() => {
-                          const toolResultMap = new Map<string, string>();
-                          for (const m of sessionMessages) {
-                            if (m.role === 'tool' && m.toolCallId) toolResultMap.set(m.toolCallId, m.content);
-                          }
-                          return (
-                            <div className="divide-y divide-gray-700/30">
-                              {sessionMessages.filter(m => m.role !== 'tool').map((m, i) => (
-                                <div key={i} className="px-3 py-2">
-                                  {(m.role === 'user' || m.role === 'system') && (
-                                    <div>
-                                      <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-600' : 'bg-surface-overlay text-fg-secondary'}`}>{t(`agent:profilePage.memoryTab.roles.${m.role}`, { defaultValue: m.role })}</span>
-                                      <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
-                                    </div>
-                                  )}
-                                  {m.role === 'assistant' && (
-                                    <div className="space-y-1">
-                                      {m.content && (
-                                        <div>
-                                          <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-600">{t('agent:profilePage.memoryTab.roles.assistant')}</span>
-                                          <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
-                                        </div>
-                                      )}
-                                      {m.toolCalls && m.toolCalls.length > 0 && (
-                                        <div className="space-y-0.5">
-                                          {m.toolCalls.map(tc => {
-                                            let parsedArgs: Record<string, unknown> | undefined;
-                                            try { parsedArgs = JSON.parse(tc.arguments); } catch { /* ignore */ }
-                                            const info: ToolCallInfo = {
-                                              tool: tc.name,
-                                              status: 'done',
-                                              args: parsedArgs,
-                                              result: toolResultMap.get(tc.id),
-                                            };
-                                            return <ExecEntryRow key={tc.id} entry={{ type: 'tool', info }} />;
-                                          })}
-                                        </div>
-                                      )}
-                                    </div>
-                                  )}
-                                </div>
-                              ))}
-                            </div>
-                          );
-                        })()}
+                        <MemorySessionBody resource={sessionRead.resource} onRetry={sessionRead.reload} />
                       </div>
                     )}
                   </div>
@@ -3201,11 +3161,112 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 
 // ─── Deliverables Tab ────────────────────────────────────────────────────────
 
-function DeliverablesTab({ agentId }: { agentId: string }) {
+/** 记忆会话里的一条消息（`getMemorySession` 的形状）。 */
+export interface MemorySessionMessage {
+  role: string;
+  content: string;
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+  toolCallId?: string;
+}
+
+/**
+ * 记忆「会话」展开体（R10）：三态由 `listView()` 判，读失败**绝不**渲染
+ * 「这个会话没有消息」—— 那句是失败的读不能下的结论。
+ *
+ * 为什么抽成组件：原来这段三分支三元写在 `MemoryTab` 的闭包里，删掉 `sessionError ?`
+ * 分支没有任何测试能看见（评审实测：探针绿 + 全量 vitest 绿）。抽出来之后
+ * `AgentProfile.r10.test.tsx` 直接渲染它，删分支即红。
+ */
+export function MemorySessionBody({
+  resource,
+  onRetry,
+}: {
+  resource: Resource<MemorySessionMessage>;
+  onRetry: () => void;
+}) {
+  const { t } = useTranslation(['agent', 'common']);
+  const view = listView(resource);
+
+  if (view.loading) {
+    return <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.loadingMessages')}</div>;
+  }
+  if (view.error) {
+    return (
+      <ReadErrorNotice
+        variant="inline"
+        subject="会话消息"
+        error={resource.error ?? '读取失败'}
+        notEquals="这个会话没有消息"
+        onRetry={onRetry}
+      />
+    );
+  }
+  if (view.empty) {
+    return <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.noMessagesInSession')}</div>;
+  }
+
+  const toolResultMap = new Map<string, string>();
+  for (const m of view.rows) {
+    if (m.role === 'tool' && m.toolCallId) toolResultMap.set(m.toolCallId, m.content);
+  }
+  return (
+    <div className="divide-y divide-gray-700/30">
+      {view.rows.filter(m => m.role !== 'tool').map((m, i) => (
+        <div key={i} className="px-3 py-2">
+          {(m.role === 'user' || m.role === 'system') && (
+            <div>
+              <span className={`inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 ${m.role === 'user' ? 'bg-blue-500/15 text-blue-600' : 'bg-surface-overlay text-fg-secondary'}`}>{t(`agent:profilePage.memoryTab.roles.${m.role}`, { defaultValue: m.role })}</span>
+              <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
+            </div>
+          )}
+          {m.role === 'assistant' && (
+            <div className="space-y-1">
+              {m.content && (
+                <div>
+                  <span className="inline-block px-1.5 py-0.5 rounded text-[10px] font-medium mb-1 bg-green-500/15 text-green-600">{t('agent:profilePage.memoryTab.roles.assistant')}</span>
+                  <div className="text-xs text-fg-secondary"><MarkdownMessage content={m.content} className="text-xs text-fg-secondary" /></div>
+                </div>
+              )}
+              {m.toolCalls && m.toolCalls.length > 0 && (
+                <div className="space-y-0.5">
+                  {m.toolCalls.map(tc => {
+                    let parsedArgs: Record<string, unknown> | undefined;
+                    try { parsedArgs = JSON.parse(tc.arguments); } catch { /* ignore */ }
+                    const info: ToolCallInfo = {
+                      tool: tc.name,
+                      status: 'done',
+                      args: parsedArgs,
+                      result: toolResultMap.get(tc.id),
+                    };
+                    return <ExecEntryRow key={tc.id} entry={{ type: 'tool', info }} />;
+                  })}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Agent 交付物列表（R9）。`export` 是为了让站点级测试直接渲染它 ——
+ * 三态接线与 JSX 闸门必须能被同一个判定器看见。
+ */
+export function DeliverablesTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const layout = useLayout();
-  const [items, setItems] = useState<DeliverableInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  /**
+   * 取数 → 三态走**唯一实现** `useReadResource`（R9）。旧写法把
+   * `items / loading / loadError` 关在本组件的闭包里 —— 「删掉升 error 的那一行」
+   * 没有任何测试能到达接缝（评审实测过：探针绿 + 全量 vitest 绿）。
+   * 现在接线在 hook 里，`AgentProfile.r9.test.tsx` 用 reject 咬它。
+   */
+  const { resource, view, reload } = useReadResource<DeliverableInfo>(
+    () => api.deliverables.search({ agentId, limit: 200 }).then(r => r.results),
+    { deps: [agentId] },
+  );
 
   /**
    * 点击产出：
@@ -3227,25 +3288,14 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
     navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: item.id });
   }, [layout]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { results } = await api.deliverables.search({ agentId, limit: 200 });
-      setItems(results);
-    } catch { setItems([]); }
-    setLoading(false);
-  }, [agentId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
   useEffect(() => {
-    const unsub1 = wsClient.on('deliverable:created', () => refresh());
-    const unsub2 = wsClient.on('deliverable:updated', () => refresh());
-    const unsub3 = wsClient.on('deliverable:removed', () => refresh());
+    const unsub1 = wsClient.on('deliverable:created', reload);
+    const unsub2 = wsClient.on('deliverable:updated', reload);
+    const unsub3 = wsClient.on('deliverable:removed', reload);
     return () => { unsub1(); unsub2(); unsub3(); };
-  }, [refresh]);
+  }, [reload]);
 
-  if (loading) {
+  if (view.loading) {
     return (
       <div className="space-y-3 py-4">
         {[1, 2, 3].map(i => (
@@ -3258,7 +3308,7 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
     );
   }
 
-  if (items.length === 0) {
+  if (view.empty) {
     return (
       <div className="flex flex-col items-center justify-center py-16 text-center">
         <span className="text-3xl mb-3">📦</span>
@@ -3270,11 +3320,24 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
 
   return (
     <>
+      {view.error && (
+        <ReadErrorNotice
+          subject="交付物"
+          error={resource.error ?? '读取失败'}
+          notEquals="这个 Agent 没有任何交付物"
+          onRetry={reload}
+        />
+      )}
       <div className="space-y-2">
-        <div className="text-xs text-fg-tertiary mb-3">
-          {t('agent:deliverables.count', { count: items.length })}
-        </div>
-        {items.map(item => {
+        {/* R9：读失败时不得渲染计数行 —— 「共 0 个交付物」与上面那句
+            「这不等于『这个 Agent 没有任何交付物』」是同一屏上的两句矛盾断言。
+            闸门读的是**同一个派生视图**（`view.error`），不另立裸 `loadError` 事实源。 */}
+        {!view.error && (
+          <div className="text-xs text-fg-tertiary mb-3">
+            {t('agent:deliverables.count', { count: view.rows.length })}
+          </div>
+        )}
+        {view.rows.map(item => {
           const typeMeta = DELIVERABLE_TYPE_META[item.type] ?? { icon: '📎', color: 'bg-surface-elevated text-fg-secondary' };
           const statusMeta = DELIVERABLE_STATUS_META[item.status] ?? DELIVERABLE_STATUS_META.active!;
           return (

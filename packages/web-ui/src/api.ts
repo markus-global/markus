@@ -1228,6 +1228,8 @@ export interface AgentMemorySummary {
   curatedCount?: number;
   archivedChars?: number;
   lastConsolidatedAt?: string | null;
+  /** 记忆健康**读失败**的原因（有值≠没有健康数据，而是没读到）。 */
+  healthError?: string;
 }
 
 export interface AvailableSkillInfo {

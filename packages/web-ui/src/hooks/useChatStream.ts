@@ -99,7 +99,7 @@ export interface ChatStreamContext {
   setActiveSession: (k: string, s: string) => void;
   incrementSending: (k: string) => void;
   decrementSending: (k: string) => number;
-  loadAndDisplay: (s: string, k: string, f: () => Promise<{ messages: ChatMsg[]; hasMore: boolean; oldestCursor: string | null }>) => Promise<{ count: number; hasMore: boolean; oldestCursor: string | null }>;
+  loadAndDisplay: (s: string, k: string, f: () => Promise<{ messages: ChatMsg[]; hasMore: boolean; oldestCursor: string | null }>) => Promise<{ count: number; hasMore: boolean; oldestCursor: string | null; error: string | null }>;
   // Team-owned refs shared with non-stream code
   sessionSwitchSeqRef: RefObject<number>;
   // Setters (stable)
@@ -121,7 +121,8 @@ export interface ChatStreamContext {
   makeDmChannel: (userId: string, dmUserId: string) => string;
   addRecentMsgId: (id: string) => void;
   resumeChatScrollFollow: () => void;
-  loadSessions: (agentId: string) => Promise<ChatSessionInfo[]>;
+  /** `null` = 没读到（不是「没有会话」）—— 调用方不得据此推断空集。 */
+  loadSessions: (agentId: string) => Promise<ChatSessionInfo[] | null>;
   t: TFunction;
 }
 
@@ -129,7 +130,7 @@ export interface ChatStreamApi {
   send: (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => Promise<void>;
   stopSending: () => void;
   tryReattachActiveStream: (agentId: string, sessionId: string, convKey: string) => Promise<void>;
-  loadSessionMessages: (sessionId: string, convKey: string) => Promise<number>;
+  loadSessionMessages: (sessionId: string, convKey: string) => Promise<{ count: number; error: string | null }>;
 }
 
 export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
@@ -196,14 +197,20 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
 
   // Load session messages from DB — phase-aware via ConversationBufferManager.
   // During streaming phase, DB data is written to cache only, never to display.
-  const loadSessionMessages = useCallback(async (sessionId: string, convKey: string): Promise<number> => {
+  //
+  // 返回值带 `error`：`count: 0` 与「没读到」是两件事。取数层不定 UI，
+  // 由调用方（Team）据此升起 error 态并清掉不属于本会话的旧内容。
+  const loadSessionMessages = useCallback(async (
+    sessionId: string,
+    convKey: string,
+  ): Promise<{ count: number; error: string | null }> => {
     const seqAtStart = sessionSwitchSeqRef.current;
     // Soft-refresh (buffer already has messages) should not flash a full-page spinner.
     const showSpinner = currentConvKeyRef.current === convKey
       && (readConvMsgs(convKey)?.length ?? 0) === 0;
     if (showSpinner) setLoadingChat(true);
     try {
-      const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
+      const { count, hasMore: more, oldestCursor, error } = await loadAndDisplay(sessionId, convKey, async () => {
         const result = await api.sessions.getMessages(sessionId, 50);
         const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
           m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
@@ -217,7 +224,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // 边界写进**这个会话自己的 buffer 槽**（`bufferId = sessionId`），而不是某个全局值 ——
       // 于是别的会话晚到的加载不可能改写这个会话的窗口边界（第六轮报障根因）。
       setWindowBounds(sessionId, { hasMore: more, oldestCursor });
-      return count;
+      return { count, error };
     } finally {
       // Only the latest session switch may clear the spinner — an older tab
       // request resolving late otherwise kills the loading state of the tab
@@ -1443,6 +1450,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           }
           loadSessions(volatile.selectedAgent!).then(s => {
             if (currentConvKeyRef.current !== sendKey) return;
+            if (!s) return; // 没读到：不动 tab，也不假装「没有会话」
             setSessions(s);
             if (streamResult.sessionId) {
               const newSess = s.find(ss => ss.id === streamResult.sessionId);
@@ -1535,7 +1543,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
               }
               try {
                 const loaded = await loadSessionMessages(resumeSessionId, sendKey);
-                if (loaded > 0) {
+                if (loaded.count > 0) {
                   decrementSending(sendKey);
                   dropStreamCtl(abortCtrl);
                   endStream(sendKey);
@@ -1574,6 +1582,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
           );
           loadSessions(volatile.selectedAgent!).then(s => {
             if (currentConvKeyRef.current !== sendKey) return;
+            if (!s) return; // 同上：读失败不推断空集
             setSessions(s);
             const newSess = s.find(ss => ss.id === errSessionId);
             if (newSess) {

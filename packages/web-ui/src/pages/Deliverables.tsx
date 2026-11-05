@@ -17,6 +17,8 @@ import { PAGE, resolvePageId } from '../routes.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { useWhilePageActive } from '../hooks/usePageActive.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
+import { listView, errorMessage } from '../lib/resourceState.ts';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { useResizablePanel } from '../hooks/useResizablePanel.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -127,6 +129,11 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   const DATE_PAGE_SIZE = 20;
   const ALL_ITEMS_LIMIT = 60;
   const [items, setItems] = useState<DeliverableInfo[]>(previewData?.items ?? []);
+  /**
+   * 交付物搜索的**读取失败**：与「0 个交付物」分开存（R8）。
+   * 旧写法 `catch { setItems([]); setTotalCount(0) }` 让界面安静地说「一个都没有」。
+   */
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [totalCount, setTotalCount] = useState(previewData?.items?.length ?? 0);
   const [loadingMore, setLoadingMore] = useState(false);
   const [projects, setProjects] = useState<ProjectInfo[]>(previewData?.projects ?? []);
@@ -309,7 +316,15 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
         if (results.some(r => r.id === prev.id)) return prev;
         return null;
       });
-    } catch { setItems([]); setTotalCount(0); setSelected(null); }
+      setLoadError(null);
+    } catch (err) {
+      // 清列表是对的（旧结果属于上一个查询），但必须同时升起 error 态：
+      // 否则界面会把「没读到」渲染成「0 个交付物」。
+      setLoadError(errorMessage(err));
+      setItems([]);
+      setTotalCount(0);
+      setSelected(null);
+    }
     setLoading(false);
   }, [searchParams, fetchLimit]);
 
@@ -325,6 +340,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
   }, [searchParams, fetchLimit, items.length, totalCount, loadingMore]);
 
   useEffect(() => { if (previewMode) return; refresh(); }, [refresh, previewMode]);
+
+  /** 三态判据：**唯一**（`listView`）；empty 只有在「没在读、没失败、确实 0 条」时才成立。 */
+  const view = listView({
+    state: loadError ? 'error' : loading ? 'loading' : 'ok',
+    items,
+    error: loadError,
+  });
 
   useEffect(() => {
     if (!previewMode || !previewData) return;
@@ -1283,6 +1305,14 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
           )}
         </div>
 
+        {loadError && (
+          <ReadErrorNotice
+            subject="交付物"
+            error={loadError}
+            notEquals="没有任何交付物"
+            onRetry={() => void refresh()}
+          />
+        )}
         {flash && (
           <div className={`mx-4 mt-2 px-3 py-1.5 text-xs rounded-lg ${flash.type === 'success' ? 'bg-green-500/15 text-green-600' : 'bg-red-500/15 text-red-500'}`}>{flash.text}</div>
         )}
@@ -1304,7 +1334,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 </div>
               ))}
             </div>
-          ) : items.length === 0 ? (
+          ) : view.empty ? (
             <div className="flex flex-col items-center justify-center py-16 px-6 text-center">
               <svg className="w-12 h-12 text-fg-muted mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1}>
                 <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 14.25v-2.625a3.375 3.375 0 00-3.375-3.375h-1.5A1.125 1.125 0 0113.5 7.125v-1.5a3.375 3.375 0 00-3.375-3.375H8.25m0 12.75h7.5m-7.5 3H12M10.5 2.25H5.625c-.621 0-1.125.504-1.125 1.125v17.25c0 .621.504 1.125 1.125 1.125h12.75c.621 0 1.125-.504 1.125-1.125V11.25a9 9 0 00-9-9z" />

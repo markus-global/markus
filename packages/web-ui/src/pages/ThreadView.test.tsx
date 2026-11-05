@@ -110,6 +110,51 @@ describe('ThreadView — 全局页是「搜索一条流」，不是目录', () =
     expect(document.querySelector('[data-thread-row="tsk_a"]')).toBeNull();
   });
 
+  /**
+   * 事故①（审计 §3）：「还没有任何记录」在首帧闪现。
+   *
+   * 旧判定只看 `results.length === 0`，而请求**飞行中** `results` 也是空数组 —— 于是刚
+   * 输入 ref 的那一帧就已经在说「这条流还没有任何记录」，然后才变成真内容。
+   *
+   * 两个方向都要钉：还没读到说在读；读失败说读失败。两个方向都禁止说「没有」。
+   */
+  it('ref 直解还在读 → 说在读，不得说「还没有任何记录」（事故①首帧闪现）', async () => {
+    apiMocks.fetchThreadByRef.mockImplementation(() => new Promise(() => { /* 永不落地 */ }));
+
+    render(<ThreadViewPage />);
+    await waitFor(() => expect(apiMocks.fetchThreads).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('搜索一条流'), { target: { value: 'tsk_slow' } });
+
+    // 首帧（effect 还没落地）：不得出现空态文案。
+    expect(screen.queryByText(/还没有任何记录/)).toBeNull();
+    expect(screen.getByText(/正在读取这条流/)).toBeTruthy();
+  });
+
+  it('ref 直解读失败 → 说读失败，不得说「还没有任何记录」', async () => {
+    apiMocks.fetchThreadByRef.mockRejectedValue(new Error('boom'));
+
+    render(<ThreadViewPage />);
+    await waitFor(() => expect(apiMocks.fetchThreads).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText('搜索一条流'), { target: { value: 'tsk_dead' } });
+
+    expect(await screen.findByText(/按 ref 读取失败/)).toBeTruthy();
+    expect(screen.queryByText(/还没有任何记录/)).toBeNull();
+  });
+
+  it('候选语料读失败时，关键词模式不得说「没有命中的流」（那是没读到，不是没命中）', async () => {
+    apiMocks.fetchThreads.mockRejectedValue(new Error('list down'));
+
+    render(<ThreadViewPage />);
+    expect(await screen.findByText(/候选流读取失败/)).toBeTruthy();
+
+    fireEvent.change(screen.getByLabelText('搜索一条流'), { target: { value: '支付' } });
+
+    await waitFor(() => expect(screen.getByText(/候选流读取失败/)).toBeTruthy());
+    expect(screen.queryByText(/没有标题或 ref 命中的流/)).toBeNull();
+  });
+
   it('输入 ref → 走按 ref 的直解（列表里没有这条流也能打开）', async () => {
     render(<ThreadViewPage />);
     await waitFor(() => expect(apiMocks.fetchThreads).toHaveBeenCalled());

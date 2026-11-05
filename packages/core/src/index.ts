@@ -24,7 +24,7 @@ export {
   type SkillLookup,
 } from './skill-warnings.js';
 export { HeartbeatScheduler } from './heartbeat.js';
-export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer, type SystemPromptResult, type SystemPromptSegment } from './context-engine.js';
+export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer, type SystemPromptResult, type SystemPromptSegment, type FetchResult } from './context-engine.js';
 export {
   SmartTokenCounter,
   getDefaultTokenCounter,
