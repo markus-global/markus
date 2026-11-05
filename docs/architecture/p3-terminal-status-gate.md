@@ -1,280 +1,352 @@
 # P3 · 状态裸比较收口：`isTerminal()` 唯一入口 + 门禁拦住新增违规
 
-- **任务**：`tsk_1e766b22991e370479a5b1f2`（req_410d823e89f19d6df27e578d · 硬编码字符串审计 P0–P4）
-- **分支**：`task/tsk_1e766b22991e370479a5b1f2-cto`（基线 = P0 收口提交 `d2f78684`，与 P0/P1/P2/P4 同基线，便于串行合并）
-- **日期**：2026-11-05
-- **一句话结论**：`isTerminal()` 现在是终态判定的**唯一入口**（附 grep 证明），且**新增裸比较会在提交前被机器拦住**；存量 127 处按文件登记为带理由的基线，基线**只能缩小**。
+> 需求 `req_410d823e89f19d6df27e578d`（硬编码字符串审计）· 任务 `tsk_1e766b22991e370479a5b1f2`
+> 分支 `task/tsk_1e766b22991e370479a5b1f2-cto`（基线 `d2f78684` = P0 分支顶端）
+> 落地日期 2026-11-05
 
 ---
 
-## 1. 先纠正口径：审计里的「386」不可复现
+## 0. 摘要：这一版能判定什么
 
-卡面要求「第一步不是改代码，是把 386 分类」。实测结论：**386 这个数字不属于任何一个可复现的 grep 口径**。
-
-在 `packages/*/src/**/*.{ts,tsx}`（684 个文件）上跑四种口径：
-
-| 口径 | 正则 | 出现次数 | 命中行 | 文件数 |
-|---|---|---:|---:|---:|
-| A 带属性 | `\.status\s*(===|!==|==|!=)\s*'…'` | 603 | 530 | 91 |
-| B 含裸标识符 | `\bstatus\s*(===|!==|==|!=)\s*'…'` | 728 | 636 | 100 |
-| C 带属性、单方向 | `\.status\s*===\s*'…'` | 468 | 404 | 81 |
-| D **只算终态字形**（本卡真正关心的） | `status\s*(===|!==)\s*'(completed|failed|rejected|cancelled|archived)'` | **155** | 136 | 33 |
-
-没有一个等于 386。**这不是审计作者的错，而是这类数字的通病**：`status` 在 6 个互不相干的域里出现（任务、需求、审批、coding 工具、会话流、工作流节点），任何「扫全仓 status 比较」的计数都在偷偷混合问题。所以本卡不拿任何单一数字当目标——下面的分类才是可判定的口径。
-
-> 同一批审计里 P0 的「5 处」实为 8 处、P1 的「97 处」按字面量实测为 0 处、P2 的「20 处」实为 188 行，已在本轮之前的复核中更正。
-
----
-
-## 2. 分类结果（不是 386 的 386）
-
-### 2.1 门禁的判定口径
-
-门禁只看**终态字形**（`completed` / `failed` / `rejected` / `cancelled` / `archived`）与状态主体的比较，并**只**在下面三个问题里做区分：
-
-| 类别 | 判定 | 处置 |
+| 判据 | 结果 | 证据 |
 |---|---|---|
-| **① 终态语义**：问的是「这件工作结束了吗」 | `status === 'completed' \|\| status === 'failed' \|\| …`，或内联终态数组 | **改用 `isTerminal(status)`** |
-| **② 具体状态语义**：问的是「它是不是 completed / 是不是 archived」 | 状态分桶计数、图标配色、`completed_at` 落库、依赖 satisfied vs dead | 允许保留，但**必须在基线里写明 why**（它回答的是哪个问题） |
-| **③ 其它域**：字形同名但不是同一个事实 | 审批、coding 工具会话、mailbox item、工作流节点/运行、Hub 审核、分享评审、LLM 响应 | **文件级豁免**，门禁不得拦 |
+| 终态判定只有**一个**入口 | ✅ `isTerminal()`（服务端 `@markus/shared`；浏览器侧 `lib/taskStatus.ts` 是它的投影，写入者仍是 shared） | `packages/shared/src/types/task.ts:35-60` |
+| **新增**终态裸比较会被提交前拦住 | ✅ 默认拦全仓，不靠白名单 | 真实树三态取证：`exit 1 → 0 → 0` |
+| 非终态比较（`running/in_progress/pending/blocked/review`）**不**被误伤 | ✅ 有测试专门钉住 | `architecture-guard.test.ts` ·「非终态比较 → 放行」 |
+| 存量只能**单调下降** | ✅ 双向棘轮：比基线多红、**比基线少也红** | `scripts/terminal-status-baseline.json` |
+| 存量数字可被任何人复算 | ✅ 一条命令：`node scripts/architecture-guard.mjs` | 输出 `扫到 N 处` |
+| 本轮存量 | **142 → 127 处**（17 个文件） | 清理 15 处，见 §4 |
 
-### 2.2 门禁实际看到的数（可重跑）
-
-```
-node scripts/architecture-guard.mjs
-→ 终态谓词：扫到 127 处终态裸比较（已登记 127 / 未登记 0 / 待精简 0）；
-  另有 45 处落在 20 个**其它域**豁免文件里
-```
-
-- **127 处 = 类别 ①②（任务/需求域内）**，分布在 **17 个文件**，全部进基线（每条带 why）。
-- **45 处 = 类别 ③**，分布在 **20 个文件**，文件级豁免 + 一句话理由（清单在 `scripts/architecture-guard.mjs#TERMINAL_LITERAL_EXEMPT_FILES`，运行时也会打印总数——**豁免清单藏了多少必须可见**，否则它就是第二个黑洞）。
-- 两者相加 172 处，与字符扫描的 188 处差 16 处：注释里的示例代码被剔除（本仓库确实有若干注释写着 `status === 'completed'` 作为说明），同行的重复字形按出现次数计。
-
-### 2.3 类别 ③ 的 20 个豁免文件（为什么它们不该被拦）
-
-| 文件 | 它问的是哪个问题 |
-|---|---|
-| `shared/src/types/task.ts` | SSOT 本体：`TERMINAL_STATUSES` 就在这里定义 |
-| `core/src/coding-tools/{context-injector,handlers,runtime}.ts` | coding 工具**步骤/会话**状态（含 `timeout`，任务没有这个状态） |
-| `core/src/learning-loop.ts` | 学习回路单次运行的 `opts.status` |
-| `core/src/llm/openai-codex.ts` | LLM 响应对象的 `response.status`（HTTP 语义） |
-| `core/src/mailbox.ts` | mailbox item 状态（queued/processing/dropped/merged） |
-| `core/src/tools/result.ts` | 工具结果信封（error/denied/deferred） |
-| `core/src/tools/subagent.ts` | 子 agent 单次运行状态 |
-| `core/src/workflow/engine.ts`、`org-manager/src/workflow-runner.ts` | 工作流**节点** / **运行**状态（含 `skipped`/`paused`） |
-| `org-manager/src/long-task-progress.ts` | 长任务**阶段**状态（stage ≠ 卡片） |
-| `desktop/src/notifications.ts` | 桌面通知点击分流 |
-| `web-ui/.../CodingToolCard.tsx`、`ExecutionTimeline.tsx` | UI 侧的工具会话状态（同 core/coding-tools） |
-| `web-ui/.../NotificationBell.tsx` | **审批**状态（cancelled/expired） |
-| `web-ui/.../{RightPanel,DeliverableShareModal,Deliverables}.tsx` | 分享 / 分享评审状态 |
-| `web-ui/.../{ArtifactDetail,AgentBuilder}.tsx` | Hub 资产审核状态（moderationStatus） |
-
-> **这张表就是卡面要求的「拦下的必须全是终态语义」的证据**：把审批单、coding 工具、流状态一起改坏，正是「386 → 0」那种目标会造成的后果。
+一句话：**「这件工作结束了吗？」这个问题从今天起有唯一答案入口，而且第二个答案写不进仓库。**
 
 ---
 
-## 3. 门禁设计（三个取舍，请评审重点看）
+## 1. 先纠正口径：审计的「386」不属于任何一个可复现的 grep 口径
 
-新增规则 `terminal-status-predicate`，写在既有 `scripts/architecture-guard.mjs`（CI 已经在跑，不新建第二套门禁体系）。
+审计文档 §1 写「386 处 `status === '…'` 裸比较」。在 684 个 `packages/*/src` 源码文件上实测四种口径，**没有一个等于 386**：
 
-**① 默认拦（default deny）**：扫 `packages/*/src` 下**全部**文件，只在类别③的文件上按文件豁免。
-极性不能反过来（只扫白名单文件）：那样**新文件天生失明**——只看得见存量、看不见新增的门禁等于没有门禁，而这正是本仓库历史上反复出现的失效形态。
-
-**② 只拦终态字形**：`status === 'running' / 'in_progress' / 'pending' / 'blocked' / 'review'` 一律放行。
-拦非终态比较是**错的门禁**：它把「正在跑吗」和「结束了吗」混成一个问题，上线后第一次误红就会被人整体关掉。有测试专门钉住这一条（见 §4）。
-
-**③ 双向棘轮基线**（`scripts/terminal-status-baseline.json`）：按**文件**记数，每条必须带 `why`（≥8 字）。
-- 现状 **多于**基线 → 红（新增违规，或混进第二种写法）；
-- 现状 **少于**基线 → 也红（代码已清理但基线没缩）。
-只拦新增的基线会让存量永远躺着；只有「机器只能缩小、人必须解释增长」才能让数字单调下降。
-`--prune-terminal-baseline` **只允许删**：遇到未登记文件直接拒绝写盘，并打印正确动作（改 `isTerminal()` 或手工登记 why）。
-
-**为什么按文件记数而不是按行**：按行的基线在每次无关重排时 churn，人就把它当噪声整片删掉。按文件记数既让「还剩多少处」逐文件可读，又让任何新增处**必然**改变计数 → 必红。
-
-**注释不算违规**：检测前把注释替换成等长空白（保留偏移，行号仍对得上原文）。本仓库有多处注释举例 `status === 'completed'`，不剔除会让门禁变成「不许写注释」。
-
----
-
-## 4. 红/绿双态验证
-
-### 4.1 真实仓库上的三态取证（不是夹具）
-
-```
-# 反例：往 packages/core/src 放一处终态裸比较
-$ cat packages/core/src/__probe_terminal.ts
-export function probeA(status: string) { return status === 'completed'; }
-$ node scripts/architecture-guard.mjs ; echo exit=$?
-[guard] ✗ 终态谓词门禁失败：1 组终态裸比较未登记。
-[guard]   「这件工作结束了吗？」只有一个答案入口：isTerminal(status)
-  ✗ packages/core/src/__probe_terminal.ts:1
-exit=1                                    ← 红
-
-# 不误伤：换成非终态比较
-$ cat packages/core/src/__probe_terminal.ts
-export function probeB(status: string) { return status === 'running' || status === 'in_progress' || status === 'blocked'; }
-$ node scripts/architecture-guard.mjs ; echo exit=$?
-exit=0                                    ← 绿
-
-# 撤销探针
-$ rm packages/core/src/__probe_terminal.ts && node scripts/architecture-guard.mjs; echo exit=$?
-exit=0                                    ← 净
-```
-
-### 4.2 固化为回归（`packages/core/test/architecture-guard.test.ts`，新增 7 例）
-
-```
-$ npx vitest run packages/core/test/architecture-guard.test.ts
-✓ packages/core/test/architecture-guard.test.ts (12 tests)
-Test Files 1 passed (1) · Tests 12 passed (12)
-```
-
-| 用例 | 断言 |
-|---|---|
-| `status === 'completed'` | 红，失败信息含 `isTerminal(status)` |
-| `status !== 'archived'` / `'rejected' === status` / `['completed','archived'].includes(status)` | 三种写法各自红 |
-| `status === 'running' \|\| 'in_progress' \|\| 'blocked' \|\| 'review'` | **放行**（不误伤） |
-| `isTerminal(status)` + 注释里的 `status === 'completed'` | 放行 |
-| `core/src/mailbox.ts`（其它域豁免文件） | 放行 |
-| 基线 count=1 现状=1 → 绿；count=0 现状=1 → 红；count=3 现状=1 → 红 | 双向棘轮 |
-| 基线条目 `why: ""` | 红（豁免必须解释它回答的是哪个问题） |
-
----
-
-## 5. 老代码清理：本轮数字（分阶段，不搞「以后再说」）
-
-### 5.1 本轮清零 15 处（4 个点位）
-
-**判据**：只改「这个判断本身就在问『结束了吗』」而且**枚举不全**的点位——枚举 3 个终态就当终态集用，正是 `rejected` / `archived` 被静默漏判的成因。
-
-| # | 位置 | 改法 | 行为变更 |
+| 口径 | 出现次数 | 命中行 | 文件数 |
 |---|---|---|---|
-| 1 | `packages/core/src/agent-manager.ts:3371` | `task.status === 'completed' \|\| 'cancelled' \|\| 'failed'` → `isTerminal(task.status)` | **有**：`rejected` / `archived` 的任务不再被「中断任务重新排队」逻辑捞回来（终态不该再被驱动，这是修正而非变更） |
-| 2 | `packages/org-manager/src/requirement-service.ts:695` | 三态枚举 → `TERMINAL_REQUIREMENT_STATUSES.has(newStatus)` | **有**：`archived` 需求转态时也会撤回 actionables（原来是漏的） |
-| 3 | `packages/org-manager/src/requirement-service.ts:710` | 同上（结算审批） | **有**：`archived` 需求转态时也会结算挂着的 pending 审批行 |
-| 4 | `packages/web-ui/src/pages/Work.tsx:7948` | 局部 `const isTerminal = req.status === …（4 态）` → `const reqTerminal = isTerminal(req.status)` + 6 处使用点改名 | 无（原来 4 态已穷尽 requirement 终态；改的是**写法**：局部变量名 `isTerminal` 会遮蔽 import，是隐形第二定义） |
-| 5 | `packages/web-ui/src/pages/Work.tsx:7449` | `tk.status !== 'completed' && tk.status !== 'cancelled'` → `!isTerminal(tk.status)` | **有**：依赖候选不再列出 `failed` / `rejected` / `archived` 的任务（原来只有 2 态，会把已判死的任务当可选依赖） |
+| A `.status (===/!==/==/!=) '<任意字面量>'` | 603 | 530 | 91 |
+| B `status …`（含裸标识符，⊇A） | 728 | 636 | 100 |
+| C `.status === '<任意字面量>'`（仅单向） | 468 | 404 | 81 |
+| D `status (===/!==) '<终态字面量>'`（仅单向） | **155** | **136** | **33** |
 
-合计：**142 → 127**，清零 15 处（基线已同步缩到 127；若只改代码不改基线，门禁会以「基线只允许缩小」判红——本轮实测过这条路径）。
-
-### 5.2 剩余 127 处 / 17 个文件（按包分布）
-
-| 包 | 处数 | 文件 |
-|---|---:|---|
-| `web-ui` | 54 | `pages/Work.tsx` 38、`pages/Home.tsx` 6、`components/{ProjectSidebar,TaskDAG}` 各 3、`components/SearchModal` 2、`pages/Search.tsx` 2 |
-| `org-manager` | 52 | `task-service.ts` 32、`requirement-service.ts` 7、`api-server.ts` 5、`report-service.ts` 3、`scheduled-task-runner.ts` 3、`archive-service.ts` 1、`event-routes.ts` 1 |
-| `core` | 18 | `agent-manager.ts` 8、`tools/task-tools.ts` 6、`agent-metrics.ts` 4 |
-| `storage` | 3 | `sqlite-storage.ts` 3 |
-| **合计** | **127** | **17** |
-
-每一条的 `why` 都在 `scripts/terminal-status-baseline.json` 里，可逐条复核。它们的共同点：**回答的是「某个具体状态」而不是「是否已结束」**（分桶计数、图标配色、`completed_at` 落库、依赖 satisfied vs dead 三分支、归档保留天数）。
-
-> 特别说明 `task-service.ts` 的 32 处：其中 `blockerVerdict()` 用 `completed|archived = satisfied`、`cancelled = dead`、`failed` 走可恢复判定。**压成 `isTerminal()` 会抹掉「依赖满足 vs 依赖判死」的区别**——这正是「不改状态机语义、不盲目 386→0」的具体体现。
-
-### 5.3 后续推进触发条件（可判定，不是「以后再说」）
-
-| 触发条件 | 动作 | 预期减量 |
-|---|---|---|
-| 任何一次要动 §5.2 表格里某文件 | 顺手清该文件的点位，同一次提交跑 `--prune-terminal-baseline` | 按文件计 |
-| 要做「任务统计口径统一」（指标 / 日报 / 侧边栏计数）| 先抽 `countByStatus()`，三处计数一起换 | `agent-manager` 8 + `agent-metrics` 4 + `report-service` 3 + `Work.tsx` 部分 ≈ 20 |
-| 需求侧 `checkCompletion` 的 `completed\|cancelled\|archived` 定性（P0 登记的独立议题）| 定性后要么改成显式 `SUCCESSFULLY_CLOSED` 谓词，要么并入 | `requirement-service` 7 |
-| 展示层图标/配色统一到 `statusMeta` 表 | 把散落三元表达式换成查表 | `Work.tsx` 与 `Home`/`Search`/`TaskDAG` 约 40 |
-
-**硬约束**：无论怎么推进，127 这个数**只能下降**——门禁会拦住任何一个让它上升的提交。
-
----
-
-## 6. 观测方式（门禁在哪儿跑、红了长什么样、本地怎么复现）
-
-### 6.1 CI 中的位置
-
-`.github/workflows/ci.yml` 已有 `Architecture guard` 步骤（在 `typecheck` / `lint` 之后、`test` 之前）：
-
-```yaml
-- name: Architecture guard
-  run: node scripts/architecture-guard.mjs
-```
-
-新规则挂在同一条命令里，**没有新建第二套门禁**——门禁一多，谁都不清楚哪条是真在跑的。本地等价入口：`npm run quality`（`package.json` 已含 `node scripts/architecture-guard.mjs`）。
-
-### 6.2 失败信息（照抄真实输出）
-
-```
-[guard] ✗ 终态谓词门禁失败：1 组终态裸比较未登记。
-[guard]   「这件工作结束了吗？」只有一个答案入口：isTerminal(status)
-[guard]   （@markus/shared#isTerminal / web-ui lib/taskStatus.ts#isTerminal）。
-[guard]   裸写 completed/failed/rejected/cancelled/archived 会在新终态出现时静默漏判。
-  ✗ packages/core/src/__probe_terminal.ts:1
-      export function probeA(status: string) { return status === 'completed'; }
-[guard]   若这是「某个具体状态」而非「是否已结束」（例：只统计 successfully completed），
-[guard]   请在 .../scripts/terminal-status-baseline.json 登记该行并写明 why。
-```
-
-基线未缩时的失败信息：
-
-```
-[guard] ✗ 终态基线比现状更宽松：1 组条目对应的代码已不再裸比较。
-[guard]   基线只允许缩小 —— 已清理的请在同一次提交里删除对应条目，否则存量数字永远不会下降。
-[guard]   可执行：node scripts/architecture-guard.mjs --prune-terminal-baseline
-```
-
-### 6.3 本地复现 / 日常命令
+复算命令（可粘贴）：
 
 ```bash
-node scripts/architecture-guard.mjs              # 门禁（有违规 exit 1）
-node scripts/architecture-guard.mjs --list       # 只列：哪些点位未登记、哪些基线条目该删
-node scripts/architecture-guard.mjs --prune-terminal-baseline   # 清理后同步基线（拒绝新增）
+node -e '...'   # 见 §6「口径复算」
+```
+
+**为什么没有一个数字能对上**：`status` 这个字形散在**六个互不相干的域**里——任务生命周期、需求生命周期、审批（approval）、coding 工具会话、消息/会话流、工作流节点/运行。任何「全仓 status 比较」的计数都在**混合不同的问题**，所以：
+
+- 「386」不可复现 ⇒ 本卡**不继承**这个数字，改为按可复现口径重新普查，并把它写进交付物（数字必须能被下一个人复算，否则只是传说）。
+- 混合计数还有一个更坏的后果：**门禁若按字面量拦，会误伤别的域**（`session.status === 'completed'` 是工具跑完，不是任务结束）。所以门禁必须**域感知**，见 §2。
+
+### 三分类（本卡采用的分类法）
+
+| 类 | 含义 | 处置 |
+|---|---|---|
+| **① 终态语义** | 「这件工作结束了吗」 | 必须走 `isTerminal()`；存量登记、新增即红 |
+| **② 具体状态语义** | 「是不是 completed」「是不是 archived」——**不是**「是否已结束」 | 允许裸写，但必须在基线里写明 `why` |
+| **③ 其它域（同名不同事实）** | coding 工具 / mailbox item / 工作流节点 / 审批 / Hub 审核 / 分享状态 | 按**文件**豁免，每条写明它回答的是哪个问题 |
+
+②③ 的区别是**承重的**：② 是同一个问题域的另一种问法（例：统计「顺利完成数」不能把 failed 算进去），③ 是**根本不同的事实**。把 ② 也强行压成 `isTerminal()` 会制造**语义错误**——这正是本次清理在 `blockerVerdict` / 指标分桶 / UI 配色上刻意**不**改的原因（§4.4）。
+
+---
+
+## 2. 门禁设计：`terminal-status-predicate`
+
+**挂在既有 `scripts/architecture-guard.mjs` 上，不新建第二套。** CI 的 `Architecture guard` 步骤（`.github/workflows/ci.yml:59`）和本地 `pnpm quality` 都已经在跑它 —— 新增门禁**零接线成本**，也不会出现「两套门禁各说各话」。
+
+### 2.1 四条决策（每条都是被反例逼出来的）
+
+**① 默认拦（default deny），而不是只扫白名单。**
+扫 `packages/*/src` 下**全部**文件，只在「字形相同但不是同一个事实」的文件上按文件豁免。
+
+> 极性不能反过来。只扫白名单文件的门禁**天生对新增文件失明** —— 那正是门禁失效最经典的形态：存量看得见，新增看不见。而「新增」恰恰是唯一会继续发生的事。
+
+**② 只拦终态字形，非终态一律放行。**
+`running / in_progress / pending / blocked / review` 不拦。
+
+> 拦非终态比较是**错的门禁**：它把「正在跑吗」和「结束了吗」混成一个问题。错门禁的结局不是被修好，而是**第一次误红就被人整体关掉**（`--no-verify` 或直接删规则）。所以这条有专门测试钉住（§3.2 第 3 例）。
+
+**③ 双向棘轮基线，`why` 强制。**
+`scripts/terminal-status-baseline.json` 按**文件**记数，每条带 `why`（≥8 字，缺了判红）：
+
+| 现状 vs 基线 | 门禁 |
+|---|---|
+| 比基线**多** | ✗ 红（新增违规 / 混进第二种写法） |
+| 比基线**少** | ✗ **也红**（要求同一次提交删掉条目） |
+| 文件不在基线里但有命中 | ✗ 红 |
+| 条目 `why` 空/过短 | ✗ 红 |
+
+> 「只拦新增」的基线会让存量**永远躺在那里**——没人有动机去删数字，因为它不疼。双向棘轮把「清理」变成**义务而不是美德**：你清掉一处，就必须同时把基线改小，于是那个数字只可能单调下降。
+
+**④ 注释用等长空白替换剔除，保留偏移。**
+本仓库有十几处注释在举例 `status === 'completed'`（如 `task-service.ts:3457`）。不剔除注释，门禁就退化成「**不许写注释**」——这种规则会被人绕过而不是遵守。
+
+> 用等长空白替换而非 `strip`：偏移不变 ⇒ 报出的行号与原文一一对应。门禁报的行号必须能直接跳转，否则第一次定位失败，人就不信它了。
+
+### 2.2 判定算法（三种写法一网打尽）
+
+```js
+// 正向：<subject> === '<terminal>'   （含 !== / == / !=）
+/(?<![\w$.])((?:[A-Za-z_$][\w$]*\s*(?:\?\.|\.)\s*){0,6}[A-Za-z_$]*[sS]tatus\b)\s*(===|!==|==|!=)\s*(['"])(${终态集})\3/
+// 反向：'completed' === status
+/(['"])(${终态集})\1\s*(===|!==|==|!=)\s*(<subject>)/
+// 内联终态数组：['completed','archived'].includes(task.status) / new Set([...]).has(status)
+/\[([^\[\]]{0,400})\]\s*\)?\s*\.\s*(?:includes|has|indexOf)\s*\(\s*(<subject>)\s*[,)]/
+```
+
+`subject` 生成式刻意接受 `status` / `task.status` / `s?.status` / `execution.status` 等链式写法，并**取最后一个标识符**必须以 `status`/`Status` 结尾 —— 这是「域感知」的最小实现：不需要理解语义，只需要认得出「这是个 status 比较」。
+
+### 2.3 豁免登记表（21 条 → 实测命中 20 个文件 / 45 处）
+
+豁免表 `TERMINAL_LITERAL_EXEMPT_FILES` 每条**必须写清它回答的是哪个问题**。当前分布：
+
+| 域 | 文件 | 回答的问题 |
+|---|---|---|
+| SSOT 本体 | `shared/src/types/task.ts` | 定义那个集合的人 |
+| coding 工具（4） | `core/coding-tools/{context-injector,handlers,runtime}.ts`、`web-ui/CodingToolCard.tsx` | 工具**会话/步骤**是否跑完 |
+| 子 agent | `core/tools/subagent.ts` | 子 agent 单次运行是否结束（含 `timeout`） |
+| workflow（2） | `core/workflow/engine.ts`、`org-manager/workflow-runner.ts` | 工作流**步骤/运行**状态（含 `skipped`/`paused`） |
+| 长任务阶段 | `org-manager/long-task-progress.ts` | `stage.status`，阶段不是卡片 |
+| mailbox | `core/mailbox.ts` | item 投递取舍（`merged`/`dropped`） |
+| 工具信封 | `core/tools/result.ts` | `error`/`denied`/`deferred` |
+| LLM 响应 | `core/llm/openai-codex.ts` | HTTP/响应体 `status` |
+| 学习回路 | `core/learning-loop.ts` | 单次运行 opts |
+| 桌面通知 | `desktop/notifications.ts` | 点击行为按通知类型分流 |
+| 审批（2） | `web-ui/NotificationBell.tsx`、`ExecutionTimeline.tsx` | 审批 `cancelled/expired`、会话流 |
+| 分享/审核（5） | `RightPanel`、`DeliverableShareModal`、`Deliverables`、`ArtifactDetail`、`AgentBuilder` | 分享发布态 / Hub `moderationStatus` |
+
+**防滥用**：豁免是**文件级**的，且每条都要写字。新增一个豁免 = 在 diff 里留下一条「我认为这个文件的 status 不是 ItemStatus」的公开声明 —— 比允许在任意行上打 `// eslint-disable` 强得多。
+
+---
+
+## 3. 取证：红 / 绿 / 净三态（真实树，不是夹具）
+
+夹具会撒谎（本仓库踩过：夹具里 `status === 'completed'` 命中，真实树的形态却不同）。所以先在**真实仓库树**上做三态探针：
+
+| 步骤 | 探针内容 | 门禁 | exit |
+|---|---|---|---|
+| 反例 | `packages/core/src/__probe_terminal.ts`：`status === 'completed'` | ✗ 报「终态谓词门禁失败 … 请改用 isTerminal(status)」 | **1** |
+| 正例（不误伤） | 同文件换成 `status === 'running' \|\| 'in_progress' \|\| 'blocked'` | ✓ 通过 | **0** |
+| 净态（删探针） | 删除探针文件 | ✓ 通过 | **0** |
+
+三态都留下过输出；探针文件已删除（`git status` 干净，无常驻调试文件）。
+
+### 3.1 固化成的 7 例回归（`packages/core/test/architecture-guard.test.ts`）
+
+| # | 用例 | 断言强度 |
+|---|---|---|
+| 1 | 终态 `===` 比较 | 必红，且**输出里必须出现** `isTerminal(status)`（门禁要可行动，不只是报错） |
+| 2 | `!==` / 反向书写 `'rejected' === status` / 内联终态数组 | **三种写法逐一**必红（漏一种 = 门禁有洞） |
+| 3 | 非终态（`running/in_progress/blocked/review`） | **必绿** —— 钉住「不误伤」这条设计 |
+| 4 | `isTerminal(status)` + 注释里的示例代码 | 必绿（注释剔除生效） |
+| 5 | 其它域豁免文件（`core/mailbox.ts`） | 必绿 |
+| 6 | 基线棘轮：=基线→绿；>基线→红；**<基线→红** | 三态，因为「比基线少」这条最容易在实现时被漏掉 |
+| 7 | 基线条目 `why` 为空 | 必红（豁免必须解释它回答的是哪个问题） |
+
+### 3.2 全量回归（本分支）
+
+```
+Test Files  472 passed | 1 skipped (473)
+     Tests  6582 passed | 13 skipped (6595)
+```
+
+类型检查（**注意这一条，见 §7**）：
+
+```
+npx tsc -b                                          → exit 0
+npx tsc --noEmit -p packages/web-ui/tsconfig.json   → exit 0，0 errors
 ```
 
 ---
 
-## 7. 验收对照
+## 4. 本轮清理：142 → 127（15 处）
 
-| 验收项 | 证据 | 结论 |
-|---|---|---|
-| 门禁反例验证（红/绿两态） | §4.1 真实树 `exit 1 → 0 → 0`；§4.2 夹具测试 7 例 | ✅ |
-| 不误伤验证（非终态比较放行） | `status === 'running' \|\| 'in_progress' \|\| 'blocked' \|\| 'review'` → `exit 0`；豁免文件 `mailbox.ts` → 放行 | ✅ |
-| `isTerminal()` 是终态判断唯一入口（附 grep 证明） | §8 grep 台账 | ✅ |
-| 报告含分类结果 / 清零数 / 剩余数 / 按包分布 / 触发条件 | §2、§5 | ✅ |
-| `tsc -b` 干净 | `npx tsc -b` → `exit 0` | ✅ |
-| org-manager + core + web-ui 全量回归绿 | `472 files passed \| 1 skipped`；`6582 passed \| 13 skipped` | ✅ |
-| 不改 FSM 语义 / 不改 `TERMINAL_STATUSES` 成员 | diff 未触及 `shared/src/types/task.ts#TASK_TRANSITIONS` 与 `TERMINAL_STATUSES` | ✅ |
-| 不把 386 一次改完 | 本轮清 15 处，其余 127 处按文件登记 + 棘轮 | ✅ 按卡面要求 |
+清理判据：**只有「这个判断的真实语义就是『这件工作结束了吗』」才改**。改了会让行为变化的地方，必须能说清变化是正确的。
+
+### 4.1 `core/src/agent-manager.ts:3370` —— 中断任务重排池（3 处 → 0）
+
+```diff
+- if (task.status === 'completed' || task.status === 'cancelled' || task.status === 'failed') {
++ if (isTerminal(task.status)) {
+    log.debug('Task already terminal, skipping rehydration', …);
+```
+
+**为什么不只是风格问题**：注释写的是「Task already terminal」，但集合只列了 3 个，漏了 `rejected` / `archived`。一个已归档的卡片在重启后被当作「还在跑」重新派发 —— 这是**把终态任务重新唤醒**。`rejected` 同理（被否掉的工作不该自动复活）。改用谓词后集合自动补齐，**行为变正确**，不是变不同。
+
+### 4.2 `org-manager/src/requirement-service.ts:694 / :713` —— 需求转终态时的两个副作用（6 处 → 0）
+
+```diff
+- if ((newStatus === 'completed' || newStatus === 'cancelled' || newStatus === 'rejected') && req.createdBy && …)
++ if (TERMINAL_REQUIREMENT_STATUSES.has(newStatus) && req.createdBy && …)
+```
+
+两处分别是：① 撤回此前投出的「请审阅/请处理」；② 结算挂在该需求上的审批行。
+
+**这两处漏的是 `archived`**：需求被归档时，行动型提醒不撤回、审批行不结算 —— 于是「已完成/已归档的需求挂着一个待审批徽标」（本仓库踩过同类事故：`apr_mw08kfis_u` → `req_2c9595…completed`）。改用集合后，归档也走同一条路径。
+
+> 用 `TERMINAL_REQUIREMENT_STATUSES` 而不是 `isTerminal()`：需求的终态**不含 `failed`**（需求不会被「执行失败」）。这是 P0 已经分好的两个集合，别合并 —— 合并会让失败的需求不再撤回提醒。
+
+### 4.3 `web-ui/src/pages/Work.tsx:7948 / :7449` —— 需求卡片与依赖候选（6 处 → 0）
+
+```diff
+- const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
++ const reqTerminal = isTerminal(req.status);           // 复用 lib/taskStatus.ts 的投影
+
+- .filter(tk => tk.status !== 'completed' && tk.status !== 'cancelled')
++ .filter(tk => !isTerminal(tk.status))                 // 依赖候选：终态卡片不能当阻塞项
+```
+
+**第二个是真 bug**：依赖候选只排除了 `completed`/`cancelled`，于是 `failed`/`rejected`/`archived` 的卡片仍然可以选为依赖 —— 选完永远等不到满足（`blockerVerdict` 会判 dead）。这不是展示问题，是**让用户建出一个必然是死的依赖**。
+
+局部变量改名 `reqTerminal`（而不是删掉它）：同名变量会遮蔽 import，`!isTerminal` 会把**函数**当真值取反 → 恒 false。这个坑本轮真的踩了，见 §7。
+
+### 4.4 刻意**不**改的三类（并说明理由）
+
+| 位置 | 为什么不能压成 `isTerminal()` |
+|---|---|
+| `task-service.ts#blockerVerdict`（`:4636-4645`） | `completed\|archived` = **依赖满足**；`cancelled` = **依赖判死**；`failed` = 走可恢复/终结判定。**三个动作不同**。压成一个布尔会把「满足」和「判死」抹成同一件事——这正是 2026-09-12 那次事故的形状。 |
+| 指标/统计分桶（`agent-metrics` / `report-service` / `agent-manager` 计数） | 「完成了几个」必须只数 `completed`，不能把 `failed`/`cancelled` 算成完成。这是**分桶**，不是**判定**。 |
+| UI 配色/图标（`Work.tsx` / `Home.tsx` / `TaskDAG` / `Search`） | 每个状态一枚图形。合并会让「失败」和「已完成」长成同一个样子 —— 用户可见的**信息损失**。 |
+
+这三类的共同点：**它们问的不是「结束了吗」**。这也解释了为什么本轮只清 15 处而不是 127 处 —— 剩下的 127 处里大部分**本来就不该改**，它们需要的是「登记 + 说明」，不是「重构」。
 
 ---
 
-## 8. grep 台账（单一入口的证明）
+## 5. 残余：127 处按文件的账（谁还需要清）
+
+存量 127 处 / 17 个文件，每条都带 `why`（写明它回答的是哪个问题）。按可清理度分档：
+
+| 档 | 文件（处数） | 性质 |
+|---|---|---|
+| **A · 真·终态判定，可继续收口** | `task-service.ts`(32) 中的子任务完成计数/统计分支、`web-ui/Work.tsx`(38) 中的 `dep.status === 'completed'` | 「依赖是否满足」「子任务完成数」——比 `isTerminal()` 窄，但是**同一个域**的判定，值得抽 `isSatisfied(status)` 之类的第二谓词 |
+| **B · 具体状态语义，登记即终点** | 指标分桶（`agent-metrics` 4 / `report-service` 3 / `agent-manager` 8）、UI 配色（`Home` 6 / `Search` 2 / `SearchModal` 2 / `TaskDAG` 3 / `ProjectSidebar` 3）、路由守卫（`api-server` 5）、归档阈值（`archive-service` 1）、`sqlite-storage` 3 | 问的是「是不是 X」，压成布尔会丢信息。**不该改** |
+| **C · 混合状态集合** | `scheduled-task-runner.ts`(3)、`event-routes.ts`(1) | 集合里同时含终态与非终态（`blocked`/`review`），本身就是另一个问题（可重置 / 需人介入） |
+
+**推进条件（谁在什么时候该动它）**：
+
+1. **只要有人碰到 A 档代码，同一次提交必须顺手清掉该文件的那几行** —— 门槛由双向棘轮强制（清一处就必须改基线）。这就是本卡真正的作用：不是一次性清零，而是**让数字只往一个方向走**。
+2. **`blockerVerdict` 的 satisfied/dead 分离**（`task-service.ts:4636`）建议后续抽成 `blockerVerdict` 内部的局部谓词并加测试，而不是全局合并 —— 见 §4.4。
+3. **审批域的三态**（`NotificationBell` 的 `cancelled/expired`）属于另一个待办（审批三态设计红线），本卡不碰。
+
+**本卡明确不做的事**：不追求「127 → 0」。127 里超过一半是**正确的**具体状态判断。把正确的代码改成错的，比留着裸露字符串更坏。
+
+---
+
+## 6. 操作手册（下一个人怎么用）
+
+### 6.1 日常
 
 ```bash
-# 1) ItemStatus 的终态定义：只有一处写入者 + 一处浏览器投影
-$ grep -rn "TERMINAL_STATUSES\s*[:=]" packages/*/src
-packages/shared/src/types/task.ts:35        ← 唯一写入者（ItemStatus 终态）
-packages/web-ui/src/lib/taskStatus.ts:22    ← web-ui 投影（浏览器构建不能 import @markus/shared；
-                                            #  漂移由 shared 侧 terminal-status-mirror 测试判红）
-packages/cli/src/commands/approval-card.ts:31        ← **审批**状态（approved/rejected/cancelled/expired）
-packages/web-ui/src/components/CodingToolCard.tsx:40 ← **coding 工具**状态（含 timeout）
-# 后两处是字形同名的**其它域**，不是第二个写者：终态谓词门禁对它们文件级豁免（见 §2.3）
-
-# 2) 终态谓词：shared 定义 + web-ui 投影；org-manager 的 isTerminalTaskStatus 只是转发
-$ grep -rn "function isTerminal" packages/*/src
-packages/shared/src/types/task.ts:58
-packages/web-ui/src/lib/taskStatus.ts:31
-$ sed -n '69,71p' packages/org-manager/src/task-attention.ts
-export function isTerminalTaskStatus(status: string | undefined): boolean {
-  return isTerminal(status);          ← P0 已把这里含 'accepted' 的私有 Set 删掉，只剩转发
-}
-
-# 3) 域内裸终态比较：全部在带理由的基线里，未登记的一律让门禁判红
-$ node scripts/architecture-guard.mjs --list | tail -2
-[guard] 终态裸比较：127 处（未登记 0 组，基线待精简 0 组）。
+node scripts/architecture-guard.mjs          # 平时：有未登记终态裸比较 → exit 1
+node scripts/architecture-guard.mjs --list   # 审计：逐条列出未登记 / 基线待精简
 ```
+
+输出示例（当前状态）：
+
+```
+[guard] 终态谓词：扫到 127 处终态裸比较（已登记 127 处 / 未登记 0 组 / 待精简 0 组）；
+        另有 45 处落在 20 个其它域豁免文件里（豁免清单见 …#TERMINAL_LITERAL_EXEMPT_FILES）
+[guard] ✓ 通过：34 处命中全部在已登记白名单内；契约不变量 17/17 满足。
+```
+
+### 6.2 我新写了一处终态比较，门禁红了，怎么办
+
+三选一，**按优先级**：
+
+1. **改成 `isTerminal(status)`** —— 90% 的情况应该是这个。
+2. **如果它问的是「某个具体状态」**（例：只统计顺利完成），在 `scripts/terminal-status-baseline.json` 里给该文件加/调 `count`，并在 `why` 里写清「它回答的是哪个问题」（≥8 字）。**新增计数必须手写**——`--prune-terminal-baseline` 会**拒绝**任何新文件/新增计数，物理上堵死「一键洗白」。
+3. **如果它根本不是 ItemStatus**（例：coding 工具会话状态），在 `architecture-guard.mjs#TERMINAL_LITERAL_EXEMPT_FILES` 加一条，写明它属于哪个域。
+
+### 6.3 我清掉了几处，怎么缩基线
+
+```bash
+node scripts/architecture-guard.mjs --prune-terminal-baseline
+```
+
+它只会**下调已有文件的计数 / 删除已消失的文件条目**；一旦发现新命中就报错退出、**不写盘**。
+
+### 6.4 口径复算（复现 §1 的四个数字）
+
+```bash
+cd <repo>
+node -e '
+const fs=require("fs"),p=require("path");
+const SKIP=new Set(["node_modules","dist","build",".git","coverage","out"]);
+const files=[];(function w(d){for(const e of fs.readdirSync(d,{withFileTypes:true})){const f=p.join(d,e.name);
+ if(e.isDirectory()){if(SKIP.has(e.name))continue;w(f);continue;}
+ if(!/\.(ts|tsx)$/.test(e.name)||/\.d\.ts$/.test(e.name))continue;
+ const rel=p.relative(process.cwd(),f).replaceAll("\\","/");
+ if(/^packages\/[^/]+\/src\//.test(rel))files.push([rel,f]);}})(p.join(process.cwd(),"packages"));
+const V={
+ A:/\.status\s*(===|!==|==|!=)\s*[\x27\x22][a-z_]+[\x27\x22]/g,
+ B:/\bstatus\s*(===|!==|==|!=)\s*[\x27\x22][a-z_]+[\x27\x22]/g,
+ C:/\.status\s*===\s*[\x27\x22][a-z_]+[\x27\x22]/g,
+ D:/status\s*(===|!==)\s*[\x27\x22](completed|failed|rejected|cancelled|archived)[\x27\x22]/g};
+const c={};for(const k in V)c[k]={occ:0,lines:0,files:new Set()};
+for(const [rel,f] of files){const t=fs.readFileSync(f,"utf8");
+ for(const k in V){const re=new RegExp(V[k].source,"g");let m;while((m=re.exec(t))){c[k].occ++;c[k].files.add(rel);}}
+ for(const ln of t.split("\n"))for(const k in V){if(new RegExp(V[k].source).test(ln))c[k].lines++;}}
+console.log("srcFiles",files.length);
+for(const k in c)console.log(k,"occ="+c[k].occ,"lines="+c[k].lines,"files="+c[k].files.size);'
+```
+
+### 6.5 两种计数的关系（别混）
+
+| 数字 | 含义 | 谁在用 |
+|---|---|---|
+| **127** | 门禁口径：注释剔除 + 终态字形 + 只算非豁免文件 + 一行一处 | 门禁 / 基线 / CI |
+| **155 / 136 行** | 普查口径 D：纯正则、含注释、含豁免文件、按**出现次数**计 | §1 的口径对账 |
+
+两个数字**不该相等**，也不代表谁错——它们是两个不同的问题。写报告时必须说明用的是哪个（本卡坑：审计里的数字没写口径，于是无法复现）。
 
 ---
 
-## 9. 残余（如实列出，不粉饰）
+## 7. 诚实记录：本轮两个失败
 
-1. **基线仍是 127 处**：这是「不能一次改完」的代价，不是遗漏。防线是双向棘轮——只能减，不能增；`--prune-terminal-baseline` 物理上拒绝新增。
-2. **门禁只看终态字形**：`setTimeout` 式的动态写法（例如先 `const TERMINAL = [...]` 再跨行 `.includes(x)`）检测不到。静态正则的能力边界就在这里；`TERMINAL_STATUSES` 唯一化已经把这类「先存数组」的动机削掉了。
-3. **类别②的 127 处里可能有伪装的终态判断**：例如某处写 `completed || cancelled` 其实是「已收尾」而不是「终态」。基线里的 `why` 是我逐文件读后的判断，**需要评审复核**——这也是把 `why` 放在基线里、而不是散在代码注释里的原因。
-4. **`boardFilters.ts` 仍是独立的 `HIDDEN_BY_DEFAULT_STATUSES`**（P0 已按评审建议 A 正名并**不并入**终态集）：它问的是「默认看板要不要藏」，合并会造成用户可见的行为变更。本轮未动。
-5. **web-ui 是投影而非 import**：浏览器构建不能运行时 import `@markus/shared`（既有约束，`lib/mailboxTypeMeta.ts` 同机制）。漂移靠 `packages/shared/test/terminal-status-mirror.test.ts` 判红，不靠人记得。
+### 7.1 `tsc -b` 假绿：它根本不覆盖 `packages/web-ui`
+
+上一轮（本卡第一次提交 `a0daafc3`）验证写的是 `npx tsc -b → exit 0`。**这是假绿**：仓库根 `tsconfig.json` 的 `references` 只含 8 个包，**`packages/web-ui` 不在其中**。
+
+本轮跑真正的全量检查才暴露 **2 个类型错误**（都是我改 `Work.tsx` 时引入的）：
+
+```
+Work.tsx(8103,26): error TS2322: Type '(status: string|null|undefined) => boolean' is not assignable to 'boolean|undefined'
+Work.tsx(8489,12): error TS2774: This condition will always return true since this function is always defined.
+```
+
+**根因**：我把 `const isTerminal = <字面量链>` 改成 `const reqTerminal = isTerminal(req.status)`，但只改了该组件里**一部分** `!isTerminal` 用法；剩下的裸 `{isTerminal && …}` / `disabled={isTerminal}` 现在指向**导入的函数**（恒真值）→ 条件恒成立、`disabled` 传函数。
+
+这正是本卡要治的病的镜像：**同名遮蔽**。变量名和函数名撞车时，`!isTerminal` 从「取反布尔」静默变成「取反函数引用」—— 类型检查能抓到，测试大概率抓不到（UI 条件恒真不会抛错，只会让"终态需求仍可编辑"）。
+
+**已修**：该组件内余下 7 处全部改为 `reqTerminal`；`npx tsc --noEmit -p packages/web-ui/tsconfig.json` → **exit 0 / 0 errors**。
+**纪律修正**：本卡起，凡改 `web-ui`，验证必须以 `pnpm typecheck`（`tsc -b && tsc --noEmit -p packages/web-ui`）为准，不能只写 `tsc -b`。
+
+> 我更正一下上一轮的说法：`a0daafc3` 的「类型检查通过」不成立，它只是「不覆盖 web-ui 的那部分通过」。真正的绿是本轮这笔提交。
+
+### 7.2 我一度打算把 127 处全清掉
+
+一度把「存量 127」当成待办清单。读代码后发现其中过半是**正确的**具体状态判断（指标分桶、UI 配色、`blockerVerdict` 的 satisfied/dead）。若按字面量批量替换，会把「依赖满足」并成「依赖判死」、把失败图标并成完成图标。
+
+**结论修正**：本卡的交付物是**门禁 + 分类 + 可下降的机制**，不是「数字归零」。已写进 §4.4 / §5，避免下一个执行人重犯。
+
+---
+
+## 8. 改动清单
+
+| 文件 | 改动 |
+|---|---|
+| `scripts/architecture-guard.mjs` | 新增规则 6 `terminal-status-predicate`：检测器、注释等长剔除、豁免表（21 条）、双向棘轮基线、`--prune-terminal-baseline`、`--list` 输出、失败提示 |
+| `scripts/terminal-status-baseline.json` | 新增：17 文件 / 127 处 / 每条带 `why` |
+| `packages/core/test/architecture-guard.test.ts` | 新增 7 例回归（红/绿/不误伤/棘轮三态/缺 why） |
+| `packages/core/src/agent-manager.ts` | 中断任务重排池 → `isTerminal()`（补 `rejected`/`archived`） |
+| `packages/org-manager/src/requirement-service.ts` | 需求转终态的两个副作用 → `TERMINAL_REQUIREMENT_STATUSES.has()`（补 `archived`） |
+| `packages/web-ui/src/pages/Work.tsx` | 需求卡片终态 → `isTerminal()`；依赖候选过滤 → `!isTerminal()`（终态卡片不再能选为依赖） |
+| `docs/architecture/p3-terminal-status-gate.md` | 本文档 |
+
+
 
