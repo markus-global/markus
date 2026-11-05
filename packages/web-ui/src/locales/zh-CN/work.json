@@ -40,7 +40,6 @@
     "removeRepo": "移除仓库",
     "repoPathPlaceholder": "本地路径（例如 /Users/me/project）",
     "repoBranchPlaceholder": "分支（默认：main）",
-    "editProject": "编辑项目",
     "kbHeading": "知识库",
     "kbOpenInDeliverables": "在产出物中查看",
     "kbSync": "重新同步",
@@ -221,7 +220,15 @@
     "scheduleNoDays": "请选择星期几",
     "schedulePreview": "将按「{{desc}}」重复执行",
     "scheduleTimezoneNote": "时区：{{tz}}",
-    "weekdayShort": { "0": "日", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六" },
+    "weekdayShort": {
+      "0": "日",
+      "1": "一",
+      "2": "二",
+      "3": "三",
+      "4": "四",
+      "5": "五",
+      "6": "六"
+    },
     "frequency": "频率",
     "freq30m": "每 30 分钟",
     "freq1h": "每 1 小时",
@@ -506,10 +513,12 @@
     "projectsCountLabel_other": "{{count}} 个项目",
     "noMatches": "无匹配项",
     "searchPlaceholder": "输入以搜索…",
-    "clickToEdit": "点击编辑",
     "tagsLabel": "标签",
     "tagsPlaceholder": "用逗号分隔",
-    "noTags": "无标签"
+    "noTags": "无标签",
+    "threadTab": "来龙去脉",
+    "ticketsHeading": "票据",
+    "openTicketStream": "来龙去脉"
   },
   "requirement": {
     "requirements": "需求",

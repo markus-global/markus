@@ -139,7 +139,7 @@ describe('agentStatusPresentation', () => {
     // agent fell through to the green idle default — a status that also claims
     // the agent is running.
     const stopped = agentStatusPresentation('offline');
-    expect(stopped.labelKey).toBe('common:status.offline');
+    expect(stopped.labelKey).toBe('common:processStatus.offline');
     expect(stopped.running).toBe(false);
     expect(stopped.labelKey).not.toBe(agentStatusPresentation('idle').labelKey);
   });
@@ -360,21 +360,21 @@ describe('resolveAgentStatus', () => {
     // the stream is open — so the chip must fold the streaming signal in.
     const streaming = resolveAgentStatus('idle', true);
     expect(streaming.tone).toBe('busy');
-    expect(streaming.labelKey).toBe('common:status.working');
+    expect(streaming.labelKey).toBe('common:processStatus.working');
     expect(streaming).toEqual(agentStatusPresentation('working'));
   });
 
   it('never lets a stale streaming mark override an authoritative stop', () => {
     // A missed endStream pair used to be able to leave the frontend refcount set.
     // "stopped" is the server's answer and must win.
-    expect(resolveAgentStatus('offline', true).labelKey).toBe('common:status.offline');
+    expect(resolveAgentStatus('offline', true).labelKey).toBe('common:processStatus.offline');
     expect(resolveAgentStatus('offline', true).running).toBe(false);
-    expect(resolveAgentStatus('paused', true).labelKey).toBe('common:status.paused');
+    expect(resolveAgentStatus('paused', true).labelKey).toBe('common:processStatus.paused');
   });
 
   it('keeps the red error chip: a crash outranks "busy"', () => {
     expect(resolveAgentStatus('error', true).tone).toBe('danger');
-    expect(resolveAgentStatus('error', true).labelKey).toBe('common:status.error');
+    expect(resolveAgentStatus('error', true).labelKey).toBe('common:processStatus.error');
   });
 
   it('is a no-op when nothing is streaming', () => {

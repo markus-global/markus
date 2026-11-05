@@ -128,7 +128,7 @@
 | 任务四（B2） | H2（加实例=注册适配器）、I3 | 位点是否**只有一个推进点**？位点与幂等键的分工是否写清？ |
 | 任务五（B1） | Q1、§5 Gate 六条、I4 | 规则命中是否**可解释**（matchedRule）？降级是否**不静默放行**？ |
 | 任务六（A4） | Q3、**I5**、I8 | 两个方向是否都能拒？autonomy 会不会被当审批用？ |
-| 任务七（B4） | Q2、Q4、H3 | Thread 是否**只是视角**而非新对象？入口是否**减少**了点击？ |
+| 任务七A/B（B4） | Q2、Q4、H3 | Thread 是否**只是视角**而非新对象？入口是否**减少**了点击？ |
 | 任务八（C2） | H7、R1、I9 | 内容是否**只剩一个写者**？旧行是否一行未动？ |
 
 ---
@@ -171,38 +171,55 @@
 ### 9.1 设计概念 ↔ 现状（源自 01 §5.1 主对账表，含完成度）
 
 状态取值只有四种：`未开始` / `进行中` / `已完成` / `范围外`。
-**规则**：`已完成` 必须填提交号；`范围外` 必须填理由；其余提交号一律 `—`。
+**规则**：`已完成` 必须填提交号；`进行中` **可以**填已经产生的提交号（A 卡已交付、B 卡未实测的真实形态），但必须能在 git 里查到；`未开始` 必须是 `—`；`范围外` 必须填理由 + 触发条件。
+**任何填写的提交号都必须真实存在** —— 这一条由 `npm run check:design-ledger` 用 `git cat-file -e` 强制。
 
 | # | 概念（super-agent） | Markus 现状对应物 | 关系判定 | 差距 | 修复卡 | 状态 | 提交号 |
 |---|---|---|---|---|---|---|---|
-| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 已在传输层之上补领域层：读取位点（`event_sources.cursor`，单一推进点）+ 准入规则（`admitEvent()`，含丢自激）+ 监听范围；详见 `docs/architecture/sources.md` | 任务四 | 已完成 | 62655742 |
-| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 内容轴已切走：正文唯一在 `triggers`，`mailbox_items` 只留执行态 + `trigger_id`（`docs/architecture/mailbox.md`）；枚举里剩下的来源/类别/优先级轴归任务四 | 任务八 | 已完成 | 3d828666 |
-| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | 只有互斥，没有顺序/订阅/归并/阶段 | 任务七 | 未开始 | — |
-| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 已补齐两段：gate 命中记 `matched_rule`（新列，值为六条规则 id，SQL 可查分布），未命中进 assessment（`deps.assess` 可插拔，无引擎/判不了→降级 `needs-assessment` 不静默放行）；单一决策点 `ThreadService.decisionFor()`；降级矩阵见 `docs/architecture/eval.md` | 任务五 | 已完成 | 14d5d1bb |
-| 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 缺 `accept/attach/stop/ignore` 这层关于工作流的决定（那层叫 `Disposition`，同名问题已在任务一收口） | 任务一 | 已完成 | b4e7dfd6 |
-| 6 | **Ticket** | `tickets` 表（`tkt_`）+ `SqliteTicketRepo` | 形似神不同 | 已补齐「执行侧的工作单位」：与 task 可选关联（`ON DELETE SET NULL`），唯一写入点 + 三态自有状态机；票不驱动执行 | 任务三 | 已完成 | a59daf1e |
-| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee + **逐件事许可（`approvals` + `details.resource`/`actionScope`）** | Markus 更强 | 边界已由代码强制：唯一判定点 `authorizeAction()` 三入参（binding / actionScope / mandate）不可互替 | 任务六 | 已完成 | 524062d6 |
+| 1 | **Source** | `comms/platforms` 适配器 + `InboundMode` | 传输层 vs 领域层 | 差距已补：准入（self→kind→scope→window）+ 读取位点 `source-cursor.ts`，自激消息进领域前丢弃 | 任务四 | 已完成 | 62655742 |
+| 2 | **Trigger** | `MailboxItem` | 同一个东西，承载太多轴 | 差距已补：mailbox 只留执行态，内容回落 `triggers`（`mailbox-content.ts`） | 任务八 | 已完成 | 3d828666 |
+| 3 | **Thread** | 实体亲和锁键（`task:`/`conv:`/`channel:`） | 形状相同，语义缺失 | UI 已收口：`/api/threads/one?ref=` 单读面 + 三处入口就地打开 + 全局页降为检索。**7B 实测（8d28d064）**：后端三项 + 任务入口 + 票据入口 + 全局页检索全 pass，agent 入口桌面端不可达。**7C 已修**：入口与弹层各一份、headless 分支同层渲染（不再复制按钮）；agent 详情面板的时间线改为「事件 ∪ 判断 ∪ 投递」单一来源（`lib/threadTimeline.ts`），三态分开、失败不再伪装成空态；票轴补事件写者（§9.3）。返修 `ea7f741d` 把 `ThreadTimeline` 的空态判定也收敛到 `timelineView().empty`（不再有第二份 `length === 0`）。**7C 实测（ce5ba79a，重建后应用 22:09:54 重启）**：按 7B 的 11 项复测**全 pass** —— 后端三项拿真实行对账（票轴建票/流转各写 1 条 trigger、失败动作不写、双身份同组 id、与 `triggers` 行数 1=1 / 3=3 一致）；任务入口 / 票据入口 / **agent 入口桌面端一步可达（7B 唯一 fail 已消除）** / 全局页检索 / 刷新后一致 / B4 面零 4xx 全绿。 | 任务七A→七B→七C | 已完成 | ce5ba79a |
+| 4 | **Eval（gate + assessment）** | triage + deliberation + consolidate | 替代品，但不可审计 | 差距已补：gate 记 `matchedRule`，assessment 可插拔、无 LLM 降级为 `needs-assessment` | 任务五 | 已完成 | 14d5d1bb |
+| 5 | **Decision** | `AttentionAction`（「接下来处理哪条」；历史名 `DecisionType`） | 词汇已具备，语义不同 | 差距已补：`DecisionType` 已消失，改为 `AttentionAction`；`RouteDecision` 保留，两者不再撞名 | 任务一 | 已完成 | b4e7dfd6 |
+| 6 | **Ticket** | `Task`（`tsk_`） | 形似神不同 | 差距已补：`tickets` 表独立，与 Task 可选关联、删 Task 不级联 | 任务三 | 已完成 | a59daf1e |
+| 7 | **Mandate** | requirement 审批 + task 审批 + reviewer≠assignee | Markus 更强 | 差距已补：`authorizeAction()` 唯一判定点，autonomy 与审批双向不可互替 | 任务六 | 已完成 | 524062d6 |
 | 8 | **Assignment** | 会话绑定 + 并发 worker 槽位 | 部分对应 | 无「一个工作单位 ↔ 一个执行实例」的显式绑定与报告回传 | 未排期 | 范围外 | 理由：本需求 8 卡不含执行实例绑定；触发条件＝出现「同一工作单位被两个执行体同时认领」的真实事故 |
 | 9 | **Subscription** | **不存在** | 最大缺口 | 后续事件无法直通已订阅执行体 | 未排期 | 范围外 | 理由：属 S4/S5 阶段；触发条件＝直通规则（01 §7.6）三条同时可满足时 |
-| 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 无法回答「卡在谁那儿」 | 任务二 | 未开始 | — |
+| 10 | **Stage** | 无（`TaskStatus` 是治理状态） | 缺失 | 差距已补：三层不平级、值域命名空间化、词表唯一入口 + 撞词守卫 | 任务二 | 已完成 | 3d112fea |
 | 11 | **Policy / accept mode** | 无（有心跳，无「主动档位」） | 语义空白 | 无法表达「观察但不行动」 | 未排期 | 范围外 | 理由：autonomy 四档已存在（§7.8），本需求不新增档位；触发条件＝需要「观察但不行动」的真实诉求 |
-| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 无「在等我」的合并视图 | 任务二 + 任务七 | 未开始 | — |
+| 12 | **Panel（Overview）** | Work / Team / Notifications 三面 | 分散 | 部分补齐：状态词已同源（任务二）；「在等我」合并视图随 Thread 入口改造落地。**7B 实测**：任务/票据两处就地打开通过，agent 一处桌面端不可达（同第 3 行）。**7C 已修**：桌面 headless 也能一步打开「来龙去脉」（入口归一，不是复制一套）；面板改为单一时间线来源 + loading/error/empty 三态；返修 `ea7f741d` 让 `ThreadTimeline` 也走同一判据（不再有第二份 `length === 0`）。**7C 实测（ce5ba79a）**：桌面端 agent 详情里「来龙去脉」按钮 `count=1` 且可见，点开后打开 `agent:` 轴面板且**内容非空**（真实 external 事件 + 一条「决定 · 忽略」+ 当前状态快照，长度 481）—— 这是 7B 唯一 fail 项的正面复验。 | 任务二 + 任务七A→七B→七C | 已完成 | ce5ba79a |
 | 13 | **Rejected concepts** | 仅工作区有 `REJECTED-CONCEPTS-2026-11-03.md` | 可低成本补齐 | 缺「为什么不做 X」的否证记录（未入仓） | 未排期 | 范围外 | 理由：内容已存在，缺入仓；触发条件＝下一次否决任何设计概念时一并入仓 |
 
 ### 9.2 本需求九项问题完成度
 
+
+
 | # | 问题 | 卡 | 状态 | 提交号 | 台账行（03 文件） |
 |---|---|---|---|---|---|
 | A2 | `Decision` 指两件事 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
-| A3 | 三种「状态」混用 | 任务二 | 未开始 | — | 未更新 |
+| A3 | 三种「状态」混用 | 任务二 | 已完成 | 3d112fea | 已更新 |
 | A4 | 两种「授权」不可互替 | 任务六 | 已完成 | 524062d6 | 已更新 |
 | B1 | Eval 只做了一半 | 任务五 | 已完成 | 14d5d1bb | 已更新 |
 | B2 | Source 不是适配器 | 任务四 | 已完成 | 62655742 | 已更新 |
 | B3 | 同一事实三种记号 | 任务一 | 已完成 | b4e7dfd6 | 已更新 |
-| B4 | Thread 是对象还是视角 | 任务七 | 未开始 | — | 未更新 |
+| B4 | Thread 是对象还是视角 | 任务七A→七B→七C | 已完成 | ce5ba79a | 已更新（7B 实测 11 项：10 pass / 1 fail → 7C 修完后 2026-11-03 22:1x 按同一 11 项复测**全 pass**，唯一 fail「agent 入口桌面端不可达」已消除：按钮 count=1 可见、点开面板非空。7C 落地：入口归一 + 时间线单一来源（事件 ∪ 判断 ∪ 投递，`timelineView()` 单一判据）+ 票轴补事件写者（建票/流转各一条，失败动作不写）+ agent 轴裁定不登记生命周期事件（§9.3）。重建后应用 22:09:54 重启，实测即新构建）。**在途：后续提交 `d9a3c428`（首帧闪烁修复）已入分支但尚未重建/未实测，台账提交号仍记实测过的 `ce5ba79a`**） |
 | C1 | Ticket 必须独立成表 | 任务三 | 已完成 | a59daf1e | 已更新 |
 | C2 | Trigger ≡ MailboxItem 拆轴 | 任务八 | 已完成 | 3d828666 | 已更新 |
 | A1 | 「发生了什么」三条并行记录 | — | 已完成 | 63241250 | 已更新 |
+
+### 9.3 轴写者裁定：哪些「发生过的事」该登记成 trigger（B4-3 缺陷 C）
+
+B4-2 实测发现：`triggers` 的写者只有 task 评论 / chat / a2a / 外部 ingress 四类，
+**票轴（`tkt_…`）与 agent 轴（`agent:…`）在自然业务流里没有任何写者** ——
+两处入口因此长期空白。空白面板不是「没有数据源」，读者会把它读成「什么都没发生」。
+本节是裁定结果，**任何一条轴要改口径都必须改这里**。
+
+| 轴 | 裁定 | 写者 | 理由 / 阈值 / 观测方式 |
+|---|---|---|---|
+| **票轴** `tkt_<id>` | **登记** | `event-routes.ts` 建票 + 流转两处调用 `deps.recordEvent`，最终落到 `thread-ensure.recordThreadEvent`（`triggers` 的唯一写入者） | 票是「一件事」，建票与流转都是**发生过的事**；量小、幂等键稳定（`ticket-created:<id>` / `ticket-status:<id>:<status>`）。失败的动作（非法流转、建票被拒）**不写** —— 失败不是事实。 |
+| **agent 轴** `agent:<id>` | **不登记生命周期事件** | 无（读取端明确说明口径） | ① agent 是**主体**，不是「发生了什么」；它的启停/状态已有唯一写者（agents 表 + `audit_logs`），往 `triggers` 再写一份就是同一事实的第二写者（R1）。② start/stop 与心跳恢复高频、幂等性差，会把「只追加的事实表」变成状态日志。③ agent 的来龙去脉 = **它经手的事**：每件事有自己的 ref 与完整时间线（agent 详情「来龙去脉」区块即此口径）。 |
+| agent 轴的**未来阈值** | 若确有必要，只登记**不可逆主体变更**（hire / fire） | 待实现时接入 | 不登记 start / stop / heartbeat。观测方式：`audit_logs` + `GET /api/agents/:id` 的 state。触发条件：出现「需要回答『这个 agent 什么时候被谁创建/解雇』」的真实诉求。 |
+| agent 轴的**对外表达** | 面板必须给出明确口径，不得留白 | `ThreadTimeline` 空态文案 | 空面板会被读成「什么都没发生」。事件为空时明说「agent 是主体而不是事件：这条轴不登记生命周期事件……」，由 `ThreadTimeline.test.tsx`「agent 轴没有事件时明说…」咬住。 |
 
 ---
 
@@ -215,9 +232,16 @@
 
 ### 10.2 及时性的定义（不是「尽快」）
 
+**拆卡规则（2026-11-03 Owner 指令）**：一张卡如果既含「写完」又含「跑通」，**必须拆成 A/B 两张**：
+A 卡 = 开发 + 基于代码与文档的实现状态 review；B 卡 = Owner 编译重启后的前后端与整体流程实测。
+
+> **有 B 卡时的状态规则**：A 卡交付后，台账状态**最高只能到 `进行中`**；
+> B 卡实测全绿才可写 `已完成` 并填提交号。
+> 理由：把「写完了」和「跑通了」当同一件事，就是历史上「UI 未完成被当成完成」的同一个病。
+
 | 时机 | 要求 |
 |---|---|
-| **开工时** | 把该行 `未开始` → `进行中`，**与该卡第一个提交同一个 commit** |
+| **开工时** | 把该行 `未开始` → `进行中`，**与该卡（A 卡）第一个提交同一个 commit** |
 | **提交时** | 该卡所有判据通过后，`进行中` → `已完成` 并填**本次提交号**，**同一个 commit 内更新** |
 | **被打回时** | `已完成` → `进行中`，提交号改回 `—`（不允许留着一个说谎的已完成） |
 

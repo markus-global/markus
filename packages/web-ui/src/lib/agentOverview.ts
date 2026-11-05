@@ -128,27 +128,27 @@ const STATUS_TABLE: Record<string, AgentStatusPresentation> = {
   idle: {
     tone: 'ok', dotClass: 'bg-green-400', running: true,
     chipClass: 'bg-green-500/10 border border-green-500/20', textClass: 'text-green-600',
-    labelKey: 'common:status.idle',
+    labelKey: 'common:processStatus.idle',
   },
   working: {
     tone: 'busy', dotClass: 'bg-blue-400 animate-pulse', running: true,
     chipClass: 'bg-blue-500/10 border border-blue-500/20', textClass: 'text-blue-500',
-    labelKey: 'common:status.working',
+    labelKey: 'common:processStatus.working',
   },
   error: {
     tone: 'danger', dotClass: 'bg-red-400 animate-pulse', running: true,
     chipClass: 'bg-red-500/10 border border-red-500/20', textClass: 'text-red-500',
-    labelKey: 'common:status.error',
+    labelKey: 'common:processStatus.error',
   },
   paused: {
     tone: 'warn', dotClass: 'bg-amber-400', running: false,
     chipClass: 'bg-amber-500/10 border border-amber-500/20', textClass: 'text-amber-600',
-    labelKey: 'common:status.paused',
+    labelKey: 'common:processStatus.paused',
   },
   offline: {
     tone: 'muted', dotClass: 'bg-gray-400', running: false,
     chipClass: 'bg-gray-500/10 border border-border-default', textClass: 'text-fg-tertiary',
-    labelKey: 'common:status.offline',
+    labelKey: 'common:processStatus.offline',
   },
 };
 

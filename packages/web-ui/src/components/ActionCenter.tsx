@@ -204,13 +204,14 @@ export function ActionCenter({
           <div className="flex items-center gap-1 shrink-0">
             {/* 两个新面的入口就放在这里，不占侧标导航（Owner 砍过导航密度）。
                 语义上它们就是行动台的下层：行动台答「现在要我做什么」，
-                Thread 视图答「这一条到底经过什么」，路由台答「系统自己判断了什么」。 */}
+                检索页答「这一条到底经过什么」（B4 把它从「全部流目录」降级为检索 ——
+                主入口已倒置到任务 / 票据 / agent 详情里），路由台答「系统自己判断了什么」。 */}
             <button
               onClick={() => navBus.navigate(PAGE.THREAD)}
               className="flex items-center gap-1 text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors rounded-lg px-1.5 py-1 hover:bg-surface-overlay"
-              title="一条流的来龙去脉（时间线）"
+              title="按 ref 或关键词检索一条流（来龙去脉在各自的详情页就地展开）"
             >
-              全部流
+              搜索一条流
             </button>
             <button
               onClick={() => navBus.navigate(PAGE.ROUTER)}

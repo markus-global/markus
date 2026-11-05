@@ -3776,6 +3776,17 @@ export interface ThreadAPI {
   /** partial = 部分事实未接线（缺 pendingApproval/openQuestion） */
   stageBasis: 'partial' | 'threadOnly';
   missingFacts: string[];
+  /**
+   * **主体是「流挂载的那个对象」，不是这条流自己。**
+   *
+   * 一条流可以挂在任务 / 需求 / 会话 / 外部资源上（见 `ref` 前缀）；这里说的是**那个对象**
+   * 的治理态（`TaskStatus`）。流自己的态是上面那个 `stage`（`ThreadStage`，派生、不落库），
+   * 两者是两个主语，允许不一致（`stage` = 等你验收，而挂载的任务仍是 `in_progress`）。
+   *
+   * 为什么必须写在这里：UI 曾把它渲染成流那一行上的「任务 评审中」，于是 `req_…` / `cs_…`
+   * 的流也被贴上「任务」二字，读者自然把「这条流在等你」读成「任务在等你」。
+   * 展示时请用 `refDisplay(ref)` 决定对象类别，不要写死「任务」。
+   */
   taskStatus: string | null;
   /** 以下由服务端聚合带出，前端不再各查 task/approval 表（避免第二写者） */
   title?: string | null;
@@ -3825,6 +3836,42 @@ function toEpochMs(v: unknown): number {
     return Number.isNaN(n) ? 0 : n;
   }
   return 0;
+}
+
+/**
+ * **只给 ref** 读一条流的头部事实（B4：入口倒置的读取面）。
+ *
+ * 为什么不用 `fetchThreads()` 再按 id 找：那要求调用方先拿到全局列表——
+ * 任务详情 / 票据详情 / agent 详情手里只有一个实体 id，为它渲染一条流
+ * 不该先去拉一份目录。三处入口共用本函数，是「组件只依赖 ref」的前提。
+ */
+export async function fetchThreadByRef(ref: string): Promise<{ thread: ThreadAPI }> {
+  const r = await request<{ thread: ThreadAPI }>(`/threads/one?ref=${encodeURIComponent(ref)}`);
+  return { thread: { ...r.thread, lastActivity: toEpochMs(r.thread.lastActivity) } };
+}
+
+/** 票据（C1 建立的独立对象）。票不驱动执行，但它是「这件事的凭据」。 */
+export interface TicketAPI {
+  id: string;
+  orgId: string;
+  kind: string;
+  sourceRef: string | null;
+  subject: string;
+  assignee: string | null;
+  taskId: string | null;
+  status: string;
+  createdAt?: string | number;
+  updatedAt?: string | number;
+}
+
+/** 某张任务卡名下的票据。没有票时返回空数组，不是 404。 */
+export function fetchTaskTickets(taskId: string): Promise<{ tickets: TicketAPI[] }> {
+  return request(`/tasks/${encodeURIComponent(taskId)}/tickets`);
+}
+
+/** 单张票。票不存在时后端回 404 + 可行动提示（页面要能区分「没内容」与「没这张票」）。 */
+export function fetchTicket(ticketId: string): Promise<{ ticket: TicketAPI }> {
+  return request(`/tickets/${encodeURIComponent(ticketId)}`);
 }
 
 export function fetchThreadDispositions(threadId: string): Promise<{ dispositions: DispositionAPI[] }> {

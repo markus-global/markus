@@ -1,7 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { api, wsClient, ApiError, invalidateApiCache, fetchThreads, type ThreadAPI, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { api, wsClient, ApiError, invalidateApiCache, fetchThreads, fetchTaskTickets, type TicketAPI, type ThreadAPI, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { ThreadTimeline } from '../components/ThreadTimeline.tsx';
+import { TicketDetailPanel } from '../components/TicketDetailPanel.tsx';
 // stage 角标必须和收件箱共用同一套文案/配色（InboxCard 是唯一事实源），
 // 否则同一个 stage 会在「收件箱」和「任务板」上是两种颜色、两套说法。
 import { StageChip } from '../components/InboxCard.tsx';
@@ -39,6 +41,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -2021,7 +2024,13 @@ function TaskDetailPanel({
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history' | 'thread'>('details');
+  /**
+   * 票——它是「这件事的凭据」（C1）。
+   * 只在真的有时才渲染；没票的行不占注意力（Q4）。
+   */
+  const [tickets, setTickets] = useState<TicketAPI[]>([]);
+  const [openTicketId, setOpenTicketId] = useState<string | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
@@ -2032,7 +2041,18 @@ function TaskDetailPanel({
       setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
     } catch { /* ok */ }
   }, [task.id]);
-  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
+  /**
+   * 票——「这件事的凭据」。
+   * 读失败不拦住宿主页面：票是补充事实，不是这张卡的宿主数据。
+   */
+  useEffect(() => {
+    let alive = true;
+    fetchTaskTickets(task.id)
+      .then(r => { if (alive) setTickets(Array.isArray(r.tickets) ? r.tickets : []); })
+      .catch(() => { if (alive) setTickets([]); });
+    return () => { alive = false; };
+  }, [task.id]);
+  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history' | 'thread') => {
     setActiveTab(tab);
     // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
     if (tab === 'deliverables') void loadUnifiedDeliverables();
@@ -2040,7 +2060,7 @@ function TaskDetailPanel({
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, [loadUnifiedDeliverables]);
-  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }, { id: 'thread' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   useEffect(() => {
@@ -2285,6 +2305,9 @@ function TaskDetailPanel({
         />
       )}
 
+        {/* 票的详情：就地展开，不新造路由（票挂在这张卡上，人在这里遇到它） */}
+        {openTicketId && <TicketDetailPanel ticketId={openTicketId} onClose={() => setOpenTicketId(null)} />}
+
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 shrink-0">
           <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work:task.detailsTab')}</button>
@@ -2297,6 +2320,10 @@ function TaskDetailPanel({
           </button>
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
+          </button>
+          {/* 入口倒置（B4）：任务卡自己的来龙去脉就地展开，不再要求先去全局页搜。 */}
+          <button onClick={() => switchTab('thread')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'thread' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            {t('work:task.threadTab')}
           </button>
         </div>
 
@@ -2313,7 +2340,36 @@ function TaskDetailPanel({
               <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
           </div>
 
+          <div className={activeTab === 'thread' ? 'px-6 py-4' : 'hidden'}>
+            {/* 只给 ref —— Thread 是「视角」，不是一个需要先打开的对象 */}
+            {activeTab === 'thread' && <ThreadTimeline refId={task.id} />}
+          </div>
+
           <div className={activeTab === 'details' ? '' : 'hidden'}>
+              {/* 票据：这件事的凭据。没有票就不渲染这一块（不赚注意力就不占位）。 */}
+              {tickets.length > 0 && (
+                <div className="border-b border-border-default px-6 pt-4 pb-3">
+                  <h4 className="mb-2 flex items-baseline gap-1.5 text-xs font-medium text-fg-secondary">
+                    {t('work:task.ticketsHeading')}
+                    <span className="rounded bg-surface-overlay px-1 text-[11px] text-fg-muted">{tickets.length}</span>
+                  </h4>
+                  <ul className="space-y-1">
+                    {tickets.map(tk => (
+                      <li key={tk.id} className="flex items-center justify-between gap-3 rounded-lg border border-border-subtle bg-surface-secondary px-2.5 py-1.5">
+                        <span className="min-w-0 flex-1 truncate text-xs text-fg-primary" title={tk.subject}>{tk.subject}</span>
+                        <span className="shrink-0 rounded bg-surface-overlay px-1.5 py-0.5 text-[11px] text-fg-tertiary">{tk.status}</span>
+                        <button
+                          onClick={() => setOpenTicketId(tk.id)}
+                          className="shrink-0 rounded px-1.5 py-0.5 text-[11px] font-medium text-brand-400 hover:bg-surface-overlay"
+                          title="这张票的来龙去脉"
+                        >
+                          {t('work:task.openTicketStream')}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {/* Description */}
               <div className="px-6 pt-4 pb-3 border-b border-border-default">
                 {editingDesc ? (
@@ -6420,7 +6476,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               {statusFilter && (
                 <button onClick={() => setStatusFilter(null)}
                   className="px-2 py-0.5 text-[11px] rounded-md font-medium bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/30 flex items-center gap-1">
-                  {t(`common:status.${statusFilter === 'in_progress' ? 'inProgress' : statusFilter}`)}
+                  {taskStatusLabel(statusFilter, t)}
                   <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 </button>
               )}

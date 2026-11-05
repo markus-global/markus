@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <title>repro · AgentProfile 运行与注意力：三种状态不许撞词</title>
+    <style>
+      body { font-family: -apple-system, "PingFang SC", sans-serif; background: #0b0d10; color: #e6e8eb; padding: 32px; }
+      h1 { font-size: 15px; font-weight: 600; color: #9aa4b2; }
+      p.note { font-size: 12px; color: #6b7480; max-width: 720px; line-height: 1.7; }
+      .card { background: #14171c; border: 1px solid #232830; border-radius: 12px; padding: 16px; max-width: 720px; margin-top: 16px; }
+      .row { display: flex; align-items: center; gap: 12px; margin-bottom: 10px; }
+      .pill { padding: 4px 10px; border-radius: 999px; font-size: 12px; font-weight: 500; }
+      .pill.attention { background: rgba(34,197,94,.15); color: #4ade80; }
+      .pill.stage { background: rgba(139,92,246,.15); color: #a78bfa; }
+      .muted { color: #6b7480; font-size: 12px; }
+      table { border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+      td, th { border: 1px solid #232830; padding: 4px 10px; text-align: left; }
+      th { color: #9aa4b2; font-weight: 500; }
+    </style>
+  </head>
+  <body>
+    <!--
+      这是 AgentProfile「运行与注意力」区域头部的最小复现台，不是另写一套文案：
+      下面每个字都来自生产代码（stateVocabulary.ts / threadPresentation.ts）+ 真实 locale JSON。
+      目的：用真实浏览器证明「任务在 review」与「agent 注意力 idle」在同一屏上是两个不同词。
+    -->
+    <h1>AgentProfile · 运行与注意力（复现台）</h1>
+    <p class="note">
+      复现场景：一个任务处于 <code>review</code>，同一时刻它的 agent 注意力循环处于 <code>idle</code>。
+      两者都是「状态」，同时出现在这一区域里——但它们回答的问题不同，所以文案必须不同。
+    </p>
+    <div class="card" id="mind">
+      <div class="row">
+        <span class="pill attention" id="attention-state" data-state="idle"></span>
+        <span class="muted" id="attention-hint">注意力循环：agent 此刻在干什么</span>
+      </div>
+      <div class="row">
+        <span class="muted">关联任务：</span>
+        <span class="pill stage" id="task-status" data-status="review"></span>
+        <span class="muted" id="task-hint">治理态：这件事走到流程哪一步</span>
+      </div>
+      <div class="row">
+        <span class="muted">这条流：</span>
+        <span class="pill stage" id="thread-stage" data-stage="none:idle"></span>
+        <span class="muted" id="stage-hint">在等谁：没人有回合</span>
+      </div>
+    </div>
+    <table>
+      <tr><th>概念</th><th>枚举值</th><th>渲染文案</th></tr>
+      <tbody id="vocab"></tbody>
+    </table>
+    <script type="module" src="./state-words.ts"></script>
+  </body>
+</html>

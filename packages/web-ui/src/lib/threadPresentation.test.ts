@@ -66,14 +66,14 @@ describe('waitPhrase — 时间短语按 stage 变（修「空闲却说已等」
     }
   });
 
-  it('空闲的流不能说「已等」—— 没有人在等', () => {
+  it('无待办的流不能说「已等」—— 没有人在等', () => {
     // 这条是核心：曾经所有 stage 共用「已等」，读者会去找它在等谁，而答案是没人。
-    expect(waitPhrase('idle', ms)).toBe('最后活动 13 分钟前');
-    expect(waitPhrase('idle', ms)).not.toContain('已等');
+    expect(waitPhrase('none:idle', ms)).toBe('最后活动 13 分钟前');
+    expect(waitPhrase('none:idle', ms)).not.toContain('已等');
   });
 
-  it('进行中/排队各有自己的说法', () => {
-    expect(waitPhrase('working', ms)).toBe('已进行 13 分钟');
+  it('处理中/排队各有自己的说法', () => {
+    expect(waitPhrase('agent:working', ms)).toBe('已进行 13 分钟');
     expect(waitPhrase('system:queued', ms)).toBe('排队 13 分钟');
   });
 
@@ -103,8 +103,8 @@ describe('wouldAcceptVerdict — 语义唯一判据（判据写反过两次，�
 describe('STAGE_LABEL — 七个 stage 一个不少（展示层不得因新 stage 白屏）', () => {
   it('闭集完整', () => {
     expect(Object.keys(STAGE_LABEL).sort()).toEqual([
-      'idle', 'person:answer', 'person:approval', 'person:blocked',
-      'person:review', 'system:queued', 'working',
+      'agent:working', 'none:idle', 'person:answer', 'person:approval',
+      'person:blocked', 'person:review', 'system:queued',
     ]);
   });
 });
