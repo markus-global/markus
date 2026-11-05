@@ -310,6 +310,7 @@ function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
 
   return (
     <SharedSendToChatModal
+      chipKind={kind}
       chipLabel={chipLabel}
       chipContent={chipContent}
       agents={agents}
@@ -4727,6 +4728,7 @@ export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: p
       {/* Same picker a task/requirement uses — the recipient is the user's choice. */}
       {sendWorkflow && (
         <SharedSendToChatModal
+          chipKind="task"
           chipLabel={workflowChipLabel(sendWorkflow)}
           chipContent={workflowChipContent(sendWorkflow)}
           agents={agents}

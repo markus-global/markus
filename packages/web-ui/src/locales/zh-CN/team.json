@@ -1,4 +1,16 @@
 {
+  "chatChip": {
+    "kind": {
+      "task": "任务",
+      "requirement": "需求",
+      "deliverable": "产出物",
+      "file": "文件",
+      "selection": "选区",
+      "web": "网页",
+      "terminal": "终端",
+      "note": "备注"
+    }
+  },
   "chat": {
     "title": "聊天",
     "pause": "暂停",

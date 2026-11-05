@@ -4574,6 +4574,41 @@ export class APIServer {
         // The user's own typed words (without injected context chips), used to
         // derive a clean session title. Absent for retries / non-UI clients.
         const titleSource = typeof body['titleSource'] === 'string' ? body['titleSource'] : undefined;
+        // ── Context-chip sidecar (card 7, ⑩) ─────────────────────────────────
+        // The composer sends chips as STRUCTURE (kind / label / offset / length)
+        // alongside the flat `text`. They are stored on the user message's
+        // metadata so the sent bubble can re-highlight them; the model still sees
+        // only `text` — the payload is already substituted in place there.
+        //
+        // Contract note: `chat_messages.metadata` is a free-form JSON blob that is
+        // persisted verbatim and returned by the message reads, so this needs NO
+        // schema change and NO client migration. Validation is server-side and
+        // bounded: unknown kinds are kept as strings but shapes that would break
+        // the renderer (bad offsets) are dropped. Omitting `chips` (every older
+        // client) persists nothing — old rows keep rendering as plain text.
+        const chipPlacements = ((): Array<{ kind: string; label: string; offset: number; length: number }> | undefined => {
+          const raw = body['chips'];
+          if (!Array.isArray(raw)) return undefined;
+          const out: Array<{ kind: string; label: string; offset: number; length: number }> = [];
+          for (const item of raw) {
+            if (!item || typeof item !== 'object') continue;
+            const rec = item as Record<string, unknown>;
+            const kind = typeof rec['kind'] === 'string' ? rec['kind'].slice(0, 32) : '';
+            const offset = Number(rec['offset']);
+            const length = Number(rec['length']);
+            if (!kind || !Number.isFinite(offset) || !Number.isFinite(length)) continue;
+            if (offset < 0 || length <= 0 || offset + length > userText.length) continue;
+            out.push({
+              kind,
+              label: typeof rec['label'] === 'string' ? rec['label'].slice(0, 200) : '',
+              offset,
+              length,
+            });
+            if (out.length >= 50) break;
+          }
+          return out.length > 0 ? out : undefined;
+        })();
+        const chipsMeta = chipPlacements ? { chips: chipPlacements } : undefined;
         // Persist user-attached files (any type incl. pasted images) to local
         // disk under ~/.markus so the agent gets a real path anchor.
         const persistedAttachments = persistChatImages(images, fileNames, agentId!);
@@ -4587,7 +4622,7 @@ export class APIServer {
 
         if (inject) {
           if (this.storage && sessionId) {
-            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, undefined, titleSource);
+            await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, chipsMeta, titleSource);
           }
           agent.injectFollowUp(agentText, senderId, senderInfo, images);
           this.json(res, 200, { injected: true });
@@ -4599,7 +4634,7 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
-          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, undefined, titleSource);
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, chipsMeta, titleSource);
           // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
           // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
           // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在

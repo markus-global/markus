@@ -41,6 +41,7 @@ import {
   resolveTurnBubbleId,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
+import { serializeDraftForSend, type DraftChip } from '../lib/chatChipDraft.ts';
 import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
@@ -52,7 +53,8 @@ import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 /* ── Volatile read-only state snapshot (refreshed every Team render) ───────── */
 
 export interface ChatStreamVolatileState {
-  chatContext: Array<{ id: string; label: string; content: string }>;
+  /** Chips placed INSIDE `input` (interval model — see lib/chatChipDraft.ts). */
+  chatContext: DraftChip[];
   input: string;
   pendingImages: Array<{ id: string; dataUrl: string; name: string }>;
   chatMode: ChatMode;
@@ -106,7 +108,7 @@ export interface ChatStreamContext {
   setSending: (b: boolean) => void;
   setActivities: (a: ActivityStep[]) => void;
   setInput: (s: string) => void;
-  setChatContext: (s: Array<{ id: string; label: string; content: string }> | ((p: Array<{ id: string; label: string; content: string }>) => Array<{ id: string; label: string; content: string }>)) => void;
+  setChatContext: (s: DraftChip[] | ((p: DraftChip[]) => DraftChip[])) => void;
   setPendingImages: (a: Array<{ id: string; dataUrl: string; name: string }>) => void;
   setMentionDropdown: (b: boolean) => void;
   setChatReplyTo: (v: { id: string; sender: string; text: string } | null) => void;
@@ -827,14 +829,22 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   // ── Send ──────────────────────────────────────────────────────────────────
   const send = useCallback(async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
     const volatile = stateRef.current;
-    const ctxPrefix = (!retryText && volatile.chatContext.length > 0)
-      ? volatile.chatContext.map(c => c.content).join('\n\n') + '\n\n'
-      : '';
-    const text = (retryText ?? (ctxPrefix + volatile.input)).trim();
-    // The user's own words WITHOUT the injected context-chip prefix — the server
-    // derives a clean session title from this instead of slicing the raw payload
-    // (which produced titles like `[terminal-selection] Terminal: …`).
-    const titleSource = (retryText ?? volatile.input).trim();
+    // ONE serializer for the composer: chips are ranges inside the text, so the
+    // payload, the session-title source and the sidecar all come from the same
+    // function (they used to be three ad-hoc string joins that drifted apart).
+    //
+    // `serializeDraftForSend` normalises the draft *before* computing offsets, and
+    // must be the only normalisation on this path: trimming afterwards would shift
+    // every offset by the amount of leading whitespace (in bounds → wrong pill title,
+    // out of bounds → placement dropped and the bubble dumps the raw payload).
+    const draft = serializeDraftForSend({ text: volatile.input, chips: volatile.chatContext ?? [] });
+    const text = retryText ? retryText.trim() : draft.text;
+    // The user's own words WITHOUT any chip payload — the server derives a clean
+    // session title from this instead of slicing the raw payload (which produced
+    // titles like `[terminal-selection] Terminal: …`).
+    const titleSource = retryText ? retryText.trim() : draft.titleSource;
+    // Retries/resumes reuse an already-persisted turn: its sidecar is stored.
+    const chipSidecar = retryText ? undefined : (draft.chips.length > 0 ? draft.chips : undefined);
     if (!text && volatile.pendingImages.length === 0) return;
     if (volatile.chatMode === 'direct' && !volatile.selectedAgent) return;
     resumeChatScrollFollow();
@@ -1343,6 +1353,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             fileNames: fileNamesToSend,
             replyTo: replyCtx,
             titleSource,
+            chips: chipSidecar,
           },
         );
         if (currentConvKeyRef.current === sendKey) {

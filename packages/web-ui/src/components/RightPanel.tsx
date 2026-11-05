@@ -13,6 +13,7 @@ import type { DirectoryEntry } from '../api.ts';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
+import type { ChipKind } from '../lib/chatChips.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import TabScrollRail from './TabScrollRail.tsx';
 import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
@@ -42,6 +43,11 @@ function toFileUrl(filePath: string): string {
 }
 
 export interface ChatContextChip {
+  /**
+   * What the chip points at. Structural, not inferred from the label emoji:
+   * the pill renders the TYPE WORD from this, so two producers cannot drift.
+   */
+  kind: ChipKind;
   label: string;
   content: string;
 }
@@ -437,6 +443,7 @@ export function RightPanel({
     const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
     if (htmlMeta) {
       return {
+        kind: 'web',
         label: `🌐 ${short}`,
         content: [
           `[html-selection]`,
@@ -449,6 +456,7 @@ export function RightPanel({
     }
     if (payload.kind === 'terminal') {
       return {
+        kind: 'terminal',
         label: `⌘ ${short}`,
         content: [
           `[terminal-selection]`,
@@ -461,6 +469,7 @@ export function RightPanel({
       };
     }
     return {
+      kind: 'selection',
       label: `“${short}”`,
       content: `${t('deliverables:chat.selectedFrom', { defaultValue: 'Selected from' })} ${sourceLabel}:\n\n"""\n${text}\n"""`,
     };
@@ -480,6 +489,7 @@ export function RightPanel({
     if (!text) return;
     const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
     onAddToChat({
+      kind: 'terminal',
       label: `⌘ ${short}`,
       content: [
         `[terminal-output]`,
@@ -568,6 +578,7 @@ export function RightPanel({
       const name = title || d.title || d.reference || d.id;
       const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
       return {
+        kind: 'deliverable',
         label: `📄 ${short}`,
         content: [
           '[deliverable]',
@@ -584,6 +595,7 @@ export function RightPanel({
       const name = title || path.split(/[/\\]/).pop() || path;
       const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
       return {
+        kind: 'file',
         label: `📄 ${short}`,
         content: [
           '[file]',

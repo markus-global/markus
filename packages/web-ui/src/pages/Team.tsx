@@ -26,6 +26,13 @@ import {
 } from '../components/ExecutionTimeline.tsx';
 import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.ts';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { ChatChipPill } from '../components/ChatChipPill.tsx';
+import { ChatChipText } from '../components/ChatChipText.tsx';
+import { parseNavChips, normalizeChip, isChipKind, type ChatChip } from '../lib/chatChips.ts';
+import {
+  appendChips, insertChip, reconcileEdit, removeChip,
+  type DraftChip,
+} from '../lib/chatChipDraft.ts';
 import {
   AT_BOTTOM_EPSILON,
   GESTURE_WINDOW_MS,
@@ -420,34 +427,40 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [previewMode, isMobile, isActive, collapseRightPanel, openRightPanel]);
 
   // Add a right-panel selection into the chat as pending context, then focus input.
-  const addChatContext = useCallback((chip: { label: string; content: string }) => {
-    const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setChatContext(prev => [...prev, { id, ...chip }]);
-    requestAnimationFrame(() => textareaRef.current?.focus());
+  //
+  // Insertion happens at the caret: the chip is a RANGE inside the composer text,
+  // so "add to conversation" while the cursor sits mid-sentence puts it where the
+  // user is actually writing instead of dumping it at the end.
+  const addChatContext = useCallback((chip: ChatChip, at?: number) => {
+    const current = draftRef.current;
+    const caret = at ?? textareaRef.current?.selectionStart ?? current.text.length;
+    const res = insertChip({ text: current.text, chips: current.chips }, chip, caret);
+    setInput(res.draft.text);
+    setChatContext(res.draft.chips);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(res.caret, res.caret);
+    });
   }, []);
 
-  // Parse a JSON array of context chips carried over navigation (e.g. from the
-  // Deliverables page), turning each into a pending chat-context tag above the
-  // input — same behaviour as right-panel "Add to conversation".
+  // Parse the JSON array of context chips carried over navigation (e.g. from the
+  // Deliverables page), turning each into a chip inside the composer text — same
+  // behaviour as right-panel "Add to conversation".
   const applyNavChatChips = useCallback((raw: string | null | undefined) => {
     if (!raw) return;
-    try {
-      const chips = JSON.parse(raw) as Array<{ label?: string; content?: string }>;
-      if (!Array.isArray(chips) || chips.length === 0) return;
-      const valid = chips.filter((c): c is { label: string; content: string } =>
-        !!c && typeof c.content === 'string' && c.content.trim().length > 0);
-      if (valid.length === 0) return;
-      const withIds = valid.map(c => ({
-        id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        label: c.label?.trim() || 'Context',
-        content: c.content,
-      }));
-      setChatContext(prev => [...prev, ...withIds]);
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
-      });
-    } catch { /* malformed JSON → ignore silently */ }
+    let seq = 0;
+    const chips = parseNavChips(raw, () => `ctx_${Date.now()}_${++seq}`);
+    if (chips.length === 0) return;
+    const current = draftRef.current;
+    const res = appendChips({ text: current.text, chips: current.chips }, chips);
+    setInput(res.draft.text);
+    setChatContext(res.draft.chips);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) { el.focus(); el.setSelectionRange(res.caret, res.caret); }
+    });
   }, []);
 
   // L2: Team detail panel (hidden by default, toggled via header button)
@@ -714,7 +727,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   // Selections sent from the right-side resource panel, prepended to the next message.
-  const [chatContext, setChatContext] = useState<Array<{ id: string; label: string; content: string }>>([]);
+  // Chips live INSIDE the composer text as explicit ranges (lib/chatChipDraft.ts):
+  // position is a fact about the draft, not something derived from a separate
+  // array or re-parsed out of the text on send.
+  const [chatContext, setChatContext] = useState<DraftChip[]>([]);
+  // Mirror of the composer draft for callbacks declared BEFORE the input state
+  // (right-panel / navigation writers). Assigned during render, same pattern as
+  // `activeScrollKeyRef` — a ref, not a second source of truth.
+  const draftRef = useRef<{ text: string; chips: DraftChip[] }>({ text: '', chips: [] });
+  // Keep the mirror in sync (the writers above are declared before `input`).
+  // Assigning a ref during render is the established pattern in this file
+  // (`activeScrollKeyRef.current = activeScrollKey`).
+  draftRef.current = { text: input, chips: chatContext };
   const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 400;
@@ -4000,7 +4024,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   ]);
 
   const handleInputChange = (val: string) => {
-    setInput(val);
+    // Resolve the edit against the chip ranges BEFORE storing the text: a change
+    // that touches a chip's range removes the whole chip (backspace eats the
+    // token), every other range just shifts. One function owns that rule.
+    const nextDraft = reconcileEdit({ text: input, chips: chatContext }, val);
+    setInput(nextDraft.text);
+    setChatContext(nextDraft.chips);
 
     const cursorPos = textareaRef.current?.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
@@ -4080,7 +4109,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const typeLabel = entityType
       ? t(`page.mentionType.${entityType}`, { defaultValue: entityType })
       : t('page.mentionType.agent');
-    addChatContext({ label: `[${icon}${typeLabel}] ${name}`, content: `${content} ` });
+    addChatContext({
+      // Mention chips carry the entity kind explicitly (the label's `[☑任务]`
+      // prefix stays for readability, but it is no longer the carrier).
+      kind: entityType && isChipKind(entityType) ? entityType : 'note',
+      label: `[${icon}${typeLabel}] ${name}`,
+      content: `${content} `,
+      id: `mention_${Date.now()}`,
+    } as ChatChip);
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
@@ -5657,10 +5693,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                                   const rect = e.currentTarget.getBoundingClientRect();
                                   setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
                                 })
-                              : (msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
-                                })}</span>)
+                              : <ChatChipText
+                                  text={msg.text}
+                                  chips={msg.sender === 'user' ? msg.chips : undefined}
+                                  className="leading-relaxed"
+                                  renderText={chunk => renderMentionText(chunk, agents, (agent, e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                                  })}
+                                />
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
@@ -5982,22 +6023,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           )}
           {chatContext.length > 0 && (
-            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap" data-chip-strip>
               {chatContext.map(chip => (
-                <span
+                <ChatChipPill
                   key={chip.id}
-                  className="inline-flex items-center gap-1 max-w-[240px] pl-2 pr-1 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
+                  kind={chip.kind}
+                  label={chip.label}
                   title={chip.content}
-                >
-                  <span className="truncate">{chip.label}</span>
-                  <button
-                    onClick={() => setChatContext(prev => prev.filter(c => c.id !== chip.id))}
-                    className="w-4 h-4 flex items-center justify-center rounded hover:bg-brand-500/20 shrink-0"
-                    aria-label={t('common:remove', { defaultValue: 'Remove' })}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </button>
-                </span>
+                  removeLabel={t('common:remove', { defaultValue: 'Remove' })}
+                  onRemove={() => {
+                    const res = removeChip({ text: input, chips: chatContext }, chip.id);
+                    setInput(res.draft.text);
+                    setChatContext(res.draft.chips);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -6109,6 +6148,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
+                  // Chips are ranges, so "delete one character of it" has no
+                  // meaning — Backspace/Delete next to a chip removes the WHOLE
+                  // chip. Done here (not in reconcileEdit) because only the key
+                  // event knows the user meant to step over the token.
+                  if ((e.key === 'Backspace' || e.key === 'Delete') && chatContext.length > 0) {
+                    const el = textareaRef.current;
+                    if (el && el.selectionStart === el.selectionEnd) {
+                      const caret = el.selectionStart ?? 0;
+                      const hit = chatContext.find(c => e.key === 'Backspace'
+                        ? caret > c.start && caret <= c.end
+                        : caret >= c.start && caret < c.end);
+                      if (hit) {
+                        e.preventDefault();
+                        const res = removeChip({ text: input, chips: chatContext }, hit.id);
+                        setInput(res.draft.text);
+                        setChatContext(res.draft.chips);
+                        requestAnimationFrame(() => {
+                          const node = textareaRef.current;
+                          if (node) node.setSelectionRange(res.caret, res.caret);
+                        });
+                        return;
+                      }
+                    }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromComposer(); }
                 }}
                 onPaste={handlePaste}
@@ -6199,7 +6262,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           onClose={collapseRightPanel}
           width={rightPanelFullscreen ? containerWidth : effectiveRightPanelWidth}
           onResizeStart={onRightPanelResizeStart}
-          onAddToChat={addChatContext}
+          onAddToChat={chip => {
+            // Right panel hands over { kind, label, content }; the composer owns
+            // chip identity (ids are what the range model deletes by).
+            let seq = 0;
+            const normalized = normalizeChip(chip, () => `ctx_${Date.now()}_${++seq}`);
+            if (normalized) addChatContext(normalized);
+          }}
           tabs={rightPanelTabs}
           activeTabId={activeRightPanelTabId}
           onSelectTab={layout?.setActiveRightPanelTab}

@@ -68,9 +68,10 @@ function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, un
  * desktop FAB, the mobile "send to conversation" picker): the chip is part of
  * the contract with the agent, so it must never drift between surfaces.
  */
-function buildDeliverableChip(d: DeliverableInfo): { label: string; content: string } {
+function buildDeliverableChip(d: DeliverableInfo): { kind: 'deliverable'; label: string; content: string } {
   const title = d.title?.trim() || d.id;
   return {
+    kind: 'deliverable',
     label: `📄 ${shortForChip(title)}`,
     content: [
       `[deliverable]`,
@@ -1872,6 +1873,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
         {sendToChatOpen && selected && (
           <SendToChatModal
+            chipKind="deliverable"
             chipLabel={buildDeliverableChip(selected).label}
             chipContent={buildDeliverableChip(selected).content}
             agents={agents}

@@ -1,5 +1,6 @@
 import type { ChatMessageInfo, ChannelMessageInfo, ChannelMsgMetadata, StoredSegment, SubagentProgressEvent } from '../api.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { normalizeSentChips, type SentChip } from '../lib/chatChips.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,13 @@ export interface ChatMsg {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  /**
+   * Structured context chips that travelled with THIS message (sidecar).
+   * When present, `text` is the flat payload and these offsets point at each
+   * chip's content — the bubble re-highlights them instead of showing a wall of
+   * `[terminal-selection] …`. Absent for older/foreign messages (plain render).
+   */
+  chips?: SentChip[];
   isActivityLog?: boolean;
   activityType?: string;
   outcome?: string;
@@ -625,6 +633,13 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     base.replyToText = m.metadata.replyToText as string;
     // Heal legacy rows that embedded the quote into content before reply metadata existed.
     base.text = stripEmbeddedReplyQuote(base.text, base.replyToSender, base.replyToText);
+  }
+  // Chip sidecar: only user turns carry one (the composer is the only producer).
+  // Unknown/malformed placements are dropped by the validator, which leaves the
+  // message rendering as plain text — exactly the pre-sidecar behaviour.
+  if (m.role === 'user') {
+    const chips = normalizeSentChips((m.metadata as Record<string, unknown> | null | undefined)?.chips);
+    if (chips) base.chips = chips;
   }
   return base;
 }

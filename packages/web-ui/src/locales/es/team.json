@@ -1,4 +1,16 @@
 {
+  "chatChip": {
+    "kind": {
+      "task": "Tarea",
+      "requirement": "Requisito",
+      "deliverable": "Entregable",
+      "file": "Archivo",
+      "selection": "Fragmento",
+      "web": "Web",
+      "terminal": "Terminal",
+      "note": "Nota"
+    }
+  },
   "chat": {
     "title": "Chat",
     "pause": "Pausar",

@@ -92,13 +92,28 @@ export type StoredSegment =
   | { type: 'text'; content: string; thinking?: string; createdAt?: string }
   | { type: 'tool'; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: SubagentProgressEvent[] };
 
+/**
+ * Where a context chip's content sits inside a sent user message.
+ *
+ * Wire shape shared by the client and the server: the client sends it on
+ * `POST /agents/:id/message` (`chips`), the server persists it under
+ * `chat_messages.metadata.chips`, and the bubble renderer uses `offset`/`length`
+ * to re-highlight the chip — it never searches the text.
+ */
+export interface MessageChipPlacement {
+  kind: string;
+  label: string;
+  offset: number;
+  length: number;
+}
+
 export interface ChatMessageInfo {
   id: string;
   sessionId: string;
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string; chips?: MessageChipPlacement[] } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -1384,6 +1399,10 @@ export interface MessageStreamOptions {
   /** The user's own typed text (without injected context chips); the server derives
    *  a clean session title from it. Omitted when the user typed nothing. */
   titleSource?: string;
+  /** Structured context-chip sidecar: which kinds travelled and where they sit in
+   *  `text`. Persisted as message metadata so the sent bubble can highlight chips
+   *  instead of rendering a wall of payload. */
+  chips?: MessageChipPlacement[];
 }
 
 /**
@@ -1517,7 +1536,7 @@ export const api = {
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string; softDisconnected?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
-          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource,
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource, chips,
         } = options ?? {};
         // Set only once we actually saw the terminal `done` event. Its absence is
         // exactly the soft-disconnect signal: the browser dropped the SSE (page
@@ -1550,6 +1569,7 @@ export const api = {
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
               titleSource: titleSource || undefined,
+              chips: chips && chips.length > 0 ? chips : undefined,
             }),
             signal,
           });
