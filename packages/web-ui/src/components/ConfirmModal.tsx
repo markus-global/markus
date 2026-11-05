@@ -51,8 +51,10 @@ export function ConfirmModal({
   });
 
   const isPrimary = variant === 'primary';
+  // brand 底必须问 token（mono 下 brand-600 = 白，写死 text-white 就是白底白字）；
+  // red 不在 mono 的重映射范围内，保持白字。
   const confirmBtnClass = isPrimary
-    ? 'px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors'
+    ? 'px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors'
     : 'px-4 py-1.5 text-sm bg-red-600 hover:bg-red-500 text-white rounded-lg transition-colors';
 
   return createPortal(
