@@ -72,6 +72,18 @@ export function detectAbnormalCompletion(
 const log = createLogger('attention');
 
 /**
+ * 重试退避的**唯一口径**：第 n 次失败后等多久再重放。
+ *
+ * 退避是「一个不变量」，同一语义只能有一种度量：此前实体冲突分支内联
+ * `250 + min(retryCount, 8) * 250`，而无进展超时分支根本没有退避——两处各写一遍，
+ * 改歪一处时另一处看起来还正常。指数增长 + 4s 封顶：小额度足够躲开瞬时抖动，
+ * 又不会长到让 mailbox 看起来「没在跑」。
+ */
+function retryBackoffMs(retries: number): number {
+  return 250 * Math.pow(2, Math.min(Math.max(retries, 0), 4));
+}
+
+/**
  * Callback interface for the AttentionController to delegate actual work
  * back to the Agent. The Agent implements this to process mailbox items
  * using its existing handleMessage / executeTask / handleHeartbeat paths.
@@ -895,7 +907,7 @@ export class AttentionController {
           }
           // auto 与 report 都做轻量退避：避免两个 worker 反复竞抢同一被锁实体
           // 造成忙循环（unlockEntity 的广播唤醒 + 重新入队会立刻再次触发竞态）。
-          await new Promise<void>(r => setTimeout(r, 250 + Math.min(item.retryCount ?? 0, 8) * 250));
+          await new Promise<void>(r => setTimeout(r, retryBackoffMs(item.retryCount ?? 0)));
           continue;
         }
 
@@ -1103,7 +1115,39 @@ export class AttentionController {
         );
         this.mailbox.drop(item.id);
       } else {
-        this.mailbox.requeue(item);
+        // 有界重放：无进展超时是**可重试**的失败，但额度必须有限，且与「异常完成」
+        // 共用同一个计数器与同一个上限（MAILBOX_ITEM_MAX_RETRIES），否则就是同一语义
+        // 两个度量。此前这里无条件 requeue：一旦每次重放都再次超时（典型场景：backstop
+        // 窗口短于一次 turn 的最短耗时），就形成自我维持的重放风暴——实测 8s 内单 item
+        // 75 次 LLM 尝试、两个 worker 永不回 idle，而 mailbox 深度看起来还是 0（现场静默）。
+        // 额度用尽 → 异常终态 dropped + agent:incomplete 事件：不静默丢弃，也绝不标 completed。
+        const retries = item.retryCount ?? 0;
+        if (retries < MAILBOX_ITEM_MAX_RETRIES) {
+          const backoffMs = retryBackoffMs(retries);
+          log.warn('backstop timeout — requeueing for retry after backoff', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            retryCount: retries + 1,
+            maxRetries: MAILBOX_ITEM_MAX_RETRIES,
+            backoffMs,
+          });
+          await new Promise<void>(r => setTimeout(r, backoffMs));
+          this.mailbox.requeue(item);
+        } else {
+          log.error('backstop timeout persisted after max retries — marking dropped', {
+            agentId: this.agentId,
+            itemId: item.id,
+            type: item.sourceType,
+            retryCount: retries,
+            maxRetries: MAILBOX_ITEM_MAX_RETRIES,
+          });
+          this.emitIncomplete(
+            item,
+            `backstop timeout persisted after ${retries + 1} attempts (max ${MAILBOX_ITEM_MAX_RETRIES} retries) — dropped, not completed`,
+          );
+          this.mailbox.drop(item.id);
+        }
       }
       statusResolved = true;
     } else if (reply === '[cancelled]' || this.lastYieldDecision === 'cancel') {
@@ -1132,12 +1176,16 @@ export class AttentionController {
     } else if (!this.running) {
       // Agent was stopped/paused during processing — requeue so the item
       // is not lost and will be picked up when the agent resumes.
-      log.info('Agent stopped during processing — requeueing item', {
+      // Agent stopped/paused during processing — the item is not lost and will be
+      // picked up when the agent resumes. 这**不是失败**：必须用 putBack（不 +retryCount），
+      // 否则「停一次 Agent」就消耗一次失败额度，重启够几次就被判 dropped——同一个计数器
+      // 被两种语义共用（失败重试 vs 稍后再跑），会把正常重启算成故障。
+      log.info('Agent stopped during processing — putting item back without consuming retry budget', {
         agentId: this.agentId,
         itemId: item.id,
         type: item.sourceType,
       });
-      this.mailbox.requeue(item);
+      this.mailbox.putBack(item);
       statusResolved = true;
     } else {
       const abnormalReason = detectAbnormalCompletion(reply, item);

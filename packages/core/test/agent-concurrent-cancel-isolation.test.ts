@@ -374,6 +374,12 @@ describe('端到端并发取消隔离（A 层，无密钥）', () => {
     await manager.startAgent(agent.id);
 
     try {
+      // ⚠️ 40ms 只用于「制造一次 backstop 取消」；取消一旦取证，必须立刻把窗口放回
+      // 宽值（见下面 `setProcessingTimeoutMs(60000)`）。原因实测（2026-11-05）：
+      // 40ms 比一次重放 turn 的最短耗时还短，于是**每一次重放**都会在 40ms 内被判
+      // 「无进展」→ 取消 → 回队 → 重放，形成自我维持的重放风暴：8s 内单 token 打了
+      // 75 次 LLM 尝试，两个 worker 永远停在 focused，收敛断言只能等到 12s 超时。
+      // 这正是不放宽时的 flaky 机制（5 次运行 2 次红，失败形态恒为 waitFor 超时）。
       attention.setProcessingTimeoutMs(40);
       attention.setBackstopCancelGraceMs(5000);
 
@@ -386,6 +392,11 @@ describe('端到端并发取消隔离（A 层，无密钥）', () => {
       await waitFor(() => probe.activeTokens().length >= 2, '两个会话同时在飞');
       const workerA = probe.calls.find(c => c.token === 'TOKEN_A')!.workerId!;
       await waitFor(() => agent.getLastCancelledWorkerId() !== undefined, 'backstop 取消触发');
+
+      // 取消已取证 → 关闭 backstop，让重放的 turn 有机会真正跑完并收敛。
+      // 注意：已进入计时的那次尝试仍按启动时捕获的 40ms 计时，所以最多再多一次
+      // 取消/重放；从这里起重放必须能结束，下面用有界 attempts 断言把这条钉住。
+      attention.setProcessingTimeoutMs(60000);
 
       probe.release('TOKEN_A');
       probe.release('TOKEN_B');
@@ -413,6 +424,13 @@ describe('端到端并发取消隔离（A 层，无密钥）', () => {
         expect(snap?.userCancelCurrent).toBe(false);
       }
       expect(attention.getWorkerUserCancel(workerA)).toBe(false);
+
+      // 重放必须有界（同一 token 的 LLM 尝试数）。这条断言是上面「取消取证后立刻
+      // 放宽 backstop」的护栏：若有人把那行 `setProcessingTimeoutMs(60000)` 删掉，
+      // 这个用例会在这里**立即**变红，而不是等 12s 收敛超时——失败形态与根因对齐。
+      // 实测（2026-11-05）：修复后 1–2 次；未修复时 8s 内可达 75 次。
+      expect(probe.attempts('TOKEN_A')).toBeLessThanOrEqual(5);
+      expect(probe.attempts('TOKEN_B')).toBeLessThanOrEqual(5);
     } finally {
       await manager.stopAgent(agent.id);
     }

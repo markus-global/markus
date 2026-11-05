@@ -15,6 +15,7 @@ import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
   END_TURN_REPLY_SENTINEL,
+  MAILBOX_ITEM_MAX_RETRIES,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPriority,
@@ -414,6 +415,40 @@ describe('processFocusedItem (via runLoop)', () => {
     expect(requeueSpy).not.toHaveBeenCalled();
     expect(mailbox.depth).toBe(0);
     expect(delegate.cancelProcessing).toHaveBeenCalledTimes(1); // cancel was still attempted
+  });
+
+  it('A1c: repeated backstop timeouts are BOUNDED — drop after MAILBOX_ITEM_MAX_RETRIES retries', async () => {
+    // 改造前的失败形态（2026-11-05 实测）：这条路径不查 retryCount，每次重放又被同一
+    // 窗口判无进展 → 取消 → 回队 → 重放，自我维持；8s 内单 item 打出 75 次 LLM 尝试，
+    // worker 永不回 idle，而 mailbox.depth 一直是 0（现场完全静默）。
+    let processCalls = 0;
+    let resolveCurrent: ((v: string) => void) | undefined;
+    const processMailboxItem = vi.fn().mockImplementation(() => {
+      processCalls++;
+      return new Promise<string>(res => { resolveCurrent = res; });
+    });
+    // 每次都让孤儿 settle → 每次都走「可重放」分支（与 A1b 的不可 settle 分支相反）。
+    const cancelProcessing = vi.fn().mockImplementation(() => { resolveCurrent?.('aborted'); });
+    const { controller, mailbox, eventBus, delegate } = makeController({ processMailboxItem, cancelProcessing });
+    controller.setProcessingTimeoutMs(20);
+    controller.setBackstopCancelGraceMs(500);
+    const requeueSpy = vi.spyOn(mailbox, 'requeue');
+    const dropSpy = vi.spyOn(mailbox, 'drop');
+    const incomplete = vi.fn();
+    eventBus.on('agent:incomplete', incomplete);
+
+    mailbox.enqueue('a2a_message', { summary: 'always times out', content: 'body' });
+    controller.start();
+
+    await vi.waitFor(() => expect(dropSpy).toHaveBeenCalledTimes(1), { timeout: 8000 });
+    controller.stop();
+
+    // 首次 + N 次重试；额度用尽后必须 dropped（可见异常终态），绝不 unlimited replay。
+    expect(processCalls).toBe(MAILBOX_ITEM_MAX_RETRIES + 1);
+    expect(requeueSpy).toHaveBeenCalledTimes(MAILBOX_ITEM_MAX_RETRIES);
+    expect(incomplete).toHaveBeenCalledTimes(1);
+    expect(mailbox.depth).toBe(0);
+    expect(delegate.cancelProcessing).toHaveBeenCalledTimes(MAILBOX_ITEM_MAX_RETRIES + 1);
   });
 
   // A2/A3 pin the REDESIGN: the backstop is an INACTIVITY window, not a total-duration cap.
