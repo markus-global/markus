@@ -1,0 +1,192 @@
+{
+  "url": "http://localhost:8062/repro/workflows-overflow.html?empty=1",
+  "browser": "HeadlessChrome/156.0.8078.4",
+  "measuredAt": "2026-11-05T14:44:11.217Z",
+  "mobileFailures": 0,
+  "results": [
+    {
+      "width": 375,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 375,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 375,
+        "scrollWidth": 375,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 375,
+          "scrollWidth": 375,
+          "overflow": 0
+        },
+        "list": null,
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 311,
+          "scrollWidth": 311,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 0,
+        "runRows": 0
+      },
+      "cards": [],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [
+        {
+          "path": "div > div[workflows-panel] > div.flex-1.flex.px-4 > div.min-w-0.w-full > details > summary.flex.gap-1.5",
+          "clientWidth": 1,
+          "scrollWidth": 54,
+          "overflow": 53,
+          "overflowX": "hidden",
+          "ellipsis": false
+        }
+      ],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 390,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 390,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 390,
+        "scrollWidth": 390,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 390,
+          "scrollWidth": 390,
+          "overflow": 0
+        },
+        "list": null,
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 326,
+          "scrollWidth": 326,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 0,
+        "runRows": 0
+      },
+      "cards": [],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [
+        {
+          "path": "div > div[workflows-panel] > div.flex-1.flex.px-4 > div.min-w-0.w-full > details > summary.flex.gap-1.5",
+          "clientWidth": 1,
+          "scrollWidth": 54,
+          "overflow": 53,
+          "overflowX": "hidden",
+          "ellipsis": false
+        }
+      ],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 430,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 430,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 430,
+        "scrollWidth": 430,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 430,
+          "scrollWidth": 430,
+          "overflow": 0
+        },
+        "list": null,
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 366,
+          "scrollWidth": 366,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 0,
+        "runRows": 0
+      },
+      "cards": [],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [
+        {
+          "path": "div > div[workflows-panel] > div.flex-1.flex.px-4 > div.min-w-0.w-full > details > summary.flex.gap-1.5",
+          "clientWidth": 1,
+          "scrollWidth": 54,
+          "overflow": 53,
+          "overflowX": "hidden",
+          "ellipsis": false
+        }
+      ],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 1280,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 1280,
+        "dpr": 1
+      },
+      "doc": {
+        "clientWidth": 1280,
+        "scrollWidth": 1280,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "overflow": 0
+        },
+        "list": null,
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 512,
+          "scrollWidth": 512,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 0,
+        "runRows": 0
+      },
+      "cards": [],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [
+        {
+          "path": "div > div[workflows-panel] > div.flex-1.flex.px-4 > div.min-w-0.w-full > details > summary.flex.gap-1.5",
+          "clientWidth": 1,
+          "scrollWidth": 54,
+          "overflow": 53,
+          "overflowX": "hidden",
+          "ellipsis": false
+        }
+      ],
+      "stickingPastViewport": [],
+      "failures": []
+    }
+  ]
+}

@@ -4113,7 +4113,9 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   };
 
   return (
-    <div className={compact ? 'max-w-4xl space-y-3' : 'max-w-lg w-full text-center space-y-5'}>
+    // `min-w-0`: this card is the last item of the workflows grid, so it lives
+    // under the same containment contract as the workflow cards themselves.
+    <div className={`min-w-0 ${compact ? 'max-w-4xl space-y-3' : 'max-w-lg w-full text-center space-y-5'}`}>
       {!compact && (
         <>
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-500/10">
@@ -4190,7 +4192,12 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
+/**
+ * Exported for the mobile-overflow repro (`repro/workflows-overflow.tsx`): the
+ * harness must mount THIS component, not a copy of its markup — a copy can only
+ * prove that the copy is well behaved.
+ */
+export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -4616,7 +4623,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
   };
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto px-4 py-5">
+    <div className="flex-1 min-h-0 overflow-auto px-4 py-5" data-testid="workflows-panel">
       {!propTeamId && teams.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           <button
@@ -4641,7 +4648,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
           <WorkflowHowItWorks teamId={teamId} agents={agents} />
         </div>
       ) : (
-        <div className="grid gap-4 max-w-4xl">
+        <div className="grid grid-cols-1 gap-4 max-w-4xl min-w-0" data-testid="workflows-list">
           {workflows.map((wf) => {
             const wfRuns = runs[wf.name] ?? [];
             const latestRun = wfRuns[0];

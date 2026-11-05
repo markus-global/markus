@@ -319,7 +319,13 @@ export function WorkflowCard({
 
   return (
     <div
-      className="rounded-xl border border-border-default/50 bg-surface-secondary p-4"
+      // `min-w-0`: a grid item's automatic minimum size is its min-content
+      // width, so without this the card refuses to shrink below ~393px even
+      // when the track is narrower — and the panel turns into a horizontal
+      // scroller (measured 2026-11-05: 375px viewport → card 393px wide, 36px
+      // past the viewport). The container side of the contract lives in
+      // Work.tsx (`grid-cols-1`), this is the item side.
+      className="min-w-0 rounded-xl border border-border-default/50 bg-surface-secondary p-4"
       data-testid={`workflow-card-${workflow.name}`}
     >
       <Disclosure
@@ -405,7 +411,14 @@ export function WorkflowCard({
                           onClick={() => onOpenRun(run)}
                           aria-label={t('work:task.workflowRunDetails', '运行详情')}
                           data-testid={`workflow-run-open-${run.id}`}
-                          className="group flex w-full items-center gap-2 rounded-lg px-1.5 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
+                          // `flex-wrap`: this row is a list of small facts, every one
+                          // of them an unbreakable token. Without wrapping its
+                          // min-content width is the sum of all of them (~250px at
+                          // 11-12px type), and a row that cannot shrink pushes its
+                          // whole card — and then the grid track — wider than the
+                          // phone (measured 2026-11-05). Wrapping costs a second
+                          // line only when the facts genuinely do not fit.
+                          className="group flex w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-lg px-1.5 py-1.5 text-left text-xs transition-colors hover:bg-surface-elevated/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-brand-500/60"
                         >
                           <span className="shrink-0 font-medium tabular-nums text-fg-secondary">
                             #{run.runNumber}
@@ -418,7 +431,7 @@ export function WorkflowCard({
                                   count: run.taskIds.length,
                                 })}
                           </span>
-                          <span className="shrink-0 text-[11px] text-fg-muted">
+                          <span className="text-[11px] text-fg-muted">
                             {timeAgo(run.startedAt, t)}
                           </span>
                           {run.triggeredBy === 'schedule' ? (
@@ -426,9 +439,8 @@ export function WorkflowCard({
                               {t('work:task.workflowScheduled', '定时')}
                             </span>
                           ) : null}
-                          <span className="flex-1" />
                           <svg
-                            className="h-3.5 w-3.5 shrink-0 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100"
+                            className="ml-auto h-3.5 w-3.5 shrink-0 text-fg-muted opacity-0 transition-opacity group-hover:opacity-100"
                             viewBox="0 0 24 24"
                             fill="none"
                             stroke="currentColor"

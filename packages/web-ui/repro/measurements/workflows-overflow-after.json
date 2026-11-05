@@ -1,0 +1,960 @@
+{
+  "url": "http://localhost:8062/repro/workflows-overflow.html",
+  "browser": "HeadlessChrome/156.0.8078.4",
+  "measuredAt": "2026-11-05T14:44:08.587Z",
+  "mobileFailures": 0,
+  "results": [
+    {
+      "width": 375,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 375,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 375,
+        "scrollWidth": 375,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 375,
+          "scrollWidth": 375,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 0
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 375,
+      "state": "expanded",
+      "viewport": {
+        "innerWidth": 375,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 375,
+        "scrollWidth": 375,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 375,
+          "scrollWidth": 375,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 375,
+      "state": "drawer",
+      "viewport": {
+        "innerWidth": 375,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 375,
+        "scrollWidth": 375,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 375,
+          "scrollWidth": 375,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        },
+        "drawer": {
+          "clientWidth": 374,
+          "scrollWidth": 374,
+          "overflow": 0
+        },
+        "howItWorks": {
+          "clientWidth": 343,
+          "scrollWidth": 343,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 341,
+          "scrollWidth": 341,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 390,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 390,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 390,
+        "scrollWidth": 390,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 390,
+          "scrollWidth": 390,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 0
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 390,
+      "state": "expanded",
+      "viewport": {
+        "innerWidth": 390,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 390,
+        "scrollWidth": 390,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 390,
+          "scrollWidth": 390,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 390,
+      "state": "drawer",
+      "viewport": {
+        "innerWidth": 390,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 390,
+        "scrollWidth": 390,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 390,
+          "scrollWidth": 390,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        },
+        "drawer": {
+          "clientWidth": 389,
+          "scrollWidth": 389,
+          "overflow": 0
+        },
+        "howItWorks": {
+          "clientWidth": 358,
+          "scrollWidth": 358,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 356,
+          "scrollWidth": 356,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 430,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 430,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 430,
+        "scrollWidth": 430,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 430,
+          "scrollWidth": 430,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 0
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 430,
+      "state": "expanded",
+      "viewport": {
+        "innerWidth": 430,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 430,
+        "scrollWidth": 430,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 430,
+          "scrollWidth": 430,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 430,
+      "state": "drawer",
+      "viewport": {
+        "innerWidth": 430,
+        "dpr": 3
+      },
+      "doc": {
+        "clientWidth": 430,
+        "scrollWidth": 430,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 430,
+          "scrollWidth": 430,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        },
+        "drawer": {
+          "clientWidth": 429,
+          "scrollWidth": 429,
+          "overflow": 0
+        },
+        "howItWorks": {
+          "clientWidth": 398,
+          "scrollWidth": 398,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 396,
+          "scrollWidth": 396,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 1280,
+      "state": "collapsed",
+      "viewport": {
+        "innerWidth": 1280,
+        "dpr": 1
+      },
+      "doc": {
+        "clientWidth": 1280,
+        "scrollWidth": 1280,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 0
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 1280,
+      "state": "expanded",
+      "viewport": {
+        "innerWidth": 1280,
+        "dpr": 1
+      },
+      "doc": {
+        "clientWidth": 1280,
+        "scrollWidth": 1280,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        },
+        "drawer": null,
+        "howItWorks": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    },
+    {
+      "width": 1280,
+      "state": "drawer",
+      "viewport": {
+        "innerWidth": 1280,
+        "dpr": 1
+      },
+      "doc": {
+        "clientWidth": 1280,
+        "scrollWidth": 1280,
+        "overflowX": 0
+      },
+      "named": {
+        "panel": {
+          "clientWidth": 1280,
+          "scrollWidth": 1280,
+          "overflow": 0
+        },
+        "list": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        },
+        "drawer": {
+          "clientWidth": 447,
+          "scrollWidth": 447,
+          "overflow": 0
+        },
+        "howItWorks": {
+          "clientWidth": 896,
+          "scrollWidth": 896,
+          "overflow": 0
+        }
+      },
+      "counts": {
+        "cards": 6,
+        "runRows": 5
+      },
+      "cards": [
+        {
+          "i": 0,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 1,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 2,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 3,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 4,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        },
+        {
+          "i": 5,
+          "clientWidth": 894,
+          "scrollWidth": 894,
+          "overflow": 0
+        }
+      ],
+      "cardsOverflowing": [],
+      "runRowsOverflowing": [],
+      "scrollOverflows": [],
+      "stickingPastViewport": [],
+      "failures": []
+    }
+  ]
+}
