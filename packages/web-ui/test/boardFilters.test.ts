@@ -7,7 +7,7 @@
  * implementation ignored that argument, so a completed run opened an empty DAG.
  */
 import { describe, it, expect } from 'vitest';
-import { filterBoardTasks, isClosedStatus, CLOSED_STATUSES } from '../src/lib/boardFilters';
+import { filterBoardTasks, isHiddenByDefault, HIDDEN_BY_DEFAULT_STATUSES } from '../src/lib/boardFilters';
 
 const tasks = [
   { id: 't1', status: 'completed', projectId: 'p1', assignedAgentId: 'a1', createdBy: 'u1' },
@@ -36,12 +36,20 @@ describe('closed visibility', () => {
     expect(ids(filterBoardTasks(tasks, { showClosed: false, includeClosed: true }))).toHaveLength(4);
   });
 
-  it('classifies closed statuses in one place', () => {
-    expect(isClosedStatus('archived')).toBe(true);
-    expect(isClosedStatus('cancelled')).toBe(true);
-    expect(isClosedStatus('rejected')).toBe(true);
-    expect(isClosedStatus('completed')).toBe(false);
-    expect([...CLOSED_STATUSES].sort()).toEqual(['archived', 'cancelled', 'rejected']);
+  /**
+   * 断言**故意保持原义**：`completed` 不是「默认隐藏」。
+   *
+   * 这不是被固化的错误语义 —— 它问的是「默认看板要不要藏」，而已经完成的任务
+   * 默认仍然要显示。终态判定在 `lib/taskStatus.ts`，两者的守卫在
+   * `packages/shared/test/terminal-status-mirror.test.ts`。
+   */
+  it('hides exactly the three statuses that are closed for good', () => {
+    expect(isHiddenByDefault('archived')).toBe(true);
+    expect(isHiddenByDefault('cancelled')).toBe(true);
+    expect(isHiddenByDefault('rejected')).toBe(true);
+    expect(isHiddenByDefault('completed')).toBe(false);
+    expect(isHiddenByDefault('failed')).toBe(false);
+    expect([...HIDDEN_BY_DEFAULT_STATUSES].sort()).toEqual(['archived', 'cancelled', 'rejected']);
   });
 });
 

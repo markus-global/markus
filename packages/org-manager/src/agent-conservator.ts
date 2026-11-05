@@ -283,8 +283,19 @@ type AgentStallVerdict =
       suggestions: string[];
     };
 
-/** 被依赖任务视为「已死」的终态失败集合 */
-const DEAD_DEP_STATUSES = new Set(['failed', 'cancelled', 'archived']);
+/**
+ * 被依赖任务视为「已死」的状态集合。
+ *
+ * **这不是终态判定**，也不得被当作终态使用：
+ *   - `completed` 是终态，但它是「做完了」，不是「死了」——把它算进来会让下游
+ *     任务因为依赖成功而被判死；
+ *   - `rejected` 是人的决定，不阻塞下游开工；
+ *   - `blocked` / `review` 都还有通往活跃状态的出边（见 `TASK_TRANSITIONS`）。
+ *
+ * 所以它是终态的**真子集**，语义也不同。守卫：
+ * `packages/org-manager/test/terminal-status-single-source.test.ts`。
+ */
+export const DEAD_DEP_STATUSES: ReadonlySet<string> = new Set(['failed', 'cancelled', 'archived']);
 
 /** 心跳停滞判定适用的 phase —— 「应该在动但没动」的集合 */
 const ACTIVITY_PHASES = new Set<string>([

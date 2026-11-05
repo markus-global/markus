@@ -44,6 +44,7 @@ import {
   SYSTEM_WORKFLOWS_MAX_CONVERSE,
   SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE,
   SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE,
+  isTerminal,
 } from '@markus/shared';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
 import type { SemanticMemorySearch } from './memory/semantic-search.js';
@@ -1176,11 +1177,10 @@ export class ContextEngine {
         const byPriority = (a: { priority?: string }, b: { priority?: string }) =>
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
-        const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed', 'archived', 'rejected']);
         const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-        const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
+        const myActive = myTasks.filter(t => !isTerminal(t.status)).sort(byPriority);
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
@@ -1202,7 +1202,7 @@ export class ContextEngine {
         // an unconditional push here produced an empty `## Task Board` shell for
         // converse and a duplicated heading for execute.
         const ACTIONABLE_TEAM_STATUSES = new Set(['blocked', 'review', 'revision']);
-        const otherActive = [...otherTasks.filter(t => !CLOSED_STATUSES.has(t.status))].sort((a, b) => {
+        const otherActive = [...otherTasks.filter(t => !isTerminal(t.status))].sort((a, b) => {
           const aAct = ACTIONABLE_TEAM_STATUSES.has(a.status) ? 0 : 1;
           const bAct = ACTIONABLE_TEAM_STATUSES.has(b.status) ? 0 : 1;
           if (aAct !== bAct) return aAct - bAct;

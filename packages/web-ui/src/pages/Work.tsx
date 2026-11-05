@@ -41,7 +41,8 @@ import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
-import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { filterBoardTasks, isHiddenByDefault, HIDDEN_BY_DEFAULT_STATUSES } from '../lib/boardFilters.ts';
+import { isTerminal } from '../lib/taskStatus.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
@@ -736,7 +737,6 @@ function NoteComment({ note, compact }: { note: string; compact?: boolean }) {
 // ─── Constants ──────────────────────────────────────────────────────────────────
 
 const ALL_STATUSES = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled', 'archived'] as const;
-const CLOSED_STATUSES_SET = new Set(['rejected', 'cancelled', 'archived']);
 
 const BOARD_COLUMNS_BASE = [
   { id: 'failed',      statuses: ['failed'],                  accent: 'border-t-red-500',    dropStatus: 'failed' },
@@ -3486,7 +3486,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
               const agentTasks = projTasks.filter(t => t.assignedAgentId === a.id);
-              const activeTasks = agentTasks.filter(t => !['completed', 'failed', 'cancelled', 'archived'].includes(t.status));
+              const activeTasks = agentTasks.filter(t => !isTerminal(t.status));
               return (
                 <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-surface-elevated/60 rounded-lg">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'working' ? 'bg-blue-500' : a.status === 'idle' ? 'bg-green-500' : 'bg-gray-500'}`} />
@@ -5147,8 +5147,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
         const target = Object.values(runs).flat().find(r => r.id === confirmCancelRunId);
         const tasks = target ? runTasks[target.id] : undefined;
         const total = target?.taskIds.length ?? 0;
-        const terminal = new Set(['completed', 'archived', 'cancelled', 'rejected', 'failed']);
-        const cancellable = tasks ? tasks.filter(t => !terminal.has(t.status)).length : null;
+        const cancellable = tasks ? tasks.filter(t => !isTerminal(t.status)).length : null;
         return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -5980,7 +5979,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
         if (detail.params?.statusFilter) {
           const sf = detail.params.statusFilter;
           localStorage.removeItem('markus_nav_statusFilter');
-          if (CLOSED_STATUSES_SET.has(sf)) setShowClosed(true);
+          if (HIDDEN_BY_DEFAULT_STATUSES.has(sf)) setShowClosed(true);
           setStatusFilter(sf);
         }
       }
@@ -6191,8 +6190,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
 
   // ── Filter & display helpers ──
 
-  const CLOSED_STATUSES = new Set(['rejected', 'cancelled', 'archived']);
-  const isClosed = (t: { status: string }) => CLOSED_STATUSES.has(t.status);
+  const isClosed = (t: { status: string }) => isHiddenByDefault(t.status);
 
   /**
    * Visibility for the board. The rules themselves live in `lib/boardFilters`
@@ -6252,11 +6250,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     + allRequirements.filter(r => isClosed(r)).length;
 
   const sortedAgents = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeAgentIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.assignedAgentId && !terminal.has(t.status)) {
+      if (t.assignedAgentId && !isTerminal(t.status)) {
         if (!selectedProjectId || t.projectId === selectedProjectId) {
           activeAgentIds.add(t.assignedAgentId);
         }
@@ -6294,11 +6291,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, [sortedAgents, teams]);
 
   const sortedProjects = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeProjectIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.projectId && !terminal.has(t.status)) {
+      if (t.projectId && !isTerminal(t.status)) {
         activeProjectIds.add(t.projectId);
       }
     }

@@ -35,6 +35,30 @@ export const TASK_TRANSITIONS: Readonly<Record<ItemStatus, ReadonlySet<ItemStatu
 export const TERMINAL_STATUSES: ReadonlySet<ItemStatus> =
   new Set<ItemStatus>(['completed', 'failed', 'rejected', 'cancelled', 'archived']);
 
+/**
+ * The one terminal predicate for task/requirement statuses.
+ *
+ * Everything that needs to answer "is this work over?" calls this — not a local
+ * array, not a local `Set`, not `['completed', ...].includes(status)`. The audit
+ * (`docs/architecture/hardcoded-string-audit.md` §2) found eight answers to this
+ * question, two of them wrong, and every one of them passed its own tests.
+ *
+ * `blocked` and `review` are deliberately NOT terminal. The FSM is the authority:
+ *   - `blocked → in_progress` — the dependency engine releases it by itself, so it
+ *     is a live waiting state, not an ending.
+ *   - `review → completed | in_progress` — it waits for a human decision.
+ * A status with an outgoing edge into active work is alive.
+ *
+ * Unknown strings answer `false`: a status we do not recognise is not evidence
+ * that the work finished.
+ *
+ * Note: `TERMINAL_REQUIREMENT_STATUSES` (`./requirement.js`) is a *different*
+ * question over the same enum — a requirement cannot `fail`. Do not merge them.
+ */
+export function isTerminal(status: string | null | undefined): boolean {
+  return !!status && TERMINAL_STATUSES.has(status as ItemStatus);
+}
+
 /** Check whether a task status transition is structurally valid per the FSM. */
 export function isValidTaskTransition(from: ItemStatus, to: ItemStatus): boolean {
   return TASK_TRANSITIONS[from]?.has(to) ?? false;
