@@ -3,7 +3,10 @@
     "kind": {
       "task": "Tarea",
       "requirement": "Requisito",
+      "project": "Proyecto",
       "deliverable": "Entregable",
+      "workflow": "Flujo de trabajo",
+      "agent": "Agente",
       "file": "Archivo",
       "selection": "Fragmento",
       "web": "Web",

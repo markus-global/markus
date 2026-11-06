@@ -1,10 +1,42 @@
 import { describe, it, expect } from 'vitest';
-import { inferChipKind, normalizeChip, parseNavChips, isChipKind, type ChatChip } from './chatChips.ts';
+import { CHIP_ICONS, CHIP_KINDS, inferChipKind, normalizeChip, parseNavChips, isChipKind, type ChatChip } from './chatChips.ts';
 
 const mkId = (() => {
   let n = 0;
   return () => `id_${++n}`;
 })();
+
+describe('一个标签只允许一个图标（类型只能由 kind 承载）', () => {
+  it('旧式 `[图标类型] ` 前缀被去掉，label 只剩标题', () => {
+    const chip = normalizeChip(
+      { kind: 'deliverable', label: '[📦交付物] 交付说明：问题证据', content: '[deliverable]\nID: d1' },
+      mkId,
+    );
+    expect(chip?.label).toBe('交付说明：问题证据');
+    expect(chip?.kind).toBe('deliverable');
+  });
+
+  it('裸 emoji 前缀（📄 / ⌘ / 🌐 / “）同样被去掉', () => {
+    expect(normalizeChip({ label: '📄 notes.md', content: '[file]\nPath: /a' }, mkId)?.label).toBe('notes.md');
+    expect(normalizeChip({ label: '⌘ ls -la', content: '[terminal-output]\nT' }, mkId)?.label).toBe('ls -la');
+    expect(normalizeChip({ label: '🌐 example.com', content: '[html-selection]\nx' }, mkId)?.label).toBe('example.com');
+  });
+
+  it('不是类型标记的方括号标题原样保留（[WIP] 不能被误吃）', () => {
+    expect(normalizeChip({ label: '[WIP] 草稿', content: '[file]\nx' }, mkId)?.label).toBe('[WIP] 草稿');
+  });
+
+  it('每个 kind 都有图标 —— 映射必须是满射，读者不该靠记忆猜', () => {
+    for (const kind of CHIP_KINDS) expect(CHIP_ICONS[kind], kind).toBeTruthy();
+  });
+
+  it('workflow / project / agent 是正式 kind，不再掉进 note', () => {
+    expect(isChipKind('workflow')).toBe(true);
+    expect(isChipKind('project')).toBe(true);
+    expect(isChipKind('agent')).toBe(true);
+    expect(inferChipKind('[deliverable]\nx', '')).toBe('deliverable');
+  });
+});
 
 describe('inferChipKind', () => {
   it('reads the structured marker in content before any label prefix', () => {
@@ -42,10 +74,13 @@ describe('normalizeChip', () => {
   it('resolves a legacy chip exactly once, then carries kind', () => {
     const legacy = { label: '⌘ npm test', content: '[terminal-selection]\nTerminal: bash' };
     const chip = normalizeChip(legacy, mkId);
-    expect(chip).toEqual({ id: expect.any(String), kind: 'terminal', label: '⌘ npm test', content: legacy.content });
-    // A second pass must not change the answer.
+    // Kind is resolved from the legacy prefix; the label is cleaned at the same
+    // boundary, because the pill renders icon + type word + title from `kind`.
+    expect(chip).toEqual({ id: expect.any(String), kind: 'terminal', label: 'npm test', content: legacy.content });
+    // A second pass must not change the answer (idempotent).
     const again = normalizeChip(chip, mkId);
     expect(again?.kind).toBe('terminal');
+    expect(again?.label).toBe('npm test');
   });
 
   it('rejects empty content instead of shipping an empty chip', () => {

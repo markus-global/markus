@@ -3,7 +3,10 @@
     "kind": {
       "task": "任务",
       "requirement": "需求",
-      "deliverable": "产出物",
+      "project": "项目",
+      "deliverable": "交付物",
+      "workflow": "工作流",
+      "agent": "智能体",
       "file": "文件",
       "selection": "选区",
       "web": "网页",

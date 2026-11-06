@@ -4728,7 +4728,7 @@ export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: p
       {/* Same picker a task/requirement uses — the recipient is the user's choice. */}
       {sendWorkflow && (
         <SharedSendToChatModal
-          chipKind="task"
+          chipKind="workflow"
           chipLabel={workflowChipLabel(sendWorkflow)}
           chipContent={workflowChipContent(sendWorkflow)}
           agents={agents}

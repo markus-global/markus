@@ -18,7 +18,10 @@
 export type ChipKind =
   | 'task'
   | 'requirement'
+  | 'project'
   | 'deliverable'
+  | 'workflow'
+  | 'agent'
   | 'file'
   | 'selection'
   | 'web'
@@ -51,7 +54,10 @@ export interface SentChip {
 export const CHIP_ICONS: Record<ChipKind, string> = {
   task: '✅',
   requirement: '📌',
+  project: '📁',
   deliverable: '📦',
+  workflow: '⚙',
+  agent: '🤖',
   file: '📄',
   selection: '📝',
   web: '🌐',
@@ -64,7 +70,8 @@ export const CHIP_ICONS: Record<ChipKind, string> = {
  * two pickers cannot present the same set in two different orders.
  */
 export const CHIP_KINDS: ChipKind[] = [
-  'task', 'requirement', 'deliverable', 'file', 'selection', 'web', 'terminal', 'note',
+  'task', 'requirement', 'project', 'deliverable', 'workflow', 'agent',
+  'file', 'selection', 'web', 'terminal', 'note',
 ];
 
 /** Structured markers written by the producers into `content`. Order matters. */
@@ -108,6 +115,47 @@ export function inferChipKind(content: string, label = ''): ChipKind {
 }
 
 /**
+ * Strip a legacy in-band type marker from a chip label.
+ *
+ * The chip pill already renders `icon + type word + title` from `kind`. Older
+ * producers additionally baked the icon (and sometimes the type word) INTO the
+ * label — `[📦交付物] 标题`, `📄 notes.md`, `“quoted”` — so one chip showed two
+ * icons and two type words. The type has exactly one carrier now (`kind`); this
+ * function retires the old shape at the single boundary every chip passes
+ * through, so queued drafts and nav payloads from older builds render clean too.
+ *
+ * Only a leading marker is removed, and only when it is recognisably a type
+ * marker (starts with an emoji, or is one of the known type words). A title that
+ * merely starts with a bracket word like `[WIP] …` is left alone.
+ */
+const TYPE_WORDS = new Set([
+  '任务', '需求', '项目', '交付物', '产出物', '工作流', '智能体', '文件', '选区', '网页', '终端', '备注',
+  'Task', 'Requirement', 'Project', 'Deliverable', 'Workflow', 'Agent', 'File', 'Selection', 'Web', 'Terminal', 'Note',
+]);
+const EMOJI_HEAD = /^[\p{Extended_Pictographic}\u2600-\u27BF\u2318\uFE0F]+/u;
+
+export function stripChipLabelPrefix(label: string): string {
+  const original = label;
+  // Legacy selection chips quoted the whole label: “word word”.
+  const quoted = /^[“"]\s*([\s\S]+?)\s*[”"]$/.exec(label);
+  if (quoted && quoted[1]!.trim()) return quoted[1]!.trim();
+  const bracket = /^\[([^\]]{1,16})\]\s+/.exec(label);
+  if (bracket) {
+    const inner = bracket[1]!.trim();
+    const word = inner.replace(EMOJI_HEAD, '').trim();
+    const hasIcon = word !== inner;
+    if (hasIcon || TYPE_WORDS.has(word)) {
+      const rest = label.slice(bracket[0].length).trim();
+      if (rest) return rest;
+    }
+    return original;
+  }
+  // Bare symbol prefix (`📄 notes.md`, `⌘ ls -la`) — only when something follows it.
+  const stripped = label.replace(/^\s*[\p{Extended_Pictographic}\u2600-\u27BF\u2318\uFE0F]+\s*/u, '').trim();
+  return stripped || original;
+}
+
+/**
  * Normalise anything chip-shaped into a `ChatChip`.
  *
  * Backwards compatibility lives here and only here: a legacy `{label, content}`
@@ -119,9 +167,11 @@ export function normalizeChip(
   makeId: () => string,
 ): ChatChip | null {
   if (!raw || typeof raw.content !== 'string' || raw.content.trim().length === 0) return null;
-  const label = (typeof raw.label === 'string' ? raw.label : '').trim() || 'Context';
-  const kind = isChipKind(raw.kind) ? raw.kind : inferChipKind(raw.content, label);
-  return { id: raw.id || makeId(), kind, label, content: raw.content };
+  const rawLabel = (typeof raw.label === 'string' ? raw.label : '').trim() || 'Context';
+  const kind = isChipKind(raw.kind) ? raw.kind : inferChipKind(raw.content, rawLabel);
+  // Kind is resolved from the ORIGINAL label (legacy prefixes still carry
+  // information when no structured marker exists), then the label is cleaned.
+  return { id: raw.id || makeId(), kind, label: stripChipLabelPrefix(rawLabel), content: raw.content };
 }
 
 export function isChipKind(value: unknown): value is ChipKind {
@@ -151,7 +201,7 @@ export function normalizeSentChips(raw: unknown): SentChip[] | undefined {
     if (!Number.isFinite(offset) || !Number.isFinite(length) || offset < 0 || length <= 0) continue;
     out.push({
       kind: isChipKind(rec.kind) ? rec.kind : inferChipKind('', typeof rec.label === 'string' ? rec.label : ''),
-      label: typeof rec.label === 'string' ? rec.label : 'Context',
+      label: stripChipLabelPrefix(typeof rec.label === 'string' ? rec.label : 'Context'),
       offset,
       length,
     });

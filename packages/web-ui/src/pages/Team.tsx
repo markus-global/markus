@@ -4103,17 +4103,11 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     const content = entityType && entityId
       ? `@[${name}](${entityType}:${entityId})`
       : name.includes(' ') ? `@[${name}]` : `@${name}`;
-    const icon = entityType ? (ENTITY_TYPE_ICON[entityType] ?? '📄') : '🤖';
-    // Label the TYPE, not just the icon: `[☑任务] 标题`. An icon alone asks the
-    // reader to memorise a glyph-to-type mapping that is never explained.
-    const typeLabel = entityType
-      ? t(`page.mentionType.${entityType}`, { defaultValue: entityType })
-      : t('page.mentionType.agent');
     addChatContext({
-      // Mention chips carry the entity kind explicitly (the label's `[☑任务]`
-      // prefix stays for readability, but it is no longer the carrier).
+      // 类型只由 `kind` 承载。pill 已经渲染「图标 + 类型词」，再往 label 里塞
+      // `[图标类型] ` 就会让一个标签出现两个图标（Owner 2026-11-06 实测）。label 只放标题。
       kind: entityType && isChipKind(entityType) ? entityType : 'note',
-      label: `[${icon}${typeLabel}] ${name}`,
+      label: name,
       content: `${content} `,
       id: `mention_${Date.now()}`,
     } as ChatChip);

@@ -3,7 +3,10 @@
     "kind": {
       "task": "Task",
       "requirement": "Requirement",
+      "project": "Project",
       "deliverable": "Deliverable",
+      "workflow": "Workflow",
+      "agent": "Agent",
       "file": "File",
       "selection": "Excerpt",
       "web": "Web",
