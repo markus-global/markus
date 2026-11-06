@@ -29,6 +29,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { ChatChipPill } from '../components/ChatChipPill.tsx';
 import { ChatChipText } from '../components/ChatChipText.tsx';
 import { parseNavChips, normalizeChip, isChipKind, type ChatChip } from '../lib/chatChips.ts';
+import { removeMentionTrigger } from '../lib/chatMention.ts';
 import {
   appendChips, insertChip, reconcileEdit, removeChip,
   type DraftChip,
@@ -1033,6 +1034,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Channel @mention
   const [mentionDropdown, setMentionDropdown] = useState(false);
+  /** 下拉打开时的触发位置（`@` + 已键入前缀）。选中时按它删除，不靠失焦后的光标。 */
+  const mentionTriggerRef = useRef<{ at: number; fragment: string } | null>(null);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   // Slash commands
@@ -4044,11 +4047,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           loadEntityMentions();
           setMentionDropdown(true);
           setMentionFilter(fragment.toLowerCase());
+          // 把触发位置记成事实：选中那一刻 textarea 已失焦，光标不可信。
+          mentionTriggerRef.current = { at: atIdx, fragment };
           setMentionSelectedIndex(0);
           return;
         }
       }
     }
+    mentionTriggerRef.current = null;
     setMentionDropdown(false);
 
     // ---- / slash command detection ----
@@ -4092,11 +4098,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const insertMention = (name: string, entityType?: string, entityId?: string) => {
     const cursorPos = textareaRef.current?.selectionStart ?? input.length;
-    const before = input.slice(0, cursorPos);
-    const atIdx = before.lastIndexOf('@');
-    const after = input.slice(cursorPos);
-    // 移除输入框中已输入的 @ + 过滤片段，改为在输入框上方生成标签（与右侧栏“添加到对话”一致）
-    const newVal = input.slice(0, atIdx) + after;
+    // 按**记录的触发位置**删 `@前缀`，不按当前光标：点下拉项会让 textarea 失焦，
+    // 光标可能停在旧位置，于是前缀残留（Owner 2026-11-06 实测）。
+    const newVal = removeMentionTrigger(input, mentionTriggerRef.current, cursorPos);
+    mentionTriggerRef.current = null;
     setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
