@@ -1806,6 +1806,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                         className="text-fg-secondary text-sm"
                         onHtmlSelection={handleHtmlSelection}
                         basePath={selected?.reference ? selected.reference.replace(/[/\\][^/\\]+$/, '') : undefined}
+                        copyVariant="preview"
                       />
                       </div>
                     )

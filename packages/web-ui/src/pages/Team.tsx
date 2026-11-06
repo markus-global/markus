@@ -464,6 +464,19 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     });
   }, []);
 
+  /**
+   * 「发送到对话」的落地握手。
+   *
+   * 为什么不用 setTimeout：agent 切换与 session 加载都是异步的，固定 300ms 只是在赌
+   * 它们谁先完成 —— 赌赢了能跳，赌输了就「点了确认没反应」，且没有任何断言会红。
+   * 这里改成两个显式意图位：等到 `selectedAgent` 真的切到目标 agent（effect 依赖）后，
+   * 才按 id 取会话、切过去，**最后**再落 chip。
+   *
+   * chip 必须在切换之后落：切换会话会重载草稿，先落的 chip 会被覆盖（验收里
+   * 「点确认后输入框没有 chip」就是这个顺序问题）。
+   */
+  const pendingSendToRef = useRef<{ agentId: string; sessionId: string; chips: string | null } | null>(null);
+
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
     if (previewMode) return true;
@@ -1624,14 +1637,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             setMainTab('chat');
             if (isMobile) enterMobileDetail();
             if (detail.params.sessionId) {
-              const targetSessionId = detail.params.sessionId;
-              setTimeout(async () => {
-                try {
-                  const { sessions: s } = await api.sessions.listByAgent(detail.params!.agentId, 20);
-                  const target = s.find((ss: ChatSessionInfo) => ss.id === targetSessionId);
-                  if (target) void switchSession(target);
-                } catch { /* session will load normally */ }
-              }, 300);
+              // 记下意图，等 selectedAgent 真正切过去后由 effect 完成会话切换 + 落 chip。
+              pendingSendToRef.current = {
+                agentId: detail.params.agentId,
+                sessionId: detail.params.sessionId,
+                chips: detail.params.chatChips ?? null,
+              };
             }
           }
         }
@@ -1675,7 +1686,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           const chipsRaw = detail.params.chatChips;
           localStorage.removeItem('markus_nav_chatChips');
           setMainTab('chat');
-          applyNavChatChips(chipsRaw);
+          // 有 sessionId 时 chip 由握手 effect 在切换会话之后落；这里先落会被切换覆盖。
+          if (!detail.params.sessionId) applyNavChatChips(chipsRaw);
         }
         if (detail.params?.dm) {
           setChatMode('dm');
@@ -3738,6 +3750,36 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
   };
+
+  /**
+   * 「发送到对话」的落地握手（放在 switchSession 之后：这里要引用它）。
+   *
+   * 为什么不用 setTimeout：agent 切换与 session 加载都是异步的，固定 300ms 只是在赌
+   * 谁先完成 —— 赌赢能跳，赌输就是「点了确认没反应」，且没有任何断言会红。
+   * 现在等 `selectedAgent` 真的切到目标 agent 后才取会话、切过去，**最后**才落 chip；
+   * chip 必须在切换之后落，因为切换会话会重载草稿，先落的会被覆盖。
+   */
+  useEffect(() => {
+    const pending = pendingSendToRef.current;
+    if (!pending || selectedAgent !== pending.agentId) return;
+    pendingSendToRef.current = null;
+    void (async () => {
+      try {
+        const { sessions: rows } = await api.sessions.listByAgent(pending.agentId, 50);
+        const target = rows.find(s => s.id === pending.sessionId);
+        if (!target) {
+          // 目标已不存在（被删 / 翻页外）：不静默什么都不做 —— chip 仍要落，
+          // 否则用户以为「发送成功」却什么也看不到。
+          if (pending.chips) applyNavChatChips(pending.chips);
+          return;
+        }
+        await switchSession(target);
+        if (pending.chips) applyNavChatChips(pending.chips);
+      } catch {
+        if (pending.chips) applyNavChatChips(pending.chips);
+      }
+    })();
+  }, [selectedAgent, switchSession, applyNavChatChips]);
 
   const closeSessionTab = (sessionId: string) => {
     setOpenSessionTabs(prev => prev.filter(t => t.id !== sessionId));

@@ -1258,6 +1258,7 @@ export function RightPanel({
                     basePath={basePath}
                     onHtmlSelection={handleHtmlSelection}
                     onDirtyChange={setEditorDirty}
+                    copyVariant="preview"
                   />
                 </div>
               );

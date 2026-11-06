@@ -1976,7 +1976,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
                   </button>
                 </div>
               ) : (
-                <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" />
+                <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" copyVariant="preview" />
               )}
             </div>
           )}

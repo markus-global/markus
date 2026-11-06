@@ -36,6 +36,7 @@ vi.mock('./markdown-copy.ts', () => ({
 
 import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { ContentRenderer } from './ContentRenderer.tsx';
+import { FilePreviewEditor } from './FilePreviewEditor.tsx';
 
 const SOURCE = '# 预览内容\n\n一段用于复制的中文正文。';
 
@@ -140,5 +141,25 @@ describe('卡5 · 调用点接线（参数必须真的走到按钮）', () => {
     const wrapper = await vi.waitFor(() => copyWrapper(container));
     expect(wrapper.dataset.copyVariant).toBe('preview');
     expect(wrapper.className).not.toContain('opacity-0');
+  });
+
+  // 验收返修（tsk_35cdf44b）：可编辑文件的预览走 FilePreviewEditor → ContentRenderer，
+  // 这条链路上漏转发过一次，于是弹层里的 .md 预览落到 inline 档。断言行为，不读源码。
+  it('FilePreviewEditor 把 copyVariant 转发到预览分支（含「复制」文字、不依赖 hover）', async () => {
+    const { container } = render(
+      <FilePreviewEditor path="/tmp/demo.md" content={SOURCE} format="markdown" copyVariant="preview" />,
+    );
+    const wrapper = await vi.waitFor(() => copyWrapper(container));
+    expect(wrapper.dataset.copyVariant).toBe('preview');
+    expect(wrapper.className).not.toContain('opacity-0');
+    expect(wrapper.textContent).toContain(i18n.t('common:markdown.copy'));
+  });
+
+  it('FilePreviewEditor 不传档位时保持 inline —— 不把预览档外溢到别的场景', async () => {
+    const { container } = render(
+      <FilePreviewEditor path="/tmp/demo.md" content={SOURCE} format="markdown" />,
+    );
+    const wrapper = await vi.waitFor(() => copyWrapper(container));
+    expect(wrapper.dataset.copyVariant).toBe('inline');
   });
 });
