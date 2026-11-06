@@ -15,6 +15,7 @@ import {
   clearGhostStreaming,
   formatSmartTime,
   hasStreamingTail,
+  buildOptimisticUserMessage,
   insertChatMsgByCreatedAt,
   isRememberActionVisible,
   msgHasContent,
@@ -34,6 +35,35 @@ import {
   type ChatMsg,
 } from './ChatHelpers.ts';
 import type { ChatMessageInfo } from '../api.ts';
+
+describe('buildOptimisticUserMessage — 刚发出的气泡必须自带 chip sidecar', () => {
+  it('带上服务端持久化的同一份 sidecar（否则要先刷新才渲染）', () => {
+    const chips = [{ kind: 'deliverable' as const, label: '交付说明', offset: 0, length: 6 }];
+    const msg = buildOptimisticUserMessage({ id: 'u_1', text: '交付说明', time: 't', rawCreatedAt: 'now', chips });
+    expect(msg.chips).toEqual(chips);
+    expect(msg.sender).toBe('user');
+  });
+
+  it('没有 chip 时不写空数组 —— 旧渲染路径保持不变', () => {
+    const msg = buildOptimisticUserMessage({ id: 'u_1', text: 'hi', time: 't', rawCreatedAt: 'now' });
+    expect(msg.chips).toBeUndefined();
+  });
+
+  it('reply 上下文与图片照旧带上', () => {
+    const msg = buildOptimisticUserMessage({
+      id: 'u_1',
+      text: 'hi',
+      time: 't',
+      rawCreatedAt: 'now',
+      images: ['/a.png'],
+      replyTo: { id: 'a_1', sender: 'agent', text: 'quote' },
+    });
+    expect(msg.images).toEqual(['/a.png']);
+    expect(msg.replyToId).toBe('a_1');
+    expect(msg.replyToSender).toBe('agent');
+    expect(msg.replyToText).toBe('quote');
+  });
+});
 
 describe('stripNotifyContext', () => {
   it('strips notify_context comment and extracts priority', () => {

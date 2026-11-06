@@ -30,6 +30,7 @@ import {
 import type { TFunction } from 'i18next';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
+  buildOptimisticUserMessage,
   dbMsgToChat, channelMsgToChat,
   storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget, alignStreamedAgentId,
   inFlightAgentIdx,
@@ -1068,9 +1069,17 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         }, streamSessionId);
       } else {
         const agentCreatedAt = new Date().toISOString();
-        const userMsg: ChatMsg = { id: optimisticUserId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
-        if (imagesToSend?.length) userMsg.images = imagesToSend;
-        if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
+        // 用户此刻看到的气泡，必须带**同一份** sidecar（服务端持久化的是它）；
+        // 不带就会退化成纯文本，直到刷新才渲染（Owner 2026-11-06）。
+        const userMsg = buildOptimisticUserMessage({
+          id: optimisticUserId,
+          text,
+          time: new Date().toLocaleTimeString(),
+          rawCreatedAt: agentCreatedAt,
+          chips: chipSidecar,
+          images: imagesToSend,
+          replyTo: replyCtx,
+        });
         updateConvMsgs(sendKey, prev => [
           ...prev,
           userMsg,

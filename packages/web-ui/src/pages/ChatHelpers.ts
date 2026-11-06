@@ -61,6 +61,40 @@ export interface ChatMsg {
   notifyPriority?: string;
 }
 
+/**
+ * Build the optimistic user bubble shown before the server answers.
+ *
+ * It must carry the SAME chip sidecar that is sent to the server (`metadata.chips`).
+ * The server persists it and a reload renders the pills, but the bubble the user is
+ * looking at right now is built locally — without the sidecar it shows the flat
+ * payload until a refresh (Owner 2026-11-06: 发出去是纯文本，刷新后才渲染).
+ */
+export function buildOptimisticUserMessage(input: {
+  id: string;
+  text: string;
+  time: string;
+  rawCreatedAt: string;
+  chips?: SentChip[];
+  images?: string[];
+  replyTo?: { id: string; sender: string; text: string } | null;
+}): ChatMsg {
+  const msg: ChatMsg = {
+    id: input.id,
+    sender: 'user',
+    text: input.text,
+    time: input.time,
+    rawCreatedAt: input.rawCreatedAt,
+  };
+  if (input.chips && input.chips.length > 0) msg.chips = input.chips;
+  if (input.images && input.images.length > 0) msg.images = input.images;
+  if (input.replyTo) {
+    msg.replyToId = input.replyTo.id;
+    msg.replyToSender = input.replyTo.sender;
+    msg.replyToText = input.replyTo.text;
+  }
+  return msg;
+}
+
 /** Remember is only for user↔agent personal DM (`showRemember` from ChatPanel / chatMode=direct). */
 export function isRememberActionVisible(showRemember: boolean | undefined, sender: ChatMsg['sender']): boolean {
   return !!showRemember && sender === 'agent';
