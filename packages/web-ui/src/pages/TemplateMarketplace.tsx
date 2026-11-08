@@ -2,7 +2,8 @@ import { useEffect, useState, useCallback, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, kebab, ownsHubItem, type AuthUser, type HubItem } from '../api.ts';
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
-import { mergeHighlightedHubItem } from '../lib/hubDeepLink.ts';
+import { useStoreCatalog } from '../hooks/useStoreCatalog.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
@@ -66,12 +67,31 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
   const { t, i18n } = useTranslation(['store', 'common']);
   const lang = i18n.language;
   const [search, setSearch] = useState('');
-  const [templates, setTemplates] = useState<TemplateInfo[]>([]);
-  const [hubItems, setHubItems] = useState<HubItem[]>([]);
+  /**
+   * 取数（Hub + 本地模板）的**唯一实现** —— 与 TeamsStore 共用
+   * `hooks/useStoreCatalog.ts`（本页旧代码是 TeamsStore.load 的拷贝实现）。
+   */
+  const catalog = useStoreCatalog<TemplateInfo>({
+    catalogType: 'agent',
+    search,
+    highlightItemId,
+    onHighlightDone,
+    loadTemplates: useCallback(async (q: string) => {
+      const params = new URLSearchParams();
+      if (q) params.set('q', q);
+      const res = await fetch('/api/templates?' + params.toString(), { credentials: 'include' });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json() as { templates?: TemplateInfo[] };
+      return Array.isArray(data.templates) ? data.templates : [];
+    }, []),
+    takeHubPrefetch: async () => (await consume<{ items: HubItem[]; total: number }>(PREFETCH_KEYS.hubAgents))?.items ?? null,
+  });
+  const templates = catalog.templates.items;
+  const hubItems = catalog.hub.items;
+  const loading = catalog.sources.loading;
   const [selected, setSelected] = useState<TemplateInfo | null>(null);
   const [roleFiles, setRoleFiles] = useState<Record<string, string>>({});
   const [showHireModal, setShowHireModal] = useState(false);
-  const [loading, setLoading] = useState(true);
   const [localArtifacts, setLocalArtifacts] = useState<Map<string, LocalArtifactInfo>>(new Map());
   const [purchasedIds, setPurchasedIds] = useState<Set<string>>(new Set());
   const [detailItem, setDetailItem] = useState<{ type: string; name: string } | null>(null);
@@ -97,36 +117,15 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
     } catch { /* ignore */ }
   }, []);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    try {
-      const hubPromise = !search
-        ? (consume<{ items: HubItem[]; total: number }>(PREFETCH_KEYS.hubAgents) ?? hubApi.search({ type: 'agent', limit: 50 }))
-        : hubApi.search({ type: 'agent', q: search, limit: 50 });
-      const params = new URLSearchParams();
-      if (search) params.set('q', search);
-      const templatesPromise = fetch('/api/templates?' + params.toString()).then(r => r.json()).catch(() => ({ templates: [] }));
-      const [hubRes, tplRes] = await Promise.all([
-        hubPromise.catch(() => ({ items: [] as HubItem[], total: 0 })),
-        templatesPromise,
-        loadLocalStatus(),
-        hubApi.isAuthenticated()
-          ? hubApi.purchases.mine().then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId)))).catch(() => {})
-          : Promise.resolve(),
-      ]);
-      const merged = await mergeHighlightedHubItem(hubRes?.items ?? [], highlightItemId);
-      setHubItems(merged.items);
-      setTemplates(Array.isArray(tplRes.templates) ? tplRes.templates : []);
-      if (merged.missing) onHighlightDone?.();
-    } catch {
-      setTemplates([]);
-      setHubItems([]);
-    } finally {
-      setLoading(false);
+  useEffect(() => {
+    // 本地安装状态 + 已购列表：与本页的两个主取数腿无关，失败只影响徒标。
+    void loadLocalStatus();
+    if (hubApi.isAuthenticated()) {
+      hubApi.purchases.mine()
+        .then(r => setPurchasedIds(new Set(r.purchases.map(p => p.itemId))))
+        .catch(() => { /* 徒标丢失不致命 */ });
     }
-  }, [search, loadLocalStatus, highlightItemId, onHighlightDone]);
-
-  useEffect(() => { load(); }, [load]);
+  }, [loadLocalStatus]);
 
   useEffect(() => {
     if (!selected) { setRoleFiles({}); return; }
@@ -279,11 +278,19 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
       </div>
 
       <div className="flex-1 overflow-y-auto p-7 space-y-8">
+        {catalog.sources.failures.length > 0 && (
+          <ReadErrorNotice
+            subject={catalog.sources.failures.join('、')}
+            error={catalog.hub.error ?? catalog.templates.error ?? '读取失败'}
+            notEquals="这里没有任何模板或 Hub 资产"
+            onRetry={catalog.reload}
+          />
+        )}
         {loading ? (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {Array.from({ length: 6 }).map((_, i) => <div key={i} className="h-56 rounded-2xl skeleton" />)}
           </div>
-        ) : templates.length === 0 && hubItems.length === 0 ? (
+        ) : catalog.sources.failures.length === 0 && templates.length === 0 && hubItems.length === 0 ? (
           <div className="text-center py-20">
             <div className="text-4xl mb-4 opacity-30">&#x29C9;</div>
             <div className="text-fg-secondary font-medium mb-1">

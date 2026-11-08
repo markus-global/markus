@@ -8,7 +8,7 @@ import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/relativeTime.ts';
 // 三态类型**复用** `lib/threadTimeline.ts` 的那一份（`SourceState` 已经是「来源的读取状态」
 // 的单一表示）。本文件不另造一个同形联合类型 —— 那会变成同一事实的第二个写者。
-import type { SourceState } from '../lib/sourceState.ts';
+import type { SourceState } from '../lib/resourceState.ts';
 
 /**
  * 概览「历史」弹窗 —— 自己设计，不套用通知页的面板。
