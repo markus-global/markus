@@ -4643,7 +4643,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   {gone ? (
                     <button
                       onClick={() => { window.location.hash = PAGE.TEAM; }}
-                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors"
+                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-on-brand rounded-md hover:bg-brand-700 transition-colors"
                     >
                       {t('page.backToList')}
                     </button>
@@ -4984,7 +4984,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {showEntityInfo && (
                   <div data-no-drag className="shrink-0">
                   {chatMode === 'channel' && activeTeamId ? (
-                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center text-sm font-bold">
+                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-on-brand flex items-center justify-center text-sm font-bold">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                     </div>
                   ) : (
@@ -6164,8 +6164,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer
-                      ? 'w-8 h-8 rounded-full flex items-center justify-center bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white transition-colors'
-                      : 'px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors'
+                      ? 'w-8 h-8 rounded-full flex items-center justify-center bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand transition-colors'
+                      : 'px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-sm rounded-xl transition-colors'
                   }
                   title={t('common:send')}
                 >

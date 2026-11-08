@@ -197,7 +197,7 @@ function CreateGroupChatModal({ agents, humans, authUser, onClose, onCreate }: {
             <button
               onClick={handleCreate}
               disabled={!name.trim() || selected.size === 0 || creating}
-              className="px-4 py-1.5 text-xs font-medium text-white bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50 disabled:pointer-events-none"
+              className="px-4 py-1.5 text-xs font-medium text-on-brand bg-brand-600 hover:bg-brand-500 rounded-lg transition-colors disabled:opacity-50 disabled:pointer-events-none"
             >
               {creating ? t('modals.createGroupChat.creating') : t('modals.createGroupChat.create')}
             </button>
