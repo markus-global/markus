@@ -115,6 +115,7 @@
     "newCount": "{{count}} 条新的",
     "more": "还有 {{count}} 条",
     "kind": {
+      "agent_question": "等你回答",
       "approval_request": "审批请求",
       "requirement_approval": "需求待审",
       "task_review": "待你验收",
@@ -123,6 +124,7 @@
       "unread_message": "未读消息"
     },
     "act": {
+      "agent_question": "去回答",
       "approval_request": "去批准",
       "requirement_approval": "去审核",
       "task_review": "去验收",

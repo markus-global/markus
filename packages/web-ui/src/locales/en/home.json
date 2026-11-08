@@ -115,6 +115,7 @@
     "newCount": "{{count}} new",
     "more": "{{count}} more",
     "kind": {
+      "agent_question": "Waiting for your answer",
       "approval_request": "Approval request",
       "requirement_approval": "Requirement review",
       "task_review": "Awaiting your review",
@@ -123,6 +124,7 @@
       "unread_message": "Unread message"
     },
     "act": {
+      "agent_question": "Answer",
       "approval_request": "Approve",
       "requirement_approval": "Review",
       "task_review": "Review",

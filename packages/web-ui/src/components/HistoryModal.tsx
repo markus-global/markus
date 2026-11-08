@@ -6,7 +6,7 @@ import { markAllNotificationsRead, markNotificationThreadRead } from '../lib/not
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/relativeTime.ts';
-import { formatWaiting } from '../lib/attentionQueue.ts';
+import { formatWaiting, isAgentQuestion } from '../lib/attentionQueue.ts';
 // 三态类型**复用** `lib/threadTimeline.ts` 的那一份（`SourceState` 已经是「来源的读取状态」
 // 的单一表示）。本文件不另造一个同形联合类型 —— 那会变成同一事实的第二个写者。
 import type { SourceState } from '../lib/resourceState.ts';
@@ -542,7 +542,11 @@ export function HistoryModal({
                         <span className="text-xs text-fg-secondary truncate">{row.approval.title}</span>
                       </div>
                       <div className="text-[11px] text-fg-tertiary mt-0.5 truncate">
-                        {row.approval.agentName} · {row.approval.status === 'approved' ? '已批准' : row.approval.status === 'rejected' ? '已拒绝' : st.label}
+                        {row.approval.agentName} · {row.approval.status === 'approved'
+                          ? (isAgentQuestion(row.approval) ? '已答复' : '已批准')
+                          : row.approval.status === 'rejected'
+                            ? (isAgentQuestion(row.approval) ? '未答复' : '已拒绝')
+                            : st.label}
                         {' '}于 {formatRelativeAny(at)}
                         {/* 「等了多久」是回顾时最想知道的那个数：请求有 requestedAt、答复有
                             respondedAt，所以这段时长是**精确**的，不用「约」。 */}

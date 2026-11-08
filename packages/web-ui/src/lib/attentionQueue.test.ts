@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionInput } from './attentionQueue.ts';
+import { buildAttentionQueue, actionableCount, formatWaiting, isAgentQuestion, type AttentionInput } from './attentionQueue.ts';
 import type { ApprovalInfo, NotificationInfo, RequirementInfo, TaskInfo } from '../api.ts';
 
 const task = (over: Partial<TaskInfo>): TaskInfo => ({
@@ -159,5 +159,43 @@ describe('计数口径与等待时长', () => {
     expect(at('2026-11-10T11:30:00.000Z')).toBe('30 分钟');
     expect(at('2026-11-10T08:00:00.000Z')).toBe('4 小时');
     expect(at('2026-11-08T08:00:00.000Z')).toBe('2 天 4 小时');
+  });
+});
+
+describe('提问 ≠ 审批（Owner 2026-11-08：「agent 提的问题属于未读消息吗」）', () => {
+  const question = (over: Partial<ApprovalInfo> = {}) => approval({
+    id: 'q1', type: 'action', title: '要用哪个口径？',
+    questions: [{ id: 'q_1', prompt: '要用哪个口径？', inputType: 'choice' }],
+    ...over,
+  });
+
+  it('带 questions[] 的审批归到 agent_question，不是 approval_request', () => {
+    const [item] = buildAttentionQueue(base({ approvals: [question()] }));
+    expect(item!.kind).toBe('agent_question');
+  });
+
+  it('不带 questions[] 的仍然是 approval_request', () => {
+    const [item] = buildAttentionQueue(base({ approvals: [approval({ id: 'a2' })] }));
+    expect(item!.kind).toBe('approval_request');
+  });
+
+  it('同一时刻提问排在审批前面（它阻塞 Agent 整个回合）', () => {
+    const items = buildAttentionQueue(base({
+      approvals: [approval({ id: 'a1', requestedAt: '2026-11-08T00:00:00.000Z' }), question({ requestedAt: '2026-11-08T00:00:00.000Z' })],
+    }));
+    expect(items.map(i => i.kind)).toEqual(['agent_question', 'approval_request']);
+  });
+
+  it('它不是未读消息 —— 未读消息只来自 notifications，不进要你动手的计数', () => {
+    const items = buildAttentionQueue(base({ approvals: [question()], notifications: [notice({ id: 'n1' })] }));
+    expect(items.filter(i => i.kind === 'unread_message')).toHaveLength(1);
+    expect(actionableCount(items)).toBe(1); // 只有那条提问算「要你动手」
+  });
+
+  it('isAgentQuestion 只认 questions[] 非空', () => {
+    expect(isAgentQuestion({ questions: [{}] })).toBe(true);
+    expect(isAgentQuestion({ questions: [] })).toBe(false);
+    expect(isAgentQuestion({})).toBe(false);
+    expect(isAgentQuestion(null)).toBe(false);
   });
 });

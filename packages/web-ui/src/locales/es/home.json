@@ -115,6 +115,7 @@
     "newCount": "{{count}} nuevas",
     "more": "{{count}} más",
     "kind": {
+      "agent_question": "Esperando tu respuesta",
       "approval_request": "Solicitud de aprobación",
       "requirement_approval": "Requisito por revisar",
       "task_review": "Espera tu revisión",
@@ -123,6 +124,7 @@
       "unread_message": "Mensaje sin leer"
     },
     "act": {
+      "agent_question": "Responder",
       "approval_request": "Aprobar",
       "requirement_approval": "Revisar",
       "task_review": "Revisar",

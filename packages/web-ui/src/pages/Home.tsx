@@ -66,6 +66,7 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
  * 就跟着漂，而且和侧边栏那套描边图标不是同一个视觉语言。
  */
 const ATTENTION_TONE: Record<AttentionKind, { icon: string; btn: string; iconName: string }> = {
+  agent_question: { icon: 'bg-violet-500/15 text-violet-500', btn: 'bg-violet-500/10 text-violet-500 hover:bg-violet-500/20', iconName: 'help-circle' },
   approval_request: { icon: 'bg-amber-500/15 text-amber-600', btn: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20', iconName: 'check-circle' },
   blocked_hold: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-pause' },
   task_failed: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-x' },

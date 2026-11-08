@@ -25,12 +25,27 @@ import type { ApprovalInfo, NotificationInfo, RequirementInfo, TaskInfo } from '
 import { blockedReasonOf } from './blockedReason.ts';
 
 export type AttentionKind =
+  | 'agent_question'
   | 'approval_request'
   | 'requirement_approval'
   | 'task_review'
   | 'blocked_hold'
   | 'task_failed'
   | 'unread_message';
+
+/**
+ * 这条审批到底是「请你批准」还是「请你回答」（Owner 2026-11-08 提问点出来的）。
+ *
+ * `request_user_input` 会**阻塞 Agent 的整个回合**等人答话，但它在数据上和普通审批
+ * 走同一张表（`approvals`，带 `questions[]`）—— 于是它一度被当成「审批请求」渲染，
+ * 按钮写着「去批准」。可回答一个问题不是批准；措辞错了，用户就会按错语义去理解
+ * （“它在求我签字” vs “它在等我一句话”）。
+ *
+ * 单一判据：`questions[]` 非空 ⇒ 提问。不要再看 `details` 里的任何东西兜底。
+ */
+export function isAgentQuestion(a: { questions?: readonly unknown[] } | null | undefined): boolean {
+  return Array.isArray(a?.questions) && a.questions.length > 0;
+}
 
 /** 等待时长的口径：精确 → 近似，界面据此决定要不要加「约」。 */
 export type WaitingBasis = 'requested' | 'created' | 'status' | 'approximate';
@@ -55,14 +70,15 @@ export interface AttentionItem {
   meta?: string;
 }
 
-/** 同一刻的排序权重：要你决定的排在做之前。 */
+/** 同一刻的排序权重：要你决定的排在做之前。提问阻塞的是 Agent 的整个回合，所以排最前。 */
 const KIND_ORDER: Record<AttentionKind, number> = {
-  approval_request: 0,
-  blocked_hold: 1,
-  task_failed: 2,
-  requirement_approval: 3,
-  task_review: 4,
-  unread_message: 5,
+  agent_question: 0,
+  approval_request: 1,
+  blocked_hold: 2,
+  task_failed: 3,
+  requirement_approval: 4,
+  task_review: 5,
+  unread_message: 6,
 };
 
 const PRIORITY_RANK: Record<string, number> = {
@@ -132,7 +148,7 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
     if (page === 'TEAM') params.preferMain = '1';
     items.push({
       id: `approval:${a.id}`,
-      kind: 'approval_request',
+      kind: isAgentQuestion(a) ? 'agent_question' : 'approval_request',
       title: a.title,
       priority: 'none',
       waitingSince: iso(a.requestedAt, nowIso),
