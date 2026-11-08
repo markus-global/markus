@@ -2524,6 +2524,7 @@ export class TaskService implements ApprovalTargetPort {
             row.createdAt instanceof Date ? row.createdAt.toISOString() : String(row.createdAt),
           updatedAt:
             row.updatedAt instanceof Date ? row.updatedAt.toISOString() : String(row.updatedAt),
+          statusChangedAt: toIso((row as any).statusChangedAt ?? (row as any).status_changed_at),
           projectId: row.projectId ?? undefined,
           createdBy: (row as any).createdBy ?? undefined,
           updatedBy: (row as any).updatedBy ?? undefined,
@@ -2753,6 +2754,7 @@ export class TaskService implements ApprovalTargetPort {
       blockedBy: request.blockedBy,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
+      statusChangedAt: new Date().toISOString(),
       dueAt: request.dueAt,
       timeoutMs: request.timeoutMs,
       projectId: request.projectId,
@@ -3338,6 +3340,9 @@ export class TaskService implements ApprovalTargetPort {
     const now = new Date().toISOString();
     task.status = status;
     task.updatedAt = now;
+    // 「何时进入当前状态」与 status 是同一时刻、同一次写入。它只回答「等了多久」，
+    // 所以只在这里推进 —— 同状态的重复调用在 `prevStatus === status` 处已经返回了。
+    task.statusChangedAt = now;
     if (updatedBy) task.updatedBy = updatedBy;
     if (status === 'in_progress' && !task.startedAt) task.startedAt = now;
     if (TERMINAL_STATUSES.has(status) && !task.completedAt) task.completedAt = now;

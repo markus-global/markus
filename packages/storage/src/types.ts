@@ -33,6 +33,8 @@ export interface TaskRow {
   scheduleConfig: unknown;
   createdAt: Date | null;
   updatedAt: Date | null;
+  /** When the row entered its current status; null only for rows predating the column. */
+  statusChangedAt: Date | null;
   dueAt: Date | null;
 }
 

@@ -114,6 +114,15 @@ export interface Task {
   notes?: string[];
   createdAt: string;
   updatedAt: string;
+  /**
+   * When the card entered its **current** status; NULL only for rows older than
+   * the column (backfilled from updated_at).
+   *
+   * Distinct from `updatedAt` on purpose: `updatedAt` is refreshed by any edit
+   * (title, notes, deliverable), so it cannot answer "how long has this been
+   * waiting for me". Only a real status transition moves this one.
+   */
+  statusChangedAt?: string;
   dueAt?: string;
   /** Timeout in ms from when the task starts (transitions to in_progress) */
   timeoutMs?: number;
