@@ -46,6 +46,7 @@ import {
   stopPolicy,
   stopReasonLabel,
   type ExecutionStopReason,
+  type BlockedReason,
 } from '@markus/shared';
 import {
   shouldDistillTask,
@@ -3026,7 +3027,7 @@ export class TaskService implements ApprovalTargetPort {
 
     const hasBlockers = task.blockedBy && task.blockedBy.length > 0 && !this.areBlockersSatisfied(task);
     const targetStatus: TaskStatus = hasBlockers ? 'blocked' : 'in_progress';
-    return this.updateTaskStatus(taskIdStr, targetStatus, userId, true, false, 'human', 'Approved');
+    return this.updateTaskStatus(taskIdStr, targetStatus, userId, true, false, 'human', 'Approved', hasBlockers ? 'deps' : null);
   }
 
   /**
@@ -3107,7 +3108,7 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'in_progress') {
       throw new Error(`Cannot pause task in ${task.status} status`);
     }
-    return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType);
+    return this.updateTaskStatus(id, 'blocked', updatedBy, false, false, updatedByType, undefined, 'hold');
   }
 
   /** Resume a blocked task to in_progress (auto-start runs via side effects). */
@@ -3161,6 +3162,7 @@ export class TaskService implements ApprovalTargetPort {
     _internal = false, _skipAutoStart = false,
     updatedByType?: 'human' | 'agent' | 'system',
     reason?: string,
+    blockedReason?: BlockedReason | null,
   ): Task {
     const byType = updatedByType ?? (updatedBy ? 'agent' : 'system');
 
@@ -3168,11 +3170,22 @@ export class TaskService implements ApprovalTargetPort {
     const result = this.validateAndApplyTransition(id, status, updatedBy, _internal, byType);
     if (!result) return this.tasks.get(id)!; // no-op (same status)
 
+    // 「为什么被 blocked」在**唯一的状态写入点**定下来：
+    //   · 显式传了 `deps`（依赖引擎派生）就是 deps；
+    //   · 其余进入 blocked 的路径一律是 hold —— 它们是「有人主动声明暂停」
+    //     （pauseTask、agent 的 task_update、人工挂起）。
+    // 非 blocked 状态清空，避免残留的缘由被下一次挂起沿用。
+    const resolvedBlockedReason: BlockedReason | null =
+      status === 'blocked' ? (blockedReason ?? 'hold') : null;
+    result.task.blockedReason = resolvedBlockedReason;
+
     // Record transition history
     this.recordTaskTransition(id, result.prevStatus, status, updatedBy, byType, reason);
 
     // Phase 2: Side effects
-    this.handleTransitionSideEffects(result.task, result.prevStatus, status, updatedBy, _skipAutoStart);
+    this.handleTransitionSideEffects(
+      result.task, result.prevStatus, status, updatedBy, _skipAutoStart, resolvedBlockedReason,
+    );
 
     log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
     return result.task;
@@ -3337,6 +3350,7 @@ export class TaskService implements ApprovalTargetPort {
   private handleTransitionSideEffects(
     task: Task, from: TaskStatus, to: TaskStatus,
     updatedBy?: string, skipAutoStart = false,
+    blockedReason?: BlockedReason | null,
   ): void {
     const id = task.id;
 
@@ -3344,7 +3358,7 @@ export class TaskService implements ApprovalTargetPort {
     this.cleanupOnLeaveStatus(id, from, to);
 
     // Stage 2: Persistence
-    this.persistStatusChange(id, to, updatedBy);
+    this.persistStatusChange(id, to, updatedBy, blockedReason);
 
     // Stage 3: Execution trigger (returns whether auto-start was scheduled)
     const executionTriggered = this.maybeAutoStartExecution(task, from, to, skipAutoStart);
@@ -3478,10 +3492,12 @@ export class TaskService implements ApprovalTargetPort {
 
   // ─── Stage 2: DB persistence ─────────────────────────────────────────────────
 
-  private persistStatusChange(id: string, status: TaskStatus, updatedBy?: string): void {
+  private persistStatusChange(
+    id: string, status: TaskStatus, updatedBy?: string, blockedReason?: BlockedReason | null,
+  ): void {
     if (this.taskRepo) {
       this.taskRepo
-        .updateStatus(id, status, updatedBy)
+        .updateStatus(id, status, updatedBy, status === 'blocked' ? (blockedReason ?? 'hold') : null)
         .catch(err => log.warn('Failed to persist task status to DB', { error: String(err) }));
     }
   }
@@ -4242,7 +4258,7 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status === 'blocked' && !shouldBeBlocked) {
       this.updateTaskStatus(task.id, 'in_progress', undefined, true);
     } else if (task.status === 'in_progress' && shouldBeBlocked) {
-      this.updateTaskStatus(task.id, 'blocked', undefined, true);
+      this.updateTaskStatus(task.id, 'blocked', undefined, true, false, 'system', undefined, 'deps');
     }
   }
 

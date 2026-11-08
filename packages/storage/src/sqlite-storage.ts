@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
   blocked_by TEXT DEFAULT '[]',
+  blocked_reason TEXT,
   workflow_run_id TEXT,
   workflow_step_id TEXT,
   result TEXT,
@@ -843,6 +844,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
+    // 为什么被 blocked（deps / hold）。旧行为 NULL —— 读取方按 blocked_by 回退推断，
+    // 与引入本列之前的行为一致，所以不需要回填。
+    { table: 'tasks', column: 'blocked_reason', sql: 'ALTER TABLE tasks ADD COLUMN blocked_reason TEXT' },
     { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
     { table: 'tasks', column: 'project_id', sql: "ALTER TABLE tasks ADD COLUMN project_id TEXT" },
     { table: 'tasks', column: 'created_by', sql: "ALTER TABLE tasks ADD COLUMN created_by TEXT" },
@@ -1532,11 +1536,16 @@ export class SqliteTaskRepo {
     return r ? this._map(r) : undefined;
   }
 
-  async updateStatus(id: string, status: string, updatedBy?: string) {
+  async updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | null) {
     const ts = now();
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: SqlParams = [status, ts];
     if (updatedBy) { sets.push('updated_by = ?'); vals.push(updatedBy); }
+    // 「为什么被 blocked」与 status 写在**同一条** UPDATE 里：拆成两条会让它们
+    // 短暂不一致（读到「blocked 但 reason 是上一次的」）。
+    // 非 blocked 状态一律清空 —— 残留 reason 会让下一次 blocked 显示上次的缘由。
+    sets.push('blocked_reason = ?');
+    vals.push(status === 'blocked' ? (blockedReason ?? null) : null);
     if (status === 'in_progress') {
       sets.push("started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END");
       vals.push(ts);
@@ -1774,6 +1783,7 @@ export class SqliteTaskRepo {
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
       blockedBy: arrayFromJson(r['blocked_by'] as string),
+      blockedReason: (r['blocked_reason'] as string | null) ?? null,
       workflowRunId: (r['workflow_run_id'] as string | null) ?? undefined,
       workflowStepId: (r['workflow_step_id'] as string | null) ?? undefined,
       result: fromJson(r['result'] as string),

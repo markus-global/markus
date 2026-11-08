@@ -11,6 +11,7 @@ import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
 import { publishAttentionCount, publishUnreadCount } from '../lib/attentionCount.ts';
+import { needsHumanDecision } from '../lib/blockedReason.ts';
 import {
   OverviewUsageTier,
   useOverviewUsageData,
@@ -467,11 +468,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [board]);
 
   const isBlockedAbnormally = useCallback((task: TaskInfo): boolean => {
-    if (!task.blockedBy || task.blockedBy.length === 0) return true;
-    return task.blockedBy.every(id => {
-      const dep = allTasksMap.get(id);
-      return dep && dep.status === 'completed';
-    });
+    // 「需要你决定」的唯一边界：hold 是有人主动挂起；deps 是引擎自己会恢复的等待。
+    // 旧数据（无 blockedReason）由 blockedReasonOf 回退到原推断，行为不变。
+    return needsHumanDecision(task, id => allTasksMap.get(id));
   }, [allTasksMap]);
 
   const attentionItems = useMemo(() => {

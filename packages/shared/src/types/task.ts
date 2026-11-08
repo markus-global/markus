@@ -46,6 +46,19 @@ export type TaskPriority = 'low' | 'medium' | 'high' | 'urgent';
 export type TaskExecutionMode = 'cli' | 'api' | 'mcp' | 'gui' | 'hybrid';
 export type TaskType = 'standard' | 'scheduled';
 
+/**
+ * 为什么这张卡是 `blocked` 的 —— **唯一判别位**。
+ *
+ * `blocked` 一直扛着两件不同的事，界面上没有任何可读的区分：
+ *  · `deps` —— 上游依赖未完成。这是**派生事实**，引擎自己会恢复，没有人需要动手。
+ *  · `hold` —— 人（或 agent）主动声明暂停。这是**需要决定**的，等着人。
+ * 两者曾经都渲染成红色「阻塞」，于是概览要求用户决定一件他无从下手的事。
+ *
+ * `null` / 缺省 = 旧数据（本字段引入前写入的行）。读取方必须回退到按 `blockedBy` 推断，
+ * 这与引入该字段之前的行为完全一致，所以不需要数据迁移。
+ */
+export type BlockedReason = 'deps' | 'hold';
+
 export interface ScheduleConfig {
   /** Cron expression, e.g. "0 9 * * 1-5" */
   cron?: string;
@@ -91,6 +104,11 @@ export interface Task {
   executionRound: number;
   /** Task IDs that must be completed before this task can start */
   blockedBy?: string[];
+  /**
+   * 为什么被 blocked（`deps` 等依赖 / `hold` 等人决定）。
+   * `null` = 本字段引入前写入的旧行，读取方按 `blockedBy` 回退推断。
+   */
+  blockedReason?: BlockedReason | null;
   result?: TaskResult;
   /** Timestamped progress notes added by agents or users */
   notes?: string[];

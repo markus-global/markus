@@ -36,6 +36,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { needsHumanDecision } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -2212,10 +2213,7 @@ function TaskDetailPanel({
   const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
-  const isAbnormallyBlocked = isBlocked && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
-    const dep = allTasks.find(t => t.id === id);
-    return dep && dep.status === 'completed';
-  }));
+  const isAbnormallyBlocked = isBlocked && needsHumanDecision(task, id => allTasks.find(t => t.id === id));
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isRejected = task.status === 'rejected';
@@ -3628,11 +3626,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
   const checkAbnormalBlocked = useCallback((task: TaskInfo): boolean => {
     if (task.status !== 'blocked') return false;
-    if (!task.blockedBy || task.blockedBy.length === 0) return true;
-    return task.blockedBy.every(id => {
-      const dep = taskMap.get(id);
-      return dep && dep.status === 'completed';
-    });
+    return needsHumanDecision(task, id => taskMap.get(id));
   }, [taskMap]);
 
   const rows = useMemo(() => {
@@ -6758,10 +6752,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;
                             const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
-                            const cardAbnormalBlocked = task.status === 'blocked' && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
-                              const dep = boardTaskMap.get(id);
-                              return dep && dep.status === 'completed';
-                            }));
+                            const cardAbnormalBlocked = task.status === 'blocked' && needsHumanDecision(task, id => boardTaskMap.get(id));
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}

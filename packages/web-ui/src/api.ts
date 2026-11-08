@@ -1012,6 +1012,11 @@ export interface TaskInfo {
   executionRound?: number;
   subtasks?: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }>;
   blockedBy?: string[];
+  /**
+   * 为什么被 blocked（`deps` = 等上游依赖，引擎会自恢复；`hold` = 有人主动挂起，等人决定）。
+   * `null` / 缺省 = 本字段引入前写入的旧行，消费方用 `lib/blockedReason.ts` 回退推断。
+   */
+  blockedReason?: 'deps' | 'hold' | null;
   notes?: string[];
   deliverables?: Array<{
     type: string;
