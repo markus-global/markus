@@ -9,6 +9,8 @@ import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
+import { HistoryModal } from '../components/HistoryModal.tsx';
+import { publishAttentionCount, publishUnreadCount } from '../lib/attentionCount.ts';
 import {
   OverviewUsageTier,
   useOverviewUsageData,
@@ -103,6 +105,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const { t } = useTranslation(['home', 'common', 'team']);
   const isMobile = useIsMobile();
   const isActive = usePageActive(PAGE.HOME);
+  /** 概览「历史」弹窗 —— 已结束的审批与全部通知的唯一入口（铃铛与通知页已移除）。 */
+  const [showHistory, setShowHistory] = useState(false);
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
@@ -496,6 +500,35 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return items;
   }, [board, allRequirements, isBlockedAbnormally]);
 
+  /**
+   * 待办数的**唯一计算点**就在这里：概览算完就发布，侧栏/底栏只订阅（见 lib/attentionCount）。
+   * 曾经三个口径各算各的（侧栏=未读+待批、概览=待批+阻塞、移动端=只算未读），
+   * 结果移动端永远是 0。
+   */
+  const attentionTotal = useMemo(() => attentionItems.reduce((n, i) => n + i.count, 0), [attentionItems]);
+  useEffect(() => {
+    if (previewMode) return;
+    publishAttentionCount(attentionTotal);
+  }, [attentionTotal, previewMode]);
+
+  // 未读数单独取、合并发布：用户看到的徒标就一个数字，但两个来源得各自更新。
+  useEffect(() => {
+    if (previewMode || !isActive) return;
+    let alive = true;
+    const refresh = () => {
+      api.notifications.list(authUser?.id, true, { limit: 1 })
+        .then(r => { if (alive) publishUnreadCount(r.unreadCount ?? 0); })
+        // 读失败不改写徒标：宁可显示上一次已知的数字，也不谎报 0。
+        .catch(() => undefined);
+    };
+    refresh();
+    window.addEventListener('markus:notifications-changed', refresh);
+    return () => {
+      alive = false;
+      window.removeEventListener('markus:notifications-changed', refresh);
+    };
+  }, [previewMode, isActive, authUser?.id]);
+
   const taskPriorityMap = useMemo(() => {
     const m = new Map<string, string>();
     for (const tasks of Object.values(board)) {
@@ -587,6 +620,12 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                 <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
                 <h3 className="text-sm font-semibold text-fg-primary">{t('attention.title')}</h3>
               </div>
+              <button
+                onClick={() => setShowHistory(true)}
+                className="text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors"
+              >
+                {t('attention.history')}
+              </button>
             </div>
             <div className="px-3 pb-3 space-y-1">
               {attentionItems.map(item => {
@@ -636,6 +675,10 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
               })}
             </div>
           </div>
+        )}
+
+        {!previewMode && (
+          <HistoryModal open={showHistory} onClose={() => setShowHistory(false)} userId={authUser?.id} />
         )}
 
         {/* ── Recent Deliverables (full-width, high priority) ── */}

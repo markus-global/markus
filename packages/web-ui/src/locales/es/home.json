@@ -112,6 +112,7 @@
   },
   "attention": {
     "title": "Necesita tu atención",
+    "history": "Historial",
     "allClear": "Todo despejado - nada necesita tu atención ahora mismo.",
     "approvals": "a) Aprobaciones pendientes",
     "requirements": "requisito(s) para examinar",

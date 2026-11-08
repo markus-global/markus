@@ -198,6 +198,7 @@
     "noApprovals": "No hay solicitudes de aprobación",
     "noNotifications": "No notificaciones",
     "markAllRead": "Marcar todo leído",
+    "markAllReadFailed": "No se pudo marcar como leído: {{message}}",
     "confirmReject": "Confirma el rechazo",
     "rejectReasonPlaceholder": "Razón para el rechazo (opcional, Entrar para enviar)",
     "freeformPlaceholder": "O escriba su opinión...",

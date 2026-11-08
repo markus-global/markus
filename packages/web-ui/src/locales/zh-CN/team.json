@@ -198,6 +198,7 @@
     "noApprovals": "暂无审批请求",
     "noNotifications": "暂无通知",
     "markAllRead": "全部标为已读",
+    "markAllReadFailed": "标记失败：{{message}}",
     "filterUnread": "未读",
     "filterAll": "全部",
     "noUnread": "暂无未读通知",

@@ -112,6 +112,7 @@
   },
   "attention": {
     "title": "Needs Your Attention",
+    "history": "History",
     "allClear": "All clear — nothing needs your attention right now.",
     "approvals": "approval(s) waiting",
     "requirements": "requirement(s) to review",

@@ -198,6 +198,7 @@
     "noApprovals": "No approval requests",
     "noNotifications": "No notifications",
     "markAllRead": "Mark all read",
+    "markAllReadFailed": "Could not mark as read: {{message}}",
     "filterUnread": "Unread",
     "filterAll": "All",
     "noUnread": "No unread notifications",

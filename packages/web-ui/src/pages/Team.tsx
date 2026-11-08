@@ -16,7 +16,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
-import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
+import { notifTitle, notifBody } from '../lib/notifyText.ts';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
