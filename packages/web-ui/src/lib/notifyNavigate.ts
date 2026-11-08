@@ -99,7 +99,7 @@ export function navigateForApproval(a: ApprovalInfo, ctx: NotifyNavContext = {})
   }
   if (details?.taskId) return void navBus.navigate(PAGE.WORK, { openTask: details.taskId });
   if (details?.requirementId) return void navBus.navigate(PAGE.WORK, { openRequirement: details.requirementId });
-  if (a.agentId) return void navBus.navigate(PAGE.TEAM, { agentId: a.agentId });
+  if (a.agentId) return void navBus.navigate(PAGE.TEAM, { agentId: a.agentId, preferMain: '1' });
   return void navBus.navigate(PAGE.WORK);
 }
 
@@ -158,7 +158,7 @@ export function navigateForNotification(n: NotificationInfo, ctx: NotifyNavConte
       const reqId = asStr(meta['requirementId']);
       if (reqId) return void navBus.navigate(PAGE.WORK, { openRequirement: reqId });
       const ag = asStr(meta['agentId']);
-      if (ag) return void navBus.navigate(PAGE.TEAM, { agentId: ag });
+      if (ag) return void navBus.navigate(PAGE.TEAM, { agentId: ag, preferMain: '1' });
       return void navBus.navigate(PAGE.WORK);
     }
     case 'task_completed':
@@ -188,6 +188,9 @@ export function navigateForNotification(n: NotificationInfo, ctx: NotifyNavConte
       if (ag) params.agentId = ag;
       const sid = asStr(meta['sessionId']);
       if (sid) params.sessionId = sid;
+      // A report that names no session belongs to the agent's MAIN session, not to
+      // whichever session this user happened to open last.
+      else if (ag) params.preferMain = '1';
       return void navBus.navigate(PAGE.TEAM, Object.keys(params).length > 0 ? params : undefined);
     }
     case 'direct_message': {

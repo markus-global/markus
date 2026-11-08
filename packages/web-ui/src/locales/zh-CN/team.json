@@ -229,7 +229,6 @@
       "groupMessage": "{{senderName}} 在 {{groupName}} 中",
       "staleReview": "审核停滞",
       "stuckTask": "任务卡住",
-      "unstartedTask": "任务未启动",
       "agentNeedsHelp": "智能体需要帮助",
       "taskComment": "任务「{{title}}」有新评论"
     },
@@ -241,8 +240,7 @@
       "requirementChangesRequestedBody": "需求「{{title}}」需修改后再审批 —— 仍处于待审批状态。{{reason}}",
       "mentionPreview": "{{itemTitle}}：{{preview}}",
       "staleTaskInProgress": "任务「{{title}}」已进行 {{hours}} 小时",
-      "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作",
-      "staleTaskUnstarted": "任务「{{title}}」已等待审批 {{hours}} 小时"
+      "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作"
     },
     "approvalDesc": {
       "requirementProposed": "智能体「{{agentName}}」提出了需求「{{title}}」（优先级：{{priority}}）。",

@@ -1342,9 +1342,7 @@ async function startServerCore(
             titleKey:
               item.type === 'review_stale'
                 ? 'notifications.titles.staleReview'
-                : item.type === 'stuck_task'
-                  ? 'notifications.titles.stuckTask'
-                  : 'notifications.titles.unstartedTask',
+                : 'notifications.titles.stuckTask',
             ...(item.i18n ?? {}),
           },
         },

@@ -24,7 +24,6 @@ describe('StaleDetector', () => {
     detector = new StaleDetector(taskService as never, {
       maxInProgressMs: 24 * 60 * 60 * 1000,
       maxReviewWaitMs: 12 * 60 * 60 * 1000,
-      maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
       maxBranchDivergenceCommits: 100,
     }, onStaleItems);
   });
@@ -48,13 +47,17 @@ describe('StaleDetector', () => {
       expect(items.some(i => i.type === 'review_stale')).toBe(true);
     });
 
-    it('detects unstarted pending tasks', async () => {
+    it('stays quiet on a pending task — unstarted cards are not a reminder any more', async () => {
+      // Owner 2026-11-08: no timed reminder for unstarted cards. A pending task is
+      // backlog, not a stall — nobody is blocked on it, so pinging only trains the
+      // reader to ignore this channel.
       taskService.listTasks.mockReturnValue([createTask({
         status: 'pending',
         updatedAt: new Date(Date.now() - 5 * 60 * 60 * 1000).toISOString(),
       })]);
       const items = await detector.scan();
-      expect(items.some(i => i.type === 'unstarted_task')).toBe(true);
+      expect(items.some(i => i.type === 'unstarted_task')).toBe(false);
+      expect(items).toHaveLength(0);
     });
 
     it('returns empty when tasks are fresh', async () => {

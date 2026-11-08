@@ -1646,6 +1646,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 sessionId: detail.params.sessionId,
                 chips: detail.params.chatChips ?? null,
               };
+            } else if (detail.params.preferMain === '1') {
+              // Message/report navigation carries no session id: land on that agent's
+              // MAIN session instead of「whatever session I looked at last」. Without
+              // this the focus pipeline restored the stored active session, so a report
+              // about session B opened on session A and the user saw nothing new.
+              // Explicit param (not the mere absence of sessionId) so that other
+              // agentId navigations — roster clicks, profile「去聊天」— keep restoring
+              // the session the user left off on.
+              pendingFocusRef.current = {
+                mode: 'direct',
+                agentId: detail.params.agentId,
+                sessionId: null,
+                preferMain: true,
+              };
             }
           }
         }
