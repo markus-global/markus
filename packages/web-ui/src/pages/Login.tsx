@@ -304,7 +304,7 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
                 <button
                   type="submit"
                   disabled={loading === 'local' || !email || !password}
-                  className="w-full h-11 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-semibold rounded-xl transition-all shadow-md shadow-brand-900/30 hover:shadow-lg active:scale-[0.99]"
+                  className="w-full h-11 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand text-sm font-semibold rounded-xl transition-all shadow-md shadow-brand-900/30 hover:shadow-lg active:scale-[0.99]"
                 >
                   {loading === 'local' ? t('login.signingIn') : t('login.signIn')}
                 </button>
@@ -438,7 +438,7 @@ export function InviteSetup({ token, onComplete }: { token: string; onComplete: 
               )}
 
               <button type="submit" disabled={loading || !password || !confirm}
-                className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/40 hover:shadow-lg hover:shadow-brand-900/50">
+                className="w-full py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand text-sm font-medium rounded-xl transition-all shadow-md shadow-brand-900/40 hover:shadow-lg hover:shadow-brand-900/50">
                 {loading ? t('invite.settingUp') : t('invite.setupAccount')}
               </button>
             </form>

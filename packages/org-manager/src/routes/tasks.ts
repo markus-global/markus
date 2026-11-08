@@ -54,6 +54,7 @@ export async function handleTasksRoutes(
           taskType: t.taskType,
           createdAt: t.createdAt,
           updatedAt: t.updatedAt,
+          statusChangedAt: t.statusChangedAt,
         })) as typeof result.tasks;
       }
       server.json(res, 200, result);
@@ -83,6 +84,7 @@ export async function handleTasksRoutes(
         scheduleConfig: t.scheduleConfig,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
+        statusChangedAt: t.statusChangedAt,
       } : t);
       server.json(res, 200, { tasks: page, total, limit, offset });
       return true;

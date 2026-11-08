@@ -13,7 +13,6 @@ export const PAGE = {
   BUILDER: 'builder',
   DELIVERABLES: 'deliverables',
   SETTINGS: 'settings',
-  NOTIFICATIONS: 'notifications',
   SEARCH: 'search',
 } as const;
 
@@ -36,6 +35,10 @@ const HASH_ALIASES: Record<string, PageId> = {
   teams: PAGE.STORE,
   knowledge: PAGE.DELIVERABLES,
   governance: PAGE.SETTINGS,
+  // 通知页已删除（Owner 2026-11-02：一个数字在概览、一份历史在弹窗）。
+  // 旧书签与桌端深链仍能用 —— 落到现在拥有这些事实的页面。必须在这里解析，
+  // 否则 'notifications' 会走 ALL_PAGE_IDS 失败后兜底到 HOME 之外的分支。
+  notifications: PAGE.HOME,
 };
 
 /**
@@ -52,7 +55,6 @@ const PAGE_HASH: Record<PageId, string> = {
   [PAGE.BUILDER]: 'assets',
   [PAGE.DELIVERABLES]: 'output',
   [PAGE.SETTINGS]: 'settings',
-  [PAGE.NOTIFICATIONS]: 'notifications',
   [PAGE.SEARCH]: 'search',
 };
 
@@ -108,20 +110,17 @@ export const PAGE_ICONS: Record<string, string> = {
   // 探索 Explore → compass (discover the marketplace)
   [PAGE.STORE]:        'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20Z M16.24 7.76 14.12 14.12 7.76 16.24 9.88 9.88Z',
   [PAGE.SETTINGS]:      'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z',
-  [PAGE.NOTIFICATIONS]: 'M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9 M13.73 21a2 2 0 0 1-3.46 0',
 };
 
 // ── Desktop sidebar structure ───────────────────────────────────────────────
 
 export const SIDEBAR_SECTIONS = [
-  { key: 'quick',     label: 'QUICK' },
   { key: 'workspace', label: 'WORKSPACE' },
   { key: 'build',     label: 'BUILD' },
   { key: 'system',    label: 'SYSTEM' },
 ] as const;
 
 export const SIDEBAR_NAV: Array<{ id: PageId; label: string; section: string }> = [
-  { id: PAGE.NOTIFICATIONS, label: 'Notifications', section: 'quick' },
   { id: PAGE.HOME,         label: 'Overview',     section: 'workspace' },
   { id: PAGE.TEAM,         label: 'Team',         section: 'workspace' },
   { id: PAGE.WORK,         label: 'Tasks',        section: 'workspace' },
@@ -141,12 +140,9 @@ export const PAGES_WITH_L1: ReadonlySet<PageId> = new Set([
 ]);
 
 /**
- * Sidebar entries that participate in L0 j/k focus.
- * Excludes notifications (popover). Settings is included — entering it focuses its L1 tab rail.
+ * Sidebar entries that participate in L0 j/k focus — the rail itself, in rail order.
  */
-export const L0_NAV_PAGES: PageId[] = SIDEBAR_NAV
-  .filter(i => i.id !== PAGE.NOTIFICATIONS)
-  .map(i => i.id);
+export const L0_NAV_PAGES: PageId[] = SIDEBAR_NAV.map(i => i.id);
 
 // ── Mobile bottom nav structure ─────────────────────────────────────────────
 
@@ -155,7 +151,6 @@ export type MobileTabId = PageId;
 export const MOBILE_TABS: Array<{ id: MobileTabId; label: string; group: PageId[] }> = [
   { id: PAGE.HOME,          label: 'Overview',      group: [PAGE.HOME] },
   { id: PAGE.TEAM,          label: 'Team',          group: [PAGE.TEAM] },
-  { id: PAGE.NOTIFICATIONS, label: 'Notifications', group: [PAGE.NOTIFICATIONS] },
   { id: PAGE.WORK,          label: 'Tasks',         group: [PAGE.WORK] },
   { id: PAGE.DELIVERABLES,  label: 'Output',        group: [PAGE.DELIVERABLES] },
 ];

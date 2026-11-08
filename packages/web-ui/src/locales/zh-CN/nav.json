@@ -6,10 +6,8 @@
   "builder": "资产",
   "deliverables": "产出",
   "reports": "报告",
-  "notifications": "通知",
   "settings": "设置",
   "sections": {
-    "quick": "",
     "workspace": "工作区",
     "build": "创作",
     "system": "系统"

@@ -92,13 +92,28 @@ export type StoredSegment =
   | { type: 'text'; content: string; thinking?: string; createdAt?: string }
   | { type: 'tool'; tool: string; status: 'running' | 'done' | 'error' | 'stopped'; arguments?: unknown; result?: string; error?: string; durationMs?: number; createdAt?: string; subagentLogs?: SubagentProgressEvent[] };
 
+/**
+ * Where a context chip's content sits inside a sent user message.
+ *
+ * Wire shape shared by the client and the server: the client sends it on
+ * `POST /agents/:id/message` (`chips`), the server persists it under
+ * `chat_messages.metadata.chips`, and the bubble renderer uses `offset`/`length`
+ * to re-highlight the chip — it never searches the text.
+ */
+export interface MessageChipPlacement {
+  kind: string;
+  label: string;
+  offset: number;
+  length: number;
+}
+
 export interface ChatMessageInfo {
   id: string;
   sessionId: string;
   agentId: string;
   role: string;
   content: string;
-  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string } | null;
+  metadata?: { segments?: StoredSegment[]; segmentsTruncated?: boolean; images?: string[]; isError?: boolean; isStopped?: boolean; isStreaming?: boolean; emptyReply?: boolean; streamId?: string; activityLog?: boolean; activityType?: string; outcome?: string; mailboxItemId?: string; taskId?: string; requirementId?: string; notifyUser?: boolean; replyToId?: string; replyToSender?: string; replyToText?: string; chips?: MessageChipPlacement[] } | null;
   tokensUsed: number;
   createdAt: string;
 }
@@ -997,6 +1012,11 @@ export interface TaskInfo {
   executionRound?: number;
   subtasks?: Array<{ id: string; title: string; status: string; createdAt?: string; completedAt?: string }>;
   blockedBy?: string[];
+  /**
+   * 为什么被 blocked（`deps` = 等上游依赖，引擎会自恢复；`hold` = 有人主动挂起，等人决定）。
+   * `null` / 缺省 = 本字段引入前写入的旧行，消费方用 `lib/blockedReason.ts` 回退推断。
+   */
+  blockedReason?: 'deps' | 'hold' | null;
   notes?: string[];
   deliverables?: Array<{
     type: string;
@@ -1015,6 +1035,12 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * 进入**当前状态**的时刻（服务端在状态转移时写入，`packages/shared/src/types/task.ts`）。
+   * 与 `updatedAt` 的区别：任何编辑都会刷新 `updatedAt`，而「等了多久」必须锚在状态上。
+   * 缺省 = 本列引入前的旧行（迁移时已用 `updated_at` 回填），消费方按「约」展示。
+   */
+  statusChangedAt?: string;
   result?: string;
   taskType?: string;
   scheduleConfig?: {
@@ -1384,6 +1410,19 @@ export interface MessageStreamOptions {
   /** The user's own typed text (without injected context chips); the server derives
    *  a clean session title from it. Omitted when the user typed nothing. */
   titleSource?: string;
+  /** Structured context-chip sidecar: which kinds travelled and where they sit in
+   *  `text`. Persisted as message metadata so the sent bubble can highlight chips
+   *  instead of rendering a wall of payload. */
+  chips?: MessageChipPlacement[];
+  /**
+   * 消息身份（Stage 1）：客户端铸的两个 id，服务端接受它们作为 `chat_messages` 的主键。
+   *
+   * 传了它们，乐观气泡与落库行就是**同一条消息**（不需要事后按相邻位置对账）；
+   * 重连时复用同一个 id，于是原地更新那一行而不是追加第二行。
+   * 不传 → 服务端自铸（完全旧的 "a_/u_ 乐观 + 相邻启发式" 行为）。
+   */
+  userMessageId?: string;
+  assistantMessageId?: string;
 }
 
 /**
@@ -1517,7 +1556,8 @@ export const api = {
     ): Promise<{ content: string; sessionId?: string; segments?: StoredSegment[]; merged?: boolean; cancelled?: boolean; emptyReply?: boolean; messageId?: string; softDisconnected?: boolean }> => {
       return new Promise(async (resolve, reject) => {
         const {
-          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource,
+          signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource, chips,
+          userMessageId, assistantMessageId,
         } = options ?? {};
         // Set only once we actually saw the terminal `done` event. Its absence is
         // exactly the soft-disconnect signal: the browser dropped the SSE (page
@@ -1550,6 +1590,9 @@ export const api = {
               isResume: isResume || undefined,
               replyTo: replyTo || undefined,
               titleSource: titleSource || undefined,
+              chips: chips && chips.length > 0 ? chips : undefined,
+              userMessageId: userMessageId || undefined,
+              assistantMessageId: assistantMessageId || undefined,
             }),
             signal,
           });

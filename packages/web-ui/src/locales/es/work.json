@@ -508,7 +508,13 @@
     "sendToChatContext": "Etiqueta de contexto a añadir",
     "sendToChatEmpty": "Sin coincidencias",
     "sendToChatNoTarget": "No hay nada disponible para enviar",
-    "sendToChatConfirm": "Enviar al chat"
+    "sendToChatConfirm": "Enviar al chat",
+    "sendToChatSessions": "Conversación",
+    "sendToChatSessionHint": "Este agente tiene varias conversaciones: elige a cuál enviar.",
+    "sendToChatSessionEmpty": "Aún no hay conversaciones: se enviará a una nueva.",
+    "sendToChatSessionError": "No se pudieron cargar las conversaciones: se enviará a la conversación predeterminada.",
+    "sendToChatSessionNoSummary": "Sin mensajes todavía",
+    "sendToChatSessionRetry": "Reintentar"
   },
   "requirement": {
     "requirements": "Requisitos",

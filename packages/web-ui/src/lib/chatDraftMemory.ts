@@ -1,3 +1,5 @@
+import type { ChipKind } from './chatChips.ts';
+
 /**
  * ChatDraftMemory — 每个视图（agent / session tab）各存一份**完整的**输入框草稿。
  *
@@ -41,8 +43,13 @@ export interface ChatDraftImage {
 /** 引用片段（composer 里的 chip）。 */
 export interface ChatDraftContext {
   id: string;
+  /** What the chip points at — explicit, never inferred from the label. */
+  kind: ChipKind;
   label: string;
   content: string;
+  /** Range of the chip's token inside the draft text (see lib/chatChipDraft.ts). */
+  start: number;
+  end: number;
 }
 
 /** 「回复某条消息」的目标。 */

@@ -377,7 +377,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
               <button
                 onClick={() => void doLogin()}
                 disabled={loggingIn}
-                className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-500 transition-colors disabled:opacity-60"
+                className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 transition-colors disabled:opacity-60"
               >
                 {loggingIn
                   ? t('deliverables:share.loggingIn', { defaultValue: '正在打开登录…' })
@@ -476,7 +476,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                   )}
                   <button
                     onClick={resubmit}
-                    className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-500 transition-colors"
+                    className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 transition-colors"
                   >
                     {t('deliverables:share.resubmit', { defaultValue: '重新提交' })}
                   </button>
@@ -488,7 +488,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                   </p>
                   <button
                     onClick={resubmit}
-                    className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-500 transition-colors"
+                    className="w-full px-3 py-2 text-sm font-medium rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 transition-colors"
                   >
                     {t('deliverables:share.shareAgain', { defaultValue: '重新分享' })}
                   </button>
@@ -598,7 +598,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                     type="button"
                     onClick={() => void doPublish()}
                     disabled={ui === 'busy' || !title.trim()}
-                    className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-brand-600 text-white hover:bg-brand-500 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
+                    className="w-full px-3 py-2.5 text-sm font-medium rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 transition-colors disabled:opacity-60 flex items-center justify-center gap-2"
                   >
                     {ui === 'busy' && (
                       <svg className="animate-spin" width="14" height="14" viewBox="0 0 24 24" fill="none">

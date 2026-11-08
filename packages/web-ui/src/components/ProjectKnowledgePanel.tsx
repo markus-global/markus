@@ -133,7 +133,7 @@ export function ProjectKnowledgePanel({ project, onUpdateProject }: {
             type="button"
             onClick={handleSync}
             disabled={syncing || paths.length === 0}
-            className="text-[10px] px-2 py-1 rounded-md bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="text-[10px] px-2 py-1 rounded-md bg-brand-600 text-on-brand hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {syncing ? t('work:project.kbSyncing') : t('work:project.kbSync')}
           </button>

@@ -62,7 +62,11 @@ export function Avatar({
   avatarUrl,
   size = 28,
   className = '',
-  bgClass = 'bg-brand-600',
+  // 默认底色是 brand（mono 下为白）→ 前景色必须由 token 给。把它写在默认值里而不是
+  // 下面那句兜底里，是因为 hasExplicitTextColor 只看 bgClass：这样默认值自带
+  // text-on-brand 就不会再被追加一个 text-white。传 bg-surface-overlay 之类非重映射
+  // 底色的调用点仍走 text-white 兜底，行为不变。
+  bgClass = 'bg-brand-600 text-on-brand',
   fallback = 'initials',
 }: AvatarProps) {
   const [imgFailed, setImgFailed] = useState(false);

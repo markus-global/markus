@@ -112,7 +112,7 @@ export function GrowthAmbassadorModal({ onClose }: Props) {
             <button
               type="button"
               onClick={() => { hubApi.ensureAuth().then(() => load()).catch(() => {}); }}
-              className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 text-white rounded-lg"
+              className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg"
             >
               {t('ambassador.login')}
             </button>
@@ -132,7 +132,7 @@ export function GrowthAmbassadorModal({ onClose }: Props) {
                 <button
                   type="button"
                   onClick={() => void copy('code')}
-                  className="px-3 py-2 text-xs font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-white shrink-0"
+                  className="px-3 py-2 text-xs font-medium rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand shrink-0"
                 >
                   {copied === 'code' ? t('ambassador.copied') : t('ambassador.copyCode')}
                 </button>

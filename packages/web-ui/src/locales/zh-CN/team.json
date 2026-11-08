@@ -1,4 +1,19 @@
 {
+  "chatChip": {
+    "kind": {
+      "task": "任务",
+      "requirement": "需求",
+      "project": "项目",
+      "deliverable": "交付物",
+      "workflow": "工作流",
+      "agent": "智能体",
+      "file": "文件",
+      "selection": "选区",
+      "web": "网页",
+      "terminal": "终端",
+      "note": "备注"
+    }
+  },
   "chat": {
     "title": "聊天",
     "pause": "暂停",
@@ -183,6 +198,7 @@
     "noApprovals": "暂无审批请求",
     "noNotifications": "暂无通知",
     "markAllRead": "全部标为已读",
+    "markAllReadFailed": "标记失败：{{message}}",
     "filterUnread": "未读",
     "filterAll": "全部",
     "noUnread": "暂无未读通知",
@@ -213,7 +229,6 @@
       "groupMessage": "{{senderName}} 在 {{groupName}} 中",
       "staleReview": "审核停滞",
       "stuckTask": "任务卡住",
-      "unstartedTask": "任务未启动",
       "agentNeedsHelp": "智能体需要帮助",
       "taskComment": "任务「{{title}}」有新评论"
     },
@@ -225,8 +240,7 @@
       "requirementChangesRequestedBody": "需求「{{title}}」需修改后再审批 —— 仍处于待审批状态。{{reason}}",
       "mentionPreview": "{{itemTitle}}：{{preview}}",
       "staleTaskInProgress": "任务「{{title}}」已进行 {{hours}} 小时",
-      "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作",
-      "staleTaskUnstarted": "任务「{{title}}」已等待审批 {{hours}} 小时"
+      "staleTaskInReview": "任务「{{title}}」已待审核 {{hours}} 小时且无动作"
     },
     "approvalDesc": {
       "requirementProposed": "智能体「{{agentName}}」提出了需求「{{title}}」（优先级：{{priority}}）。",

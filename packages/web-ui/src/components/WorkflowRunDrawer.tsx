@@ -344,7 +344,7 @@ export function WorkflowRunDrawer({
           <button
             type="button"
             onClick={onViewTasks}
-            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-white transition-colors hover:bg-brand-500"
+            className="rounded-lg bg-brand-600 px-3 py-1.5 text-xs font-medium text-on-brand transition-colors hover:bg-brand-500"
           >
             {t('work:task.workflowViewTasks', '查看任务')}
           </button>

@@ -2,8 +2,60 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { PAGE } from '../routes.ts';
 import { navBus } from '../navBus.ts';
-import type { AgentInfo, HumanUserInfo } from '../api.ts';
+import { api, type AgentInfo, type HumanUserInfo } from '../api.ts';
 import { Avatar } from './Avatar.tsx';
+import { inferChipKind, type ChipKind } from '../lib/chatChips.ts';
+
+/**
+ * One row of the conversation picker.
+ *
+ * `snippet` needs a per-session last message, which `listByAgent` does not return
+ * (it carries title + lastMessageAt only). Rather than invent a new backend
+ * contract, the picker reuses the existing `GET /sessions/:id/messages?limit=1`
+ * — at most one lightweight request per session, fired only after the user has
+ * picked an agent, and a failure simply leaves the row without a snippet.
+ */
+export interface SendToSessionRow {
+  id: string;
+  title: string | null;
+  lastMessageAt: string;
+  snippet: string | null;
+  snippetFailed: boolean;
+}
+
+const SNIPPET_MAX = 80;
+
+function snippetFrom(content: string): string {
+  const flat = content
+    .replace(/<think>[\s\S]*?<\/think>/g, ' ')
+    .replace(/\[(?:terminal|html|file|deliverable|task|requirement)-?[a-z]*\]/gi, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return flat.length > SNIPPET_MAX ? `${flat.slice(0, SNIPPET_MAX)}…` : flat;
+}
+
+/** Load the agent's conversations (bounded) with one snippet request each. */
+export async function loadSendToSessions(agentId: string): Promise<SendToSessionRow[]> {
+  const res = await api.sessions.listByAgent(agentId, 20, 1);
+  const rows = res.sessions ?? [];
+  const withSnippets = await Promise.all(rows.map(async (s): Promise<SendToSessionRow> => {
+    try {
+      const got = await api.sessions.getMessages(s.id, 1);
+      const latest = got.messages?.[0];
+      return {
+        id: s.id,
+        title: s.title,
+        lastMessageAt: s.lastMessageAt,
+        snippet: latest?.content ? snippetFrom(latest.content) || null : null,
+        snippetFailed: false,
+      };
+    } catch {
+      // A missing snippet must not hide the conversation — the row stays usable.
+      return { id: s.id, title: s.title, lastMessageAt: s.lastMessageAt, snippet: null, snippetFailed: true };
+    }
+  }));
+  return withSnippets;
+}
 
 /**
  * "Send to conversation" — one implementation, shared by every detail surface
@@ -74,8 +126,15 @@ export function SendToChatButton({ onClick, label, className }: {
 /**
  * Pick an agent / member, then land in Team Chat with the context chip already
  * attached above the input — the user can add their own words before sending.
+ *
+ * Card 7 ② adds the SESSION dimension: an agent usually owns several
+ * conversations, so after picking the agent the picker asks WHICH one — but only
+ * when there is more than one (a single-conversation agent must not cost an extra
+ * click). The chosen session travels as `sessionId` on the navigation params and
+ * Team.tsx switches to it.
  */
-export function SendToChatModal({ chipLabel, chipContent, agents, users, defaultTarget, onClose }: {
+export function SendToChatModal({ chipKind, chipLabel, chipContent, agents, users, defaultTarget, onClose }: {
+  chipKind?: ChipKind;
   chipLabel: string;
   chipContent: string;
   agents: AgentInfo[];
@@ -86,6 +145,11 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
   const { t } = useTranslation(['work', 'common']);
   const [target, setTarget] = useState(() => defaultTarget || resolveDefaultChatTarget(undefined, agents, users));
   const [query, setQuery] = useState('');
+  // Second level: which conversation of the picked agent.
+  const [sessionStep, setSessionStep] = useState(false);
+  const [sessionState, setSessionState] = useState<'idle' | 'loading' | 'ok' | 'error'>('idle');
+  const [sessionRows, setSessionRows] = useState<SendToSessionRow[]>([]);
+  const sessionLoadSeq = useRef(0);
 
   const rows = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -119,16 +183,75 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
     ? (agents.find(a => a.id === targetId)?.name ?? '')
     : (users.find(u => u.id === targetId)?.name ?? '');
 
-  const handleSend = () => {
+  // Legacy callers pass only a label: resolve the kind ONCE, here, so everything
+  // downstream (pill + payload) uses the structured value.
+  const kind: ChipKind = chipKind ?? inferChipKind(chipContent, chipLabel);
+
+  const sendTo = (sessionId?: string) => {
     if (!target) return;
     const [type, id] = target.split(':');
     const params: Record<string, string> = {
-      chatChips: JSON.stringify([{ label: chipLabel, content: chipContent }]),
+      chatChips: JSON.stringify([{ kind, label: chipLabel, content: chipContent }]),
     };
     if (type === 'agent') params.agentId = id;
     else params.dm = id;
+    // Only agents own conversations; a human DM has no session dimension.
+    if (sessionId) params.sessionId = sessionId;
     navBus.navigate(PAGE.TEAM, params);
     onClose();
+  };
+
+  const loadSessions = async (agentId: string) => {
+    const seq = ++sessionLoadSeq.current;
+    setSessionState('loading');
+    try {
+      const rows = await loadSendToSessions(agentId);
+      if (seq !== sessionLoadSeq.current) return;
+      setSessionRows(rows);
+      setSessionState('ok');
+    } catch {
+      if (seq !== sessionLoadSeq.current) return;
+      setSessionRows([]);
+      // The failure is VISIBLE (banner + retry); sending still works and lands in
+      // the agent's default conversation — never a silent no-op.
+      setSessionState('error');
+    }
+  };
+
+  const handleSend = () => {
+    if (!target) return;
+    const [type, id] = target.split(':');
+    if (type !== 'agent') { sendTo(); return; }
+    // Ask "which conversation" only when there is a real choice.
+    void (async () => {
+      const seq = ++sessionLoadSeq.current;
+      setSessionStep(true);
+      setSessionState('loading');
+      try {
+        const rows = await loadSendToSessions(id);
+        if (seq !== sessionLoadSeq.current) return;
+        setSessionRows(rows);
+        setSessionState('ok');
+        if (rows.length === 0) { sendTo(); return; }              // no history → new conversation
+        if (rows.length === 1) { sendTo(rows[0]!.id); return; }   // the only one → no extra click
+      } catch {
+        if (seq !== sessionLoadSeq.current) return;
+        setSessionRows([]);
+        setSessionState('error');
+      }
+    })();
+  };
+
+  const formatWhen = (iso: string) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return '';
+    const diffMs = Date.now() - d.getTime();
+    const mins = Math.floor(diffMs / 60000);
+    if (mins < 1) return t('common:justNow', { defaultValue: 'just now' });
+    if (mins < 60) return `${mins}m`;
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) return `${hours}h`;
+    return d.toLocaleDateString();
   };
 
   return (
@@ -150,8 +273,86 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
           </p>
         </div>
 
+        {/* Session step (②): which conversation of the picked agent. */}
+        {sessionStep && (
+          <div className="flex-1 min-h-0 overflow-y-auto px-3 py-2" data-send-to-sessions>
+            <div className="px-2 pb-1 text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider">
+              {t('work:task.sendToChatSessions', { defaultValue: 'Conversation' })}
+            </div>
+            <p className="px-2 pb-2 text-[11px] text-fg-tertiary leading-relaxed">
+              {t('work:task.sendToChatSessionHint', { defaultValue: 'This agent has several conversations — pick the one to send into.' })}
+            </p>
+            {sessionState === 'loading' && (
+              <div className="px-3 py-6 text-center text-xs text-fg-tertiary" data-send-to-sessions-loading>
+                {t('common:loading', { defaultValue: 'Loading…' })}
+              </div>
+            )}
+            {sessionState === 'error' && (
+              <div className="mx-1 mb-2 px-3 py-2 rounded-lg border border-amber-500/40 bg-amber-500/10 text-xs text-amber-500 leading-relaxed" data-send-to-sessions-error>
+                {t('work:task.sendToChatSessionError', { defaultValue: 'Could not load the conversations — sending to the default conversation instead.' })}
+                <div className="mt-1.5 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => { const [, id] = target.split(':'); if (id) void loadSessions(id); }}
+                    className="underline hover:no-underline"
+                    data-send-to-sessions-retry
+                  >
+                    {t('work:task.sendToChatSessionRetry', { defaultValue: 'Retry' })}
+                  </button>
+                  {/* A load failure must never dead-end the send: the same "send
+                      anyway (default conversation)" escape is one click away. */}
+                  <button
+                    type="button"
+                    onClick={() => sendTo()}
+                    className="underline hover:no-underline"
+                    data-send-to-default-session
+                  >
+                    {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
+                  </button>
+                </div>
+              </div>
+            )}
+            {sessionState === 'ok' && sessionRows.length === 0 && (
+              <div className="px-3 py-6 text-center text-xs text-fg-tertiary" data-send-to-sessions-empty>
+                {t('work:task.sendToChatSessionEmpty', { defaultValue: 'No conversations yet — this goes to a new one.' })}
+              </div>
+            )}
+            {sessionState === 'ok' && sessionRows.map(row => (
+              <button
+                key={row.id}
+                type="button"
+                onClick={() => sendTo(row.id)}
+                data-session-id={row.id}
+                className="w-full text-left px-3 py-2 rounded-lg hover:bg-surface-elevated transition-colors"
+              >
+                <div className="flex items-baseline gap-2">
+                  <span className="flex-1 min-w-0 truncate text-sm text-fg-primary">
+                    {row.title?.trim() || t('work:task.sendToChatSessionNoSummary', { defaultValue: 'No message yet' })}
+                  </span>
+                  <span className="text-[10px] text-fg-tertiary shrink-0">{formatWhen(row.lastMessageAt)}</span>
+                </div>
+                <div className="text-[11px] text-fg-tertiary truncate">
+                  {row.snippetFailed
+                    ? t('work:task.sendToChatSessionNoSummary', { defaultValue: 'No message yet' })
+                    : (row.snippet ?? t('work:task.sendToChatSessionNoSummary', { defaultValue: 'No message yet' }))}
+                </div>
+              </button>
+            ))}
+            {sessionState === 'ok' && sessionRows.length > 0 && (
+              <button
+                type="button"
+                onClick={() => sendTo()}
+                className="w-full text-left px-3 py-2 mt-1 rounded-lg text-xs text-fg-secondary hover:bg-surface-elevated transition-colors"
+                data-send-to-new-session
+              >
+                + {t('work:task.sendToChatSessionEmpty', { defaultValue: 'No conversations yet — this goes to a new one.' })}
+              </button>
+            )}
+          </div>
+        )}
+
         {/* Target picker */}
-        <div className="px-5 pt-3 pb-2 shrink-0">
+        <div className={`px-5 pt-3 pb-2 shrink-0 ${sessionStep ? 'hidden' : ''}`}>
           <label className="block text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">
             {t('work:task.sendToChatTarget', { defaultValue: '发送给' })}
           </label>
@@ -174,7 +375,7 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
         </div>
 
         {/* Target list */}
-        <div className="flex-1 min-h-0 overflow-y-auto px-2 pb-2" ref={listRef}>
+        <div className={`flex-1 min-h-0 overflow-y-auto px-2 pb-2 ${sessionStep ? 'hidden' : ''}`} ref={listRef}>
           {rows.length === 0 ? (
             <div className="px-3 py-6 text-center text-xs text-fg-tertiary">
               {t('work:task.sendToChatEmpty', { defaultValue: '没有匹配的对象' })}
@@ -227,25 +428,32 @@ export function SendToChatModal({ chipLabel, chipContent, agents, users, default
           <span
             className="inline-flex items-center gap-1 max-w-full pl-2 pr-2 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
             title={chipContent}
+            data-chip-kind={kind}
           >
             <span className="truncate">{chipLabel}</span>
           </span>
           <div className="mt-3 flex items-center justify-end gap-2">
             <button
               type="button"
-              onClick={onClose}
+              onClick={sessionStep ? () => setSessionStep(false) : onClose}
               className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:bg-surface-elevated transition-colors"
             >
-              {t('common:cancel')}
+              {sessionStep
+                ? t('common:back', { defaultValue: 'Back' })
+                : t('common:cancel')}
             </button>
-            <button
-              type="button"
-              onClick={handleSend}
-              disabled={!target}
-              className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-white font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
-            </button>
+            {!sessionStep && (
+              <button
+                type="button"
+                onClick={handleSend}
+                disabled={!target}
+                data-send-to-confirm
+                aria-label={t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
+                className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {t('work:task.sendToChatConfirm', { defaultValue: '发送到对话' })}
+              </button>
+            )}
           </div>
         </div>
       </div>

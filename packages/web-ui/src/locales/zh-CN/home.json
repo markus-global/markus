@@ -112,6 +112,27 @@
   },
   "attention": {
     "title": "需要你的关注",
+    "newCount": "{{count}} 条新的",
+    "more": "还有 {{count}} 条",
+    "kind": {
+      "agent_question": "等你回答",
+      "approval_request": "审批请求",
+      "requirement_approval": "需求待审",
+      "task_review": "待你验收",
+      "blocked_hold": "已挂起",
+      "task_failed": "执行失败",
+      "unread_message": "未读消息"
+    },
+    "act": {
+      "agent_question": "去回答",
+      "approval_request": "去批准",
+      "requirement_approval": "去审核",
+      "task_review": "去验收",
+      "blocked_hold": "去解阻",
+      "task_failed": "去处理",
+      "unread_message": "去查看"
+    },
+    "history": "历史",
     "allClear": "一切正常 — 当前没有需要你处理的事项。",
     "approvals": "项审批等待处理",
     "requirements": "条需求待审核",

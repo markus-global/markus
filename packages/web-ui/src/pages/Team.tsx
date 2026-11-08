@@ -16,7 +16,7 @@ import { ErrorBoundary } from '../components/ErrorBoundary.tsx';
 import { UserInputModal } from '../components/UserInputModal.tsx';
 import { ToolApprovalModal } from '../components/ToolApprovalModal.tsx';
 import { NotifyUserModal } from '../components/NotifyUserModal.tsx';
-import { notifTitle, notifBody } from '../components/NotificationBell.tsx';
+import { notifTitle, notifBody } from '../lib/notifyText.ts';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import { ListLoading, PageLoading, Spinner, EmptyState } from '../components/AsyncState.tsx';
 import {
@@ -26,6 +26,14 @@ import {
 } from '../components/ExecutionTimeline.tsx';
 import { isVirtualScrollAdjustSuppressed } from '../components/execution-utils.ts';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { ChatChipPill } from '../components/ChatChipPill.tsx';
+import { ChatChipText } from '../components/ChatChipText.tsx';
+import { parseNavChips, normalizeChip, isChipKind, type ChatChip } from '../lib/chatChips.ts';
+import { removeMentionTrigger } from '../lib/chatMention.ts';
+import {
+  appendChips, insertChip, reconcileEdit, removeChip,
+  type DraftChip,
+} from '../lib/chatChipDraft.ts';
 import {
   AT_BOTTOM_EPSILON,
   GESTURE_WINDOW_MS,
@@ -108,7 +116,6 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
-  dedupeAdjacentUserMessages,
   stopRunningTools,
   shouldRenderChatMsg,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
@@ -420,35 +427,54 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [previewMode, isMobile, isActive, collapseRightPanel, openRightPanel]);
 
   // Add a right-panel selection into the chat as pending context, then focus input.
-  const addChatContext = useCallback((chip: { label: string; content: string }) => {
-    const id = `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-    setChatContext(prev => [...prev, { id, ...chip }]);
-    requestAnimationFrame(() => textareaRef.current?.focus());
+  //
+  // Insertion happens at the caret: the chip is a RANGE inside the composer text,
+  // so "add to conversation" while the cursor sits mid-sentence puts it where the
+  // user is actually writing instead of dumping it at the end.
+  const addChatContext = useCallback((chip: ChatChip, at?: number) => {
+    const current = draftRef.current;
+    const caret = at ?? textareaRef.current?.selectionStart ?? current.text.length;
+    const res = insertChip({ text: current.text, chips: current.chips }, chip, caret);
+    setInput(res.draft.text);
+    setChatContext(res.draft.chips);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (!el) return;
+      el.focus();
+      el.setSelectionRange(res.caret, res.caret);
+    });
   }, []);
 
-  // Parse a JSON array of context chips carried over navigation (e.g. from the
-  // Deliverables page), turning each into a pending chat-context tag above the
-  // input — same behaviour as right-panel "Add to conversation".
+  // Parse the JSON array of context chips carried over navigation (e.g. from the
+  // Deliverables page), turning each into a chip inside the composer text — same
+  // behaviour as right-panel "Add to conversation".
   const applyNavChatChips = useCallback((raw: string | null | undefined) => {
     if (!raw) return;
-    try {
-      const chips = JSON.parse(raw) as Array<{ label?: string; content?: string }>;
-      if (!Array.isArray(chips) || chips.length === 0) return;
-      const valid = chips.filter((c): c is { label: string; content: string } =>
-        !!c && typeof c.content === 'string' && c.content.trim().length > 0);
-      if (valid.length === 0) return;
-      const withIds = valid.map(c => ({
-        id: `ctx_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
-        label: c.label?.trim() || 'Context',
-        content: c.content,
-      }));
-      setChatContext(prev => [...prev, ...withIds]);
-      requestAnimationFrame(() => {
-        const el = textareaRef.current;
-        if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
-      });
-    } catch { /* malformed JSON → ignore silently */ }
+    let seq = 0;
+    const chips = parseNavChips(raw, () => `ctx_${Date.now()}_${++seq}`);
+    if (chips.length === 0) return;
+    const current = draftRef.current;
+    const res = appendChips({ text: current.text, chips: current.chips }, chips);
+    setInput(res.draft.text);
+    setChatContext(res.draft.chips);
+    requestAnimationFrame(() => {
+      const el = textareaRef.current;
+      if (el) { el.focus(); el.setSelectionRange(res.caret, res.caret); }
+    });
   }, []);
+
+  /**
+   * 「发送到对话」的落地握手。
+   *
+   * 为什么不用 setTimeout：agent 切换与 session 加载都是异步的，固定 300ms 只是在赌
+   * 它们谁先完成 —— 赌赢了能跳，赌输了就「点了确认没反应」，且没有任何断言会红。
+   * 这里改成两个显式意图位：等到 `selectedAgent` 真的切到目标 agent（effect 依赖）后，
+   * 才按 id 取会话、切过去，**最后**再落 chip。
+   *
+   * chip 必须在切换之后落：切换会话会重载草稿，先落的 chip 会被覆盖（验收里
+   * 「点确认后输入框没有 chip」就是这个顺序问题）。
+   */
+  const pendingSendToRef = useRef<{ agentId: string; sessionId: string; chips: string | null } | null>(null);
 
   // L2: Team detail panel (hidden by default, toggled via header button)
   const [showTeamDetailPanel, setShowTeamDetailPanel] = useState<boolean>(() => {
@@ -714,7 +740,18 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   const [input, setInput] = useState('');
   const [chatReplyTo, setChatReplyTo] = useState<{ id: string; sender: string; text: string } | null>(null);
   // Selections sent from the right-side resource panel, prepended to the next message.
-  const [chatContext, setChatContext] = useState<Array<{ id: string; label: string; content: string }>>([]);
+  // Chips live INSIDE the composer text as explicit ranges (lib/chatChipDraft.ts):
+  // position is a fact about the draft, not something derived from a separate
+  // array or re-parsed out of the text on send.
+  const [chatContext, setChatContext] = useState<DraftChip[]>([]);
+  // Mirror of the composer draft for callbacks declared BEFORE the input state
+  // (right-panel / navigation writers). Assigned during render, same pattern as
+  // `activeScrollKeyRef` — a ref, not a second source of truth.
+  const draftRef = useRef<{ text: string; chips: DraftChip[] }>({ text: '', chips: [] });
+  // Keep the mirror in sync (the writers above are declared before `input`).
+  // Assigning a ref during render is the established pattern in this file
+  // (`activeScrollKeyRef.current = activeScrollKey`).
+  draftRef.current = { text: input, chips: chatContext };
   const [streamingVisual, setStreamingVisual] = useState(!!previewData?.streamLastMessage);
   const streamingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const STREAMING_MIN_DISPLAY_MS = 400;
@@ -1009,6 +1046,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   // Channel @mention
   const [mentionDropdown, setMentionDropdown] = useState(false);
+  /** 下拉打开时的触发位置（`@` + 已键入前缀）。选中时按它删除，不靠失焦后的光标。 */
+  const mentionTriggerRef = useRef<{ at: number; fragment: string } | null>(null);
   const [mentionFilter, setMentionFilter] = useState('');
   const [mentionSelectedIndex, setMentionSelectedIndex] = useState(0);
   // Slash commands
@@ -1108,6 +1147,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // （`getStreamSession`）——对后台/未附着的会话天然为空，见 lib/sessionStreamState.ts。
   useSessionStreamRevision(); // 订阅：任何会话存活性变化都重渲染本组件
   const liveStreamForView = sessionStreamState.isStreaming(activeSessionId);
+  // 「此刻哪一个 assistant 气泡是活的」——同样出自服务端事件（阶段 3）。
+  // 一条消息自带的 `isStreaming` 只是快照（可能来自断连时持久化的中途状态），
+  // 它能不能点亮只能由这个 id 裁决。
+  const liveBubbleIdForView = sessionStreamState.liveBubbleId(activeSessionId);
 
   // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
   // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
@@ -1597,14 +1640,26 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             setMainTab('chat');
             if (isMobile) enterMobileDetail();
             if (detail.params.sessionId) {
-              const targetSessionId = detail.params.sessionId;
-              setTimeout(async () => {
-                try {
-                  const { sessions: s } = await api.sessions.listByAgent(detail.params!.agentId, 20);
-                  const target = s.find((ss: ChatSessionInfo) => ss.id === targetSessionId);
-                  if (target) void switchSession(target);
-                } catch { /* session will load normally */ }
-              }, 300);
+              // 记下意图，等 selectedAgent 真正切过去后由 effect 完成会话切换 + 落 chip。
+              pendingSendToRef.current = {
+                agentId: detail.params.agentId,
+                sessionId: detail.params.sessionId,
+                chips: detail.params.chatChips ?? null,
+              };
+            } else if (detail.params.preferMain === '1') {
+              // Message/report navigation carries no session id: land on that agent's
+              // MAIN session instead of「whatever session I looked at last」. Without
+              // this the focus pipeline restored the stored active session, so a report
+              // about session B opened on session A and the user saw nothing new.
+              // Explicit param (not the mere absence of sessionId) so that other
+              // agentId navigations — roster clicks, profile「去聊天」— keep restoring
+              // the session the user left off on.
+              pendingFocusRef.current = {
+                mode: 'direct',
+                agentId: detail.params.agentId,
+                sessionId: null,
+                preferMain: true,
+              };
             }
           }
         }
@@ -1648,7 +1703,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           const chipsRaw = detail.params.chatChips;
           localStorage.removeItem('markus_nav_chatChips');
           setMainTab('chat');
-          applyNavChatChips(chipsRaw);
+          // 有 sessionId 时 chip 由握手 effect 在切换会话之后落；这里先落会被切换覆盖。
+          if (!detail.params.sessionId) applyNavChatChips(chipsRaw);
         }
         if (detail.params?.dm) {
           setChatMode('dm');
@@ -3597,7 +3653,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     try {
       const result = await api.agents.evolveFromMessage(selectedAgent, {
         parentSessionId,
-        sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
+        // 「这条消息是否已经落库」——而不是猜 id 前缀。
+        // 消息身份统一后，乐观气泡与落库行同形（`cm_*`），所以前缀再也分不出
+        // 「还没存下去的那一条」；而在飞的（isStreaming）气泡就一定是没落库的。
+        // 旧前缀判断保留，因为历史会话里可能还留着旧形状的 id。
+        sourceMessageId: rememberTarget.isStreaming === true
+          || rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
           ? undefined
           : rememberTarget.id,
         sourceText: (rememberTarget.text || '').slice(0, 500) || undefined,
@@ -3711,6 +3772,36 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       void tryReattachActiveStream(selectedAgent, s.id, key);
     }
   };
+
+  /**
+   * 「发送到对话」的落地握手（放在 switchSession 之后：这里要引用它）。
+   *
+   * 为什么不用 setTimeout：agent 切换与 session 加载都是异步的，固定 300ms 只是在赌
+   * 谁先完成 —— 赌赢能跳，赌输就是「点了确认没反应」，且没有任何断言会红。
+   * 现在等 `selectedAgent` 真的切到目标 agent 后才取会话、切过去，**最后**才落 chip；
+   * chip 必须在切换之后落，因为切换会话会重载草稿，先落的会被覆盖。
+   */
+  useEffect(() => {
+    const pending = pendingSendToRef.current;
+    if (!pending || selectedAgent !== pending.agentId) return;
+    pendingSendToRef.current = null;
+    void (async () => {
+      try {
+        const { sessions: rows } = await api.sessions.listByAgent(pending.agentId, 50);
+        const target = rows.find(s => s.id === pending.sessionId);
+        if (!target) {
+          // 目标已不存在（被删 / 翻页外）：不静默什么都不做 —— chip 仍要落，
+          // 否则用户以为「发送成功」却什么也看不到。
+          if (pending.chips) applyNavChatChips(pending.chips);
+          return;
+        }
+        await switchSession(target);
+        if (pending.chips) applyNavChatChips(pending.chips);
+      } catch {
+        if (pending.chips) applyNavChatChips(pending.chips);
+      }
+    })();
+  }, [selectedAgent, switchSession, applyNavChatChips]);
 
   const closeSessionTab = (sessionId: string) => {
     setOpenSessionTabs(prev => prev.filter(t => t.id !== sessionId));
@@ -4000,7 +4091,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   ]);
 
   const handleInputChange = (val: string) => {
-    setInput(val);
+    // Resolve the edit against the chip ranges BEFORE storing the text: a change
+    // that touches a chip's range removes the whole chip (backspace eats the
+    // token), every other range just shifts. One function owns that rule.
+    const nextDraft = reconcileEdit({ text: input, chips: chatContext }, val);
+    setInput(nextDraft.text);
+    setChatContext(nextDraft.chips);
 
     const cursorPos = textareaRef.current?.selectionStart ?? val.length;
     const textBeforeCursor = val.slice(0, cursorPos);
@@ -4015,11 +4111,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           loadEntityMentions();
           setMentionDropdown(true);
           setMentionFilter(fragment.toLowerCase());
+          // 把触发位置记成事实：选中那一刻 textarea 已失焦，光标不可信。
+          mentionTriggerRef.current = { at: atIdx, fragment };
           setMentionSelectedIndex(0);
           return;
         }
       }
     }
+    mentionTriggerRef.current = null;
     setMentionDropdown(false);
 
     // ---- / slash command detection ----
@@ -4063,24 +4162,24 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const insertMention = (name: string, entityType?: string, entityId?: string) => {
     const cursorPos = textareaRef.current?.selectionStart ?? input.length;
-    const before = input.slice(0, cursorPos);
-    const atIdx = before.lastIndexOf('@');
-    const after = input.slice(cursorPos);
-    // 移除输入框中已输入的 @ + 过滤片段，改为在输入框上方生成标签（与右侧栏“添加到对话”一致）
-    const newVal = input.slice(0, atIdx) + after;
+    // 按**记录的触发位置**删 `@前缀`，不按当前光标：点下拉项会让 textarea 失焦，
+    // 光标可能停在旧位置，于是前缀残留（Owner 2026-11-06 实测）。
+    const newVal = removeMentionTrigger(input, mentionTriggerRef.current, cursorPos);
+    mentionTriggerRef.current = null;
     setInput(newVal);
     setMentionDropdown(false);
     setMentionSelectedIndex(0);
     const content = entityType && entityId
       ? `@[${name}](${entityType}:${entityId})`
       : name.includes(' ') ? `@[${name}]` : `@${name}`;
-    const icon = entityType ? (ENTITY_TYPE_ICON[entityType] ?? '📄') : '🤖';
-    // Label the TYPE, not just the icon: `[☑任务] 标题`. An icon alone asks the
-    // reader to memorise a glyph-to-type mapping that is never explained.
-    const typeLabel = entityType
-      ? t(`page.mentionType.${entityType}`, { defaultValue: entityType })
-      : t('page.mentionType.agent');
-    addChatContext({ label: `[${icon}${typeLabel}] ${name}`, content: `${content} ` });
+    addChatContext({
+      // 类型只由 `kind` 承载。pill 已经渲染「图标 + 类型词」，再往 label 里塞
+      // `[图标类型] ` 就会让一个标签出现两个图标（Owner 2026-11-06 实测）。label 只放标题。
+      kind: entityType && isChipKind(entityType) ? entityType : 'note',
+      label: name,
+      content: `${content} `,
+      id: `mention_${Date.now()}`,
+    } as ChatChip);
     requestAnimationFrame(() => {
       const el = textareaRef.current;
       if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
@@ -4643,7 +4742,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   {gone ? (
                     <button
                       onClick={() => { window.location.hash = PAGE.TEAM; }}
-                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-md hover:bg-brand-700 transition-colors"
+                      className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-on-brand rounded-md hover:bg-brand-700 transition-colors"
                     >
                       {t('page.backToList')}
                     </button>
@@ -4984,7 +5083,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                 {showEntityInfo && (
                   <div data-no-drag className="shrink-0">
                   {chatMode === 'channel' && activeTeamId ? (
-                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-white flex items-center justify-center text-sm font-bold">
+                    <div className="w-9 h-9 rounded-xl bg-brand-600 text-on-brand flex items-center justify-center text-sm font-bold">
                       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                     </div>
                   ) : (
@@ -5092,7 +5191,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <button
                       onClick={newConversation}
                       title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                      className="text-xs font-semibold text-on-brand bg-brand-600 hover:bg-brand-700 px-3.5 py-1.5 rounded-lg shadow-sm transition-colors flex items-center gap-1"
                     >
                       {t('page.newChatButton')}
                     </button>
@@ -5536,6 +5635,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const isStreamingMsg = shouldPaintStreamingBubble({
                 msgIsStreaming: !!msg.isStreaming,
                 liveStreamForView,
+                liveBubbleId: liveBubbleIdForView,
+                msgId: msg.id,
               });
               // 光环 = 「这轮还在输出」，**不看有没有正文**：思考、工具调用都算输出，
               // 即使还没吐出任何文字也该让用户看到这轮是活的（老板 2026-10-18）。
@@ -5657,10 +5758,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                                   const rect = e.currentTarget.getBoundingClientRect();
                                   setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
                                 })
-                              : (msg.text && <span className="leading-relaxed">{renderMentionText(msg.text, agents, (agent, e) => {
-                                  const rect = e.currentTarget.getBoundingClientRect();
-                                  setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
-                                })}</span>)
+                              : <ChatChipText
+                                  text={msg.text}
+                                  chips={msg.sender === 'user' ? msg.chips : undefined}
+                                  className="leading-relaxed"
+                                  renderText={chunk => renderMentionText(chunk, agents, (agent, e) => {
+                                    const rect = e.currentTarget.getBoundingClientRect();
+                                    setAvatarPopover({ agentId: agent.id, top: rect.bottom, left: rect.left });
+                                  })}
+                                />
                             }
                           </div>
                         : msg.sender === 'agent' && chatMode === 'channel' && !(msg.segments && msg.segments.length > 0)
@@ -5982,22 +6088,20 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
             </div>
           )}
           {chatContext.length > 0 && (
-            <div className="flex items-center gap-1.5 mb-2 flex-wrap">
+            <div className="flex items-center gap-1.5 mb-2 flex-wrap" data-chip-strip>
               {chatContext.map(chip => (
-                <span
+                <ChatChipPill
                   key={chip.id}
-                  className="inline-flex items-center gap-1 max-w-[240px] pl-2 pr-1 py-1 rounded-lg bg-brand-500/10 text-brand-500 text-xs border border-brand-500/20"
+                  kind={chip.kind}
+                  label={chip.label}
                   title={chip.content}
-                >
-                  <span className="truncate">{chip.label}</span>
-                  <button
-                    onClick={() => setChatContext(prev => prev.filter(c => c.id !== chip.id))}
-                    className="w-4 h-4 flex items-center justify-center rounded hover:bg-brand-500/20 shrink-0"
-                    aria-label={t('common:remove', { defaultValue: 'Remove' })}
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
-                  </button>
-                </span>
+                  removeLabel={t('common:remove', { defaultValue: 'Remove' })}
+                  onRemove={() => {
+                    const res = removeChip({ text: input, chips: chatContext }, chip.id);
+                    setInput(res.draft.text);
+                    setChatContext(res.draft.chips);
+                  }}
+                />
               ))}
             </div>
           )}
@@ -6109,6 +6213,30 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     e.currentTarget.blur();
                     return;
                   }
+                  // Chips are ranges, so "delete one character of it" has no
+                  // meaning — Backspace/Delete next to a chip removes the WHOLE
+                  // chip. Done here (not in reconcileEdit) because only the key
+                  // event knows the user meant to step over the token.
+                  if ((e.key === 'Backspace' || e.key === 'Delete') && chatContext.length > 0) {
+                    const el = textareaRef.current;
+                    if (el && el.selectionStart === el.selectionEnd) {
+                      const caret = el.selectionStart ?? 0;
+                      const hit = chatContext.find(c => e.key === 'Backspace'
+                        ? caret > c.start && caret <= c.end
+                        : caret >= c.start && caret < c.end);
+                      if (hit) {
+                        e.preventDefault();
+                        const res = removeChip({ text: input, chips: chatContext }, hit.id);
+                        setInput(res.draft.text);
+                        setChatContext(res.draft.chips);
+                        requestAnimationFrame(() => {
+                          const node = textareaRef.current;
+                          if (node) node.setSelectionRange(res.caret, res.caret);
+                        });
+                        return;
+                      }
+                    }
+                  }
                   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendFromComposer(); }
                 }}
                 onPaste={handlePaste}
@@ -6164,8 +6292,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   disabled={(chatMode === 'direct' && (!selectedAgent || isAgentOffline)) || (!input.trim() && pendingImages.length === 0)}
                   className={
                     compactComposer
-                      ? 'w-8 h-8 rounded-full flex items-center justify-center bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white transition-colors'
-                      : 'px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors'
+                      ? 'w-8 h-8 rounded-full flex items-center justify-center bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand transition-colors'
+                      : 'px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-sm rounded-xl transition-colors'
                   }
                   title={t('common:send')}
                 >
@@ -6199,7 +6327,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           onClose={collapseRightPanel}
           width={rightPanelFullscreen ? containerWidth : effectiveRightPanelWidth}
           onResizeStart={onRightPanelResizeStart}
-          onAddToChat={addChatContext}
+          onAddToChat={chip => {
+            // Right panel hands over { kind, label, content }; the composer owns
+            // chip identity (ids are what the range model deletes by).
+            let seq = 0;
+            const normalized = normalizeChip(chip, () => `ctx_${Date.now()}_${++seq}`);
+            if (normalized) addChatContext(normalized);
+          }}
           tabs={rightPanelTabs}
           activeTabId={activeRightPanelTabId}
           onSelectTab={layout?.setActiveRightPanelTab}

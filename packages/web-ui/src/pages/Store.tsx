@@ -144,7 +144,7 @@ function DeepLinkBanner({
             type="button"
             disabled={installing}
             onClick={() => void handleInstall()}
-            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-white disabled:opacity-60"
+            className="px-3.5 py-2 rounded-lg text-xs font-semibold bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-60"
           >
             {installing ? t('deepLink.installing') : t('deepLink.install')}
           </button>

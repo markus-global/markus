@@ -22,12 +22,11 @@ export interface StaleConfig {
    * happened to notice 15 hours later. Notify the responsible party first.
    */
   maxReviewWaitMs: number;
-  maxAssignedUnstartedMs: number;
   maxBranchDivergenceCommits: number;
 }
 
 export interface StaleItem {
-  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'unstarted_task' | 'branch_diverged';
+  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'branch_diverged';
   taskId?: string;
   ageMs: number;
   agentId?: string;
@@ -44,7 +43,6 @@ const DEFAULT_CONFIG: StaleConfig = {
   maxInProgressMs: 24 * 60 * 60 * 1000,
   reviewReminderMs: 30 * 60 * 1000,
   maxReviewWaitMs: 4 * 60 * 60 * 1000,
-  maxAssignedUnstartedMs: 4 * 60 * 60 * 1000,
   maxBranchDivergenceCommits: 100,
 };
 
@@ -149,18 +147,6 @@ export class StaleDetector {
           message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
           i18n: {
             bodyKey: 'notifications.bodies.staleTaskInReview',
-            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
-          },
-        });
-      }
-
-      if (task.status === 'pending' && age > this.config.maxAssignedUnstartedMs) {
-        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'unstarted_task', {
-          ageMs: age,
-          agentId: task.assignedAgentId,
-          message: `Task "${task.title}" awaiting approval for ${Math.round(age / 3600000)}h`,
-          i18n: {
-            bodyKey: 'notifications.bodies.staleTaskUnstarted',
             bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
           },
         });

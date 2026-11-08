@@ -40,7 +40,6 @@ describe('review stall detection', () => {
       maxInProgressMs: 24 * HOUR,
       reviewReminderMs: 30 * MIN,
       maxReviewWaitMs: 4 * HOUR,
-      maxAssignedUnstartedMs: 4 * HOUR,
       maxBranchDivergenceCommits: 100,
     });
   });

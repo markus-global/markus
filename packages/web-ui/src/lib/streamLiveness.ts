@@ -133,6 +133,13 @@ export interface StreamingBubbleInput {
   msgIsStreaming: boolean;
   /** 权威：`sessionHasLiveStream(活流集合, 本视图的 session id)`。 */
   liveStreamForView: boolean;
+  /**
+   * 服务端**指名**的那条活跃 assistant 消息 id（`sessionStreamState.liveBubbleId`）。
+   * 不在流时为 null。
+   */
+  liveBubbleId?: string | null;
+  /** 当前正在渲染的这条消息 id。 */
+  msgId?: string;
 }
 
 /**
@@ -157,5 +164,13 @@ export interface StreamingBubbleInput {
  * stop 改写，见本模块头部不变量）——这里只决定"这一次渲染画不画边框"。
  */
 export function shouldPaintStreamingBubble(input: StreamingBubbleInput): boolean {
-  return input.msgIsStreaming && input.liveStreamForView;
+  // 没有活跃回合 → 不可能有活跃气泡（不变量，先守住再谈细节）。
+  if (!input.liveStreamForView) return false;
+  // 服务端指名了是哪一条 → 只有它算活的。
+  // 这是「陈旧 isStreaming 让气泡永远转圈」的结构性终点：每行自带的 isStreaming
+  // 只是快照，可能来自一次断连时持久化的中途状态；而「谁是活的」现在由服务端事件点名。
+  const live = input.liveBubbleId;
+  if (live) return input.msgId === live;
+  // 服务端没指名（旧服务端 / 本地乐观提示期）→ 退回原判据，不退化成「永远不亮」。
+  return input.msgIsStreaming;
 }

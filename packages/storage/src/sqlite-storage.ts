@@ -163,6 +163,7 @@ CREATE TABLE IF NOT EXISTS tasks (
   subtasks TEXT DEFAULT '[]',
   requirement_id TEXT,
   blocked_by TEXT DEFAULT '[]',
+  blocked_reason TEXT,
   workflow_run_id TEXT,
   workflow_step_id TEXT,
   result TEXT,
@@ -179,6 +180,9 @@ CREATE TABLE IF NOT EXISTS tasks (
   decisions TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 何时进入「当前状态」。updated_at 会被任何编辑刷新，不能用来衡量「等了多久」；
+  -- 这个列只在真实状态转移时推进。NULL 仅出现在本列引入前的旧行（迁移时由 updated_at 回填）。
+  status_changed_at TEXT,
   due_at TEXT
 );
 
@@ -843,6 +847,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
     { table: 'tasks', column: 'blocked_by', sql: "ALTER TABLE tasks ADD COLUMN blocked_by TEXT DEFAULT '[]'" },
+    // 为什么被 blocked（deps / hold）。旧行为 NULL —— 读取方按 blocked_by 回退推断，
+    // 与引入本列之前的行为一致，所以不需要回填。
+    { table: 'tasks', column: 'blocked_reason', sql: 'ALTER TABLE tasks ADD COLUMN blocked_reason TEXT' },
     { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
     { table: 'tasks', column: 'project_id', sql: "ALTER TABLE tasks ADD COLUMN project_id TEXT" },
     { table: 'tasks', column: 'created_by', sql: "ALTER TABLE tasks ADD COLUMN created_by TEXT" },
@@ -851,6 +858,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'tasks', column: 'schedule_config', sql: "ALTER TABLE tasks ADD COLUMN schedule_config TEXT" },
     { table: 'tasks', column: 'due_at', sql: "ALTER TABLE tasks ADD COLUMN due_at TEXT" },
     { table: 'tasks', column: 'open_question', sql: "ALTER TABLE tasks ADD COLUMN open_question TEXT" },
+    // 何时进入当前状态（Overview 待办队列按真实等待时长排序）。旧行没有这项事实，
+    // 迁移后立即用 updated_at 回填 —— 详见下面 addedColumns 处的回填步骤。
+    { table: 'tasks', column: 'status_changed_at', sql: 'ALTER TABLE tasks ADD COLUMN status_changed_at TEXT' },
     { table: 'tasks', column: 'decisions', sql: "ALTER TABLE tasks ADD COLUMN decisions TEXT DEFAULT '[]'" },
     // Workflow identity (2026-10-27): a workflow task belongs to exactly one
     // (run, step). Structural columns replace the old `step: <id>` marker in
@@ -925,11 +935,28 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
   ];
+    const addedColumns: string[] = [];
     for (const m of migrations) {
       const cols = _db.prepare(`PRAGMA table_info(${m.table})`).all() as Array<{ name: string }>;
       if (!cols.some(c => c.name === m.column)) {
         _db.exec(m.sql);
+        addedColumns.push(`${m.table}.${m.column}`);
         log.info(`Migration: added column ${m.column} to ${m.table}`);
+      }
+    }
+
+    // 补列后的回填：`status_changed_at` 没有历史来源，updated_at 是最接近的诚实代理
+    // （对一行从未被改动过的记录来说，它写下的时刻就是进入当前状态的时刻）。
+    // 只在「这一次升级刚好补上这列」时执行 —— 重复打开库不写任何一行，
+    // 也就永远不会把之后真实转移写入的值覆盖回去。
+    if (addedColumns.includes('tasks.status_changed_at')) {
+      const backfilled = _db
+        .prepare(
+          'UPDATE tasks SET status_changed_at = COALESCE(status_changed_at, updated_at) WHERE status_changed_at IS NULL'
+        )
+        .run();
+      if (backfilled.changes > 0) {
+        log.info(`Migration: backfilled status_changed_at from updated_at (${backfilled.changes} rows)`);
       }
     }
 
@@ -1494,8 +1521,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, workflow_run_id, workflow_step_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, execution_mode, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, status_changed_at, workflow_run_id, workflow_step_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1519,6 +1546,7 @@ export class SqliteTaskRepo {
         data.scheduleConfig ? toJson(data.scheduleConfig) : null,
         ts,
         ts,
+        ts,
         data.workflowRunId ?? null,
         data.workflowStepId ?? null
       );
@@ -1532,11 +1560,16 @@ export class SqliteTaskRepo {
     return r ? this._map(r) : undefined;
   }
 
-  async updateStatus(id: string, status: string, updatedBy?: string) {
+  async updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | null) {
     const ts = now();
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: SqlParams = [status, ts];
     if (updatedBy) { sets.push('updated_by = ?'); vals.push(updatedBy); }
+    // 「为什么被 blocked」与 status 写在**同一条** UPDATE 里：拆成两条会让它们
+    // 短暂不一致（读到「blocked 但 reason 是上一次的」）。
+    // 非 blocked 状态一律清空 —— 残留 reason 会让下一次 blocked 显示上次的缘由。
+    sets.push('blocked_reason = ?');
+    vals.push(status === 'blocked' ? (blockedReason ?? null) : null);
     if (status === 'in_progress') {
       sets.push("started_at = CASE WHEN started_at IS NULL THEN ? ELSE started_at END");
       vals.push(ts);
@@ -1545,6 +1578,11 @@ export class SqliteTaskRepo {
       sets.push('completed_at = ?');
       vals.push(ts);
     }
+    // 「何时进入当前状态」只在状态**真的变了**时推进。用 SQL 自比较（UPDATE 的
+    // 右值全部取更新前的旧值）而不是把保证交给调用方：任何一次同状态写入 ——
+    // 重复 settle、恢复流程、或将来有人绕过 updateTaskStatus —— 都不会让等待时钟倒退。
+    sets.push('status_changed_at = CASE WHEN status = ? THEN status_changed_at ELSE ? END');
+    vals.push(status, ts);
     vals.push(id);
     this.db.prepare(`UPDATE tasks SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
   }
@@ -1719,8 +1757,8 @@ export class SqliteTaskRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, workflow_run_id, workflow_step_id)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO tasks (id, org_id, title, description, status, priority, assigned_agent_id, reviewer_agent_id, reviewer_type, execution_round, subtasks, requirement_id, blocked_by, project_id, created_by, due_at, task_type, schedule_config, created_at, updated_at, status_changed_at, workflow_run_id, workflow_step_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          status = excluded.status,
@@ -1749,6 +1787,7 @@ export class SqliteTaskRepo {
         data.scheduleConfig ? toJson(data.scheduleConfig) : null,
         ts,
         ts,
+        ts,
         data.workflowRunId ?? null,
         data.workflowStepId ?? null
       );
@@ -1774,6 +1813,7 @@ export class SqliteTaskRepo {
       subtasks: fromJson<unknown[]>(r['subtasks'] as string) ?? [],
       requirementId: r['requirement_id'] as string | null,
       blockedBy: arrayFromJson(r['blocked_by'] as string),
+      blockedReason: (r['blocked_reason'] as string | null) ?? null,
       workflowRunId: (r['workflow_run_id'] as string | null) ?? undefined,
       workflowStepId: (r['workflow_step_id'] as string | null) ?? undefined,
       result: fromJson(r['result'] as string),
@@ -1789,6 +1829,7 @@ export class SqliteTaskRepo {
       completionSummary: (r['completion_summary'] as string) ?? undefined,
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
+      statusChangedAt: toDate(r['status_changed_at'] as string),
       dueAt: toDate(r['due_at'] as string),
     };
   }
@@ -2580,9 +2621,17 @@ export class SqliteChatSessionRepo {
     role: string,
     content: string,
     tokensUsed?: number,
-    metadata?: unknown
+    metadata?: unknown,
+    /**
+     * 调用方铸的消息 id（= 该行的主键）。
+     *
+     * 为什么要允许外部给：客户端已经渲染了一个乐观气泡，它必须与服务端落库的行
+     * **出生即同一身份**；否则只能事后靠「相邻启发式」对账，每次对不上就是一个重复气泡。
+     * 不传则完全走旧行为（本层自己铸 `cm_*`）—— 所以这是向后兼容的可选参数。
+     */
+    messageId?: string,
   ) {
-    const id = generateId('cm');
+    const id = messageId ?? generateId('cm');
     const ts = now();
     this.db
       .prepare(
@@ -2636,7 +2685,38 @@ export class SqliteChatSessionRepo {
     content: string,
     tokensUsed?: number,
     metadata?: unknown,
+    /** 调用方铸的 assistant 消息 id。给了就**按 id 定位**那一行，不再猜「最新一条」。 */
+    messageId?: string,
   ) {
+    // 有明确身份时，定位方式只能是 id —— 「最新一条 assistant 行」在同一次重连里
+    // 可能就是上一个回合的行，猜错的代价是覆盖历史内容（不可逆）。
+    if (messageId) {
+      const existing = this.db
+        .prepare('SELECT id FROM chat_messages WHERE id = ? AND session_id = ?')
+        .get(messageId, sessionId) as { id: string } | undefined;
+      if (existing) {
+        const ts = now();
+        this.db
+          .prepare(
+            `UPDATE chat_messages
+             SET content = ?, metadata = ?, tokens_used = ?, created_at = created_at
+             WHERE id = ?`,
+          )
+          .run(content, metadata ? toJson(metadata) : null, tokensUsed ?? 0, messageId);
+        return {
+          id: messageId,
+          sessionId,
+          agentId,
+          role: 'assistant',
+          content,
+          metadata: metadata ?? null,
+          tokensUsed: tokensUsed ?? 0,
+          createdAt: new Date(ts),
+        };
+      }
+      return this.appendMessage(sessionId, agentId, 'assistant', content, tokensUsed, metadata, messageId);
+    }
+
     const row = this.db
       .prepare(
         `SELECT id, metadata, created_at FROM chat_messages

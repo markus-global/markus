@@ -68,9 +68,10 @@ function relativeTime(dateStr: string, t: (key: string, opts?: Record<string, un
  * desktop FAB, the mobile "send to conversation" picker): the chip is part of
  * the contract with the agent, so it must never drift between surfaces.
  */
-function buildDeliverableChip(d: DeliverableInfo): { label: string; content: string } {
+function buildDeliverableChip(d: DeliverableInfo): { kind: 'deliverable'; label: string; content: string } {
   const title = d.title?.trim() || d.id;
   return {
+    kind: 'deliverable',
     label: `📄 ${shortForChip(title)}`,
     content: [
       `[deliverable]`,
@@ -1219,7 +1220,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             <span className="text-[10px] text-fg-tertiary">{t('filters.group')}</span>
             {(['date', 'project', 'team', 'agent'] as const).map(g => (
               <button key={g} onClick={() => { setGroupBy(g); }}
-                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'}`}>
+                className={`px-2 py-1 rounded text-xs transition-colors ${groupBy === g ? 'bg-brand-600 text-on-brand' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'}`}>
                 {t(`groupBy.${g}`)}
               </button>
             ))}
@@ -1314,13 +1315,13 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <>
                   <p className="text-sm text-fg-secondary">{t('empty.noResults')}</p>
                   <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.noResultsHint')}</p>
-                  <button onClick={clearAllFilters} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('filters.clearAll')}</button>
+                  <button onClick={clearAllFilters} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors">{t('filters.clearAll')}</button>
                 </>
               ) : (
                 <>
                   <p className="text-sm text-fg-secondary">{t('empty.title')}</p>
                   <p className="text-xs text-fg-tertiary mt-1 mb-3">{t('empty.subtitle')}</p>
-                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">{t('empty.goToWork')}</button>
+                  <button onClick={() => navBus.navigate(PAGE.WORK)} className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors">{t('empty.goToWork')}</button>
                 </>
               )}
             </div>
@@ -1660,7 +1661,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                 <div className="flex gap-2">
                   <button
                     onClick={handleOpenInBuilder}
-                    className="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
+                    className="flex-1 px-4 py-2.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-sm font-medium rounded-lg transition-colors"
                   >
                     {t('detail.openInBuilder')}
                   </button>
@@ -1685,7 +1686,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                   <p className="text-xs text-fg-tertiary font-mono mb-4 px-4 text-center break-all select-all">{selected.reference}</p>
                   <button
                     onClick={() => window.open(selected.reference, '_blank', 'noopener,noreferrer')}
-                    className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-white text-sm font-medium rounded-lg transition-colors"
+                    className="px-6 py-2.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-sm font-medium rounded-lg transition-colors"
                   >{t('detail.openUrl')}</button>
                 </div>
               </div>
@@ -1711,7 +1712,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                       <button
                         onClick={handleSaveEdit}
                         disabled={!editDirty || editSaving}
-                        className="px-3 py-1 rounded text-xs font-medium bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+                        className="px-3 py-1 rounded text-xs font-medium bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
                       >
                         {editSaving ? t('detail.saving') : t('detail.save')}
                       </button>
@@ -1805,6 +1806,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
                         className="text-fg-secondary text-sm"
                         onHtmlSelection={handleHtmlSelection}
                         basePath={selected?.reference ? selected.reference.replace(/[/\\][^/\\]+$/, '') : undefined}
+                        copyVariant="preview"
                       />
                       </div>
                     )
@@ -1856,7 +1858,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
             onClick={() => { if (isMobile) setSendToChatOpen(true); else openInTeamChat(); }}
             className={`${isMobile
               ? 'fixed bottom-[calc(1.25rem+env(safe-area-inset-bottom))] right-4 z-40'
-              : 'absolute bottom-6 right-6 z-20'} w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-white shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in`}
+              : 'absolute bottom-6 right-6 z-20'} w-12 h-12 rounded-full bg-brand-600 hover:bg-brand-500 text-on-brand shadow-lg shadow-black/20 flex items-center justify-center transition-transform hover:scale-105 animate-fab-in`}
             title={isMobile
               ? t('chat.sendToChat', { defaultValue: 'Send to conversation' })
               : t('chat.openChat', { defaultValue: 'Open in Team Chat' })}
@@ -1872,6 +1874,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
 
         {sendToChatOpen && selected && (
           <SendToChatModal
+            chipKind="deliverable"
             chipLabel={buildDeliverableChip(selected).label}
             chipContent={buildDeliverableChip(selected).content}
             agents={agents}
@@ -1970,7 +1973,7 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               <button onClick={() => { handleDiscardEdit(); unsavedDialog.action(); }}
                 className="px-4 py-1.5 text-xs text-fg-secondary hover:text-fg-primary border border-border-default hover:border-gray-600 rounded-lg transition-colors">{t('detail.discard')}</button>
               <button onClick={async () => { await handleSaveEdit(); unsavedDialog.action(); setUnsavedDialog(null); }}
-                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg transition-colors">{t('detail.saveAndLeave')}</button>
+                className="px-4 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg transition-colors">{t('detail.saveAndLeave')}</button>
             </div>
           </div>
         </div>
@@ -2072,7 +2075,7 @@ function KnowledgeBindModal({ projects, onClose, onBound }: { projects: ProjectI
           <button
             onClick={() => void submit()}
             disabled={busy || !projectId || !path.trim()}
-            className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-3 py-1.5 text-xs bg-brand-600 text-on-brand rounded-lg hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {busy ? t('bindSaving', { defaultValue: 'Saving…' }) : t('bindSave', { defaultValue: 'Bind directory' })}
           </button>
@@ -2087,7 +2090,7 @@ function FilterPill({ label, value, current, onClick }: { label: string; value: 
     <button
       onClick={() => onClick(current === value ? '' : value)}
       className={`px-2 py-1 rounded text-xs whitespace-nowrap shrink-0 transition-colors ${
-        current === value ? 'bg-brand-600 text-white' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'
+        current === value ? 'bg-brand-600 text-on-brand' : 'bg-surface-elevated text-fg-secondary hover:bg-surface-overlay'
       }`}
     >
       {label}

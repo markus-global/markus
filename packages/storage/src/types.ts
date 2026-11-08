@@ -33,6 +33,8 @@ export interface TaskRow {
   scheduleConfig: unknown;
   createdAt: Date | null;
   updatedAt: Date | null;
+  /** When the row entered its current status; null only for rows predating the column. */
+  statusChangedAt: Date | null;
   dueAt: Date | null;
 }
 
@@ -410,7 +412,7 @@ export interface TaskRepo {
   create(data: Record<string, unknown>): Promise<unknown>;
   ensureExists(data: Record<string, unknown>): Promise<void>;
   listByOrg(orgId: string, filters?: Record<string, unknown>): TaskRow[];
-  updateStatus(id: string, status: string, updatedBy?: string): Promise<void>;
+  updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | null): Promise<void>;
   assign(id: string, agentId: string, updatedBy?: string): Promise<void>;
   update(id: string, data: Record<string, unknown>): Promise<void>;
   updateDeliverables(id: string, deliverables: unknown): Promise<void>;

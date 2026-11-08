@@ -13,9 +13,23 @@ import type { DirectoryEntry } from '../api.ts';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
+import { oneLineLabel, type ChipKind } from '../lib/chatChips.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import TabScrollRail from './TabScrollRail.tsx';
-import type { RightPanelMode, RightPanelPayload, RightPanelTab } from '../contexts/LayoutContext.tsx';
+import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
+import {
+  clearBrowserHistory,
+  historyEntryKey,
+  historyVisitForPanel,
+  loadBrowserHistory,
+  recordHistoryVisit,
+  removeHistoryEntry,
+  subscribeBrowserHistory,
+  type BrowserHistoryEntry,
+} from '../lib/browserHistory.ts';
+import { reopenHistoryEntry } from '../lib/historyReopen.ts';
+import { shouldProbeFileRefresh, hasFileChanged, FILE_AUTO_REFRESH_MS } from '../lib/fileAutoRefresh.ts';
+import { useLayout, type RightPanelMode, type RightPanelPayload, type RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
 
@@ -30,6 +44,11 @@ function toFileUrl(filePath: string): string {
 }
 
 export interface ChatContextChip {
+  /**
+   * What the chip points at. Structural, not inferred from the label emoji:
+   * the pill renders the TYPE WORD from this, so two producers cannot drift.
+   */
+  kind: ChipKind;
   label: string;
   content: string;
 }
@@ -152,22 +171,31 @@ export function RightPanel({
   const [tabOwners, setTabOwners] = useState<Record<number, TabOwner>>({});
   const [termOwners, setTermOwners] = useState<Record<string, TabOwner>>({});
   const [editorDirty, setEditorDirty] = useState(false);
-  /** Bumped by the refresh button / auto-refresh poll to re-run the preview fetch. */
-  const [reloadNonce, setReloadNonce] = useState(0);
-  /** Auto-refresh is on by default: local files/deliverables are rewritten by agents behind our back. */
-  const [autoRefresh, setAutoRefresh] = useState(true);
-  /**
-   * File stamp (mtime + size) of the content currently on screen. The poll only
-   * reloads when the on-disk stamp differs from this baseline, so our own saves
-   * and no-op polls never cause a pointless remount.
-   */
-  const loadedStampRef = useRef<{ path: string; mtimeMs: number; size: number } | null>(null);
+  /** Visit-history dropdown opened from the panel chrome (file / deliverable modes). */
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<BrowserHistoryEntry[]>(() => loadBrowserHistory());
+  const layout = useLayout();
   const contentRef = useRef<HTMLDivElement>(null);
   const tabStripRef = useRef<HTMLDivElement>(null);
+  const historyWrapRef = useRef<HTMLDivElement>(null);
   const activeTabBtnRef = useRef<HTMLButtonElement>(null);
   const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
   const editorDirtyRef = useRef(false);
   editorDirtyRef.current = editorDirty;
+
+  /**
+   * 本地文件自动刷新（Owner 2026-11-08 要求恢复）。
+   *
+   * 上一版把整套机制删了，代价是「agent 改了磁盘上的文件，右栏还显示旧内容」。
+   * 这里重做的三条纪律，正是原来那个 5 秒轮询没有的：
+   *   ① **编辑中不刷新** —— 用户正在输入时重读会把他打的字冲掉（最坏的失败方式）；
+   *   ② **面板不可见时不探测** —— 后台标签页不该持续读盘；
+   *   ③ **只在 mtime/size 真的变了才重读** —— stat 很便宜（几十字节），
+   *      重读内容很贵（整份文件 + 重新渲染 Markdown）。
+   * 探测失败一律静默：网络/权限抖动不该在界面上闪错误。
+   */
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const probeBaselineRef = useRef<{ mtimeMs?: number; size?: number } | null>(null);
 
   const confirmLeaveEditor = useCallback(() => {
     return confirmDiscardDirty(
@@ -175,6 +203,38 @@ export function RightPanel({
       t('common:fileEditor.discardConfirm', { defaultValue: 'Discard unsaved changes?' }),
     );
   }, [t]);
+
+  // Keep the chrome dropdown in step with the shared history (records made by the
+  // address bar, removes, clear-all, and other windows' writes).
+  useEffect(() => subscribeBrowserHistory(setHistoryItems), []);
+
+  // Click-away closes the chrome dropdown (it sits above the preview body, so an
+  // outside click is usually "I am done with the menu").
+  useEffect(() => {
+    if (!historyOpen) return;
+    const onDown = (e: MouseEvent) => {
+      const target = e.target;
+      if (!(target instanceof Node)) return;
+      if (historyWrapRef.current?.contains(target)) return;
+      setHistoryOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    return () => document.removeEventListener('mousedown', onDown);
+  }, [historyOpen]);
+
+  // Directory listings open files / subfolders *inside* the current tab, so no
+  // `openRightPanel` call happens and the visit history would otherwise skip
+  // them. Recording every in-panel navigation keeps the list equal to what was
+  // actually read.
+  useEffect(() => {
+    if (!dirNavPath) return;
+    const visit = historyVisitForPanel({
+      kind: 'file',
+      path: dirNavPath,
+      title: dirNavPath.split(/[/\\]/).pop() || dirNavPath,
+    });
+    if (visit) recordHistoryVisit(visit);
+  }, [dirNavPath]);
 
   // Hydrate + live-update which agent currently owns each embedded-browser pageId.
   useEffect(() => {
@@ -257,75 +317,6 @@ export function RightPanel({
   const showTabs = (tabs?.length ?? 0) >= 1;
   const contentKey = previewIdentity(payload, activeTabId);
 
-  /**
-   * Refresh affordances only apply to resources backed by a local path.
-   * URL tabs already have the browser's own reload; terminals stream live.
-   * Builder artifacts have no file body at all.
-   */
-  const canRefresh = (payload.kind === 'file' || payload.kind === 'deliverable')
-    && !!reference
-    && !isUrl(reference)
-    && !(payload.kind === 'deliverable' && !!payload.deliverable.artifactType);
-  /** Re-stat / re-read target — follows in-panel directory navigation. */
-  const refreshTarget = activePath || reference;
-
-  /** Manual refresh: re-read from disk (asks before dropping unsaved edits). */
-  const refreshPreview = useCallback(() => {
-    if (!confirmLeaveEditor()) return;
-    // Drop the baseline so the poll stays quiet until the new content lands.
-    loadedStampRef.current = null;
-    setReloadNonce(n => n + 1);
-  }, [confirmLeaveEditor]);
-
-  // Baseline the file stamp right after a preview lands, so the poll below only
-  // reacts to changes that happened AFTER what is currently on screen.
-  useEffect(() => {
-    if (!canRefresh || !refreshTarget || preview.mode === 'loading') return;
-    let cancelled = false;
-    void api.files.stat(refreshTarget).then((s) => {
-      if (cancelled || !s.exists) return;
-      loadedStampRef.current = {
-        path: s.path || refreshTarget,
-        mtimeMs: s.mtimeMs ?? 0,
-        size: s.size ?? 0,
-      };
-    }).catch(() => { /* stat is best-effort — endpoint may be unavailable */ });
-    return () => { cancelled = true; };
-  }, [canRefresh, refreshTarget, preview, reloadNonce]);
-
-  // Auto-refresh: agents rewrite deliverables / files behind our back while the
-  // panel stays open. Poll a cheap stat every few seconds, plus immediately when
-  // the app regains focus, and reload the preview when the file really changed.
-  // Paused while the file is being edited (never yank the buffer out from under).
-  useEffect(() => {
-    if (!autoRefresh || !canRefresh || !refreshTarget || editorDirty) return;
-    let cancelled = false;
-
-    const check = async () => {
-      const base = loadedStampRef.current;
-      if (!base || base.path !== refreshTarget) return;
-      try {
-        const s = await api.files.stat(refreshTarget);
-        if (cancelled || !s.exists) return;
-        if ((s.mtimeMs ?? 0) !== base.mtimeMs || (s.size ?? 0) !== base.size) {
-          setReloadNonce(n => n + 1);
-        }
-      } catch { /* offline / older server → keep showing current content */ }
-    };
-
-    const timer = window.setInterval(() => { void check(); }, 5000);
-    const onFocus = () => { void check(); };
-    const onVisibility = () => { if (document.visibilityState === 'visible') void check(); };
-    window.addEventListener('focus', onFocus);
-    document.addEventListener('visibilitychange', onVisibility);
-    return () => {
-      cancelled = true;
-      window.clearInterval(timer);
-      window.removeEventListener('focus', onFocus);
-      document.removeEventListener('visibilitychange', onVisibility);
-    };
-  }, [autoRefresh, canRefresh, refreshTarget, editorDirty]);
-
   // Keep the active tab in view (new tabs open on the left; selecting an
   // off-screen tab also scrolls it into the strip).
   useEffect(() => {
@@ -378,6 +369,11 @@ export function RightPanel({
 
     setPreview({ mode: 'loading' });
 
+    // 媒体 / 文档类预览走 streamUrl：URL 不变时浏览器会直接用缓存，
+    // 于是「文件内容变了但右栏还是旧的」。reloadNonce 是打断缓存的那个变量。
+    const withNonce = (u: string) =>
+      reloadNonce ? `${u}${u.includes('?') ? '&' : '?'}_v=${reloadNonce}` : u;
+
     // Builder artifacts have no file body — surface the summary + open-in-page.
     if (payload.kind === 'deliverable' && payload.deliverable.artifactType && payload.deliverable.artifactData) {
       setPreview({ mode: 'artifact', summary: payload.deliverable.summary || payload.deliverable.title || '' });
@@ -398,20 +394,20 @@ export function RightPanel({
         // Prefer stream URL (works for large webp/png); fall back to legacy base64 content.
         const src = resp.content
           ? `data:${resp.mimeType || 'image/png'};base64,${resp.content}`
-          : (resp.streamUrl
+          : withNonce(resp.streamUrl
             || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'image', src, name: resp.name || title });
         return;
       }
       if (resp.type === 'audio') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'audio', src, name: resp.name || title, mimeType: resp.mimeType || 'audio/mpeg', size: resp.size });
         return;
       }
       if (resp.type === 'video') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'video', src, name: resp.name || title, mimeType: resp.mimeType || 'video/mp4', size: resp.size });
         return;
       }
@@ -426,8 +422,8 @@ export function RightPanel({
         return;
       }
       if (resp.type === 'office') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({
           mode: 'office',
           format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
@@ -456,18 +452,67 @@ export function RightPanel({
     return () => { cancelled = true; };
   // Reload whenever the active tab / preview identity changes — not just payload
   // object identity (which can be sticky across tab clicks in some open paths).
-  // reloadNonce forces an explicit re-read (refresh button / auto-refresh poll).
+  // `reloadNonce` 是唯一的「内容变了」信号：只由自动刷新探测（mtime/size 变化）递增。
   }, [contentKey, payload, activePath, reference, title, reloadNonce]);
 
+  // ─── 本地文件自动刷新：探测 mtime/size，变了才重读 ────────────────────────────
+  useEffect(() => {
+    probeBaselineRef.current = null;   // 换文件/换 tab = 换基线
+    // 能不能探测由纯函数回答（编辑中 / 不可见 / URL / 非文件类）。
+    // 这里只判断「是否可能有本地路径」，避免无意义的定时器。
+    if (!activePath || isUrl(activePath)) return;
+    if (payload.kind !== 'file' && payload.kind !== 'deliverable') return;
+
+    let stopped = false;
+    const probe = async () => {
+      if (stopped) return;
+      const allowed = shouldProbeFileRefresh({
+        kind: payload.kind,
+        hasPath: true,
+        isUrlReference: false,
+        editorDirty: editorDirtyRef.current,
+        visibility: document.visibilityState,
+      });
+      if (!allowed) return;
+      try {
+        const st = await api.files.stat(activePath);
+        if (stopped || !st.exists) return;
+        const base = probeBaselineRef.current;
+        probeBaselineRef.current = { mtimeMs: st.mtimeMs, size: st.size };
+        if (hasFileChanged(base, { mtimeMs: st.mtimeMs, size: st.size })) {
+          setReloadNonce(n => n + 1);                      // 真变了才重读
+        }
+      } catch {
+        /* 探测失败静默：下一轮再试 */
+      }
+    };
+
+    void probe();
+    const timer = window.setInterval(() => { void probe(); }, FILE_AUTO_REFRESH_MS);
+    const onWake = () => { void probe(); };               // 切回来立刻对一次
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('focus', onWake);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('focus', onWake);
+    };
+  }, [activePath, payload.kind, contentKey]);
+
   // Reset in-panel directory navigation when the payload / active tab changes.
-  useEffect(() => { setDirNavPath(null); }, [contentKey]);
+  useEffect(() => { setDirNavPath(null); setHistoryOpen(false); }, [contentKey]);
 
   const sourceLabel = title || activePath;
 
   const buildChip = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }): ChatContextChip => {
-    const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
+    // The label is a one-line title: a terminal selection can span lines, and the
+    // composer draws this label as literal text inside the textarea.
+    const flat = oneLineLabel(text);
+    const short = flat.length > 40 ? `${flat.slice(0, 24)}…${flat.slice(-12)}` : flat;
     if (htmlMeta) {
       return {
+        kind: 'web',
         label: `🌐 ${short}`,
         content: [
           `[html-selection]`,
@@ -480,6 +525,7 @@ export function RightPanel({
     }
     if (payload.kind === 'terminal') {
       return {
+        kind: 'terminal',
         label: `⌘ ${short}`,
         content: [
           `[terminal-selection]`,
@@ -492,6 +538,7 @@ export function RightPanel({
       };
     }
     return {
+      kind: 'selection',
       label: `“${short}”`,
       content: `${t('deliverables:chat.selectedFrom', { defaultValue: 'Selected from' })} ${sourceLabel}:\n\n"""\n${text}\n"""`,
     };
@@ -509,8 +556,10 @@ export function RightPanel({
     if (!onAddToChat || payload.kind !== 'terminal') return;
     const text = (await terminalApiRef.current?.getRecentOutput(80))?.trim();
     if (!text) return;
-    const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
+    const flat = oneLineLabel(text);
+    const short = flat.length > 40 ? `${flat.slice(0, 24)}…${flat.slice(-12)}` : flat;
     onAddToChat({
+      kind: 'terminal',
       label: `⌘ ${short}`,
       content: [
         `[terminal-output]`,
@@ -599,6 +648,7 @@ export function RightPanel({
       const name = title || d.title || d.reference || d.id;
       const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
       return {
+        kind: 'deliverable',
         label: `📄 ${short}`,
         content: [
           '[deliverable]',
@@ -615,6 +665,7 @@ export function RightPanel({
       const name = title || path.split(/[/\\]/).pop() || path;
       const short = name.length > 40 ? `${name.slice(0, 24)}…${name.slice(-12)}` : name;
       return {
+        kind: 'file',
         label: `📄 ${short}`,
         content: [
           '[file]',
@@ -953,49 +1004,46 @@ export function RightPanel({
             </span>
           )}
 
-          <div data-no-drag className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
-            {/* 本地文件 / 交付物：手动刷新（重新从磁盘读取） */}
-            {canRefresh && (
-              <button
-                type="button"
-                onClick={refreshPreview}
-                title={t('common:refreshPreview', { defaultValue: '刷新' })}
-                aria-label={t('common:refreshPreview', { defaultValue: '刷新' })}
-                className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated"
-              >
-                <svg
-                  className={preview.mode === 'loading' ? 'animate-spin' : ''}
-                  width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
-                  strokeLinecap="round" strokeLinejoin="round"
+          {/* Panel actions. Local files / deliverables no longer expose a manual
+              refresh or an auto-refresh toggle — the preview re-reads whenever the
+              payload / tab changes, and nothing polls /api/files/stat on a timer. */}
+          <div data-no-drag data-panel-actions className="shrink-0 flex items-center gap-0.5 pl-1 border-l border-border-default/60">
+            {/* 最近访问：文件 / 产出物预览没有地址栏，历史入口在面板操作区。
+                url 模式不重复提供 —— 那里的地址栏本身就是入口。 */}
+            {(payload.kind === 'file' || payload.kind === 'deliverable') && (
+              <div ref={historyWrapRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setHistoryOpen(v => !v)}
+                  title={t('common:browserHistoryRecent', { defaultValue: '最近访问' })}
+                  aria-label={t('common:browserHistoryRecent', { defaultValue: '最近访问' })}
+                  aria-haspopup="listbox"
+                  aria-expanded={historyOpen}
+                  className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
+                    historyOpen ? 'text-brand-500 bg-brand-500/10' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
+                  }`}
                 >
-                  <polyline points="23 4 23 10 17 10" />
-                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" />
-                </svg>
-              </button>
-            )}
-            {/* 自动刷新开关：文件在磁盘上被改写时自动更新预览 */}
-            {canRefresh && (
-              <button
-                type="button"
-                onClick={() => setAutoRefresh(v => !v)}
-                aria-pressed={autoRefresh}
-                title={autoRefresh
-                  ? t('common:autoRefreshOn', { defaultValue: '自动刷新：已开启' })
-                  : t('common:autoRefreshOff', { defaultValue: '自动刷新：已关闭' })}
-                aria-label={autoRefresh
-                  ? t('common:autoRefreshOn', { defaultValue: '自动刷新：已开启' })
-                  : t('common:autoRefreshOff', { defaultValue: '自动刷新：已关闭' })}
-                className={`w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
-                  autoRefresh
-                    ? 'text-brand-500 bg-brand-500/10'
-                    : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
-                }`}
-              >
-                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                  <circle cx="12" cy="12" r="9" />
-                  <circle cx="12" cy="12" r="3" fill="currentColor" stroke="none" />
-                </svg>
-              </button>
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+                    <path d="M3 12a9 9 0 1 0 3-6.7" /><polyline points="3 4 3 10 9 10" /><polyline points="12 8 12 12 15 14" />
+                  </svg>
+                </button>
+                {historyOpen && (
+                  <BrowserHistoryMenu
+                    items={historyItems}
+                    query=""
+                    activeIndex={-1}
+                    onHover={() => { /* chrome menu has no keyboard highlight */ }}
+                    onPick={entry => {
+                      setHistoryOpen(false);
+                      void reopenHistoryEntry(entry, { openPanel: layout?.openRightPanel });
+                    }}
+                    onRemove={entry => setHistoryItems(removeHistoryEntry(historyEntryKey(entry)))}
+                    onClear={() => { clearBrowserHistory(); setHistoryOpen(false); }}
+                    anchorClassName="right-0 top-full mt-1 w-72"
+                    keyboardHint={false}
+                  />
+                )}
+              </div>
             )}
             {payload.kind === 'terminal' && onAddToChat && (
               <button
@@ -1148,7 +1196,7 @@ export function RightPanel({
         </header>
 
         <div
-          key={`${contentKey}#${reloadNonce}`}
+          key={contentKey}
           className={`flex-1 min-w-0 min-h-0 ${
             preview.mode === 'url' || preview.mode === 'terminal' || preview.mode === 'office' || preview.mode === 'directory'
               || (preview.mode === 'content' && ['code', 'json', 'text', 'markdown', 'html'].includes(preview.format))
@@ -1280,6 +1328,7 @@ export function RightPanel({
                     basePath={basePath}
                     onHtmlSelection={handleHtmlSelection}
                     onDirtyChange={setEditorDirty}
+                    copyVariant="preview"
                   />
                 </div>
               );
@@ -1292,6 +1341,7 @@ export function RightPanel({
                   className="text-fg-secondary text-sm"
                   onHtmlSelection={handleHtmlSelection}
                   basePath={basePath}
+                  copyVariant="preview"
                 />
               </div>
             );
@@ -1299,7 +1349,7 @@ export function RightPanel({
 
           {preview.mode === 'artifact' && (
             <div ref={contentRef} className="min-w-0 max-w-full break-words [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_img]:max-w-full">
-              <ContentRenderer content={preview.summary} format="markdown" className="text-fg-secondary text-sm" />
+              <ContentRenderer content={preview.summary} format="markdown" className="text-fg-secondary text-sm" copyVariant="preview" />
             </div>
           )}
 
@@ -1388,7 +1438,7 @@ export function RightPanel({
         >
           <button
             onMouseDown={e => { e.preventDefault(); e.stopPropagation(); commitSelection(selectionToolbar.text, selectionToolbar.htmlMeta); }}
-            className="px-3 py-1.5 text-xs font-medium text-white hover:bg-brand-500 transition-colors flex items-center gap-1.5 whitespace-nowrap"
+            className="px-3 py-1.5 text-xs font-medium text-on-brand hover:bg-brand-500 transition-colors flex items-center gap-1.5 whitespace-nowrap"
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" />

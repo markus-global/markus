@@ -16,14 +16,17 @@ import {
 } from '../lib/browserUrl.ts';
 import {
   clearBrowserHistory,
+  historyEntryKey,
   historyNavFromModifierKey,
   recordBrowserVisit,
-  removeBrowserHistoryEntry,
+  removeHistoryEntry,
   searchBrowserHistory,
   stepHistoryIndex,
   subscribeBrowserHistory,
   type BrowserHistoryEntry,
 } from '../lib/browserHistory.ts';
+import { reopenHistoryEntry } from '../lib/historyReopen.ts';
+import { useLayout } from '../contexts/LayoutContext.tsx';
 import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
 
 /**
@@ -69,6 +72,8 @@ export function EmbeddedBrowser({
   const [historyIndex, setHistoryIndex] = useState(-1);
   const api = typeof window !== 'undefined' ? window.markusDesktop?.browser : undefined;
   const platform = typeof window !== 'undefined' ? window.markusDesktop?.platform : undefined;
+  /** Reopening a file / deliverable row needs the layout's openRightPanel. */
+  const layout = useLayout();
   directoryPathRef.current = directoryPath;
 
   const folderAppLabel =
@@ -116,7 +121,15 @@ export function EmbeddedBrowser({
   };
 
   const pickHistory = (entry: BrowserHistoryEntry) => {
-    navigateTo(entry.url, entry.title);
+    // A url row keeps the current tab and navigates it in place — that is what
+    // an address-bar history pick should do. File / deliverable rows are not
+    // navigations: they reopen the right panel on that target.
+    if (entry.kind === 'url') {
+      navigateTo(entry.target, entry.title);
+      return;
+    }
+    closeHistory();
+    void reopenHistoryEntry(entry, { openPanel: layout?.openRightPanel });
   };
 
   useEffect(() => {
@@ -495,7 +508,7 @@ export function EmbeddedBrowser({
                 activeIndex={historyIndex}
                 onHover={setHistoryIndex}
                 onPick={pickHistory}
-                onRemove={url => setHistoryItems(removeBrowserHistoryEntry(url))}
+                onRemove={entry => setHistoryItems(removeHistoryEntry(historyEntryKey(entry)))}
                 onClear={() => { clearBrowserHistory(); closeHistory(); }}
               />
             )}
@@ -558,7 +571,7 @@ export function EmbeddedBrowser({
                   .catch(() => httpApi.files.reveal(directoryPath))
                   .finally(() => setOpeningFolder(false));
               }}
-              className="px-3.5 py-2 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-white transition-colors"
+              className="px-3.5 py-2 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-50 text-on-brand transition-colors"
             >
               {openingFolder ? t('browserFolderOpening') : t('browserFolderOpen', { app: folderAppLabel })}
             </button>

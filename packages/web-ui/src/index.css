@@ -15,7 +15,10 @@
   --color-brand-300: oklch(0.74 0.04 250);
   --color-brand-400: oklch(0.66 0.05 250);
   --color-brand-500: oklch(0.58 0.045 250);
-  --color-brand-600: oklch(0.52 0.04 250);
+  /* Text-bearing brand fill: white on the old L0.52 measured 4.04 (below AA for
+     the 10–11px button labels). Deepening THIS step keeps white text valid and
+     leaves brand-500 as the decorative figure colour. */
+  --color-brand-600: oklch(0.42 0.10 258);
   --color-brand-700: oklch(0.44 0.035 250);
   --color-brand-800: oklch(0.34 0.025 250);
   --color-brand-900: oklch(0.25 0.018 250);
@@ -33,7 +36,7 @@
   --color-fg-primary: oklch(0.95 0.003 270);
   --color-fg-secondary: oklch(0.72 0.006 270);
   --color-fg-tertiary: oklch(0.55 0.006 270);
-  --color-fg-muted: oklch(0.42 0.005 270);
+  --color-fg-muted: oklch(0.58 0.006 270);
 
 
 
@@ -57,6 +60,23 @@
   --color-selected-bg: oklch(0.30 0.06 258);
   --color-selected-border: oklch(0.46 0.11 258);
   --color-selected-fg: oklch(0.84 0.09 250);
+
+  /* Foreground ON a solid brand surface (a `bg-brand-500/600/700` fill).
+     ONE token, ONE fact: whatever sits on a brand fill reads `text-on-brand`,
+     never a hardcoded `text-white`. Mono maps brand-500..700 to white, so a
+     hardcoded white turned every brand button into white-on-white; the old
+     fix was a per-selector list (`.btn-primary, .bg-brand-600, .bg-brand-500`)
+     that could never cover hover states, opacity variants or new components.
+     Tailwind only emits `text-on-brand` if the name is declared here, so the
+     default (dark) palette MUST carry it too — the theme classes below
+     override the value, not the name. */
+  --color-on-brand: oklch(1 0 0);
+
+  /* Solid fills that carry TEXT (primary / danger actions). Decorative red-500
+     is a figure colour: white on it measures 3.81. A text-bearing fill is a
+     different fact, so it gets its own token instead of each button picking a
+     darker red ad hoc. Mono overrides it to white + black foreground. */
+  --color-danger-solid: oklch(0.47 0.19 27);
 
   --font-sans: 'SF Pro Display', 'SF Pro Text', 'Inter', ui-sans-serif, system-ui, -apple-system, sans-serif;
 }
@@ -88,6 +108,14 @@ html.light {
   --color-selected-bg: oklch(0.95 0.035 265);
   --color-selected-border: oklch(0.80 0.09 265);
   --color-selected-fg: oklch(0.42 0.19 268);
+  --color-on-brand: oklch(1 0 0);
+  /* Light-theme status TEXT: amber-600 / orange-500 measured 2.89–3.51 on white.
+     Overriding the palette entries here fixes all 39 call sites in one place;
+     the decorative fills keep their own (unchanged) figure tokens. */
+  --color-amber-500: oklch(0.52 0.13 70);
+  --color-amber-600: oklch(0.47 0.12 62);
+  --color-orange-500: oklch(0.48 0.14 55);
+  --color-danger-solid: oklch(0.47 0.19 27);
 }
 
 @media (prefers-color-scheme: light) {
@@ -114,6 +142,11 @@ html.light {
     --color-selected-bg: oklch(0.95 0.035 265);
     --color-selected-border: oklch(0.80 0.09 265);
     --color-selected-fg: oklch(0.42 0.19 268);
+    --color-on-brand: oklch(1 0 0);
+    --color-amber-500: oklch(0.52 0.13 70);
+    --color-amber-600: oklch(0.47 0.12 62);
+    --color-orange-500: oklch(0.48 0.14 55);
+    --color-danger-solid: oklch(0.47 0.19 27);
   }
 }
 
@@ -125,7 +158,7 @@ html.cyberpunk {
   --color-brand-300: oklch(0.76 0.18 330);
   --color-brand-400: oklch(0.68 0.24 330);
   --color-brand-500: oklch(0.62 0.28 330);
-  --color-brand-600: oklch(0.55 0.28 330);
+  --color-brand-600: oklch(0.46 0.26 330);
   --color-brand-700: oklch(0.45 0.22 330);
   --color-brand-800: oklch(0.35 0.16 330);
   --color-brand-900: oklch(0.25 0.10 330);
@@ -147,6 +180,7 @@ html.cyberpunk {
   --color-selected-bg: oklch(0.25 0.08 330);
   --color-selected-border: oklch(0.48 0.16 330);
   --color-selected-fg: oklch(0.86 0.14 330);
+  --color-on-brand: oklch(1 0 0);
 }
 
 html.mono {
@@ -181,11 +215,15 @@ html.mono {
   --color-selected-bg: oklch(0.25 0 0);
   --color-selected-border: oklch(0.72 0 0);
   --color-selected-fg: oklch(1 0 0);
-}
-html.mono .btn-primary,
-html.mono .bg-brand-600,
-html.mono .bg-brand-500 {
-  color: oklch(0 0 0);
+  /* Mono paints brand-500..700 as WHITE, so the foreground on a brand fill
+     must be black (same logic as the switch knob right above). This token is
+     the ONLY place that fact lives — there is no per-selector patch list
+     anymore, because such a list is structurally unable to cover hover
+     states, opacity variants (`bg-brand-600/90`) or newly added components. */
+  --color-on-brand: oklch(0 0 0);
+  /* Mono has no red: a danger action is a white fill with black text, exactly
+     like every other solid in this theme. */
+  --color-danger-solid: oklch(1 0 0);
 }
 
 html, body, #root {
@@ -267,7 +305,7 @@ body {
 }
 
 .btn-primary {
-  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-white rounded-lg text-sm font-medium transition-all shadow-sm shadow-black/20 hover:shadow-md hover:shadow-black/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
+  @apply px-5 py-2.5 bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg text-sm font-medium transition-all shadow-sm shadow-black/20 hover:shadow-md hover:shadow-black/25 disabled:opacity-50 disabled:cursor-not-allowed disabled:shadow-none;
 }
 
 .btn-secondary {

@@ -8,8 +8,6 @@ describe('navRing: shape', () => {
     expect(NAV_RING.map(s => s.page)).toEqual([
       PAGE.HOME,
       PAGE.TEAM,
-      PAGE.NOTIFICATIONS,
-      PAGE.NOTIFICATIONS,
       PAGE.WORK,
       PAGE.WORK,
       PAGE.WORK,
@@ -19,8 +17,6 @@ describe('navRing: shape', () => {
     expect(NAV_RING.map(s => s.sub)).toEqual([
       undefined,
       'l1',
-      'approvals',
-      'notifications',
       'backlog',
       'kanban',
       'dag',
@@ -37,21 +33,19 @@ describe('navRing: shape', () => {
 describe('navRing: where am I', () => {
   it('resolves a page that owns exactly one step', () => {
     expect(ringIndex(PAGE.HOME)).toBe(0);
-    expect(ringIndex(PAGE.DELIVERABLES)).toBe(8);
+    expect(ringIndex(PAGE.DELIVERABLES)).toBe(6);
   });
 
   it('resolves a page with several steps by its published sub-view', () => {
-    expect(ringIndex(PAGE.WORK, 'backlog')).toBe(4);
-    expect(ringIndex(PAGE.WORK, 'kanban')).toBe(5);
-    expect(ringIndex(PAGE.WORK, 'dag')).toBe(6);
-    expect(ringIndex(PAGE.WORK, 'workflows')).toBe(7);
-    expect(ringIndex(PAGE.NOTIFICATIONS, 'approvals')).toBe(2);
-    expect(ringIndex(PAGE.NOTIFICATIONS, 'notifications')).toBe(3);
+    expect(ringIndex(PAGE.WORK, 'backlog')).toBe(2);
+    expect(ringIndex(PAGE.WORK, 'kanban')).toBe(3);
+    expect(ringIndex(PAGE.WORK, 'dag')).toBe(4);
+    expect(ringIndex(PAGE.WORK, 'workflows')).toBe(5);
   });
 
   it('falls back to the first step of the page when the sub-view is unknown', () => {
-    expect(ringIndex(PAGE.WORK)).toBe(4);
-    expect(ringIndex(PAGE.WORK, 'l1')).toBe(4);
+    expect(ringIndex(PAGE.WORK)).toBe(2);
+    expect(ringIndex(PAGE.WORK, 'l1')).toBe(2);
   });
 
   it('reports -1 for pages that are not on the ring', () => {
@@ -64,9 +58,7 @@ describe('navRing: where am I', () => {
 describe('navRing: stepping', () => {
   it('walks the owner’s route forward', () => {
     expect(ringStep(PAGE.HOME, undefined, 1)?.page).toBe(PAGE.TEAM);
-    expect(ringStep(PAGE.TEAM, 'l1', 1)?.sub).toBe('approvals');
-    expect(ringStep(PAGE.NOTIFICATIONS, 'approvals', 1)?.sub).toBe('notifications');
-    expect(ringStep(PAGE.NOTIFICATIONS, 'notifications', 1)?.sub).toBe('backlog');
+    expect(ringStep(PAGE.TEAM, 'l1', 1)?.sub).toBe('backlog');
     expect(ringStep(PAGE.WORK, 'backlog', 1)?.sub).toBe('kanban');
     expect(ringStep(PAGE.WORK, 'kanban', 1)?.sub).toBe('dag');
     expect(ringStep(PAGE.WORK, 'dag', 1)?.sub).toBe('workflows');
@@ -113,14 +105,14 @@ describe('navRing: gesture → direction', () => {
 
 describe('navRing: live sub-view source', () => {
   it('reads the page’s current sub-view at call time, never a cached copy', () => {
-    let tab: 'approvals' | 'notifications' = 'approvals';
-    const unregister = registerRingSubSource(PAGE.NOTIFICATIONS, () => tab);
-    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBe('approvals');
+    let tab: 'backlog' | 'kanban' = 'backlog';
+    const unregister = registerRingSubSource(PAGE.WORK, () => tab);
+    expect(currentRingSub(PAGE.WORK)).toBe('backlog');
     // the page changes its own state directly — the ring must see it immediately
-    tab = 'notifications';
-    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBe('notifications');
+    tab = 'kanban';
+    expect(currentRingSub(PAGE.WORK)).toBe('kanban');
     unregister();
-    expect(currentRingSub(PAGE.NOTIFICATIONS)).toBeUndefined();
+    expect(currentRingSub(PAGE.WORK)).toBeUndefined();
   });
 });
 

@@ -50,6 +50,15 @@ function emit(type: string, payload: unknown): void {
   for (const fn of h.handlers.get(type) ?? []) fn({ type, payload });
 }
 
+/**
+ * The chip's **server** status, read from the attribute rather than the visible
+ * text: the label is localised (`common:taskStatus.*`), so asserting the raw enum
+ * would pin this guard to the locale instead of to the behaviour it protects.
+ */
+function renderedStatus(): string | null {
+  return screen.getByTestId('entity-status').getAttribute('data-status');
+}
+
 beforeEach(() => {
   h.status.value = 'pending';
 });
@@ -58,26 +67,26 @@ describe('EntityCard — the bubble card follows the server status', () => {
   it('repaints when the task is rejected (the reported symptom)', async () => {
     const id = 'tsk_live_reject';
     render(<EntityCard id={id} />);
-    await waitFor(() => expect(screen.getByText('pending')).toBeTruthy());
+    await waitFor(() => expect(renderedStatus()).toBe('pending'));
 
     h.status.value = 'rejected';
     act(() => emit('task:update', { taskId: id, status: 'rejected' }));
 
-    await waitFor(() => expect(screen.getByText('rejected')).toBeTruthy());
-    expect(screen.queryByText('pending')).toBeNull();
+    await waitFor(() => expect(renderedStatus()).toBe('rejected'));
+    expect(renderedStatus()).not.toBe('pending');
   });
 
   it('an event for a different entity does not repaint this card', async () => {
     const id = 'tsk_live_isolated';
     render(<EntityCard id={id} />);
-    await waitFor(() => expect(screen.getByText('pending')).toBeTruthy());
+    await waitFor(() => expect(renderedStatus()).toBe('pending'));
 
     h.status.value = 'rejected';
     act(() => emit('task:update', { taskId: 'tsk_somebody_else' }));
 
     await new Promise((r) => setTimeout(r, 20));
-    expect(screen.getByText('pending')).toBeTruthy();
-    expect(screen.queryByText('rejected')).toBeNull();
+    expect(renderedStatus()).toBe('pending');
+    expect(renderedStatus()).not.toBe('rejected');
   });
 
   it('renders the entity title (the card is not just a status pill)', async () => {

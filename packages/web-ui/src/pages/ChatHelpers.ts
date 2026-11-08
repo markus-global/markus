@@ -1,5 +1,6 @@
 import type { ChatMessageInfo, ChannelMessageInfo, ChannelMsgMetadata, StoredSegment, SubagentProgressEvent } from '../api.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
+import { normalizeSentChips, type SentChip } from '../lib/chatChips.ts';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -43,6 +44,13 @@ export interface ChatMsg {
   replyToId?: string;
   replyToSender?: string;
   replyToText?: string;
+  /**
+   * Structured context chips that travelled with THIS message (sidecar).
+   * When present, `text` is the flat payload and these offsets point at each
+   * chip's content — the bubble re-highlights them instead of showing a wall of
+   * `[terminal-selection] …`. Absent for older/foreign messages (plain render).
+   */
+  chips?: SentChip[];
   isActivityLog?: boolean;
   activityType?: string;
   outcome?: string;
@@ -51,6 +59,40 @@ export interface ChatMsg {
   requirementId?: string;
   isNotification?: boolean;
   notifyPriority?: string;
+}
+
+/**
+ * Build the optimistic user bubble shown before the server answers.
+ *
+ * It must carry the SAME chip sidecar that is sent to the server (`metadata.chips`).
+ * The server persists it and a reload renders the pills, but the bubble the user is
+ * looking at right now is built locally — without the sidecar it shows the flat
+ * payload until a refresh (Owner 2026-11-06: 发出去是纯文本，刷新后才渲染).
+ */
+export function buildOptimisticUserMessage(input: {
+  id: string;
+  text: string;
+  time: string;
+  rawCreatedAt: string;
+  chips?: SentChip[];
+  images?: string[];
+  replyTo?: { id: string; sender: string; text: string } | null;
+}): ChatMsg {
+  const msg: ChatMsg = {
+    id: input.id,
+    sender: 'user',
+    text: input.text,
+    time: input.time,
+    rawCreatedAt: input.rawCreatedAt,
+  };
+  if (input.chips && input.chips.length > 0) msg.chips = input.chips;
+  if (input.images && input.images.length > 0) msg.images = input.images;
+  if (input.replyTo) {
+    msg.replyToId = input.replyTo.id;
+    msg.replyToSender = input.replyTo.sender;
+    msg.replyToText = input.replyTo.text;
+  }
+  return msg;
 }
 
 /** Remember is only for user↔agent personal DM (`showRemember` from ChatPanel / chatMode=direct). */
@@ -626,6 +668,13 @@ export function dbMsgToChat(m: ChatMessageInfo): ChatMsg {
     // Heal legacy rows that embedded the quote into content before reply metadata existed.
     base.text = stripEmbeddedReplyQuote(base.text, base.replyToSender, base.replyToText);
   }
+  // Chip sidecar: only user turns carry one (the composer is the only producer).
+  // Unknown/malformed placements are dropped by the validator, which leaves the
+  // message rendering as plain text — exactly the pre-sidecar behaviour.
+  if (m.role === 'user') {
+    const chips = normalizeSentChips((m.metadata as Record<string, unknown> | null | undefined)?.chips);
+    if (chips) base.chips = chips;
+  }
   return base;
 }
 
@@ -746,29 +795,6 @@ export function resolveTurnBubbleId(
  * Collapse accidental adjacent duplicate user bubbles (same text, within a short window).
  * Does not touch intentional repeats that have an assistant turn between them.
  */
-export function dedupeAdjacentUserMessages(msgs: ChatMsg[], windowMs = 120_000): ChatMsg[] {
-  if (msgs.length < 2) return msgs;
-  const out: ChatMsg[] = [];
-  for (const m of msgs) {
-    const prev = out[out.length - 1];
-    if (
-      m.sender === 'user'
-      && prev?.sender === 'user'
-      && prev.text === m.text
-      && prev.text.length > 0
-      && prev.text.length <= 500
-    ) {
-      const prevTs = prev.rawCreatedAt ? Date.parse(prev.rawCreatedAt) : NaN;
-      const curTs = m.rawCreatedAt ? Date.parse(m.rawCreatedAt) : NaN;
-      if (!Number.isFinite(prevTs) || !Number.isFinite(curTs) || Math.abs(curTs - prevTs) <= windowMs) {
-        continue;
-      }
-    }
-    out.push(m);
-  }
-  return out;
-}
-
 export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
   const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
   const isSelf = m.senderType === 'human' && (!authUserId || m.senderId === authUserId);

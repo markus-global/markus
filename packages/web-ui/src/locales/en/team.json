@@ -1,4 +1,19 @@
 {
+  "chatChip": {
+    "kind": {
+      "task": "Task",
+      "requirement": "Requirement",
+      "project": "Project",
+      "deliverable": "Deliverable",
+      "workflow": "Workflow",
+      "agent": "Agent",
+      "file": "File",
+      "selection": "Excerpt",
+      "web": "Web",
+      "terminal": "Terminal",
+      "note": "Note"
+    }
+  },
   "chat": {
     "title": "Chat",
     "pause": "Pause",
@@ -183,6 +198,7 @@
     "noApprovals": "No approval requests",
     "noNotifications": "No notifications",
     "markAllRead": "Mark all read",
+    "markAllReadFailed": "Could not mark as read: {{message}}",
     "filterUnread": "Unread",
     "filterAll": "All",
     "noUnread": "No unread notifications",
@@ -213,7 +229,6 @@
       "groupMessage": "{{senderName}} in {{groupName}}",
       "staleReview": "Stale review",
       "stuckTask": "Stuck task",
-      "unstartedTask": "Unstarted task",
       "agentNeedsHelp": "Agent needs help",
       "taskComment": "Comment on task {{title}}"
     },
@@ -225,8 +240,7 @@
       "requirementChangesRequestedBody": "Requirement \"{{title}}\" needs changes before approval — it is still pending.{{reason}}",
       "mentionPreview": "{{itemTitle}}: {{preview}}",
       "staleTaskInProgress": "Task \"{{title}}\" has been in_progress for {{hours}}h",
-      "staleTaskInReview": "Task \"{{title}}\" has been in review for {{hours}}h with no action",
-      "staleTaskUnstarted": "Task \"{{title}}\" awaiting approval for {{hours}}h"
+      "staleTaskInReview": "Task \"{{title}}\" has been in review for {{hours}}h with no action"
     },
     "approvalDesc": {
       "requirementProposed": "Agent \"{{agentName}}\" proposed requirement \"{{title}}\" (priority: {{priority}}).",

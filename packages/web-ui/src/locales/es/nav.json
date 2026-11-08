@@ -6,10 +6,8 @@
   "builder": "Activos",
   "deliverables": "Salida",
   "reports": "Informes",
-  "notifications": "Notificaciones",
   "settings": "Configuración",
   "sections": {
-    "quick": "",
     "workspace": "TRABAJO",
     "build": "BUILD",
     "system": "SYSTEM"

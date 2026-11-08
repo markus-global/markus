@@ -325,7 +325,7 @@ function FileSection({ filename, content, onSave, embedded, readOnly }: {
       {editing ? (
         <>
           <button onClick={() => { setDraft(content); setEditing(false); }} className="text-[10px] px-2.5 py-1 rounded-md text-fg-tertiary hover:text-fg-secondary border border-border-default transition-colors">{t('common:cancel')}</button>
-          <button onClick={handleSave} disabled={saving} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">{saving ? t('common:saving') : t('common:save')}</button>
+          <button onClick={handleSave} disabled={saving} className="text-[10px] px-2.5 py-1 rounded-md bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-50">{saving ? t('common:saving') : t('common:save')}</button>
         </>
       ) : (
         <button onClick={() => setEditing(true)} className="text-[10px] px-2.5 py-1 rounded-md text-fg-tertiary hover:text-fg-secondary border border-border-default transition-colors inline-flex items-center gap-1">
@@ -1212,7 +1212,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
             })()}
             {!readOnly && !hubStatus.shared && (
               <button onClick={() => setShowVisibility(true)} disabled={shareInProgress}
-                className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50">
+                className="text-xs px-3 py-1.5 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-50">
                 {shareInProgress ? t('share.sharing') : t('share.toHub')}
               </button>
             )}
@@ -1683,7 +1683,7 @@ function VisibilityDialog({ onClose, onConfirm }: {
           </button>
           <button onClick={() => onConfirm(selected, selected === 'org' ? selectedOrgId : undefined, isPublicLike && priceCents > 0 ? priceCents : undefined, isPublicLike ? donationsEnabled : undefined)}
             disabled={selected === 'org' && !selectedOrgId}
-            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
             {t('shareMode.share')}
           </button>
         </div>
@@ -1734,7 +1734,7 @@ function ShareModeDialog({ onClose, onConfirm, isUpdate }: {
             {t('common:cancel')}
           </button>
           <button onClick={() => onConfirm(selectedPrice > 0 ? 'paid' : 'free', selectedPrice)}
-            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-white transition-colors">
+            className="flex-1 text-sm px-4 py-2 rounded-lg bg-brand-600 hover:bg-brand-500 text-on-brand transition-colors">
             {isUpdate ? t('shareMode.update') : t('shareMode.share')}
           </button>
         </div>

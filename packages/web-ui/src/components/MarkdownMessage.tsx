@@ -61,6 +61,11 @@ interface Props {
   knownNames?: string[];
   /** Base directory for resolving relative image paths */
   basePath?: string;
+  /**
+   * Copy-button density. Deliberately a caller-supplied fact — see
+   * `CopyVariant`. Defaults to `inline` (chat message).
+   */
+  copyVariant?: CopyVariant;
 }
 
 const thinkRegex = /(?:<thinking>| thinking)([\s\S]*?)<\/thinking>/g;
@@ -78,6 +83,50 @@ function extractThinkBlocks(text: string): { thinking: string[]; rest: string } 
 
 // ─── Copy menu ───────────────────────────────────────────────────────────────
 
+/**
+ * Which density the copy button gets — decided by the **call site**, never
+ * inferred here.
+ *
+ *   inline  — one bubble in a long chat scroll. The copy button is a secondary
+ *             affordance that repeats N times down the page, so it stays out of
+ *             the way until the reader hovers (or tabs into) it: icon only.
+ *   preview — a file / deliverable the reader deliberately opened in a panel.
+ *             There the copy button *is* the action, so it is always visible,
+ *             larger, filled with the theme colour and it says "Copy".
+ *
+ * Why an explicit parameter instead of "detect whether an ancestor looks like a
+ * preview": the call site already knows the fact, and a DOM sniff would be a
+ * second writer for it — the exact shape that silently flips when the component
+ * is nested one level deeper or rendered in a modal.
+ */
+export type CopyVariant = 'inline' | 'preview';
+
+/**
+ * One row per variant. Both tiers share the same polarity rule — a `bg-brand-*`
+ * fill always carries `text-on-brand` (see `--color-on-brand` in index.css), so
+ * the mono theme cannot turn either tier white-on-white.
+ */
+const COPY_VARIANTS: Record<CopyVariant, { wrapper: string; button: string; icon: string; labelled: boolean }> = {
+  inline: {
+    wrapper: 'absolute top-1 right-1 z-10 opacity-0 focus-within:opacity-100 group-hover/md:opacity-100 transition-opacity',
+    button: 'p-1.5 rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 shadow-sm transition-colors',
+    icon: 'w-4 h-4',
+    labelled: false,
+  },
+  preview: {
+    wrapper: 'absolute top-2 right-2 z-10',
+    button: 'flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-brand-600 text-on-brand hover:bg-brand-500 shadow-md text-xs font-medium transition-colors',
+    icon: 'w-4 h-4',
+    labelled: true,
+  },
+};
+
+/** Right padding of the rendered content, so the button never sits on the text. */
+const COPY_VARIANT_CONTENT_PADDING: Record<CopyVariant, string> = {
+  inline: 'pr-2 sm:pr-8',
+  preview: 'pr-2 sm:pr-24',
+};
+
 function useIsNarrow(breakpoint = 640) {
   const [narrow, setNarrow] = useState(() => window.innerWidth < breakpoint);
   useEffect(() => {
@@ -90,7 +139,11 @@ function useIsNarrow(breakpoint = 640) {
   return narrow;
 }
 
-function CopyMenu({ content, contentRef }: { content: string; contentRef: React.RefObject<HTMLDivElement | null> }) {
+function CopyMenu({ content, contentRef, variant }: {
+  content: string;
+  contentRef: React.RefObject<HTMLDivElement | null>;
+  variant: CopyVariant;
+}) {
   const { t } = useTranslation('common');
   const [open, setOpen] = useState(false);
   const [showInfo, setShowInfo] = useState(false);
@@ -138,8 +191,10 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
     setOpen(false);
   };
 
+  const styles = COPY_VARIANTS[variant];
+
   return (
-    <div className="absolute top-1 right-1 z-10 opacity-0 group-hover/md:opacity-100 transition-opacity" ref={menuRef}>
+    <div className={styles.wrapper} ref={menuRef} data-copy-variant={variant}>
       {flash && (
         <div className="absolute right-0 top-full mt-1 z-20 px-2 py-0.5 rounded bg-surface-elevated border border-border-default text-[10px] text-fg-secondary whitespace-nowrap shadow-lg">
           {flash}
@@ -147,12 +202,13 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
       )}
       <button
         onClick={() => setOpen(o => !o)}
-        className="p-1.5 rounded-lg bg-surface-elevated/80 hover:bg-surface-overlay text-fg-secondary hover:text-fg-primary backdrop-blur-sm border border-border-default/50 transition-all"
+        className={styles.button}
         title={t('markdown.copyContent')}
       >
-        <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <svg className={styles.icon} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
           <path strokeLinecap="round" strokeLinejoin="round" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
         </svg>
+        {styles.labelled && <span className="leading-none">{t('markdown.copy')}</span>}
       </button>
       {open && (
         <div className="absolute right-0 top-full mt-1 bg-surface-elevated border border-border-default rounded-lg shadow-xl py-1 min-w-[180px]">
@@ -227,7 +283,7 @@ function CopyMenu({ content, contentRef }: { content: string; contentRef: React.
 
 // ─── MarkdownMessage ─────────────────────────────────────────────────────────
 
-export const MarkdownMessage = memo(function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath }: Props) {
+export const MarkdownMessage = memo(function MarkdownMessage({ content, className = '', onMentionClick, knownNames, basePath, copyVariant = 'inline' }: Props) {
   const { thinking, rest } = extractThinkBlocks(content);
   const contentRef = useRef<HTMLDivElement>(null);
   const [previewSrc, setPreviewSrc] = useState<string | null>(null);
@@ -248,6 +304,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   }, [knownNames]);
 
   const processedRest = useMemo(() => preprocess(rest), [rest, preprocess]);
+  const contentPadding = COPY_VARIANT_CONTENT_PADDING[copyVariant];
 
   const components = useMarkdownComponents({
     onMentionClick,
@@ -260,13 +317,13 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
 
   return (
     <div className="relative group/md">
-      <CopyMenu content={content} contentRef={contentRef} />
+      <CopyMenu content={content} contentRef={contentRef} variant={copyVariant} />
       <div ref={contentRef}>
         <ErrorBoundary
           resetKeys={[processedRest]}
-          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap pr-2 sm:pr-8 text-fg-secondary ${className}`}>{rest}</div>}
+          fallback={<div className={`prose prose-sm max-w-none break-words whitespace-pre-wrap ${contentPadding} text-fg-secondary ${className}`}>{rest}</div>}
         >
-        <div className={`prose prose-sm max-w-none break-words pr-2 sm:pr-8 text-fg-secondary ${className}`}>
+        <div className={`prose prose-sm max-w-none break-words ${contentPadding} text-fg-secondary ${className}`}>
           {thinking.length > 0 && (() => {
             const full = thinking.join('\n\n');
             const firstLine = full.split('\n')[0] ?? '';
@@ -303,6 +360,7 @@ export const MarkdownMessage = memo(function MarkdownMessage({ content, classNam
   prev.content === next.content
   && prev.className === next.className
   && prev.basePath === next.basePath
+  && prev.copyVariant === next.copyVariant
   && prev.onMentionClick === next.onMentionClick
   && arraysShallowEqual(prev.knownNames, next.knownNames));
 

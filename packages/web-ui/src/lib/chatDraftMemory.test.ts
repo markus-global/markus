@@ -13,7 +13,7 @@ const draft = (patch: Partial<ChatDraft> = {}): ChatDraft => ({
 
 const text = (t: string) => draft({ text: t });
 const img = (id: string) => ({ id, dataUrl: `data:image/png;base64,${id}`, name: `${id}.png` });
-const ctx = (id: string) => ({ id, label: `#${id}`, content: `引用内容 ${id}` });
+const ctx = (id: string) => ({ id, kind: 'note' as const, label: `#${id}`, content: `引用内容 ${id}`, start: 0, end: 0 });
 
 describe('ChatDraftMemory', () => {
   it('keeps a separate draft per view key', () => {

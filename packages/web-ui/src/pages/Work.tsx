@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
@@ -36,6 +39,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { needsHumanDecision } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -310,6 +314,7 @@ function SendToChatModal({ kind, entity, agents, users, projects, onClose }: {
 
   return (
     <SharedSendToChatModal
+      chipKind={kind}
       chipLabel={chipLabel}
       chipContent={chipContent}
       agents={agents}
@@ -741,40 +746,33 @@ const BOARD_COLUMNS_BASE = [
 ] as const;
 
 const SUB_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:  'bg-amber-500/15 text-amber-600',
-  blocked:  'bg-amber-500/15 text-amber-600',
-  failed:   'bg-red-500/15 text-red-500',
-  rejected: 'bg-red-500/15 text-red-500',
+  pending:  TONE.neutral.chip,
+  blocked:  TONE.blocked.chip,
+  failed:   TONE.danger.chip,
+  rejected: TONE.danger.chip,
 };
-const TASK_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:     'bg-amber-500/15 text-amber-600',
-  in_progress: 'bg-blue-500/15 text-blue-500',
-  blocked:     'bg-orange-500/15 text-orange-500',
-  review:      'bg-purple-500/15 text-purple-500',
-  revision:    'bg-amber-500/15 text-amber-600',
-  completed:   'bg-green-500/15 text-green-600',
-  failed:      'bg-red-500/15 text-red-500',
-  rejected:    'bg-red-500/15 text-red-500',
-  cancelled:   'bg-gray-500/15 text-fg-tertiary',
-  archived:    'bg-gray-500/15 text-fg-tertiary',
-};
+/** 任务状态色：**由 `lib/tone.ts` 派生**，本文件不再出现颜色名（Owner 2026-11-08）。 */
+const TASK_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
+  ['pending', 'in_progress', 'blocked', 'review', 'revision', 'completed', 'failed', 'rejected', 'cancelled', 'archived']
+    .map(s => [s, TONE[taskTone(s)].chip]),
+);
+/** 优先级只区分「紧急」：只有 urgent 占红，其余中性（优先级不是状态，不占状态色）。 */
 const PRIORITY_COLORS: Record<string, string> = {
-  urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
+  urgent: TONE.danger.border,
+  high: TONE.neutral.border,
+  medium: TONE.neutral.border,
+  low: TONE.neutral.border,
 };
 const PRIORITY_BADGE_CLS: Record<string, string> = {
   low:    'bg-gray-500/15 text-fg-tertiary',
-  medium: 'bg-blue-500/15 text-blue-500',
-  high:   'bg-amber-500/15 text-amber-600',
-  urgent: 'bg-red-500/15 text-red-500',
+  medium: 'bg-surface-overlay text-fg-secondary',
+  high:   'bg-surface-overlay text-fg-secondary font-semibold',
+  urgent: TONE.danger.chip,
 };
-const REQ_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:     'bg-amber-500/15 text-amber-600',
-  in_progress: 'bg-brand-500/15 text-brand-500',
-  completed:   'bg-green-500/15 text-green-600',
-  rejected:    'bg-red-500/15 text-red-500',
-  cancelled:   'bg-gray-600/15 text-fg-tertiary',
-  archived:    'bg-gray-600/10 text-fg-tertiary/60',
-};
+const REQ_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
+  ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived']
+    .map(s => [s, TONE[requirementTone(s)].chip]),
+);
 
 function buildTaskStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
   return (Object.keys(TASK_STATUS_BADGE_CLS) as string[]).reduce((acc, k) => {
@@ -1975,7 +1973,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
                   </button>
                 </div>
               ) : (
-                <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" />
+                <ContentRenderer content={data.content} format={data.type === 'text' ? 'text' : data.type} className="text-sm text-fg-secondary leading-relaxed" copyVariant="preview" />
               )}
             </div>
           )}
@@ -2211,16 +2209,14 @@ function TaskDetailPanel({
   const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
-  const isAbnormallyBlocked = isBlocked && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
-    const dep = allTasks.find(t => t.id === id);
-    return dep && dep.status === 'completed';
-  }));
+  const isAbnormallyBlocked = isBlocked && needsHumanDecision(task, id => allTasks.find(t => t.id === id));
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
+  // 终态判定只走 shared 投影的 isTerminalStatus()（web-ui: lib/taskStatus.ts）。
+  const isTerminal = isTerminalStatus(task.status);
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -2254,7 +2250,7 @@ function TaskDetailPanel({
               return badge ? (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${badge.cls}`}>{badge.label}</span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{task.status.replace(/_/g, ' ')}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
               );
             })()}
             {isAbnormallyBlocked && (
@@ -2589,7 +2585,7 @@ function TaskDetailPanel({
                     <input autoFocus value={newSubtask} onChange={e => setNewSubtask(e.target.value)}
                       onKeyDown={e => { if (e.key === 'Enter') void addSubtask(); if (e.key === 'Escape') { setAddingSubtask(false); setNewSubtask(''); } }}
                       placeholder={t('work:task.subtaskTitlePlaceholder')} className="flex-1 px-3 py-1.5 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
-                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg">{t('work:task.add')}</button>
+                    <button onClick={() => void addSubtask()} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg">{t('work:task.add')}</button>
                     <button onClick={() => { setAddingSubtask(false); setNewSubtask(''); }} className="px-3 py-1.5 border border-border-default text-xs rounded-lg hover:bg-surface-elevated">{t('common:cancel')}</button>
                   </div>
                 )}
@@ -2734,7 +2730,7 @@ function TaskDetailPanel({
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button
             onClick={() => scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-            className="absolute bottom-36 right-4 md:bottom-28 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-36 right-4 md:bottom-28 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-on-brand hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToTop')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
@@ -2743,7 +2739,7 @@ function TaskDetailPanel({
         {scrollState !== 'none' && scrollState !== 'bottom' && (
           <button
             onClick={() => { const el = scrollContainerRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-22 right-4 md:bottom-18 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-22 right-4 md:bottom-18 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-on-brand hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToBottom')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
@@ -2791,7 +2787,7 @@ function TaskDetailPanel({
                   <button onClick={async () => {
                     await doUpdate(() => api.tasks.updateSchedule(task.id, draftToScheduleConfig(scheduleDraft)));
                     setEditingSchedule(false);
-                  }} disabled={actionInFlight} className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{t('common:save')}</button>
+                  }} disabled={actionInFlight} className="px-3 py-1 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand disabled:opacity-50">{t('common:save')}</button>
                   <button onClick={() => setEditingSchedule(false)} className="px-3 py-1 text-xs text-fg-secondary hover:text-fg-primary">{t('common:cancel')}</button>
                 </div>
               </div>
@@ -2887,7 +2883,7 @@ function TaskDetailPanel({
             )}
             {/* ── Scheduled task: Run Now / Schedule controls ── */}
             {isScheduled && (isCompleted || isFailed || isCancelled) && !isArchived && (
-              <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50 flex items-center gap-1.5">
+              <button onClick={() => void runScheduledNow()} disabled={actionInFlight} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand disabled:opacity-50 flex items-center gap-1.5">
                 {actionInFlight ? <>{t('work:task.running')}</> : <><svg className="w-3 h-3" viewBox="0 0 12 12" fill="currentColor"><path d="M3 1.5v9l7-4.5-7-4.5z" /></svg>{t('work:task.runNow')}</>}
               </button>
             )}
@@ -3000,7 +2996,7 @@ function TaskDetailPanel({
               <button
                 disabled={actionInFlight}
                 onClick={() => { setScheduleApproveModal(false); void doUpdate(() => api.tasks.approve(task.id, false)); }}
-                className="w-full px-4 py-2.5 text-sm bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors disabled:opacity-50"
+                className="w-full px-4 py-2.5 text-sm bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium transition-colors disabled:opacity-50"
               >
                 {t('work:task.scheduleApproveWait')}
               </button>
@@ -3163,7 +3159,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
               const agentTasks = projTasks.filter(t => t.assignedAgentId === a.id);
-              const activeTasks = agentTasks.filter(t => !['completed', 'failed', 'cancelled', 'archived'].includes(t.status));
+              const activeTasks = agentTasks.filter(t => !isTerminalStatus(t.status));
               return (
                 <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-surface-elevated/60 rounded-lg">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'working' ? 'bg-blue-500' : a.status === 'idle' ? 'bg-green-500' : 'bg-gray-500'}`} />
@@ -3219,7 +3215,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
               <button
                 onClick={handleAddRepo}
                 disabled={!newRepoPath.trim()}
-                className="px-3 py-1.5 text-xs bg-brand-600 text-white rounded-md hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                className="px-3 py-1.5 text-xs bg-brand-600 text-on-brand rounded-md hover:bg-brand-700 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
               >{t('work:task.add')}</button>
             </div>
           </div>
@@ -3627,11 +3623,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
 
   const checkAbnormalBlocked = useCallback((task: TaskInfo): boolean => {
     if (task.status !== 'blocked') return false;
-    if (!task.blockedBy || task.blockedBy.length === 0) return true;
-    return task.blockedBy.every(id => {
-      const dep = taskMap.get(id);
-      return dep && dep.status === 'completed';
-    });
+    return needsHumanDecision(task, id => taskMap.get(id));
   }, [taskMap]);
 
   const rows = useMemo(() => {
@@ -4085,7 +4077,7 @@ function SaveAsWorkflowModal({
           <button
             onClick={handleSave}
             disabled={saving || saved || !name.trim() || steps.length === 0}
-            className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-white text-sm rounded-lg font-medium transition-colors"
+            className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-50 disabled:cursor-not-allowed text-on-brand text-sm rounded-lg font-medium transition-colors"
           >
             {saving ? t('work:task.saving', 'Saving...') : saved ? t('work:task.workflowSavedSuccess', 'Saved!') : t('work:task.saveWorkflow', 'Save Workflow')}
           </button>
@@ -4113,7 +4105,9 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   };
 
   return (
-    <div className={compact ? 'max-w-4xl space-y-3' : 'max-w-lg w-full text-center space-y-5'}>
+    // `min-w-0`: this card is the last item of the workflows grid, so it lives
+    // under the same containment contract as the workflow cards themselves.
+    <div className={`min-w-0 ${compact ? 'max-w-4xl space-y-3' : 'max-w-lg w-full text-center space-y-5'}`}>
       {!compact && (
         <>
           <div className="inline-flex items-center justify-center w-16 h-16 rounded-2xl bg-brand-500/10">
@@ -4177,7 +4171,7 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
         <div className={compact ? '' : 'text-center'}>
           <button
             onClick={handleAskManager}
-            className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg font-medium transition-colors"
+            className="inline-flex items-center gap-2 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-sm rounded-lg font-medium transition-colors"
           >
             <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
@@ -4190,7 +4184,12 @@ function WorkflowHowItWorks({ teamId, agents, compact }: { teamId: string | null
   );
 }
 
-function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
+/**
+ * Exported for the mobile-overflow repro (`repro/workflows-overflow.tsx`): the
+ * harness must mount THIS component, not a copy of its markup — a copy can only
+ * prove that the copy is well behaved.
+ */
+export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProjectId, agents, users, projects, onViewRunTasks }: { teamId: string | null; defaultTeamId?: string | null; projectId: string | null; agents: AgentInfo[]; users: HumanUserInfo[]; projects: ProjectInfo[]; onViewRunTasks?: (requirementId: string) => void }) {
   const { t } = useTranslation(['work']);
   const [workflows, setWorkflows] = useState<WorkflowInfo[]>([]);
   const [runs, setRuns] = useState<Record<string, WorkflowRunInfo[]>>({});
@@ -4616,12 +4615,12 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
   };
 
   return (
-    <div className="flex-1 min-h-0 overflow-auto px-4 py-5">
+    <div className="flex-1 min-h-0 overflow-auto px-4 py-5" data-testid="workflows-panel">
       {!propTeamId && teams.length > 0 && (
         <div className="flex flex-wrap items-center gap-1.5 mb-4">
           <button
             onClick={() => selectTeam(null)}
-            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === null ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
+            className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === null ? 'bg-brand-600 text-on-brand' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
           >
             {t('work:task.all', 'All')}
           </button>
@@ -4629,7 +4628,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
             <button
               key={tm.id}
               onClick={() => selectTeam(tm.id)}
-              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === tm.id ? 'bg-brand-600 text-white' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
+              className={`px-3 py-1.5 text-xs rounded-lg font-medium transition-colors ${selectedTeamId === tm.id ? 'bg-brand-600 text-on-brand' : 'bg-surface-secondary border border-border-default/50 text-fg-secondary hover:text-fg-primary hover:border-border-default'}`}
             >
               {tm.name}
             </button>
@@ -4641,7 +4640,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
           <WorkflowHowItWorks teamId={teamId} agents={agents} />
         </div>
       ) : (
-        <div className="grid gap-4 max-w-4xl">
+        <div className="grid grid-cols-1 gap-4 max-w-4xl min-w-0" data-testid="workflows-list">
           {workflows.map((wf) => {
             const wfRuns = runs[wf.name] ?? [];
             const latestRun = wfRuns[0];
@@ -4720,6 +4719,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
       {/* Same picker a task/requirement uses — the recipient is the user's choice. */}
       {sendWorkflow && (
         <SharedSendToChatModal
+          chipKind="workflow"
           chipLabel={workflowChipLabel(sendWorkflow)}
           chipContent={workflowChipContent(sendWorkflow)}
           agents={agents}
@@ -4818,8 +4818,7 @@ function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: propProj
         const target = Object.values(runs).flat().find(r => r.id === confirmCancelRunId);
         const tasks = target ? runTasks[target.id] : undefined;
         const total = target?.taskIds.length ?? 0;
-        const terminal = new Set(['completed', 'archived', 'cancelled', 'rejected', 'failed']);
-        const cancellable = tasks ? tasks.filter(t => !terminal.has(t.status)).length : null;
+        const cancellable = tasks ? tasks.filter(t => !isTerminalStatus(t.status)).length : null;
         return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -5894,11 +5893,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     + allRequirements.filter(r => isClosed(r)).length;
 
   const sortedAgents = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeAgentIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.assignedAgentId && !terminal.has(t.status)) {
+      if (t.assignedAgentId && !isTerminalStatus(t.status)) {
         if (!selectedProjectId || t.projectId === selectedProjectId) {
           activeAgentIds.add(t.assignedAgentId);
         }
@@ -5936,11 +5934,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, [sortedAgents, teams]);
 
   const sortedProjects = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeProjectIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.projectId && !terminal.has(t.status)) {
+      if (t.projectId && !isTerminalStatus(t.status)) {
         activeProjectIds.add(t.projectId);
       }
     }
@@ -6349,8 +6346,8 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 </h2>
               )}
               <div className="flex items-center gap-1 shrink-0">
-                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">{t('work:task.shortProject')}</button>
-                <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-white rounded-md">{t('work:task.shortReq')}</button>
+                <button onClick={() => setShowCreateProject(true)} className="px-2 py-1 text-[11px] bg-brand-600 text-on-brand rounded-md">{t('work:task.shortProject')}</button>
+                <button onClick={openCreateReq} className="px-2 py-1 text-[11px] bg-brand-600 text-on-brand rounded-md">{t('work:task.shortReq')}</button>
                 <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-2 py-1 text-[11px] border border-amber-500/60 text-amber-600 rounded-md">{t('work:task.shortTask')}</button>
               </div>
             </div>
@@ -6461,7 +6458,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           {/* Actions */}
           <div data-no-drag className="flex items-center gap-1.5 shrink-0">
             <button onClick={() => setShowCreateProject(true)} className="px-3 py-1.5 border border-border-default text-fg-secondary hover:bg-surface-elevated text-xs rounded-lg font-medium transition-colors">{t('work:task.newProjectBtn')}</button>
-            <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs rounded-lg font-medium transition-colors">{t('work:task.newRequirement')}</button>
+            <button onClick={openCreateReq} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg font-medium transition-colors">{t('work:task.newRequirement')}</button>
             <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }} className="px-3 py-1.5 border border-amber-500/60 text-amber-600 hover:bg-amber-500/10 text-xs rounded-lg font-medium transition-colors">{t('work:task.newTaskBtn')}</button>
           </div>
 
@@ -6517,7 +6514,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   className={`flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[11px] shrink-0 transition-all ${
                     selected ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/40' : 'text-fg-tertiary hover:bg-surface-elevated hover:text-fg-secondary'
                   }`}>
-                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'}`}>{a.name[0]?.toUpperCase()}</span>
+                  <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-secondary'}`}>{a.name[0]?.toUpperCase()}</span>
                   {a.name}
                 </button>
               );
@@ -6533,7 +6530,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               </div>
               <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoProjectsTitle')}</h3>
               <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyNoProjectsHint')}</p>
-              <button onClick={() => setShowCreateProject(true)} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+              <button onClick={() => setShowCreateProject(true)} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium transition-colors">
                 {t('work:project.newProject')}
               </button>
             </div>
@@ -6558,7 +6555,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                   <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyNoReqsTitle')}</h3>
                   <p className="text-xs text-fg-tertiary leading-relaxed whitespace-pre-line">{t('work:task.emptyNoReqsHint')}</p>
                   <div className="flex items-center justify-center gap-2 pt-1">
-                    <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors">
+                    <button onClick={openCreateReq} className="inline-flex items-center gap-1.5 px-4 py-2 text-xs bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium transition-colors">
                       {t('work:task.createRequirementCta')}
                     </button>
                     <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }}
@@ -6653,7 +6650,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             previewMode={previewMode}
           />
           {isMobile && (
-            <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
+            <button onClick={() => setBoardType('kanban')} className="absolute left-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-on-brand active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.backToKanban')}>
               <svg className="w-5 h-5" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M12.79 5.23a.75.75 0 01-.02 1.06L8.832 10l3.938 3.71a.75.75 0 11-1.04 1.08l-4.5-4.25a.75.75 0 010-1.08l4.5-4.25a.75.75 0 011.06.02z" clipRule="evenodd" /></svg>
             </button>
           )}
@@ -6661,7 +6658,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               last view a thumb could reach; adding a fourth view left it with no
               way forward except the header toggle. Mirrors the button on the left. */}
           {isMobile && (
-            <button onClick={() => setBoardType('workflows')} className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-white active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toWorkflows', 'Workflows')}>
+            <button onClick={() => setBoardType('workflows')} className="absolute right-3 top-1/2 -translate-y-1/2 w-11 h-11 rounded-full bg-brand-500 border border-brand-400/60 shadow-xl shadow-brand-500/30 flex items-center justify-center text-on-brand active:bg-brand-400 backdrop-blur-sm z-10" title={t('work:task.toWorkflows', 'Workflows')}>
               <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2.5} strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
             </button>
           )}
@@ -6749,10 +6746,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;
                             const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
-                            const cardAbnormalBlocked = task.status === 'blocked' && (!task.blockedBy || task.blockedBy.length === 0 || task.blockedBy.every(id => {
-                              const dep = boardTaskMap.get(id);
-                              return dep && dep.status === 'completed';
-                            }));
+                            const cardAbnormalBlocked = task.status === 'blocked' && needsHumanDecision(task, id => boardTaskMap.get(id));
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
@@ -6856,7 +6850,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                 <h3 className="text-sm font-medium text-fg-secondary">{t('work:task.emptyDetailTitle', { defaultValue: 'No item selected' })}</h3>
                 <p className="text-xs text-fg-tertiary leading-relaxed">{t('work:task.emptyDetailHint', { defaultValue: 'Select a requirement or task from the list, or create one to get started.' })}</p>
                 <div className="flex items-center justify-center gap-2">
-                  <button onClick={openCreateReq} className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium">{t('work:task.newRequirement')}</button>
+                  <button onClick={openCreateReq} className="px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium">{t('work:task.newRequirement')}</button>
                   <button onClick={() => { setTaskProjectId(selectedProjectId ?? ''); setShowCreateTask(true); }}
                     className="px-3 py-1.5 text-[11px] border border-amber-500/60 text-amber-600 rounded-lg font-medium">{t('work:task.newTaskBtn')}</button>
                 </div>
@@ -7003,7 +6997,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
               <div className="inline-flex w-full p-0.5 bg-surface-elevated border border-border-default rounded-lg">
                 {(['standard', 'scheduled'] as const).map(v => (
                   <button key={v} type="button" onClick={() => setTaskType(v)} aria-pressed={taskType === v}
-                    className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${taskType === v ? 'bg-brand-600 text-white font-medium' : 'text-fg-secondary hover:text-fg-primary'}`}>
+                    className={`flex-1 px-3 py-1.5 text-sm rounded-md transition-colors ${taskType === v ? 'bg-brand-600 text-on-brand font-medium' : 'text-fg-secondary hover:text-fg-primary'}`}>
                     {v === 'standard' ? t('work:task.taskTypeStandard') : t('work:task.taskTypeScheduled')}
                   </button>
                 ))}
@@ -7053,7 +7047,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                         onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); void createInlineReq(); } }}
                         className="flex-1 px-3 py-2 bg-surface-elevated border border-border-default rounded-lg text-sm focus:border-brand-500 outline-none" />
                       <button type="button" onClick={() => void createInlineReq()} disabled={!inlineReqTitle.trim()}
-                        className="px-3 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40">{t('common:create')}</button>
+                        className="px-3 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand disabled:opacity-40">{t('common:create')}</button>
                     </div>
                     <p className="text-[11px] text-fg-tertiary">{taskProjectId ? t('work:task.newReqInlineHint') : t('work:task.newReqInlineNeedProject')}</p>
                   </div>
@@ -7110,7 +7104,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             {taskCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{taskCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => { setShowCreateTask(false); setTaskCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer || taskCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-50">{taskCreating ? t('common:creating') : t('common:create')}</button>
+              <button onClick={() => void createTask()} disabled={!taskTitle.trim() || !taskAssignTo || !taskReviewer || taskCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand disabled:opacity-50">{taskCreating ? t('common:creating') : t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -7149,7 +7143,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             {reqCreateError && <div className="px-3 py-2 bg-red-500/15 text-red-500 text-xs rounded-lg">{reqCreateError}</div>}
             <div className="flex justify-end gap-3 pt-1">
               <button onClick={() => { setShowCreateReq(false); setReqTitle(''); setReqDesc(''); setReqCreateError(''); }} className="px-4 py-2 text-sm border border-border-default rounded-lg hover:bg-surface-elevated text-fg-secondary">{t('common:cancel')}</button>
-              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId || reqCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-white disabled:opacity-40 disabled:cursor-not-allowed">{reqCreating ? t('common:creating') : t('common:create')}</button>
+              <button onClick={() => void handleCreateReq()} disabled={!reqTitle.trim() || !reqDesc.trim() || !reqProjectId || reqCreating} className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand disabled:opacity-40 disabled:cursor-not-allowed">{reqCreating ? t('common:creating') : t('common:create')}</button>
             </div>
           </div>
         </div>
@@ -7218,7 +7212,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                           selected ? 'bg-brand-500/15 text-brand-600 ring-1 ring-brand-500/30' : 'bg-surface-elevated text-fg-secondary'
                         }`}
                       >
-                        <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
+                        <span className={`w-4 h-4 rounded-sm flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-tertiary'}`}>{p.name[0]?.toUpperCase()}</span>
                         {p.name}
                         {count > 0 && <span className="text-[9px] text-fg-tertiary">{count}</span>}
                       </button>
@@ -7275,7 +7269,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                         className={`flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg text-[11px] transition-all ${
                           selected ? 'bg-brand-600/20 text-brand-500 ring-1 ring-brand-500/40' : 'bg-surface-elevated text-fg-secondary'
                         }`}>
-                        <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-tertiary'}`}>{a.name[0]?.toUpperCase()}</span>
+                        <span className={`w-4 h-4 rounded-full flex items-center justify-center text-[9px] font-bold shrink-0 ${selected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-tertiary'}`}>{a.name[0]?.toUpperCase()}</span>
                         {a.name}
                       </button>
                     );
@@ -7584,7 +7578,7 @@ function RequirementDetailPanel({
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
+  const isTerminal = TERMINAL_REQUIREMENT_STATUSES.has(req.status);
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));
@@ -7919,7 +7913,7 @@ function RequirementDetailPanel({
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button
             onClick={() => reqScrollRef.current?.scrollTo({ top: 0, behavior: 'smooth' })}
-            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-20 right-4 md:bottom-14 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-on-brand hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToTop')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M14.77 12.79a.75.75 0 01-1.06-.02L10 8.832l-3.71 3.938a.75.75 0 11-1.08-1.04l4.25-4.5a.75.75 0 011.08 0l4.25 4.5a.75.75 0 01-.02 1.06z" clipRule="evenodd" /></svg>
@@ -7928,7 +7922,7 @@ function RequirementDetailPanel({
         {scrollState !== 'none' && scrollState !== 'bottom' && (
           <button
             onClick={() => { const el = reqScrollRef.current; if (el) el.scrollTo({ top: el.scrollHeight, behavior: 'smooth' }); }}
-            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-white hover:bg-brand-400 transition-colors backdrop-blur-sm"
+            className="absolute bottom-6 right-4 md:bottom-4 md:right-3 z-10 w-12 h-12 md:w-8 md:h-8 rounded-full bg-brand-500 md:bg-brand-600/90 border border-brand-400/60 shadow-xl shadow-brand-500/30 md:shadow-lg md:shadow-brand-500/20 flex items-center justify-center text-on-brand hover:bg-brand-400 transition-colors backdrop-blur-sm"
             title={t('work:task.scrollToBottom')}
           >
             <svg className="w-6 h-6 md:w-4 md:h-4" viewBox="0 0 20 20" fill="currentColor"><path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" /></svg>
@@ -7943,7 +7937,7 @@ function RequirementDetailPanel({
               <button
                 onClick={() => void openBulkPreview()}
                 disabled={bulkBusy}
-                className="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg font-medium transition-colors disabled:opacity-60"
+                className="px-3 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-sm rounded-lg font-medium transition-colors disabled:opacity-60"
               >
                 {t('work:requirement.bulkApprove', '批量批准待批任务 ({{count}})', { count: pendingTaskCount })}
               </button>

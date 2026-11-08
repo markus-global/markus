@@ -197,7 +197,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
                           finally { setAcceptingInvite(null); }
                         }}
                         disabled={acceptingInvite === inv.orgId || acceptedInvite === inv.orgId}
-                        className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white transition-colors"
+                        className="px-3 py-1.5 text-xs rounded-lg bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand transition-colors"
                       >
                         {acceptedInvite === inv.orgId ? t('usageType.accepted') : acceptingInvite === inv.orgId ? t('usageType.accepting') : t('usageType.acceptAndJoin')}
                       </button>
@@ -222,7 +222,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
               <button
                 onClick={() => { void saveOrgName(); }}
                 disabled={orgNameSaving || !orgName.trim() || orgNameSaved}
-                className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+                className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-sm rounded-xl transition-colors"
               >
                 {orgNameSaving ? t('common:saving') : orgNameSaved ? t('usageType.orgNameSaved') : t('usageType.setOrgName')}
               </button>
@@ -300,7 +300,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
           <button
             onClick={() => void saveProfile()}
             disabled={profileSaving || !profileName.trim() || !profileEmail.trim()}
-            className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-xl transition-colors"
+            className="w-full px-4 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-sm rounded-xl transition-colors"
           >
             {profileSaving ? t('common:saving') : t('profile.saveProfile')}
           </button>
@@ -395,7 +395,7 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
             <button
               onClick={handleNext}
               disabled={(profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))}
-              className={`px-6 py-2.5 text-white text-sm rounded-xl transition-colors ${
+              className={`px-6 py-2.5 text-on-brand text-sm rounded-xl transition-colors ${
                 (profileStepIdx >= 0 && step === profileStepIdx && !profileSaved) || (usageTypeStepIdx >= 0 && step === usageTypeStepIdx && (!usageType || (usageType === 'organization' && !orgNameSaved)))
                   ? 'bg-brand-600/40 cursor-not-allowed'
                   : 'bg-brand-600 hover:bg-brand-500'

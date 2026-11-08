@@ -30,8 +30,9 @@ import {
 import type { TFunction } from 'i18next';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
+  buildOptimisticUserMessage,
   dbMsgToChat, channelMsgToChat,
-  storedSegmentsToMsgSegments, dedupeAdjacentUserMessages, pickStreamReattachTarget, alignStreamedAgentId,
+  storedSegmentsToMsgSegments, pickStreamReattachTarget, alignStreamedAgentId,
   inFlightAgentIdx,
   appendLiveOutput, appendSubagentLog,
   appendTextToSegments, appendThinkingToSegments,
@@ -41,18 +42,21 @@ import {
   resolveTurnBubbleId,
 } from '../pages/ChatHelpers.ts';
 import { NEW_CHAT_PLACEHOLDER_ID } from './useConversationBuffers.ts';
+import { serializeDraftForSend, type DraftChip } from '../lib/chatChipDraft.ts';
 import { resolveStopCancelDecision } from '../lib/stopCancelDecision.ts';
 import { parseMentionNames } from '../components/CommentInput.tsx';
 import { exponentialBackoffDelay } from '../lib/streamResilience.ts';
 import { decideOnStreamEnd, normalizeServerStreamStatus } from '../lib/streamLiveness.ts';
 import { sessionStreamState } from '../lib/sessionStreamState.ts';
+import { newMessageId } from '../lib/messageId.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
 /* ── Volatile read-only state snapshot (refreshed every Team render) ───────── */
 
 export interface ChatStreamVolatileState {
-  chatContext: Array<{ id: string; label: string; content: string }>;
+  /** Chips placed INSIDE `input` (interval model — see lib/chatChipDraft.ts). */
+  chatContext: DraftChip[];
   input: string;
   pendingImages: Array<{ id: string; dataUrl: string; name: string }>;
   chatMode: ChatMode;
@@ -106,7 +110,7 @@ export interface ChatStreamContext {
   setSending: (b: boolean) => void;
   setActivities: (a: ActivityStep[]) => void;
   setInput: (s: string) => void;
-  setChatContext: (s: Array<{ id: string; label: string; content: string }> | ((p: Array<{ id: string; label: string; content: string }>) => Array<{ id: string; label: string; content: string }>)) => void;
+  setChatContext: (s: DraftChip[] | ((p: DraftChip[]) => DraftChip[])) => void;
   setPendingImages: (a: Array<{ id: string; dataUrl: string; name: string }>) => void;
   setMentionDropdown: (b: boolean) => void;
   setChatReplyTo: (v: { id: string; sender: string; text: string } | null) => void;
@@ -205,9 +209,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     try {
       const { count, hasMore: more, oldestCursor } = await loadAndDisplay(sessionId, convKey, async () => {
         const result = await api.sessions.getMessages(sessionId, 50);
-        const msgs = dedupeAdjacentUserMessages(result.messages.map(dbMsgToChat).filter(m =>
+        // 不再做「相邻相同用户消息去重」：它的存在理由（同一条消息被双发）已由消息身份
+        // 修复从源头消灭，而它本身会把「用户真的想发两遍同一句话」静默吃掉。
+        const msgs = result.messages.map(dbMsgToChat).filter(m =>
           m.sender !== 'agent' || m.text || (m.segments && m.segments.length > 0) || m.isStreaming
-        ));
+        );
         return {
           messages: msgs,
           hasMore: result.hasMore,
@@ -827,14 +833,22 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   // ── Send ──────────────────────────────────────────────────────────────────
   const send = useCallback(async (retryText?: string, options?: { isRetry?: boolean; isResume?: boolean; sessionIdOverride?: string }) => {
     const volatile = stateRef.current;
-    const ctxPrefix = (!retryText && volatile.chatContext.length > 0)
-      ? volatile.chatContext.map(c => c.content).join('\n\n') + '\n\n'
-      : '';
-    const text = (retryText ?? (ctxPrefix + volatile.input)).trim();
-    // The user's own words WITHOUT the injected context-chip prefix — the server
-    // derives a clean session title from this instead of slicing the raw payload
-    // (which produced titles like `[terminal-selection] Terminal: …`).
-    const titleSource = (retryText ?? volatile.input).trim();
+    // ONE serializer for the composer: chips are ranges inside the text, so the
+    // payload, the session-title source and the sidecar all come from the same
+    // function (they used to be three ad-hoc string joins that drifted apart).
+    //
+    // `serializeDraftForSend` normalises the draft *before* computing offsets, and
+    // must be the only normalisation on this path: trimming afterwards would shift
+    // every offset by the amount of leading whitespace (in bounds → wrong pill title,
+    // out of bounds → placement dropped and the bubble dumps the raw payload).
+    const draft = serializeDraftForSend({ text: volatile.input, chips: volatile.chatContext ?? [] });
+    const text = retryText ? retryText.trim() : draft.text;
+    // The user's own words WITHOUT any chip payload — the server derives a clean
+    // session title from this instead of slicing the raw payload (which produced
+    // titles like `[terminal-selection] Terminal: …`).
+    const titleSource = retryText ? retryText.trim() : draft.titleSource;
+    // Retries/resumes reuse an already-persisted turn: its sidecar is stored.
+    const chipSidecar = retryText ? undefined : (draft.chips.length > 0 ? draft.chips : undefined);
     if (!text && volatile.pendingImages.length === 0) return;
     if (volatile.chatMode === 'direct' && !volatile.selectedAgent) return;
     resumeChatScrollFollow();
@@ -1024,7 +1038,6 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
     } else {
       // direct — build an interleaved segment stream
       beginStream(sendKey);
-      const sendNonce = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
       // ── 气泡身份 = 回合（2026-10-25 根因修复）──────────────────────────────
       // resume 是**同一个回合**的延续（看门狗重连、断流恢复、半截回复续写）。
       // 旧实现无条件 append 一个新 agent 气泡，于是每 resume 一次就多一个气泡：
@@ -1034,8 +1047,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       const beforeMsgs = options?.isResume ? (readConvMsgs(sendKey) ?? []) : [];
       const resumeIdx = options?.isResume ? inFlightAgentIdx(beforeMsgs) : -1;
       const resumedBubbleId = resumeIdx >= 0 ? beforeMsgs[resumeIdx]!.id : undefined;
-      const agentMsgId = resumedBubbleId ?? `a_${sendNonce}`;
-      const optimisticUserId = `u_${sendNonce}`;
+      const agentMsgId = resumedBubbleId ?? newMessageId();
+      // 用户气泡同样用库内主键形状：它也会被服务端当作 user 行的主键。
+      const optimisticUserId = newMessageId();
       // Mutable session ID that gets resolved when session_start event arrives
       let streamSessionId: string | null = options?.sessionIdOverride
         ?? (volatile.activeSessionId === NEW_CHAT_PLACEHOLDER_ID ? null : (volatile.activeSessionId ?? null));
@@ -1058,9 +1072,17 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         }, streamSessionId);
       } else {
         const agentCreatedAt = new Date().toISOString();
-        const userMsg: ChatMsg = { id: optimisticUserId, sender: 'user', text, time: new Date().toLocaleTimeString(), rawCreatedAt: agentCreatedAt };
-        if (imagesToSend?.length) userMsg.images = imagesToSend;
-        if (replyCtx) { userMsg.replyToId = replyCtx.id; userMsg.replyToSender = replyCtx.sender; userMsg.replyToText = replyCtx.text; }
+        // 用户此刻看到的气泡，必须带**同一份** sidecar（服务端持久化的是它）；
+        // 不带就会退化成纯文本，直到刷新才渲染（Owner 2026-11-06）。
+        const userMsg = buildOptimisticUserMessage({
+          id: optimisticUserId,
+          text,
+          time: new Date().toLocaleTimeString(),
+          rawCreatedAt: agentCreatedAt,
+          chips: chipSidecar,
+          images: imagesToSend,
+          replyTo: replyCtx,
+        });
         updateConvMsgs(sendKey, prev => [
           ...prev,
           userMsg,
@@ -1343,6 +1365,11 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
             fileNames: fileNamesToSend,
             replyTo: replyCtx,
             titleSource,
+            chips: chipSidecar,
+            // 身份（Stage 1）：乐观气泡的 id 就是落库行的主键，服务端接受它们。
+            // resume 时 agentMsgId 就是「在飞那个气泡」的 id → 服务端 upsert 原地更新，不会多一行。
+            userMessageId: optimisticUserId,
+            assistantMessageId: agentMsgId,
           },
         );
         if (currentConvKeyRef.current === sendKey) {

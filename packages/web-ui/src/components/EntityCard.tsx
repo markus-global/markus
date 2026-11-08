@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api, wsClient, type DeliverableInfo } from '../api.ts';
 
 import { navBus } from '../navBus.ts';
@@ -6,6 +7,8 @@ import { resolveEntityId } from '../entityResolve.ts';
 import { PAGE } from '../routes.ts';
 import { DeliverableDetailModal } from './DeliverableDetailModal.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
+import { taskStatusPresentation } from '../lib/stateVocabulary.ts';
+import { TONE, entityTone } from '../lib/tone.ts';
 
 // ─── Entity types & metadata ─────────────────────────────────────────────────
 
@@ -248,6 +251,7 @@ export function EntityChip({ id, type: typeHint, label }: { id: string; type?: E
  * its own line/paragraph. Deliverables open a detail modal; others navigate.
  */
 export function EntityCard({ id, type: typeHint, label }: { id: string; type?: EntityType; label?: string }) {
+  const { t } = useTranslation(['common']);
   const meta = useEntityMeta(id, typeHint);
   const [showDeliverable, setShowDeliverable] = useState(false);
   const layout = useLayout();
@@ -278,7 +282,22 @@ export function EntityCard({ id, type: typeHint, label }: { id: string; type?: E
         <span className="flex-1 min-w-0 block">
           <span className="flex items-center gap-2 flex-wrap">
             <span className="text-[10px] uppercase tracking-wide text-fg-tertiary font-medium">{ENTITY_TYPE_LABEL[meta.type]}</span>
-            {meta.status && <span className="px-1.5 py-0.5 text-[10px] rounded font-medium bg-brand-500/10 text-brand-500">{meta.status}</span>}
+            {meta.status && (() => {
+              // 一行状态 = 字 + 语气，一起给（只拿字再自己写颜色 = 同一事实两个写者）。
+              // 非任务实体没有治理态词表，原样展示服务端给的值。
+              const p = meta.type === 'task' ? taskStatusPresentation(meta.status, t) : null;
+              return (
+                <span
+                  data-testid="entity-status"
+                  data-status={meta.status}
+                  // team chat 里的卡片与 Work 页/概览用**同一份** entityTone，局部不再写颜色
+                  // （否则「待验收」在这里又是另一种颜色）。
+                  className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${p?.tone?.chip ?? TONE[entityTone(meta.type, meta.status)].chip}`}
+                >
+                  {p?.label ?? meta.status}
+                </span>
+              );
+            })()}
           </span>
           <span className={`block text-sm font-medium truncate mt-0.5 ${meta.notFound ? 'font-mono text-fg-tertiary' : 'text-fg-primary'}`}>{title}</span>
           {meta.summary && meta.summary.trim() !== meta.title.trim() && <span className="block text-xs text-fg-tertiary mt-0.5 line-clamp-1">{meta.summary}</span>}

@@ -95,7 +95,7 @@ export function ProjectSidebar({
               <button
                 type="button"
                 onClick={onCreateProject}
-                className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium transition-colors"
+                className="inline-flex items-center gap-1 px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium transition-colors"
               >
                 {t('work:project.newProject')}
               </button>
@@ -116,7 +116,7 @@ export function ProjectSidebar({
                   }`}
                 >
                   <span className={`w-7 h-7 rounded-md flex items-center justify-center shrink-0 ${
-                    allIsSelected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
+                    allIsSelected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-secondary'
                   }`}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="7" height="7" /><rect x="14" y="3" width="7" height="7" />
@@ -160,7 +160,7 @@ export function ProjectSidebar({
                     }`}
                   >
                     <span className={`w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-bold shrink-0 ${
-                      selected ? 'bg-brand-600 text-white' : 'bg-surface-overlay text-fg-secondary'
+                      selected ? 'bg-brand-600 text-on-brand' : 'bg-surface-overlay text-fg-secondary'
                     }`}>
                       {p.name[0]?.toUpperCase() ?? '?'}
                     </span>

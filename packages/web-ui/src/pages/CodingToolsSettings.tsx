@@ -204,7 +204,7 @@ function AuthActions({ name, onAuthDone }: { name: CodingToolName; onAuthDone: (
           <button
             type="button"
             onClick={() => { setMode('login'); void doCliLogin(); }}
-            className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 transition-colors"
+            className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-on-brand rounded-md hover:bg-brand-600 transition-colors"
           >
             {t('codingTools.loginBtn')}
           </button>
@@ -235,7 +235,7 @@ function AuthActions({ name, onAuthDone }: { name: CodingToolName; onAuthDone: (
             <button
               type="button"
               onClick={() => { setResult(null); onAuthDone(); }}
-              className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 transition-colors"
+              className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-on-brand rounded-md hover:bg-brand-600 transition-colors"
             >
               {t('codingTools.recheckAuth')}
             </button>
@@ -249,7 +249,7 @@ function AuthActions({ name, onAuthDone }: { name: CodingToolName; onAuthDone: (
             <button
               type="button"
               onClick={() => { stopPolling(); setBusy(false); setResult(null); onAuthDone(); }}
-              className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 transition-colors"
+              className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-on-brand rounded-md hover:bg-brand-600 transition-colors"
             >
               {t('codingTools.recheckAuth')}
             </button>
@@ -283,7 +283,7 @@ function AuthActions({ name, onAuthDone }: { name: CodingToolName; onAuthDone: (
           type="button"
           onClick={() => void doApiKey()}
           disabled={busy || !apiKey.trim()}
-          className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-white rounded-md hover:bg-brand-600 transition-colors disabled:opacity-40 shrink-0"
+          className="px-2.5 py-1 text-[10px] font-medium bg-brand-500 text-on-brand rounded-md hover:bg-brand-600 transition-colors disabled:opacity-40 shrink-0"
         >
           {busy ? '...' : t('common:save')}
         </button>
@@ -876,7 +876,7 @@ export function CodingToolsSettings() {
                             type="button"
                             disabled={testingTool === name}
                             onClick={() => runTest(name)}
-                            className="px-3 py-1.5 text-xs font-medium bg-brand-500 text-white rounded-lg hover:bg-brand-600 disabled:opacity-50 transition-colors flex items-center gap-1.5 shrink-0"
+                            className="px-3 py-1.5 text-xs font-medium bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 disabled:opacity-50 transition-colors flex items-center gap-1.5 shrink-0"
                           >
                             {testingTool === name && <Spinner className="w-3 h-3" />}
                             {testingTool === name ? t('codingTools.testing') : t('codingTools.testConfig')}

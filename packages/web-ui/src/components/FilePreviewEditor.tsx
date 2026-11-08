@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ContentRenderer, type HtmlSelectionData } from './ContentRenderer.tsx';
+import type { CopyVariant } from './MarkdownMessage.tsx';
 import { CodeFileEditor, confirmDiscardDirty, languageFromPath } from './CodeFileEditor.tsx';
 
 type ViewMode = 'preview' | 'edit';
@@ -13,6 +14,13 @@ type Props = {
   onHtmlSelection?: (data: HtmlSelectionData) => void;
   onDirtyChange?: (dirty: boolean) => void;
   className?: string;
+  /**
+   * 复制按钮档位，由**调用方显式传入**后在预览分支原样转发给 `ContentRenderer`。
+   *
+   * 这个组件是「可编辑文件的预览」，但它不知道自己被谁渲染（右栏 / 交付物页 / 任务详情），
+   * 所以档位不能在这里按消费者猜——缺省沿用聊天档，面板侧必须显式传 'preview'。
+   */
+  copyVariant?: CopyVariant;
 };
 
 /**
@@ -26,6 +34,7 @@ export function FilePreviewEditor({
   onHtmlSelection,
   onDirtyChange,
   className = '',
+  copyVariant,
 }: Props) {
   const { t } = useTranslation('common');
   const [view, setView] = useState<ViewMode>('preview');
@@ -99,6 +108,7 @@ export function FilePreviewEditor({
             className="text-fg-secondary text-sm"
             onHtmlSelection={onHtmlSelection}
             basePath={basePath}
+            copyVariant={copyVariant}
           />
         </div>
       ) : (

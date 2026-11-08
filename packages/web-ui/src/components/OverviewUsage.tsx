@@ -208,7 +208,7 @@ export function CloudQuotaBar({ hubConnected, hubPlan, hubOrgMeta }: {
           <span className="text-sm text-fg-tertiary">{t('usage.quota.notConnected')}</span>
         </div>
         <button onClick={() => hubApi.ensureAuth().catch(() => {})}
-          className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-white rounded-lg hover:bg-brand-500 transition-colors shrink-0">
+          className="px-3 py-1.5 text-xs font-medium bg-brand-600 text-on-brand rounded-lg hover:bg-brand-500 transition-colors shrink-0">
           {t('usage.quota.connect')}
         </button>
       </div>
@@ -273,7 +273,7 @@ export function CloudQuotaBar({ hubConnected, hubPlan, hubOrgMeta }: {
           <span>{hubPlan.cuResetAt ? t('usage.quota.resetsAt', { date: new Date(hubPlan.cuResetAt).toLocaleDateString() }) : ''}</span>
           <button
             type="button"
-            className="px-2 py-1 bg-brand-600 text-white rounded hover:bg-brand-500 transition-colors font-medium"
+            className="px-2 py-1 bg-brand-600 text-on-brand rounded hover:bg-brand-500 transition-colors font-medium"
             onClick={e => { e.stopPropagation(); openBilling(); }}
           >
             {t('usage.quota.topUp')}

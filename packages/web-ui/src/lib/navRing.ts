@@ -4,9 +4,8 @@
  * Owner's model (2026-10-17): a thumb-driven ring that walks the app on a single
  * axis, so no view is a dead end and no gesture has two meanings at page level.
  *
- *   overview → team L1 → approvals → notifications
- *            → tasks/backlog → tasks/kanban → tasks/dag → tasks/workflows
- *            → deliverables → (back to overview)
+ *   overview → team L1 → tasks/backlog → tasks/kanban → tasks/dag
+ *            → tasks/workflows → deliverables → (back to overview)
  *
  * Swipe RIGHT advances one step, swipe LEFT steps back; both wrap. Nested
  * horizontal gestures (chat session tabs, detail tabs, store tabs, deliverables
@@ -24,8 +23,6 @@ import { getMobileNavDepths, isTopLevelPage } from './mobileNavDepth.ts';
 /** Sub-view inside a page that owns more than one ring step. */
 export type RingSub =
   | 'l1'
-  | 'approvals'
-  | 'notifications'
   | 'backlog'
   | 'kanban'
   | 'dag'
@@ -40,8 +37,6 @@ export interface RingStep {
 export const NAV_RING: readonly RingStep[] = [
   { id: 'overview', page: PAGE.HOME },
   { id: 'team-l1', page: PAGE.TEAM, sub: 'l1' },
-  { id: 'approvals', page: PAGE.NOTIFICATIONS, sub: 'approvals' },
-  { id: 'notifications', page: PAGE.NOTIFICATIONS, sub: 'notifications' },
   { id: 'tasks-backlog', page: PAGE.WORK, sub: 'backlog' },
   { id: 'tasks-kanban', page: PAGE.WORK, sub: 'kanban' },
   { id: 'tasks-dag', page: PAGE.WORK, sub: 'dag' },

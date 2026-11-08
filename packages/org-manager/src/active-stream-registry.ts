@@ -275,6 +275,14 @@ export interface StreamStateChange {
   /** 权威：该会话此刻确实在生成（等价于 `status === 'streaming'`）。 */
   streaming: boolean;
   status: ActiveStreamSession['status'];
+  /**
+   * 这一回合正在写的那条 assistant 消息 id。
+   *
+   * 同一个事件因此同时回答两个问题：「在生成吗」与「哪个气泡在生成」。
+   * 以前只回答前者，客户端于是只能用本地信号去猜后者，一旦猜错，一个陈旧信号
+   * 就能让某个气泡永远转圈。
+   */
+  messageId: string;
 }
 
 export class ActiveStreamRegistry {
@@ -312,7 +320,7 @@ export class ActiveStreamRegistry {
       ...opts,
       onDispose: () => this.unregister(session),
       // 注入给会话，使 complete / cancel 也走同一个通知点（而不是各自记得调用）。
-      onStatusChange: (status) => this.emitStateChange(session.agentId, session.sessionId, status),
+      onStatusChange: (status) => this.emitStateChange(session.agentId, session.sessionId, status, session.messageId),
     });
     this.bySession.set(this.key(opts.agentId, opts.sessionId), session);
     this.byStreamId.set(opts.streamId, session);
@@ -322,7 +330,7 @@ export class ActiveStreamRegistry {
       sessionId: opts.sessionId,
     });
     // 回合开始的权威信号。
-    this.emitStateChange(opts.agentId, opts.sessionId, session.status);
+    this.emitStateChange(opts.agentId, opts.sessionId, session.status, session.messageId);
     return session;
   }
 
@@ -346,8 +354,9 @@ export class ActiveStreamRegistry {
     agentId: string,
     sessionId: string,
     status: ActiveStreamSession['status'],
+    messageId: string,
   ): void {
-    this.onStateChange?.({ agentId, sessionId, streaming: status === 'streaming', status });
+    this.onStateChange?.({ agentId, sessionId, streaming: status === 'streaming', status, messageId });
   }
 
   getByAgentSession(agentId: string, sessionId: string): ActiveStreamSession | undefined {

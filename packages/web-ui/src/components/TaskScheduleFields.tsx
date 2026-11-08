@@ -40,7 +40,7 @@ function Segmented<T extends string>({
           onClick={() => onChange(opt.value)}
           className={`${pad} transition-colors ${
             value === opt.value
-              ? 'bg-brand-600 text-white'
+              ? 'bg-brand-600 text-on-brand'
               : 'bg-surface-elevated text-fg-secondary hover:text-fg-primary'
           }`}
         >
@@ -174,7 +174,7 @@ export function TaskScheduleFields({
                     onClick={() => toggleWeekday(day)}
                     className={`w-7 h-7 rounded-full text-xs transition-colors ${
                       active
-                        ? 'bg-brand-600 text-white'
+                        ? 'bg-brand-600 text-on-brand'
                         : 'bg-surface-elevated text-fg-secondary border border-border-default hover:text-fg-primary'
                     }`}
                   >

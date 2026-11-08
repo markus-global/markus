@@ -434,7 +434,7 @@ export function RememberModal({
             type="button"
             onClick={() => onConfirm(note)}
             disabled={busy}
-            className="px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white rounded-lg transition-colors"
+            className="px-4 py-1.5 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-on-brand rounded-lg transition-colors"
           >
             {busy ? t('common:loading', { defaultValue: '…' }) : t('page.messageActions.rememberConfirm')}
           </button>

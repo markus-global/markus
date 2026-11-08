@@ -23,6 +23,9 @@ import { FilterableSelect } from '../components/FilterableSelect.tsx';
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
+import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
+import { errorMessage } from '../lib/resourceState.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
@@ -716,6 +719,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [addProviderSaving, setAddProviderSaving] = useState(false);
   const [addProviderMsg, setAddProviderMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [addProviderCatalogModels, setAddProviderCatalogModels] = useState<CatalogModel[]>([]);
+  /** 模型目录的**读取失败**（R14）：与「该 provider 没有模型」分开存。 */
+  const [addProviderCatalogError, setAddProviderCatalogError] = useState<string | null>(null);
   const [addProviderValidating, setAddProviderValidating] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '', contextWindow: 0, maxOutputTokens: 0, costInput: 0, costOutput: 0 });
@@ -738,6 +743,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     if (!providerName || providerName === '__custom__') return;
     setAddProviderValidating(true);
     setQuickSetupMsg(null);
+    setAddProviderCatalogError(null);
     const po = providerOptions.find(p => p.id === providerName);
     const baseUrl = addProviderForm.baseUrl || po?.baseUrl;
     try {
@@ -748,11 +754,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         }
         setAddProviderCatalogModels(result.models);
       } else {
-        const result = await api.modelCatalog.getByProvider(providerName);
-        setAddProviderCatalogModels(result.models);
+        // 读目录的**唯一实现**（与 AddModelWithCatalog 同一处，R14/R15）。
+        const r = await readProviderCatalog(providerName);
+        setAddProviderCatalogModels(r.state === 'ok' ? [...r.items] : []);
+        if (r.state === 'error') setAddProviderCatalogError(r.error ?? '读取失败');
       }
-    } catch {
+    } catch (err) {
+      // 读失败 ≠ 没有模型（R14）
       setAddProviderCatalogModels([]);
+      setAddProviderCatalogError(errorMessage(err));
     } finally {
       setAddProviderValidating(false);
     }
@@ -1171,7 +1181,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     key={value}
                     onClick={() => onThemeChange?.(value)}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      theme === value ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
+                      theme === value ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {t(`appearance.modes.${value}`)}
@@ -1195,7 +1205,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
                       i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
-                        ? 'bg-brand-600 text-white' : 'text-fg-secondary hover:text-fg-primary'
+                        ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {label}
@@ -1278,7 +1288,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <div className="px-4 md:px-5 pb-5 space-y-3 border-t border-border-default/50">
                     <p className="text-xs text-fg-tertiary pt-3">{t('modelProviders.markusSetupLogin')}</p>
                     <button onClick={() => navBus.navigate(PAGE.SETTINGS, { tab: 'account' })}
-                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-sm rounded-lg transition-colors">
+                      className="px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-sm rounded-lg transition-colors">
                       {t('modelProviders.goToAccount')}
                     </button>
                   </div>
@@ -1398,7 +1408,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             <button onClick={() => void applyOllama()} disabled={ollamaApplying || !ollamaSelectedModel}
                               className={`px-4 py-2 text-sm rounded-lg transition-colors disabled:opacity-40 ${info.configured
                                 ? 'border border-brand-500/40 text-brand-500 hover:bg-brand-500/10'
-                                : 'bg-brand-600 hover:bg-brand-500 text-white'}`}>
+                                : 'bg-brand-600 hover:bg-brand-500 text-on-brand'}`}>
                               {ollamaApplying ? t('common:applying') : (info.configured ? t('ollama.switchModel') : t('ollama.useModel', { model: ollamaSelectedModel }))}
                             </button>
                             {ollamaMsg && <Msg type={ollamaMsg.type} text={ollamaMsg.text} />}
@@ -1433,7 +1443,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             </div>
                             <div className="flex flex-wrap gap-2">
                               <button onClick={() => void saveEditProvider(name)} disabled={editProviderSaving}
-                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
+                                className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors whitespace-nowrap">
                                 {editProviderSaving ? t('common:saving') : t('common:save')}
                               </button>
                               <button onClick={() => setEditingProvider(null)}
@@ -1659,6 +1669,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         </div>
 
                         {/* Model selection after key validation */}
+                        {expandedProvider === name && addProviderCatalogError && (
+                          <ReadErrorNotice
+                            variant="inline"
+                            subject="模型目录"
+                            error={addProviderCatalogError}
+                            notEquals="该 provider 没有模型"
+                            hint="稍后重新选择 provider 重试"
+                          />
+                        )}
                         {expandedProvider === name && addProviderCatalogModels.length > 0 && (
                           <div>
                             <label className="text-[10px] text-fg-tertiary uppercase block mb-2">{t('modelProviders.selectModel')}</label>
@@ -1698,7 +1717,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               }
                             }}
                             disabled={quickSetupSaving || addProviderSaving}
-                            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors"
                           >
                             {(quickSetupSaving || addProviderSaving) ? t('modelProviders.quickSetupSaving') : t('modelProviders.quickSetupSubmit')}
                           </button>
@@ -1757,7 +1776,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => void addProvider()} disabled={addProviderSaving || !addProviderForm.name || addProviderForm.name === '__custom__' || !addProviderForm.model}
-                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors whitespace-nowrap">
+                  className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors whitespace-nowrap">
                   {addProviderSaving ? t('modelProviders.adding') : t('modelProviders.addProviderSubmit')}
                 </button>
                 <button onClick={() => { setShowAddProvider(false); setAddProviderMsg(null); setAddProviderCatalogModels([]); setAddProviderForm({ name: '', apiKey: '', baseUrl: '', model: '', contextWindow: 128000, maxOutputTokens: 16384, costInput: 1, costOutput: 5 }); }}
@@ -1814,7 +1833,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     <div className="text-xs text-fg-tertiary">{t('envConfig.llmTimeout', { ms: envModels.timeoutMs })}</div>
                   )}
                   <button onClick={() => void applyEnvModels()} disabled={envApplying || Object.values(envSelected).filter(Boolean).length === 0}
-                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-sm rounded-lg transition-colors">
+                    className="px-4 py-2 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-sm rounded-lg transition-colors">
                     {envApplying ? t('common:applying') : t('envConfig.applyToConfig', { count: Object.values(envSelected).filter(Boolean).length })}
                   </button>
                 </div>
@@ -1839,7 +1858,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <button
                     onClick={() => startOAuthLogin(p.name)}
                     disabled={!!oauthLoading}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-l-lg transition-colors"
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-l-lg transition-colors"
                   >
                     {oauthLoading === p.name ? t('oauthAuth.connecting') : t('oauthAuth.signInWith', { name: p.displayName })}
                   </button>
@@ -1894,7 +1913,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <button
                     onClick={handleManualCallback}
                     disabled={!manualCallbackUrl.trim() || oauthLoading === 'manual'}
-                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                    className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors"
                   >
                     {t('oauthAuth.submit')}
                   </button>
@@ -1960,7 +1979,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 ) : <div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}
                 {selectedProvider !== llm?.defaultProvider && (
                   <button onClick={() => void saveLLM()} disabled={saving}
-                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors shrink-0 whitespace-nowrap">
+                    className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors shrink-0 whitespace-nowrap">
                     {saving ? t('common:saving') : t('common:save')}
                   </button>
                 )}
@@ -2129,7 +2148,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   finally { setProxySaving(false); }
                 }}
                 disabled={proxySaving}
-                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded-lg transition-colors"
+                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors"
               >
                 {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
               </button>
@@ -2167,7 +2186,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);
                   }}
-                  className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                 >
                   {agentSaving ? t('common:saving') : t('common:save')}
                 </button>
@@ -2198,7 +2217,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);
                   }}
-                  className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                 >
                   {agentSaving ? t('common:saving') : t('common:save')}
                 </button>
@@ -2278,7 +2297,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   } catch { setConcMsg({ type: 'err', text: t('concurrent.failedToSave') }); }
                   setConcSaving(false);
                 }}
-                className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
               >
                 {concSaving ? t('common:saving') : t('common:save')}
               </button>
@@ -2441,7 +2460,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
                     {/* Step 1: Download */}
                     <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
-                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">1</span>
+                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-on-brand text-[10px] font-bold shrink-0 mt-0.5">1</span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep1')}</div>
                         <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep1Desc')}</div>
@@ -2454,7 +2473,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                             } catch { setBrowserMsg({ type: 'err', text: t('browserAutomation.extensionDownloadError') }); }
                             setBrowserSaving(false);
                           }}
-                          className="mt-2 inline-flex max-w-full items-center gap-1.5 px-3 py-1.5 text-xs text-left break-words bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                          className="mt-2 inline-flex max-w-full items-center gap-1.5 px-3 py-1.5 text-xs text-left break-words bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                         >
                           <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" /></svg>
                           {browserSaving ? t('browserAutomation.extensionStep1Downloading') : t('browserAutomation.extensionStep1Btn')}
@@ -2464,7 +2483,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
                     {/* Step 2: Open extensions page */}
                     <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
-                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">2</span>
+                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-on-brand text-[10px] font-bold shrink-0 mt-0.5">2</span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep2')}</div>
                         <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep2Desc')}</div>
@@ -2493,7 +2512,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
                     {/* Step 3: Load unpacked */}
                     <div className="flex items-start gap-3 p-3 rounded-lg bg-surface-primary/50">
-                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-white text-[10px] font-bold shrink-0 mt-0.5">3</span>
+                      <span className="flex items-center justify-center w-5 h-5 rounded-full bg-brand-500 text-on-brand text-[10px] font-bold shrink-0 mt-0.5">3</span>
                       <div className="flex-1 min-w-0">
                         <div className="text-sm font-medium text-fg-primary">{t('browserAutomation.extensionStep3')}</div>
                         <div className="text-xs text-fg-tertiary mt-0.5">{t('browserAutomation.extensionStep3Desc')}</div>
@@ -2673,7 +2692,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         } catch { setBrowserMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                         setBrowserSaving(false);
                       }}
-                      className="px-3 py-1.5 text-xs bg-brand-500 text-white rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                      className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
                     >
                       {browserSaving ? t('common:saving') : t('common:save')}
                     </button>
@@ -2975,7 +2994,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
 
       {!showAddUser ? (
         <button onClick={() => setShowAddUser(true)}
-          className="mb-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+          className="mb-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors">
           {t('settings:userManagement.addUser', { defaultValue: 'Add User' })}
         </button>
       ) : (
@@ -3008,7 +3027,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
             <button onClick={() => { setShowAddUser(false); setAddName(''); setAddEmail(''); setAddRole('member'); setAddPassword(''); }}
               className="px-3 py-1.5 text-xs text-fg-tertiary hover:text-fg-secondary">{t('settings:userManagement.cancel')}</button>
             <button onClick={handleAddUser} disabled={!addName.trim()}
-              className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white text-xs font-medium rounded-lg">
+              className="px-4 py-1.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand text-xs font-medium rounded-lg">
               {t('settings:userManagement.save')}</button>
           </div>
         </div>
@@ -3027,7 +3046,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
               <code className="text-[10px] text-brand-500 bg-surface-elevated px-2 py-1 rounded block truncate">{inviteLink}</code>
             </div>
             <button onClick={() => { navigator.clipboard.writeText(inviteLink); setMsg({ type: 'ok', text: t('settings:userManagement.linkCopied') }); }}
-              className="shrink-0 px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-white rounded-lg font-medium">{t('settings:userManagement.copy')}</button>
+              className="shrink-0 px-3 py-1.5 text-[11px] bg-brand-600 hover:bg-brand-500 text-on-brand rounded-lg font-medium">{t('settings:userManagement.copy')}</button>
             <button onClick={() => setInviteLink(null)} className="shrink-0 text-fg-tertiary hover:text-fg-secondary text-sm">×</button>
           </div>
         )}
@@ -3356,16 +3375,19 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
 }) {
   const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  /** 模型目录的**读取失败**（R15）：与「该 provider 没有模型」分开存。 */
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [showCatalog, setShowCatalog] = useState(false);
 
   const loadCatalog = async () => {
     setCatalogLoading(true);
-    try {
-      const result = await api.modelCatalog.getByProvider(providerName);
-      setCatalogModels(result.models);
-      setShowCatalog(true);
-    } catch { setCatalogModels([]); }
-    finally { setCatalogLoading(false); }
+    setCatalogError(null);
+    // 与新增 provider 表单共用同一取数实现（R14/R15 合为一处）。
+    const r = await readProviderCatalog(providerName);
+    setCatalogModels(r.state === 'ok' ? [...r.items] : []);
+    if (r.state === 'error') setCatalogError(r.error ?? '读取失败');
+    setShowCatalog(r.state === 'ok');
+    setCatalogLoading(false);
   };
 
   return (
@@ -3381,6 +3403,15 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </button>
       </div>
 
+      {catalogError && (
+        <ReadErrorNotice
+          variant="inline"
+          subject="模型目录"
+          error={catalogError}
+          notEquals="该 provider 没有模型"
+          onRetry={() => void loadCatalog()}
+        />
+      )}
       {showCatalog && catalogModels.length > 0 && (
         <div className="border border-border-default rounded-lg p-2 mb-2">
           <ModelPicker
@@ -3449,7 +3480,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </label>
         <div className="flex-1" />
         <button onClick={onAdd} disabled={addModelSaving || !addModelForm.id || !addModelForm.name}
-          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-white rounded transition-colors whitespace-nowrap">
+          className="px-2 py-1 text-[10px] bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded transition-colors whitespace-nowrap">
           {addModelSaving ? t('modelProviders.adding') : t('common:create')}
         </button>
         <button onClick={onCancel}
@@ -3835,7 +3866,7 @@ function AccountOverviewSection() {
           )}
           <div className="flex flex-wrap gap-2">
             <a href={`${hubApi.getUrl()}/settings?tab=billing`} target="_blank" rel="noopener noreferrer"
-              className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors no-underline">
+              className="inline-flex items-center gap-1.5 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors no-underline">
               <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
               {t('account.manageBilling')}
             </a>
@@ -3854,7 +3885,7 @@ function AccountOverviewSection() {
                   <span className="font-medium text-fg-primary">{inv.orgName}</span>
                   <span className="text-fg-tertiary ml-1">— {t('org.invitedBy')} {inv.invitedBy}</span>
                 </div>
-                <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-white text-xs font-medium rounded-lg transition-colors">
+                <button onClick={() => void handleAcceptInvite(inv.orgId)} className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors">
                   {t('org.accept')}
                 </button>
               </div>
@@ -3899,7 +3930,7 @@ function AccountOverviewSection() {
                 setOrgMsg({ type: 'err', text });
               }).finally(() => setHubConnecting(false));
             }}
-              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-white text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
+              className="px-5 py-2.5 bg-brand-600 hover:bg-brand-500 disabled:opacity-60 text-on-brand text-sm font-medium rounded-lg transition-colors inline-flex items-center gap-2">
               {hubConnecting && <svg className="w-4 h-4 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="30 70" strokeLinecap="round"/></svg>}
               {hubConnecting ? t('org.connecting') : (getHubToken() ? t('org.reconnectHub') : t('org.connectHub'))}
             </button>

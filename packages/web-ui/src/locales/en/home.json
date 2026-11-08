@@ -112,6 +112,27 @@
   },
   "attention": {
     "title": "Needs Your Attention",
+    "newCount": "{{count}} new",
+    "more": "{{count}} more",
+    "kind": {
+      "agent_question": "Waiting for your answer",
+      "approval_request": "Approval request",
+      "requirement_approval": "Requirement review",
+      "task_review": "Awaiting your review",
+      "blocked_hold": "On hold",
+      "task_failed": "Failed",
+      "unread_message": "Unread message"
+    },
+    "act": {
+      "agent_question": "Answer",
+      "approval_request": "Approve",
+      "requirement_approval": "Review",
+      "task_review": "Review",
+      "blocked_hold": "Unblock",
+      "task_failed": "Handle",
+      "unread_message": "Open"
+    },
+    "history": "History",
     "allClear": "All clear — nothing needs your attention right now.",
     "approvals": "approval(s) waiting",
     "requirements": "requirement(s) to review",

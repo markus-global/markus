@@ -214,10 +214,12 @@ export class WSBroadcaster {
     sessionId: string,
     streaming: boolean,
     status: string,
+    /** 这一回合在写的那条 assistant 消息 id —— 客户端据此定位「哪个气泡是活的」。 */
+    messageId?: string,
   ): void {
     this.broadcast({
       type: 'session:stream_state',
-      payload: { agentId, sessionId, streaming, status },
+      payload: { agentId, sessionId, streaming, status, messageId },
       timestamp: new Date().toISOString(),
     });
   }

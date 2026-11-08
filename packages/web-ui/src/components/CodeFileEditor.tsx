@@ -263,7 +263,7 @@ export function CodeFileEditor({
             type="button"
             onClick={() => { void save(); }}
             disabled={!dirty || saving}
-            className="px-2.5 py-1 text-[11px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2.5 py-1 text-[11px] font-medium rounded-md bg-brand-600 text-on-brand hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? t('saving') : t('save')}
           </button>
@@ -290,7 +290,7 @@ export function CodeFileEditor({
             type="button"
             onClick={() => { void save(); }}
             disabled={!dirty || saving}
-            className="px-2.5 py-1 text-[11px] font-medium rounded-md bg-brand-600 text-white hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+            className="px-2.5 py-1 text-[11px] font-medium rounded-md bg-brand-600 text-on-brand hover:bg-brand-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           >
             {saving ? t('saving') : t('save')}
           </button>

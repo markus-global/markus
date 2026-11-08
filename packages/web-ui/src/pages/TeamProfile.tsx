@@ -228,7 +228,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                     <div className="flex gap-2 items-center">
                       <input ref={nameRef} value={nameDraft} onChange={e => setNameDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRename()}
                         className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary focus:outline-none focus:border-brand-500" autoFocus />
-                      <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
+                      <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
                       <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                     </div>
                   ) : (
@@ -245,7 +245,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                       <textarea value={descDraft} onChange={e => setDescDraft(e.target.value)}
                         className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
                       <div className="flex gap-2">
-                        <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
+                        <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
                         <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                       </div>
                     </div>
@@ -272,7 +272,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
       {/* Header */}
       <div className="px-5 py-3.5 bg-surface-secondary sticky top-0 z-10 shrink-0">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-brand-600 text-white flex items-center justify-center text-lg font-bold shrink-0">
+          <div className="w-10 h-10 rounded-xl bg-brand-600 text-on-brand flex items-center justify-center text-lg font-bold shrink-0">
             <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
           </div>
           <div className="flex-1 min-w-0">
@@ -418,7 +418,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                   <div className="flex gap-2 items-center">
                     <input ref={nameRef} value={nameDraft} onChange={e => setNameDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRename()}
                       className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary focus:outline-none focus:border-brand-500" autoFocus />
-                    <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
+                    <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
                     <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                   </div>
                 ) : (
@@ -435,7 +435,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                     <textarea value={descDraft} onChange={e => setDescDraft(e.target.value)}
                       className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
                     <div className="flex gap-2">
-                      <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-white">Save</button>
+                      <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
                       <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
                     </div>
                   </div>

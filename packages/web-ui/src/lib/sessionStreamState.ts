@@ -34,6 +34,16 @@ export interface SessionStreamEntry {
   source: 'server' | 'local';
   /** **服务端**时间戳（毫秒），本地写入用 `Date.now()` 仅作兜底排序。 */
   at: number;
+  /**
+   * 服务端权威：这一回合正在写的那条 assistant 消息 id（不在流时为空）。
+   *
+   * 有了它，「在不在生成」与「哪个气泡在生成」出自**同一个事件**，客户端不必再
+   * 从每行消息自带的 payload 副本去猜第二个问题。猜错的后果是：一个陈旧信号就能
+   * 让某个气泡永远转圈。
+   */
+  assistantMessageId: string | null;
+  /** 服务端权威的回合状态（streaming / done / error / cancelled）。 */
+  status?: string;
 }
 
 /** 已结束的条目保留多久（仅为让陈旧事件可判断；到点回收，避免无界增长）。 */
@@ -54,12 +64,22 @@ export class SessionStreamState {
   };
 
   /** 服务端推送：权威写入。 */
-  applyServerState(agentId: string, sessionId: string, streaming: boolean, at = Date.now()): void {
+  applyServerState(
+    agentId: string,
+    sessionId: string,
+    streaming: boolean,
+    at = Date.now(),
+    assistantMessageId?: string | null,
+    status?: string,
+  ): void {
     const prev = this.bySession.get(sessionId);
     // 陈旧事件：已有更新的**服务端**状态 → 丢弃（本地条目不算，权威可覆盖它）。
     if (prev && prev.source === 'server' && prev.at > at) return;
-    const changed = !prev || prev.streaming !== streaming;
-    this.bySession.set(sessionId, { agentId, streaming, source: 'server', at });
+    const nextId = assistantMessageId ?? null;
+    const changed = !prev
+      || prev.streaming !== streaming
+      || prev.assistantMessageId !== nextId;
+    this.bySession.set(sessionId, { agentId, streaming, source: 'server', at, assistantMessageId: nextId, status });
     if (changed) this.bump();
   }
 
@@ -91,13 +111,35 @@ export class SessionStreamState {
     // 同一时刻或更晚的服务端状态仍然优先（服务端时间可能领先本机时钟）。
     if (prev && prev.source === 'server' && prev.at >= at) return;
     const changed = !prev || prev.streaming !== streaming;
-    this.bySession.set(sessionId, { agentId, streaming, source: 'local', at });
+    this.bySession.set(sessionId, {
+      agentId,
+      streaming,
+      source: 'local',
+      at,
+      // 本地条目不知道服务端铸的那个 id —— 保留上一次已知的，不要抹掉。
+      assistantMessageId: prev?.assistantMessageId ?? null,
+      status: prev?.status,
+    });
     if (changed) this.bump();
   }
 
   isStreaming(sessionId: string | null | undefined): boolean {
     if (!sessionId) return false;
     return this.bySession.get(sessionId)?.streaming ?? false;
+  }
+
+  /**
+   * 「此刻唯一那个活着的 assistant 气泡」的 id。
+   *
+   * 一个回合最多只有一个在飞的 assistant 消息，所以答案**只能是一个 id**，
+   * 而不是「每条消息自带的 isStreaming」。没在流的时候返回 null —— 这就是
+   * 「没有活跃回合 ⇒ 不可能有活跃气泡」这条不变量的执行点。
+   */
+  liveBubbleId(sessionId: string | null | undefined): string | null {
+    if (!sessionId) return null;
+    const e = this.bySession.get(sessionId);
+    if (!e || !e.streaming) return null;
+    return e.assistantMessageId;
   }
 
   /** 该 agent 名下**任一**会话在输出 —— 顶部状态徽章与侧栏共用的口径。 */
