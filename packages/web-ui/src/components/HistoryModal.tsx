@@ -6,6 +6,7 @@ import { markAllNotificationsRead, markNotificationThreadRead } from '../lib/not
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { formatRelativeAny } from '../lib/relativeTime.ts';
+import { formatWaiting } from '../lib/attentionQueue.ts';
 // 三态类型**复用** `lib/threadTimeline.ts` 的那一份（`SourceState` 已经是「来源的读取状态」
 // 的单一表示）。本文件不另造一个同形联合类型 —— 那会变成同一事实的第二个写者。
 import type { SourceState } from '../lib/resourceState.ts';
@@ -47,6 +48,36 @@ type ResolvedStatus = keyof typeof APPROVAL_STATUS;
 
 type Tab = 'all' | 'approvals' | 'notices';
 const PAGE_SIZE = 15;
+
+/**
+ * 历史弹窗的「上次读到哪」记忆（Owner 2026-11-08：历史不能丢、也不能让人重新找）。
+ *
+ * 只记两件事：上次停在哪个 tab、滚到多深。弹窗一开一关就把位置清掉，用户每次都要
+ * 重新翻到上次那一屏——这不是个能靠“再看看”解决的问题。
+ */
+const HISTORY_UI_KEY = 'markus_history_ui';
+
+type StoredUi = { tab: Tab; scrollTop: number };
+
+function readHistoryUi(): StoredUi {
+  try {
+    const raw = localStorage.getItem(HISTORY_UI_KEY);
+    if (!raw) return { tab: 'all', scrollTop: 0 };
+    const v = JSON.parse(raw) as { tab?: Tab; scrollTop?: number };
+    const tab: Tab = v.tab === 'approvals' || v.tab === 'notices' ? v.tab : 'all';
+    return { tab, scrollTop: typeof v.scrollTop === 'number' && v.scrollTop >= 0 ? v.scrollTop : 0 };
+  } catch {
+    return { tab: 'all', scrollTop: 0 };
+  }
+}
+
+function writeHistoryUi(ui: StoredUi): void {
+  try {
+    localStorage.setItem(HISTORY_UI_KEY, JSON.stringify(ui));
+  } catch {
+    /* 隐私模式：退化为不记忆，不影响功能 */
+  }
+}
 /**
  * DOM 上限：历史只是回顾，没必要把上万条全堆进页面。
  * 没这个上限时哨兵会持续加载（实测 scrollHeight 一度涨到 25 万像素）。
@@ -115,7 +146,9 @@ export function HistoryModal({
   onClose: () => void;
   userId?: string;
 }) {
-  const [tab, setTab] = useState<Tab>('all');
+  const [tab, setTab] = useState<Tab>(() => readHistoryUi().tab);
+  /** 上次滚到哪儿（切 tab 也各自记不住，够用了：用户关心的是“回到我离开的那一屏”）。 */
+  const restoreScrollRef = useRef<number>(readHistoryUi().scrollTop);
   const [notices, setNotices] = useState<NotificationInfo[]>([]);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const overlayRef = useRef<HTMLDivElement | null>(null);
@@ -136,8 +169,12 @@ export function HistoryModal({
   /** 重试计数：改它让取数 effect 重跑（失败后的「重试」就用它，不另开机制）。 */
   const [retryTick, setRetryTick] = useState(0);
   const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
-  /** 默认只看未读（Owner 2026-11-04：这个入口叫「未读消息」，打开就该是未读）。 */
-  const [unreadOnly, setUnreadOnly] = useState(true);
+  /**
+   * 默认 tab = **全部**（Owner 2026-11-08：历史不能丢）。旧默认是「只看未读」，
+   * 于是想回顾上一次怎么处理时，历史反而被自己的默认过滤掉了 ——「未读」是一个
+   * 筛选器，不是历史视图的默认形状。
+   */
+  const [unreadOnly, setUnreadOnly] = useState(false);
   /**
    * 「全部标为已读」：写入中（防重入 + 按钮有反馈）与失败原因（**不许静默吞错**）。
    * 失败时绝不能只把按钮点完什么都不说 —— 那样用户看到数字没变，只会以为界面坏了。
@@ -317,6 +354,16 @@ export function HistoryModal({
   // 弹窗开着时锁住背后的滚动容器（否则滚轮会滚到 Overview 上）
   useBackgroundScrollLock(open);
 
+  // 打开（或切 tab）时回到上次那一屏。延迟一拍：列表刚渲染时 scrollHeight 还是 0。
+  useEffect(() => {
+    if (!open) return;
+    const id = window.setTimeout(() => {
+      const el = scrollerRef.current;
+      if (el) el.scrollTop = restoreScrollRef.current;
+    }, 60);
+    return () => window.clearTimeout(id);
+  }, [open, tab]);
+
   if (!open) return null;
   return (
     <div
@@ -410,7 +457,11 @@ export function HistoryModal({
         </div>
 
         {/* 列表 */}
-        <div ref={scrollerRef} className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 pb-2">
+        <div
+          ref={scrollerRef}
+          onScroll={e => writeHistoryUi({ tab, scrollTop: (e.currentTarget as HTMLDivElement).scrollTop })}
+          className="flex-1 min-h-0 overflow-y-auto overscroll-contain scrollbar-thin px-2 pb-2"
+        >
           {/* 批量标已读失败：可见、可重试。绝不允许「点了按钮、数字不变、一句话没有」。 */}
           {markAllError && (
             <div data-mark-all-error className="mx-1 mb-2 rounded-lg bg-rose-500/10 text-rose-600 text-[11px] px-3 py-2 flex items-center gap-2">
@@ -491,7 +542,13 @@ export function HistoryModal({
                         <span className="text-xs text-fg-secondary truncate">{row.approval.title}</span>
                       </div>
                       <div className="text-[11px] text-fg-tertiary mt-0.5 truncate">
-                        {row.approval.agentName} · {formatRelativeAny(at)}
+                        {row.approval.agentName} · {row.approval.status === 'approved' ? '已批准' : row.approval.status === 'rejected' ? '已拒绝' : st.label}
+                        {' '}于 {formatRelativeAny(at)}
+                        {/* 「等了多久」是回顾时最想知道的那个数：请求有 requestedAt、答复有
+                            respondedAt，所以这段时长是**精确**的，不用「约」。 */}
+                        {row.approval.respondedAt && row.approval.requestedAt && (
+                          <> · 等了 {formatWaiting({ waitingSince: row.approval.requestedAt, waitingBasis: 'requested' }, Date.parse(row.approval.respondedAt))}</>
+                        )}
                       </div>
                     </div>
                   </div>
