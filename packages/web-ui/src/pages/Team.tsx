@@ -5177,7 +5177,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <button
                       onClick={newConversation}
                       title={t('page.newChatKbdHint', { kbd: formatShortcutKeys(['N'], isMac) })}
-                      className="text-xs text-brand-500 hover:text-brand-500 px-2.5 py-1 rounded-md hover:bg-brand-500/10 border border-brand-500/20 transition-colors flex items-center gap-1"
+                      className="text-xs font-semibold text-on-brand bg-brand-600 hover:bg-brand-700 px-3.5 py-1.5 rounded-lg shadow-sm transition-colors flex items-center gap-1"
                     >
                       {t('page.newChatButton')}
                     </button>
