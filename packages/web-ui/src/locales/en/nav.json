@@ -6,10 +6,8 @@
   "builder": "Assets",
   "deliverables": "Output",
   "reports": "Reports",
-  "notifications": "Notifications",
   "settings": "Settings",
   "sections": {
-    "quick": "",
     "workspace": "WORKSPACE",
     "build": "BUILD",
     "system": "SYSTEM"

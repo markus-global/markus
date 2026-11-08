@@ -3,6 +3,7 @@ import { type PageId, PAGE, resolvePageId, getPageFromHash, hashPath, pageToHash
 import { setNativeBrowserPagePaintAllowed } from './lib/nativeBrowserOverlay.ts';
 import { isEphemeralAuthBrowserUrl } from './lib/browserAuthUrl.ts';
 import { useNavRingSwipe, ringStep, currentRingSub, requestRingSub } from './lib/navRing.ts';
+import { requestHistoryModal } from './lib/historyModal.ts';
 import { HomePage } from './pages/Home.tsx';
 
 const TeamPage = lazy(() => import('./pages/Team.tsx').then(m => ({ default: m.TeamPage })));
@@ -548,8 +549,6 @@ export function App() {
     let normalized = resolvePageId(p);
     if (isMobile) {
       normalized = MOBILE_REDIRECTS[normalized] ?? normalized;
-    } else if (normalized === PAGE.NOTIFICATIONS) {
-      normalized = PAGE.HOME;
     }
     // Hide native browser immediately — don't wait for React commit/effects.
     if (normalized !== PAGE.TEAM) {
@@ -729,13 +728,10 @@ export function App() {
     }
   }, [sidebar.collapsed, page, isMobile]);
 
-  // Desktop: handle OS notification click — open panel + navigate to content
+  // Desktop: handle OS notification click — land on the thing it was about.
   useEffect(() => {
     if (!window.markusDesktop) return;
     window.markusDesktop.onNotificationClick((nav) => {
-      if (nav.openNotifications) {
-        window.dispatchEvent(new CustomEvent('markus:open-notifications'));
-      }
       if (nav.page) {
         const page = resolvePageId(nav.page as PageId);
         if (nav.params) {
@@ -743,6 +739,13 @@ export function App() {
         }
         navigate(page);
         window.dispatchEvent(new CustomEvent('markus:navigate', { detail: { page, params: nav.params } }));
+        return;
+      }
+      // Payload carries no destination (a plain notification with no task/agent
+      // meta): the only surface that still lists them is Overview's history modal.
+      if (nav.openNotifications) {
+        requestHistoryModal();
+        navigate(PAGE.HOME);
       }
     });
   }, [navigate]);
@@ -1069,7 +1072,7 @@ export function App() {
 
       {/* Mobile bottom nav (top-level pages only — hidden on Settings/Search and on sub-pages) */}
       {showBottomNav && (
-        <BottomNav currentPage={page} onNavigate={navigate} userId={currentUser?.id} />
+        <BottomNav currentPage={page} onNavigate={navigate} />
       )}
 
       {/* Mobile drawer menu */}

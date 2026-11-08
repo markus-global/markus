@@ -11,6 +11,7 @@ import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
 import { publishAttentionCount, publishUnreadCount } from '../lib/attentionCount.ts';
+import { subscribeHistoryModal } from '../lib/historyModal.ts';
 import { needsHumanDecision } from '../lib/blockedReason.ts';
 import {
   OverviewUsageTier,
@@ -108,6 +109,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const isActive = usePageActive(PAGE.HOME);
   /** 概览「历史」弹窗 —— 已结束的审批与全部通知的唯一入口（铃铛与通知页已移除）。 */
   const [showHistory, setShowHistory] = useState(false);
+  // 桌端系统通知被点击 → 打开历史弹窗。请求可能先于本页挂载（点击常伴随导航），
+  // 由 lib/historyModal 暂存，这里订阅即消费。
+  useEffect(() => subscribeHistoryModal(() => setShowHistory(true)), []);
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [teams, setTeams] = useState<TeamInfo[]>(previewData?.teams ?? []);
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});

@@ -1,13 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { type PageId, PAGE, PAGE_ICONS, MOBILE_TABS } from '../routes.ts';
-import { api, type NotificationInfo } from '../api.ts';
 import { useUnreadCounts, sumTeamChatUnread } from '../hooks/useUnreadCounts.ts';
+import { readAttentionCount, subscribeAttentionCount } from '../lib/attentionCount.ts';
 
 interface Props {
   currentPage: PageId;
   onNavigate: (page: PageId) => void;
-  userId?: string;
 }
 
 /**
@@ -26,9 +25,13 @@ const HIDE_AFTER_PX = 6;
 const SHOW_AFTER_PX = 6;
 const TOP_ALWAYS_VISIBLE_PX = 56;
 
-export function BottomNav({ currentPage, onNavigate, userId }: Props) {
+export function BottomNav({ currentPage, onNavigate }: Props) {
   const { t } = useTranslation('nav');
-  const [unreadCount, setUnreadCount] = useState(0);
+  // 待办数只有一个计算点：概览页算完 publish，桌面侧栏与移动底栏都只订阅。
+  // 通知页（连同它的自主口径）已删除 —— 移动端曾经的「只算未读通知」导致
+  // 徽标永远是 0，这个 bug 就是从这里消失的。
+  const [noticeCount, setNoticeCount] = useState(readAttentionCount);
+  useEffect(() => subscribeAttentionCount(setNoticeCount), []);
   const [hidden, setHidden] = useState(false);
   const hiddenRef = useRef(false);
 
@@ -72,26 +75,6 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
   // 而不是全量 counts 求和——孤儿 session / 无映射会话不再污染徽标数字。
   const teamUnread = useMemo(() => sumTeamChatUnread(chatUnreadCounts, sessionAgentMap), [chatUnreadCounts, sessionAgentMap]);
 
-  const fetchUnread = useCallback(async () => {
-    try {
-      const n = await api.notifications.list(userId, false);
-      setUnreadCount(n.unreadCount ?? n.notifications.filter((x: NotificationInfo) => !x.read).length);
-    } catch { /* */ }
-  }, [userId]);
-
-  useEffect(() => {
-    fetchUnread();
-    const timer = setInterval(() => {
-      if (document.visibilityState === 'visible') fetchUnread();
-    }, 30_000);
-    const onChanged = () => fetchUnread();
-    window.addEventListener('markus:notifications-changed', onChanged);
-    return () => {
-      clearInterval(timer);
-      window.removeEventListener('markus:notifications-changed', onChanged);
-    };
-  }, [fetchUnread]);
-
   return (
     <nav
       data-mobile-bottom-nav
@@ -101,7 +84,7 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
     >
       {MOBILE_TABS.map(tab => {
         const isActive = tab.group.includes(currentPage);
-        const isNotif = tab.id === PAGE.NOTIFICATIONS;
+        const isHome = tab.id === PAGE.HOME;
         const isTeam = tab.id === PAGE.TEAM;
 
         return (
@@ -126,9 +109,9 @@ export function BottomNav({ currentPage, onNavigate, userId }: Props) {
               >
                 <path d={PAGE_ICONS[tab.id]!} />
               </svg>
-              {isNotif && unreadCount > 0 && (
+              {isHome && noticeCount > 0 && (
                 <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 flex items-center justify-center bg-red-500 text-white text-[9px] font-bold rounded-full leading-none">
-                  {unreadCount > 99 ? '99+' : unreadCount}
+                  {noticeCount > 99 ? '99+' : noticeCount}
                 </span>
               )}
               {isTeam && teamUnread > 0 && (

@@ -1,5 +1,5 @@
 import { useTranslation } from 'react-i18next';
-import { PAGE, PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
+import { PAGE_ICONS, SIDEBAR_NAV, SIDEBAR_SECTIONS } from '../routes.ts';
 
 function Icon({ d, size = 18 }: { d: string; size?: number }) {
   return (
@@ -13,7 +13,7 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
  * Collapsed-mode sidebar for the product showcase.
  * Mirrors the real Sidebar component's collapsed layout exactly
  * (same routes data, icons, spacing) but avoids API deps like
- * NotificationBell and __APP_VERSION__.
+ * __APP_VERSION__.
  */
 export function SidebarPreview({ activePage }: { activePage: string }) {
   const { t } = useTranslation(['nav', 'common']);
@@ -29,17 +29,6 @@ export function SidebarPreview({ activePage }: { activePage: string }) {
           <div key={section.key}>
             {si > 0 && <div className="my-3" />}
             {SIDEBAR_NAV.filter(i => i.section === section.key).map((item) => {
-              if (item.id === PAGE.NOTIFICATIONS) {
-                return (
-                  <div
-                    key={item.id}
-                    className="w-full flex flex-col items-center justify-center px-1 py-1.5 gap-0.5 rounded-xl text-[13px] mb-0.5 text-fg-secondary"
-                  >
-                    <Icon d={PAGE_ICONS[item.id] ?? ''} size={16} />
-                    <span className="text-[9px] leading-tight truncate w-full text-center">{t(item.id)}</span>
-                  </div>
-                );
-              }
               const isActive = activePage === item.id;
               return (
                 <div
