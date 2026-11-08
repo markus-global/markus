@@ -1,6 +1,8 @@
 import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
+import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
@@ -2219,7 +2221,8 @@ function TaskDetailPanel({
   const isRejected = task.status === 'rejected';
   const isCancelled = task.status === 'cancelled';
   const isArchived = task.status === 'archived';
-  const isTerminal = isCompleted || isFailed || isRejected || isCancelled || isArchived;
+  // 终态判定只走 shared 投影的 isTerminalStatus()（web-ui: lib/taskStatus.ts）。
+  const isTerminal = isTerminalStatus(task.status);
   const isScheduled = task.taskType === 'scheduled' && !!task.scheduleConfig;
   const schedPaused = isScheduled && !!task.scheduleConfig?.paused;
 
@@ -2253,7 +2256,7 @@ function TaskDetailPanel({
               return badge ? (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${badge.cls}`}>{badge.label}</span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{task.status.replace(/_/g, ' ')}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
               );
             })()}
             {isAbnormallyBlocked && (
@@ -3162,7 +3165,7 @@ function ProjectSettingsPanel({ project, tasks, requirements, agents, onDeletePr
           <div className="flex flex-wrap gap-2">
             {projAgents.map(a => {
               const agentTasks = projTasks.filter(t => t.assignedAgentId === a.id);
-              const activeTasks = agentTasks.filter(t => !['completed', 'failed', 'cancelled', 'archived'].includes(t.status));
+              const activeTasks = agentTasks.filter(t => !isTerminalStatus(t.status));
               return (
                 <div key={a.id} className="flex items-center gap-2 px-3 py-2 bg-surface-elevated/60 rounded-lg">
                   <span className={`w-2 h-2 rounded-full shrink-0 ${a.status === 'working' ? 'bg-blue-500' : a.status === 'idle' ? 'bg-green-500' : 'bg-gray-500'}`} />
@@ -4821,8 +4824,7 @@ export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: p
         const target = Object.values(runs).flat().find(r => r.id === confirmCancelRunId);
         const tasks = target ? runTasks[target.id] : undefined;
         const total = target?.taskIds.length ?? 0;
-        const terminal = new Set(['completed', 'archived', 'cancelled', 'rejected', 'failed']);
-        const cancellable = tasks ? tasks.filter(t => !terminal.has(t.status)).length : null;
+        const cancellable = tasks ? tasks.filter(t => !isTerminalStatus(t.status)).length : null;
         return (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50" onClick={() => setConfirmCancelRunId(null)}>
           <div className="bg-surface-secondary border border-border-default rounded-xl p-6 w-full max-w-sm shadow-2xl" onClick={e => e.stopPropagation()}>
@@ -5897,11 +5899,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     + allRequirements.filter(r => isClosed(r)).length;
 
   const sortedAgents = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeAgentIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.assignedAgentId && !terminal.has(t.status)) {
+      if (t.assignedAgentId && !isTerminalStatus(t.status)) {
         if (!selectedProjectId || t.projectId === selectedProjectId) {
           activeAgentIds.add(t.assignedAgentId);
         }
@@ -5939,11 +5940,10 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   }, [sortedAgents, teams]);
 
   const sortedProjects = useMemo(() => {
-    const terminal = new Set(['completed', 'failed', 'cancelled', 'archived']);
     const allTasks = Object.values(board).flat();
     const activeProjectIds = new Set<string>();
     for (const t of allTasks) {
-      if (t.projectId && !terminal.has(t.status)) {
+      if (t.projectId && !isTerminalStatus(t.status)) {
         activeProjectIds.add(t.projectId);
       }
     }
@@ -7584,7 +7584,7 @@ function RequirementDetailPanel({
   const isAgent = req.source === 'agent';
   const needsReview = isAgent && req.status === 'pending';
   const canCancel = req.status === 'pending' || req.status === 'in_progress';
-  const isTerminal = req.status === 'completed' || req.status === 'rejected' || req.status === 'cancelled' || req.status === 'archived';
+  const isTerminal = TERMINAL_REQUIREMENT_STATUSES.has(req.status);
   const reqProject = req.projectId ? projects.find(p => p.id === req.projectId) : null;
   const creatorName = resolveActorName(req.createdBy, agents, users) ?? req.createdBy.slice(0, 12);
   const linkedTasks = allTasks.filter(t => req.taskIds.includes(t.id));

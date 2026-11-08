@@ -5,6 +5,7 @@ import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, t
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
@@ -47,12 +48,6 @@ const STATUS_COLORS_BG: Record<string, string> = {
   completed: 'bg-green-500', in_progress: 'bg-brand-500', review: 'bg-blue-500',
   pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-amber-500',
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
-};
-const TASK_STATUS_I18N: Record<string, string> = {
-  pending: 'common:status.pending', in_progress: 'common:status.inProgress',
-  blocked: 'common:status.blocked', review: 'common:status.review',
-  completed: 'common:status.completed', failed: 'common:status.failed',
-  rejected: 'common:status.rejected', cancelled: 'common:status.cancelled',
 };
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 const ACTIVITY_ICON_BG: Record<string, string> = {
@@ -825,7 +820,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         <button key={status} onClick={() => navBus.navigate(PAGE.WORK, { statusFilter: status })}
                           className="flex items-center gap-2 group cursor-pointer text-left">
                           <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS_BG[status] ?? 'bg-gray-500'}`} />
-                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{t(TASK_STATUS_I18N[status] ?? status)}</span>
+                          <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{taskStatusLabel(status, t)}</span>
                           <span className="text-sm font-semibold text-fg-primary ml-auto tabular-nums">{count}</span>
                         </button>
                       ))}
@@ -843,7 +838,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   {allRequirements.length > 0 && (
                     <EntityRow icon="edit" label={t('globalOverview.requirements')} value={allRequirements.length} onClick={() => navBus.navigate(PAGE.WORK)}>
                       {(['in_progress', 'pending', 'completed'] as const).map(s =>
-                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {t(`common:status.${s === 'in_progress' ? 'inProgress' : s}`)}</Chip>
+                        (reqStatusCounts[s] ?? 0) > 0 && <Chip key={s}>{reqStatusCounts[s]} {taskStatusLabel(s, t)}</Chip>
                       )}
                     </EntityRow>
                   )}

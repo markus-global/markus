@@ -25,6 +25,9 @@ import { parseCommentSummary } from '../lib/mailboxCommentSummary.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
 import { sliceNotebookForDisplay, formatNotebookAge, NOTEBOOK_DISPLAY_LIMIT } from '../lib/notebookDisplay.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
+import { attentionStateLabel, processStatusLabel, taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { useReadResource } from '../hooks/useProfileReads.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
 
 const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage })));
 
@@ -60,11 +63,11 @@ export const TAB_DEF: Array<{ key: ProfileTab; icon: string }> = [
   { key: 'deliverables', icon: '📦' },
 ];
 
-function taskStatusLabel(status: string, t: TFunction): string {
-  return t(`agent:profilePage.taskStatus.${status}`, { defaultValue: status.replace(/_/g, ' ') });
-}
-
 /**
+ * "A resolved entity's `status`" labels now come from the shared vocabulary
+ * (`lib/stateVocabulary.ts#taskStatusLabel`): a local map here was a second writer,
+ * and it leaked `in_progress` verbatim when a key was missing.
+ *
  * Label for a process status, delegated to the shared presentation table so this
  * page and the chat header badge cannot disagree about what "offline" means.
  *
@@ -428,7 +431,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
 
         <Card title={t('agent:profilePage.overview.connectionStatus')}>
           <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={externalInfo.connected ? t('common:status.online') : t('common:status.offline')} color={externalInfo.connected ? 'green' : 'gray'} />
+            <StatBox label={t('agent:profilePage.overview.labels.connection')} value={processStatusLabel(externalInfo.connected ? 'online' : 'offline', t)} color={externalInfo.connected ? 'green' : 'gray'} />
             <StatBox label={t('agent:profilePage.overview.labels.platform')} value={t('agent:profilePage.overview.openClaw')} />
             <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(agent.state.activeTaskIds?.length ?? 0)} />
             <StatBox label={t('agent:profilePage.overview.labels.lastSync')} value={externalInfo.lastHeartbeat ? new Date(externalInfo.lastHeartbeat).toLocaleTimeString() : t('agent:profilePage.never')} />
@@ -1444,6 +1447,14 @@ function CapabilitiesTab({ tools, agent }: { tools: AgentToolInfo[]; agent: Agen
 
 // ─── Memory Tab ──────────────────────────────────────────────────────────────
 
+/** 记忆会话里的一行（工具调用结果也在这里，role === 'tool'）。 */
+type MemorySessionMessage = {
+  role: string;
+  content: string;
+  toolCalls?: Array<{ id: string; name: string; arguments: string }>;
+  toolCallId?: string;
+};
+
 function MemoryTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const [data, setData] = useState<AgentMemorySummary | null>(null);
@@ -1454,8 +1465,15 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [saving, setSaving] = useState(false);
   const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
-  const [sessionMessages, setSessionMessages] = useState<Array<{ role: string; content: string; toolCalls?: Array<{ id: string; name: string; arguments: string }>; toolCallId?: string }>>([]);
-  const [sessionLoading, setSessionLoading] = useState(false);
+  /**
+   * R10 · 记忆会话消息：读失败**不等于**「这个会话没有消息」。
+   * 三态判据只有一处（`hooks/useProfileReads.ts` → `readList()`/`listView()`），
+   * 本页不再自己 `try { set(await …) } catch { set([]) }`。
+   */
+  const sessionRead = useReadResource<MemorySessionMessage>(
+    () => api.agents.getMemorySession(agentId, expandedSessionId ?? '').then(r => r.messages as MemorySessionMessage[]),
+    { enabled: expandedSessionId !== null, deps: [agentId, expandedSessionId] },
+  );
 
   const loadData = useCallback(() => {
     setLoading(true);
@@ -1582,15 +1600,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
             <div className="space-y-1.5 max-h-[600px] overflow-y-auto">
               {data.sessions.map(s => {
                 const isExpanded = expandedSessionId === s.id;
-                const toggleSession = async () => {
-                  if (isExpanded) { setExpandedSessionId(null); setSessionMessages([]); return; }
-                  setExpandedSessionId(s.id);
-                  setSessionLoading(true);
-                  try {
-                    const res = await api.agents.getMemorySession(agentId, s.id);
-                    setSessionMessages(res.messages);
-                  } catch { setSessionMessages([]); }
-                  setSessionLoading(false);
+                const toggleSession = () => {
+                  setExpandedSessionId(isExpanded ? null : s.id);
                 };
                 return (
                   <div key={s.id}>
@@ -1605,11 +1616,20 @@ function MemoryTab({ agentId }: { agentId: string }) {
                     </button>
                     {isExpanded && (
                       <div className="mx-3 mt-1 mb-2 bg-surface-elevated/30 rounded-lg border border-border-default/20 max-h-96 overflow-y-auto">
-                        {sessionLoading ? (
+                        {sessionRead.view.loading ? (
                           <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.loadingMessages')}</div>
-                        ) : sessionMessages.length === 0 ? (
+                        ) : sessionRead.view.error ? (
+                          <ReadErrorNotice
+                            variant="inline"
+                            subject="会话消息"
+                            error={sessionRead.resource.error ?? '读取失败'}
+                            notEquals="这个会话没有消息"
+                            onRetry={sessionRead.reload}
+                          />
+                        ) : sessionRead.view.empty ? (
                           <div className="text-[10px] text-fg-tertiary py-3 text-center">{t('agent:profilePage.memoryTab.noMessagesInSession')}</div>
                         ) : (() => {
+                          const sessionMessages = sessionRead.resource.items;
                           const toolResultMap = new Map<string, string>();
                           for (const m of sessionMessages) {
                             if (m.role === 'tool' && m.toolCallId) toolResultMap.set(m.toolCallId, m.content);
@@ -2517,7 +2537,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             </span>
           ) : (
             <span className={`px-2.5 py-1 text-xs font-medium rounded-full ${ATTENTION_COLORS[effectiveAttentionState] ?? 'bg-gray-500/20 text-gray-500'}`}>
-              {t(`agent:profilePage.mind.attention.${effectiveAttentionState}`)}
+              {attentionStateLabel(effectiveAttentionState, t)}
             </span>
           )}
           {!agentRunning ? (
@@ -2959,8 +2979,18 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 function DeliverablesTab({ agentId }: { agentId: string }) {
   const { t } = useTranslation(['agent', 'common']);
   const layout = useLayout();
-  const [items, setItems] = useState<DeliverableInfo[]>([]);
-  const [loading, setLoading] = useState(true);
+  /**
+   * R9 · 交付物列表：读失败**不等于**「这个 agent 没有交付物」。
+   * 三态判据只有一处（`hooks/useProfileReads.ts`），旧代码在 catch 里 `setItems([])`，
+   * 把「没读到」渲染成一句「还没有交付物」的**断言**。
+   */
+  const deliverablesRead = useReadResource<DeliverableInfo>(
+    () => api.deliverables.search({ agentId, limit: 200 }).then(r => r.results),
+    { deps: [agentId] },
+  );
+  const items = deliverablesRead.resource.items;
+  const loading = deliverablesRead.view.loading;
+  const refresh = deliverablesRead.reload;
 
   /**
    * 点击产出：
@@ -2982,17 +3012,6 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
     navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: item.id });
   }, [layout]);
 
-  const refresh = useCallback(async () => {
-    setLoading(true);
-    try {
-      const { results } = await api.deliverables.search({ agentId, limit: 200 });
-      setItems(results);
-    } catch { setItems([]); }
-    setLoading(false);
-  }, [agentId]);
-
-  useEffect(() => { refresh(); }, [refresh]);
-
   useEffect(() => {
     const unsub1 = wsClient.on('deliverable:created', () => refresh());
     const unsub2 = wsClient.on('deliverable:updated', () => refresh());
@@ -3010,6 +3029,18 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
           </div>
         ))}
       </div>
+    );
+  }
+
+  if (deliverablesRead.view.error) {
+    return (
+      <ReadErrorNotice
+        variant="inline"
+        subject="交付物"
+        error={deliverablesRead.resource.error ?? '读取失败'}
+        notEquals="这个 agent 没有任何交付物"
+        onRetry={refresh}
+      />
     );
   }
 
