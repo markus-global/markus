@@ -110,18 +110,6 @@
     "mcp": "MCP: {{server}}"
   },
   "profilePage": {
-    "taskStatus": {
-      "pending": "Pendiente",
-      "assigned": "Asignado",
-      "in_progress": "En curso",
-      "completed": "Completado",
-      "failed": "Fallido",
-      "cancelled": "Cancelado",
-      "review": "Revisión",
-      "approved": "Aprobado",
-      "rejected": "Rechazado",
-      "draft": "Borrador"
-    },
     "loadingAgent": "Agente de carga...",
     "chat": "Chat",
     "hub": "Hub",

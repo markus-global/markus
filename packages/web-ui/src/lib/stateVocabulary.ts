@@ -10,9 +10,11 @@
  * | 治理态 | 这件事走到治理流程哪一步 | `TaskStatus`（`updateTaskStatus()` + FSM） | 是 |
  * | 运行时注意力 | agent 循环此刻在干什么 | `AttentionState`（`AttentionController.getState()`） | 否（内存，重启归零） |
  *
- * 这三个概念历史上共用过字面值（`idle` / `working`），并有**两个**治理态词表
- * （`common:status.review` = 待审核 vs `agent:profilePage.taskStatus.review` = 评审中）。
- * 结果是同一屏上出现两个含义不同的「进行中」，以及同一个治理状态两个说法。
+ * 这三个概念历史上共用过字面值（`idle` / `working`），并曾有过**两个**治理态词表
+ * （旧扁平的 `common:status.review` = 待审核 vs 已删除的 `agent:profilePage.taskStatus.review`
+ * = 评审中）。结果是同一屏上出现两个含义不同的「进行中」，以及同一个治理状态两个说法。
+ * 后一张表连同它夹带的 `assigned` / `approved` / `draft` 三个**枚举里不存在的状态**一起删除，
+ * 现在本文件是治理态的唯一写者。
  *
  * 本文件是治理态 / 注意力 / 进程态三类词的**唯一写者**；「在等谁」的写者是
  * `threadPresentation.ts` 的 `STAGE_LABEL`（架构守卫 E2.1 已锁死不得出现第二份）。
