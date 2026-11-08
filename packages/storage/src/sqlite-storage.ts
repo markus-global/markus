@@ -2590,9 +2590,17 @@ export class SqliteChatSessionRepo {
     role: string,
     content: string,
     tokensUsed?: number,
-    metadata?: unknown
+    metadata?: unknown,
+    /**
+     * 调用方铸的消息 id（= 该行的主键）。
+     *
+     * 为什么要允许外部给：客户端已经渲染了一个乐观气泡，它必须与服务端落库的行
+     * **出生即同一身份**；否则只能事后靠「相邻启发式」对账，每次对不上就是一个重复气泡。
+     * 不传则完全走旧行为（本层自己铸 `cm_*`）—— 所以这是向后兼容的可选参数。
+     */
+    messageId?: string,
   ) {
-    const id = generateId('cm');
+    const id = messageId ?? generateId('cm');
     const ts = now();
     this.db
       .prepare(
@@ -2646,7 +2654,38 @@ export class SqliteChatSessionRepo {
     content: string,
     tokensUsed?: number,
     metadata?: unknown,
+    /** 调用方铸的 assistant 消息 id。给了就**按 id 定位**那一行，不再猜「最新一条」。 */
+    messageId?: string,
   ) {
+    // 有明确身份时，定位方式只能是 id —— 「最新一条 assistant 行」在同一次重连里
+    // 可能就是上一个回合的行，猜错的代价是覆盖历史内容（不可逆）。
+    if (messageId) {
+      const existing = this.db
+        .prepare('SELECT id FROM chat_messages WHERE id = ? AND session_id = ?')
+        .get(messageId, sessionId) as { id: string } | undefined;
+      if (existing) {
+        const ts = now();
+        this.db
+          .prepare(
+            `UPDATE chat_messages
+             SET content = ?, metadata = ?, tokens_used = ?, created_at = created_at
+             WHERE id = ?`,
+          )
+          .run(content, metadata ? toJson(metadata) : null, tokensUsed ?? 0, messageId);
+        return {
+          id: messageId,
+          sessionId,
+          agentId,
+          role: 'assistant',
+          content,
+          metadata: metadata ?? null,
+          tokensUsed: tokensUsed ?? 0,
+          createdAt: new Date(ts),
+        };
+      }
+      return this.appendMessage(sessionId, agentId, 'assistant', content, tokensUsed, metadata, messageId);
+    }
+
     const row = this.db
       .prepare(
         `SELECT id, metadata, created_at FROM chat_messages

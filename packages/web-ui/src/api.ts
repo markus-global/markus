@@ -1408,6 +1408,15 @@ export interface MessageStreamOptions {
    *  `text`. Persisted as message metadata so the sent bubble can highlight chips
    *  instead of rendering a wall of payload. */
   chips?: MessageChipPlacement[];
+  /**
+   * 消息身份（Stage 1）：客户端铸的两个 id，服务端接受它们作为 `chat_messages` 的主键。
+   *
+   * 传了它们，乐观气泡与落库行就是**同一条消息**（不需要事后按相邻位置对账）；
+   * 重连时复用同一个 id，于是原地更新那一行而不是追加第二行。
+   * 不传 → 服务端自铸（完全旧的 "a_/u_ 乐观 + 相邻启发式" 行为）。
+   */
+  userMessageId?: string;
+  assistantMessageId?: string;
 }
 
 /**
@@ -1542,6 +1551,7 @@ export const api = {
       return new Promise(async (resolve, reject) => {
         const {
           signal, images, sessionId, isRetry, isResume, fileNames, replyTo, titleSource, chips,
+          userMessageId, assistantMessageId,
         } = options ?? {};
         // Set only once we actually saw the terminal `done` event. Its absence is
         // exactly the soft-disconnect signal: the browser dropped the SSE (page
@@ -1575,6 +1585,8 @@ export const api = {
               replyTo: replyTo || undefined,
               titleSource: titleSource || undefined,
               chips: chips && chips.length > 0 ? chips : undefined,
+              userMessageId: userMessageId || undefined,
+              assistantMessageId: assistantMessageId || undefined,
             }),
             signal,
           });

@@ -795,29 +795,6 @@ export function resolveTurnBubbleId(
  * Collapse accidental adjacent duplicate user bubbles (same text, within a short window).
  * Does not touch intentional repeats that have an assistant turn between them.
  */
-export function dedupeAdjacentUserMessages(msgs: ChatMsg[], windowMs = 120_000): ChatMsg[] {
-  if (msgs.length < 2) return msgs;
-  const out: ChatMsg[] = [];
-  for (const m of msgs) {
-    const prev = out[out.length - 1];
-    if (
-      m.sender === 'user'
-      && prev?.sender === 'user'
-      && prev.text === m.text
-      && prev.text.length > 0
-      && prev.text.length <= 500
-    ) {
-      const prevTs = prev.rawCreatedAt ? Date.parse(prev.rawCreatedAt) : NaN;
-      const curTs = m.rawCreatedAt ? Date.parse(m.rawCreatedAt) : NaN;
-      if (!Number.isFinite(prevTs) || !Number.isFinite(curTs) || Math.abs(curTs - prevTs) <= windowMs) {
-        continue;
-      }
-    }
-    out.push(m);
-  }
-  return out;
-}
-
 export function channelMsgToChat(m: ChannelMessageInfo, authUserId?: string): ChatMsg {
   const isError = m.senderType === 'system' || (m.senderType === 'agent' && m.text.startsWith('⚠'));
   const isSelf = m.senderType === 'human' && (!authUserId || m.senderId === authUserId);

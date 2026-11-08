@@ -116,7 +116,6 @@ import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
-  dedupeAdjacentUserMessages,
   stopRunningTools,
   shouldRenderChatMsg,
   formatSmartTime, getDateKey, formatDateLabel, throttle,
@@ -1148,6 +1147,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // （`getStreamSession`）——对后台/未附着的会话天然为空，见 lib/sessionStreamState.ts。
   useSessionStreamRevision(); // 订阅：任何会话存活性变化都重渲染本组件
   const liveStreamForView = sessionStreamState.isStreaming(activeSessionId);
+  // 「此刻哪一个 assistant 气泡是活的」——同样出自服务端事件（阶段 3）。
+  // 一条消息自带的 `isStreaming` 只是快照（可能来自断连时持久化的中途状态），
+  // 它能不能点亮只能由这个 id 裁决。
+  const liveBubbleIdForView = sessionStreamState.liveBubbleId(activeSessionId);
 
   // ── 「幽灵清扫」已删除（2026-10-08）────────────────────────────────────────
   // 这里曾有一个 effect，挂在 `[messages]` 上（即每次 delta 都跑）：当**客户端本地**
@@ -3636,7 +3639,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     try {
       const result = await api.agents.evolveFromMessage(selectedAgent, {
         parentSessionId,
-        sourceMessageId: rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
+        // 「这条消息是否已经落库」——而不是猜 id 前缀。
+        // 消息身份统一后，乐观气泡与落库行同形（`cm_*`），所以前缀再也分不出
+        // 「还没存下去的那一条」；而在飞的（isStreaming）气泡就一定是没落库的。
+        // 旧前缀判断保留，因为历史会话里可能还留着旧形状的 id。
+        sourceMessageId: rememberTarget.isStreaming === true
+          || rememberTarget.id.startsWith('a_') || rememberTarget.id.startsWith('u_')
           ? undefined
           : rememberTarget.id,
         sourceText: (rememberTarget.text || '').slice(0, 500) || undefined,
@@ -5613,6 +5621,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
               const isStreamingMsg = shouldPaintStreamingBubble({
                 msgIsStreaming: !!msg.isStreaming,
                 liveStreamForView,
+                liveBubbleId: liveBubbleIdForView,
+                msgId: msg.id,
               });
               // 光环 = 「这轮还在输出」，**不看有没有正文**：思考、工具调用都算输出，
               // 即使还没吐出任何文字也该让用户看到这轮是活的（老板 2026-10-18）。

@@ -13,13 +13,20 @@ import { api, wsClient } from '../api.ts';
 import { sessionStreamState } from './sessionStreamState.ts';
 
 /** WS 载荷形状（服务端 `session:stream_state`）。 */
-function readStreamStateEvent(event: unknown): { agentId: string; sessionId: string; streaming: boolean } | null {
-  const p = (event as { payload?: { agentId?: unknown; sessionId?: unknown; streaming?: unknown } })?.payload;
+function readStreamStateEvent(
+  event: unknown,
+): { agentId: string; sessionId: string; streaming: boolean; messageId: string | null; status?: string } | null {
+  const p = (event as {
+    payload?: { agentId?: unknown; sessionId?: unknown; streaming?: unknown; messageId?: unknown; status?: unknown };
+  })?.payload;
   if (!p || typeof p.sessionId !== 'string' || typeof p.streaming !== 'boolean') return null;
   return {
     agentId: typeof p.agentId === 'string' ? p.agentId : '',
     sessionId: p.sessionId,
     streaming: p.streaming,
+    // 同一个事件回答「在生成吗」与「哪个气泡在生成」两个问题。
+    messageId: typeof p.messageId === 'string' && p.messageId.length > 0 ? p.messageId : null,
+    status: typeof p.status === 'string' ? p.status : undefined,
   };
 }
 
@@ -37,7 +44,7 @@ export function ensureSessionStreamStateFeed(): void {
     if (!s) return;
     // 信封的 timestamp 是**服务端**时钟 —— 排序必须用它，不能用本地时钟。
     const at = Date.parse((event as { timestamp?: string }).timestamp ?? '') || Date.now();
-    sessionStreamState.applyServerState(s.agentId, s.sessionId, s.streaming, at);
+    sessionStreamState.applyServerState(s.agentId, s.sessionId, s.streaming, at, s.messageId, s.status);
   });
 }
 

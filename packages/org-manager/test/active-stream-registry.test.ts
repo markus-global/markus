@@ -168,11 +168,13 @@ describe('ActiveStreamRegistry — 权威状态变化通知（唯一的存活性
     const reg = new ActiveStreamRegistry();
     const seen = collect(reg);
     const s = reg.register({ streamId: 's1', agentId: 'a1', sessionId: 'sess1', messageId: 'm1' });
-    expect(seen).toEqual([{ agentId: 'a1', sessionId: 'sess1', streaming: true, status: 'streaming' }]);
+    // `messageId` 是新契约的一部分：同一个事件既要回答「在生成吗」，也要回答
+    // 「哪个气泡在生成」——客户端据此点名唯一的活跃气泡。
+    expect(seen).toEqual([{ agentId: 'a1', sessionId: 'sess1', streaming: true, status: 'streaming', messageId: 'm1' }]);
     s.complete({ type: 'done', content: 'x' });
     expect(seen).toEqual([
-      { agentId: 'a1', sessionId: 'sess1', streaming: true, status: 'streaming' },
-      { agentId: 'a1', sessionId: 'sess1', streaming: false, status: 'done' },
+      { agentId: 'a1', sessionId: 'sess1', streaming: true, status: 'streaming', messageId: 'm1' },
+      { agentId: 'a1', sessionId: 'sess1', streaming: false, status: 'done', messageId: 'm1' },
     ]);
   });
 
@@ -180,7 +182,7 @@ describe('ActiveStreamRegistry — 权威状态变化通知（唯一的存活性
     const reg = new ActiveStreamRegistry();
     const seen = collect(reg);
     reg.register({ streamId: 's1', agentId: 'a1', sessionId: 'sess1', messageId: 'm1' }).cancel();
-    expect(last(seen)).toEqual({ agentId: 'a1', sessionId: 'sess1', streaming: false, status: 'cancelled' });
+    expect(last(seen)).toEqual({ agentId: 'a1', sessionId: 'sess1', streaming: false, status: 'cancelled', messageId: 'm1' });
 
     const seen2 = collect(reg);
     const s2 = reg.register({ streamId: 's2', agentId: 'a1', sessionId: 'sess2', messageId: 'm2' });

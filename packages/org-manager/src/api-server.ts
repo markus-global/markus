@@ -1099,6 +1099,7 @@ export class APIServer {
         change.sessionId,
         change.streaming,
         change.status,
+        change.messageId,
       );
     });
     this.teamTemplateRegistry = createDefaultTeamTemplates();
@@ -2491,6 +2492,8 @@ export class APIServer {
     replyTo?: { id: string; sender: string; text: string } | null,
     extraMeta?: Record<string, unknown>,
     titleSource?: string,
+    /** 客户端铸的用户消息 id —— 让它与已渲染的乐观气泡出生即同一行。 */
+    messageId?: string,
   ): Promise<{ sessionId: string; messageId: string } | null> {
     if (!this.storage) return null;
     try {
@@ -2518,6 +2521,7 @@ export class APIServer {
         userMessage,
         0,
         Object.keys(meta).length > 0 ? meta : undefined,
+        messageId,
       );
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session!.id, title);
       return { sessionId: session!.id, messageId: saved.id };
@@ -2533,7 +2537,9 @@ export class APIServer {
     agentId: string,
     reply: string,
     tokensUsed = 0,
-    metadata?: unknown
+    metadata?: unknown,
+    /** 客户端铸的 assistant 消息 id —— upsert 按它定位，不再猜「最新一条」。 */
+    messageId?: string,
   ): Promise<void> {
     if (!this.storage || !sessionId) return;
     try {
@@ -2548,6 +2554,7 @@ export class APIServer {
             reply,
             tokensUsed,
             metadata,
+            messageId,
           )
         : await this.storage.chatSessionRepo.appendMessage(
             sessionId,
@@ -2556,6 +2563,7 @@ export class APIServer {
             reply,
             tokensUsed,
             metadata,
+            messageId,
           );
       await this.storage.chatSessionRepo.updateLastMessage(sessionId);
       if (msg?.id) {
@@ -4571,6 +4579,22 @@ export class APIServer {
         // conversation it was in.
 
         const userText = body['text'] as string;
+        /**
+         * 消息身份（Stage 1）：客户端铸 id，服务端**接受它们作为行主键**。
+         *
+         * 为什么要这样：客户端在按发送键那一刻就已经渲染了乐观气泡（且只能拿临时 id），
+         * 服务端再自铸 `cm_*`，两者只能事后靠「相邻启发式」对账 —— 每次对不上就是一个
+         * 重复气泡，重连则给同一个回合成两行。
+         *
+         * 兼容：不传 = 完全走旧行为（本层自铸 id），老客户端/脚本不受影响。
+         * 格式：客户端必须铸 `cm_*` 形状（与既有主键同构），否则就是在污染数据格式。
+         */
+        const readMsgId = (key: string): string | undefined => {
+          const v = body[key];
+          return typeof v === 'string' && v.trim().length > 0 ? v.trim() : undefined;
+        };
+        const userMessageId = readMsgId('userMessageId');
+        const assistantMessageId = readMsgId('assistantMessageId');
         // The user's own typed words (without injected context chips), used to
         // derive a clean session title. Absent for retries / non-UI clients.
         const titleSource = typeof body['titleSource'] === 'string' ? body['titleSource'] : undefined;
@@ -4634,7 +4658,7 @@ export class APIServer {
         const bindingPersist = async (
           aId: string, _text: string, sId?: string, imgs?: string[], sessId?: string,
         ): Promise<{ sessionId: string; messageId: string } | null> => {
-          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, chipsMeta, titleSource);
+          const persisted = await this.persistUserMessage(aId, userText, sId, imgs, sessId, replyTo, chipsMeta, titleSource, userMessageId);
           // NOTE: 这里以前会顺手做两件「写绑定」的事（agent.bindDbSession +
           // persistMemorySessionBinding）。两者都跑在 HTTP 线程上、读的是 root 工作区，
           // 并发下只会写下陈旧/空绑定。绑定现在由处理该消息的 worker 写，持久化则在
@@ -4674,12 +4698,17 @@ export class APIServer {
             senderId,
             senderInfo,
             sessionId,
+            // 服务端事件与落库用同一个 assistant 消息 id：
+            // 「这条消息」与「这个气泡」从此是同一个身份，不需要客户端再猜。
+            messageId: assistantMessageId,
             wsBroadcaster: this.ws,
             persistUserMessage: bindingPersist,
             deleteUserMessage: (messageId: string) => {
               this.storage?.chatSessionRepo.deleteMessage(messageId);
             },
-            persistAssistantMessage: this.persistAssistantMessage.bind(this),
+            // SSEHandler 只认 5 个参数的契约；id 用闭包绑定，不改它的接口（少一个跨层契约）。
+            persistAssistantMessage: (sid: string | null, aid: string, reply: string, tokens?: number, meta?: unknown) =>
+              this.persistAssistantMessage(sid, aid, reply, tokens, meta, assistantMessageId),
             executionStreamRepo: this.storage?.executionStreamRepo,
             isResume,
             sessionRestore: deferredRestore,
