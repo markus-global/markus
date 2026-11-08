@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { CHIP_ICONS, CHIP_KINDS, inferChipKind, normalizeChip, parseNavChips, isChipKind, type ChatChip } from './chatChips.ts';
+import { CHIP_ICONS, CHIP_KINDS, inferChipKind, normalizeChip, oneLineLabel, parseNavChips, isChipKind, type ChatChip } from './chatChips.ts';
 
 const mkId = (() => {
   let n = 0;
@@ -130,5 +130,26 @@ describe('isChipKind', () => {
     expect(isChipKind(chip.kind)).toBe(true);
     expect(isChipKind('nope')).toBe(false);
     expect(isChipKind(undefined)).toBe(false);
+  });
+});
+
+/**
+ * Owner-reported (2026-11-08): a multi-line terminal selection produced a chip
+ * whose label still held the newlines, so the `[⌘ …]` token in the composer wrapped
+ * onto several lines. A label is a one-line title; the payload keeps the newlines.
+ */
+describe('a chip label is one line', () => {
+  it('collapses every whitespace run to a single space', () => {
+    expect(oneLineLabel('line one\nline two')).toBe('line one line two');
+    expect(oneLineLabel('a\r\nb\tc   d')).toBe('a b c d');
+    expect(oneLineLabel('\n\n  padded  \n')).toBe('padded');
+  });
+
+  it('keeps the payload untouched — only the display string is collapsed', () => {
+    const content = '[terminal-selection]\nTerminal: bash\n"""\nls\npwd\n"""';
+    const chip = normalizeChip({ kind: 'terminal', label: '⌘ ls\npwd', content }, mkId);
+    expect(chip?.label).toBe('ls pwd');
+    expect(chip?.content).toBe(content);
+    expect(chip?.label).not.toContain('\n');
   });
 });

@@ -171,11 +171,24 @@ export function normalizeChip(
   const kind = isChipKind(raw.kind) ? raw.kind : inferChipKind(raw.content, rawLabel);
   // Kind is resolved from the ORIGINAL label (legacy prefixes still carry
   // information when no structured marker exists), then the label is cleaned.
-  return { id: raw.id || makeId(), kind, label: stripChipLabelPrefix(rawLabel), content: raw.content };
+  return { id: raw.id || makeId(), kind, label: oneLineLabel(stripChipLabelPrefix(rawLabel)), content: raw.content };
 }
 
 export function isChipKind(value: unknown): value is ChipKind {
   return typeof value === 'string' && (CHIP_KINDS as string[]).includes(value);
+}
+
+/**
+ * A chip label is **one line** — it is a pill, not a paragraph.
+ *
+ * Reported by the owner (2026-11-08): selecting several lines in the right-panel
+ * terminal and hitting "send to chat" produced a chip whose label still carried
+ * the newlines, so the token drawn inside the composer (`[⌘ …]`) wrapped across
+ * lines and pulled the caret with it. The label is a DISPLAY string; the payload
+ * (`content`) keeps every newline the user selected — collapsing happens only here.
+ */
+export function oneLineLabel(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
 }
 
 /** i18n key (inside the `team` namespace) holding the kind's display word. */
@@ -201,7 +214,7 @@ export function normalizeSentChips(raw: unknown): SentChip[] | undefined {
     if (!Number.isFinite(offset) || !Number.isFinite(length) || offset < 0 || length <= 0) continue;
     out.push({
       kind: isChipKind(rec.kind) ? rec.kind : inferChipKind('', typeof rec.label === 'string' ? rec.label : ''),
-      label: stripChipLabelPrefix(typeof rec.label === 'string' ? rec.label : 'Context'),
+      label: oneLineLabel(stripChipLabelPrefix(typeof rec.label === 'string' ? rec.label : 'Context')),
       offset,
       length,
     });

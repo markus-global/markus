@@ -18,6 +18,19 @@ describe('chipDisplayText', () => {
     expect(chipDisplayText(fileChip())).toBe('[📄 a.md]');
     expect(chipDisplayText(taskChip())).toBe('[✅ T1]');
   });
+
+  it('never emits a newline — a multi-line selection becomes one line', () => {
+    const selection: ChatChip = {
+      id: 'c9',
+      kind: 'terminal',
+      label: 'total 4\n-rw-r--r-- 1 me  staff  12 Nov  8 a.txt',
+      content: '[terminal-selection]\nTerminal: bash (t1)\n"""\ntotal 4\n-rw-r--r-- 1 me  staff  12 Nov  8 a.txt\n"""',
+    };
+    const token = chipDisplayText(selection);
+    expect(token).not.toContain('\n');
+    // Column alignment (runs of spaces) collapses too: the pill is a title, not a table.
+    expect(token).toBe('[⌘ total 4 -rw-r--r-- 1 me staff 12 Nov 8 a.txt]');
+  });
 });
 
 describe('insertChip', () => {

@@ -13,7 +13,7 @@ import type { DirectoryEntry } from '../api.ts';
 import { EmbeddedBrowser } from './EmbeddedBrowser.tsx';
 import { EmbeddedTerminal, type EmbeddedTerminalApi } from './EmbeddedTerminal.tsx';
 import { DeliverableShareModal } from './DeliverableShareModal.tsx';
-import type { ChipKind } from '../lib/chatChips.ts';
+import { oneLineLabel, type ChipKind } from '../lib/chatChips.ts';
 import { createDeliverableShareService, canShareDeliverableFormat, type DeliverableShareRecord } from '../lib/deliverableShare.ts';
 import TabScrollRail from './TabScrollRail.tsx';
 import { BrowserHistoryMenu } from './BrowserHistoryMenu.tsx';
@@ -506,7 +506,10 @@ export function RightPanel({
   const sourceLabel = title || activePath;
 
   const buildChip = useCallback((text: string, htmlMeta?: { xpath: string; cssSelector: string }): ChatContextChip => {
-    const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
+    // The label is a one-line title: a terminal selection can span lines, and the
+    // composer draws this label as literal text inside the textarea.
+    const flat = oneLineLabel(text);
+    const short = flat.length > 40 ? `${flat.slice(0, 24)}…${flat.slice(-12)}` : flat;
     if (htmlMeta) {
       return {
         kind: 'web',
@@ -553,7 +556,8 @@ export function RightPanel({
     if (!onAddToChat || payload.kind !== 'terminal') return;
     const text = (await terminalApiRef.current?.getRecentOutput(80))?.trim();
     if (!text) return;
-    const short = text.length > 40 ? `${text.slice(0, 24)}…${text.slice(-12)}` : text;
+    const flat = oneLineLabel(text);
+    const short = flat.length > 40 ? `${flat.slice(0, 24)}…${flat.slice(-12)}` : flat;
     onAddToChat({
       kind: 'terminal',
       label: `⌘ ${short}`,

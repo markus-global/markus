@@ -23,7 +23,7 @@
  *     while the bubble can still highlight the chip.
  */
 
-import { CHIP_ICONS, type ChatChip, type SentChip, type ChipKind } from './chatChips.ts';
+import { CHIP_ICONS, oneLineLabel, type ChatChip, type SentChip, type ChipKind } from './chatChips.ts';
 
 /** A chip placed inside the composer text: `[start, end)` indexes into `text`. */
 export interface DraftChip extends ChatChip {
@@ -49,9 +49,15 @@ export function emptyDraft(): ChipDraft {
   return { text: '', chips: [] };
 }
 
-/** The token a chip renders as inside the textarea. Display only — never parsed. */
+/**
+ * The token a chip renders as inside the textarea. Display only — never parsed.
+ *
+ * The token is LITERAL characters sitting in the user's text, so it has to be one
+ * line: a multi-line label (a terminal selection, a log excerpt) would otherwise
+ * wrap inside the textarea and drag the caret onto the next line with it.
+ */
 export function chipDisplayText(chip: Pick<DraftChip, 'kind' | 'label'>): string {
-  return `[${CHIP_ICONS[chip.kind]} ${chip.label}]`;
+  return `[${CHIP_ICONS[chip.kind]} ${oneLineLabel(chip.label)}]`;
 }
 
 function clamp(n: number, lo: number, hi: number): number {
