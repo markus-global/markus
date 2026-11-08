@@ -28,6 +28,7 @@ import {
   type BrowserHistoryEntry,
 } from '../lib/browserHistory.ts';
 import { reopenHistoryEntry } from '../lib/historyReopen.ts';
+import { shouldProbeFileRefresh, hasFileChanged, FILE_AUTO_REFRESH_MS } from '../lib/fileAutoRefresh.ts';
 import { useLayout, type RightPanelMode, type RightPanelPayload, type RightPanelTab } from '../contexts/LayoutContext.tsx';
 
 type TabOwner = { agentId: string; agentName: string };
@@ -181,6 +182,20 @@ export function RightPanel({
   const terminalApiRef = useRef<EmbeddedTerminalApi | null>(null);
   const editorDirtyRef = useRef(false);
   editorDirtyRef.current = editorDirty;
+
+  /**
+   * 本地文件自动刷新（Owner 2026-11-08 要求恢复）。
+   *
+   * 上一版把整套机制删了，代价是「agent 改了磁盘上的文件，右栏还显示旧内容」。
+   * 这里重做的三条纪律，正是原来那个 5 秒轮询没有的：
+   *   ① **编辑中不刷新** —— 用户正在输入时重读会把他打的字冲掉（最坏的失败方式）；
+   *   ② **面板不可见时不探测** —— 后台标签页不该持续读盘；
+   *   ③ **只在 mtime/size 真的变了才重读** —— stat 很便宜（几十字节），
+   *      重读内容很贵（整份文件 + 重新渲染 Markdown）。
+   * 探测失败一律静默：网络/权限抖动不该在界面上闪错误。
+   */
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const probeBaselineRef = useRef<{ mtimeMs?: number; size?: number } | null>(null);
 
   const confirmLeaveEditor = useCallback(() => {
     return confirmDiscardDirty(
@@ -354,6 +369,11 @@ export function RightPanel({
 
     setPreview({ mode: 'loading' });
 
+    // 媒体 / 文档类预览走 streamUrl：URL 不变时浏览器会直接用缓存，
+    // 于是「文件内容变了但右栏还是旧的」。reloadNonce 是打断缓存的那个变量。
+    const withNonce = (u: string) =>
+      reloadNonce ? `${u}${u.includes('?') ? '&' : '?'}_v=${reloadNonce}` : u;
+
     // Builder artifacts have no file body — surface the summary + open-in-page.
     if (payload.kind === 'deliverable' && payload.deliverable.artifactType && payload.deliverable.artifactData) {
       setPreview({ mode: 'artifact', summary: payload.deliverable.summary || payload.deliverable.title || '' });
@@ -374,20 +394,20 @@ export function RightPanel({
         // Prefer stream URL (works for large webp/png); fall back to legacy base64 content.
         const src = resp.content
           ? `data:${resp.mimeType || 'image/png'};base64,${resp.content}`
-          : (resp.streamUrl
+          : withNonce(resp.streamUrl
             || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'image', src, name: resp.name || title });
         return;
       }
       if (resp.type === 'audio') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'audio', src, name: resp.name || title, mimeType: resp.mimeType || 'audio/mpeg', size: resp.size });
         return;
       }
       if (resp.type === 'video') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({ mode: 'video', src, name: resp.name || title, mimeType: resp.mimeType || 'video/mp4', size: resp.size });
         return;
       }
@@ -402,8 +422,8 @@ export function RightPanel({
         return;
       }
       if (resp.type === 'office') {
-        const src = resp.streamUrl
-          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath));
+        const src = withNonce(resp.streamUrl
+          || (resp.path ? api.files.streamUrl(resp.path) : api.files.streamUrl(activePath)));
         setPreview({
           mode: 'office',
           format: resp.format || String(resp.extension || '').replace(/^\./, '') || 'pdf',
@@ -432,7 +452,53 @@ export function RightPanel({
     return () => { cancelled = true; };
   // Reload whenever the active tab / preview identity changes — not just payload
   // object identity (which can be sticky across tab clicks in some open paths).
-  }, [contentKey, payload, activePath, reference, title]);
+  // `reloadNonce` 是唯一的「内容变了」信号：只由自动刷新探测（mtime/size 变化）递增。
+  }, [contentKey, payload, activePath, reference, title, reloadNonce]);
+
+  // ─── 本地文件自动刷新：探测 mtime/size，变了才重读 ────────────────────────────
+  useEffect(() => {
+    probeBaselineRef.current = null;   // 换文件/换 tab = 换基线
+    // 能不能探测由纯函数回答（编辑中 / 不可见 / URL / 非文件类）。
+    // 这里只判断「是否可能有本地路径」，避免无意义的定时器。
+    if (!activePath || isUrl(activePath)) return;
+    if (payload.kind !== 'file' && payload.kind !== 'deliverable') return;
+
+    let stopped = false;
+    const probe = async () => {
+      if (stopped) return;
+      const allowed = shouldProbeFileRefresh({
+        kind: payload.kind,
+        hasPath: true,
+        isUrlReference: false,
+        editorDirty: editorDirtyRef.current,
+        visibility: document.visibilityState,
+      });
+      if (!allowed) return;
+      try {
+        const st = await api.files.stat(activePath);
+        if (stopped || !st.exists) return;
+        const base = probeBaselineRef.current;
+        probeBaselineRef.current = { mtimeMs: st.mtimeMs, size: st.size };
+        if (hasFileChanged(base, { mtimeMs: st.mtimeMs, size: st.size })) {
+          setReloadNonce(n => n + 1);                      // 真变了才重读
+        }
+      } catch {
+        /* 探测失败静默：下一轮再试 */
+      }
+    };
+
+    void probe();
+    const timer = window.setInterval(() => { void probe(); }, FILE_AUTO_REFRESH_MS);
+    const onWake = () => { void probe(); };               // 切回来立刻对一次
+    document.addEventListener('visibilitychange', onWake);
+    window.addEventListener('focus', onWake);
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onWake);
+      window.removeEventListener('focus', onWake);
+    };
+  }, [activePath, payload.kind, contentKey]);
 
   // Reset in-panel directory navigation when the payload / active tab changes.
   useEffect(() => { setDirNavPath(null); setHistoryOpen(false); }, [contentKey]);
