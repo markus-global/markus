@@ -23,6 +23,9 @@ import { FilterableSelect } from '../components/FilterableSelect.tsx';
 import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
+import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
+import { errorMessage } from '../lib/resourceState.ts';
+import { ReadErrorNotice } from '../components/ListState.tsx';
 
 interface ModelCost { input: number; output: number; cacheRead?: number; cacheWrite?: number }
 interface ModelDef { id: string; name: string; provider: string; contextWindow: number; maxOutputTokens: number; cost: ModelCost; reasoning?: boolean; inputTypes?: string[]; tier?: string }
@@ -716,6 +719,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [addProviderSaving, setAddProviderSaving] = useState(false);
   const [addProviderMsg, setAddProviderMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
   const [addProviderCatalogModels, setAddProviderCatalogModels] = useState<CatalogModel[]>([]);
+  /** 模型目录的**读取失败**（R14）：与「该 provider 没有模型」分开存。 */
+  const [addProviderCatalogError, setAddProviderCatalogError] = useState<string | null>(null);
   const [addProviderValidating, setAddProviderValidating] = useState(false);
   const [editingProvider, setEditingProvider] = useState<string | null>(null);
   const [editProviderForm, setEditProviderForm] = useState({ apiKey: '', baseUrl: '', model: '', contextWindow: 0, maxOutputTokens: 0, costInput: 0, costOutput: 0 });
@@ -738,6 +743,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     if (!providerName || providerName === '__custom__') return;
     setAddProviderValidating(true);
     setQuickSetupMsg(null);
+    setAddProviderCatalogError(null);
     const po = providerOptions.find(p => p.id === providerName);
     const baseUrl = addProviderForm.baseUrl || po?.baseUrl;
     try {
@@ -748,11 +754,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         }
         setAddProviderCatalogModels(result.models);
       } else {
-        const result = await api.modelCatalog.getByProvider(providerName);
-        setAddProviderCatalogModels(result.models);
+        // 读目录的**唯一实现**（与 AddModelWithCatalog 同一处，R14/R15）。
+        const r = await readProviderCatalog(providerName);
+        setAddProviderCatalogModels(r.state === 'ok' ? [...r.items] : []);
+        if (r.state === 'error') setAddProviderCatalogError(r.error ?? '读取失败');
       }
-    } catch {
+    } catch (err) {
+      // 读失败 ≠ 没有模型（R14）
       setAddProviderCatalogModels([]);
+      setAddProviderCatalogError(errorMessage(err));
     } finally {
       setAddProviderValidating(false);
     }
@@ -1659,6 +1669,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         </div>
 
                         {/* Model selection after key validation */}
+                        {expandedProvider === name && addProviderCatalogError && (
+                          <ReadErrorNotice
+                            variant="inline"
+                            subject="模型目录"
+                            error={addProviderCatalogError}
+                            notEquals="该 provider 没有模型"
+                            hint="稍后重新选择 provider 重试"
+                          />
+                        )}
                         {expandedProvider === name && addProviderCatalogModels.length > 0 && (
                           <div>
                             <label className="text-[10px] text-fg-tertiary uppercase block mb-2">{t('modelProviders.selectModel')}</label>
@@ -3356,16 +3375,19 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
 }) {
   const [catalogModels, setCatalogModels] = useState<CatalogModel[]>([]);
   const [catalogLoading, setCatalogLoading] = useState(false);
+  /** 模型目录的**读取失败**（R15）：与「该 provider 没有模型」分开存。 */
+  const [catalogError, setCatalogError] = useState<string | null>(null);
   const [showCatalog, setShowCatalog] = useState(false);
 
   const loadCatalog = async () => {
     setCatalogLoading(true);
-    try {
-      const result = await api.modelCatalog.getByProvider(providerName);
-      setCatalogModels(result.models);
-      setShowCatalog(true);
-    } catch { setCatalogModels([]); }
-    finally { setCatalogLoading(false); }
+    setCatalogError(null);
+    // 与新增 provider 表单共用同一取数实现（R14/R15 合为一处）。
+    const r = await readProviderCatalog(providerName);
+    setCatalogModels(r.state === 'ok' ? [...r.items] : []);
+    if (r.state === 'error') setCatalogError(r.error ?? '读取失败');
+    setShowCatalog(r.state === 'ok');
+    setCatalogLoading(false);
   };
 
   return (
@@ -3381,6 +3403,15 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
         </button>
       </div>
 
+      {catalogError && (
+        <ReadErrorNotice
+          variant="inline"
+          subject="模型目录"
+          error={catalogError}
+          notEquals="该 provider 没有模型"
+          onRetry={() => void loadCatalog()}
+        />
+      )}
       {showCatalog && catalogModels.length > 0 && (
         <div className="border border-border-default rounded-lg p-2 mb-2">
           <ModelPicker
