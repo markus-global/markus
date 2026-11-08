@@ -12,6 +12,7 @@ import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
 import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
 import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
+import { NamedIcon } from '../lib/namedIcons.tsx';
 import { subscribeHistoryModal } from '../lib/historyModal.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import {
@@ -57,13 +58,20 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
  * 颜色跟着**类型**走，不跟优先级走：紧急程度已经由那颗优先级 chip 和排序表达了，
  * 再给整行染红只会让所有行看起来一样急。
  */
-const ATTENTION_TONE: Record<AttentionKind, { icon: string; btn: string; glyph: string }> = {
-  approval_request: { icon: 'bg-amber-500/15 text-amber-600', btn: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20', glyph: '✓' },
-  blocked_hold: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', glyph: '⏸' },
-  task_failed: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', glyph: '✕' },
-  requirement_approval: { icon: 'bg-brand-500/15 text-brand-500', btn: 'bg-brand-500/10 text-brand-500 hover:bg-brand-500/20', glyph: '📌' },
-  task_review: { icon: 'bg-blue-500/15 text-blue-500', btn: 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20', glyph: '✓' },
-  unread_message: { icon: 'bg-surface-overlay text-fg-secondary', btn: 'bg-surface-overlay text-fg-secondary hover:bg-surface-overlay/70', glyph: '✉' },
+/**
+ * 关注行的色板 + 图标。
+ *
+ * `iconName` 指向 `lib/namedIcons.tsx` 里**画出来**的描边图标（Owner 2026-11-08）。
+ * 之前用的是 ✓ ⏸ ✕ 📌 ✉ 这类字体符号：字号、行高、平台字体一变，大小和基线
+ * 就跟着漂，而且和侧边栏那套描边图标不是同一个视觉语言。
+ */
+const ATTENTION_TONE: Record<AttentionKind, { icon: string; btn: string; iconName: string }> = {
+  approval_request: { icon: 'bg-amber-500/15 text-amber-600', btn: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20', iconName: 'check-circle' },
+  blocked_hold: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-pause' },
+  task_failed: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-x' },
+  requirement_approval: { icon: 'bg-brand-500/15 text-brand-500', btn: 'bg-brand-500/10 text-brand-500 hover:bg-brand-500/20', iconName: 'file-check' },
+  task_review: { icon: 'bg-blue-500/15 text-blue-500', btn: 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20', iconName: 'clipboard-check' },
+  unread_message: { icon: 'bg-surface-overlay text-fg-secondary', btn: 'bg-surface-overlay text-fg-secondary hover:bg-surface-overlay/70', iconName: 'message-square' },
 };
 
 /** 优先级 chip：只有 urgent / high 上色，其余保持中性 —— 否则「优先级」等于没有信息。 */
@@ -668,7 +676,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
           <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
               <div className="flex items-center gap-2 min-w-0">
-                <span className={`w-2 h-2 rounded-full bg-amber-500 shrink-0 ${newCount > 0 ? 'animate-pulse' : ''}`} />
+                <span className="w-2 h-2 rounded-full bg-amber-500 shrink-0" />
                 <h3 className="text-sm font-semibold text-fg-primary">{t('attention.title')}</h3>
                 {attentionQueue.length > 0 && (
                   <span className="text-[11px] text-fg-tertiary tabular-nums">{attentionQueue.length}</span>
@@ -698,8 +706,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                 >
                   {/* 行首竖条 = 「比上次访问新」。不是动画：动画会一直抢注意力。 */}
                   <span className={`w-1 self-stretch rounded-full shrink-0 ${item.isNew ? 'bg-brand-500' : 'bg-transparent'}`} />
-                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs ${ATTENTION_TONE[item.kind].icon}`}>
-                    {ATTENTION_TONE[item.kind].glyph}
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${ATTENTION_TONE[item.kind].icon}`}>
+                    <NamedIcon name={ATTENTION_TONE[item.kind].iconName} size={15} />
                   </span>
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-2">
