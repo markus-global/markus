@@ -17,6 +17,30 @@
 const STORAGE_KEY = 'markus_attention_count';
 const EVENT = 'markus:attention-count';
 
+/**
+ * 「上次看过概览待办」的时刻。
+ *
+ * 只用于把**新到的**事项标出来（行首竖条 +「新」）。故意放本地：它是「我看过没有」
+ * 的个人视图，不是服务端事实；跨设备各记各的比伪造一个共享真相更诚实。
+ */
+const LAST_SEEN_KEY = 'markus_attention_last_seen';
+
+export function readAttentionLastSeen(): string | null {
+  try {
+    return localStorage.getItem(LAST_SEEN_KEY);
+  } catch {
+    return null;
+  }
+}
+
+export function writeAttentionLastSeen(iso: string): void {
+  try {
+    localStorage.setItem(LAST_SEEN_KEY, iso);
+  } catch {
+    /* 隐私模式下不可用：退化为「本次不标新」，不影响待办本身 */
+  }
+}
+
 export function publishAttentionCount(count: number): void {
   try {
     localStorage.setItem(STORAGE_KEY, String(count));

@@ -112,6 +112,24 @@
   },
   "attention": {
     "title": "Necesita tu atención",
+    "newCount": "{{count}} nuevas",
+    "more": "{{count}} más",
+    "kind": {
+      "approval_request": "Solicitud de aprobación",
+      "requirement_approval": "Requisito por revisar",
+      "task_review": "Espera tu revisión",
+      "blocked_hold": "En pausa",
+      "task_failed": "Fallida",
+      "unread_message": "Mensaje sin leer"
+    },
+    "act": {
+      "approval_request": "Aprobar",
+      "requirement_approval": "Revisar",
+      "task_review": "Revisar",
+      "blocked_hold": "Desbloquear",
+      "task_failed": "Atender",
+      "unread_message": "Abrir"
+    },
     "history": "Historial",
     "allClear": "Todo despejado - nada necesita tu atención ahora mismo.",
     "approvals": "a) Aprobaciones pendientes",

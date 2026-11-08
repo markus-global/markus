@@ -1035,6 +1035,12 @@ export interface TaskInfo {
   completedAt?: string;
   createdAt?: string;
   updatedAt?: string;
+  /**
+   * 进入**当前状态**的时刻（服务端在状态转移时写入，`packages/shared/src/types/task.ts`）。
+   * 与 `updatedAt` 的区别：任何编辑都会刷新 `updatedAt`，而「等了多久」必须锚在状态上。
+   * 缺省 = 本列引入前的旧行（迁移时已用 `updated_at` 回填），消费方按「约」展示。
+   */
+  statusChangedAt?: string;
   result?: string;
   taskType?: string;
   scheduleConfig?: {

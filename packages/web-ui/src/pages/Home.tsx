@@ -1,19 +1,19 @@
 import { useEffect, useState, useMemo, useRef, useCallback, forwardRef } from 'react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo } from '../api.ts';
+import { api, hubApi, getHubToken, restoreHubTokenFromBackend, type AgentInfo, type TaskInfo, type OpsDashboard, type TeamInfo, type RequirementInfo, type ProjectInfo, type StorageInfo, type DeliverableInfo, type ApprovalInfo, type NotificationInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
-import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
-import { publishAttentionCount, publishUnreadCount } from '../lib/attentionCount.ts';
+import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
+import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
 import { subscribeHistoryModal } from '../lib/historyModal.ts';
-import { needsHumanDecision } from '../lib/blockedReason.ts';
+import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import {
   OverviewUsageTier,
   useOverviewUsageData,
@@ -50,6 +50,30 @@ const STATUS_COLORS_BG: Record<string, string> = {
   rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
 };
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
+
+/**
+ * 「需要你的关注」每一行的视觉：图标底色 + 主行动按钮 + 一个字符图标。
+ *
+ * 颜色跟着**类型**走，不跟优先级走：紧急程度已经由那颗优先级 chip 和排序表达了，
+ * 再给整行染红只会让所有行看起来一样急。
+ */
+const ATTENTION_TONE: Record<AttentionKind, { icon: string; btn: string; glyph: string }> = {
+  approval_request: { icon: 'bg-amber-500/15 text-amber-600', btn: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20', glyph: '✓' },
+  blocked_hold: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', glyph: '⏸' },
+  task_failed: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', glyph: '✕' },
+  requirement_approval: { icon: 'bg-brand-500/15 text-brand-500', btn: 'bg-brand-500/10 text-brand-500 hover:bg-brand-500/20', glyph: '📌' },
+  task_review: { icon: 'bg-blue-500/15 text-blue-500', btn: 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20', glyph: '✓' },
+  unread_message: { icon: 'bg-surface-overlay text-fg-secondary', btn: 'bg-surface-overlay text-fg-secondary hover:bg-surface-overlay/70', glyph: '✉' },
+};
+
+/** 优先级 chip：只有 urgent / high 上色，其余保持中性 —— 否则「优先级」等于没有信息。 */
+const PRIORITY_CHIP: Record<string, string> = {
+  urgent: 'bg-red-500/15 text-red-500',
+  high: 'bg-amber-500/15 text-amber-600',
+  medium: 'bg-surface-overlay text-fg-secondary',
+  low: 'bg-surface-overlay text-fg-tertiary',
+  none: 'bg-surface-overlay text-fg-tertiary',
+};
 const ACTIVITY_ICON_BG: Record<string, string> = {
   completed: 'bg-green-500/15', in_progress: 'bg-brand-500/15', pending: 'bg-amber-500/15',
   review: 'bg-blue-500/15', failed: 'bg-red-500/15', blocked: 'bg-amber-500/15',
@@ -466,48 +490,77 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return m;
   }, [board]);
 
-  const isBlockedAbnormally = useCallback((task: TaskInfo): boolean => {
-    // 「需要你决定」的唯一边界：hold 是有人主动挂起；deps 是引擎自己会恢复的等待。
-    // 旧数据（无 blockedReason）由 blockedReasonOf 回退到原推断，行为不变。
-    return needsHumanDecision(task, id => allTasksMap.get(id));
-  }, [allTasksMap]);
+  /**
+   * 审批请求 + 未读通知：**旧实现完全没有这两类**（只算 board + requirements），
+   * 于是「agent 等你批准 / 等你回答 / 有人 @ 你」在概览里不存在 —— 用户以为没事。
+   */
+  const [pendingApprovals, setPendingApprovals] = useState<ApprovalInfo[]>([]);
+  const [unreadNotices, setUnreadNotices] = useState<NotificationInfo[]>([]);
+  /** 上次看过概览的时刻：只用于把「新到的」标出来，本页停留期间不再改写。 */
+  const [attentionLastSeen] = useState<string | null>(() => readAttentionLastSeen());
 
-  const attentionItems = useMemo(() => {
-    const items: Array<{ type: 'review' | 'approval' | 'blocked' | 'blocked_abnormal'; count: number; tasks?: TaskInfo[]; urgent?: number }> = [];
-    const reviewTasks = (board['review'] ?? []).filter(tk => tk.reviewerType === 'human');
-    if (reviewTasks.length > 0) {
-      const urg = reviewTasks.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-      items.push({ type: 'review', count: reviewTasks.length, tasks: reviewTasks, urgent: urg });
-    }
-    const pendingReqs = allRequirements.filter(r => r.status === 'pending');
-    if (pendingReqs.length > 0) items.push({ type: 'approval', count: pendingReqs.length });
+  useEffect(() => {
+    if (previewMode || !isActive) return;
+    let alive = true;
+    const load = () => {
+      api.approvals.list()
+        .then(r => { if (alive) setPendingApprovals((r.approvals ?? []).filter(a => a.status === 'pending')); })
+        // 读失败不清空：显示上一次已知的，比谎报「没有」诚实。
+        .catch(() => undefined);
+      if (authUser?.id) {
+        api.notifications.list(authUser.id, true, { limit: 20 })
+          .then(r => { if (alive) setUnreadNotices(r.notifications ?? []); })
+          .catch(() => undefined);
+      }
+    };
+    load();
+    window.addEventListener('markus:notifications-changed', load);
+    return () => {
+      alive = false;
+      window.removeEventListener('markus:notifications-changed', load);
+    };
+  }, [previewMode, isActive, authUser?.id]);
 
-    const blockedTasks = [...(board['blocked'] ?? [])];
-    const failedTasks = [...(board['failed'] ?? [])];
-    const abnormal = blockedTasks.filter(t => isBlockedAbnormally(t));
-    const normal = blockedTasks.filter(t => !isBlockedAbnormally(t));
-    const allAbnormal = [...abnormal, ...failedTasks];
+  const allTasksFlat = useMemo(() => Object.values(board).flat(), [board]);
+  /** 队列本体（标题/优先级/等待时长/跳转参数/排序）**只有一处实现**：`lib/attentionQueue.ts`。 */
+  const attentionQueue = useMemo(() => buildAttentionQueue({
+    tasks: allTasksFlat,
+    requirements: allRequirements,
+    approvals: pendingApprovals,
+    notifications: unreadNotices,
+    taskById: id => allTasksMap.get(id),
+    lastSeenAt: attentionLastSeen,
+  }), [allTasksFlat, allRequirements, pendingApprovals, unreadNotices, allTasksMap, attentionLastSeen]);
 
-    if (allAbnormal.length > 0) {
-      const urg = allAbnormal.filter(tk => tk.priority === 'urgent' || tk.priority === 'high').length;
-      items.push({ type: 'blocked_abnormal', count: allAbnormal.length, tasks: allAbnormal, urgent: urg });
-    }
-    if (normal.length > 0) {
-      items.push({ type: 'blocked', count: normal.length, tasks: normal });
-    }
-    return items;
-  }, [board, allRequirements, isBlockedAbnormally]);
+  const actionables = useMemo(() => actionableCount(attentionQueue), [attentionQueue]);
+  const newCount = useMemo(() => attentionQueue.filter(i => i.isNew).length, [attentionQueue]);
+  /** 等待时长每分钟刷一次（不是每帧）——「等了 3 小时」不需要秒级精度。 */
+  const [waitTick, setWaitTick] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setWaitTick(Date.now()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
 
   /**
-   * 待办数的**唯一计算点**就在这里：概览算完就发布，侧栏/底栏只订阅（见 lib/attentionCount）。
-   * 曾经三个口径各算各的（侧栏=未读+待批、概览=待批+阻塞、移动端=只算未读），
-   * 结果移动端永远是 0。
+   * 待办数的**唯一计算点**仍在这里：概览算完就发布，侧栏/底栏只订阅（`lib/attentionCount`）。
+   * 口径（Owner 2026-11-08）：数字 = 要你动手的 + 未读消息。未读由 `publishUnreadCount`
+   * 单独发布、读取时合并，所以这里只发布 actionables，避免同一件事计两次。
    */
-  const attentionTotal = useMemo(() => attentionItems.reduce((n, i) => n + i.count, 0), [attentionItems]);
   useEffect(() => {
     if (previewMode) return;
-    publishAttentionCount(attentionTotal);
-  }, [attentionTotal, previewMode]);
+    publishAttentionCount(actionables);
+  }, [actionables, previewMode]);
+
+  // 停留 3 秒后才写回 last-seen：一进页面就写，等于把「新」全吃掉，标记就失去意义。
+  useEffect(() => {
+    if (previewMode || !isActive) return;
+    const timer = window.setTimeout(() => writeAttentionLastSeen(new Date().toISOString()), 3000);
+    return () => window.clearTimeout(timer);
+  }, [previewMode, isActive, attentionQueue.length]);
+
+  const openAttention = useCallback((item: AttentionItem) => {
+    navBus.navigate(item.target.page === 'WORK' ? PAGE.WORK : PAGE.TEAM, item.target.params);
+  }, []);
 
   // 未读数单独取、合并发布：用户看到的徒标就一个数字，但两个来源得各自更新。
   useEffect(() => {
@@ -611,67 +664,74 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         </div>
 
         {/* ── Needs Your Attention ── */}
-        {!previewMode && attentionItems.length > 0 && (
+        {!previewMode && (
           <div className="bg-gradient-to-r from-amber-500/5 via-surface-elevated to-surface-elevated border border-amber-500/20 rounded-2xl overflow-hidden">
             <div className="flex items-center justify-between px-5 pt-4 pb-2">
-              <div className="flex items-center gap-2">
-                <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+              <div className="flex items-center gap-2 min-w-0">
+                <span className={`w-2 h-2 rounded-full bg-amber-500 shrink-0 ${newCount > 0 ? 'animate-pulse' : ''}`} />
                 <h3 className="text-sm font-semibold text-fg-primary">{t('attention.title')}</h3>
+                {attentionQueue.length > 0 && (
+                  <span className="text-[11px] text-fg-tertiary tabular-nums">{attentionQueue.length}</span>
+                )}
+                {newCount > 0 && (
+                  <span className="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-brand-500/15 text-brand-500 shrink-0">
+                    {t('attention.newCount', { count: newCount })}
+                  </span>
+                )}
               </div>
               <button
                 onClick={() => setShowHistory(true)}
-                className="text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors"
+                className="text-[11px] font-medium text-fg-tertiary hover:text-fg-primary transition-colors shrink-0"
               >
                 {t('attention.history')}
               </button>
             </div>
-            <div className="px-3 pb-3 space-y-1">
-              {attentionItems.map(item => {
-                const isAbnormal = item.type === 'blocked_abnormal';
-                const isBlocked = item.type === 'blocked' || isAbnormal;
-                const iconBg = item.type === 'review' ? 'bg-blue-500/15' : item.type === 'approval' ? 'bg-amber-500/15' : isAbnormal ? 'bg-red-500/15' : 'bg-amber-500/15';
-                const btnCls = item.type === 'review' ? 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20'
-                  : item.type === 'approval' ? 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20'
-                  : isAbnormal ? 'bg-red-500/10 text-red-500 hover:bg-red-500/20'
-                  : 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20';
-                const label = item.type === 'review' ? t('attention.tasksReview')
-                  : item.type === 'approval' ? t('attention.requirements')
-                  : isAbnormal ? t('attention.blockedAbnormal')
-                  : t('attention.blockedNormal');
-                const btnLabel = item.type === 'review' ? t('attention.goReview')
-                  : item.type === 'approval' ? t('attention.goApprove')
-                  : t('attention.viewDetails');
-                return (
-                  <div key={item.type} className="flex items-center gap-3 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 cursor-pointer transition-colors"
-                    onClick={() => {
-                      if (item.type === 'review') {
-                        navBus.navigate(PAGE.WORK, { statusFilter: 'review' });
-                      } else if (item.type === 'approval') {
-                        navBus.navigate(PAGE.WORK);
-                      } else if (isBlocked && item.tasks && item.tasks.length > 0) {
-                        navBus.navigate(PAGE.WORK, { openTask: item.tasks[0]!.id });
-                      } else {
-                        navBus.navigate(PAGE.WORK);
-                      }
-                    }}>
-                    <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${iconBg}`}>
-                      <AttentionIcon type={isBlocked ? 'blocked' : item.type as 'review' | 'approval' | 'blocked'} />
-                    </span>
-                    <div className="flex-1 min-w-0">
-                      <span className="text-xs font-medium text-fg-primary">
-                        {item.count} {label}
-                      </span>
-                      {(item.urgent ?? 0) > 0 && (
-                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-500/15 text-red-500">{item.urgent} urgent</span>
+            {attentionQueue.length === 0 ? (
+              <div className="px-5 pb-4 text-xs text-fg-tertiary">{t('attention.allClear')}</div>
+            ) : (
+            <div className="px-3 pb-2 space-y-1">
+              {attentionQueue.slice(0, 5).map(item => (
+                <button
+                  key={item.id}
+                  onClick={() => openAttention(item)}
+                  className="w-full flex items-start gap-2.5 px-3 py-2.5 rounded-xl hover:bg-surface-overlay/40 transition-colors text-left"
+                >
+                  {/* 行首竖条 = 「比上次访问新」。不是动画：动画会一直抢注意力。 */}
+                  <span className={`w-1 self-stretch rounded-full shrink-0 ${item.isNew ? 'bg-brand-500' : 'bg-transparent'}`} />
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 text-xs ${ATTENTION_TONE[item.kind].icon}`}>
+                    {ATTENTION_TONE[item.kind].glyph}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="flex items-center gap-2">
+                      <span className="text-xs font-medium text-fg-primary truncate">{item.title}</span>
+                      {item.priority !== 'none' && (
+                        <span className={`shrink-0 px-1.5 py-0.5 rounded text-[10px] font-semibold ${PRIORITY_CHIP[item.priority] ?? PRIORITY_CHIP.none}`}>
+                          {item.priority}
+                        </span>
                       )}
-                    </div>
-                    <button className={`text-[11px] font-medium px-3 py-1 rounded-lg transition-colors shrink-0 ${btnCls}`}>
-                      {btnLabel}
-                    </button>
-                  </div>
-                );
-              })}
+                    </span>
+                    <span className="mt-0.5 flex items-center gap-1.5 text-[11px] text-fg-tertiary">
+                      <span className="shrink-0">{t(`attention.kind.${item.kind}`)}</span>
+                      <span>·</span>
+                      <span className="tabular-nums shrink-0">{formatWaiting(item, waitTick)}</span>
+                      {item.meta && (<><span>·</span><span className="truncate">{item.meta}</span></>)}
+                    </span>
+                  </span>
+                  <span className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors ${ATTENTION_TONE[item.kind].btn}`}>
+                    {t(`attention.act.${item.kind}`)}
+                  </span>
+                </button>
+              ))}
+              {attentionQueue.length > 5 && (
+                <button
+                  onClick={() => setShowHistory(true)}
+                  className="w-full text-[11px] text-fg-tertiary hover:text-fg-primary px-3 py-2 text-left"
+                >
+                  {t('attention.more', { count: attentionQueue.length - 5 })}
+                </button>
+              )}
             </div>
+            )}
           </div>
         )}
 
@@ -1158,19 +1218,6 @@ function ActivityIcon({ status }: { status: string }) {
       {(status === 'failed' || status === 'rejected') && <><circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" /></>}
       {status === 'blocked' && <><circle cx="12" cy="12" r="10" /><line x1="4.93" y1="4.93" x2="19.07" y2="19.07" /></>}
       {status === 'cancelled' && <><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></>}
-    </svg>
-  );
-}
-
-// ── Attention Icon ──────────────────────────────────────────────────────────
-
-function AttentionIcon({ type }: { type: 'review' | 'approval' | 'blocked' }) {
-  const color = type === 'review' ? '#3b82f6' : type === 'approval' ? '#f59e0b' : '#ef4444';
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      {type === 'review' && <><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></>}
-      {type === 'approval' && <><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="12" y1="18" x2="12" y2="12" /><line x1="9" y1="15" x2="15" y2="15" /></>}
-      {type === 'blocked' && <><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>}
     </svg>
   );
 }
