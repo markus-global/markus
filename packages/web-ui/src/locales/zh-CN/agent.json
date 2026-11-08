@@ -510,9 +510,9 @@
         "4": "后台"
       },
       "attention": {
-        "idle": "待命",
-        "focused": "专注",
-        "deciding": "决策中"
+        "idle": "Agent 待命",
+        "focused": "Agent 专注",
+        "deciding": "Agent 决策中"
       },
       "mailbox": {
         "commentFrom": "来自 {{name}} 的评论",

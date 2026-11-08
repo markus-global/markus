@@ -92,6 +92,27 @@
     "cancelled": "Cancelled",
     "expired": "Expired"
   },
+  "taskStatus": {
+    "pending": "Pending",
+    "inProgress": "In Progress",
+    "blocked": "Blocked",
+    "waitingDeps": "Waiting on Dependencies",
+    "onHold": "On Hold",
+    "review": "In Review",
+    "completed": "Completed",
+    "failed": "Failed",
+    "rejected": "Rejected",
+    "cancelled": "Cancelled",
+    "archived": "Archived"
+  },
+  "processStatus": {
+    "idle": "Idle",
+    "working": "Working",
+    "online": "Online",
+    "offline": "Offline",
+    "paused": "Paused",
+    "error": "Error"
+  },
   "status": {
     "pending": "Pending",
     "approved": "Approved",

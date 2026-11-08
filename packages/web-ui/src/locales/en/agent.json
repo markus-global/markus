@@ -511,9 +511,9 @@
         "4": "Background"
       },
       "attention": {
-        "idle": "STANDBY",
-        "focused": "FOCUSED",
-        "deciding": "DECIDING"
+        "idle": "AGENT STANDBY",
+        "focused": "AGENT FOCUSED",
+        "deciding": "AGENT DECIDING"
       },
       "mailbox": {
         "commentFrom": "Comment from {{name}}",

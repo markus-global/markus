@@ -505,9 +505,9 @@
         "4": "Antecedentes"
       },
       "attention": {
-        "idle": "IDLE",
-        "focused": "FOCUSED",
-        "deciding": "DECIDING"
+        "idle": "AGENTE EN ESPERA",
+        "focused": "AGENTE ENFOCADO",
+        "deciding": "AGENTE DECIDIENDO"
       },
       "mailbox": {
         "commentFrom": "Comentario de {{name}}",

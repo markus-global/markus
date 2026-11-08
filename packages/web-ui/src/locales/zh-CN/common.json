@@ -92,6 +92,27 @@
     "cancelled": "已取消",
     "expired": "已过期"
   },
+  "taskStatus": {
+    "pending": "待处理",
+    "inProgress": "进行中",
+    "blocked": "已阻塞",
+    "waitingDeps": "等待依赖",
+    "onHold": "已挂起",
+    "review": "评审中",
+    "completed": "已完成",
+    "failed": "失败",
+    "rejected": "已拒绝",
+    "cancelled": "已取消",
+    "archived": "已归档"
+  },
+  "processStatus": {
+    "idle": "空闲",
+    "working": "工作中",
+    "online": "在线",
+    "offline": "离线",
+    "paused": "已暂停",
+    "error": "错误"
+  },
   "status": {
     "pending": "待处理",
     "approved": "已批准",
