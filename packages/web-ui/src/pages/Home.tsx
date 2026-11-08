@@ -13,6 +13,7 @@ import { HistoryModal } from '../components/HistoryModal.tsx';
 import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
 import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
+import { TONE, taskTone, type Tone } from '../lib/tone.ts';
 import { subscribeHistoryModal } from '../lib/historyModal.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
 import {
@@ -40,16 +41,13 @@ function llmStateFromSettings(d: {
   };
 }
 
-const DONUT_COLORS: Record<string, string> = {
-  completed: '#22c55e', in_progress: '#8b5cf6', review: '#3b82f6',
-  pending: '#f59e0b', failed: '#ef4444', blocked: '#f59e0b',
-  rejected: '#fb7185', cancelled: '#6b7280',
-};
-const STATUS_COLORS_BG: Record<string, string> = {
-  completed: 'bg-green-500', in_progress: 'bg-brand-500', review: 'bg-blue-500',
-  pending: 'bg-amber-500', failed: 'bg-red-500', blocked: 'bg-amber-500',
-  rejected: 'bg-rose-400', cancelled: 'bg-gray-500',
-};
+/** 图表用的十六进制从 `lib/tone.ts` 派生 —— 图表与徽标不能各说一套颜色。 */
+const DONUT_COLORS: Record<string, string> = Object.fromEntries(
+  ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled']
+    .map(s => [s, TONE[taskTone(s)].hex]),
+);
+/** 活动条圆点：同一份 `taskTone`。 */
+const statusDot = (status: string): string => TONE[taskTone(status)].dot;
 const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled'];
 
 /**
@@ -65,41 +63,46 @@ const STATUS_ORDER = ['completed', 'in_progress', 'review', 'pending', 'failed',
  * 之前用的是 ✓ ⏸ ✕ 📌 ✉ 这类字体符号：字号、行高、平台字体一变，大小和基线
  * 就跟着漂，而且和侧边栏那套描边图标不是同一个视觉语言。
  */
-const ATTENTION_TONE: Record<AttentionKind, { icon: string; btn: string; iconName: string }> = {
-  agent_question: { icon: 'bg-violet-500/15 text-violet-500', btn: 'bg-violet-500/10 text-violet-500 hover:bg-violet-500/20', iconName: 'help-circle' },
-  approval_request: { icon: 'bg-amber-500/15 text-amber-600', btn: 'bg-amber-500/10 text-amber-600 hover:bg-amber-500/20', iconName: 'check-circle' },
-  blocked_hold: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-pause' },
-  task_failed: { icon: 'bg-red-500/15 text-red-500', btn: 'bg-red-500/10 text-red-500 hover:bg-red-500/20', iconName: 'circle-x' },
-  requirement_approval: { icon: 'bg-brand-500/15 text-brand-500', btn: 'bg-brand-500/10 text-brand-500 hover:bg-brand-500/20', iconName: 'file-check' },
-  task_review: { icon: 'bg-blue-500/15 text-blue-500', btn: 'bg-blue-500/10 text-blue-500 hover:bg-blue-500/20', iconName: 'clipboard-check' },
-  unread_message: { icon: 'bg-surface-overlay text-fg-secondary', btn: 'bg-surface-overlay text-fg-secondary hover:bg-surface-overlay/70', iconName: 'message-square' },
+const ATTENTION_VIEW: Record<AttentionKind, { tone: Tone; iconName: string }> = {
+  // 四类「在等你」全用 attention 紫：颜色只回答「需不需要我」，具体是什么事由图标 + 文案说。
+  agent_question: { tone: 'attention', iconName: 'help-circle' },
+  approval_request: { tone: 'attention', iconName: 'check-circle' },
+  requirement_approval: { tone: 'attention', iconName: 'file-check' },
+  task_review: { tone: 'attention', iconName: 'clipboard-check' },
+  // 卡住（等外部/依赖）与出错各有自己的含义，不能和「等你」混成一个颜色。
+  blocked_hold: { tone: 'blocked', iconName: 'circle-pause' },
+  task_failed: { tone: 'danger', iconName: 'circle-x' },
+  // 未读消息：只是消息，不要求你动手 → 中性灰。
+  unread_message: { tone: 'neutral', iconName: 'message-square' },
 };
 
-/** 优先级 chip：只有 urgent / high 上色，其余保持中性 —— 否则「优先级」等于没有信息。 */
+/**
+ * 优先级 chip：**只有 urgent 占色**（红 = 真紧急），其余一律中性。
+ * 优先级与状态是两个轴；两边都上色就会出现「橙色阻塞 + 橙色高优」这种只能猜的组合。
+ */
 const PRIORITY_CHIP: Record<string, string> = {
-  urgent: 'bg-red-500/15 text-red-500',
-  high: 'bg-amber-500/15 text-amber-600',
+  urgent: TONE.danger.chip,
+  high: 'bg-surface-overlay text-fg-secondary font-semibold',
   medium: 'bg-surface-overlay text-fg-secondary',
   low: 'bg-surface-overlay text-fg-tertiary',
   none: 'bg-surface-overlay text-fg-tertiary',
 };
-const ACTIVITY_ICON_BG: Record<string, string> = {
-  completed: 'bg-green-500/15', in_progress: 'bg-brand-500/15', pending: 'bg-amber-500/15',
-  review: 'bg-blue-500/15', failed: 'bg-red-500/15', blocked: 'bg-amber-500/15',
-  rejected: 'bg-red-500/15', cancelled: 'bg-gray-500/15',
-};
+const ACTIVITY_ICON_BG: Record<string, string> = Object.fromEntries(
+  ['completed', 'in_progress', 'review', 'pending', 'failed', 'blocked', 'rejected', 'cancelled']
+    .map(s => [s, TONE[taskTone(s)].chip]),
+);
 const ACTIVITY_LABEL_KEYS: Record<string, string> = {
   'Heartbeat check-in': 'agentFocus.heartbeatCheckIn',
   'Heartbeat check-in (idle skip)': 'agentFocus.heartbeatSkip',
 };
 
-/** OB-1：agent runtime phase → 圆点颜色（Home 概览进度展开） */
+/** OB-1：agent runtime phase → 圆点颜色。含义同样归到六个 tone，不再自编一套。 */
 const AGENT_PHASE_DOT: Record<string, string> = {
-  thinking: 'bg-amber-400 animate-pulse',
-  running: 'bg-blue-400 animate-pulse',
-  'waiting-dependency': 'bg-orange-400 animate-pulse',
-  blocked: 'bg-red-400 animate-pulse',
-  degraded: 'bg-amber-500 animate-pulse',
+  thinking: `${TONE.active.dot} animate-pulse`,
+  running: `${TONE.active.dot} animate-pulse`,
+  'waiting-dependency': `${TONE.blocked.dot} animate-pulse`,
+  blocked: `${TONE.danger.dot} animate-pulse`,
+  degraded: `${TONE.danger.dot} animate-pulse`,
   error: 'bg-red-500 animate-pulse',
   idle: 'bg-green-400',
   offline: 'bg-gray-400',
@@ -707,8 +710,8 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                 >
                   {/* 行首竖条 = 「比上次访问新」。不是动画：动画会一直抢注意力。 */}
                   <span className={`w-1 self-stretch rounded-full shrink-0 ${item.isNew ? 'bg-brand-500' : 'bg-transparent'}`} />
-                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${ATTENTION_TONE[item.kind].icon}`}>
-                    <NamedIcon name={ATTENTION_TONE[item.kind].iconName} size={15} />
+                  <span className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${TONE[ATTENTION_VIEW[item.kind].tone].chip}`}>
+                    <NamedIcon name={ATTENTION_VIEW[item.kind].iconName} size={15} />
                   </span>
                   <span className="flex-1 min-w-0">
                     <span className="flex items-center gap-2">
@@ -726,7 +729,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                       {item.meta && (<><span>·</span><span className="truncate">{item.meta}</span></>)}
                     </span>
                   </span>
-                  <span className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors ${ATTENTION_TONE[item.kind].btn}`}>
+                  <span className={`shrink-0 text-[11px] font-medium px-2.5 py-1 rounded-lg transition-colors ${TONE[ATTENTION_VIEW[item.kind].tone].btn}`}>
                     {t(`attention.act.${item.kind}`)}
                   </span>
                 </button>
@@ -888,7 +891,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                       {sortedStatusEntries.map(({ status, count }) => (
                         <button key={status} onClick={() => navBus.navigate(PAGE.WORK, { statusFilter: status })}
                           className="flex items-center gap-2 group cursor-pointer text-left">
-                          <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS_BG[status] ?? 'bg-gray-500'}`} />
+                          <span className={`w-2 h-2 rounded-full shrink-0 ${statusDot(status)}`} />
                           <span className="text-xs text-fg-tertiary group-hover:text-fg-secondary transition-colors">{taskStatusLabel(status, t)}</span>
                           <span className="text-sm font-semibold text-fg-primary ml-auto tabular-nums">{count}</span>
                         </button>

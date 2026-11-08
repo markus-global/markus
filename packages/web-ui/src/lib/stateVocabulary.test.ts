@@ -33,6 +33,7 @@ import {
   taskStatusPresentation,
   type LabelEntry,
 } from './stateVocabulary.ts';
+import { TONE } from './tone.ts';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const localesDir = join(here, '..', 'locales');
@@ -201,14 +202,17 @@ describe('blocked 的原因：等待依赖 ≠ 已挂起', () => {
     expect(taskStatusLabel('blocked', t, 'hold')).toBe('已挂起');
   });
 
-  it('语气与文案同源：deps 不带红色，hold 警示色', () => {
+  it('语气与文案同源：deps 不带警示色，hold 用「卡住」色，两者不同', () => {
     const t = translatorFor('zh-CN');
     const deps = taskStatusPresentation('blocked', t, 'deps');
     const hold = taskStatusPresentation('blocked', t, 'hold');
     expect(deps.tone).toBe(BLOCKED_TONE.deps);
     expect(hold.tone).toBe(BLOCKED_TONE.hold);
-    expect(BLOCKED_TONE.deps.chip).not.toContain('red');
-    expect(BLOCKED_TONE.hold.chip).toContain('red');
+    // 不写死具体色值（旧断言写死 'red'，一改配色就变黑）；断言的是**来源与关系**：
+    // deps = 不需要人动（neutral），hold = 卡住（blocked），且两者不可能同色。
+    expect(BLOCKED_TONE.deps.chip).toBe(TONE.neutral.chip);
+    expect(BLOCKED_TONE.hold.chip).toBe(TONE.blocked.chip);
+    expect(BLOCKED_TONE.deps.chip).not.toBe(BLOCKED_TONE.hold.chip);
     // 非 blocked 状态没有原因语气：交给各自的既有配色。
     expect(taskStatusPresentation('in_progress', t, undefined).tone).toBeNull();
   });

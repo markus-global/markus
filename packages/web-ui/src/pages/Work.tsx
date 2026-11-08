@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
@@ -745,40 +746,33 @@ const BOARD_COLUMNS_BASE = [
 ] as const;
 
 const SUB_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:  'bg-amber-500/15 text-amber-600',
-  blocked:  'bg-amber-500/15 text-amber-600',
-  failed:   'bg-red-500/15 text-red-500',
-  rejected: 'bg-red-500/15 text-red-500',
+  pending:  TONE.neutral.chip,
+  blocked:  TONE.blocked.chip,
+  failed:   TONE.danger.chip,
+  rejected: TONE.danger.chip,
 };
-const TASK_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:     'bg-amber-500/15 text-amber-600',
-  in_progress: 'bg-blue-500/15 text-blue-500',
-  blocked:     'bg-orange-500/15 text-orange-500',
-  review:      'bg-purple-500/15 text-purple-500',
-  revision:    'bg-amber-500/15 text-amber-600',
-  completed:   'bg-green-500/15 text-green-600',
-  failed:      'bg-red-500/15 text-red-500',
-  rejected:    'bg-red-500/15 text-red-500',
-  cancelled:   'bg-gray-500/15 text-fg-tertiary',
-  archived:    'bg-gray-500/15 text-fg-tertiary',
-};
+/** 任务状态色：**由 `lib/tone.ts` 派生**，本文件不再出现颜色名（Owner 2026-11-08）。 */
+const TASK_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
+  ['pending', 'in_progress', 'blocked', 'review', 'revision', 'completed', 'failed', 'rejected', 'cancelled', 'archived']
+    .map(s => [s, TONE[taskTone(s)].chip]),
+);
+/** 优先级只区分「紧急」：只有 urgent 占红，其余中性（优先级不是状态，不占状态色）。 */
 const PRIORITY_COLORS: Record<string, string> = {
-  urgent: 'border-l-red-500', high: 'border-l-amber-500', medium: 'border-l-blue-500', low: 'border-l-gray-500',
+  urgent: TONE.danger.border,
+  high: TONE.neutral.border,
+  medium: TONE.neutral.border,
+  low: TONE.neutral.border,
 };
 const PRIORITY_BADGE_CLS: Record<string, string> = {
   low:    'bg-gray-500/15 text-fg-tertiary',
-  medium: 'bg-blue-500/15 text-blue-500',
-  high:   'bg-amber-500/15 text-amber-600',
-  urgent: 'bg-red-500/15 text-red-500',
+  medium: 'bg-surface-overlay text-fg-secondary',
+  high:   'bg-surface-overlay text-fg-secondary font-semibold',
+  urgent: TONE.danger.chip,
 };
-const REQ_STATUS_BADGE_CLS: Record<string, string> = {
-  pending:     'bg-amber-500/15 text-amber-600',
-  in_progress: 'bg-brand-500/15 text-brand-500',
-  completed:   'bg-green-500/15 text-green-600',
-  rejected:    'bg-red-500/15 text-red-500',
-  cancelled:   'bg-gray-600/15 text-fg-tertiary',
-  archived:    'bg-gray-600/10 text-fg-tertiary/60',
-};
+const REQ_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
+  ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived']
+    .map(s => [s, TONE[requirementTone(s)].chip]),
+);
 
 function buildTaskStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
   return (Object.keys(TASK_STATUS_BADGE_CLS) as string[]).reduce((acc, k) => {

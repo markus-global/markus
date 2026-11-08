@@ -24,6 +24,7 @@
  * 而第二写者不会报错，只会慢慢和第一份分叉。
  */
 import type { TFunction } from 'i18next';
+import { TONE } from './tone.ts';
 
 /**
  * 治理态：枚举值（snake_case，来自 `ItemStatus`）→ 词表键（camelCase）。
@@ -85,17 +86,19 @@ export const BLOCKED_REASON_KEY: Readonly<Record<BlockedReason, string>> = {
 export const BLOCKED_TONE: Readonly<
   Record<BlockedReason, { chip: string; dot: string; bar: string; card: string }>
 > = {
+  // 等依赖：引擎自己会恢复，**没有任何人需要动手** → 中性灰。
   deps: {
-    chip: 'bg-gray-500/10 text-fg-secondary',
-    dot: 'bg-gray-400',
-    bar: 'bg-gray-400',
-    card: 'bg-surface-elevated/60 border-border-default/60',
+    chip: TONE.neutral.chip,
+    dot: TONE.neutral.dot,
+    bar: TONE.neutral.dot,
+    card: `${TONE.neutral.surface} border-border-default/60`,
   },
+  // 被人工挂起：卡住了、需要人推 → blocked 橙（与「等你」的紫、「出错」的红分开）。
   hold: {
-    chip: 'bg-red-500/10 text-red-500',
-    dot: 'bg-red-500',
-    bar: 'bg-red-500',
-    card: 'bg-red-500/[0.06] border-red-500/30 ring-1 ring-red-500/15',
+    chip: TONE.blocked.chip,
+    dot: TONE.blocked.dot,
+    bar: TONE.blocked.dot,
+    card: `${TONE.blocked.surface} border-orange-500/30 ring-1 ring-orange-500/15`,
   },
 };
 

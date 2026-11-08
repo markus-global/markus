@@ -8,6 +8,7 @@ import { PAGE } from '../routes.ts';
 import { DeliverableDetailModal } from './DeliverableDetailModal.tsx';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { taskStatusPresentation } from '../lib/stateVocabulary.ts';
+import { TONE, entityTone } from '../lib/tone.ts';
 
 // ─── Entity types & metadata ─────────────────────────────────────────────────
 
@@ -289,7 +290,9 @@ export function EntityCard({ id, type: typeHint, label }: { id: string; type?: E
                 <span
                   data-testid="entity-status"
                   data-status={meta.status}
-                  className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${p?.tone?.chip ?? 'bg-brand-500/10 text-brand-500'}`}
+                  // team chat 里的卡片与 Work 页/概览用**同一份** entityTone，局部不再写颜色
+                  // （否则「待验收」在这里又是另一种颜色）。
+                  className={`px-1.5 py-0.5 text-[10px] rounded font-medium ${p?.tone?.chip ?? TONE[entityTone(meta.type, meta.status)].chip}`}
                 >
                   {p?.label ?? meta.status}
                 </span>

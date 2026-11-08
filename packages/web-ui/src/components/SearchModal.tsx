@@ -5,6 +5,7 @@ import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE, type PageId } from '../routes.ts';
 import { Avatar } from './Avatar.tsx';
+import { TONE, taskTone } from '../lib/tone.ts';
 
 type SearchCategory = 'all' | 'agents' | 'tasks' | 'requirements' | 'projects' | 'deliverables' | 'workflows';
 
@@ -469,10 +470,8 @@ function StatusDot({ status }: { status: string }) {
 }
 
 function TaskStatusIcon({ status }: { status: string }) {
-  const color = status === 'completed' ? 'text-green-500 bg-green-500/15'
-    : status === 'in_progress' ? 'text-blue-500 bg-blue-500/15'
-    : status === 'pending' ? 'text-amber-500 bg-amber-500/15'
-    : 'text-fg-tertiary bg-surface-elevated';
+  // 状态色只来自 `lib/tone.ts`（与 Work / 概览 / 聊天卡片同一套含义）。
+  const color = TONE[taskTone(status)].chip;
   return (
     <div className={`w-7 h-7 rounded-lg flex items-center justify-center shrink-0 ${color}`}>
       <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" /></svg>

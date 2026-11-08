@@ -15,6 +15,7 @@ import { MarkdownMessage } from './MarkdownMessage.tsx';
 import { ConfirmModal } from './ConfirmModal.tsx';
 import { CodingToolCard, type CodingToolSession } from './CodingToolCard.tsx';
 import { NamedIcon } from '../lib/namedIcons.tsx';
+import { TONE, type Tone } from '../lib/tone.ts';
 import {
   getToolMeta, getShellCommand, formatDuration, formatLogTime, truncate, prettyJson, formatArgsDetail, suppressVirtualScrollAdjust,
   filterCompletedStarts, streamEntryToExecEntry,
@@ -245,20 +246,32 @@ const TASK_STATUS_TO_CARD_STATE: Record<string, TaskCardState> = {
   archived: 'archived',
 };
 
+/**
+ * 状态色统一从 `lib/tone.ts` 取：执行卡只是同一套含义的另一种排版。
+ * 之前这两张表（任务卡 + 需求卡）各写了一遍颜色字面量，于是「待审批」在这里是
+ * 琥珫、在概览是别的一样，同一个含义两套颜色。
+ */
+const toneCls = (t: Tone) => ({
+  borderClass: TONE[t].border,
+  bgClass: TONE[t].surface,
+  badgeClass: TONE[t].chip,
+  textClass: TONE[t].text,
+});
+
 const TASK_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '⏳', labelKey: 'execution.card.pendingApproval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
-  completed:   { icon: '✅', labelKey: 'execution.card.completed',      borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
-  review:      { icon: '👀', labelKey: 'execution.card.inReview',       borderClass: 'border-purple-500/40',      bgClass: 'bg-purple-500/5',         badgeClass: 'bg-purple-500/15 text-purple-500', textClass: 'text-purple-500' },
-  blocked:     { icon: '🚫', labelKey: 'execution.card.blocked',        borderClass: 'border-orange-500/40',      bgClass: 'bg-orange-500/5',         badgeClass: 'bg-orange-500/15 text-orange-500', textClass: 'text-orange-500' },
-  failed:      { icon: '❌', labelKey: 'execution.card.failed',         borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
-  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
-  revision:    { icon: '✏️', labelKey: 'execution.card.revision',       borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: 'text-amber-600' },
-  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  archived:    { icon: '📦', labelKey: 'execution.card.archived',       borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+  pending:     { icon: '⏳', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
+  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      ...toneCls('attention') },
+  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
+  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
+  completed:   { icon: '✅', labelKey: 'execution.card.completed',      ...toneCls('success') },
+  review:      { icon: '👀', labelKey: 'execution.card.inReview',       ...toneCls('attention') },
+  blocked:     { icon: '🚫', labelKey: 'execution.card.blocked',        ...toneCls('blocked') },
+  failed:      { icon: '❌', labelKey: 'execution.card.failed',         ...toneCls('danger') },
+  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
+  revision:    { icon: '✏️', labelKey: 'execution.card.revision',       ...toneCls('active') },
+  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
+  archived:    { icon: '📦', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
+  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
 };
 
 export function TaskApprovalCard({ info }: { info: TaskApprovalInfo }) {
@@ -405,15 +418,15 @@ const REQ_STATUS_TO_CARD_STATE: Record<string, ReqCardState> = {
 };
 
 const REQ_STATUS_CONFIG: Record<string, { icon: string; labelKey: string; borderClass: string; bgClass: string; badgeClass: string; textClass: string }> = {
-  pending:     { icon: '📋', labelKey: 'execution.card.pendingApproval', borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      borderClass: 'border-amber-500/40',       bgClass: 'bg-amber-500/5',          badgeClass: 'bg-amber-500/15 text-amber-600', textClass: '' },
-  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     borderClass: 'border-blue-500/40',        bgClass: 'bg-blue-500/5',           badgeClass: 'bg-blue-500/15 text-blue-500',   textClass: 'text-blue-500' },
-  completed:   { icon: '✅', labelKey: 'execution.card.completed',      borderClass: 'border-green-500/30',       bgClass: 'bg-green-500/5',          badgeClass: 'bg-green-500/15 text-green-500', textClass: 'text-green-500' },
-  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       borderClass: 'border-red-500/30',         bgClass: 'bg-red-500/5',            badgeClass: 'bg-red-500/15 text-red-500',     textClass: 'text-red-500' },
-  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  archived:    { icon: '📦', labelKey: 'execution.card.archived',       borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: 'text-fg-tertiary' },
-  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        borderClass: 'border-border-default/40',  bgClass: 'bg-surface-secondary/30', badgeClass: 'bg-surface-elevated text-fg-tertiary', textClass: '' },
+  pending:     { icon: '📋', labelKey: 'execution.card.pendingApproval', ...toneCls('attention') },
+  approving:   { icon: '⏳', labelKey: 'execution.card.approving',      ...toneCls('attention') },
+  rejecting:   { icon: '⏳', labelKey: 'execution.card.rejecting',      ...toneCls('attention') },
+  in_progress: { icon: '▶',  labelKey: 'execution.card.inProgress',     ...toneCls('active') },
+  completed:   { icon: '✅', labelKey: 'execution.card.completed',      ...toneCls('success') },
+  rejected:    { icon: '❌', labelKey: 'execution.card.rejected',       ...toneCls('danger') },
+  cancelled:   { icon: '⊘',  labelKey: 'execution.card.cancelled',     ...toneCls('neutral') },
+  archived:    { icon: '📦', labelKey: 'execution.card.archived',       ...toneCls('neutral') },
+  loading:     { icon: '⏳', labelKey: 'execution.card.loading',        ...toneCls('neutral') },
 };
 
 const REQ_WS_EVENTS = [
