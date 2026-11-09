@@ -78,6 +78,7 @@ function createMockAgentManager() {
     }),
     removeAgent: vi.fn(async (id: string) => { agents.delete(id); }),
     startAgent: vi.fn(async () => {}),
+    hydrateHumanStopped: vi.fn(),
     restoreAgent: vi.fn(async (row: { id: string; name: string; orgId: string }) => {
       const agent = createMockAgent({ id: row.id, config: { name: row.name, orgId: row.orgId } });
       agents.set(row.id, agent);

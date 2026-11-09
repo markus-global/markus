@@ -10,7 +10,10 @@ import { platform } from 'node:os';
 
 function run(command: string, timeout = 3000): string {
   try {
-    return execSync(command, { encoding: 'utf-8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
+    const output = execSync(command, { encoding: 'utf-8', timeout, stdio: ['ignore', 'pipe', 'ignore'] });
+    // Never hand a non-string back to a caller that will .trim() it: execSync is
+    // typed as string, but a stub (tests) or an odd spawn can yield undefined.
+    return typeof output === 'string' ? output : '';
   } catch {
     return '';
   }

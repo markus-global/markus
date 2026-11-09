@@ -31,6 +31,7 @@ import {
   setEnvValue,
   resolveActionSecret,
   resolveHostLocale,
+  installEgress,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -45,7 +46,6 @@ import {
   type ExternalAgentRegistration,
   proxyFetch,
 } from '@markus/core';
-import { installEgress } from '@markus/shared';
 import {
   OrganizationService,
   TaskService,

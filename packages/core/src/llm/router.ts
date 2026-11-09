@@ -1833,7 +1833,9 @@ export class LLMRouter {
   }
 
   async chat(request: LLMRequest, providerName?: string, options?: ChatOptions): Promise<LLMResponse> {
-    let { primary, routedModel } = this.resolveRoute(request, providerName, options);
+    const route = this.resolveRoute(request, providerName, options);
+    const primary = route.primary;
+    let routedModel = route.routedModel;
 
     const provider = this.providers.get(primary);
     if (!provider) {
@@ -1992,7 +1994,9 @@ export class LLMRouter {
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal, options?: ChatOptions): Promise<LLMResponse> {
-    let { primary, routedModel } = this.resolveRoute(request, providerName, options);
+    const route = this.resolveRoute(request, providerName, options);
+    const primary = route.primary;
+    let routedModel = route.routedModel;
 
     const provider = this.providers.get(primary);
     if (!provider) {
