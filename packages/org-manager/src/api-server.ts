@@ -2700,7 +2700,14 @@ export class APIServer {
   }
 
   stop(): void {
-    this.server?.close();
+    // Same reasoning as applyBindHost(): http close() waits for every connection
+    // to end, and an open /ws socket never ends on its own. Drop WS + force-close
+    // sockets so shutdown does not hang.
+    this.ws.detach();
+    const live = this.server;
+    if (!live) return;
+    live.close();
+    live.closeAllConnections();
   }
 
   /**
@@ -2806,16 +2813,47 @@ export class APIServer {
     if (previous === target) return { host: target, port: this.port, changed: false };
     const live = this.server;
     if (!live) throw new Error('API server is not running');
+
+    // 1. Drop the WebSocket layer + every open WS client first. An upgraded /ws
+    //    socket never ends on its own, and `http.Server.close()` waits for *all*
+    //    connections before firing its callback — without this the close below
+    //    hangs until every browser tab navigates away (observed as "switch takes
+    //    forever, then fails").
+    this.ws.detach();
+
+    // 2. Close the HTTP listener. `close()` stops accepting new connections
+    //    immediately but only resolves once existing ones end; force the lingering
+    //    keep-alive sockets down so it resolves now instead of waiting on them.
     await new Promise<void>((resolve, reject) => {
       live.close(err => (err ? reject(err) : resolve()));
+      live.closeAllConnections();
     });
+
+    // 3. Rebind the same port on the new interface. If the target address can't
+    //    be bound (e.g. not assigned to this machine), roll back to the previous
+    //    one so the API never ends up dead.
     const next = createServer((req, res) => this.handleRequest(req, res));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        next.once('error', reject);
+        next.listen(this.port, target, () => resolve());
+      });
+    } catch (err) {
+      log.error(`Failed to bind ${target}:${this.port}; restoring ${previous ?? '127.0.0.1'}`, { error: String(err) });
+      const fallbackHost = previous ?? '127.0.0.1';
+      const restore = createServer((req, res) => this.handleRequest(req, res));
+      await new Promise<void>((resolve, reject) => {
+        restore.once('error', reject);
+        restore.listen(this.port, fallbackHost, () => resolve());
+      });
+      this.server = restore;
+      this.ws.attach(restore);
+      this.currentHost = fallbackHost;
+      throw err;
+    }
+
     this.server = next;
     this.ws.attach(next);
-    await new Promise<void>((resolve, reject) => {
-      next.once('error', reject);
-      next.listen(this.port, target, () => resolve());
-    });
     this.currentHost = target;
     log.info(`API server rebound ${previous ?? 'unknown'} -> ${target}:${this.port}`);
     return { host: target, port: this.port, changed: true, previous };
@@ -8989,13 +9027,26 @@ EXPLANATION_END`;
 
     // Settings — Network / Proxy
     if (path === '/api/settings/network' && req.method === 'GET') {
-      const { loadConfig: loadCfg } = await import('@markus/shared');
-      const { getEffectiveProxy } = await import('@markus/core');
+      const { loadConfig: loadCfg, egressStatus, EGRESS_PROBE_URL: probeUrl } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
-      const effective = getEffectiveProxy();
+      const egress = egressStatus();
       this.json(res, 200, {
         network: currentConfig.network ?? {},
-        effective: { proxy: effective.url ?? null, source: effective.source },
+        effective: { proxy: egress.policy.url ?? null, source: egress.policy.source },
+        egress: {
+          enabled: egress.policy.enabled,
+          source: egress.policy.source,
+          displayUrl: egress.displayUrl ?? null,
+          noProxy: egress.policy.noProxy,
+          installed: egress.installed,
+          error: egress.error ?? null,
+          probeUrl,
+          coverage: {
+            // Stated plainly so the UI does not have to lie by omission.
+            covered: ['fetch / undici in this process', 'child processes (git, gh, npm, tunnel)'],
+            notCovered: ['browser automation (Chrome uses its own proxy settings)'],
+          },
+        },
         server: {
           host: currentConfig.server?.host ?? '127.0.0.1',
           hostDecided: currentConfig.server?.hostDecided ?? false,
@@ -9017,6 +9068,16 @@ EXPLANATION_END`;
       const updates: Record<string, unknown> = {};
       if (typeof body['proxy'] === 'string') updates.proxy = body['proxy'] || undefined;
       if (typeof body['proxyEnabled'] === 'boolean') updates.proxyEnabled = body['proxyEnabled'];
+      // NO_PROXY list: array or comma-separated string.
+      if (body['noProxy'] !== undefined) {
+        const raw = Array.isArray(body['noProxy']) ? body['noProxy'] : String(body['noProxy']).split(',');
+        const entries = raw.map((entry: unknown) => String(entry).trim()).filter(Boolean);
+        if (entries.some((entry: string) => /\s/.test(entry))) {
+          this.json(res, 400, { error: 'noProxy entries must not contain whitespace' });
+          return;
+        }
+        updates.noProxy = entries;
+      }
       const requestedHost = typeof body['host'] === 'string' ? body['host'].trim() : undefined;
       if (requestedHost !== undefined && requestedHost !== '') {
         const allowed = ['127.0.0.1', '0.0.0.0', 'localhost', '::1'];
@@ -9034,6 +9095,12 @@ EXPLANATION_END`;
           saveConfig({ server: { host: requestedHost, hostDecided: true } } as any, this.markusConfigPath);
         }
         saveConfig({ network: updates } as any, this.markusConfigPath);
+        // Proxy changes take effect now: re-install the dispatcher so a corrected
+        // URL does not require restarting the process.
+        if (updates.proxy !== undefined || updates.proxyEnabled !== undefined || updates.noProxy !== undefined) {
+          const { installEgress } = await import('@markus/shared');
+          await installEgress({ force: true });
+        }
         this.json(res, 200, {
           ok: true,
           network: updates,
@@ -9046,7 +9113,46 @@ EXPLANATION_END`;
       return;
     }
 
+    // Probe the egress route: the response echoes the exit IP, which is the only
+    // way a user can tell "my proxy is configured" from "my proxy is being used".
+    if (path === '/api/settings/network/test' && req.method === 'POST') {
+      const testUser = await this.requireAuth(req, res);
+      if (!testUser) return;
+      if (testUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+      const { installEgress, EGRESS_PROBE_URL } = await import('@markus/shared');
+      const status = await installEgress({ force: true });
+      const startedAt = Date.now();
+      try {
+        const probe = await fetch(EGRESS_PROBE_URL, { signal: AbortSignal.timeout(8000) });
+        const data = await probe.json().catch(() => ({} as { ip?: string }));
+        this.json(res, 200, {
+          ok: probe.ok,
+          exitIp: (data as { ip?: string }).ip ?? null,
+          latencyMs: Date.now() - startedAt,
+          proxied: status.installed,
+          source: status.policy.source,
+          error: probe.ok ? null : `probe returned HTTP ${probe.status}`,
+        });
+      } catch (err) {
+        this.json(res, 200, {
+          ok: false,
+          exitIp: null,
+          latencyMs: Date.now() - startedAt,
+          proxied: status.installed,
+          source: status.policy.source,
+          error: String(err),
+        });
+      }
+      return;
+    }
+
     // Apply the configured interface to the live listener (no process restart).
+    // CRITICAL: We must respond to the client BEFORE calling applyBindHost(),
+    // because applyBindHost() closes the current server — killing this connection.
+    // Return 202 Accepted so the frontend knows not to wait for a body.
     if (path === '/api/settings/network/apply' && req.method === 'POST') {
       const applyUser = await this.requireAuth(req, res);
       if (!applyUser) return;
@@ -9060,8 +9166,16 @@ EXPLANATION_END`;
         if (requested) {
           saveConfig({ server: { host: requested, hostDecided: true } } as any, this.markusConfigPath);
         }
-        const result = await this.applyBindHost();
-        this.json(res, 200, { ok: true, ...result });
+        // Respond FIRST with 202 — client must not wait for this connection.
+        // Rebind only AFTER the response is actually flushed: applyBindHost()
+        // calls closeAllConnections(), which would otherwise destroy this socket
+        // mid-write and the client would never see the 202.
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, rebinding: true }), () => {
+          void this.applyBindHost().catch(err =>
+            log.error(`applyBindHost failed after 202 response: ${err}`),
+          );
+        });
       } catch (err) {
         this.json(res, 500, { error: `Failed to rebind listener: ${String(err)}` });
       }

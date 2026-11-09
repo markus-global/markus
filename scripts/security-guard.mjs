@@ -40,6 +40,9 @@ function stripComments(source) {
     .replace(/(^|[^:])\/\/[^\n]*/g, '$1');
 }
 
+/** Only this module may own the egress dispatcher. */
+const EGRESS_MODULE = 'packages/shared/src/net/egress.ts';
+
 // ── 1. dynamic code generation ────────────────────────────────────────────
 const packagesDir = join(root, 'packages');
 const offenders = [];
@@ -68,7 +71,34 @@ if (offenders.length > 0) {
   );
 }
 
-// ── 2 & 3. API gate invariants ────────────────────────────────────────────
+// ── 2. one egress implementation point ────────────────────────────────────
+// Proxy support has twice been re-implemented per call site, which is why 105 of
+// 120 outbound calls used to bypass the proxy entirely. Anything that builds its
+// own dispatcher must live in the egress module.
+const egressOffenders = [];
+if (statSync(packagesDir, { throwIfNoEntry: false })?.isDirectory()) {
+  for (const pkg of readdirSync(packagesDir)) {
+    if (pkg === 'chrome-extension') continue;
+    const srcDir = join(packagesDir, pkg, 'src');
+    if (!statSync(srcDir, { throwIfNoEntry: false })?.isDirectory()) continue;
+    for (const file of walk(srcDir)) {
+      const rel = relative(root, file);
+      if (rel === EGRESS_MODULE) continue;
+      const text = stripComments(readFileSync(file, 'utf-8'));
+      if (/\bnew ProxyAgent\s*\(|\bsetGlobalDispatcher\s*\(/.test(text)) {
+        egressOffenders.push(rel);
+      }
+    }
+  }
+}
+
+if (egressOffenders.length > 0) {
+  failures.push(
+    `Second egress/proxy implementation found (must live only in ${EGRESS_MODULE}):\n    ${egressOffenders.join('\n    ')}`,
+  );
+}
+
+// ── 3 & 4. API gate invariants ────────────────────────────────────────────
 const apiServerPath = join(root, 'packages/org-manager/src/api-server.ts');
 const apiServer = readFileSync(apiServerPath, 'utf-8');
 

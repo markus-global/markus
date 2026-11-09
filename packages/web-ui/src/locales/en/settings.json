@@ -1,5 +1,16 @@
 {
   "title": "Settings",
+  "tabDesc": {
+    "appearance": "Theme, language and interface preferences",
+    "storage": "Disk usage and where your data lives",
+    "providers": "Connect model providers and manage API keys",
+    "execution": "Agent runtime limits and concurrency control",
+    "browser": "Browser automation backend and extension",
+    "search": "Web search providers and API keys",
+    "integrations": "Connect external messaging platforms",
+    "network": "Access scope, proxy and egress routing",
+    "account": "Your account, organization and license"
+  },
   "nav": {
     "appearance": "General",
     "providers": "Model Providers",
@@ -320,8 +331,22 @@
     "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN."
   },
   "networkProxy": {
-    "title": "Network Proxy",
-    "description": "Configure an HTTP proxy for ChatGPT OAuth login and Codex API calls. Other LLM providers use system/TUN proxy automatically.",
+    "title": "Network proxy",
+    "description": "Applies to every outbound HTTP request from the server: model providers, Hub, IM, search, update checks and child processes. Leave blank to resolve from the environment and system settings.",
+    "noProxyTitle": "Bypass list",
+    "noProxyEmpty": "none yet",
+    "noProxyPlaceholder": "e.g. 192.168.1.0/24",
+    "noProxyHint": "Loopback, private ranges and .local are included by default. Exact hosts, .suffix and CIDR are supported.",
+    "remove": "Remove",
+    "test": "Test route",
+    "testing": "Testing…",
+    "testResult": "Exit IP {{ip}} · {{ms}}ms · {{route}}",
+    "testFailed": "Test failed: {{error}}",
+    "viaProxy": "via proxy",
+    "direct": "direct",
+    "coverageTitle": "What this covers",
+    "coverageCovered": "Covered: fetch/undici calls in this process and child processes (git, gh, npm, tunnels).",
+    "coverageNotCovered": "Not covered: browser automation — Chrome uses its own proxy settings.",
     "active": "Active:",
     "noProxy": "No proxy detected",
     "sourceConfig": "markus.json",

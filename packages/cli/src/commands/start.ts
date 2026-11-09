@@ -45,6 +45,7 @@ import {
   type ExternalAgentRegistration,
   proxyFetch,
 } from '@markus/core';
+import { installEgress } from '@markus/shared';
 import {
   OrganizationService,
   TaskService,
@@ -2562,6 +2563,11 @@ async function startServerCore(
   // (e.g. Telegram from mainland China), which surfaces as "connection failed"
   // while the LLM path — already proxy-aware — works fine on the same machine.
   // One install point; no per-adapter wiring to forget.
+  //
+  // `installEgress` additionally installs the process-wide dispatcher and exports
+  // the proxy variables for child processes, so `fetch` call sites that were never
+  // taught about proxies are covered as well.
+  await installEgress();
   setHttpFetch(proxyFetch);
 
   const messageRouter = new MessageRouter();

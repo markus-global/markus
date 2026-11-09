@@ -7,7 +7,9 @@ import { WSBroadcaster } from '../src/ws-server.js';
 class MockWebSocket extends EventEmitter {
   readyState = WebSocket.OPEN;
   sent: string[] = [];
+  terminated = false;
   send(data: string) { this.sent.push(data); }
+  terminate() { this.terminated = true; this.readyState = WebSocket.CLOSED; }
 }
 
 describe('WSBroadcaster', () => {
@@ -101,5 +103,24 @@ describe('WSBroadcaster', () => {
     expect(broadcaster.getClientCount()).toBe(1);
     (broadcaster as unknown as { clients: Set<MockWebSocket> }).clients.delete(client);
     expect(broadcaster.getClientCount()).toBe(0);
+  });
+
+  it('detach() terminates every client and clears tracking (regression: rebind hang)', () => {
+    // Rationale: applyBindHost() calls http.Server.close(), which only fires its
+    // callback after ALL connections end. An upgraded /ws socket never ends on
+    // its own, so without detach() the rebind hangs forever ("switch takes
+    // forever, then fails"). detach() must (a) terminate each client socket and
+    // (b) drop all tracking so a fresh attach() starts clean.
+    const extra = new MockWebSocket();
+    (broadcaster as unknown as { clients: Set<MockWebSocket> }).clients.add(extra);
+
+    broadcaster.detach();
+
+    expect(client.terminated).toBe(true);
+    expect(userClient.terminated).toBe(true);
+    expect(extra.terminated).toBe(true);
+    expect(broadcaster.getClientCount()).toBe(0);
+    expect((broadcaster as unknown as { userConnections: Map<string, Set<MockWebSocket>> }).userConnections.size).toBe(0);
+    expect((broadcaster as unknown as { wss?: unknown }).wss).toBeUndefined();
   });
 });
