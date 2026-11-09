@@ -1,10 +1,12 @@
 import {
   createLogger,
   requirementId as genRequirementId,
+  isValidRequirementTransition,
   type Requirement,
   type RequirementStatus,
   type RequirementSource,
   type TaskPriority,
+  type BlockedReason,
 } from '@markus/shared';
 import type { AgentManager } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
@@ -629,6 +631,7 @@ export class RequirementService implements ApprovalTargetPort {
     newStatus: RequirementStatus,
     userId?: string,
     actorType?: 'human' | 'agent' | 'system',
+    blockedReason?: BlockedReason | null,
   ): Requirement {
     if (!RequirementService.VALID_STATUSES.has(newStatus)) {
       throw new Error(`Invalid requirement status "${newStatus}". Valid values: ${[...RequirementService.VALID_STATUSES].join(', ')}`);
@@ -636,10 +639,16 @@ export class RequirementService implements ApprovalTargetPort {
     const req = this.requirements.get(id);
     if (!req) throw new Error(`Requirement ${id} not found`);
     if (req.status === newStatus) return req;
+    // One matrix, one execute point: refuse an illegal transition instead of applying it.
+    if (!isValidRequirementTransition(req.status, newStatus)) {
+      throw new Error(`Illegal requirement state transition ${req.status} -> ${newStatus}`);
+    }
 
     const now = new Date().toISOString();
     const oldStatus = req.status;
     req.status = newStatus;
+    // `blocked` carries a reason; every other state clears it.
+    req.blockedReason = newStatus === 'blocked' ? (blockedReason ?? 'hold') : undefined;
     req.updatedAt = now;
 
     if (newStatus === 'in_progress' && oldStatus === 'pending') {
@@ -664,7 +673,7 @@ export class RequirementService implements ApprovalTargetPort {
       } else if (newStatus === 'rejected') {
         this.requirementRepo.reject(id, req.rejectedReason ?? '', userId).catch(persistErr);
       } else {
-        this.requirementRepo.updateStatus(id, newStatus).catch(persistErr);
+        this.requirementRepo.updateStatus(id, newStatus, req.blockedReason ?? null).catch(persistErr);
       }
     }
 

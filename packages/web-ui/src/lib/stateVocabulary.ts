@@ -59,11 +59,13 @@ export const TASK_STATUS_KEY: Readonly<Record<string, string>> = {
  * 缺省（`undefined` / `null` / 未知值）= `deps`，与 `packages/shared/src/types/task.ts` 的
  * `BlockedReason` 注释一致：该列出现之前的旧行按旧行为处理。
  */
-export type BlockedReason = 'deps' | 'hold';
+export type BlockedReason = 'deps' | 'hold' | 'workflow';
 
 /** 把 API 上的原始值收敛成闭集：不认识的一律当 `deps`（旧行语义）。 */
 export function blockedReasonOf(reason: string | null | undefined): BlockedReason {
-  return reason === 'hold' ? 'hold' : 'deps';
+  if (reason === 'hold') return 'hold';
+  if (reason === 'workflow') return 'workflow';
+  return 'deps';
 }
 
 /**
@@ -75,6 +77,7 @@ export function blockedReasonOf(reason: string | null | undefined): BlockedReaso
 export const BLOCKED_REASON_KEY: Readonly<Record<BlockedReason, string>> = {
   deps: 'waitingDeps',
   hold: 'onHold',
+  workflow: 'workflowPaused',
 };
 
 /**
@@ -99,6 +102,13 @@ export const BLOCKED_TONE: Readonly<
     dot: TONE.blocked.dot,
     bar: TONE.blocked.dot,
     card: `${TONE.blocked.surface} border-orange-500/30 ring-1 ring-orange-500/15`,
+  },
+  // 工作流自动暂停：引擎会自己恢复（无人需动手）→ 与 deps 同中性灰，绝不冒充「等你」。
+  workflow: {
+    chip: TONE.neutral.chip,
+    dot: TONE.neutral.dot,
+    bar: TONE.neutral.dot,
+    card: `${TONE.neutral.surface} border-border-default/60`,
   },
 };
 

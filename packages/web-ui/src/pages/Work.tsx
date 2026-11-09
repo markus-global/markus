@@ -800,27 +800,11 @@ function buildReqStatusBadges(t: (key: string, opts?: Record<string, unknown>) =
 }
 const PRIORITY_CYCLE = ['low', 'medium', 'high', 'urgent'] as const;
 const TASK_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'review', 'completed', 'failed', 'rejected', 'cancelled'] as const;
-const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'completed', 'rejected', 'cancelled'] as const;
+const REQ_STATUS_CYCLE = ['pending', 'in_progress', 'blocked', 'completed', 'rejected', 'cancelled'] as const;
 
-// Mirror of TASK_TRANSITIONS from @markus/shared — kept in sync manually
-const TASK_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
-  pending:     new Set(['in_progress', 'blocked', 'rejected', 'cancelled']),
-  in_progress: new Set(['review', 'blocked', 'failed', 'cancelled']),
-  blocked:     new Set(['in_progress', 'cancelled']),
-  review:      new Set(['completed', 'in_progress', 'cancelled']),
-  completed:   new Set(['archived', 'in_progress']),
-  failed:      new Set(['in_progress', 'archived']),
-  rejected:    new Set(['archived']),
-  cancelled:   new Set(['archived']),
-  archived:    new Set([]),
-};
-const REQ_ALLOWED_TRANSITIONS: Record<string, ReadonlySet<string>> = {
-  pending:     new Set(['in_progress', 'rejected', 'cancelled']),
-  in_progress: new Set(['completed', 'cancelled']),
-  completed:   new Set([]),
-  rejected:    new Set([]),
-  cancelled:   new Set([]),
-};
+// Transitions come from one mirrored source (constants/allowedTransitions.ts),
+// which a contract test keeps identical to @markus/shared's matrices.
+import { TASK_ALLOWED_TRANSITIONS, REQ_ALLOWED_TRANSITIONS } from '../constants/allowedTransitions.ts';
 const STATUS_DOT: Record<string, string> = {
   idle: 'bg-green-400', working: 'bg-blue-400', error: 'bg-red-400', paused: 'bg-amber-400', offline: 'bg-gray-600',
   pending: 'bg-amber-400',

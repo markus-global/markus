@@ -97,6 +97,7 @@
     "blocked": "Bloqueado",
     "waitingDeps": "Esperando dependencias",
     "onHold": "Suspendida",
+    "workflowPaused": "Flujo en pausa",
     "review": "En revisión",
     "completed": "Completado",
     "failed": "Fallido",

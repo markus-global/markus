@@ -57,7 +57,7 @@ export type TaskType = 'standard' | 'scheduled';
  * `null` / 缺省 = 旧数据（本字段引入前写入的行）。读取方必须回退到按 `blockedBy` 推断，
  * 这与引入该字段之前的行为完全一致，所以不需要数据迁移。
  */
-export type BlockedReason = 'deps' | 'hold';
+export type BlockedReason = 'deps' | 'hold' | 'workflow';
 
 export interface ScheduleConfig {
   /** Cron expression, e.g. "0 9 * * 1-5" */

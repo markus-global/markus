@@ -461,7 +461,7 @@ describe('onTaskStatusChange', () => {    it('marks run completed when all tasks
 
       await runner.onTaskStatusChange(failedTask as never);
       expect(mocks.taskService.updateTaskStatus).toHaveBeenCalledWith(
-        failedTaskId, 'pending', 'system', true, false, 'system', expect.stringContaining('auto-retry'),
+        failedTaskId, 'in_progress', 'system', true, false, 'system', expect.stringContaining('auto-retry'),
       );
       expect(runner.getRun(run.id)?.status).toBe('running');
     });

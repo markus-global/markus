@@ -412,7 +412,7 @@ export interface TaskRepo {
   create(data: Record<string, unknown>): Promise<unknown>;
   ensureExists(data: Record<string, unknown>): Promise<void>;
   listByOrg(orgId: string, filters?: Record<string, unknown>): TaskRow[];
-  updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | null): Promise<void>;
+  updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | 'workflow' | null): Promise<void>;
   assign(id: string, agentId: string, updatedBy?: string): Promise<void>;
   update(id: string, data: Record<string, unknown>): Promise<void>;
   updateDeliverables(id: string, deliverables: unknown): Promise<void>;

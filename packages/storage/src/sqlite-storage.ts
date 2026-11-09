@@ -301,6 +301,7 @@ CREATE TABLE IF NOT EXISTS requirements (
   approved_at TEXT,
   rejected_reason TEXT,
   rejected_by TEXT,
+  blocked_reason TEXT,
   tags TEXT DEFAULT '[]',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
@@ -850,6 +851,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // 为什么被 blocked（deps / hold）。旧行为 NULL —— 读取方按 blocked_by 回退推断，
     // 与引入本列之前的行为一致，所以不需要回填。
     { table: 'tasks', column: 'blocked_reason', sql: 'ALTER TABLE tasks ADD COLUMN blocked_reason TEXT' },
+    // Requirements may now be blocked like tasks (with the same reason discriminant).
+    { table: 'requirements', column: 'blocked_reason', sql: 'ALTER TABLE requirements ADD COLUMN blocked_reason TEXT' },
     { table: 'tasks', column: 'deliverables', sql: "ALTER TABLE tasks ADD COLUMN deliverables TEXT" },
     { table: 'tasks', column: 'project_id', sql: "ALTER TABLE tasks ADD COLUMN project_id TEXT" },
     { table: 'tasks', column: 'created_by', sql: "ALTER TABLE tasks ADD COLUMN created_by TEXT" },
@@ -1560,7 +1563,7 @@ export class SqliteTaskRepo {
     return r ? this._map(r) : undefined;
   }
 
-  async updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | null) {
+  async updateStatus(id: string, status: string, updatedBy?: string, blockedReason?: 'deps' | 'hold' | 'workflow' | null) {
     const ts = now();
     const sets = ['status = ?', 'updated_at = ?'];
     const vals: SqlParams = [status, ts];
@@ -1886,8 +1889,10 @@ export class SqliteRequirementRepo {
     return r ? this._map(r) : undefined;
   }
 
-  async updateStatus(id: string, status: string) {
-    this.db.prepare('UPDATE requirements SET status = ?, updated_at = ? WHERE id = ?').run(status, now(), id);
+  async updateStatus(id: string, status: string, blockedReason?: 'deps' | 'hold' | 'workflow' | null) {
+    this.db
+      .prepare('UPDATE requirements SET status = ?, blocked_reason = ?, updated_at = ? WHERE id = ?')
+      .run(status, status === 'blocked' ? (blockedReason ?? null) : null, now(), id);
   }
 
   async approve(id: string, approvedBy: string) {
@@ -1963,6 +1968,8 @@ export class SqliteRequirementRepo {
       title: r['title'],
       description: r['description'],
       status: r['status'],
+      // Only meaningful while blocked (a stale column on a non-blocked row must not leak).
+      blockedReason: r['status'] === 'blocked' ? ((r['blocked_reason'] as string | null) ?? null) : null,
       priority: r['priority'],
       source: r['source'],
       createdBy: r['created_by'],
