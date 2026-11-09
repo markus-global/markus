@@ -1246,9 +1246,18 @@ export class LLMRouter {
    * Infer the capability type from a request based on tools, keywords, and context.
    */
   static inferCapability(request: LLMRequest): ModelCapabilityType {
-    const hasImage = request.messages.some(m =>
-      Array.isArray(m.content) && m.content.some(p => p.type === 'image_url'),
-    );
+    // ONLY the latest user turn decides vision.
+    //
+    // This used to scan the whole history. Measured consequence (2026-11-09):
+    // one screenshot attached at 04:15 routed EVERY later turn of that session
+    // — two hours of pure-text work — to the vision model, because the image
+    // stayed in history. The turn that needs eyes is the turn that brought them;
+    // afterwards the `[USER ATTACHED …]` anchor + `describe_image` is the way
+    // back to the picture.
+    const lastUser = [...request.messages].reverse().find(m => m.role === 'user');
+    const hasImage = !!lastUser
+      && Array.isArray(lastUser.content)
+      && lastUser.content.some(p => p.type === 'image_url');
     if (hasImage) return 'image_recognition';
     return 'text';
   }
@@ -1758,7 +1767,24 @@ export class LLMRouter {
     }
   }
 
-  async chat(request: LLMRequest, providerName?: string, options?: ChatOptions): Promise<LLMResponse> {
+  /**
+   * SINGLE decision point for "which provider + model serves this request".
+   *
+   * `chat()`, `chatStream()` and `previewRoute()` all resolve here, so a caller
+   * that only wants to KNOW the target (the context budget) can never disagree
+   * with the call that actually sends the prompt.
+   *
+   * Why this exists: the budget used to resolve its window on its own, from the
+   * agent's configured model. On an image-bearing turn routing sent the prompt to
+   * a 202,752-token vision model while the budget computed 1,000,000 (the default
+   * text model) — compaction never fired and the upstream finally rejected the
+   * request with `Prompt exceeds max length` (Z.AI code 1261). One turn, one target.
+   */
+  private resolveRoute(
+    request: LLMRequest,
+    providerName?: string,
+    options?: ChatOptions,
+  ): { primary: string; routedModel?: string } {
     let primary: string;
     let routedModel: string | undefined;
 
@@ -1785,6 +1811,29 @@ export class LLMRouter {
       primary = routeResult.provider;
       routedModel = routeResult.model;
     }
+    return { primary, routedModel };
+  }
+
+  /**
+   * The provider + model this request WOULD be served by, without sending it.
+   * Used by the context budget so it measures the same model that will actually
+   * receive the prompt (see {@link resolveRoute}).
+   */
+  previewRoute(
+    request: Pick<LLMRequest, 'messages' | 'model'>,
+    providerName?: string,
+    options?: ChatOptions,
+  ): { provider: string; model?: string } {
+    const { primary, routedModel } = this.resolveRoute(
+      request as LLMRequest,
+      providerName,
+      options,
+    );
+    return { provider: primary, model: this.resolveModelForProvider(primary, routedModel) };
+  }
+
+  async chat(request: LLMRequest, providerName?: string, options?: ChatOptions): Promise<LLMResponse> {
+    let { primary, routedModel } = this.resolveRoute(request, providerName, options);
 
     const provider = this.providers.get(primary);
     if (!provider) {
@@ -1943,26 +1992,7 @@ export class LLMRouter {
   }
 
   async chatStream(request: LLMRequest, onEvent: (event: LLMStreamEvent) => void, providerName?: string, signal?: AbortSignal, options?: ChatOptions): Promise<LLMResponse> {
-    let primary: string;
-    let routedModel: string | undefined;
-
-    if (providerName) {
-      primary = this.selectProvider(request, providerName);
-      if (request.model) {
-        routedModel = request.model;
-      } else if (
-        this._routingDefaultModel &&
-        this._routingDefaultModel.provider === primary &&
-        !this._capabilityRouting.assignments.text
-      ) {
-        routedModel = this._routingDefaultModel.model;
-      }
-    } else {
-      const capabilityType = options?.capabilityType ?? LLMRouter.inferCapability(request);
-      const routeResult = this.selectForCapability(capabilityType, request, options?.sessionId);
-      primary = routeResult.provider;
-      routedModel = routeResult.model;
-    }
+    let { primary, routedModel } = this.resolveRoute(request, providerName, options);
 
     const provider = this.providers.get(primary);
     if (!provider) {

@@ -24,6 +24,7 @@ import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
 import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
+import { fetchLlmSettings } from '../lib/llmSettingsCache.ts';
 import { errorMessage } from '../lib/resourceState.ts';
 import { ReadErrorNotice } from '../components/ListState.tsx';
 
@@ -79,6 +80,29 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
+
+/** Data each settings tab needs the first time it is opened (pure, testable). */
+export type SettingsLoadKey = 'llm' | 'network' | 'oauth' | 'authProfiles' | 'agent' | 'browser' | 'storage';
+
+/**
+ * The single list of loaders a tab depends on. Kept pure and exported because
+ * the failure mode it prevents is invisible: a tab that renders state nobody
+ * loads looks "empty until you press Save" (the network/proxy panel did exactly
+ * that — no `network` branch existed, so the tab opened blank and only filled in
+ * after an unrelated action called the same loader).
+ */
+export function settingsTabLoads(tab: SettingsTab): SettingsLoadKey[] {
+  switch (tab) {
+    // The 模型配置 tab shows the LLM providers AND the network/egress status.
+    case 'providers': return ['llm', 'network', 'oauth', 'authProfiles'];
+    // 网络与访问 renders the proxy + access-scope panels from network state only.
+    case 'network': return ['network'];
+    case 'execution': return ['agent'];
+    case 'browser': return ['browser'];
+    case 'storage': return ['storage'];
+    default: return [];
+  }
+}
 
 /** Maps API breakdown `name` → i18n key under dataStorage.items.* */
 const STORAGE_ITEM_KEYS: Record<string, string> = {
@@ -240,8 +264,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [egressTesting, setEgressTesting] = useState(false);
   const [egressTest, setEgressTest] = useState<{ ok: boolean; text: string } | null>(null);
   // Access scope: which interface the API binds to, and whether that was decided.
-  const [bindHostValue, setBindHostValue] = useState('127.0.0.1');
-  const [bindHostEffective, setBindHostEffective] = useState('127.0.0.1');
+  const [bindHostValue, setBindHostValue] = useState('0.0.0.0');
+  const [bindHostEffective, setBindHostEffective] = useState('0.0.0.0');
   const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
   const [bindHostNotice, setBindHostNotice] = useState('');
   const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
@@ -308,20 +332,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.health().then(setHealth).catch(() => {});
   }, []);
 
+  // This page OWNS provider mutations, so it reads fresh (`force`): a cache hit
+  // right after a save would repaint the settings the user just changed away
+  // from. The read-only surfaces (composer model menu, boot check) use the
+  // shared TTL cache in lib/llmSettingsCache.
   const loadLlmSettings = useCallback(() => {
-    fetch('/api/settings/llm')
-      .then(r => r.ok ? r.json() as Promise<LLMSettings> : Promise.reject(r.status))
+    return fetchLlmSettings({ force: true })
       .then(d => {
         if (d && typeof d === 'object' && 'providers' in d) {
-          setLlm(d);
-          setSelectedProvider(d.defaultProvider);
+          setLlm(d as unknown as LLMSettings);
+          setSelectedProvider(d.defaultProvider ?? '');
+          return true;
         }
+        return false;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadNetworkSettings = useCallback(() => {
-    fetch('/api/settings/network')
+    return fetch('/api/settings/network')
       .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string }; server?: { host?: string; effectiveHost?: string; source?: string; pendingRestart?: boolean } }> : Promise.reject(r.status))
       .then(d => {
         setProxyUrl(d.network?.proxy ?? '');
@@ -333,32 +362,33 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setEgressSource(egress.source ?? 'none');
           setEgressError(egress.error ?? null);
         }
-        setBindHostValue(d.server?.host ?? '127.0.0.1');
-        setBindHostEffective(d.server?.effectiveHost ?? '127.0.0.1');
+        setBindHostValue(d.server?.host ?? '0.0.0.0');
+        setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
         setBindHostFromEnv(d.server?.source === 'env');
         setBindHostPendingRestart(!!d.server?.pendingRestart);
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadOAuthProviders = useCallback(() => {
-    fetch('/api/settings/oauth/providers')
+    return fetch('/api/settings/oauth/providers')
       .then(r => r.ok ? r.json() as Promise<{ providers: OAuthProvider[] }> : Promise.reject(r.status))
-      .then(d => setOauthProviders(d.providers ?? []))
-      .catch(() => {});
+      .then(d => { setOauthProviders(d.providers ?? []); return true; })
+      .catch(() => false);
   }, []);
 
   const loadAuthProfiles = useCallback((validate = false) => {
     const qs = validate ? '?validate=1' : '';
-    fetch(`/api/settings/oauth/profiles${qs}`, { headers: authHeaders() })
+    return fetch(`/api/settings/oauth/profiles${qs}`, { headers: authHeaders() })
       .then(r => r.ok ? r.json() as Promise<{ profiles: AuthProfileSafe[] }> : Promise.reject(r.status))
-      .then(d => setAuthProfiles(d.profiles ?? []))
-      .catch(() => {});
+      .then(d => { setAuthProfiles(d.profiles ?? []); return true; })
+      .catch(() => false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadAgentSettings = useCallback(() => {
-    api.settings.getAgent()
+    return api.settings.getAgent()
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
         if (d && typeof d.maxPendingTasksPerAgent === 'number') setAgentMaxPending(d.maxPendingTasksPerAgent);
@@ -367,12 +397,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
           setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadBrowserSettings = useCallback(() => {
-    api.settings.getBrowser()
+    return api.settings.getBrowser()
       .then(d => {
         if (d) {
           setBrowserMode(d.mode ?? 'embedded');
@@ -384,46 +415,73 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserExtensionConnected(d.extensionConnected ?? false);
           setBrowserExtensionPort(d.extensionBridgePort ?? 9333);
         }
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
 
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
-    api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
+    const main = api.system.storage()
+      .then(setStorageInfo)
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
+    return main;
   }, []);
 
   // Global: only health check on mount
   useEffect(() => { loadHealth(); }, [loadHealth]);
 
-  // Per-tab lazy loading
+  // Per-tab lazy loading.
+  //
+  // A tab is recorded as loaded ONLY once its data actually arrived. It used to
+  // be marked loaded up-front, before the fetches resolved, so a single failed
+  // read (auth cookie not ready during boot, a 401, a dropped connection) left
+  // that tab permanently blank — the panel rendered its `useState` defaults and
+  // nothing would ever retry, until an unrelated action (pressing Save) happened
+  // to call the same loader again. That is the "opened blank, needed to update a
+  // setting to make it appear" symptom, and it hid behind a `.catch(() => {})`.
+  const [loadRetryTick, setLoadRetryTick] = useState(0);
   useEffect(() => {
     if (!resolvedTab) return;
     if (tabLoadedRef.current.has(resolvedTab)) return;
-    tabLoadedRef.current.add(resolvedTab);
 
-    switch (resolvedTab) {
-      case 'providers':
-        loadLlmSettings();
-        loadNetworkSettings();
-        loadOAuthProviders();
-        loadAuthProfiles(true);
-        break;
-      case 'execution':
-        loadAgentSettings();
-        break;
-      case 'browser':
-        loadBrowserSettings();
-        break;
-      case 'storage':
-        loadStorage();
-        break;
-      default:
-        break;
+    const loads = settingsTabLoads(resolvedTab);
+    const tasks: Array<Promise<boolean>> = [];
+    if (loads.includes('llm')) tasks.push(loadLlmSettings());
+    if (loads.includes('network')) tasks.push(loadNetworkSettings());
+    if (loads.includes('oauth')) tasks.push(loadOAuthProviders());
+    if (loads.includes('authProfiles')) tasks.push(loadAuthProfiles(true));
+    if (loads.includes('agent')) tasks.push(loadAgentSettings());
+    if (loads.includes('browser')) tasks.push(loadBrowserSettings());
+    if (loads.includes('storage')) tasks.push(loadStorage());
+
+    if (tasks.length === 0) {
+      tabLoadedRef.current.add(resolvedTab);
+      return;
     }
-  }, [resolvedTab, loadLlmSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
+
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    void Promise.all(tasks).then(results => {
+      if (cancelled) return;
+      if (results.every(Boolean)) {
+        tabLoadedRef.current.add(resolvedTab);
+        return;
+      }
+      // Stay unloaded and try again shortly — the usual cause is a transient
+      // API/auth hiccup at boot, not a permanent condition.
+      retryTimer = setTimeout(() => setLoadRetryTick(t => t + 1), 1500);
+    });
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [resolvedTab, loadRetryTick, loadLlmSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -2094,8 +2152,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onClick={() => setBindHostValue('127.0.0.1')}
                 className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
                   bindHostValue === '127.0.0.1' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-white shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-tertiary'
+                    ? 'bg-brand-600 text-on-brand shadow-sm'
+                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
                 } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
               >{t('accessScope.localOnly')}</button>
               <button
@@ -2103,8 +2161,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onClick={() => setBindHostValue('0.0.0.0')}
                 className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
                   bindHostValue === '0.0.0.0' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-white shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-tertiary'
+                    ? 'bg-brand-600 text-on-brand shadow-sm'
+                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
                 } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
               >{t('accessScope.lan')}</button>
             </div>
@@ -2200,8 +2258,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 }}
                 className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
                   bindHostPendingRestart
-                    ? 'bg-amber-500 text-white hover:bg-amber-400 active:bg-amber-600'
-                    : 'bg-brand-600 text-white hover:bg-brand-500 active:bg-brand-700'
+                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
+                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
                 }`}
               >
                 {bindHostApplying ? (

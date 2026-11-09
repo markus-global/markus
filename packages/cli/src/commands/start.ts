@@ -2082,6 +2082,15 @@ async function startServerCore(
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
+  // Tell the user their instance is reachable from the LAN (default bind is
+  // 0.0.0.0). Not an error — just so nobody is surprised that another device can
+  // open it. Login is still required for every non-loopback caller.
+  if (apiServer.isLANExposed()) {
+    startupBlank();
+    startupLog('INFO', `API 已对局域网开放（监听 ${apiServer.getBoundHost()}:${apiPort}），同一网络内的其他设备可访问（需登录）`);
+    startupLog('INFO', '  如需仅限本机：设置 → 网络与访问 → 访问范围 → 仅本机');
+  }
+
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
 

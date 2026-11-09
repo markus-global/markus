@@ -538,6 +538,10 @@
     "message": "No LLM provider configured — agents cannot process requests.",
     "goToSettings": "Go to Settings"
   },
+  "lanNotice": {
+    "message": "Reachable on your local network ({{host}}). Other devices on this network can open Markus — login is still required.",
+    "goToSettings": "Network settings"
+  },
   "license": {
     "upgradeLicense": "Upgrade"
   },

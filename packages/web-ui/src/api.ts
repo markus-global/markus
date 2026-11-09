@@ -1978,7 +1978,7 @@ export const api = {
   cu: {
     status: () => request<{ available: boolean; cuCost: number; cuRemaining: number; cuLimit: number; cuUsedToday?: number; totalCuUsed?: number }>('/cu/status'),
   },
-  health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean }>('/health'),
+  health: () => request<{ status: string; version: string; agents: number; latestVersion?: string; updateAvailable?: boolean; bindHost?: string; lanExposed?: boolean }>('/health'),
   system: {
     openPath: (path: string) =>
       request<{ ok: boolean }>('/system/open-path', { method: 'POST', body: JSON.stringify({ path }) }),

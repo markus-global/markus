@@ -42,6 +42,14 @@ describe('isContextOverflowError — real provider shapes', () => {
     ))).toBe(true);
   });
 
+  it('recognises Z.AI / GLM (live shape: proxy-wrapped code 1261)', () => {
+    // Copied from the real failure on 2026-11-09 — markus:z-ai/glm-5v-turbo.
+    expect(isContextOverflowError(err(
+      '[markus:z-ai/glm-5v-turbo] Markus proxy error 400: {"error":{"message":"Provider returned error","code":400,"metadata":{"raw":"{\\"error\\":{\\"code\\":\\"1261\\",\\"message\\":\\"Prompt exceeds max length\\"}}","provider_name":"Z.AI","is_byok":false,"provider_error_code":"1261"}}}',
+    ))).toBe(true);
+    expect(isContextOverflowError(err('Prompt exceeds max length'))).toBe(true);
+  });
+
   it('recognises gateway / OSS-server shapes', () => {
     expect(isContextOverflowError(err('context length exceeded: 131072 > 32768'))).toBe(true);
     expect(isContextOverflowError(err('too many tokens in request'))).toBe(true);

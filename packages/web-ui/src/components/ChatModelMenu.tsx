@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
+import { fetchLlmSettings, invalidateLlmSettings } from '../lib/llmSettingsCache';
 import { isChatCapableModel } from '../lib/modelCapabilities';
 import { Switch } from './Switch';
 
@@ -69,9 +70,10 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
   const loadModels = useCallback(async () => {
     setLoading(true);
     try {
-      const res = await fetch('/api/settings/llm', { credentials: 'include' });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json() as {
+      // Shared TTL cache + in-flight dedupe: this menu loads on mount AND on
+      // every open, and the Settings page / boot check read the same document.
+      // Without it, opening the menu twice fired four identical requests.
+      const data = await fetchLlmSettings() as {
         defaultProvider?: string;
         routingDefaultModel?: { provider: string; model: string } | null;
         providers?: Record<string, {
@@ -153,7 +155,7 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
           void api.settings.updateRouting({
             defaultProvider: fallback.provider,
             routingDefaultModel: fallback,
-          }).catch(() => { /* non-fatal */ });
+          }).then(() => invalidateLlmSettings()).catch(() => { /* non-fatal */ });
         } else {
           nextGlobal = null;
         }
@@ -388,4 +390,7 @@ export async function applyChatModelSelection(
     defaultProvider: sel.provider,
     routingDefaultModel: { provider: sel.provider, model: sel.model },
   });
+  // Routing just changed on the server: the shared settings snapshot is now
+  // stale, and the next menu open must not repaint the old default.
+  invalidateLlmSettings();
 }

@@ -22,6 +22,7 @@ import { Onboarding } from './components/Onboarding.tsx';
 import { Login, InviteSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
 import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
+import { fetchLlmSettings } from './lib/llmSettingsCache.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
 import { useLayout, isBrowserTabReopenSuppressed } from './contexts/LayoutContext.tsx';
@@ -39,6 +40,7 @@ import { isEditableTarget, isXtermTarget } from './lib/keyboard-shortcuts.ts';
 import { applyLessonKeyPress, type LessonKeyEvent } from './lib/shortcut-lessons.ts';
 import { knownTerminalIds, rememberTerminalId } from './lib/known-terminals.ts';
 import { isUserOnboarded, markUserOnboarded, clearUserOnboarded } from './lib/onboarding.ts';
+import { shouldShowLanNotice, acknowledgeLanNotice } from './lib/lanNotice.ts';
 
 /**
  * Inactive page slot = NOT LAYOUT, NOT PAINT, NOT STYLE.
@@ -258,6 +260,11 @@ export function App() {
   const [mustChangePassword, setMustChangePassword] = useState(false);
   const [llmConfigured, setLlmConfigured] = useState<boolean | null>(null);
   const [llmBannerDismissed, setLlmBannerDismissed] = useState(false);
+  // Shown once per app launch when the API is reachable from the LAN (default
+  // bind is 0.0.0.0). Dismissal is session-scoped on purpose — this is a
+  // standing reminder, not a one-time-ever popup.
+  const [lanNotice, setLanNotice] = useState<{ host: string } | null>(null);
+  const [lanNoticeDismissed, setLanNoticeDismissed] = useState(false);
   const [updateInfo, setUpdateInfo] = useState<{ latestVersion: string; currentVersion: string } | null>(null);
   const [updateBannerDismissed, setUpdateBannerDismissed] = useState(() => {
     const stored = localStorage.getItem('markus_update_dismissed');
@@ -751,8 +758,9 @@ export function App() {
   }, [navigate]);
 
   const checkLlmConfig = useCallback(() => {
-    fetch('/api/settings/llm')
-      .then(r => r.ok ? r.json() : null)
+    // Shared TTL cache: this runs at boot, right when the Settings page and the
+    // composer's model menu are also reading the same document.
+    fetchLlmSettings()
       .then(d => {
         if (d?.providers) {
           const configured = Object.values(d.providers as Record<string, { configured: boolean }>).some(p => p.configured);
@@ -813,6 +821,10 @@ export function App() {
         api.health().then(h => {
           if (h.updateAvailable && h.latestVersion) {
             setUpdateInfo({ latestVersion: h.latestVersion, currentVersion: h.version });
+          }
+          const exposedHost = h.bindHost ?? '0.0.0.0';
+          if (shouldShowLanNotice(h.lanExposed === true, exposedHost)) {
+            setLanNotice({ host: exposedHost });
           }
         }).catch(() => {});
         const doPrefetch = () => {
@@ -1056,6 +1068,17 @@ export function App() {
             <span className="flex items-center gap-3 shrink-0">
               <a href="https://markus.global/#download" target="_blank" rel="noopener noreferrer" className="text-xs font-medium text-brand-400 hover:text-brand-300 transition-colors">{t('update.download')}</a>
               <button onClick={() => { setUpdateBannerDismissed(updateInfo.latestVersion); localStorage.setItem('markus_update_dismissed', updateInfo.latestVersion); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
+            </span>
+          </div>
+        )}
+        {lanNotice && !lanNoticeDismissed && page !== PAGE.SETTINGS && (
+          <div className="flex items-center justify-between px-4 py-2 bg-emerald-500/10 border-b border-emerald-500/25 text-emerald-600 dark:text-emerald-400 text-sm shrink-0">
+            <span className={isMobile ? 'text-xs' : ''}>{t('lanNotice.message', { host: lanNotice.host })}</span>
+            <span className="flex items-center gap-3 shrink-0">
+              <button onClick={() => { window.location.hash = '#settings/network'; }} className="text-xs font-medium text-emerald-600 dark:text-emerald-400 hover:text-emerald-500 transition-colors">
+                {t('lanNotice.goToSettings')}
+              </button>
+              <button onClick={() => { acknowledgeLanNotice(lanNotice.host); setLanNoticeDismissed(true); }} className="text-fg-tertiary hover:text-fg-secondary text-xs shrink-0">{t('dismiss')}</button>
             </span>
           </div>
         )}

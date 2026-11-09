@@ -431,6 +431,13 @@ const EMPTY_REMOTE_STATUS = {
   peers: [] as unknown[],
 };
 
+/**
+ * Interface the API binds to when neither MARKUS_HOST nor config.server.host is
+ * set. LAN-accessible so a teammate can open the UI from another device without
+ * extra setup; non-loopback callers still must authenticate (getAuthUser).
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
+
 export class APIServer {
   /**
    * A2A 投递/回复的**唯一**执行点（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）。
@@ -518,6 +525,21 @@ export class APIServer {
   /** In-flight chat streams for refresh reattach. */
   public readonly activeStreams = new ActiveStreamRegistry();
   invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
+
+  // ── LLM catalog maintenance state (see warmLlmCatalogInBackground) ─────────
+  /** Single-flight guard: concurrent GETs must not each start their own refresh. */
+  private llmCatalogWarmInFlight: Promise<void> | null = null;
+  /** One cold Markus-catalog attempt per process (see the read path). */
+  private markusCatalogColdLoadAttempted = false;
+  /** Last Markus catalog sync attempt (ms) — refresh at most once per TTL. */
+  private markusCatalogSyncedAt = 0;
+  /** Last Ollama local-model sync (ms) — probing every model is not a read cost. */
+  private ollamaSyncedAt = 0;
+  /** Last *failed* Hub credential sync — a cooldown so a bad Hub is not hit per request. */
+  private hubCredentialSyncFailedAt = 0;
+  private static readonly OLLAMA_SYNC_TTL_MS = 5 * 60_000;
+  private static readonly MARKUS_CATALOG_SYNC_TTL_MS = 5 * 60_000;
+  private static readonly HUB_SYNC_FAILURE_COOLDOWN_MS = 60_000;
 
   /**
    * Build the model routing candidates payload.
@@ -674,6 +696,89 @@ export class APIServer {
     } catch (err) {
       log.warn('Routing candidates warm-up failed; will build on first request', { error: String(err) });
     }
+  }
+
+  /**
+   * All network work that used to sit on the `GET /api/settings/llm` read path:
+   * Hub credential sync, Markus catalog refresh, Ollama local-model probe.
+   *
+   * Reads must not pay for these. Three hot surfaces hit that endpoint — the
+   * Settings page on tab open, the composer model menu on mount AND on every
+   * open, and the boot config check — so a 0.6 s Hub round-trip there was a
+   * 0.6 s pause on every single open, twice for the menu.
+   *
+   * Contract:
+   *  - fire-and-forget; never throws, never blocks a response;
+   *  - single-flight — concurrent GETs join one refresh instead of piling up;
+   *  - per-source TTL — the credentialed Hub sync only re-runs when the
+   *    effective key is actually legacy/missing (see resolveMarkusOrKey, the
+   *    ONE definition of "usable key"), and a *failed* sync backs off so an
+   *    unreachable Hub is not retried on every keystroke-driven render.
+   */
+  private warmLlmCatalogInBackground(): void {
+    if (!this.llmRouter) return;
+    if (this.llmCatalogWarmInFlight) return;
+
+    const flight = (async () => {
+      const now = Date.now();
+      // 1) Credential repair — only when there is genuinely no usable key.
+      //    The old code asked the raw on-disk `apiKey`, which is `null` after a
+      //    correct migration, so it re-synced on every request forever.
+      try {
+        if (now - this.hubCredentialSyncFailedAt > APIServer.HUB_SYNC_FAILURE_COOLDOWN_MS) {
+          const cfg = loadConfig();
+          const markus = cfg.llm.providers?.['markus'] as { apiKey?: string } | undefined;
+          if (!this.resolveMarkusOrKey(markus)) {
+            const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
+            if (!sync.ok) {
+              this.hubCredentialSyncFailedAt = Date.now();
+              log.warn('Background OpenRouter credential sync failed', {
+                error: sync.error,
+                retryAfterMs: APIServer.HUB_SYNC_FAILURE_COOLDOWN_MS,
+              });
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+
+      // 2) Markus catalog — TTL'd.
+      try {
+        const hasCatalog = (this.llmRouter!.getEnhancedSettings().providers?.['markus']?.models ?? []).length > 0;
+        if (!hasCatalog || now - this.markusCatalogSyncedAt > APIServer.MARKUS_CATALOG_SYNC_TTL_MS) {
+          this.markusCatalogSyncedAt = Date.now();
+          const flown = await this.llmRouter!.refreshMarkusCatalog().catch(() => 0);
+          if (flown > 0) {
+            const settings = this.llmRouter!.getEnhancedSettings();
+            const markus = settings.providers?.['markus'];
+            const ids = new Set((markus?.models ?? []).map(m => m.id));
+            if (ids.size > 0) {
+              const preferred = (markus?.model && ids.has(markus.model)) ? markus.model : [...ids][0]!;
+              this.llmRouter!.healMarkusRoutingAgainstCatalog(ids, preferred);
+              this.persistHealedMarkusRouting();
+            }
+            this.invalidateRoutingCache();
+          }
+        }
+      } catch { /* non-fatal — keep last-good catalog */ }
+
+      // 3) Ollama local models — TTL'd. Probing every model via /api/show is
+      //    seconds of work when the daemon is slow or unhealthy.
+      try {
+        if (now - this.ollamaSyncedAt > APIServer.OLLAMA_SYNC_TTL_MS) {
+          this.ollamaSyncedAt = Date.now();
+          await this.llmRouter!.refreshOllamaLocalModels?.().catch(() => 0);
+        }
+      } catch { /* non-fatal — keep last-good catalog */ }
+    })();
+
+    this.llmCatalogWarmInFlight = flight
+      // Never let a background refresh surface as an unhandled rejection: no
+      // caller awaits this promise, so a throw here would be invisible at best
+      // and a process-level warning at worst.
+      .catch(err => { log.warn('LLM catalog background refresh failed', { error: String(err) }); })
+      .finally(() => {
+        this.llmCatalogWarmInFlight = null;
+      });
   }
 
   /**
@@ -2864,9 +2969,25 @@ export class APIServer {
   }
 
   /**
-   * Interface the HTTP server binds to. Loopback by default — this API is a local
-   * control plane, not a network service. Set MARKUS_HOST=0.0.0.0 to opt in to
-   * exposing it (e.g. behind your own tunnel or on a trusted LAN).
+   * The interface the API is actually listening on right now (falls back to the
+   * configured one before start). The web UI uses this to tell the user their
+   * instance is reachable from the local network.
+   */
+  getBoundHost(): string {
+    return this.currentHost ?? this.bindHost;
+  }
+
+  /** True when the listener accepts connections from other machines. */
+  isLANExposed(): boolean {
+    const host = this.getBoundHost().trim();
+    return host !== '127.0.0.1' && host !== '::1' && host !== 'localhost';
+  }
+
+  /**
+   * Interface the HTTP server binds to. LAN-accessible by default so teammates
+   * can reach this instance without extra setup; authentication is still
+   * enforced for every non-loopback caller (see getAuthUser). Set MARKUS_HOST
+   * (or Settings → Network → Access scope) to 127.0.0.1 to keep it local-only.
    */
   private get bindHost(): string {
     const fromEnv = process.env['MARKUS_HOST']?.trim();
@@ -2876,9 +2997,9 @@ export class APIServer {
       const fromConfig = cfg.server?.host?.trim();
       if (fromConfig) return fromConfig;
     } catch {
-      /* fall through to the safe default */
+      /* fall through to the default */
     }
-    return '127.0.0.1';
+    return DEFAULT_BIND_HOST;
   }
 
   /** Origins allowed to call this API from a browser. */
@@ -8635,39 +8756,46 @@ EXPLANATION_END`;
         this.json(res, 200, { defaultProvider: 'unknown', providers: {} });
         return;
       }
-      // Fix stale Worker baseUrl / missing modelsUrl, migrate legacy markus_ keys,
-      // then refresh Hub catalog.
+      // ── READ PATH ────────────────────────────────────────────────────────
+      // Three surfaces enter here: the Settings page (as soon as a tab opens),
+      // the composer's model menu (on mount AND on every open), and the boot
+      // config check. It therefore must serve what is already in memory and
+      // must NEVER await the Hub.
+      //
+      // It used to do exactly the opposite: a forced Hub credential sync + a
+      // catalog refresh + an Ollama probe on every single call. The "legacy
+      // key" probe read the raw on-disk `markus.apiKey`, which is `null` for
+      // every correctly-migrated install (the key lives in ~/.markus/.env), so
+      // `isLegacyMarkusSubscriptionKey(null)` was true forever and the sync
+      // re-ran on each GET — measured 0.6 s warm / 3.9 s cold per request, on
+      // every open of the Settings page and of the model menu.
+      //
+      // Division of labour now: this path normalizes config and heals routing
+      // from what it has; warmLlmCatalogInBackground() owns all network work.
       try {
         this.ensureMarkusDirectConfig();
-        const cfg = loadConfig();
-        const markusKey = (cfg.llm.providers?.['markus'] as { apiKey?: string } | undefined)?.apiKey;
-        if (this.isLegacyMarkusSubscriptionKey(markusKey)) {
-          const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
-          if (!sync.ok) {
-            log.warn('Legacy Markus key present but OpenRouter sync failed', { error: sync.error });
-          }
-        }
-        const preview = this.llmRouter.getEnhancedSettings();
-        const markus = preview.providers?.['markus'];
+        const markus = this.llmRouter.getEnhancedSettings().providers?.['markus'];
         if (markus?.configured) {
           const ids = new Set((markus.models ?? []).map(m => m.id));
-          if (ids.size === 0) {
-            await this.llmRouter.refreshMarkusCatalog();
-          } else {
+          if (ids.size === 0 && !this.markusCatalogColdLoadAttempted) {
+            // Cold and genuinely empty: the pickers would render blank. Pay it
+            // ONCE per process — every later call is served from memory.
+            this.markusCatalogColdLoadAttempted = true;
+            this.markusCatalogSyncedAt = Date.now();
+            await this.llmRouter.refreshMarkusCatalog().catch(() => 0);
+          } else if (ids.size > 0) {
             // CN geo (etc.) can drop sticky RDM from the list while chip still shows it.
             const preferred = (markus.model && ids.has(markus.model))
               ? markus.model
               : [...ids][0]!;
             this.llmRouter.healMarkusRoutingAgainstCatalog(ids, preferred);
+            this.persistHealedMarkusRouting();
           }
-          this.persistHealedMarkusRouting();
         }
       } catch { /* non-fatal */ }
-      // Sync locally-available Ollama models so the pickers (Settings + chat
-      // model selector) show real local models, not just the static catalog.
-      try {
-        await this.llmRouter.refreshOllamaLocalModels?.();
-      } catch { /* non-fatal — keep last-good catalog */ }
+      // Stale-while-revalidate: hand the network work to the background stream
+      // and answer with the catalog we have. Single-flight + per-source TTL.
+      this.warmLlmCatalogInBackground();
       this.json(res, 200, this.llmRouter.getEnhancedSettings());
       return;
     }
@@ -9048,13 +9176,13 @@ EXPLANATION_END`;
           },
         },
         server: {
-          host: currentConfig.server?.host ?? '127.0.0.1',
+          host: currentConfig.server?.host ?? DEFAULT_BIND_HOST,
           hostDecided: currentConfig.server?.hostDecided ?? false,
           effectiveHost: this.bindHost,
           // Live listener vs configured value: the page uses this to decide whether
           // an "Approve now" action is pending, including after a reload.
           pendingRestart: this.currentHost !== undefined
-            && this.currentHost !== (currentConfig.server?.host ?? '127.0.0.1'),
+            && this.currentHost !== (currentConfig.server?.host ?? DEFAULT_BIND_HOST),
           source: process.env['MARKUS_HOST']?.trim() ? 'env' : 'config',
         },
       });
@@ -12454,6 +12582,10 @@ EXPLANATION_END`;
         status: 'ok',
         version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
+        // Where the listener actually is + whether other machines can reach it.
+        // The web UI shows a first-run notice off these two.
+        bindHost: this.getBoundHost(),
+        lanExposed: this.isLANExposed(),
       };
       // Non-blocking update check — cached, so normally instant after first call
       try {
