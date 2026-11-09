@@ -6,6 +6,8 @@ export type {
 
 export { WorkflowEngine, type WorkflowExecutor, type WorkflowEventHandler } from './engine.js';
 
+export { evaluateExpression, ExpressionError } from './expression.js';
+
 export {
   createPipeline, createFanOut, createReviewChain, createParallelConsensus,
   type PipelineStage, type FanOutConfig,

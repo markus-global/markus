@@ -1,4 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
+
+// Route-behaviour tests: auth bypassed so the anonymous caller is the org owner.
+process.env['AUTH_ENABLED'] = 'false';
 import type { TaskContextResponse } from '@markus/shared';
 import {
   AGENT_A,

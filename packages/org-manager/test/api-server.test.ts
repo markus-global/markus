@@ -1771,9 +1771,9 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('GET /api/workflows', async () => {
+    it('GET /api/workflows (removed legacy route)', async () => {
       const res = await request(ctx.server, 'GET', '/api/workflows');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
 
     it('GET /api/governance/policy', async () => {
@@ -2226,9 +2226,9 @@ describe('APIServer route handlers', () => {
         expect(res.status).toBe(200);
       });
 
-      it('POST /api/workflows validation', async () => {
+      it('POST /api/workflows validation (removed legacy route)', async () => {
         const res = await request(ctx.server, 'POST', '/api/workflows', {});
-        expect(res.status).toBe(400);
+        expect(res.status).toBe(404);
       });
 
       it('POST /api/reports/generate', async () => {
@@ -2487,11 +2487,11 @@ describe('APIServer route handlers', () => {
     });
 
     describe('Workflows, templates, and team-templates', () => {
-      it('POST /api/workflows creates workflow', async () => {
+      it('POST /api/workflows creates workflow (removed legacy route)', async () => {
         const res = await request(ctx.server, 'POST', '/api/workflows', {
           name: 'wf-test', displayName: 'WF Test', description: 'D', steps: [],
         });
-        expect([201, 200, 400]).toContain(res.status);
+        expect(res.status).toBe(404);
       });
 
       it('GET /api/team-templates/:id', async () => {

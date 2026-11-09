@@ -1,4 +1,5 @@
 import { createLogger, generateId } from '@markus/shared';
+import { evaluateExpression } from './expression.js';
 import type {
   WorkflowDefinition, WorkflowExecution, WorkflowStatus,
   StepDefinition, StepExecution, StepStatus, WorkflowEvent,
@@ -481,9 +482,10 @@ export class WorkflowEngine {
   private executeTransform(stepDef: StepDefinition, input: Record<string, unknown>): Record<string, unknown> {
     if (!stepDef.transform) throw new Error('Transform step missing transform expression');
     try {
-      const fn = new Function('input', `return (${stepDef.transform})`);
-      const result = fn(input);
-      return typeof result === 'object' && result !== null ? result : { value: result };
+      const result = evaluateExpression(stepDef.transform, { input });
+      return typeof result === 'object' && result !== null
+        ? (result as Record<string, unknown>)
+        : { value: result };
     } catch (err) {
       throw new Error(`Transform failed: ${err}`);
     }
@@ -538,8 +540,7 @@ export class WorkflowEngine {
           input: stepExec.input ?? {},
         };
       }
-      const fn = new Function('steps', 'inputs', `return !!(${expr})`);
-      return fn(steps, execution.inputs);
+      return Boolean(evaluateExpression(expr, { steps, inputs: execution.inputs }));
     } catch {
       log.warn('Expression evaluation failed', { expr });
       return false;

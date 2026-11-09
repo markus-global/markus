@@ -538,11 +538,6 @@ describe('APIServer targeted route coverage', () => {
       expect(broadcast).toHaveBeenCalledWith(expect.objectContaining({ type: 'remote:status' }));
     });
 
-    it('initWorkflowEngine executes workflow step', async () => {
-      const engine = ctx.server.initWorkflowEngine();
-      expect(engine).toBeDefined();
-    });
-
     it('ensureAdminUser returns existing owner id', async () => {
       const id = await ctx.server.ensureAdminUser('default');
       expect(typeof id).toBe('string');

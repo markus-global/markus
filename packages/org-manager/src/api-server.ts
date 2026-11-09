@@ -8,7 +8,6 @@ import { execSync } from 'node:child_process';
 import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
-  WorkflowEngine,
   createDefaultTeamTemplates,
   createDefaultTemplateRegistry,
   generateHandbook,
@@ -21,8 +20,6 @@ import {
   type ReviewService,
   type SkillRegistry,
   type TemplateRegistry,
-  type WorkflowExecutor,
-  type WorkflowDefinition,
   type SyncRequest,
   type HandbookColleague,
   type HandbookProject,
@@ -130,6 +127,105 @@ import {
 } from './agent-conservator.js';
 
 const log = createLogger('api-server');
+
+/**
+ * Paths that are reachable without a session.
+ *
+ * Everything else under /api is deny-by-default — see the gate at the top of
+ * {@link APIServer.route}. Every entry here is a deliberate decision that the
+ * path is safe for anyone who can reach the port, so keep the list short and
+ * treat additions as security review material.
+ */
+const PUBLIC_API_PREFIXES = [
+  '/api/auth', // login / init / status / logout — must work before a session exists
+  '/api/health', // liveness probe used by the desktop shell and CLI
+  '/api/gateway', // external gateway — every branch verifies its own bearer token
+  '/api/license', // desktop license refresh before a session exists
+];
+
+function isPublicApiPath(path: string): boolean {
+  return PUBLIC_API_PREFIXES.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+/** Roles, strongest first. Mirrors the `role` column on users. */
+export type ApiRole = 'owner' | 'admin' | 'member';
+
+const ROLE_RANK: Record<ApiRole, number> = { owner: 3, admin: 2, member: 1 };
+
+function isWriteMethod(method: string): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+}
+
+type RoleRule = {
+  /** Path predicate. */
+  path: (p: string) => boolean;
+  /** Restrict the rule to these methods; omit for every method. */
+  methods?: string[];
+  minRole: ApiRole;
+};
+
+const underPrefix = (prefix: string) => (p: string) => p === prefix || p.startsWith(`${prefix}/`);
+const anyOf = (...prefixes: string[]) => {
+  const matchers = prefixes.map(underPrefix);
+  return (p: string) => matchers.some(match => match(p));
+};
+
+/**
+ * Role required for a route. Ordered: first match wins, default is `member`.
+ *
+ * `owner` = decides what this machine can reach, holds credentials, touches the
+ * filesystem. `admin` = shapes the org and what runs in it. `member` = does the
+ * work (tasks, deliverables, chat). Keeping the default at `member` means an
+ * unlisted route stays usable by the team instead of silently locking people out;
+ * the sensitive groups below are the enumerated exceptions.
+ */
+const ROLE_RULES: RoleRule[] = [
+  // ── owner ──────────────────────────────────────────────────────────────
+  { path: underPrefix('/api/settings/remote'), minRole: 'owner' },
+  { path: underPrefix('/api/settings/subscription-key'), minRole: 'owner' },
+  { path: underPrefix('/api/license'), minRole: 'owner' },
+  { path: anyOf('/api/settings/import', '/api/settings/export'), minRole: 'owner' },
+  { path: underPrefix('/api/files/write'), minRole: 'owner' },
+  { path: underPrefix('/api/system/open-path'), minRole: 'owner' },
+  { path: underPrefix('/api/settings/llm/providers'), minRole: 'owner' },
+  { path: underPrefix('/api/settings/env-models'), methods: ['POST'], minRole: 'owner' },
+  { path: underPrefix('/api/models/catalog/refresh'), minRole: 'owner' },
+  { path: underPrefix('/api/hub/publish'), minRole: 'owner' },
+  { path: underPrefix('/api/system/storage/orphans'), methods: ['DELETE'], minRole: 'owner' },
+
+  // ── admin ──────────────────────────────────────────────────────────────
+  { path: underPrefix('/api/agents'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/external-agents'), minRole: 'admin' },
+  { path: underPrefix('/api/teams'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/team-templates'), methods: ['POST', 'PUT', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/templates/instantiate'), minRole: 'admin' },
+  { path: underPrefix('/api/builder'), minRole: 'admin' },
+  { path: underPrefix('/api/users'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/system/pause-all'), minRole: 'admin' },
+  { path: underPrefix('/api/system/resume-all'), minRole: 'admin' },
+  { path: underPrefix('/api/system/emergency-stop'), minRole: 'admin' },
+  { path: underPrefix('/api/system/announcements'), methods: ['POST'], minRole: 'admin' },
+  { path: underPrefix('/api/system/maintenance'), minRole: 'admin' },
+  // Per-user Hub tokens: every member manages their own.
+  { path: underPrefix('/api/settings/hub-token'), minRole: 'member' },
+  { path: underPrefix('/api/settings'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/oauth'), minRole: 'admin' },
+];
+
+function requiredApiRole(path: string, method: string): ApiRole {
+  for (const rule of ROLE_RULES) {
+    if (rule.methods && !rule.methods.includes(method)) continue;
+    if (rule.path(path)) return rule.minRole;
+  }
+  return 'member';
+}
+
+/** True when `role` satisfies `minimum`. Exported for tests. */
+export function roleSatisfies(role: string, minimum: ApiRole): boolean {
+  const rank = ROLE_RANK[role as ApiRole];
+  if (!rank) return false;
+  return rank >= ROLE_RANK[minimum];
+}
 
 // ── Response compression (single implementation point) ──────────────────────
 // Both the JSON API outlet (`json`) and static-asset serving compress through
@@ -401,7 +497,6 @@ export class APIServer {
   public registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
   builderService?: BuilderService;
-  private workflowEngine?: WorkflowEngine;
   private workflowService?: WorkflowService;
   private workflowRunner?: WorkflowRunner;
   private teamTemplateRegistry: TeamTemplateRegistry;
@@ -2105,42 +2200,6 @@ export class APIServer {
     this.fileStorage = provider;
   }
 
-  initWorkflowEngine(): WorkflowEngine {
-    const agentManager = this.orgService.getAgentManager();
-    const executor: WorkflowExecutor = {
-      executeStep: async (
-        agentId: string,
-        taskDescription: string,
-        input: Record<string, unknown>
-      ) => {
-        const agent = agentManager.getAgent(agentId);
-        const reply = await agent.sendMessage(
-          taskDescription,
-          'workflow-engine',
-          { name: 'workflow', role: 'system' },
-          {
-            sourceType: 'system_event',
-            sessionId: `sys_${agentId}_${Date.now()}`,
-          }
-        );
-        return { reply, input };
-      },
-      findAgent: (skills: string[]) => {
-        const agents = agentManager.listAgents();
-        const found = agents.find(a =>
-          skills.some(
-            s =>
-              a.role?.toLowerCase().includes(s.toLowerCase()) ||
-              a.agentRole?.toLowerCase().includes(s.toLowerCase())
-          )
-        );
-        return found?.id;
-      },
-    };
-    this.workflowEngine = new WorkflowEngine(executor);
-    return this.workflowEngine;
-  }
-
   getTeamTemplateRegistry(): TeamTemplateRegistry {
     return this.teamTemplateRegistry;
   }
@@ -2204,7 +2263,16 @@ export class APIServer {
   private async getAuthUser(
     req: IncomingMessage
   ): Promise<{ userId: string; orgId: string; role: string } | null> {
-    if (!this.authEnabled) return { userId: 'anonymous', orgId: 'default', role: 'owner' };
+    if (!this.authEnabled) {
+      // Auth-disabled mode is a local single-user convenience. Handing out an
+      // owner identity to a caller from the network would defeat that premise.
+      const remote = req.socket?.remoteAddress ?? '';
+      // An absent address means a non-socket caller (in-process tests, embedded use);
+      // a real network peer always carries one, so the check still holds in production.
+      const isLoopback = remote === '' || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!isLoopback) return null;
+      return { userId: 'anonymous', orgId: 'default', role: 'owner' };
+    }
     const cookies = parseCookies(req.headers['cookie']);
     const token = cookies['markus_token'];
     if (!token) return null;
@@ -2616,8 +2684,8 @@ export class APIServer {
       this.server.once('error', (err) => {
         reject(err);
       });
-      this.server.listen(this.port, '0.0.0.0', () => {
-        log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+      this.server.listen(this.port, this.bindHost, () => {
+        log.info(`API server listening on ${this.bindHost}:${this.port} (HTTP + WebSocket)`);
         resolve();
         // Warm the routing-candidates cache in the background so the first visit
         // to Settings → Model Routing hits the cache (no empty-then-filled UI).
@@ -2724,12 +2792,59 @@ export class APIServer {
     return this.ws;
   }
 
+  /**
+   * Interface the HTTP server binds to. Loopback by default — this API is a local
+   * control plane, not a network service. Set MARKUS_HOST=0.0.0.0 to opt in to
+   * exposing it (e.g. behind your own tunnel or on a trusted LAN).
+   */
+  private get bindHost(): string {
+    const fromEnv = process.env['MARKUS_HOST']?.trim();
+    if (fromEnv) return fromEnv;
+    try {
+      const cfg = loadConfig(this.markusConfigPath) as { server?: { host?: string } };
+      const fromConfig = cfg.server?.host?.trim();
+      if (fromConfig) return fromConfig;
+    } catch {
+      /* fall through to the safe default */
+    }
+    return '127.0.0.1';
+  }
+
+  /** Origins allowed to call this API from a browser. */
+  private isAllowedOrigin(origin: string): boolean {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    const hostname = parsed.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+    if (hostname === '0.0.0.0') return true;
+    const extra = (process.env['MARKUS_ALLOWED_ORIGINS'] ?? '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    return extra.includes(origin);
+  }
+
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    // CORS: only echo back origins we actually trust. `*` combined with any
+    // unauthenticated route let a visited web page drive this API.
+    const requestOrigin = typeof req.headers['origin'] === 'string' ? req.headers['origin'] : undefined;
+    if (requestOrigin && this.isAllowedOrigin(requestOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    }
 
     if (req.method === 'OPTIONS') {
+      if (requestOrigin && !this.isAllowedOrigin(requestOrigin)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
       res.writeHead(204);
       res.end();
       return;
@@ -2801,6 +2916,27 @@ export class APIServer {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
         await this.readBody(req);
+      }
+    }
+
+    // ── Deny-by-default authentication gate ─────────────────────────────────
+    // Every /api route requires a valid session unless it is explicitly public.
+    // This is the load-bearing check: a new route cannot end up unauthenticated
+    // just because its handler forgot to call requireAuth.
+    if (path.startsWith('/api/') && !isPublicApiPath(path)) {
+      const sessionUser = await this.requireAuth(req, res);
+      if (!sessionUser) return;
+      const requiredRole = requiredApiRole(path, req.method ?? 'GET');
+      if (!roleSatisfies(sessionUser.role, requiredRole)) {
+        log.warn('Authorization denied', {
+          userId: sessionUser.userId,
+          role: sessionUser.role,
+          requiredRole,
+          method: req.method,
+          path,
+        });
+        this.json(res, 403, { error: `Requires ${requiredRole} role`, requiredRole });
+        return;
       }
     }
 
@@ -6289,11 +6425,17 @@ EXPLANATION_END`;
     // Slash command dispatch
     if (path.match(/^\/api\/agents\/[^/]+\/command$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
+      const commandUser = await this.requireAuth(req, res);
+      if (!commandUser) return;
+      if (commandUser.role !== 'owner' && commandUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
+        return;
+      }
       const body = await this.readBody(req);
       const command = body['command'] as string;
       const args = body['args'] as string | undefined;
-      const senderId = body['senderId'] as string | undefined ?? 'system';
-      const senderName = body['senderName'] as string | undefined ?? 'User';
+      const senderId = commandUser.userId;
+      const senderName = 'User';
       if (!command) {
         this.json(res, 400, { error: 'command is required' });
         return;
@@ -6887,6 +7029,14 @@ EXPLANATION_END`;
     if (path === '/api/external-agents/register' && req.method === 'POST') {
       if (!this.gateway) {
         this.json(res, 503, { error: 'External agent gateway not configured' });
+        return;
+      }
+      // Enrolment mints a gateway token, so it is a privileged act — only an
+      // owner/admin session may hand one out.
+      const enrolUser = await this.requireAuth(req, res);
+      if (!enrolUser) return;
+      if (enrolUser.role !== 'owner' && enrolUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
         return;
       }
       const body = await this.readBody(req);
@@ -8076,6 +8226,17 @@ EXPLANATION_END`;
     }
 
     // Settings — Remote Access (T8: V2 payload + legacy aliases)
+    // Remote access is the switch that publishes this API port to the internet.
+    // Its control surface is owner-only, whatever the individual route does.
+    if (path === '/api/settings/remote' || path.startsWith('/api/settings/remote/')) {
+      const remoteUser = await this.requireAuth(req, res);
+      if (!remoteUser) return;
+      if (remoteUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+    }
+
     if (path === '/api/settings/remote' && req.method === 'GET') {
       this.json(res, 200, this.remoteStatusPayload());
       return;
@@ -8804,6 +8965,12 @@ EXPLANATION_END`;
       this.json(res, 200, {
         network: currentConfig.network ?? {},
         effective: { proxy: effective.url ?? null, source: effective.source },
+        server: {
+          host: currentConfig.server?.host ?? '127.0.0.1',
+          hostDecided: currentConfig.server?.hostDecided ?? false,
+          effectiveHost: this.bindHost,
+          source: process.env['MARKUS_HOST']?.trim() ? 'env' : 'config',
+        },
       });
       return;
     }
@@ -8815,9 +8982,26 @@ EXPLANATION_END`;
       const updates: Record<string, unknown> = {};
       if (typeof body['proxy'] === 'string') updates.proxy = body['proxy'] || undefined;
       if (typeof body['proxyEnabled'] === 'boolean') updates.proxyEnabled = body['proxyEnabled'];
+      const requestedHost = typeof body['host'] === 'string' ? body['host'].trim() : undefined;
+      if (requestedHost !== undefined && requestedHost !== '') {
+        const allowed = ['127.0.0.1', '0.0.0.0', 'localhost', '::1'];
+        const looksLikeAddress = /^[0-9a-fA-F.:]+$/.test(requestedHost);
+        if (!allowed.includes(requestedHost) && !looksLikeAddress) {
+          this.json(res, 400, { error: 'host must be an IP address or localhost' });
+          return;
+        }
+      }
       try {
+        if (requestedHost !== undefined && requestedHost !== '') {
+          saveConfig({ server: { host: requestedHost, hostDecided: true } } as any, this.markusConfigPath);
+        }
         saveConfig({ network: updates } as any, this.markusConfigPath);
-        this.json(res, 200, { ok: true, network: updates });
+        this.json(res, 200, {
+          ok: true,
+          network: updates,
+          // A bind address cannot move under a live listener.
+          restartRequired: requestedHost !== undefined && requestedHost !== '' && requestedHost !== this.bindHost,
+        });
       } catch (e) {
         this.json(res, 500, { error: `Failed to save network settings: ${e}` });
       }
@@ -11965,94 +12149,9 @@ EXPLANATION_END`;
       return;
     }
 
-    // ── Workflow Engine (DEPRECATED — use /api/teams/:teamId/workflows instead) ─
-    if ((path === '/api/workflows' || path.startsWith('/api/workflows/')) &&
-        !path.startsWith('/api/workflow-runs')) {
-      res.setHeader('Deprecation', 'true');
-      res.setHeader('Sunset', '2026-09-01');
-      res.setHeader('Link', '</api/teams/{teamId}/workflows>; rel="successor-version"');
-    }
-
-    if (path === '/api/workflows' && req.method === 'GET') {
-      if (!this.workflowEngine) {
-        this.json(res, 200, { executions: [], _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
-        return;
-      }
-      const executions = this.workflowEngine.listExecutions().map(e => ({
-        id: e.id,
-        workflowId: e.workflowId,
-        status: e.status,
-        startedAt: e.startedAt,
-        completedAt: e.completedAt,
-        error: e.error,
-        stepCount: e.steps.size,
-      }));
-      this.json(res, 200, { executions, _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
-      return;
-    }
-
-    if (path === '/api/workflows' && req.method === 'POST') {
-      if (!this.workflowEngine) this.initWorkflowEngine();
-      const body = await this.readBody(req);
-      const action = body['action'] as string;
-      if (action === 'validate') {
-        const errors = this.workflowEngine!.validate(body['workflow'] as WorkflowDefinition);
-        this.json(res, 200, { valid: errors.length === 0, errors, _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead' });
-        return;
-      }
-      try {
-        const execution = await this.workflowEngine!.start(
-          body['workflow'] as WorkflowDefinition,
-          (body['inputs'] as Record<string, unknown>) ?? {}
-        );
-        this.json(res, 201, {
-          executionId: execution.id,
-          status: execution.status,
-          outputs: execution.outputs,
-          error: execution.error,
-          _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead',
-        });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path.startsWith('/api/workflows/') && req.method === 'GET') {
-      if (!this.workflowEngine) {
-        this.json(res, 404, { error: 'No workflow engine' });
-        return;
-      }
-      const executionId = path.split('/')[3]!;
-      const execution = this.workflowEngine.getExecution(executionId);
-      if (!execution) {
-        this.json(res, 404, { error: 'Execution not found' });
-        return;
-      }
-      const steps = [...execution.steps.entries()].map(([id, s]) => ({
-        id,
-        status: s.status,
-        agentId: s.agentId,
-        startedAt: s.startedAt,
-        completedAt: s.completedAt,
-        error: s.error,
-        retryCount: s.retryCount,
-        output: s.output,
-      }));
-      this.json(res, 200, { execution: { ...execution, steps } });
-      return;
-    }
-
-    if (path.startsWith('/api/workflows/') && req.method === 'DELETE') {
-      if (!this.workflowEngine) {
-        this.json(res, 404, { error: 'No workflow engine' });
-        return;
-      }
-      const executionId = path.split('/')[3]!;
-      const cancelled = this.workflowEngine.cancel(executionId);
-      this.json(res, 200, { cancelled });
-      return;
-    }
+    // NOTE: the legacy /api/workflows engine routes were removed — they executed
+    // request-supplied expressions inside the server process. Team-scoped
+    // templates live under /api/teams/:teamId/workflows.
 
     // ── Team Templates ───────────────────────────────────────────────────
     if (path === '/api/team-templates' && req.method === 'GET') {
@@ -12808,6 +12907,12 @@ EXPLANATION_END`;
 
     // POST /api/files/write — write content to a local file (for in-place editing)
     if (path === '/api/files/write' && req.method === 'POST') {
+      const writeUser = await this.requireAuth(req, res);
+      if (!writeUser) return;
+      if (writeUser.role !== 'owner' && writeUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
+        return;
+      }
       const body = await this.readBody(req);
       const filePath = body?.path as string | undefined;
       const content = body?.content as string | undefined;
@@ -14015,8 +14120,6 @@ EXPLANATION_END`;
 
       // ── Governance / Workflows ───────────────────────────────────────────
       exact('/api/governance/policy', 'GET', 'PUT'),
-      exact('/api/workflows', 'GET', 'POST'),
-      startsWith('/api/workflows/', 'GET', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/workflows$/, 'GET', 'POST'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/roles$/, 'GET'),

@@ -1,4 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// These tests pin route behaviour, not the auth layer: run with auth bypassed so
+// the anonymous request is treated as the org owner (as the pre-auth-gate suite did).
+process.env['AUTH_ENABLED'] = 'false';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
