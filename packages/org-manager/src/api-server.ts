@@ -2681,13 +2681,15 @@ export class APIServer {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
+      const host = this.bindHost;
       this.server = createServer((req, res) => this.handleRequest(req, res));
       this.ws.attach(this.server);
       this.server.once('error', (err) => {
         reject(err);
       });
-      this.server.listen(this.port, this.bindHost, () => {
-        log.info(`API server listening on ${this.bindHost}:${this.port} (HTTP + WebSocket)`);
+      this.server.listen(this.port, host, () => {
+        this.currentHost = host;
+        log.info(`API server listening on ${host}:${this.port} (HTTP + WebSocket)`);
         resolve();
         // Warm the routing-candidates cache in the background so the first visit
         // to Settings → Model Routing hits the cache (no empty-then-filled UI).
@@ -2788,6 +2790,35 @@ export class APIServer {
     } catch (err) {
       log.warn('Failed to init Conservator', { error: String(err) });
     }
+  }
+
+  /** Which interface the live listener is on (may differ from config until applied). */
+  private currentHost?: string;
+
+  /**
+   * Move the live listener to the configured interface without a full restart.
+   * Existing connections (HTTP keep-alive and WebSocket) are dropped, which is the
+   * honest outcome of changing the address; clients reconnect to the same port.
+   */
+  async applyBindHost(): Promise<{ host: string; port: number; changed: boolean; previous?: string }> {
+    const target = this.bindHost;
+    const previous = this.currentHost;
+    if (previous === target) return { host: target, port: this.port, changed: false };
+    const live = this.server;
+    if (!live) throw new Error('API server is not running');
+    await new Promise<void>((resolve, reject) => {
+      live.close(err => (err ? reject(err) : resolve()));
+    });
+    const next = createServer((req, res) => this.handleRequest(req, res));
+    this.server = next;
+    this.ws.attach(next);
+    await new Promise<void>((resolve, reject) => {
+      next.once('error', reject);
+      next.listen(this.port, target, () => resolve());
+    });
+    this.currentHost = target;
+    log.info(`API server rebound ${previous ?? 'unknown'} -> ${target}:${this.port}`);
+    return { host: target, port: this.port, changed: true, previous };
   }
 
   getWSBroadcaster(): WSBroadcaster {
@@ -4183,6 +4214,18 @@ export class APIServer {
       const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
 
+      // 被人类停止的 agent：不启动、也不静默丢消息 —— 明确告诉人「它停着，启动后才会处理」。
+      // 绝不能在这里悄悄 startAgent：那等于替人类推翻他自己按下的停止。
+      if (this.orgService.getAgentManager().isStoppedByHuman(routedAgentId)) {
+        this.json(res, 200, {
+          userMessage: enrichedUserMsg,
+          agentMessage: null,
+          agentStopped: true,
+          notice: 'This agent is stopped. Your message was NOT delivered — start it to resume.',
+        });
+        return;
+      }
+
       const channelContext = await buildChannelContext();
 
       let reply: string;
@@ -4555,7 +4598,7 @@ export class APIServer {
       return;
     }
 
-    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
+    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const parts = path.split('/');
@@ -4563,7 +4606,7 @@ export class APIServer {
       const action = parts[4];
 
       if (action === 'start') {
-        await this.orgService.getAgentManager().startAgent(agentId!);
+        await this.orgService.getAgentManager().startAgent(agentId!, { cause: 'human' });
         this.ws.broadcastAgentUpdate(agentId!, 'idle');
         this.json(res, 200, { status: 'started' });
         return;
@@ -4572,20 +4615,6 @@ export class APIServer {
         await this.orgService.getAgentManager().stopAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'offline');
         this.json(res, 200, { status: 'stopped' });
-        return;
-      }
-      if (action === 'pause') {
-        // Unified: pause is now an alias for stop
-        await this.orgService.getAgentManager().stopAgent(agentId!);
-        this.ws.broadcastAgentUpdate(agentId!, 'offline');
-        this.json(res, 200, { status: 'stopped' });
-        return;
-      }
-      if (action === 'resume') {
-        // Unified: resume is now an alias for start
-        await this.orgService.getAgentManager().startAgent(agentId!);
-        this.ws.broadcastAgentUpdate(agentId!, 'idle');
-        this.json(res, 200, { status: 'started' });
         return;
       }
       if (action === 'cancel-processing') {
@@ -7001,7 +7030,7 @@ EXPLANATION_END`;
           }
         }
 
-        await agentManager.startAgent(agent.id);
+        await agentManager.startAgent(agent.id, { cause: 'creation' });
         this.json(res, 201, {
           agent: {
             id: agent.id,
@@ -8971,6 +9000,10 @@ EXPLANATION_END`;
           host: currentConfig.server?.host ?? '127.0.0.1',
           hostDecided: currentConfig.server?.hostDecided ?? false,
           effectiveHost: this.bindHost,
+          // Live listener vs configured value: the page uses this to decide whether
+          // an "Approve now" action is pending, including after a reload.
+          pendingRestart: this.currentHost !== undefined
+            && this.currentHost !== (currentConfig.server?.host ?? '127.0.0.1'),
           source: process.env['MARKUS_HOST']?.trim() ? 'env' : 'config',
         },
       });
@@ -8993,6 +9026,9 @@ EXPLANATION_END`;
           return;
         }
       }
+      // Capture the live listener BEFORE writing config — `bindHost` reads config,
+      // so comparing after the save makes the two sides always equal.
+      const liveHost = this.currentHost;
       try {
         if (requestedHost !== undefined && requestedHost !== '') {
           saveConfig({ server: { host: requestedHost, hostDecided: true } } as any, this.markusConfigPath);
@@ -9002,10 +9038,32 @@ EXPLANATION_END`;
           ok: true,
           network: updates,
           // A bind address cannot move under a live listener.
-          restartRequired: requestedHost !== undefined && requestedHost !== '' && requestedHost !== this.bindHost,
+          restartRequired: !!requestedHost && liveHost !== undefined && requestedHost !== liveHost,
         });
       } catch (e) {
         this.json(res, 500, { error: `Failed to save network settings: ${e}` });
+      }
+      return;
+    }
+
+    // Apply the configured interface to the live listener (no process restart).
+    if (path === '/api/settings/network/apply' && req.method === 'POST') {
+      const applyUser = await this.requireAuth(req, res);
+      if (!applyUser) return;
+      if (applyUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+        const requested = typeof body?.['host'] === 'string' ? String(body['host']).trim() : '';
+        if (requested) {
+          saveConfig({ server: { host: requested, hostDecided: true } } as any, this.markusConfigPath);
+        }
+        const result = await this.applyBindHost();
+        this.json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to rebind listener: ${String(err)}` });
       }
       return;
     }
@@ -12340,38 +12398,6 @@ EXPLANATION_END`;
 
     // ── Governance: System Controls ──────────────────────────────────────────
 
-    if (path === '/api/system/pause-all' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
-      const am = this.orgService.getAgentManager();
-      await am.stopAllAgents(body['reason'] as string | undefined);
-      this.auditService?.record({
-        orgId: 'system',
-        type: 'system_pause_all',
-        action: 'pause_all',
-        detail: body['reason'] as string,
-        userId: authUser?.userId,
-        success: true,
-      });
-      this.json(res, 200, { status: 'stopped', message: 'All agents stopped' });
-      return;
-    }
-
-    if (path === '/api/system/resume-all' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
-      const am = this.orgService.getAgentManager();
-      await am.startAllAgents();
-      this.auditService?.record({
-        orgId: 'system',
-        type: 'system_resume_all',
-        action: 'resume_all',
-        userId: authUser?.userId,
-        success: true,
-      });
-      this.json(res, 200, { status: 'started', message: 'All agents started' });
-      return;
-    }
-
     if (path === '/api/system/emergency-stop' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
@@ -12390,7 +12416,6 @@ EXPLANATION_END`;
     if (path === '/api/system/status' && req.method === 'GET') {
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
-        globalPaused: am.isGlobalStopped(),
         emergencyMode: am.isEmergencyMode(),
       });
       return;
@@ -13819,7 +13844,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
       regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
@@ -14131,8 +14156,6 @@ EXPLANATION_END`;
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
       exact('/api/evolution/metrics', 'GET'),
-      exact('/api/system/pause-all', 'POST'),
-      exact('/api/system/resume-all', 'POST'),
       exact('/api/system/emergency-stop', 'POST'),
       exact('/api/system/status', 'GET'),
       exact('/api/browser/tab-ownership', 'GET'),

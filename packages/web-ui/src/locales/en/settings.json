@@ -313,6 +313,10 @@
     "saved": "Saved",
     "restartRequired": "Saved — restart Markus to apply",
     "saveFailed": "Save failed",
+    "applyNow": "Apply now",
+    "applying": "Applying…",
+    "applied": "Applied — the listener moved",
+    "applyFailed": "Could not move the listener",
     "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN."
   },
   "networkProxy": {

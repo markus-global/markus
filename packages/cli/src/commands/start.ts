@@ -2527,14 +2527,6 @@ async function startServerCore(
   // one writer.
 
   // Wire system-wide events to WS broadcast
-  eventBus.on('system:pause-all', (event: unknown) => {
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcast({ type: 'system:pause-all', payload: event, timestamp: new Date().toISOString() });
-  });
-  eventBus.on('system:resume-all', (event: unknown) => {
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcast({ type: 'system:resume-all', payload: event, timestamp: new Date().toISOString() });
-  });
   eventBus.on('system:emergency-stop', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
     ws.broadcast({ type: 'system:emergency-stop', payload: event, timestamp: new Date().toISOString() });

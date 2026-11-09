@@ -277,22 +277,8 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     setTimeout(() => setToast(null), 3000);
   };
 
-  // System stop/start – default to null (unknown) until API responds.
-  // WS events are ignored until the initial HTTP fetch completes to prevent
-  // a race where system:resume-all arrives first and flashes stale state.
-  const [globalStopped, setGlobalStopped] = useState<boolean | null>(null);
-  const [pauseLoading, setPauseLoading] = useState(false);
-  const statusFetchedRef = useRef(false);
-
-  useEffect(() => {
-    if (previewMode) return;
-    api.governance.getSystemStatus()
-      .then(s => { statusFetchedRef.current = true; setGlobalStopped(s.globalPaused); })
-      .catch(() => { statusFetchedRef.current = true; setGlobalStopped(false); });
-    const unsubPause = wsClient.on('system:pause-all', () => { if (statusFetchedRef.current) setGlobalStopped(true); });
-    const unsubResume = wsClient.on('system:resume-all', () => { if (statusFetchedRef.current) setGlobalStopped(false); });
-    return () => { unsubPause(); unsubResume(); };
-  }, []);
+  // 停 / 启只有两个作用域：单个 agent、整个团队。没有「暂停 / 冻结全局」这一层
+  // （Owner 2026-11-08：停止就是停止，反过来就是启动）。
 
   useEffect(() => {
     if (!previewMode) return;
@@ -306,24 +292,6 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
     return () => clearTimeout(timer);
   }, [previewMode]);
 
-  const handlePauseClick = useCallback(() => {
-    if (globalStopped === null) return;
-    setPendingConfirm({
-      title: globalStopped ? t('modals.resumeAll.title') : t('modals.pauseAll.title'),
-      message: globalStopped
-        ? t('modals.resumeAll.message')
-        : t('modals.pauseAll.message'),
-      confirmLabel: globalStopped ? t('chat.resume') : t('chat.pause'),
-      onConfirm: async () => {
-        setPauseLoading(true);
-        try {
-          if (globalStopped) { await api.governance.resumeAll(); setGlobalStopped(false); }
-          else { await api.governance.pauseAll(); setGlobalStopped(true); }
-        } catch { /* ignore */ }
-        setPauseLoading(false);
-      },
-    });
-  }, [globalStopped]);
 
   // Confirm dialog
   const [pendingConfirm, setPendingConfirm] = useState<{
@@ -527,9 +495,24 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
   // ── Agent actions ──────────────────────────────────────────────────────────
 
   const handleStartStop = async (agentId: string, status: string) => {
-    if (status === 'offline') await api.agents.start(agentId);
-    else await api.agents.stop(agentId);
-    onRefreshAgents();
+    if (status === 'offline') {
+      await api.agents.start(agentId);
+      onRefreshAgents();
+      return;
+    }
+    // A human-initiated stop is sticky on the backend: no agent-initiated wakeup
+    // will restart it — only a human starting it (individually or by starting the
+    // whole team). Say that out loud before stopping, otherwise "stop" reads as a
+    // resumable "pause" that does not exist.
+    askConfirm(
+      t('modals.stopAgent.title'),
+      t('modals.stopAgent.message'),
+      async () => {
+        await api.agents.stop(agentId);
+        onRefreshAgents();
+      },
+      t('contextMenu.stop'),
+    );
   };
 
   const handleRemoveFromTeam = (teamId: string, memberId: string) => {
@@ -1255,24 +1238,6 @@ export const ChatTeamSidebar = memo(function ChatTeamSidebar({
                     </div>
                     <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{t('chat.newGroupChatDesc')}</div>
                   </button>
-                  {globalStopped !== null && (
-                    <button
-                      onClick={() => { setActionMenu(false); handlePauseClick(); }}
-                      disabled={pauseLoading}
-                      className={`w-full text-left px-4 py-2.5 text-xs hover:bg-surface-elevated border-t border-border-default transition-colors disabled:opacity-50 ${
-                        globalStopped ? 'text-green-600' : 'text-red-500'
-                      }`}
-                    >
-                      <div className="font-medium flex items-center gap-1.5">
-                        {globalStopped ? (
-                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3" /></svg> {t('chat.resume')}</>
-                        ) : (
-                          <><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="4" y="4" width="16" height="16" rx="2" /></svg> {t('contextMenu.stopAll')}</>
-                        )}
-                      </div>
-                      <div className="text-[10px] text-fg-tertiary mt-0.5 pl-[18px]">{globalStopped ? t('modals.resumeAll.title') : t('modals.pauseAll.title')}</div>
-                    </button>
-                  )}
                 </div>
               )}
             </div>

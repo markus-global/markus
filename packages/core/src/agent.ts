@@ -1337,8 +1337,11 @@ export class Agent {
   }
 
   async stop(reason?: string): Promise<void> {
-    this.cancelActiveStream();
+    // 顺序不能反：**先关取件口，再断流**。
+    // 反过来的话，两者之间存在一个窗口：worker 刚好在 dequeueAsync 返回后就拿到了新 item，
+    // 于是 stop() 之后整轮仍会跑完（生产事故：停止后 7–13 秒还在跑 heartbeat / a2a）。
     this.attentionController.stop();
+    this.cancelActiveStream();
     this.heartbeat.stop();
     if (this.wakeupTimer) {
       clearInterval(this.wakeupTimer);

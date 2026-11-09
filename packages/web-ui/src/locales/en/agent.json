@@ -139,6 +139,11 @@
       "storage": "Storage",
       "openFolder": "Open folder →",
       "detailsToggle": "Usage & storage details",
+      "stopAgentConfirm": {
+        "title": "Stop this agent?",
+        "message": "A stopped agent does not restart on its own: other agents' wakeups, messages and Resume All all skip it. Only you can start it again — or answering its own approval/question.",
+        "confirm": "Stop"
+      },
       "lifetimeCaption": "Cumulative since the agent was created",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
       "sections": {

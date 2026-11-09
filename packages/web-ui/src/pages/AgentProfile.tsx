@@ -394,9 +394,13 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
     return () => { cancelled = true; };
   }, [section, agent.id]);
 
+  // 停止是「一次性」动作：后端把「人类按的停止」记成粘性意图，agent 侧的唤醒
+  // 都不会拉起它，只有人类再次启动（单个或整个团队）或回答它自己的审批才会恢复。
+  // 所以这里必须先确认一句，否则“停止”看起来像可以随手恢复的“暂停”。
+  const [confirmingStop, setConfirmingStop] = useState(false);
   const toggleAgent = () => {
     if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
-    else api.agents.stop(agent.id).then(onUpdate);
+    else setConfirmingStop(true);
   };
 
   const GATEWAY_ENDPOINTS = useMemo(() => [
@@ -697,6 +701,19 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
             <MemoryTab agentId={agent.id} />
           </div>
         </SectionPanel>
+      )}
+      {/** 「停止」确认：与页面其他确认弹窗同一个 ConfirmModal。 */}
+      {confirmingStop && (
+        <ConfirmModal
+          title={t('agent:profilePage.overview.stopAgentConfirm.title')}
+          message={t('agent:profilePage.overview.stopAgentConfirm.message')}
+          confirmLabel={t('agent:profilePage.overview.stopAgentConfirm.confirm')}
+          onConfirm={() => {
+            setConfirmingStop(false);
+            api.agents.stop(agent.id).then(onUpdate);
+          }}
+          onCancel={() => setConfirmingStop(false)}
+        />
       )}
     </div>
   );

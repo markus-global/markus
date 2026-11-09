@@ -1449,10 +1449,6 @@ export const api = {
       request('/agents', { method: 'POST', body: JSON.stringify({ name, ...(roleName ? { roleName } : {}), agentRole, teamId }) }),
     start: (id: string) => request(`/agents/${id}/start`, { method: 'POST' }),
     stop: (id: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
-    /** @deprecated Use stop() instead */
-    pause: (id: string, _reason?: string) => request(`/agents/${id}/stop`, { method: 'POST' }),
-    /** @deprecated Use start() instead */
-    resume: (id: string) => request<{ status: string }>(`/agents/${id}/start`, { method: 'POST' }),
     cancelProcessing: (id: string, target?: { itemId?: string; sessionId?: string }) =>
       request(`/agents/${id}/cancel-processing`, {
         method: 'POST',
@@ -1736,13 +1732,7 @@ export const api = {
     startAll: (teamId: string) =>
       request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/start`, { method: 'POST' }),
     stopAll: (teamId: string) =>
-      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/stop`, { method: 'POST' }),
-    /** @deprecated Use stopAll() instead */
-    pauseAll: (teamId: string, _reason?: string) =>
-      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/stop`, { method: 'POST' }),
-    /** @deprecated Use startAll() instead */
-    resumeAll: (teamId: string) =>
-      request<{ success: string[]; failed: Array<{ id: string; error: string }> }>(`/teams/${teamId}/start`, { method: 'POST' }),
+      request<{ success: string[]; failed: Array<{ id: string; error: string }>; skipped?: string[] }>(`/teams/${teamId}/stop`, { method: 'POST' }),
     status: (teamId: string) =>
       request<{ agents: Array<{ id: string; name: string; status: string; role?: string }> }>(`/teams/${teamId}/status`),
     getFiles: (teamId: string) =>
@@ -2610,7 +2600,13 @@ export const api = {
         `/channels/${encodeURIComponent(channel)}/messages?limit=${limit}${before ? `&before=${before}` : ''}`
       ),
     sendMessage: (channel: string, data: { text: string; senderId?: string; senderName?: string; mentions?: string[]; targetAgentId?: string; orgId?: string; humanOnly?: boolean; replyToId?: string; images?: string[]; fileNames?: string[] }) =>
-      request<{ userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null }>(
+      request<{
+        userMessage: ChannelMessageInfo | null; agentMessage: ChannelMessageInfo | null;
+        /** Set when the addressed agent is stopped by a human: nothing was queued for it. */
+        agentStopped?: boolean;
+        /** Server-supplied explanation for `agentStopped`, meant to be shown to the human. */
+        notice?: string;
+      }>(
         `/channels/${encodeURIComponent(channel)}/messages`,
         { method: 'POST', body: JSON.stringify(data) }
       ),
@@ -2618,11 +2614,7 @@ export const api = {
   // ─── Governance ────────────────────────────────────────────────────
   governance: {
     getSystemStatus: () =>
-      request<{ globalPaused: boolean; emergencyMode: boolean }>('/system/status'),
-    pauseAll: (reason?: string) =>
-      request<{ status: string; message: string }>('/system/pause-all', { method: 'POST', body: JSON.stringify({ reason }) }),
-    resumeAll: () =>
-      request<{ status: string; message: string }>('/system/resume-all', { method: 'POST' }),
+      request<{ emergencyMode: boolean }>('/system/status'),
     emergencyStop: (reason?: string) =>
       request<{ status: string; message: string }>('/system/emergency-stop', { method: 'POST', body: JSON.stringify({ reason }) }),
 

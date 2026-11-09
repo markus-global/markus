@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { AgentStoppedByHumanError } from '../agent-start-cause.js';
 import { createLogger } from '@markus/shared';
 
 const log = createLogger('manager-tools');
@@ -521,8 +522,8 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
               required: ['agent_id'],
             },
             async execute(args: Record<string, unknown>): Promise<string> {
+              const agentId = (args['agent_id'] as string | undefined)?.trim();
               try {
-                const agentId = (args['agent_id'] as string | undefined)?.trim();
                 if (!agentId) return JSON.stringify({ status: 'error', error: 'agent_id is required' });
                 const teamMembers = ctx.listAgents();
                 if (!teamMembers.some(a => a.id === agentId)) {
@@ -532,6 +533,13 @@ export function createManagerTools(ctx: ManagerToolsContext): AgentToolHandler[]
                 log.info('Manager started agent via tool', { agentId });
                 return JSON.stringify({ status: 'success', message: `Agent ${agentId} has been started.` });
               } catch (error) {
+                if (error instanceof AgentStoppedByHumanError) {
+                  return JSON.stringify({
+                    status: 'stopped_by_human',
+                    error: `Agent ${agentId} was stopped by the human and will not be started by an agent.`,
+                    hint: 'Ask the human with request_user_input; only a human can start it.',
+                  });
+                }
                 return JSON.stringify({ status: 'error', error: String(error) });
               }
             },

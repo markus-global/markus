@@ -16,8 +16,6 @@
   },
   "chat": {
     "title": "聊天",
-    "pause": "暂停",
-    "resume": "继续",
     "manage": "管理",
     "newTeam": "新建团队",
     "newTeamDesc": "创建新团队",
@@ -51,7 +49,6 @@
     "collapseTeam": "收起",
     "moreOptions": "更多选项",
     "extBadge": "外部",
-    "pauseAllTooltip": "暂停所有智能体",
     "resumeAllTooltip": "恢复所有智能体",
     "failedToCreateTeam": "创建团队失败：{{message}}",
     "agents": "智能体",
@@ -74,8 +71,6 @@
     "renameTeam": "重命名团队",
     "startAll": "全部启动",
     "stopAll": "全部停止",
-    "pauseAll": "全部暂停",
-    "resumeAll": "全部继续",
     "addExisting": "添加已有成员",
     "deleteTeam": "删除团队",
     "viewProfile": "查看资料",
@@ -166,13 +161,9 @@
       "message": "该用户将失去访问权限。",
       "confirmTitle": "移除「{{name}}」？"
     },
-    "pauseAll": {
-      "title": "暂停所有智能体",
-      "message": "所有智能体将暂停。事件仍会进入邮箱但不会处理。进行中的任务将被阻塞。"
-    },
-    "resumeAll": {
-      "title": "恢复所有智能体",
-      "message": "所有智能体将恢复处理邮箱中的事件。"
+    "stopAgent": {
+      "title": "停止这个智能体？",
+      "message": "停止后它不会自行启动：其他 Agent 的唤醒、消息都不会拉起它。只有你手动启动（或启动整个团队），或回答它自己的审批/提问，才会恢复。"
     },
     "createGroupChat": {
       "title": "创建群聊",
@@ -293,15 +284,11 @@
     "failedToRun": "{{action}} 失败：{{error}}",
     "past": {
       "start": "已启动",
-      "stop": "已停止",
-      "pause": "已暂停",
-      "resume": "已恢复"
+      "stop": "已停止"
     },
     "operation": {
       "start": "启动",
-      "stop": "停止",
-      "pause": "暂停",
-      "resume": "恢复"
+      "stop": "停止"
     }
   },
   "errors": {
@@ -467,6 +454,7 @@
     "newTaskTitle": "来自对话的新任务",
     "taskFromChat": "在与 {{name}} 的聊天中创建",
     "errorWithMessage": "错误：{{message}}",
+    "agentStopped": "该智能体已被你停止，消息未投递。启动它才会恢复处理。",
     "retryConfirmSingular": "将丢弃此点之后的一条消息并重新生成，是否继续？",
     "retryConfirmPlural": "将丢弃此点之后的 {{count}} 条消息并重新生成，是否继续？",
     "errorDetails": "错误详情",

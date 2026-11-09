@@ -25,6 +25,7 @@ import {
   MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
 
 /**
  * Peer agent as seen by `askAgent` (the `agent_ask_agent` tool).
@@ -507,6 +508,14 @@ export class AgentManager {
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
   ) => void;
   private disabledChangeHandler?: (agentId: string, disabled: boolean) => void;
+
+  /**
+   * 人类明确停止的 agent —— **唯一的内存真相**（持久镜像 = `agents.disabled`）。
+   *
+   * 判据是「人类意图」，不是运行时的 `offline`：后者把「崩溃 / 未启动 / 被人类停止」
+   * 混为一谈，于是 Agent 之间一条消息就能把人刚停止的 agent 拉起来（修复前的 P0）。
+   */
+  private humanStopped = new Set<string>();
   /** Grace timers for releasing scoped MCP processes after agent goes idle */
   private mcpReleaseTimers = new Map<string, ReturnType<typeof setTimeout>>();
   private static readonly MCP_IDLE_GRACE_MS = 30_000;
@@ -3293,22 +3302,72 @@ export class AgentManager {
     }
   }
 
-  async startAgent(agentId: string, options?: { initialHeartbeatDelayMs?: number; skipDisabledFlag?: boolean }): Promise<void> {
+  async startAgent(
+    agentId: string,
+    options?: { initialHeartbeatDelayMs?: number; skipDisabledFlag?: boolean; cause?: StartCause; force?: boolean },
+  ): Promise<void> {
+    // 启动原因**必须声明**；不声明 = `unattributed` = 不允许启动人类停掉的 agent。
+    // 这是 fail-closed：未来新增一条启动路径即使忘了声明，也不可能静默推翻人类的决定。
+    const cause: StartCause = options?.cause ?? 'unattributed';
+    const decision = decideStart({
+      cause,
+      stoppedByHuman: this.humanStopped.has(agentId),
+      force: options?.force,
+    });
+    if (!decision.allowed) {
+      log.warn('Refused to start an agent the human stopped', { agentId, cause });
+      throw new AgentStoppedByHumanError(agentId, cause);
+    }
+
     const agent = this.getAgent(agentId);
-    await agent.start(options);
-    if (!options?.skipDisabledFlag) {
+    await agent.start({ initialHeartbeatDelayMs: options?.initialHeartbeatDelayMs });
+    if (decision.clearsHumanStop && !options?.skipDisabledFlag) {
+      this.humanStopped.delete(agentId);
       this.disabledChangeHandler?.(agentId, false);
     }
   }
 
-  async stopAgent(agentId: string): Promise<void> {
+  /**
+   * 停止一个 agent。
+   *
+   * `cause='human'`（默认）：记录**人类意图**（内存 + `agents.disabled`），之后任何
+   * agent 侧路径都启不动它。
+   * `cause='system'`：仅停运行时（「暂停全部」/ 紧急停止），**不写人类意图** ——
+   * 否则「暂停全部 → 全部恢复」会因为把自己标成人停的而互相死锁。
+   */
+  async stopAgent(agentId: string, opts?: { cause?: 'human' | 'system' }): Promise<void> {
+    const cause = opts?.cause ?? 'human';
     const agent = this.getAgent(agentId);
     await agent.stop();
     this.cancelMcpRelease(agentId);
     this.browserSessionManager.cleanupAgent(agentId);
     this.terminalSessionManager.cleanupAgent(agentId);
     await this.mcpManager.removeAllForScope(agentId);
-    this.disabledChangeHandler?.(agentId, true);
+    if (cause === 'human') {
+      this.humanStopped.add(agentId);
+      this.disabledChangeHandler?.(agentId, true);
+    }
+  }
+
+  /**
+   * 开机时从存储的 `agents.disabled` 恢复「人类停掉的」意图。
+   * 必须在本进程任何启动之前调用，否则闸门会误放行。
+   */
+  hydrateHumanStopped(ids: Iterable<string>): void {
+    for (const id of ids) this.humanStopped.add(id);
+    if (this.humanStopped.size > 0) {
+      log.info('Restored human-stop intent', { count: this.humanStopped.size });
+    }
+  }
+
+  /** 这个 agent 是否被人类明确停止（`agents.disabled === 1` 的读穿）。 */
+  isStoppedByHuman(agentId: string): boolean {
+    return this.humanStopped.has(agentId);
+  }
+
+  /** 当前被人类停止的 agent（供路由 / UI 展示，不产生第二份真相）。 */
+  listHumanStopped(): string[] {
+    return [...this.humanStopped];
   }
 
   /**
@@ -3859,9 +3918,16 @@ export class AgentManager {
 
   // ─── Batch Agent Control ───────────────────────────────────────────────────
 
+  /**
+   * 批量启动（「启动团队」）。
+   *
+   * **启动一个团队 = 启动团队里的每一个**（Owner 2026-11-08）：这是人的明确动作，
+   * 所以调用方传 `cause: 'human'`，包括那些之前被单个停掉的成员 —— 不存在「跳过」。
+   * 只有 **agent 自己**发起的路径才会被粘性停止拦住（见 `decideStart`）。
+   */
   async startAgentsByIds(
     ids: string[],
-    options?: { staggerHeartbeats?: boolean },
+    options?: { staggerHeartbeats?: boolean; cause?: StartCause },
   ): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
     const stagger = options?.staggerHeartbeats ?? true;
     const success: string[] = [];
@@ -3875,7 +3941,10 @@ export class AgentManager {
           const intervalMs = agent.config.heartbeatIntervalMs || DEFAULT_HEARTBEAT_INTERVAL_MS;
           initialHeartbeatDelayMs = Math.floor((i / ids.length) * intervalMs);
         }
-        await this.startAgent(id, { initialHeartbeatDelayMs });
+        await this.startAgent(id, {
+          initialHeartbeatDelayMs,
+          cause: options?.cause ?? 'unattributed',
+        });
         success.push(id);
       } catch (err) {
         failed.push({ id, error: String(err) });
@@ -3903,35 +3972,6 @@ export class AgentManager {
 
   private emergencyMode = false;
 
-  async stopAllAgents(reason?: string): Promise<void> {
-    for (const [id, agent] of this.agents) {
-      try {
-        await agent.stop(reason);
-        this.disabledChangeHandler?.(id, true);
-      } catch (err) {
-        log.warn('Failed to stop agent', { agentId: id, error: String(err) });
-      }
-    }
-    this.eventBus.emit('system:pause-all', { reason });
-    log.info('All agents stopped', { reason });
-  }
-
-  async startAllAgents(): Promise<void> {
-    for (const [id, agent] of this.agents) {
-      try {
-        if (agent.getState().status === 'offline') {
-          await agent.start();
-          this.disabledChangeHandler?.(id, false);
-        }
-      } catch (err) {
-        log.warn('Failed to start agent', { agentId: id, error: String(err) });
-      }
-    }
-    this.emergencyMode = false;
-    this.eventBus.emit('system:resume-all', {});
-    log.info('All agents started');
-  }
-
   async emergencyStop(): Promise<void> {
     for (const [id, agent] of this.agents) {
       try {
@@ -3944,13 +3984,6 @@ export class AgentManager {
     this.emergencyMode = true;
     this.eventBus.emit('system:emergency-stop', {});
     log.warn('EMERGENCY STOP — all agents stopped');
-  }
-
-  isGlobalStopped(): boolean {
-    for (const [, agent] of this.agents) {
-      if (agent.getState().status !== 'offline') return false;
-    }
-    return this.agents.size > 0;
   }
 
   isEmergencyMode(): boolean {

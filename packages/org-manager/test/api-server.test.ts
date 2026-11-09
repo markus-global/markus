@@ -931,14 +931,12 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('POST /api/system/pause-all', async () => {
-      const res = await request(ctx.server, 'POST', '/api/system/pause-all', { reason: 'test' });
-      expect(res.status).toBe(200);
-    });
-
-    it('POST /api/system/resume-all', async () => {
-      const res = await request(ctx.server, 'POST', '/api/system/resume-all');
-      expect(res.status).toBe(200);
+    it('the global pause-all / resume-all endpoints are gone — only per-agent and per-team start/stop exist', async () => {
+      // 页面上只有「停止」和「启动」，作用域只有单个 agent 和整个团队。
+      // 全局「暂停全部 / 恢复全部」曾是一对多余的同义词（停止就是停止），已删除；
+      // 保留这两条断言，防止它们被悄悄加回来。
+      expect((await request(ctx.server, 'POST', '/api/system/pause-all', { reason: 'test' })).status).toBe(404);
+      expect((await request(ctx.server, 'POST', '/api/system/resume-all')).status).toBe(404);
     });
 
     it('POST /api/system/emergency-stop', async () => {
@@ -1032,14 +1030,11 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('POST /api/agents/:id/pause', async () => {
-      const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/pause`, { reason: 'test' });
-      expect(res.status).toBe(200);
-    });
-
-    it('POST /api/agents/:id/resume', async () => {
-      const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/resume`);
-      expect(res.status).toBe(200);
+    it('POST /api/agents/:id/pause and /resume no longer exist — stop/start are the only verbs', async () => {
+      // 「暂停」曾经只是 stop 的第二个名字（同一动作两种叫法 = 歧义温床，
+      // 还会让人以为存在第三种状态）。删掉后必须有测试挡住它被悄悄加回来。
+      expect((await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/pause`)).status).toBe(404);
+      expect((await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/resume`)).status).toBe(404);
     });
 
     it('POST /api/agents/:id/cancel-processing', async () => {

@@ -313,6 +313,10 @@
     "saved": "Guardado",
     "restartRequired": "Guardado: reinicia Markus para aplicarlo",
     "saveFailed": "Error al guardar",
+    "applyNow": "Aplicar ahora",
+    "applying": "Aplicando…",
+    "applied": "Aplicado: el listener se ha movido",
+    "applyFailed": "No se pudo mover el listener",
     "remoteNote": "El túnel de acceso remoto conecta a 127.0.0.1, así que habilitar el acceso remoto no requiere abrir la red local."
   },
   "networkProxy": {

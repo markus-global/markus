@@ -313,6 +313,10 @@
     "saved": "已保存",
     "restartRequired": "已保存，重启 Markus 后生效",
     "saveFailed": "保存失败",
+    "applyNow": "立即生效",
+    "applying": "切换中…",
+    "applied": "已生效，监听地址已切换",
+    "applyFailed": "切换失败",
     "remoteNote": "远程访问隧道连接的是本机 127.0.0.1，开启远程访问不需要开放局域网。"
   },
   "networkProxy": {

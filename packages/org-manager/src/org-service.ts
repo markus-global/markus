@@ -584,7 +584,9 @@ export class OrganizationService {
   async startTeamAgents(teamId: string): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
     const team = this.teams.get(teamId);
     if (!team) throw new Error(`Team not found: ${teamId}`);
-    return this.agentManager.startAgentsByIds(team.memberAgentIds);
+    // 「启动团队」= 启动团队里的每一个。这是人的动作，所以 cause='human'：
+    // 它可以推翻自己先前的单个停止决定（团队作用域与单个作用域都只有 start/stop 两个动词）。
+    return this.agentManager.startAgentsByIds(team.memberAgentIds, { cause: 'human' });
   }
 
   async stopTeamAgents(teamId: string): Promise<{ success: string[]; failed: Array<{ id: string; error: string }> }> {
@@ -658,7 +660,7 @@ export class OrganizationService {
     // (unless skipAutoStart is set, e.g. when caller will copy custom role files first).
     if (!request.skipAutoStart) {
       try {
-        await this.agentManager.startAgent(agent.id);
+        await this.agentManager.startAgent(agent.id, { cause: 'creation' });
         log.info(`Agent onboarded: ${request.name} (auto-started)`, {
           orgId: request.orgId,
           agentId: agent.id,
@@ -957,6 +959,10 @@ export class OrganizationService {
     this.pendingAgentStartIds = [];
     if (entries.length === 0) return Promise.resolve();
 
+    // 闸门需要先知道「哪些是人类停掉的」——必须在任何启动之前注入，
+    // 否则开机恢复会以「不是人停的」误放行（这正是修复前的根因）。
+    this.agentManager.hydrateHumanStopped(entries.filter(e => e.disabled).map(e => e.id));
+
     const STAGGER_MS = 1_000;
     log.info(`Starting ${entries.length} restored agents in background (heartbeats will be staggered)...`);
 
@@ -976,7 +982,7 @@ export class OrganizationService {
           const initialHeartbeatDelayMs = activeEntries > 1
             ? Math.floor((started / activeEntries) * DEFAULT_HEARTBEAT_INTERVAL_MS) + Math.floor(Math.random() * HEARTBEAT_STARTUP_JITTER_MS)
             : undefined;
-          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs, skipDisabledFlag: true });
+          await this.agentManager.startAgent(id, { initialHeartbeatDelayMs, skipDisabledFlag: true, cause: 'boot' });
           started++;
           if (started < activeEntries) {
             await new Promise(r => setTimeout(r, STAGGER_MS));

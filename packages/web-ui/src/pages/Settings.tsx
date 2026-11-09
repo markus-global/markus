@@ -237,6 +237,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [bindHostEffective, setBindHostEffective] = useState('127.0.0.1');
   const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
   const [bindHostNotice, setBindHostNotice] = useState('');
+  const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
+  const [bindHostApplying, setBindHostApplying] = useState(false);
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -313,7 +315,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const loadNetworkSettings = useCallback(() => {
     fetch('/api/settings/network')
-      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string }; server?: { host?: string; effectiveHost?: string; source?: string } }> : Promise.reject(r.status))
+      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string }; server?: { host?: string; effectiveHost?: string; source?: string; pendingRestart?: boolean } }> : Promise.reject(r.status))
       .then(d => {
         setProxyUrl(d.network?.proxy ?? '');
         setProxyEnabled(d.network?.proxyEnabled !== false);
@@ -321,6 +323,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         setBindHostValue(d.server?.host ?? '127.0.0.1');
         setBindHostEffective(d.server?.effectiveHost ?? '127.0.0.1');
         setBindHostFromEnv(d.server?.source === 'env');
+        setBindHostPendingRestart(!!d.server?.pendingRestart);
       })
       .catch(() => {});
   }, []);
@@ -2075,7 +2078,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'network' && <>
         {/* ───── Access scope (bind host) ───── */}
-        <CollapsibleSection title={t('accessScope.title')} defaultOpen={false}>
+        <CollapsibleSection title={t('accessScope.title')} defaultOpen={true}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-3">
             <p className="text-xs text-fg-tertiary">{t('accessScope.description')}</p>
             <div className="flex flex-wrap gap-2">
@@ -2119,6 +2122,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     if (!res.ok) throw new Error(`HTTP ${res.status}`);
                     const d = await res.json() as { restartRequired?: boolean };
                     setBindHostNotice(d.restartRequired ? t('accessScope.restartRequired') : t('accessScope.saved'));
+                    setBindHostPendingRestart(!!d.restartRequired);
                     loadNetworkSettings();
                   } catch {
                     setBindHostNotice(t('accessScope.saveFailed'));
@@ -2128,6 +2132,30 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               >
                 {t('accessScope.save')}
               </button>
+              {bindHostPendingRestart && (
+                <button
+                  onClick={async () => {
+                    setBindHostApplying(true);
+                    try {
+                      const res = await fetch('/api/settings/network/apply', {
+                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
+                      });
+                      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                      setBindHostNotice(t('accessScope.applied'));
+                      setBindHostPendingRestart(false);
+                      loadNetworkSettings();
+                    } catch {
+                      setBindHostNotice(t('accessScope.applyFailed'));
+                    } finally {
+                      setBindHostApplying(false);
+                    }
+                  }}
+                  disabled={bindHostApplying}
+                  className="px-3 py-1.5 text-xs rounded-lg border border-border-default text-fg-secondary hover:text-fg-primary transition-colors disabled:opacity-40"
+                >
+                  {bindHostApplying ? t('accessScope.applying') : t('accessScope.applyNow')}
+                </button>
+              )}
               {bindHostNotice && <span className="text-[11px] text-fg-secondary">{bindHostNotice}</span>}
             </div>
             <p className="text-[11px] text-fg-muted">{t('accessScope.remoteNote')}</p>
@@ -2135,7 +2163,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </CollapsibleSection>
 
         {/* ───── Network / Proxy ───── */}
-        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={false}>
+        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={true}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
             <div className="flex items-center justify-between">
               <div>

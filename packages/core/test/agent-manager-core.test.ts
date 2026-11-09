@@ -292,23 +292,27 @@ describe('agent lifecycle', () => {
   it('startAgentsByIds starts offline agents', async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Start Me', roleName: 'custom', tools: [] });
-    await manager.stopAgent(agent.id);
+    // 系统级暂停（不是人类按的停止）：批量启动应当能把它拉回来。
+    await manager.stopAgent(agent.id, { cause: 'system' });
 
     const result = await manager.startAgentsByIds([agent.id]);
     expect(result.success).toEqual([agent.id]);
     expect(agent.start).toHaveBeenCalled();
   });
 
-  it('stopAllAgents and startAllAgents toggle global stopped state', async () => {
+  it('startAgentsByIds (启动团队) starts every member — including one stopped individually', async () => {
+    // Owner 2026-11-08：启动一个团队 = 启动团队里的每一个。人的动作可以推翻自己的
+    // 单个停止决定；只有 agent 侧路径才会被粘性停止拦住。
     const manager = createManager();
-    await manager.createAgent({ name: 'Global', roleName: 'custom', tools: [] });
+    const agent = await manager.createAgent({ name: 'Human Stopped', roleName: 'custom', tools: [] });
+    await manager.stopAgent(agent.id);
 
-    await manager.stopAllAgents('maintenance');
-    expect(manager.isGlobalStopped()).toBe(true);
-
-    await manager.startAllAgents();
-    expect(manager.isGlobalStopped()).toBe(false);
+    const result = await manager.startAgentsByIds([agent.id], { cause: 'human' });
+    expect(result.success).toEqual([agent.id]);
+    expect(agent.start).toHaveBeenCalled();
+    expect(manager.isStoppedByHuman(agent.id)).toBe(false);
   });
+
 });
 
 describe('config update wiring', () => {
@@ -506,7 +510,10 @@ describe('emergency and global control', () => {
     await manager.emergencyStop();
     expect(a.stop).toHaveBeenCalled();
     expect(b.stop).toHaveBeenCalled();
-    expect(manager.isGlobalStopped()).toBe(true);
+    // 没有「全局暂停」这个概念了（只有单个/团队两档停止），所以断言运行时状态：
+    // 紧急停止后每个 agent 都真的 offline，且 emergencyMode 亮着。
+    expect(a.getState().status).toBe('offline');
+    expect(b.getState().status).toBe('offline');
     expect(manager.isEmergencyMode()).toBe(true);
     expect(handler).toHaveBeenCalled();
   });
@@ -775,7 +782,7 @@ describe('service wiring setters', () => {
   it('startAgentsByIds reports failures for unknown agents', async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Start Me', roleName: 'custom', tools: [] });
-    await manager.stopAgent(agent.id);
+    await manager.stopAgent(agent.id, { cause: 'system' });
 
     const result = await manager.startAgentsByIds([agent.id, 'agt_missing']);
     expect(result.success).toEqual([agent.id]);
