@@ -2234,7 +2234,7 @@ function TaskDetailPanel({
               return badge ? (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${badge.cls}`}>{badge.label}</span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t, task.blockedReason)}</span>
               );
             })()}
             {isAbnormallyBlocked && (

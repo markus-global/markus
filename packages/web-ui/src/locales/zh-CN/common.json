@@ -96,7 +96,7 @@
     "pending": "待处理",
     "inProgress": "进行中",
     "blocked": "已阻塞",
-    "waitingDeps": "等待依赖",
+    "waitingDeps": "等待前置",
     "onHold": "已挂起",
     "workflowPaused": "流程暂停",
     "review": "评审中",

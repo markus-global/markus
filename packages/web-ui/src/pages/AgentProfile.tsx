@@ -568,7 +568,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
                 <div key={task.id} className="flex items-center gap-2 text-[11px]">
                   <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse shrink-0" />
                   <span className="text-fg-secondary truncate flex-1">{task.title}</span>
-                  <span className="text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t)}</span>
+                  <span className="text-fg-tertiary capitalize shrink-0">{taskStatusLabel(task.status, t, task.blockedReason)}</span>
                 </div>
               ))}
               {queuedCount > 0 && (

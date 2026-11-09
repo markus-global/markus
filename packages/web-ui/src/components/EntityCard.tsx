@@ -75,6 +75,7 @@ export interface ResolvedEntity {
   type: EntityType;
   title: string;
   status?: string;
+  blockedReason?: 'deps' | 'hold' | 'workflow' | null;
   summary?: string;
   loading: boolean;
   notFound?: boolean;
@@ -156,8 +157,8 @@ async function fetchEntity(id: string, type: EntityType): Promise<ResolvedEntity
   const base: ResolvedEntity = { id, type, title: id, loading: false };
   try {
     switch (type) {
-      case 'task': { const r = await api.tasks.get(id); return { ...base, title: r.task.title, status: r.task.status }; }
-      case 'requirement': { const r = await api.requirements.get(id); return { ...base, title: r.requirement.title, status: r.requirement.status }; }
+      case 'task': { const r = await api.tasks.get(id); return { ...base, title: r.task.title, status: r.task.status, blockedReason: r.task.blockedReason ?? null }; }
+      case 'requirement': { const r = await api.requirements.get(id); const rr = r.requirement as { blockedReason?: 'deps' | 'hold' | 'workflow' | null }; return { ...base, title: r.requirement.title, status: r.requirement.status, blockedReason: rr.blockedReason ?? null }; }
       case 'project': { const r = await api.projects.get(id); return { ...base, title: r.project.name, status: r.project.status, summary: r.project.description }; }
       case 'deliverable': { const r = await api.deliverables.get(id); return { ...base, title: r.deliverable.title, status: r.deliverable.status, summary: r.deliverable.summary, deliverable: r.deliverable }; }
       case 'agent': { const r = await api.agents.get(id); return { ...base, title: r.name, summary: r.role }; }
@@ -285,7 +286,7 @@ export function EntityCard({ id, type: typeHint, label }: { id: string; type?: E
             {meta.status && (() => {
               // 一行状态 = 字 + 语气，一起给（只拿字再自己写颜色 = 同一事实两个写者）。
               // 非任务实体没有治理态词表，原样展示服务端给的值。
-              const p = meta.type === 'task' ? taskStatusPresentation(meta.status, t) : null;
+              const p = meta.type === 'task' || meta.type === 'requirement' ? taskStatusPresentation(meta.status, t, meta.blockedReason) : null;
               return (
                 <span
                   data-testid="entity-status"
