@@ -1517,8 +1517,8 @@ export class Agent {
           dbSessionId: options?.sessionRestore === null
             ? undefined
             : (options?.sessionRestore?.dbSessionId ?? options?.sessionId),
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1615,8 +1615,8 @@ export class Agent {
               // at a completely different conversation.
               ?? options?.sessionId
               ?? (this.getDbSessionId() || undefined)),
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1665,8 +1665,8 @@ export class Agent {
         priority: 1,
         metadata: {
           taskId,
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1697,8 +1697,8 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -2309,13 +2309,13 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
     const resolveResponse = (reply: string) => {
-      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
-        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
+      if (typeof item.runtime?.responsePromise?.resolve === 'function') {
+        item.runtime?.responsePromise?.resolve(stripCompletionMarker(reply));
       }
     };
     const rejectResponse = (err: unknown) => {
-      if (typeof item.metadata?.responsePromise?.reject === 'function') {
-        item.metadata.responsePromise.reject(err);
+      if (typeof item.runtime?.responsePromise?.reject === 'function') {
+        item.runtime?.responsePromise?.reject(err);
       }
     };
 
@@ -2486,7 +2486,7 @@ export class Agent {
           // 从 DB 拉不到回复（刷新也不显示）。正常路径（发起方 promise 存活）由发起方
           // persistAssistantMessage，这里不写（避免双写）——判据见 shouldPersistRecoveredReply。
           if (item.sourceType === 'human_chat') {
-            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata);
+            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata, item.runtime);
           }
           resolveResponse(reply);
           return reply;
@@ -4765,12 +4765,13 @@ export class Agent {
   async persistRecoveredReplyIfNeeded(
     reply: string,
     extra: Record<string, unknown>,
-    metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
+    metadata: { dbSessionId?: unknown } | undefined,
+    runtime: { responsePromise?: { resolve?: unknown } } | undefined,
   ): Promise<void> {
     if (!reply || typeof reply !== 'string' || !reply.trim()) return;
     if (!this.assistantReplyPersister) return;
     const decision = shouldPersistRecoveredReply({
-      resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
+      resolveIsFunction: typeof runtime?.responsePromise?.resolve === 'function',
       sessionId: extra.sessionId,
       dbSessionId: metadata?.dbSessionId,
     });
@@ -5630,8 +5631,8 @@ export class Agent {
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(chatYield.item)}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
-          if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
-            chatYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof chatYield.item.runtime?.responsePromise?.resolve === 'function') {
+            chatYield.item.runtime.responsePromise.resolve('[merged]');
           }
         }
 
@@ -6377,8 +6378,8 @@ export class Agent {
         if (streamYield.decision === 'merge' && streamYield.item) {
           const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(streamYield.item)}`;
           this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
-          if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
-            streamYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof streamYield.item.runtime?.responsePromise?.resolve === 'function') {
+            streamYield.item.runtime.responsePromise.resolve('[merged]');
           }
         } else if (streamYield.decision === 'cancel') {
           // B3: an explicit revocation (e.g. "stop / cancel that") must cut the stream
@@ -7111,8 +7112,8 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE]\n\n${turnContentOf(yieldResult.item)}`,
           });
-          if (typeof yieldResult.item.metadata?.responsePromise?.resolve === 'function') {
-            yieldResult.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof yieldResult.item.runtime?.responsePromise?.resolve === 'function') {
+            yieldResult.item.runtime.responsePromise.resolve('[merged]');
           }
           log.debug('Merged mailbox item into active task session', {
             taskId,
@@ -7630,8 +7631,8 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE]\n\n${turnContentOf(risYield.item)}`,
           });
-          if (typeof risYield.item.metadata?.responsePromise?.resolve === 'function') {
-            risYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof risYield.item.runtime?.responsePromise?.resolve === 'function') {
+            risYield.item.runtime.responsePromise.resolve('[merged]');
           }
         }
 

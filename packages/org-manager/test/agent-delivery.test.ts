@@ -121,12 +121,12 @@ describe('AgentDelivery.deliver — 因果链与载荷', () => {
     const { deps, enqueued } = makeDeps();
     const out = new AgentDelivery(deps).deliver(req({ collectReply: true }));
     expect(out.replies).toHaveLength(1);
-    const md = enqueued[0]!.options as { metadata: { responsePromise?: { resolve: (v: string) => void } } };
-    expect(typeof md.metadata.responsePromise?.resolve).toBe('function');
+    const md = enqueued[0]!.options as { runtime?: { responsePromise?: { resolve: (v: string) => void } } };
+    expect(typeof md.runtime?.responsePromise?.resolve).toBe('function');
 
     let settled = '';
     void out.replies![0]!.then(v => { settled = v; });
-    md.metadata.responsePromise!.resolve('pong');
+    md.runtime!.responsePromise!.resolve('pong');
     return Promise.resolve().then(() => expect(settled).toBe('pong'));
   });
 

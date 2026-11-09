@@ -541,7 +541,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
   ) {
     return new Promise<string>((resolve, reject) => {
       agent.enqueueToMailbox(sourceType, payload, {
-        metadata: { responsePromise: { resolve, reject } },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1020,7 +1020,7 @@ describe('performDeliberation and cognitive pipeline', () => {
         content: 'Can you clarify?',
         extra: { sessionId: session.id, onLog: () => {} },
       }, {
-        metadata: { responsePromise: { resolve, reject } },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
 
@@ -1045,7 +1045,7 @@ describe('performDeliberation and cognitive pipeline', () => {
           triggerExecution: true,
           onLog: (entry: { type: string; content: string }) => { logs.push(entry.type); },
         },
-      }, { metadata: { taskId: 'task_mbx_exec', responsePromise: { resolve: () => resolve(), reject } } });
+      }, { metadata: { taskId: 'task_mbx_exec' }, runtime: { responsePromise: { resolve: () => resolve(), reject } } });
     });
 
     expect(logs).toContain('status');

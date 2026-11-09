@@ -298,7 +298,7 @@ describe('P0 重复投递 · 入队层显式拒绝', () => {
     expect(table.insertOk, '首次落库').toBe(1);
 
     const second = mb.enqueue('review_request', REVIEW('tsk_dup', 1) as never, {
-      metadata: { responsePromise: { resolve: (v: string) => resolved.push(v), reject: () => {} } },
+      runtime: { responsePromise: { resolve: (v: string) => resolved.push(v), reject: () => {} } },
     });
 
     expect(table.insertOk, '仍只落库一行').toBe(1);

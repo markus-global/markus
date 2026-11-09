@@ -180,7 +180,7 @@ describe('P1.x · 既有 P0/P1 语义不回归', () => {
     mb.enqueue('review_request', REVIEW('task_5', 3));
 
     const resolve = vi.fn();
-    const dup = mb.enqueue('review_request', REVIEW('task_5', 3), { metadata: { responsePromise: { resolve } } as never });
+    const dup = mb.enqueue('review_request', REVIEW('task_5', 3), { runtime: { responsePromise: { resolve } } } as never);
 
     expect(dup.status).toBe('dropped');
     expect(resolve).toHaveBeenCalledWith('[duplicate-delivery-suppressed]');

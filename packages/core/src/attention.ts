@@ -607,7 +607,7 @@ export class AttentionController {
             // Direct a2a_message with a live responsePromise is also dropped
             // (the promise is stale after restart). Group chat a2a_messages
             // (no responsePromise) ARE re-enqueued to avoid silent message loss.
-            const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
+            const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.runtime?.responsePromise;
             if (item.sourceType !== 'human_chat' && !hasLiveCallback) {
               try {
                 // P1.x (a)(R2)：**显式复用原行**回队（而不仅仅是重投）。

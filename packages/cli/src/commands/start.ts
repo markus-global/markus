@@ -2307,12 +2307,11 @@ async function startServerCore(
         mailbox.setPersistence({
           save: (item, dedupKey) => {
             try {
-              const { responsePromise, ...persistableMetadata } = (item.metadata ?? {}) as Record<string, unknown>;
               const inserted = mbRepo.save({
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
-                metadata: persistableMetadata,
+                metadata: (item.metadata ?? {}) as Record<string, unknown>,
                 queuedAt: item.queuedAt,
                 dedupKey,
               });

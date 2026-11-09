@@ -359,6 +359,11 @@ export interface MailboxItem {
    * → 该项为「租约过期的孤儿」，可被其它 worker（含其它进程实例）重新认领。
    */
   leaseUntil?: string;
+  /**
+   * 进程内运行期回调（不在持久化面内；见 {@link MailboxItemRuntime}）。
+   * 持久化只写 `payload` + `metadata`，因此这里永远不会落库。
+   */
+  runtime?: MailboxItemRuntime;
 }
 
 /**
@@ -429,7 +434,19 @@ export interface MailboxItemMetadata {
   mergeCount?: number;
   /** When true, this item is a continuation of a previous conversation — not a new request. */
   isResume?: boolean;
-  /** For streaming: a promise resolver the caller can await */
+}
+
+/**
+ * In-process runtime callbacks — **never persisted**.
+ *
+ * These live only on `MailboxItem.runtime`. Persistence serializes only
+ * `payload` + `metadata`, so a function here is *structurally* unable to reach
+ * the database — no strip guard required at any write path. "Is the initiator
+ * still waiting?" reads this; after a restart it is naturally undefined (the
+ * initiating request thread is gone).
+ */
+export interface MailboxItemRuntime {
+  /** The initiator's resolver; absent after restart ⇒ initiator is gone. */
   responsePromise?: {
     resolve: (value: string) => void;
     reject: (reason: unknown) => void;

@@ -89,7 +89,7 @@ async function processViaMailbox(
 ): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     agent.enqueueToMailbox(sourceType, payload, {
-      metadata: { responsePromise: { resolve, reject } },
+      runtime: { responsePromise: { resolve, reject } },
     });
   });
 }

@@ -173,7 +173,8 @@ describe('P3 恢复项：worker 兜底回写 DB 会话', () => {
     await agent.persistRecoveredReplyIfNeeded(
       'live reply',
       { stream: true, onEvent: () => {}, sessionId: 'cs_live' },
-      { senderId: 'user', dbSessionId: 'cs_live', responsePromise: { resolve: () => {}, reject: () => {} } },
+      { senderId: 'user', dbSessionId: 'cs_live' },
+      { responsePromise: { resolve: () => {}, reject: () => {} } },
     );
 
     expect(persister).not.toHaveBeenCalled();

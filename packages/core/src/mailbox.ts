@@ -7,6 +7,7 @@ import {
   type MailboxItemType,
   type MailboxPayload,
   type MailboxItemMetadata,
+  type MailboxItemRuntime,
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
@@ -105,6 +106,12 @@ export function mailboxDedupKey(
 export interface EnqueueOptions {
   priority?: MailboxPriority;
   metadata?: MailboxItemMetadata;
+  /**
+   * In-process runtime callbacks (never persisted — see `MailboxItemRuntime`).
+   * Persistence serializes only `payload` + `metadata`, so callbacks here cannot
+   * reach the database.
+   */
+  runtime?: MailboxItemRuntime;
   /**
    * P1.x (a)(R2)：调用方明确声明「我正在交还这一条既有行」——停停机重投 / 崩溃恢复时，
    * 该 item 的持久行正是「本实例刚取走、未处理完就停机」的那一条。
@@ -660,7 +667,7 @@ export class AgentMailbox {
         // 实测路径：HB 处理完 resolve 后、complete() 清 _processingHeartbeatId 前的
         // 窗口内再入队 HB → 被折叠 → 原实现让其 promise 悬挂 → 测试 10s 超时）。
         const foldedPromise = pendingHeartbeat.id === this._processingHeartbeatId
-          ? options?.metadata?.responsePromise
+          ? options?.runtime?.responsePromise
           : undefined;
         if (foldedPromise) {
           try { foldedPromise.resolve('[heartbeat-collapsed]'); } catch { /* caller gone */ }
@@ -682,6 +689,7 @@ export class AgentMailbox {
       payload,
       metadata: options?.metadata,
       queuedAt: new Date().toISOString(),
+      runtime: options?.runtime,
     };
 
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）
@@ -1402,7 +1410,7 @@ export class AgentMailbox {
     // 投递方可能在 await responsePromise（如 notifyReviewer 的 .then）：
     // 重复投递既然被抑制，就必须显式了结该 Promise，否则调用方永久挂起
     // （其内存态 activeReviews 会残留 → 后续轮次的评审通知被误抑制）。
-    const pending = item.metadata?.responsePromise;
+    const pending = item.runtime?.responsePromise;
     if (pending) {
       try { pending.resolve('[duplicate-delivery-suppressed]'); } catch { /* caller gone */ }
     }

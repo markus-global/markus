@@ -96,7 +96,10 @@ export interface DeliveryDeps {
     enqueueToMailbox: (
       sourceType: string,
       payload: { summary: string; content: string; extra?: Record<string, unknown> },
-      options?: { metadata?: Record<string, unknown> },
+      options?: {
+        metadata?: Record<string, unknown>;
+        runtime?: { responsePromise?: { resolve: (v: string) => void; reject: (r: unknown) => void } };
+      },
     ) => unknown;
   } | undefined;
   /** 把一条回复写进频道历史；返回持久化 id（失败可返回 undefined）。 */
@@ -197,10 +200,10 @@ export class AgentDelivery {
             senderId: req.fromAgentId,
             senderName: req.fromAgentName,
             senderRole: 'agent',
-            ...(resolveReply
-              ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
-              : {}),
           },
+          runtime: resolveReply
+            ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
+            : undefined,
         });
         deliveredTo.push(targetId);
       } catch (err) {

@@ -569,16 +569,14 @@ describe('runLoop shutdown re-enqueue', () => {
     const item = mailbox.dequeue()!;
     expect(item.sourceType).toBe('human_chat');
 
-    const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
+    const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.runtime?.responsePromise;
     const shouldReenqueue = item.sourceType !== 'human_chat' && !hasLiveCallback;
     expect(shouldReenqueue).toBe(false);
   });
 
   it('distinguishes direct a2a (with responsePromise) from group chat a2a', () => {
-    const directA2A = makeItem({
-      sourceType: 'a2a_message',
-      metadata: { responsePromise: { resolve: () => {} } } as any,
-    });
+    const directA2A = makeItem({ sourceType: 'a2a_message' });
+    (directA2A as any).runtime = { responsePromise: { resolve: () => {} } };
     const groupA2A = makeItem({
       sourceType: 'a2a_message',
       metadata: { senderId: 'agent-2' },
@@ -586,10 +584,10 @@ describe('runLoop shutdown re-enqueue', () => {
 
     const shouldReenqueueDirect =
       directA2A.sourceType !== 'human_chat' &&
-      !(directA2A.sourceType === 'a2a_message' && !!directA2A.metadata?.responsePromise);
+      !(directA2A.sourceType === 'a2a_message' && !!directA2A.runtime?.responsePromise);
     const shouldReenqueueGroup =
       groupA2A.sourceType !== 'human_chat' &&
-      !(groupA2A.sourceType === 'a2a_message' && !!groupA2A.metadata?.responsePromise);
+      !(groupA2A.sourceType === 'a2a_message' && !!groupA2A.runtime?.responsePromise);
 
     expect(shouldReenqueueDirect).toBe(false);
     expect(shouldReenqueueGroup).toBe(true);
