@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { installEgress } from '@markus/shared';
 
 interface SearchResult {
   title: string;
@@ -11,40 +12,18 @@ const SEARCH_TIMEOUT_MS = 15_000;
 
 // ── Proxy-aware fetch ──────────────────────────────────────────────────────
 
-const NOT_RESOLVED = Symbol('not-resolved');
-let _dispatcher: Record<string, unknown> | undefined | typeof NOT_RESOLVED = NOT_RESOLVED;
-
-async function resolveProxyDispatcher(): Promise<Record<string, unknown> | undefined> {
-  if (_dispatcher !== NOT_RESOLVED) return _dispatcher;
-  const proxyUrl =
-    process.env['HTTPS_PROXY'] || process.env['HTTP_PROXY'] ||
-    process.env['https_proxy'] || process.env['http_proxy'];
-  if (!proxyUrl) {
-    _dispatcher = undefined;
-    return undefined;
-  }
-  try {
-    // Node.js 22+ re-exports undici; use indirect eval to dodge TS module resolution.
-    // eslint-disable-next-line @typescript-eslint/no-implied-eval, no-new-func
-    const load = new Function('id', 'return import(id)') as (id: string) => Promise<{ ProxyAgent: new (url: string) => Record<string, unknown> }>;
-    const { ProxyAgent } = await load('undici');
-    _dispatcher = new ProxyAgent(proxyUrl);
-  } catch {
-    _dispatcher = undefined;
-  }
-  return _dispatcher;
-}
-
 /**
- * Fetch wrapper that respects HTTPS_PROXY / HTTP_PROXY env vars (via undici
- * ProxyAgent on Node 22+) and enforces a default timeout.
+ * Fetch with the process egress policy applied and a default timeout.
+ *
+ * Proxy resolution lives in `@markus/shared/net/egress`. This file used to keep a
+ * second dispatcher of its own, resolved from environment variables only — no
+ * config, no system detection — so a user who set the proxy in Settings had search
+ * silently go direct while the LLM path was proxied.
  */
 async function proxyFetch(url: string | URL, init?: RequestInit): Promise<Response> {
-  const dispatcher = await resolveProxyDispatcher();
+  await installEgress();
   const signal = init?.signal ?? AbortSignal.timeout(SEARCH_TIMEOUT_MS);
-  const opts: Record<string, unknown> = { ...init, signal };
-  if (dispatcher) opts['dispatcher'] = dispatcher;
-  return fetch(url, opts as RequestInit);
+  return fetch(url, { ...init, signal } as RequestInit);
 }
 
 // ── Tool definition ────────────────────────────────────────────────────────

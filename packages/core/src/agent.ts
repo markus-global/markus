@@ -1337,8 +1337,11 @@ export class Agent {
   }
 
   async stop(reason?: string): Promise<void> {
-    this.cancelActiveStream();
+    // 顺序不能反：**先关取件口，再断流**。
+    // 反过来的话，两者之间存在一个窗口：worker 刚好在 dequeueAsync 返回后就拿到了新 item，
+    // 于是 stop() 之后整轮仍会跑完（生产事故：停止后 7–13 秒还在跑 heartbeat / a2a）。
     this.attentionController.stop();
+    this.cancelActiveStream();
     this.heartbeat.stop();
     if (this.wakeupTimer) {
       clearInterval(this.wakeupTimer);
@@ -2040,7 +2043,7 @@ export class Agent {
         memory: this.memory,
         sessionId,
         agentId: this.id,
-        ...this.getPrepareBudgetOpts(),
+        ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
         toolDefinitions: llmTools,
         volatileState: this.volatileState,
       });
@@ -2210,7 +2213,7 @@ export class Agent {
         memory: this.memory,
         sessionId,
         agentId: this.id,
-        ...this.getPrepareBudgetOpts(),
+        ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
         toolDefinitions: [],
         volatileState: this.volatileState,
       });
@@ -3223,15 +3226,42 @@ export class Agent {
   }
 
   /** Shared packing budget fields for prepareMessages (window + OR afford). */
-  private getPrepareBudgetOpts(): {
+  private getPrepareBudgetOpts(sessionMessages: LLMMessage[]): {
     modelContextWindow: number;
     modelMaxOutput: number | undefined;
     scenario: AgentScenario | undefined;
     /** Observed cache hit rate for the compaction-timing signal (null ⇒ silent). */
     cacheHitRate: number | undefined;
   } {
-    const provider = this.getEffectiveProvider();
     const effectiveModel = this.getEffectiveModel();
+    // The window must belong to the model that will RECEIVE this prompt, not to
+    // the agent's configured provider default. Capability routing can pick a
+    // different provider/model for the same turn — an image-bearing history is
+    // routed to the vision model — and resolving the window independently here
+    // once packed a 202,752-token model as if it had 1,000,000: compaction never
+    // fired and the prompt only died at the upstream (`Prompt exceeds max length`,
+    // Z.AI 1261). `previewRoute` is the same decision point `chat()`/`chatStream()`
+    // use, so budget and wire can no longer diverge.
+    // Previewing the route is an ESTIMATE step, not the request itself: if this
+    // router cannot answer (unit-test stubs, an unregistered provider, a fork
+    // without the method) we fall back to the agent's configured model instead
+    // of failing the whole turn. The real router always answers, so production
+    // keeps budget == wire; the fallback only ever restores the old behaviour.
+    let route: { provider?: string; model?: string };
+    try {
+      route = typeof this.llmRouter.previewRoute === 'function'
+        ? this.llmRouter.previewRoute(
+          { messages: sessionMessages, ...(effectiveModel ? { model: effectiveModel } : {}) },
+          this.getEffectiveProvider(),
+        )
+        : { provider: this.getEffectiveProvider(), model: effectiveModel };
+    } catch (error) {
+      log.warn('Route preview failed — budgeting against the configured model', {
+        agentId: this.id,
+        error: String(error),
+      });
+      route = { provider: this.getEffectiveProvider(), model: effectiveModel };
+    }
     return {
       // Feeds `compactionGuidance` (context-budget.ts): the economics of
       // compacting depend on what a cached vs uncached token actually costs.
@@ -3246,9 +3276,10 @@ export class Agent {
         this.metricsCollector.getUsageStats().cacheHitRateWindow ??
         this.metricsCollector.getUsageStats().cacheHitRate ??
         undefined,
-      // P1-8: window must be resolved for the model actually used this request,
-      // not the provider's configured default (which the session may override).
-      modelContextWindow: this.llmRouter.getModelContextWindow(provider, effectiveModel),
+      // Window belongs to the model that will RECEIVE this prompt (see the
+      // previewRoute note above) — capability routing may pick another model
+      // than the agent's configured default for the same turn.
+      modelContextWindow: this.llmRouter.getModelContextWindow(route.provider, route.model),
       // RESERVE IS DERIVED, not the catalog ceiling.
       //
       // This used to be `this.getModelMaxOutputForBudget()` — the provider's
@@ -4813,7 +4844,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
           toolDefinitions: browserTools,
           systemCacheSegments,
           volatileState,
@@ -5371,7 +5402,7 @@ export class Agent {
       memory: this.memory,
       sessionId,
       agentId: this.id,
-      ...this.getPrepareBudgetOpts(),
+      ...this.getPrepareBudgetOpts(sessionMessages),
       toolDefinitions: llmTools,
       systemCacheSegments,
       slotsSegment: this.memory.serializeSlots ? this.memory.serializeSlots(sessionId) : undefined,
@@ -5611,7 +5642,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(updatedSessionMessages),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -5666,7 +5697,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(reminderMessages),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -5731,7 +5762,7 @@ export class Agent {
             memory: this.memory,
             sessionId,
             agentId: this.id,
-            ...this.getPrepareBudgetOpts(),
+            ...this.getPrepareBudgetOpts(finalMessages),
             toolDefinitions: llmTools,
             systemCacheSegments,
             volatileState: this.volatileState,
@@ -5772,7 +5803,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(reminderMessages),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -5835,7 +5866,7 @@ export class Agent {
             memory: this.memory,
             sessionId,
             agentId: this.id,
-            ...this.getPrepareBudgetOpts(),
+            ...this.getPrepareBudgetOpts(finalMessages),
             toolDefinitions: llmTools,
             systemCacheSegments,
             volatileState: this.volatileState,
@@ -6081,7 +6112,7 @@ export class Agent {
       memory: this.memory,
       sessionId: this.currentSessionId,
       agentId: this.id,
-      ...this.getPrepareBudgetOpts(),
+      ...this.getPrepareBudgetOpts(sessionMessages),
       toolDefinitions: llmTools,
       systemCacheSegments,
       volatileState: this.volatileState,
@@ -6377,7 +6408,7 @@ export class Agent {
           memory: this.memory,
           sessionId: this.currentSessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(updatedSessionMessages),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -7127,7 +7158,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -7204,7 +7235,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -7606,7 +7637,7 @@ export class Agent {
           memory: this.memory,
           sessionId,
           agentId: this.id,
-          ...this.getPrepareBudgetOpts(),
+          ...this.getPrepareBudgetOpts(this.requestHistory(sessionId)),
           toolDefinitions: llmTools,
           systemCacheSegments,
           volatileState: this.volatileState,
@@ -8382,7 +8413,7 @@ export class Agent {
       memory: this.memory,
       sessionId: opts.sessionId,
       agentId: this.id,
-      ...this.getPrepareBudgetOpts(),
+      ...this.getPrepareBudgetOpts(sessionMessages),
       toolDefinitions: opts.llmTools,
       systemCacheSegments,
       volatileState: this.volatileState,

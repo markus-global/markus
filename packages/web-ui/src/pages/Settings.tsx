@@ -24,6 +24,7 @@ import { WebSearchSettings } from './WebSearchSettings.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { Switch } from '../components/Switch.tsx';
 import { readProviderCatalog } from '../lib/providerCatalogRead.ts';
+import { fetchLlmSettings } from '../lib/llmSettingsCache.ts';
 import { errorMessage } from '../lib/resourceState.ts';
 import { ReadErrorNotice } from '../components/ListState.tsx';
 
@@ -54,7 +55,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -68,7 +69,7 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   // { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
-  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+  { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
 ];
 
@@ -76,9 +77,32 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
+
+/** Data each settings tab needs the first time it is opened (pure, testable). */
+export type SettingsLoadKey = 'llm' | 'network' | 'oauth' | 'authProfiles' | 'agent' | 'browser' | 'storage';
+
+/**
+ * The single list of loaders a tab depends on. Kept pure and exported because
+ * the failure mode it prevents is invisible: a tab that renders state nobody
+ * loads looks "empty until you press Save" (the network/proxy panel did exactly
+ * that — no `network` branch existed, so the tab opened blank and only filled in
+ * after an unrelated action called the same loader).
+ */
+export function settingsTabLoads(tab: SettingsTab): SettingsLoadKey[] {
+  switch (tab) {
+    // The 模型配置 tab shows the LLM providers AND the network/egress status.
+    case 'providers': return ['llm', 'network', 'oauth', 'authProfiles'];
+    // 网络与访问 renders the proxy + access-scope panels from network state only.
+    case 'network': return ['network'];
+    case 'execution': return ['agent'];
+    case 'browser': return ['browser'];
+    case 'storage': return ['storage'];
+    default: return [];
+  }
+}
 
 /** Maps API breakdown `name` → i18n key under dataStorage.items.* */
 const STORAGE_ITEM_KEYS: Record<string, string> = {
@@ -115,6 +139,7 @@ const SETTINGS_TAB_ICONS: Record<string, string> = {
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
   integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
   remote: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
+  network: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
   _default: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
 };
@@ -127,7 +152,7 @@ function SettingsTabIcon({ id, className }: { id: string; className?: string }) 
   );
 }
 
-const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', remote: 'network' };
 
 /**
  * Pure hash → tab resolver. `hash` may carry a leading `#` (as `window.location.hash`
@@ -231,6 +256,20 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // Network / Proxy state
   const [proxyUrl, setProxyUrl] = useState('');
   const [proxyEnabled, setProxyEnabled] = useState(true);
+  // Egress: bypass list, resolved source, and the last probe result.
+  const [noProxyList, setNoProxyList] = useState<string[]>([]);
+  const [noProxyEntry, setNoProxyEntry] = useState('');
+  const [egressSource, setEgressSource] = useState<'config' | 'env' | 'system' | 'none' | 'disabled'>('none');
+  const [egressError, setEgressError] = useState<string | null>(null);
+  const [egressTesting, setEgressTesting] = useState(false);
+  const [egressTest, setEgressTest] = useState<{ ok: boolean; text: string } | null>(null);
+  // Access scope: which interface the API binds to, and whether that was decided.
+  const [bindHostValue, setBindHostValue] = useState('0.0.0.0');
+  const [bindHostEffective, setBindHostEffective] = useState('0.0.0.0');
+  const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
+  const [bindHostNotice, setBindHostNotice] = useState('');
+  const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
+  const [bindHostApplying, setBindHostApplying] = useState(false);
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -293,47 +332,63 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
     api.health().then(setHealth).catch(() => {});
   }, []);
 
+  // This page OWNS provider mutations, so it reads fresh (`force`): a cache hit
+  // right after a save would repaint the settings the user just changed away
+  // from. The read-only surfaces (composer model menu, boot check) use the
+  // shared TTL cache in lib/llmSettingsCache.
   const loadLlmSettings = useCallback(() => {
-    fetch('/api/settings/llm')
-      .then(r => r.ok ? r.json() as Promise<LLMSettings> : Promise.reject(r.status))
+    return fetchLlmSettings({ force: true })
       .then(d => {
         if (d && typeof d === 'object' && 'providers' in d) {
-          setLlm(d);
-          setSelectedProvider(d.defaultProvider);
+          setLlm(d as unknown as LLMSettings);
+          setSelectedProvider(d.defaultProvider ?? '');
+          return true;
         }
+        return false;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadNetworkSettings = useCallback(() => {
-    fetch('/api/settings/network')
-      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string } }> : Promise.reject(r.status))
+    return fetch('/api/settings/network')
+      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string }; server?: { host?: string; effectiveHost?: string; source?: string; pendingRestart?: boolean } }> : Promise.reject(r.status))
       .then(d => {
         setProxyUrl(d.network?.proxy ?? '');
         setProxyEnabled(d.network?.proxyEnabled !== false);
         setProxyEffective(d.effective);
+        const egress = (d as { egress?: { noProxy?: string[]; source?: 'config' | 'env' | 'system' | 'none' | 'disabled'; error?: string | null } }).egress;
+        if (egress) {
+          setNoProxyList(egress.noProxy ?? []);
+          setEgressSource(egress.source ?? 'none');
+          setEgressError(egress.error ?? null);
+        }
+        setBindHostValue(d.server?.host ?? '0.0.0.0');
+        setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
+        setBindHostFromEnv(d.server?.source === 'env');
+        setBindHostPendingRestart(!!d.server?.pendingRestart);
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadOAuthProviders = useCallback(() => {
-    fetch('/api/settings/oauth/providers')
+    return fetch('/api/settings/oauth/providers')
       .then(r => r.ok ? r.json() as Promise<{ providers: OAuthProvider[] }> : Promise.reject(r.status))
-      .then(d => setOauthProviders(d.providers ?? []))
-      .catch(() => {});
+      .then(d => { setOauthProviders(d.providers ?? []); return true; })
+      .catch(() => false);
   }, []);
 
   const loadAuthProfiles = useCallback((validate = false) => {
     const qs = validate ? '?validate=1' : '';
-    fetch(`/api/settings/oauth/profiles${qs}`, { headers: authHeaders() })
+    return fetch(`/api/settings/oauth/profiles${qs}`, { headers: authHeaders() })
       .then(r => r.ok ? r.json() as Promise<{ profiles: AuthProfileSafe[] }> : Promise.reject(r.status))
-      .then(d => setAuthProfiles(d.profiles ?? []))
-      .catch(() => {});
+      .then(d => { setAuthProfiles(d.profiles ?? []); return true; })
+      .catch(() => false);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const loadAgentSettings = useCallback(() => {
-    api.settings.getAgent()
+    return api.settings.getAgent()
       .then(d => {
         if (d && typeof d.maxToolIterations === 'number') setAgentMaxIter(d.maxToolIterations);
         if (d && typeof d.maxPendingTasksPerAgent === 'number') setAgentMaxPending(d.maxPendingTasksPerAgent);
@@ -342,12 +397,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setConcMaxWorkers(d.concurrent.maxWorkers ?? 3);
           setConcConflictPolicy(d.concurrent.conflictPolicy ?? 'auto');
         }
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
   const loadBrowserSettings = useCallback(() => {
-    api.settings.getBrowser()
+    return api.settings.getBrowser()
       .then(d => {
         if (d) {
           setBrowserMode(d.mode ?? 'embedded');
@@ -359,46 +415,73 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setBrowserExtensionConnected(d.extensionConnected ?? false);
           setBrowserExtensionPort(d.extensionBridgePort ?? 9333);
         }
+        return true;
       })
-      .catch(() => {});
+      .catch(() => false);
   }, []);
 
 
   const loadStorage = useCallback(() => {
     setStorageLoading(true);
-    api.system.storage().then(setStorageInfo).catch(() => {}).finally(() => setStorageLoading(false));
+    const main = api.system.storage()
+      .then(setStorageInfo)
+      .then(() => true)
+      .catch(() => false)
+      .finally(() => setStorageLoading(false));
     api.system.orphans().then(setOrphanInfo).catch(() => {});
+    return main;
   }, []);
 
   // Global: only health check on mount
   useEffect(() => { loadHealth(); }, [loadHealth]);
 
-  // Per-tab lazy loading
+  // Per-tab lazy loading.
+  //
+  // A tab is recorded as loaded ONLY once its data actually arrived. It used to
+  // be marked loaded up-front, before the fetches resolved, so a single failed
+  // read (auth cookie not ready during boot, a 401, a dropped connection) left
+  // that tab permanently blank — the panel rendered its `useState` defaults and
+  // nothing would ever retry, until an unrelated action (pressing Save) happened
+  // to call the same loader again. That is the "opened blank, needed to update a
+  // setting to make it appear" symptom, and it hid behind a `.catch(() => {})`.
+  const [loadRetryTick, setLoadRetryTick] = useState(0);
   useEffect(() => {
     if (!resolvedTab) return;
     if (tabLoadedRef.current.has(resolvedTab)) return;
-    tabLoadedRef.current.add(resolvedTab);
 
-    switch (resolvedTab) {
-      case 'providers':
-        loadLlmSettings();
-        loadNetworkSettings();
-        loadOAuthProviders();
-        loadAuthProfiles(true);
-        break;
-      case 'execution':
-        loadAgentSettings();
-        break;
-      case 'browser':
-        loadBrowserSettings();
-        break;
-      case 'storage':
-        loadStorage();
-        break;
-      default:
-        break;
+    const loads = settingsTabLoads(resolvedTab);
+    const tasks: Array<Promise<boolean>> = [];
+    if (loads.includes('llm')) tasks.push(loadLlmSettings());
+    if (loads.includes('network')) tasks.push(loadNetworkSettings());
+    if (loads.includes('oauth')) tasks.push(loadOAuthProviders());
+    if (loads.includes('authProfiles')) tasks.push(loadAuthProfiles(true));
+    if (loads.includes('agent')) tasks.push(loadAgentSettings());
+    if (loads.includes('browser')) tasks.push(loadBrowserSettings());
+    if (loads.includes('storage')) tasks.push(loadStorage());
+
+    if (tasks.length === 0) {
+      tabLoadedRef.current.add(resolvedTab);
+      return;
     }
-  }, [resolvedTab, loadLlmSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
+
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+    let cancelled = false;
+    void Promise.all(tasks).then(results => {
+      if (cancelled) return;
+      if (results.every(Boolean)) {
+        tabLoadedRef.current.add(resolvedTab);
+        return;
+      }
+      // Stay unloaded and try again shortly — the usual cause is a transient
+      // API/auth hiccup at boot, not a permanent condition.
+      retryTimer = setTimeout(() => setLoadRetryTick(t => t + 1), 1500);
+    });
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [resolvedTab, loadRetryTick, loadLlmSettings, loadNetworkSettings, loadOAuthProviders, loadAuthProfiles, loadAgentSettings, loadBrowserSettings, loadStorage]);
 
   useEffect(() => {
     const handler = () => loadStorage();
@@ -1154,7 +1237,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           <h1 className="text-base font-semibold text-fg-primary">{t(`settings:${visibleTabs.find(tb => tb.id === resolvedTab)?.labelKey || 'title'}`)}</h1>
         </div>
       )}
-      {resolvedTab !== null && <div className="p-4 md:p-7 space-y-10 max-w-4xl mx-auto w-full">
+      {resolvedTab !== null && <div className="p-4 md:p-8 space-y-8 max-w-4xl mx-auto w-full">
+        <PageHeader tab={resolvedTab} />
 
         {/* ───── General: system status + appearance ───── */}
         {resolvedTab === 'appearance' && <>
@@ -1169,32 +1253,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         <Section title={t('appearance.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium">{t('appearance.theme')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.themeDesc')}</div>
-              </div>
-              <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
+          <div className={`${CARD} p-5 divide-y divide-border-default/40`}>
+            <Field label={t('appearance.theme')} description={t('appearance.themeDesc')}>
+              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
                 {THEME_OPTIONS.map(({ value }) => (
                   <button
                     key={value}
                     onClick={() => onThemeChange?.(value)}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      theme === value ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary'
+                      theme === value ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {t(`appearance.modes.${value}`)}
                   </button>
                 ))}
               </div>
-            </div>
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mt-5 pt-5 border-t border-border-default/50">
-              <div>
-                <div className="text-sm font-medium">{t('appearance.language')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.languageDesc')}</div>
-              </div>
-              <div className="flex flex-wrap gap-1 bg-surface-elevated rounded-lg p-0.5">
+            </Field>
+            <div className="pt-4">
+            <Field label={t('appearance.language')} description={t('appearance.languageDesc')}>
+              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
                 {SUPPORTED_LANGUAGES.map(({ code, label }) => (
                   <button
                     key={code}
@@ -1205,27 +1282,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     }}
                     className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
                       i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
-                        ? 'bg-brand-600 text-on-brand' : 'text-fg-secondary hover:text-fg-primary'
+                        ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
                     }`}
                   >
                     {label}
                   </button>
                 ))}
               </div>
+            </Field>
             </div>
             {isElectron() && (
-              <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between mt-5 pt-5 border-t border-border-default/50">
-                <div>
-                  <div className="text-sm font-medium">{t('appearance.launchAtLogin')}</div>
-                  <div className="text-xs text-fg-tertiary mt-0.5">{t('appearance.launchAtLoginDesc')}</div>
-                </div>
-                <Switch
-                  checked={launchAtLogin}
-                  onChange={() => void toggleLaunchAtLogin()}
-                  label={t('appearance.launchAtLogin')}
-                  size="lg"
-                  disabled={launchAtLoginBusy}
-                />
+              <div className="pt-4">
+                <Field label={t('appearance.launchAtLogin')} description={t('appearance.launchAtLoginDesc')}>
+                  <Switch
+                    checked={launchAtLogin}
+                    onChange={() => void toggleLaunchAtLogin()}
+                    label={t('appearance.launchAtLogin')}
+                    disabled={launchAtLoginBusy}
+                  />
+                </Field>
               </div>
             )}
           </div>
@@ -1717,7 +1792,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                               }
                             }}
                             disabled={quickSetupSaving || addProviderSaving}
-                            className="px-4 py-2 text-sm bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors"
+                            className={BTN_PRIMARY}
                           >
                             {(quickSetupSaving || addProviderSaving) ? t('modelProviders.quickSetupSaving') : t('modelProviders.quickSetupSubmit')}
                           </button>
@@ -1794,7 +1869,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── Auto-detect & Import ───── */}
         <CollapsibleSection title={t('autoDetect.title')} defaultOpen={false}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
+          <div className={`${CARD} p-5 space-y-5`}>
             <div className="text-sm text-fg-secondary">{t('autoDetect.description')}</div>
 
             {/* — Environment Variables — */}
@@ -1846,7 +1921,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── OAuth Authentication ───── */}
         <CollapsibleSection title={t('oauthAuth.title')} defaultOpen={false}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
+          <div className={`${CARD} p-5 space-y-4`}>
             <p className="text-xs text-fg-tertiary">
               {t('oauthAuth.description')}
             </p>
@@ -1964,7 +2039,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── Default Provider ───── */}
         <Section title={t('defaultProvider.title')}>
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
+          <div className={`${CARD} p-5 space-y-4`}>
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
                 <div className="text-sm font-medium">{t('defaultProvider.primaryProvider')}</div>
@@ -2062,13 +2137,157 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           />
         </Section>
 
-        {/* ───── Network / Proxy ───── */}
-        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={false}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <p className="text-xs text-fg-tertiary">{t('networkProxy.description')}</p>
-              </div>
+        </>}
+
+        {resolvedTab === 'network' && <>
+        {/* ───── Access scope (bind host) ───── */}
+        <CollapsibleSection title={t('accessScope.title')} defaultOpen={true}>
+          <div className={`${CARD} p-5 space-y-4`}>
+            <p className="text-[13px] text-fg-secondary leading-relaxed">{t('accessScope.description')}</p>
+
+            {/* Segmented control: two presets only */}
+            <div className="flex rounded-lg bg-surface-secondary/80 p-1 gap-1">
+              <button
+                disabled={bindHostFromEnv}
+                onClick={() => setBindHostValue('127.0.0.1')}
+                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
+                  bindHostValue === '127.0.0.1' && !bindHostFromEnv
+                    ? 'bg-brand-600 text-on-brand shadow-sm'
+                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
+                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >{t('accessScope.localOnly')}</button>
+              <button
+                disabled={bindHostFromEnv}
+                onClick={() => setBindHostValue('0.0.0.0')}
+                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
+                  bindHostValue === '0.0.0.0' && !bindHostFromEnv
+                    ? 'bg-brand-600 text-on-brand shadow-sm'
+                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
+                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
+              >{t('accessScope.lan')}</button>
+            </div>
+
+            {/* Status + hint in one clean line */}
+            <div className="flex items-center gap-2 text-[13px] text-fg-secondary">
+              <span className={`w-2 h-2 rounded-full shrink-0 ${bindHostEffective === '0.0.0.0' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+              <span>{t('accessScope.current', { host: bindHostEffective })}</span>
+              <span className={bindHostEffective === '0.0.0.0' ? 'text-emerald-600 dark:text-emerald-400' : 'text-fg-muted'}>
+                {bindHostEffective === '0.0.0.0' ? t('accessScope.lanHint') : t('accessScope.localOnlyHint')}
+              </span>
+            </div>
+
+            {bindHostFromEnv && (
+              <p className="text-[13px] text-amber-500 flex items-center gap-1.5">
+                ⚠ {t('accessScope.envControlled')}
+              </p>
+            )}
+
+            {/* Single morphing button: 保存 → 立即生效 → 保存 */}
+            <div className="flex items-center gap-3 pt-0.5">
+              <button
+                disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
+                onClick={async () => {
+                  /* ── Phase A: user sees "立即生效" → fire-and-forget + poll for recovery ── */
+                  if (bindHostPendingRestart) {
+                    // Optimistic UI: show applying immediately, don't wait for response
+                    // (backend returns 202 then rebinds, which drops our connection)
+                    setBindHostApplying(true);
+                    setBindHostNotice(t('accessScope.applying'));
+                    try {
+                      const res = await fetch('/api/settings/network/apply', {
+                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
+                      });
+                      // If we get here, server managed to respond — could be 200 or 202
+                      if (res.status === 202 || res.ok) {
+                        setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
+                      } else {
+                        throw new Error(`HTTP ${res.status}`);
+                      }
+                    } catch {
+                      // Expected: connection dropped during server rebind
+                      setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
+                    }
+                    // Poll for the server to come back after the rebind. It now
+                    // resolves in well under a second (see applyBindHost), so poll
+                    // briskly and give up quickly instead of waiting 30s.
+                    let retries = 0;
+                    const poll = setInterval(async () => {
+                      retries++;
+                      try {
+                        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
+                        if (r.ok) {
+                          clearInterval(poll);
+                          setBindHostApplying(false);
+                          setBindHostPendingRestart(false);
+                          setBindHostNotice(t('accessScope.applied'));
+                          loadNetworkSettings();
+                          return;
+                        }
+                      } catch { /* still down */ }
+                      if (retries > 20) { // ~8s timeout (400ms * 20)
+                        clearInterval(poll);
+                        setBindHostApplying(false);
+                        setBindHostNotice(t('accessScope.applyFailed'));
+                      }
+                    }, 400);
+                    return;
+                  }
+
+                  /* ── Phase B: user sees "保存" → clicking saves & may morph button ── */
+                  const prevEffective = bindHostEffective;
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ host: bindHostValue }),
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const d = await res.json() as { restartRequired?: boolean };
+                    const serverSaysNeedsRestart = !!d.restartRequired;
+                    const valueDidChange = bindHostValue !== prevEffective;
+                    const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
+
+                    setBindHostPendingRestart(shouldShowApply);
+                    setBindHostNotice(shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'));
+
+                    // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
+                    // because server.pendingRestart is often false even when a restart IS needed.
+                    // We'll refresh after the user clicks "立即生效".
+                  } catch {
+                    setBindHostNotice(t('accessScope.saveFailed'));
+                  }
+                }}
+                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
+                  bindHostPendingRestart
+                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
+                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
+                }`}
+              >
+                {bindHostApplying ? (
+                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>{t('accessScope.applying')}</>
+                ) : bindHostPendingRestart ? (
+                  t('accessScope.applyNow')
+                ) : (
+                  t('accessScope.save')
+                )}
+              </button>
+              {bindHostNotice && (
+                <span className={`text-[13px] ${bindHostNotice.includes('重启') || bindHostNotice.includes('切换') || bindHostNotice.includes('已生效') ? 'text-amber-500' : 'text-fg-muted'}`}>
+                  {bindHostNotice}
+                </span>
+              )}
+            </div>
+
+            <p className="text-[12px] text-fg-muted leading-relaxed">{t('accessScope.remoteNote')}</p>
+          </div>
+        </CollapsibleSection>
+
+        {/* ───── Network / Proxy — redesigned ───── */}
+        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={true}>
+          <div className={`${CARD} p-5 space-y-4`}>
+
+            {/* ① Row: description + toggle */}
+            <div className="flex items-start justify-between gap-4">
+              <p className="text-[13px] text-fg-secondary leading-relaxed">{t('networkProxy.description')}</p>
               <button
                 onClick={async () => {
                   const newVal = !proxyEnabled;
@@ -2081,30 +2300,32 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     loadNetworkSettings();
                   } catch { setProxyEnabled(!newVal); }
                 }}
-                className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-gray-600'}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors mt-0.5 ${proxyEnabled ? 'bg-green-500' : 'bg-fg-muted/30'}`}
               >
-                <span className={`inline-block h-3.5 w-3.5 rounded-full bg-white transition-transform ${proxyEnabled ? 'translate-x-4' : 'translate-x-1'}`} />
+                <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${proxyEnabled ? 'translate-x-[22px]' : 'translate-x-1'}`} />
               </button>
             </div>
 
-            {/* Effective proxy status */}
+            {/* ② Current status — compact single line */}
             {proxyEffective && (
-              <div className={`flex items-center gap-2 px-3 py-2.5 rounded-lg bg-surface-secondary border border-border-default transition-opacity ${!proxyEnabled ? 'opacity-50' : ''}`}>
-                <span className={`w-2 h-2 rounded-full ${
-                  !proxyEnabled ? 'bg-gray-600' : proxyEffective.proxy ? 'bg-green-400' : 'bg-gray-600'
+              <div className={`flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''} ${
+                proxyEffective.proxy ? 'bg-emerald-500/5 border border-emerald-500/12' : 'bg-surface-secondary/60 border border-border-default/50'
+              }`}>
+                <span className={`w-2 h-2 rounded-full shrink-0 ${
+                  proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'
                 }`} />
-                <span className="text-xs text-fg-secondary">
+                <span className="text-[13px]">
                   {!proxyEnabled ? t('networkProxy.disabled') :
                    proxyEffective.proxy ? (
-                    <>{t('networkProxy.active')} <code className="text-fg-primary font-mono">{proxyEffective.proxy}</code></>
+                    <>{t('networkProxy.active')}{' '}<code className="font-mono text-brand-600 dark:text-brand-400 font-medium">{proxyEffective.proxy}</code></>
                   ) : t('networkProxy.noProxy')}
                 </span>
                 {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`text-[10px] px-1.5 py-0.5 rounded-md font-medium ${
-                    proxyEffective.source === 'config' ? 'bg-brand-500/15 text-brand-500' :
-                    proxyEffective.source === 'env' ? 'bg-amber-500/15 text-amber-600' :
-                    proxyEffective.source === 'system' ? 'bg-blue-500/15 text-blue-500' :
-                    'bg-gray-500/15 text-fg-muted'
+                  <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${
+                    proxyEffective.source === 'config' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
+                    proxyEffective.source === 'env' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
+                    proxyEffective.source === 'system' ? 'bg-blue-500/10 text-blue-500' :
+                    'bg-fg-muted/10 text-fg-muted'
                   }`}>
                     {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
                      proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
@@ -2113,21 +2334,25 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
                 <button
                   onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[10px] px-1.5 py-0.5 rounded-md text-fg-muted hover:text-fg-secondary hover:bg-surface-elevated transition-colors"
+                  className="ml-auto text-[11px] text-fg-muted hover:text-fg-secondary transition-colors flex items-center gap-1"
                   title={t('networkProxy.refresh')}
                 >
-                  ↻ {t('networkProxy.refresh')}
+                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                  {t('networkProxy.refresh')}
                 </button>
               </div>
             )}
 
-            <div className={`flex gap-2 items-center transition-opacity ${!proxyEnabled ? 'opacity-50 pointer-events-none' : ''}`}>
+            {/* ③ Primary action: Proxy URL input + Save — PROMINENT */}
+            <div className={`flex gap-2.5 items-center transition-opacity ${!proxyEnabled ? 'opacity-40 pointer-events-none' : ''}`}>
               <input
                 type="text"
                 value={proxyUrl}
                 onChange={e => setProxyUrl(e.target.value)}
                 placeholder={t('networkProxy.placeholder')}
-                className="flex-1 px-3 py-2 text-xs bg-surface-elevated border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none"
+                className="flex-1 min-w-0 px-3.5 py-2.5 text-sm bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
               />
               <button
                 onClick={async () => {
@@ -2148,32 +2373,66 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   finally { setProxySaving(false); }
                 }}
                 disabled={proxySaving}
-                className="px-3 py-2 text-xs bg-brand-600 hover:bg-brand-500 disabled:opacity-40 text-on-brand rounded-lg transition-colors"
+                className={`${BTN_PRIMARY} shrink-0`}
               >
                 {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
               </button>
             </div>
             {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
+
+            {/* ④ Bypass list — COLLAPSIBLE (default closed to reduce noise) */}
+            <ProxyBypassSection
+              noProxyList={noProxyList}
+              setNoProxyList={setNoProxyList}
+              noProxyEntry={noProxyEntry}
+              setNoProxyEntry={setNoProxyEntry}
+              egressTesting={egressTesting}
+              egressTest={egressTest}
+              egressError={egressError}
+              onTest={() => {
+                setEgressTesting(true); setEgressTest(null);
+                fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
+                  .then(async res => {
+                    const d = await res.json() as { ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean; error?: string | null };
+                    if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
+                    setEgressTest({
+                      ok: !!d.ok,
+                      text: d.ok ? t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') })
+                        : t('networkProxy.testFailed', { error: d.error ?? 'unknown' }),
+                    });
+                  })
+                  .catch(err => setEgressTest({ ok: false, text: t('networkProxy.testFailed', { error: String(err) }) }))
+                  .finally(() => setEgressTesting(false));
+              }}
+              authHeaders={authHeaders}
+              loadNetworkSettings={loadNetworkSettings}
+              t={t}
+            />
+
+            {/* ⑤ Coverage note — minimal footer */}
+            <div className="rounded-lg bg-surface-secondary/40 border border-border-default/30 px-4 py-2.5 space-y-1">
+              <p className="text-[11px] font-medium text-fg-secondary/80">{t('networkProxy.coverageTitle')}</p>
+              <p className="text-[11px] text-fg-muted/70 leading-relaxed">{t('networkProxy.coverageCovered')}</p>
+              <p className="text-[11px] text-amber-500/60 leading-relaxed">{t('networkProxy.coverageNotCovered')}</p>
+            </div>
+
           </div>
         </CollapsibleSection>
+        <RemoteAccessSection />
 
         </>}
 
         {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxToolIterations')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxToolIterationsDesc')}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
+          <div className={`${CARD} p-5 space-y-4`}>
+            <Field label={t('agentExecution.maxToolIterations')} description={t('agentExecution.maxToolIterationsDesc')}>
+              <div className="flex items-center gap-2">
                 <input
                   type="number"
                   min={0}
                   value={agentMaxIter}
                   onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
-                  className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
                 />
                 <button
                   disabled={agentSaving}
@@ -2186,25 +2445,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);
                   }}
-                  className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  className={BTN_PRIMARY}
                 >
                   {agentSaving ? t('common:saving') : t('common:save')}
                 </button>
               </div>
-            </div>
-            {/* Per-agent 任务上限（每个 agent 各自独立计数） */}
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('agentExecution.maxPendingTasksPerAgent')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('agentExecution.maxPendingTasksPerAgentDesc')}</div>
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
+            </Field>
+            <div className="border-t border-border-default/40" />
+            <Field label={t('agentExecution.maxPendingTasksPerAgent')} description={t('agentExecution.maxPendingTasksPerAgentDesc')}>
+              <div className="flex items-center gap-2">
                 <input
                   type="number"
                   min={1}
                   value={agentMaxPending}
                   onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
-                  className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right"
+                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
                 />
                 <button
                   disabled={agentSaving}
@@ -2217,41 +2472,28 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
                     setAgentSaving(false);
                   }}
-                  className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                  className={BTN_PRIMARY}
                 >
                   {agentSaving ? t('common:saving') : t('common:save')}
                 </button>
               </div>
-            </div>
+            </Field>
             {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
           </div>
         </Section>
 
         {/* ── Concurrent Processing（并发处理） ── */}
-        <Section title={t('concurrent.title')}>
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4">
-            <div className="text-xs text-fg-tertiary">{t('concurrent.description')}</div>
+        <Section title={t('concurrent.title')} description={t('concurrent.description')}>
+          <div className={`${CARD} p-5 space-y-4`}>
+            <Field label={t('concurrent.enabled')} description={t('concurrent.enabledDesc')}>
+              <Switch
+                checked={concEnabled}
+                onChange={(v) => { setConcEnabled(v); setConcMsg(null); }}
+                label={t('concurrent.enabled')}
+              />
+            </Field>
 
-            {/* Enable toggle */}
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('concurrent.enabled')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.enabledDesc')}</div>
-              </div>
-              <button
-                onClick={() => { setConcEnabled(!concEnabled); setConcMsg(null); }}
-                className={`relative w-10 h-5 shrink-0 rounded-full transition-colors ${concEnabled ? 'bg-brand-500' : 'bg-fg-muted'}`}
-              >
-                <span className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${concEnabled ? 'translate-x-5' : ''}`} />
-              </button>
-            </div>
-
-            {/* Max Workers */}
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('concurrent.maxWorkers')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.maxWorkersDesc')}</div>
-              </div>
+            <Field label={t('concurrent.maxWorkers')} description={t('concurrent.maxWorkersDesc')}>
               <input
                 type="number"
                 min={1}
@@ -2259,29 +2501,23 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 disabled={!concEnabled}
                 value={concMaxWorkers}
                 onChange={e => { setConcMaxWorkers(Number(e.target.value)); setConcMsg(null); }}
-                className="w-24 px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary text-right disabled:opacity-40"
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums disabled:opacity-40`}
               />
-            </div>
+            </Field>
 
-            {/* Conflict Policy */}
-            <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-              <div>
-                <div className="text-sm font-medium text-fg-primary">{t('concurrent.conflictPolicy')}</div>
-                <div className="text-xs text-fg-tertiary mt-0.5">{t('concurrent.conflictPolicyDesc')}</div>
-              </div>
+            <Field label={t('concurrent.conflictPolicy')} description={t('concurrent.conflictPolicyDesc')}>
               <select
                 value={concConflictPolicy}
                 disabled={!concEnabled}
                 onChange={e => { setConcConflictPolicy(e.target.value as 'auto' | 'report'); setConcMsg(null); }}
-                className="px-3 py-1.5 text-sm border border-border-default rounded-lg bg-surface-primary text-fg-primary disabled:opacity-40"
+                className={`${FIELD_INPUT} disabled:opacity-40`}
               >
                 <option value="auto">{t('concurrent.policyAuto')}</option>
                 <option value="report">{t('concurrent.policyReport')}</option>
               </select>
-            </div>
+            </Field>
 
-            {/* Save */}
-            <div className="flex items-center justify-end gap-2">
+            <div className="flex items-center justify-end">
               <button
                 disabled={concSaving}
                 onClick={async () => {
@@ -2297,7 +2533,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   } catch { setConcMsg({ type: 'err', text: t('concurrent.failedToSave') }); }
                   setConcSaving(false);
                 }}
-                className="px-3 py-1.5 text-xs bg-brand-500 text-on-brand rounded-lg hover:bg-brand-600 transition-colors disabled:opacity-40"
+                className={BTN_PRIMARY}
               >
                 {concSaving ? t('common:saving') : t('common:save')}
               </button>
@@ -2310,7 +2546,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'browser' && <>
         <Section title={t('browserAutomation.title')}>
           {/* ── Backend selector: built-in browser vs system Chrome ── */}
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
+          <div className={`${CARD} p-5 mb-4`}>
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.backendTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.backendDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2359,7 +2595,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
 
           {/* ── Element selection: HOW the agent picks an element (orthogonal to the backend above) ── */}
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4">
+          <div className={`${CARD} p-5 mb-4`}>
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.elementSelectionTitle')}</div>
             <div className="text-xs text-fg-tertiary mt-0.5 mb-3">{t('browserAutomation.elementSelectionDesc')}</div>
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -2409,7 +2645,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Mode status: depends on selected backend ── */}
           {browserMode === 'embedded' ? (
-            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 flex items-start gap-3">
+            <div className={`${CARD} p-5 mb-4 flex items-start gap-3`}>
               <span className="mt-0.5 w-2 h-2 rounded-full bg-green-400 shrink-0" />
               <div className="flex-1 min-w-0">
                 <div className="text-sm font-semibold text-fg-primary">{t('browserAutomation.embeddedActiveTitle')}</div>
@@ -2543,7 +2779,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           )}
 
           {/* ── General Settings (always visible) ── */}
-          <div className="bg-surface-elevated rounded-xl p-4 md:p-5 space-y-4 mb-4">
+          <div className={`${CARD} p-5 space-y-4 mb-4`}>
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.generalSettings')}</div>
             <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
               <div>
@@ -2597,7 +2833,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           {/* ── Advanced: alternative ways to connect System Chrome (only when extension not connected) ── */}
           {browserMode === 'system-chrome' && !browserExtensionConnected && (
-            <div className="bg-surface-elevated rounded-xl p-4 md:p-5 mb-4 space-y-4">
+            <div className={`${CARD} p-5 mb-4 space-y-4`}>
               <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.advancedOptions')}</div>
 
               {/* Auto-click Chrome Allow Dialog toggle */}
@@ -2713,7 +2949,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
-          <div className="bg-surface-elevated rounded-xl p-5 space-y-5">
+          <div className={`${CARD} p-5 space-y-5`}>
             {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
             {storageInfo && (() => {
               const rows = [...storageInfo.breakdown]
@@ -2738,11 +2974,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     </div>
                     <div className="flex gap-2 shrink-0">
                       <button onClick={() => loadStorage()} disabled={storageLoading}
-                        className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-primary/60 rounded-lg text-fg-secondary transition-colors disabled:opacity-40">
+                        className={BTN_SECONDARY}>
                         {storageLoading ? t('dataStorage.scanning') : t('common:refresh')}
                       </button>
                       <button onClick={() => void api.system.openPath(storageInfo.dataDir)}
-                        className="px-3 py-1.5 text-xs border border-border-default hover:bg-surface-primary/60 rounded-lg text-fg-secondary transition-colors">
+                        className={BTN_SECONDARY}>
                         {t('dataStorage.openInFinder')}
                       </button>
                     </div>
@@ -2829,14 +3065,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 
-        {resolvedTab === 'remote' && <RemoteAccessSection />}
-
-        {resolvedTab === 'integrations' && <>
-          <section>
-            <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{t('nav.integrations')}</h3>
-            <InstancesSection />
-          </section>
-        </>}
+        {resolvedTab === 'integrations' && <InstancesSection />}
 
         {/* TEMPORARILY HIDDEN — coding tools integration disabled (2026-08). Re-enable to show config page.
         {resolvedTab === 'coding-tools' && <CodingToolsSettings />}
@@ -3520,7 +3749,7 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
         className="flex items-center justify-between w-full group mb-4"
       >
         <div className="flex items-center gap-3">
-          <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{title}</h3>
+          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
           {collapsed && configuredProviders.length > 0 && (
             <span className="text-xs text-fg-tertiary">
               ({configuredProviders.length} {t('modelProviders.configuredCount')})
@@ -3569,45 +3798,107 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
   );
 }
 
-function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
+/* ─── Design primitives ───
+ * Single source of truth for the Settings visual language. Every tab composes
+ * from these so spacing, radius, surface and control styling cannot drift.
+ * (Rule: if you find yourself hand-writing `bg-surface-elevated rounded-xl`
+ *  or a primary button, use one of these instead.) */
+
+/** Base card surface — pair with a padding utility (usually `p-5`). */
+const CARD = 'bg-surface-elevated rounded-xl border border-border-default/40';
+
+/** Standard text input / number input. Add width utils at the call site. */
+const FIELD_INPUT = 'px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary/50 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none transition-colors';
+
+/** Primary (commit) action. */
+const BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-40 rounded-lg transition-colors';
+
+/** Secondary / neutral action. */
+const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium border border-border-default text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40 rounded-lg transition-colors';
+
+/** Per-tab page header — the anchor every Settings panel was missing. */
+function PageHeader({ tab }: { tab: SettingsTab }) {
+  const { t } = useTranslation(['settings', 'common']);
+  const def = SETTINGS_TABS.find(x => x.id === tab);
+  const title = def ? t(`settings:${def.labelKey}`) : t('settings:title');
+  const desc = t(`settings:tabDesc.${tab}`, { defaultValue: '' });
   return (
-    <section>
-      <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
-      <div className="space-y-4">{children}</div>
+    <header className="flex items-center gap-3 pb-1">
+      <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-brand-500/10 text-brand-500 shrink-0">
+        <SettingsTabIcon id={tab} className="w-[18px] h-[18px]" />
+      </span>
+      <div className="min-w-0">
+        <h1 className="text-lg font-semibold text-fg-primary tracking-tight leading-tight">{title}</h1>
+        {desc && <p className="text-[13px] text-fg-tertiary mt-0.5 leading-snug">{desc}</p>}
+      </div>
+    </header>
+  );
+}
+
+/** A labelled setting row: label + hint on the left, control on the right. */
+function Field({ label, description, children }: {
+  label: React.ReactNode; description?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
+      <div className="min-w-0">
+        <div className="text-sm font-medium text-fg-primary">{label}</div>
+        {description && <div className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</div>}
+      </div>
+      <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+function Section({ title, description, action, children }: {
+  title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-3.5">
+      <div className="flex items-end justify-between gap-3">
+        <div className="min-w-0">
+          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
+          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
+        </div>
+        {action}
+      </div>
+      <div className="space-y-3">{children}</div>
     </section>
   );
 }
 
-function CollapsibleSection({ title, children, defaultOpen = true }: {
+function CollapsibleSection({ title, description, children, defaultOpen = true }: {
   title: React.ReactNode;
+  description?: React.ReactNode;
   children: React.ReactNode;
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section>
+    <section className="space-y-3.5">
       <button
         type="button"
         onClick={() => setOpen(!open)}
-        className="flex items-center justify-between w-full group mb-4"
+        className="flex items-start justify-between w-full group text-left"
       >
-        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">
-          {title}
-        </h3>
-        <span className={`text-fg-tertiary text-xs transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
-          ▼
+        <div className="min-w-0">
+          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
+          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
+        </div>
+        <span className={`text-fg-tertiary mt-0.5 transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
         </span>
       </button>
-      {open && <div className="space-y-4">{children}</div>}
+      {open && <div className="space-y-3">{children}</div>}
     </section>
   );
 }
 
 function InfoCard({ label, value, color }: { label: string; value: string; color: string }) {
-  const bg = color === 'green' ? 'bg-green-500/10 text-green-600' : color === 'indigo' ? 'bg-brand-500/10 text-brand-500' : 'bg-brand-500/10 text-brand-500';
+  const bg = color === 'green' ? 'bg-green-500/10 text-green-600' : 'bg-brand-500/10 text-brand-500';
   return (
-    <div className={`rounded-xl px-5 py-4 ${bg}`}>
-      <div className="text-2xl font-bold">{value}</div>
+    <div className={`rounded-xl border border-border-default/40 px-5 py-4 ${bg}`}>
+      <div className="text-2xl font-bold tabular-nums">{value}</div>
       <div className="text-xs mt-1 opacity-70">{label}</div>
     </div>
   );
@@ -3729,12 +4020,7 @@ function AccountSection({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['settings', 'common']);
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h2 className="text-lg font-semibold text-fg-primary mb-1">{t('account.title')}</h2>
-        <p className="text-xs text-fg-tertiary">{t('account.subtitle')}</p>
-      </div>
-
+    <div className="space-y-8">
       <AccountOverviewSection />
       <UserManagementSection authUser={authUser} />
     </div>
@@ -3844,7 +4130,7 @@ function AccountOverviewSection() {
 
       {/* ═══ CLOUD AI ═══ */}
       <div>
-        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('account.cloudAiTitle')}</h3>
+        <h3 className="text-[13px] font-semibold text-fg-primary mb-3">{t('account.cloudAiTitle')}</h3>
         <div className="rounded-lg border border-border-default bg-gradient-to-r from-brand-600/5 to-transparent px-5 py-4 space-y-3">
           {planInfo ? (
             <div className="space-y-2">
@@ -3876,7 +4162,7 @@ function AccountOverviewSection() {
 
       {/* ═══ ORGANIZATION ═══ */}
       <div>
-        <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-3">{t('account.orgSection')}</h3>
+        <h3 className="text-[13px] font-semibold text-fg-primary mb-3">{t('account.orgSection')}</h3>
         {invitations.length > 0 && (
           <div className="space-y-2 mb-3">
             {invitations.map(inv => (
@@ -3942,7 +4228,7 @@ function AccountOverviewSection() {
       {isEnterprise && (
         <div>
           <div className="flex items-center mb-3">
-            <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider">{t('license.title')}</h3>
+            <h3 className="text-[13px] font-semibold text-fg-primary">{t('license.title')}</h3>
             <button onClick={() => refreshLicense(true)} disabled={refreshing}
               className="ml-auto flex items-center gap-1.5 text-xs text-fg-tertiary hover:text-fg-secondary disabled:opacity-50 transition-colors">
               <svg className={`w-3.5 h-3.5 ${refreshing ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -4032,3 +4318,108 @@ function InlineTierBadge({ modelId, tier: serverTier }: { modelId: string; tier?
   const colors = { max: 'bg-purple-500/15 text-purple-400', pro: 'bg-blue-500/15 text-blue-400', base: 'bg-gray-500/15 text-gray-400' };
   return <span className={`text-[9px] px-1 py-0.5 rounded font-semibold uppercase ${colors[tier]}`}>{t(`modelRouting.tier.${tier}`)}</span>;
 }
+
+/* ── Proxy Bypass Section (collapsible, reduces visual noise) ─── */
+function ProxyBypassSection({
+  noProxyList, setNoProxyList, noProxyEntry, setNoProxyEntry,
+  egressTesting, egressTest, egressError,
+  onTest, authHeaders, loadNetworkSettings, t,
+}: {
+  noProxyList: string[]; setNoProxyList: (v: string[]) => void;
+  noProxyEntry: string; setNoProxyEntry: (v: string) => void;
+  egressTesting: boolean; egressTest: { ok: boolean; text: string } | null; egressError: string | null;
+  onTest: () => void;
+  authHeaders: () => Record<string, string>;
+  loadNetworkSettings: () => void;
+  t: (key: string) => string;
+}) {
+  const [expanded, setExpanded] = useState(false);
+
+  return (
+    <div className="space-y-2">
+      {/* Header row: title + count + test button + expand toggle */}
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 text-[13px] font-medium text-fg-primary hover:text-fg-secondary transition-colors"
+        >
+          <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+          {t('networkProxy.noProxyTitle')}
+          <span className="text-[11px] tabular-nums text-fg-muted bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
+        </button>
+
+        {/* Test button — always visible */}
+        <button
+          onClick={onTest}
+          disabled={egressTesting}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border-default/60 text-fg-secondary hover:text-fg-primary hover:border-fg-muted transition-colors disabled:opacity-40"
+        >
+          {egressTesting && (
+            <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+            </svg>
+          )}
+          {egressTesting ? t('networkProxy.testing') : t('networkProxy.test')}
+        </button>
+      </div>
+
+      {/* Test result — show below header */}
+      {egressTest && (
+        <span className={`text-[12px] ${egressTest.ok ? 'text-emerald-600' : 'text-red-400'}`}>{egressTest.text}</span>
+      )}
+      {egressError && (
+        <span className="text-[12px] text-amber-500">{egressError}</span>
+      )}
+
+      {/* Collapsible content */}
+      {expanded && (
+        <div className="space-y-2 pl-4 border-l-2 border-border-default/30">
+          {/* Tag cloud */}
+          {noProxyList.length > 0 && (
+            <div className="flex flex-wrap gap-1.5">
+              {noProxyList.map(entry => (
+                <span key={entry} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded bg-surface-secondary border border-border-default/50 text-[11px] font-mono text-fg-secondary">
+                  {entry}
+                  <button
+                    onClick={() => {
+                      const next = noProxyList.filter(item => item !== entry);
+                      setNoProxyList(next);
+                      fetch('/api/settings/network', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ noProxy: next }) })
+                        .then(() => loadNetworkSettings()).catch(() => {});
+                    }}
+                    className="w-3.5 h-3.5 rounded flex items-center justify-center text-fg-muted/50 hover:text-red-400 hover:bg-red-500/10 transition-all text-[10px]"
+                    title={t('networkProxy.remove')}
+                  >×</button>
+                </span>
+              ))}
+            </div>
+          )}
+
+          {noProxyList.length === 0 && (
+            <p className="text-[11px] text-fg-muted italic">{t('networkProxy.noProxyEmpty')}</p>
+          )}
+
+          {/* Add entry input */}
+          <input
+            type="text"
+            value={noProxyEntry}
+            onChange={e => setNoProxyEntry(e.target.value)}
+            onKeyDown={e => {
+              if (e.key !== 'Enter' || !noProxyEntry.trim()) return;
+              const next = [...new Set([...noProxyList, noProxyEntry.trim()])];
+              setNoProxyList(next); setNoProxyEntry('');
+              fetch('/api/settings/network', { method: 'POST', headers: authHeaders(), body: JSON.stringify({ noProxy: next }) })
+                .then(() => loadNetworkSettings()).catch(() => {});
+            }}
+            placeholder={t('networkProxy.noProxyPlaceholder')}
+            className="w-full px-3 py-1.5 text-[13px] font-mono bg-surface-secondary/50 border border-border-default/50 rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 outline-none transition-colors"
+          />
+
+          <p className="text-[11px] text-fg-muted leading-relaxed">{t('networkProxy.noProxyHint')}</p>
+        </div>
+      )}
+    </div>
+  );
+}
+

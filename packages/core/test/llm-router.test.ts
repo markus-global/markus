@@ -105,6 +105,52 @@ describe('LLMRouter.createDefault', () => {
   });
 });
 
+describe('LLMRouter.previewRoute — the budget must see the model that receives the prompt', () => {
+  function visionRouter() {
+    const router = new LLMRouter('deepseek');
+    const deepseek = mockProvider('deepseek', 'deepseek-v4-flash');
+    const markus = mockProvider('markus', 'deepseek/flash-vision');
+    router.registerProvider('deepseek', deepseek);
+    router.registerProvider('markus', markus);
+    router.setCapabilityRouting({
+      assignments: { image_recognition: { provider: 'markus', model: 'z-ai/glm-5v-turbo' } },
+    });
+    return { router, deepseek, markus };
+  }
+  const imageTurn = [{ role: 'user' as const, content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] as any }];
+
+  it('follows content-based routing: text turn stays, image turn switches model', () => {
+    const { router } = visionRouter();
+    expect(router.previewRoute({ messages: [{ role: 'user', content: 'hi' }] }).provider).toBe('deepseek');
+    // Regression (2026-11-09): the budget resolved the agent's configured model
+    // (1M window) while routing sent this turn to a 202k vision model, so
+    // compaction never fired and the upstream rejected with
+    // `Prompt exceeds max length` (Z.AI 1261).
+    expect(router.previewRoute({ messages: imageTurn })).toEqual({ provider: 'markus', model: 'z-ai/glm-5v-turbo' });
+  });
+
+  it('does not let an OLD screenshot hijack a later text turn', () => {
+    const { router } = visionRouter();
+    // Measured 2026-11-09: one screenshot at 04:15 routed two hours of later
+    // pure-text work to the vision model (and to its 202k budget).
+    const history = [
+      { role: 'user' as const, content: [{ type: 'image_url', image_url: { url: 'data:image/png;base64,AA' } }] as any },
+      { role: 'assistant' as const, content: '编译通过' },
+      { role: 'user' as const, content: '接着把设置页改完' },
+    ];
+    expect(router.previewRoute({ messages: history }).provider).toBe('deepseek');
+  });
+
+  it('agrees with the call that actually sends the prompt', async () => {
+    const { router, deepseek, markus } = visionRouter();
+    const preview = router.previewRoute({ messages: imageTurn });
+    await router.chat({ messages: imageTurn });
+    expect(preview.provider).toBe('markus');
+    expect(markus.chat).toHaveBeenCalled();
+    expect(deepseek.chat).not.toHaveBeenCalled();
+  });
+});
+
 describe('LLMRouter.setCapabilityRouting', () => {
   let router: LLMRouter;
 

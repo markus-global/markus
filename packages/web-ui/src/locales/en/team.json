@@ -16,8 +16,6 @@
   },
   "chat": {
     "title": "Chat",
-    "pause": "Pause",
-    "resume": "Resume",
     "manage": "Manage",
     "newTeam": "New Team",
     "newTeamDesc": "Create a new team",
@@ -51,7 +49,6 @@
     "collapseTeam": "Collapse",
     "moreOptions": "More options",
     "extBadge": "EXT",
-    "pauseAllTooltip": "Pause all agents",
     "resumeAllTooltip": "Resume all agents",
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agents",
@@ -74,8 +71,6 @@
     "renameTeam": "Rename Team",
     "startAll": "Start All",
     "stopAll": "Stop All",
-    "pauseAll": "Pause All",
-    "resumeAll": "Resume All",
     "addExisting": "Add Existing",
     "deleteTeam": "Delete Team",
     "viewProfile": "View Profile",
@@ -166,13 +161,9 @@
       "message": "This user will lose access.",
       "confirmTitle": "Remove \"{{name}}\"?"
     },
-    "pauseAll": {
-      "title": "Pause All Agents",
-      "message": "All agents will be paused. Events will still enter the mailbox but will not be processed. In-progress tasks will be blocked."
-    },
-    "resumeAll": {
-      "title": "Resume All Agents",
-      "message": "All agents will resume processing events from their mailbox."
+    "stopAgent": {
+      "title": "Stop this agent?",
+      "message": "A stopped agent does not restart on its own: other agents' wakeups and messages will not start it. Only you can start it again (individually or by starting the whole team) — or by answering its own approval/question."
     },
     "createGroupChat": {
       "title": "Create Group Chat",
@@ -293,15 +284,11 @@
     "failedToRun": "Failed to {{action}}: {{error}}",
     "past": {
       "start": "started",
-      "stop": "stopped",
-      "pause": "paused",
-      "resume": "resumed"
+      "stop": "stopped"
     },
     "operation": {
       "start": "Start",
-      "stop": "Stop",
-      "pause": "Pause",
-      "resume": "Resume"
+      "stop": "Stop"
     }
   },
   "errors": {
@@ -467,6 +454,7 @@
     "newTaskTitle": "New Conversation Task",
     "taskFromChat": "Created from chat with {{name}}",
     "errorWithMessage": "Error: {{message}}",
+    "agentStopped": "This agent is stopped, so your message was not delivered. Start it to resume.",
     "retryConfirmSingular": "This will discard one message after this point and re-generate. Continue?",
     "retryConfirmPlural": "This will discard {{count}} messages after this point and re-generate. Continue?",
     "errorDetails": "Error Details",

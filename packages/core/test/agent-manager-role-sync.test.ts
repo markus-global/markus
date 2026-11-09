@@ -92,18 +92,13 @@ describe('AgentManager role sync and updates', () => {
     expect(status.isUpToDate).toBe(true);
   });
 
-  it('stopAllAgents and startAllAgents toggle global stopped state', async () => {
+  it('stopAgent marks the intent and isEmergencyMode stays false', async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Stop Agent', roleName: 'developer', tools: [] });
-    await manager.startAgent(agent.id);
-
-    await manager.stopAllAgents('maintenance');
-    expect(manager.isGlobalStopped()).toBe(true);
-
-    await manager.startAllAgents();
-    expect(manager.isGlobalStopped()).toBe(false);
-    expect(manager.isEmergencyMode()).toBe(false);
+    await manager.startAgent(agent.id, { cause: 'creation' });
     await manager.stopAgent(agent.id);
+    expect(manager.isStoppedByHuman(agent.id)).toBe(true);
+    expect(manager.isEmergencyMode()).toBe(false);
   });
 
   it('setAgentConfigPersister is invoked when manager tools update agent config', async () => {

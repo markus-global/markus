@@ -139,6 +139,11 @@
       "storage": "存储",
       "openFolder": "打开文件夹 →",
       "detailsToggle": "用量与存储明细",
+      "stopAgentConfirm": {
+        "title": "停止这个智能体？",
+        "message": "停止后它不会自行启动：其他 Agent 的唤醒、消息、全部恢复都会跳过它。只有你手动启动，或回答它自己的审批/提问，才会恢复。",
+        "confirm": "停止"
+      },
       "lifetimeCaption": "自 Agent 创建以来累计",
       "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
       "sections": {

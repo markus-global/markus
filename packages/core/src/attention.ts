@@ -862,6 +862,18 @@ export class AttentionController {
           break;
         }
 
+        // 已停止：**stop() 之后不得再处理任何 item**。
+        //
+        // 旧实现只检查 generation，不检查 running —— stop() 刚好落在「dequeue 已返回、
+        // 处理还没开始」的窗口里时，这一件仍会被完整跑完（2026-11-08 生产事故：Owner
+        // 停止 GEO 团队后 7–13 秒仍有 'handleMessage cancel by higher-priority item'，
+        // 界面上看起来「停了又自己起来了两个」）。
+        // 放回队列、下次启动再处理：既不丢件，也不让已停止的 agent 再产生任何回合。
+        if (!this.running) {
+          try { this.mailbox.putBack(item); } catch { /* ignore */ }
+          break;
+        }
+
         // 实体亲和锁：取到即锁全部实体维度，处理完必释放（lockEntities 为全有或全无）。
         //
         // 锁键必须**在本 worker 的会话上下文里**求值：`delegate.sessionLockKey` 要回答

@@ -85,6 +85,36 @@ export class WSBroadcaster {
     log.info('WebSocket server attached');
   }
 
+  /**
+   * Tear down the current WebSocketServer and every open client socket, without
+   * touching the HTTP server.
+   *
+   * Required before moving the listener to a new interface: `http.Server.close()`
+   * only fires its callback once *all* connections end, and an upgraded `/ws`
+   * socket never ends on its own. Terminating the clients here (and closing the
+   * WSS) is what lets the HTTP close() resolve instead of hanging forever.
+   *
+   * This is the honest outcome of changing the bind address — the connections are
+   * dropped and clients reconnect to the same port on the new interface.
+   */
+  detach(): void {
+    // Terminate every tracked socket — the union of both sets, so a socket that
+    // was only recorded under userConnections still gets dropped. A socket left
+    // open here keeps http.Server.close() from ever resolving.
+    const sockets = new Set<WebSocket>(this.clients);
+    for (const set of this.userConnections.values()) {
+      for (const ws of set) sockets.add(ws);
+    }
+    for (const ws of sockets) {
+      try { ws.terminate(); } catch { /* already closing */ }
+    }
+    this.clients.clear();
+    this.userConnections.clear();
+    const old = this.wss;
+    this.wss = undefined;
+    try { old?.close(); } catch { /* already closed */ }
+  }
+
   sendToUser(userId: string, event: WSEvent): void {
     this.sendToUsers([userId], event);
   }

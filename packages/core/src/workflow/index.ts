@@ -4,12 +4,7 @@ export type {
   StepExecution, WorkflowExecution, WorkflowEvent,
 } from './types.js';
 
-export { WorkflowEngine, type WorkflowExecutor, type WorkflowEventHandler } from './engine.js';
-
-export {
-  createPipeline, createFanOut, createReviewChain, createParallelConsensus,
-  type PipelineStage, type FanOutConfig,
-} from './composition.js';
+export { evaluateExpression, ExpressionError } from './expression.js';
 
 export {
   TeamTemplateRegistry, createDefaultTeamTemplates,

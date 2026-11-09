@@ -8,7 +8,6 @@ import { execSync } from 'node:child_process';
 import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
-  WorkflowEngine,
   createDefaultTeamTemplates,
   createDefaultTemplateRegistry,
   generateHandbook,
@@ -21,8 +20,6 @@ import {
   type ReviewService,
   type SkillRegistry,
   type TemplateRegistry,
-  type WorkflowExecutor,
-  type WorkflowDefinition,
   type SyncRequest,
   type HandbookColleague,
   type HandbookProject,
@@ -130,6 +127,107 @@ import {
 } from './agent-conservator.js';
 
 const log = createLogger('api-server');
+
+/**
+ * Paths that are reachable without a session.
+ *
+ * Everything else under /api is deny-by-default — see the gate at the top of
+ * {@link APIServer.route}. Every entry here is a deliberate decision that the
+ * path is safe for anyone who can reach the port, so keep the list short and
+ * treat additions as security review material.
+ */
+const PUBLIC_API_PREFIXES = [
+  '/api/auth', // login / init / status / logout — must work before a session exists
+  '/api/health', // liveness probe used by the desktop shell and CLI
+  '/api/gateway', // external gateway — every branch verifies its own bearer token
+  '/api/license', // desktop license refresh before a session exists
+];
+
+function isPublicApiPath(path: string): boolean {
+  return PUBLIC_API_PREFIXES.some(prefix => path === prefix || path.startsWith(`${prefix}/`));
+}
+
+/** Roles, strongest first. Mirrors the `role` column on users. */
+export type ApiRole = 'owner' | 'admin' | 'member';
+
+const ROLE_RANK: Record<ApiRole, number> = { owner: 3, admin: 2, member: 1 };
+
+function isWriteMethod(method: string): boolean {
+  return method === 'POST' || method === 'PUT' || method === 'PATCH' || method === 'DELETE';
+}
+
+type RoleRule = {
+  /** Path predicate. */
+  path: (p: string) => boolean;
+  /** Restrict the rule to these methods; omit for every method. */
+  methods?: string[];
+  minRole: ApiRole;
+};
+
+const underPrefix = (prefix: string) => (p: string) => p === prefix || p.startsWith(`${prefix}/`);
+const anyOf = (...prefixes: string[]) => {
+  const matchers = prefixes.map(underPrefix);
+  return (p: string) => matchers.some(match => match(p));
+};
+
+/**
+ * Role required for a route. Ordered: first match wins, default is `member`.
+ *
+ * `owner` = decides what this machine can reach, holds credentials, touches the
+ * filesystem. `admin` = shapes the org and what runs in it. `member` = does the
+ * work (tasks, deliverables, chat). Keeping the default at `member` means an
+ * unlisted route stays usable by the team instead of silently locking people out;
+ * the sensitive groups below are the enumerated exceptions.
+ */
+const ROLE_RULES: RoleRule[] = [
+  // ── owner ──────────────────────────────────────────────────────────────
+  { path: underPrefix('/api/settings/remote'), minRole: 'owner' },
+  // Machine-level network config (bind address, outbound proxy) is owner-only.
+  { path: underPrefix('/api/settings/network'), methods: ['POST', 'PUT', 'PATCH'], minRole: 'owner' },
+  { path: underPrefix('/api/settings/subscription-key'), minRole: 'owner' },
+  { path: underPrefix('/api/license'), minRole: 'owner' },
+  { path: anyOf('/api/settings/import', '/api/settings/export'), minRole: 'owner' },
+  { path: underPrefix('/api/files/write'), minRole: 'owner' },
+  { path: underPrefix('/api/system/open-path'), minRole: 'owner' },
+  { path: underPrefix('/api/settings/llm/providers'), minRole: 'owner' },
+  { path: underPrefix('/api/settings/env-models'), methods: ['POST'], minRole: 'owner' },
+  { path: underPrefix('/api/models/catalog/refresh'), minRole: 'owner' },
+  { path: underPrefix('/api/hub/publish'), minRole: 'owner' },
+  { path: underPrefix('/api/system/storage/orphans'), methods: ['DELETE'], minRole: 'owner' },
+
+  // ── admin ──────────────────────────────────────────────────────────────
+  { path: underPrefix('/api/agents'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/external-agents'), minRole: 'admin' },
+  { path: underPrefix('/api/teams'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/team-templates'), methods: ['POST', 'PUT', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/templates/instantiate'), minRole: 'admin' },
+  { path: underPrefix('/api/builder'), minRole: 'admin' },
+  { path: underPrefix('/api/users'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/system/pause-all'), minRole: 'admin' },
+  { path: underPrefix('/api/system/resume-all'), minRole: 'admin' },
+  { path: underPrefix('/api/system/emergency-stop'), minRole: 'admin' },
+  { path: underPrefix('/api/system/announcements'), methods: ['POST'], minRole: 'admin' },
+  { path: underPrefix('/api/system/maintenance'), minRole: 'admin' },
+  // Per-user Hub tokens: every member manages their own.
+  { path: underPrefix('/api/settings/hub-token'), minRole: 'member' },
+  { path: underPrefix('/api/settings'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
+  { path: underPrefix('/api/oauth'), minRole: 'admin' },
+];
+
+function requiredApiRole(path: string, method: string): ApiRole {
+  for (const rule of ROLE_RULES) {
+    if (rule.methods && !rule.methods.includes(method)) continue;
+    if (rule.path(path)) return rule.minRole;
+  }
+  return 'member';
+}
+
+/** True when `role` satisfies `minimum`. Exported for tests. */
+export function roleSatisfies(role: string, minimum: ApiRole): boolean {
+  const rank = ROLE_RANK[role as ApiRole];
+  if (!rank) return false;
+  return rank >= ROLE_RANK[minimum];
+}
 
 // ── Response compression (single implementation point) ──────────────────────
 // Both the JSON API outlet (`json`) and static-asset serving compress through
@@ -333,6 +431,13 @@ const EMPTY_REMOTE_STATUS = {
   peers: [] as unknown[],
 };
 
+/**
+ * Interface the API binds to when neither MARKUS_HOST nor config.server.host is
+ * set. LAN-accessible so a teammate can open the UI from another device without
+ * extra setup; non-loopback callers still must authenticate (getAuthUser).
+ */
+export const DEFAULT_BIND_HOST = '0.0.0.0';
+
 export class APIServer {
   /**
    * A2A 投递/回复的**唯一**执行点（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）。
@@ -401,7 +506,6 @@ export class APIServer {
   public registryCache?: Map<string, { data: unknown; ts: number }>;
   private templateRegistry?: TemplateRegistry;
   builderService?: BuilderService;
-  private workflowEngine?: WorkflowEngine;
   private workflowService?: WorkflowService;
   private workflowRunner?: WorkflowRunner;
   private teamTemplateRegistry: TeamTemplateRegistry;
@@ -421,6 +525,21 @@ export class APIServer {
   /** In-flight chat streams for refresh reattach. */
   public readonly activeStreams = new ActiveStreamRegistry();
   invalidateRoutingCache(): void { this.routingCandidatesCache = null; }
+
+  // ── LLM catalog maintenance state (see warmLlmCatalogInBackground) ─────────
+  /** Single-flight guard: concurrent GETs must not each start their own refresh. */
+  private llmCatalogWarmInFlight: Promise<void> | null = null;
+  /** One cold Markus-catalog attempt per process (see the read path). */
+  private markusCatalogColdLoadAttempted = false;
+  /** Last Markus catalog sync attempt (ms) — refresh at most once per TTL. */
+  private markusCatalogSyncedAt = 0;
+  /** Last Ollama local-model sync (ms) — probing every model is not a read cost. */
+  private ollamaSyncedAt = 0;
+  /** Last *failed* Hub credential sync — a cooldown so a bad Hub is not hit per request. */
+  private hubCredentialSyncFailedAt = 0;
+  private static readonly OLLAMA_SYNC_TTL_MS = 5 * 60_000;
+  private static readonly MARKUS_CATALOG_SYNC_TTL_MS = 5 * 60_000;
+  private static readonly HUB_SYNC_FAILURE_COOLDOWN_MS = 60_000;
 
   /**
    * Build the model routing candidates payload.
@@ -577,6 +696,89 @@ export class APIServer {
     } catch (err) {
       log.warn('Routing candidates warm-up failed; will build on first request', { error: String(err) });
     }
+  }
+
+  /**
+   * All network work that used to sit on the `GET /api/settings/llm` read path:
+   * Hub credential sync, Markus catalog refresh, Ollama local-model probe.
+   *
+   * Reads must not pay for these. Three hot surfaces hit that endpoint — the
+   * Settings page on tab open, the composer model menu on mount AND on every
+   * open, and the boot config check — so a 0.6 s Hub round-trip there was a
+   * 0.6 s pause on every single open, twice for the menu.
+   *
+   * Contract:
+   *  - fire-and-forget; never throws, never blocks a response;
+   *  - single-flight — concurrent GETs join one refresh instead of piling up;
+   *  - per-source TTL — the credentialed Hub sync only re-runs when the
+   *    effective key is actually legacy/missing (see resolveMarkusOrKey, the
+   *    ONE definition of "usable key"), and a *failed* sync backs off so an
+   *    unreachable Hub is not retried on every keystroke-driven render.
+   */
+  private warmLlmCatalogInBackground(): void {
+    if (!this.llmRouter) return;
+    if (this.llmCatalogWarmInFlight) return;
+
+    const flight = (async () => {
+      const now = Date.now();
+      // 1) Credential repair — only when there is genuinely no usable key.
+      //    The old code asked the raw on-disk `apiKey`, which is `null` after a
+      //    correct migration, so it re-synced on every request forever.
+      try {
+        if (now - this.hubCredentialSyncFailedAt > APIServer.HUB_SYNC_FAILURE_COOLDOWN_MS) {
+          const cfg = loadConfig();
+          const markus = cfg.llm.providers?.['markus'] as { apiKey?: string } | undefined;
+          if (!this.resolveMarkusOrKey(markus)) {
+            const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
+            if (!sync.ok) {
+              this.hubCredentialSyncFailedAt = Date.now();
+              log.warn('Background OpenRouter credential sync failed', {
+                error: sync.error,
+                retryAfterMs: APIServer.HUB_SYNC_FAILURE_COOLDOWN_MS,
+              });
+            }
+          }
+        }
+      } catch { /* non-fatal */ }
+
+      // 2) Markus catalog — TTL'd.
+      try {
+        const hasCatalog = (this.llmRouter!.getEnhancedSettings().providers?.['markus']?.models ?? []).length > 0;
+        if (!hasCatalog || now - this.markusCatalogSyncedAt > APIServer.MARKUS_CATALOG_SYNC_TTL_MS) {
+          this.markusCatalogSyncedAt = Date.now();
+          const flown = await this.llmRouter!.refreshMarkusCatalog().catch(() => 0);
+          if (flown > 0) {
+            const settings = this.llmRouter!.getEnhancedSettings();
+            const markus = settings.providers?.['markus'];
+            const ids = new Set((markus?.models ?? []).map(m => m.id));
+            if (ids.size > 0) {
+              const preferred = (markus?.model && ids.has(markus.model)) ? markus.model : [...ids][0]!;
+              this.llmRouter!.healMarkusRoutingAgainstCatalog(ids, preferred);
+              this.persistHealedMarkusRouting();
+            }
+            this.invalidateRoutingCache();
+          }
+        }
+      } catch { /* non-fatal — keep last-good catalog */ }
+
+      // 3) Ollama local models — TTL'd. Probing every model via /api/show is
+      //    seconds of work when the daemon is slow or unhealthy.
+      try {
+        if (now - this.ollamaSyncedAt > APIServer.OLLAMA_SYNC_TTL_MS) {
+          this.ollamaSyncedAt = Date.now();
+          await this.llmRouter!.refreshOllamaLocalModels?.().catch(() => 0);
+        }
+      } catch { /* non-fatal — keep last-good catalog */ }
+    })();
+
+    this.llmCatalogWarmInFlight = flight
+      // Never let a background refresh surface as an unhandled rejection: no
+      // caller awaits this promise, so a throw here would be invisible at best
+      // and a process-level warning at worst.
+      .catch(err => { log.warn('LLM catalog background refresh failed', { error: String(err) }); })
+      .finally(() => {
+        this.llmCatalogWarmInFlight = null;
+      });
   }
 
   /**
@@ -2105,42 +2307,6 @@ export class APIServer {
     this.fileStorage = provider;
   }
 
-  initWorkflowEngine(): WorkflowEngine {
-    const agentManager = this.orgService.getAgentManager();
-    const executor: WorkflowExecutor = {
-      executeStep: async (
-        agentId: string,
-        taskDescription: string,
-        input: Record<string, unknown>
-      ) => {
-        const agent = agentManager.getAgent(agentId);
-        const reply = await agent.sendMessage(
-          taskDescription,
-          'workflow-engine',
-          { name: 'workflow', role: 'system' },
-          {
-            sourceType: 'system_event',
-            sessionId: `sys_${agentId}_${Date.now()}`,
-          }
-        );
-        return { reply, input };
-      },
-      findAgent: (skills: string[]) => {
-        const agents = agentManager.listAgents();
-        const found = agents.find(a =>
-          skills.some(
-            s =>
-              a.role?.toLowerCase().includes(s.toLowerCase()) ||
-              a.agentRole?.toLowerCase().includes(s.toLowerCase())
-          )
-        );
-        return found?.id;
-      },
-    };
-    this.workflowEngine = new WorkflowEngine(executor);
-    return this.workflowEngine;
-  }
-
   getTeamTemplateRegistry(): TeamTemplateRegistry {
     return this.teamTemplateRegistry;
   }
@@ -2204,7 +2370,16 @@ export class APIServer {
   private async getAuthUser(
     req: IncomingMessage
   ): Promise<{ userId: string; orgId: string; role: string } | null> {
-    if (!this.authEnabled) return { userId: 'anonymous', orgId: 'default', role: 'owner' };
+    if (!this.authEnabled) {
+      // Auth-disabled mode is a local single-user convenience. Handing out an
+      // owner identity to a caller from the network would defeat that premise.
+      const remote = req.socket?.remoteAddress ?? '';
+      // An absent address means a non-socket caller (in-process tests, embedded use);
+      // a real network peer always carries one, so the check still holds in production.
+      const isLoopback = remote === '' || remote === '127.0.0.1' || remote === '::1' || remote === '::ffff:127.0.0.1';
+      if (!isLoopback) return null;
+      return { userId: 'anonymous', orgId: 'default', role: 'owner' };
+    }
     const cookies = parseCookies(req.headers['cookie']);
     const token = cookies['markus_token'];
     if (!token) return null;
@@ -2611,13 +2786,15 @@ export class APIServer {
 
   start(): Promise<void> {
     return new Promise((resolve, reject) => {
+      const host = this.bindHost;
       this.server = createServer((req, res) => this.handleRequest(req, res));
       this.ws.attach(this.server);
       this.server.once('error', (err) => {
         reject(err);
       });
-      this.server.listen(this.port, '0.0.0.0', () => {
-        log.info(`API server listening on 0.0.0.0:${this.port} (HTTP + WebSocket)`);
+      this.server.listen(this.port, host, () => {
+        this.currentHost = host;
+        log.info(`API server listening on ${host}:${this.port} (HTTP + WebSocket)`);
         resolve();
         // Warm the routing-candidates cache in the background so the first visit
         // to Settings → Model Routing hits the cache (no empty-then-filled UI).
@@ -2628,7 +2805,14 @@ export class APIServer {
   }
 
   stop(): void {
-    this.server?.close();
+    // Same reasoning as applyBindHost(): http close() waits for every connection
+    // to end, and an open /ws socket never ends on its own. Drop WS + force-close
+    // sockets so shutdown does not hang.
+    this.ws.detach();
+    const live = this.server;
+    if (!live) return;
+    live.close();
+    live.closeAllConnections();
   }
 
   /**
@@ -2720,16 +2904,139 @@ export class APIServer {
     }
   }
 
+  /** Which interface the live listener is on (may differ from config until applied). */
+  private currentHost?: string;
+
+  /**
+   * Move the live listener to the configured interface without a full restart.
+   * Existing connections (HTTP keep-alive and WebSocket) are dropped, which is the
+   * honest outcome of changing the address; clients reconnect to the same port.
+   */
+  async applyBindHost(): Promise<{ host: string; port: number; changed: boolean; previous?: string }> {
+    const target = this.bindHost;
+    const previous = this.currentHost;
+    if (previous === target) return { host: target, port: this.port, changed: false };
+    const live = this.server;
+    if (!live) throw new Error('API server is not running');
+
+    // 1. Drop the WebSocket layer + every open WS client first. An upgraded /ws
+    //    socket never ends on its own, and `http.Server.close()` waits for *all*
+    //    connections before firing its callback — without this the close below
+    //    hangs until every browser tab navigates away (observed as "switch takes
+    //    forever, then fails").
+    this.ws.detach();
+
+    // 2. Close the HTTP listener. `close()` stops accepting new connections
+    //    immediately but only resolves once existing ones end; force the lingering
+    //    keep-alive sockets down so it resolves now instead of waiting on them.
+    await new Promise<void>((resolve, reject) => {
+      live.close(err => (err ? reject(err) : resolve()));
+      live.closeAllConnections();
+    });
+
+    // 3. Rebind the same port on the new interface. If the target address can't
+    //    be bound (e.g. not assigned to this machine), roll back to the previous
+    //    one so the API never ends up dead.
+    const next = createServer((req, res) => this.handleRequest(req, res));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        next.once('error', reject);
+        next.listen(this.port, target, () => resolve());
+      });
+    } catch (err) {
+      log.error(`Failed to bind ${target}:${this.port}; restoring ${previous ?? '127.0.0.1'}`, { error: String(err) });
+      const fallbackHost = previous ?? '127.0.0.1';
+      const restore = createServer((req, res) => this.handleRequest(req, res));
+      await new Promise<void>((resolve, reject) => {
+        restore.once('error', reject);
+        restore.listen(this.port, fallbackHost, () => resolve());
+      });
+      this.server = restore;
+      this.ws.attach(restore);
+      this.currentHost = fallbackHost;
+      throw err;
+    }
+
+    this.server = next;
+    this.ws.attach(next);
+    this.currentHost = target;
+    log.info(`API server rebound ${previous ?? 'unknown'} -> ${target}:${this.port}`);
+    return { host: target, port: this.port, changed: true, previous };
+  }
+
   getWSBroadcaster(): WSBroadcaster {
     return this.ws;
   }
 
+  /**
+   * The interface the API is actually listening on right now (falls back to the
+   * configured one before start). The web UI uses this to tell the user their
+   * instance is reachable from the local network.
+   */
+  getBoundHost(): string {
+    return this.currentHost ?? this.bindHost;
+  }
+
+  /** True when the listener accepts connections from other machines. */
+  isLANExposed(): boolean {
+    const host = this.getBoundHost().trim();
+    return host !== '127.0.0.1' && host !== '::1' && host !== 'localhost';
+  }
+
+  /**
+   * Interface the HTTP server binds to. LAN-accessible by default so teammates
+   * can reach this instance without extra setup; authentication is still
+   * enforced for every non-loopback caller (see getAuthUser). Set MARKUS_HOST
+   * (or Settings → Network → Access scope) to 127.0.0.1 to keep it local-only.
+   */
+  private get bindHost(): string {
+    const fromEnv = process.env['MARKUS_HOST']?.trim();
+    if (fromEnv) return fromEnv;
+    try {
+      const cfg = loadConfig(this.markusConfigPath) as { server?: { host?: string } };
+      const fromConfig = cfg.server?.host?.trim();
+      if (fromConfig) return fromConfig;
+    } catch {
+      /* fall through to the default */
+    }
+    return DEFAULT_BIND_HOST;
+  }
+
+  /** Origins allowed to call this API from a browser. */
+  private isAllowedOrigin(origin: string): boolean {
+    let parsed: URL;
+    try {
+      parsed = new URL(origin);
+    } catch {
+      return false;
+    }
+    const hostname = parsed.hostname;
+    if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') return true;
+    if (hostname === '0.0.0.0') return true;
+    const extra = (process.env['MARKUS_ALLOWED_ORIGINS'] ?? '')
+      .split(',')
+      .map(value => value.trim())
+      .filter(Boolean);
+    return extra.includes(origin);
+  }
+
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    // CORS: only echo back origins we actually trust. `*` combined with any
+    // unauthenticated route let a visited web page drive this API.
+    const requestOrigin = typeof req.headers['origin'] === 'string' ? req.headers['origin'] : undefined;
+    if (requestOrigin && this.isAllowedOrigin(requestOrigin)) {
+      res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+      res.setHeader('Vary', 'Origin');
+      res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+      res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+    }
 
     if (req.method === 'OPTIONS') {
+      if (requestOrigin && !this.isAllowedOrigin(requestOrigin)) {
+        res.writeHead(403);
+        res.end();
+        return;
+      }
       res.writeHead(204);
       res.end();
       return;
@@ -2801,6 +3108,27 @@ export class APIServer {
       const ct = String(req.headers['content-type'] ?? '').toLowerCase();
       if (!ct.includes('multipart/form-data')) {
         await this.readBody(req);
+      }
+    }
+
+    // ── Deny-by-default authentication gate ─────────────────────────────────
+    // Every /api route requires a valid session unless it is explicitly public.
+    // This is the load-bearing check: a new route cannot end up unauthenticated
+    // just because its handler forgot to call requireAuth.
+    if (path.startsWith('/api/') && !isPublicApiPath(path)) {
+      const sessionUser = await this.requireAuth(req, res);
+      if (!sessionUser) return;
+      const requiredRole = requiredApiRole(path, req.method ?? 'GET');
+      if (!roleSatisfies(sessionUser.role, requiredRole)) {
+        log.warn('Authorization denied', {
+          userId: sessionUser.userId,
+          role: sessionUser.role,
+          requiredRole,
+          method: req.method,
+          path,
+        });
+        this.json(res, 403, { error: `Requires ${requiredRole} role`, requiredRole });
+        return;
       }
     }
 
@@ -4045,6 +4373,18 @@ export class APIServer {
       const agent = this.orgService.getAgentManager().getAgent(routedAgentId);
       const senderInfo = this.orgService.resolveHumanIdentity(senderId);
 
+      // 被人类停止的 agent：不启动、也不静默丢消息 —— 明确告诉人「它停着，启动后才会处理」。
+      // 绝不能在这里悄悄 startAgent：那等于替人类推翻他自己按下的停止。
+      if (this.orgService.getAgentManager().isStoppedByHuman(routedAgentId)) {
+        this.json(res, 200, {
+          userMessage: enrichedUserMsg,
+          agentMessage: null,
+          agentStopped: true,
+          notice: 'This agent is stopped. Your message was NOT delivered — start it to resume.',
+        });
+        return;
+      }
+
       const channelContext = await buildChannelContext();
 
       let reply: string;
@@ -4417,7 +4757,7 @@ export class APIServer {
       return;
     }
 
-    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
+    if (path.match(/^\/api\/agents\/[^/]+\/(start|stop|cancel-processing|daily-report|a2a|message)$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
       const parts = path.split('/');
@@ -4425,7 +4765,7 @@ export class APIServer {
       const action = parts[4];
 
       if (action === 'start') {
-        await this.orgService.getAgentManager().startAgent(agentId!);
+        await this.orgService.getAgentManager().startAgent(agentId!, { cause: 'human' });
         this.ws.broadcastAgentUpdate(agentId!, 'idle');
         this.json(res, 200, { status: 'started' });
         return;
@@ -4434,20 +4774,6 @@ export class APIServer {
         await this.orgService.getAgentManager().stopAgent(agentId!);
         this.ws.broadcastAgentUpdate(agentId!, 'offline');
         this.json(res, 200, { status: 'stopped' });
-        return;
-      }
-      if (action === 'pause') {
-        // Unified: pause is now an alias for stop
-        await this.orgService.getAgentManager().stopAgent(agentId!);
-        this.ws.broadcastAgentUpdate(agentId!, 'offline');
-        this.json(res, 200, { status: 'stopped' });
-        return;
-      }
-      if (action === 'resume') {
-        // Unified: resume is now an alias for start
-        await this.orgService.getAgentManager().startAgent(agentId!);
-        this.ws.broadcastAgentUpdate(agentId!, 'idle');
-        this.json(res, 200, { status: 'started' });
         return;
       }
       if (action === 'cancel-processing') {
@@ -6289,11 +6615,17 @@ EXPLANATION_END`;
     // Slash command dispatch
     if (path.match(/^\/api\/agents\/[^/]+\/command$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
+      const commandUser = await this.requireAuth(req, res);
+      if (!commandUser) return;
+      if (commandUser.role !== 'owner' && commandUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
+        return;
+      }
       const body = await this.readBody(req);
       const command = body['command'] as string;
       const args = body['args'] as string | undefined;
-      const senderId = body['senderId'] as string | undefined ?? 'system';
-      const senderName = body['senderName'] as string | undefined ?? 'User';
+      const senderId = commandUser.userId;
+      const senderName = 'User';
       if (!command) {
         this.json(res, 400, { error: 'command is required' });
         return;
@@ -6857,7 +7189,7 @@ EXPLANATION_END`;
           }
         }
 
-        await agentManager.startAgent(agent.id);
+        await agentManager.startAgent(agent.id, { cause: 'creation' });
         this.json(res, 201, {
           agent: {
             id: agent.id,
@@ -6887,6 +7219,14 @@ EXPLANATION_END`;
     if (path === '/api/external-agents/register' && req.method === 'POST') {
       if (!this.gateway) {
         this.json(res, 503, { error: 'External agent gateway not configured' });
+        return;
+      }
+      // Enrolment mints a gateway token, so it is a privileged act — only an
+      // owner/admin session may hand one out.
+      const enrolUser = await this.requireAuth(req, res);
+      if (!enrolUser) return;
+      if (enrolUser.role !== 'owner' && enrolUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
         return;
       }
       const body = await this.readBody(req);
@@ -8076,6 +8416,17 @@ EXPLANATION_END`;
     }
 
     // Settings — Remote Access (T8: V2 payload + legacy aliases)
+    // Remote access is the switch that publishes this API port to the internet.
+    // Its control surface is owner-only, whatever the individual route does.
+    if (path === '/api/settings/remote' || path.startsWith('/api/settings/remote/')) {
+      const remoteUser = await this.requireAuth(req, res);
+      if (!remoteUser) return;
+      if (remoteUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+    }
+
     if (path === '/api/settings/remote' && req.method === 'GET') {
       this.json(res, 200, this.remoteStatusPayload());
       return;
@@ -8405,39 +8756,46 @@ EXPLANATION_END`;
         this.json(res, 200, { defaultProvider: 'unknown', providers: {} });
         return;
       }
-      // Fix stale Worker baseUrl / missing modelsUrl, migrate legacy markus_ keys,
-      // then refresh Hub catalog.
+      // ── READ PATH ────────────────────────────────────────────────────────
+      // Three surfaces enter here: the Settings page (as soon as a tab opens),
+      // the composer's model menu (on mount AND on every open), and the boot
+      // config check. It therefore must serve what is already in memory and
+      // must NEVER await the Hub.
+      //
+      // It used to do exactly the opposite: a forced Hub credential sync + a
+      // catalog refresh + an Ollama probe on every single call. The "legacy
+      // key" probe read the raw on-disk `markus.apiKey`, which is `null` for
+      // every correctly-migrated install (the key lives in ~/.markus/.env), so
+      // `isLegacyMarkusSubscriptionKey(null)` was true forever and the sync
+      // re-ran on each GET — measured 0.6 s warm / 3.9 s cold per request, on
+      // every open of the Settings page and of the model menu.
+      //
+      // Division of labour now: this path normalizes config and heals routing
+      // from what it has; warmLlmCatalogInBackground() owns all network work.
       try {
         this.ensureMarkusDirectConfig();
-        const cfg = loadConfig();
-        const markusKey = (cfg.llm.providers?.['markus'] as { apiKey?: string } | undefined)?.apiKey;
-        if (this.isLegacyMarkusSubscriptionKey(markusKey)) {
-          const sync = await this.syncOpenRouterCredentialsFromHub({ force: true });
-          if (!sync.ok) {
-            log.warn('Legacy Markus key present but OpenRouter sync failed', { error: sync.error });
-          }
-        }
-        const preview = this.llmRouter.getEnhancedSettings();
-        const markus = preview.providers?.['markus'];
+        const markus = this.llmRouter.getEnhancedSettings().providers?.['markus'];
         if (markus?.configured) {
           const ids = new Set((markus.models ?? []).map(m => m.id));
-          if (ids.size === 0) {
-            await this.llmRouter.refreshMarkusCatalog();
-          } else {
+          if (ids.size === 0 && !this.markusCatalogColdLoadAttempted) {
+            // Cold and genuinely empty: the pickers would render blank. Pay it
+            // ONCE per process — every later call is served from memory.
+            this.markusCatalogColdLoadAttempted = true;
+            this.markusCatalogSyncedAt = Date.now();
+            await this.llmRouter.refreshMarkusCatalog().catch(() => 0);
+          } else if (ids.size > 0) {
             // CN geo (etc.) can drop sticky RDM from the list while chip still shows it.
             const preferred = (markus.model && ids.has(markus.model))
               ? markus.model
               : [...ids][0]!;
             this.llmRouter.healMarkusRoutingAgainstCatalog(ids, preferred);
+            this.persistHealedMarkusRouting();
           }
-          this.persistHealedMarkusRouting();
         }
       } catch { /* non-fatal */ }
-      // Sync locally-available Ollama models so the pickers (Settings + chat
-      // model selector) show real local models, not just the static catalog.
-      try {
-        await this.llmRouter.refreshOllamaLocalModels?.();
-      } catch { /* non-fatal — keep last-good catalog */ }
+      // Stale-while-revalidate: hand the network work to the background stream
+      // and answer with the catalog we have. Single-flight + per-source TTL.
+      this.warmLlmCatalogInBackground();
       this.json(res, 200, this.llmRouter.getEnhancedSettings());
       return;
     }
@@ -8797,13 +9155,36 @@ EXPLANATION_END`;
 
     // Settings — Network / Proxy
     if (path === '/api/settings/network' && req.method === 'GET') {
-      const { loadConfig: loadCfg } = await import('@markus/shared');
-      const { getEffectiveProxy } = await import('@markus/core');
+      const { loadConfig: loadCfg, egressStatus, EGRESS_PROBE_URL: probeUrl } = await import('@markus/shared');
       const currentConfig = loadCfg(this.markusConfigPath);
-      const effective = getEffectiveProxy();
+      const egress = egressStatus();
       this.json(res, 200, {
         network: currentConfig.network ?? {},
-        effective: { proxy: effective.url ?? null, source: effective.source },
+        effective: { proxy: egress.policy.url ?? null, source: egress.policy.source },
+        egress: {
+          enabled: egress.policy.enabled,
+          source: egress.policy.source,
+          displayUrl: egress.displayUrl ?? null,
+          noProxy: egress.policy.noProxy,
+          installed: egress.installed,
+          error: egress.error ?? null,
+          probeUrl,
+          coverage: {
+            // Stated plainly so the UI does not have to lie by omission.
+            covered: ['fetch / undici in this process', 'child processes (git, gh, npm, tunnel)'],
+            notCovered: ['browser automation (Chrome uses its own proxy settings)'],
+          },
+        },
+        server: {
+          host: currentConfig.server?.host ?? DEFAULT_BIND_HOST,
+          hostDecided: currentConfig.server?.hostDecided ?? false,
+          effectiveHost: this.bindHost,
+          // Live listener vs configured value: the page uses this to decide whether
+          // an "Approve now" action is pending, including after a reload.
+          pendingRestart: this.currentHost !== undefined
+            && this.currentHost !== (currentConfig.server?.host ?? DEFAULT_BIND_HOST),
+          source: process.env['MARKUS_HOST']?.trim() ? 'env' : 'config',
+        },
       });
       return;
     }
@@ -8815,11 +9196,116 @@ EXPLANATION_END`;
       const updates: Record<string, unknown> = {};
       if (typeof body['proxy'] === 'string') updates.proxy = body['proxy'] || undefined;
       if (typeof body['proxyEnabled'] === 'boolean') updates.proxyEnabled = body['proxyEnabled'];
+      // NO_PROXY list: array or comma-separated string.
+      if (body['noProxy'] !== undefined) {
+        const raw = Array.isArray(body['noProxy']) ? body['noProxy'] : String(body['noProxy']).split(',');
+        const entries = raw.map((entry: unknown) => String(entry).trim()).filter(Boolean);
+        if (entries.some((entry: string) => /\s/.test(entry))) {
+          this.json(res, 400, { error: 'noProxy entries must not contain whitespace' });
+          return;
+        }
+        updates.noProxy = entries;
+      }
+      const requestedHost = typeof body['host'] === 'string' ? body['host'].trim() : undefined;
+      if (requestedHost !== undefined && requestedHost !== '') {
+        const allowed = ['127.0.0.1', '0.0.0.0', 'localhost', '::1'];
+        const looksLikeAddress = /^[0-9a-fA-F.:]+$/.test(requestedHost);
+        if (!allowed.includes(requestedHost) && !looksLikeAddress) {
+          this.json(res, 400, { error: 'host must be an IP address or localhost' });
+          return;
+        }
+      }
+      // Capture the live listener BEFORE writing config — `bindHost` reads config,
+      // so comparing after the save makes the two sides always equal.
+      const liveHost = this.currentHost;
       try {
+        if (requestedHost !== undefined && requestedHost !== '') {
+          saveConfig({ server: { host: requestedHost, hostDecided: true } } as any, this.markusConfigPath);
+        }
         saveConfig({ network: updates } as any, this.markusConfigPath);
-        this.json(res, 200, { ok: true, network: updates });
+        // Proxy changes take effect now: re-install the dispatcher so a corrected
+        // URL does not require restarting the process.
+        if (updates.proxy !== undefined || updates.proxyEnabled !== undefined || updates.noProxy !== undefined) {
+          const { installEgress } = await import('@markus/shared');
+          await installEgress({ force: true });
+        }
+        this.json(res, 200, {
+          ok: true,
+          network: updates,
+          // A bind address cannot move under a live listener.
+          restartRequired: !!requestedHost && liveHost !== undefined && requestedHost !== liveHost,
+        });
       } catch (e) {
         this.json(res, 500, { error: `Failed to save network settings: ${e}` });
+      }
+      return;
+    }
+
+    // Probe the egress route: the response echoes the exit IP, which is the only
+    // way a user can tell "my proxy is configured" from "my proxy is being used".
+    if (path === '/api/settings/network/test' && req.method === 'POST') {
+      const testUser = await this.requireAuth(req, res);
+      if (!testUser) return;
+      if (testUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+      const { installEgress, EGRESS_PROBE_URL } = await import('@markus/shared');
+      const status = await installEgress({ force: true });
+      const startedAt = Date.now();
+      try {
+        const probe = await fetch(EGRESS_PROBE_URL, { signal: AbortSignal.timeout(8000) });
+        const data = await probe.json().catch(() => ({} as { ip?: string }));
+        this.json(res, 200, {
+          ok: probe.ok,
+          exitIp: (data as { ip?: string }).ip ?? null,
+          latencyMs: Date.now() - startedAt,
+          proxied: status.installed,
+          source: status.policy.source,
+          error: probe.ok ? null : `probe returned HTTP ${probe.status}`,
+        });
+      } catch (err) {
+        this.json(res, 200, {
+          ok: false,
+          exitIp: null,
+          latencyMs: Date.now() - startedAt,
+          proxied: status.installed,
+          source: status.policy.source,
+          error: String(err),
+        });
+      }
+      return;
+    }
+
+    // Apply the configured interface to the live listener (no process restart).
+    // CRITICAL: We must respond to the client BEFORE calling applyBindHost(),
+    // because applyBindHost() closes the current server — killing this connection.
+    // Return 202 Accepted so the frontend knows not to wait for a body.
+    if (path === '/api/settings/network/apply' && req.method === 'POST') {
+      const applyUser = await this.requireAuth(req, res);
+      if (!applyUser) return;
+      if (applyUser.role !== 'owner') {
+        this.json(res, 403, { error: 'Owner role required' });
+        return;
+      }
+      try {
+        const body = await this.readBody(req).catch(() => ({} as Record<string, unknown>));
+        const requested = typeof body?.['host'] === 'string' ? String(body['host']).trim() : '';
+        if (requested) {
+          saveConfig({ server: { host: requested, hostDecided: true } } as any, this.markusConfigPath);
+        }
+        // Respond FIRST with 202 — client must not wait for this connection.
+        // Rebind only AFTER the response is actually flushed: applyBindHost()
+        // calls closeAllConnections(), which would otherwise destroy this socket
+        // mid-write and the client would never see the 202.
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, rebinding: true }), () => {
+          void this.applyBindHost().catch(err =>
+            log.error(`applyBindHost failed after 202 response: ${err}`),
+          );
+        });
+      } catch (err) {
+        this.json(res, 500, { error: `Failed to rebind listener: ${String(err)}` });
       }
       return;
     }
@@ -11965,94 +12451,9 @@ EXPLANATION_END`;
       return;
     }
 
-    // ── Workflow Engine (DEPRECATED — use /api/teams/:teamId/workflows instead) ─
-    if ((path === '/api/workflows' || path.startsWith('/api/workflows/')) &&
-        !path.startsWith('/api/workflow-runs')) {
-      res.setHeader('Deprecation', 'true');
-      res.setHeader('Sunset', '2026-09-01');
-      res.setHeader('Link', '</api/teams/{teamId}/workflows>; rel="successor-version"');
-    }
-
-    if (path === '/api/workflows' && req.method === 'GET') {
-      if (!this.workflowEngine) {
-        this.json(res, 200, { executions: [], _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
-        return;
-      }
-      const executions = this.workflowEngine.listExecutions().map(e => ({
-        id: e.id,
-        workflowId: e.workflowId,
-        status: e.status,
-        startedAt: e.startedAt,
-        completedAt: e.completedAt,
-        error: e.error,
-        stepCount: e.steps.size,
-      }));
-      this.json(res, 200, { executions, _deprecated: 'Use GET /api/teams/:teamId/workflows instead' });
-      return;
-    }
-
-    if (path === '/api/workflows' && req.method === 'POST') {
-      if (!this.workflowEngine) this.initWorkflowEngine();
-      const body = await this.readBody(req);
-      const action = body['action'] as string;
-      if (action === 'validate') {
-        const errors = this.workflowEngine!.validate(body['workflow'] as WorkflowDefinition);
-        this.json(res, 200, { valid: errors.length === 0, errors, _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead' });
-        return;
-      }
-      try {
-        const execution = await this.workflowEngine!.start(
-          body['workflow'] as WorkflowDefinition,
-          (body['inputs'] as Record<string, unknown>) ?? {}
-        );
-        this.json(res, 201, {
-          executionId: execution.id,
-          status: execution.status,
-          outputs: execution.outputs,
-          error: execution.error,
-          _deprecated: 'Use POST /api/teams/:teamId/workflows/:name/runs instead',
-        });
-      } catch (err) {
-        this.json(res, 400, { error: String(err) });
-      }
-      return;
-    }
-
-    if (path.startsWith('/api/workflows/') && req.method === 'GET') {
-      if (!this.workflowEngine) {
-        this.json(res, 404, { error: 'No workflow engine' });
-        return;
-      }
-      const executionId = path.split('/')[3]!;
-      const execution = this.workflowEngine.getExecution(executionId);
-      if (!execution) {
-        this.json(res, 404, { error: 'Execution not found' });
-        return;
-      }
-      const steps = [...execution.steps.entries()].map(([id, s]) => ({
-        id,
-        status: s.status,
-        agentId: s.agentId,
-        startedAt: s.startedAt,
-        completedAt: s.completedAt,
-        error: s.error,
-        retryCount: s.retryCount,
-        output: s.output,
-      }));
-      this.json(res, 200, { execution: { ...execution, steps } });
-      return;
-    }
-
-    if (path.startsWith('/api/workflows/') && req.method === 'DELETE') {
-      if (!this.workflowEngine) {
-        this.json(res, 404, { error: 'No workflow engine' });
-        return;
-      }
-      const executionId = path.split('/')[3]!;
-      const cancelled = this.workflowEngine.cancel(executionId);
-      this.json(res, 200, { cancelled });
-      return;
-    }
+    // NOTE: the legacy /api/workflows engine routes were removed — they executed
+    // request-supplied expressions inside the server process. Team-scoped
+    // templates live under /api/teams/:teamId/workflows.
 
     // ── Team Templates ───────────────────────────────────────────────────
     if (path === '/api/team-templates' && req.method === 'GET') {
@@ -12181,6 +12582,10 @@ EXPLANATION_END`;
         status: 'ok',
         version: APP_VERSION,
         agents: this.orgService.getAgentManager().listAgents().length,
+        // Where the listener actually is + whether other machines can reach it.
+        // The web UI shows a first-run notice off these two.
+        bindHost: this.getBoundHost(),
+        lanExposed: this.isLANExposed(),
       };
       // Non-blocking update check — cached, so normally instant after first call
       try {
@@ -12239,38 +12644,6 @@ EXPLANATION_END`;
 
     // ── Governance: System Controls ──────────────────────────────────────────
 
-    if (path === '/api/system/pause-all' && req.method === 'POST') {
-      const body = await this.readBody(req);
-      const authUser = await this.getAuthUser(req);
-      const am = this.orgService.getAgentManager();
-      await am.stopAllAgents(body['reason'] as string | undefined);
-      this.auditService?.record({
-        orgId: 'system',
-        type: 'system_pause_all',
-        action: 'pause_all',
-        detail: body['reason'] as string,
-        userId: authUser?.userId,
-        success: true,
-      });
-      this.json(res, 200, { status: 'stopped', message: 'All agents stopped' });
-      return;
-    }
-
-    if (path === '/api/system/resume-all' && req.method === 'POST') {
-      const authUser = await this.getAuthUser(req);
-      const am = this.orgService.getAgentManager();
-      await am.startAllAgents();
-      this.auditService?.record({
-        orgId: 'system',
-        type: 'system_resume_all',
-        action: 'resume_all',
-        userId: authUser?.userId,
-        success: true,
-      });
-      this.json(res, 200, { status: 'started', message: 'All agents started' });
-      return;
-    }
-
     if (path === '/api/system/emergency-stop' && req.method === 'POST') {
       const authUser = await this.getAuthUser(req);
       const am = this.orgService.getAgentManager();
@@ -12289,7 +12662,6 @@ EXPLANATION_END`;
     if (path === '/api/system/status' && req.method === 'GET') {
       const am = this.orgService.getAgentManager();
       this.json(res, 200, {
-        globalPaused: am.isGlobalStopped(),
         emergencyMode: am.isEmergencyMode(),
       });
       return;
@@ -12808,6 +13180,12 @@ EXPLANATION_END`;
 
     // POST /api/files/write — write content to a local file (for in-place editing)
     if (path === '/api/files/write' && req.method === 'POST') {
+      const writeUser = await this.requireAuth(req, res);
+      if (!writeUser) return;
+      if (writeUser.role !== 'owner' && writeUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Owner or admin role required' });
+        return;
+      }
       const body = await this.readBody(req);
       const filePath = body?.path as string | undefined;
       const content = body?.content as string | undefined;
@@ -13712,7 +14090,7 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
       regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),
-      regex(/^\/api\/agents\/[^/]+\/(start|stop|pause|resume|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/(start|stop|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
       regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
@@ -14015,8 +14393,6 @@ EXPLANATION_END`;
 
       // ── Governance / Workflows ───────────────────────────────────────────
       exact('/api/governance/policy', 'GET', 'PUT'),
-      exact('/api/workflows', 'GET', 'POST'),
-      startsWith('/api/workflows/', 'GET', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/workflows$/, 'GET', 'POST'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/roles$/, 'GET'),
@@ -14026,8 +14402,6 @@ EXPLANATION_END`;
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
       exact('/api/evolution/metrics', 'GET'),
-      exact('/api/system/pause-all', 'POST'),
-      exact('/api/system/resume-all', 'POST'),
       exact('/api/system/emergency-stop', 'POST'),
       exact('/api/system/status', 'GET'),
       exact('/api/browser/tab-ownership', 'GET'),
@@ -14051,6 +14425,24 @@ EXPLANATION_END`;
       exact('/api/external-agents', 'GET'),
       exact('/api/external-agents/register', 'POST'),
       regex(/^\/api\/external-agents\/[^/]+$/, 'DELETE'),
+
+      // ── Handled in route(), previously missing from this table ───────────
+      // Without an entry here a wrong-method request falls through to 404 instead
+      // of the 405 it deserves, which made the surface look smaller than it is.
+      exact('/api/auth/status', 'GET'),
+      exact('/api/auth/init', 'POST'),
+      exact('/api/unread', 'GET'),
+      startsWith('/api/unread/', 'POST'),
+      startsWith('/api/settings/remote', 'GET', 'POST'),
+      exact('/api/settings/coding-tools', 'GET', 'POST'),
+      exact('/api/settings/coding-tools/detect', 'GET'),
+      exact('/api/settings/oauth/device-code', 'POST'),
+      startsWith('/api/models/live/', 'GET'),
+      exact('/api/models/routing-candidates', 'GET'),
+      exact('/api/models/suggested-assignments', 'GET'),
+      exact('/api/llm/provider-catalog', 'GET'),
+      exact('/api/sessions/has-any', 'GET'),
+      exact('/api/sessions/stream/status', 'POST'),
     ];
   }
 

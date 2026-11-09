@@ -31,6 +31,7 @@ import {
   setEnvValue,
   resolveActionSecret,
   resolveHostLocale,
+  installEgress,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -2081,6 +2082,15 @@ async function startServerCore(
   requirementService.setWSBroadcaster(apiServer.getWSBroadcaster());
   deliverableService.setWSBroadcaster(apiServer.getWSBroadcaster());
 
+  // Tell the user their instance is reachable from the LAN (default bind is
+  // 0.0.0.0). Not an error — just so nobody is surprised that another device can
+  // open it. Login is still required for every non-loopback caller.
+  if (apiServer.isLANExposed()) {
+    startupBlank();
+    startupLog('INFO', `API 已对局域网开放（监听 ${apiServer.getBoundHost()}:${apiPort}），同一网络内的其他设备可访问（需登录）`);
+    startupLog('INFO', '  如需仅限本机：设置 → 网络与访问 → 访问范围 → 仅本机');
+  }
+
   const scheduledTaskRunner = new ScheduledTaskRunner(taskService);
   scheduledTaskRunner.start();
 
@@ -2527,14 +2537,6 @@ async function startServerCore(
   // one writer.
 
   // Wire system-wide events to WS broadcast
-  eventBus.on('system:pause-all', (event: unknown) => {
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcast({ type: 'system:pause-all', payload: event, timestamp: new Date().toISOString() });
-  });
-  eventBus.on('system:resume-all', (event: unknown) => {
-    const ws = apiServer.getWSBroadcaster();
-    ws.broadcast({ type: 'system:resume-all', payload: event, timestamp: new Date().toISOString() });
-  });
   eventBus.on('system:emergency-stop', (event: unknown) => {
     const ws = apiServer.getWSBroadcaster();
     ws.broadcast({ type: 'system:emergency-stop', payload: event, timestamp: new Date().toISOString() });
@@ -2570,6 +2572,11 @@ async function startServerCore(
   // (e.g. Telegram from mainland China), which surfaces as "connection failed"
   // while the LLM path — already proxy-aware — works fine on the same machine.
   // One install point; no per-adapter wiring to forget.
+  //
+  // `installEgress` additionally installs the process-wide dispatcher and exports
+  // the proxy variables for child processes, so `fetch` call sites that were never
+  // taught about proxies are covered as well.
+  await installEgress();
   setHttpFetch(proxyFetch);
 
   const messageRouter = new MessageRouter();

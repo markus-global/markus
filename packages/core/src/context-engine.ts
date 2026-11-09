@@ -50,6 +50,7 @@ import type { SemanticMemorySearch } from './memory/semantic-search.js';
 import { getDefaultTokenCounter, type TokenCounter } from './token-counter.js';
 import { summarizeComposition, formatComposition } from './context-composition.js';
 import { elideStaleToolResults } from './tool-result-elision.js';
+import { normalizeHistoryContent } from './llm/message-content.js';
 import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
@@ -2324,7 +2325,11 @@ export class ContextEngine {
     // A request that does not fit fails at the provider; that failure is translated
     // into an actionable remedy (llm/context-overflow.ts) and the agent compacts.
 
-    let messages = opts.sessionMessages;
+    // Structure must be structure: a message whose multimodal parts were
+    // serialized into text (observed: a 338,836-char screenshot blob billed as
+    // ~35k prompt tokens per turn) is parsed back into real parts HERE, the one
+    // choke point every request passes through.
+    let messages = normalizeHistoryContent(opts.sessionMessages);
 
     // ── Stage 1: Pathological single-message shrink only ────────────────
     messages = this.shrinkOversizedMessages(messages, CONTEXT_ABSURD_MESSAGE_CHARS);

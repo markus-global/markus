@@ -23,6 +23,12 @@ const OVERFLOW_PATTERNS: RegExp[] = [
   /input length and `?max_tokens`? exceed/i,
   // Google / Gemini
   /exceeds the maximum number of tokens/i,
+  // Z.AI / Zhipu (GLM) — observed live 2026-11-09 as
+  // `{"code":1261,"message":"Prompt exceeds max length"}` wrapped by the
+  // OpenRouter gateway. Without these two shapes the agent got a bare 400 and
+  // re-sent the identical oversized prompt instead of compacting.
+  /prompt exceeds max(?:imum)? length/i,
+  /exceeds max(?:imum)? (?:input )?length/i,
   // DeepSeek / Qwen / misc gateways
   /\bcontext (?:length|window)\b.*\b(exceed|too (?:long|large)|limit)/i,
   /\btoo many tokens\b/i,

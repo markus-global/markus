@@ -16,8 +16,6 @@
   },
   "chat": {
     "title": "Chat",
-    "pause": "Pausar",
-    "resume": "Reanudar",
     "manage": "Manage",
     "newTeam": "Nuevo equipo",
     "newTeamDesc": "Crear un nuevo equipo",
@@ -51,7 +49,6 @@
     "collapseTeam": "Contraer",
     "moreOptions": "Más opciones",
     "extBadge": "EXT",
-    "pauseAllTooltip": "Pausa a todos los agentes",
     "resumeAllTooltip": "Resumir todos los agentes",
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agentes",
@@ -74,8 +71,6 @@
     "renameTeam": "Rename Team",
     "startAll": "Empieza todo",
     "stopAll": "Deténganse.",
-    "pauseAll": "Pausa Todos",
-    "resumeAll": "Resume All",
     "addExisting": "Add Existing",
     "deleteTeam": "Eliminar el equipo",
     "viewProfile": "Ver perfil",
@@ -166,13 +161,9 @@
       "message": "Este usuario perderá el acceso.",
       "confirmTitle": "Retirar \"{{name}}\"?"
     },
-    "pauseAll": {
-      "title": "Pausa a todos los agentes",
-      "message": "Todos los agentes serán pausados. Los eventos todavía entrarán en el buzón de correo pero no serán procesados. Se bloquearán las tareas en el proceso."
-    },
-    "resumeAll": {
-      "title": "Reanudar a todos los agentes",
-      "message": "Todos los agentes reanudarán los eventos de procesamiento de su buzón de correo."
+    "stopAgent": {
+      "title": "¿Detener este agente?",
+      "message": "Un agente detenido no se reinicia solo: los despertares y mensajes de otros agentes no lo inician. Solo tú puedes iniciarlo de nuevo (individualmente o iniciando todo el equipo), o responder su propia aprobación/pregunta."
     },
     "createGroupChat": {
       "title": "Crear Chat de Grupo",
@@ -293,15 +284,11 @@
     "failedToRun": "Failed {{action}}: {{error}}",
     "past": {
       "start": "comenzado",
-      "stop": "detenido",
-      "pause": "pausado",
-      "resume": "Continuación"
+      "stop": "detenido"
     },
     "operation": {
       "start": "Iniciar",
-      "stop": "Detener",
-      "pause": "Pausar",
-      "resume": "Reanudar"
+      "stop": "Detener"
     }
   },
   "errors": {
@@ -447,6 +434,7 @@
     "newTaskTitle": "New Conversation Task",
     "taskFromChat": "Creado desde chat con {{name}}",
     "errorWithMessage": "Error: {{message}}",
+    "agentStopped": "Este agente está detenido, así que tu mensaje no se entregó. Inícialo para reanudar.",
     "retryConfirmSingular": "Esto descartará un mensaje después de este punto y regenerará. Continuar?",
     "retryConfirmPlural": "Esto se descartará {{count}} mensajes después de este punto y regenerar. Continuar?",
     "errorDetails": "Detalles del error",

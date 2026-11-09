@@ -1,4 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+
+// Route-behaviour tests: run with auth bypassed so the anonymous request is
+// treated as the org owner.
+process.env['AUTH_ENABLED'] = 'false';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';

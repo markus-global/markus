@@ -74,6 +74,14 @@ export interface MarkusConfig {
   server: {
     apiPort: number;
     webPort: number;
+    /**
+     * Interface the HTTP API binds to. `0.0.0.0` (default) lets other devices on
+     * the LAN reach it (login still required); `127.0.0.1` keeps it local-only.
+     * `MARKUS_HOST` overrides this.
+     */
+    host?: string;
+    /** Set once the user has been asked which interface to use. */
+    hostDecided?: boolean;
   };
   security?: {
     adminPassword?: string;

@@ -520,16 +520,9 @@ describe('APIServer final coverage batch', () => {
       expect([200, 400]).toContain(res.status);
     });
 
-    it('POST /api/workflows creates workflow run', async () => {
-      const res = await requestAsync(ctx.server, 'POST', '/api/workflows', {
-        teamId: TEAM_1, workflowName: 'wf-test', params: { topic: 'test' },
-      });
-      expect([200, 201, 400, 404]).toContain(res.status);
-    });
-
-    it('GET /api/workflows lists runs', async () => {
+    it('GET /api/workflows lists runs (removed legacy route)', async () => {
       const res = await requestAsync(ctx.server, 'GET', '/api/workflows?teamId=team-1');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
   });
 

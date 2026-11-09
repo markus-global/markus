@@ -349,6 +349,7 @@ function createMockAgentManager() {
     startAllAgents: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
     isGlobalStopped: vi.fn(() => false),
+    isStoppedByHuman: vi.fn(() => false),
     isEmergencyMode: vi.fn(() => false),
     broadcastAnnouncement: vi.fn(),
     getActiveAnnouncements: vi.fn(() => []),
@@ -931,14 +932,12 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('POST /api/system/pause-all', async () => {
-      const res = await request(ctx.server, 'POST', '/api/system/pause-all', { reason: 'test' });
-      expect(res.status).toBe(200);
-    });
-
-    it('POST /api/system/resume-all', async () => {
-      const res = await request(ctx.server, 'POST', '/api/system/resume-all');
-      expect(res.status).toBe(200);
+    it('the global pause-all / resume-all endpoints are gone — only per-agent and per-team start/stop exist', async () => {
+      // 页面上只有「停止」和「启动」，作用域只有单个 agent 和整个团队。
+      // 全局「暂停全部 / 恢复全部」曾是一对多余的同义词（停止就是停止），已删除；
+      // 保留这两条断言，防止它们被悄悄加回来。
+      expect((await request(ctx.server, 'POST', '/api/system/pause-all', { reason: 'test' })).status).toBe(404);
+      expect((await request(ctx.server, 'POST', '/api/system/resume-all')).status).toBe(404);
     });
 
     it('POST /api/system/emergency-stop', async () => {
@@ -1032,14 +1031,11 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('POST /api/agents/:id/pause', async () => {
-      const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/pause`, { reason: 'test' });
-      expect(res.status).toBe(200);
-    });
-
-    it('POST /api/agents/:id/resume', async () => {
-      const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/resume`);
-      expect(res.status).toBe(200);
+    it('POST /api/agents/:id/pause and /resume no longer exist — stop/start are the only verbs', async () => {
+      // 「暂停」曾经只是 stop 的第二个名字（同一动作两种叫法 = 歧义温床，
+      // 还会让人以为存在第三种状态）。删掉后必须有测试挡住它被悄悄加回来。
+      expect((await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/pause`)).status).toBe(404);
+      expect((await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/resume`)).status).toBe(404);
     });
 
     it('POST /api/agents/:id/cancel-processing', async () => {
@@ -1771,9 +1767,9 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
-    it('GET /api/workflows', async () => {
+    it('GET /api/workflows (removed legacy route)', async () => {
       const res = await request(ctx.server, 'GET', '/api/workflows');
-      expect(res.status).toBe(200);
+      expect(res.status).toBe(404);
     });
 
     it('GET /api/governance/policy', async () => {
@@ -2226,11 +2222,6 @@ describe('APIServer route handlers', () => {
         expect(res.status).toBe(200);
       });
 
-      it('POST /api/workflows validation', async () => {
-        const res = await request(ctx.server, 'POST', '/api/workflows', {});
-        expect(res.status).toBe(400);
-      });
-
       it('POST /api/reports/generate', async () => {
         const res = await request(ctx.server, 'POST', '/api/reports/generate', {
           type: 'daily', orgId: 'default',
@@ -2487,13 +2478,6 @@ describe('APIServer route handlers', () => {
     });
 
     describe('Workflows, templates, and team-templates', () => {
-      it('POST /api/workflows creates workflow', async () => {
-        const res = await request(ctx.server, 'POST', '/api/workflows', {
-          name: 'wf-test', displayName: 'WF Test', description: 'D', steps: [],
-        });
-        expect([201, 200, 400]).toContain(res.status);
-      });
-
       it('GET /api/team-templates/:id', async () => {
         const res = await request(ctx.server, 'GET', '/api/team-templates/default');
         expect([200, 404]).toContain(res.status);

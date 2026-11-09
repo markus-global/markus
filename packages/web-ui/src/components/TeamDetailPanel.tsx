@@ -198,10 +198,24 @@ export function TeamDetailPanel({
   }, [agentMenu]);
 
   const handleStartStop = useCallback(async (agentId: string, status: string) => {
-    if (status === 'offline') await api.agents.start(agentId);
-    else await api.agents.stop(agentId);
-    onRefreshAgents();
-  }, [onRefreshAgents]);
+    if (status === 'offline') {
+      await api.agents.start(agentId);
+      onRefreshAgents();
+      return;
+    }
+    // A human-initiated stop is sticky on the backend: no agent-initiated wakeup
+    // will restart this agent — only a human start (single or whole-team). Confirm
+    // it as a one-way action rather than a resumable pause.
+    askConfirm(
+      t('modals.stopAgent.title'),
+      t('modals.stopAgent.message'),
+      async () => {
+        await api.agents.stop(agentId);
+        onRefreshAgents();
+      },
+      t('contextMenu.stop'),
+    );
+  }, [onRefreshAgents, askConfirm, t]);
 
   const handleSetManager = useCallback(async (memberId: string) => {
     await api.teams.update(team.id, { managerId: memberId, managerType: 'agent' });

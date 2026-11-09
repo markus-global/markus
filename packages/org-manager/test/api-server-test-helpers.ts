@@ -257,6 +257,7 @@ export function createMockAgentManager() {
     stopAllAgents: vi.fn(async () => {}), startAllAgents: vi.fn(async () => {}),
     emergencyStop: vi.fn(async () => {}),
     isGlobalStopped: vi.fn(() => false), isEmergencyMode: vi.fn(() => false),
+    isStoppedByHuman: vi.fn(() => false),
     broadcastAnnouncement: vi.fn(), getActiveAnnouncements: vi.fn(() => []),
     checkAllRoleUpdates: vi.fn(() => []),
     checkRoleUpdate: vi.fn(() => ({ hasTemplate: false, isUpToDate: true })),

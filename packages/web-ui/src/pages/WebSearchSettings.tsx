@@ -242,10 +242,6 @@ export function WebSearchSettings() {
 
   return (
     <section>
-      <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">
-        {t('searchApi.title')}
-      </h3>
-
       <div className="space-y-3">
         <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
 

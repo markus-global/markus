@@ -1,4 +1,5 @@
 import type { AgentToolHandler } from '../agent.js';
+import { AgentStoppedByHumanError } from '../agent-start-cause.js';
 import { createLogger } from '@markus/shared';
 import type { TaskDelegation, DelegationResult } from '@markus/a2a';
 
@@ -101,18 +102,26 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           : !!recipient && recipient.status !== 'stopped' && recipient.status !== 'offline';
         const recipientStopped = !!recipient && !recipientAlive;
         let recipientWoken = false;
+        /** 收件人被人类停掉 —— 唤醒被闸门拒绝，消息只能排队。 */
+        let recipientStoppedByHuman = false;
         if (wakeRecipient && recipientStopped && ctx.wakeAgent) {
           try {
             await ctx.wakeAgent(targetId);
             recipientWoken = true;
             log.info(`A2A wake_recipient: woke ${targetId} before dispatch`, { sender: ctx.selfName });
           } catch (err) {
-            log.warn(`A2A wake_recipient failed for ${targetId}`, { error: String(err) });
-            return JSON.stringify({
-              status: 'error',
-              error: `Recipient ${targetId} is stopped and could not be woken: ${String(err)}`,
-              hint: 'Retry later, or use agent_start if you manage this agent.',
-            });
+            if (err instanceof AgentStoppedByHumanError) {
+              // 不是错误，是事实：人类把它关了。消息仍然入队，但不替人类做决定。
+              recipientStoppedByHuman = true;
+              log.info(`A2A wake refused: ${targetId} was stopped by the human`, { sender: ctx.selfName });
+            } else {
+              log.warn(`A2A wake_recipient failed for ${targetId}`, { error: String(err) });
+              return JSON.stringify({
+                status: 'error',
+                error: `Recipient ${targetId} is stopped and could not be woken: ${String(err)}`,
+                hint: 'Retry later, or use agent_start if you manage this agent.',
+              });
+            }
           }
         }
 
@@ -126,6 +135,8 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
           notice = 'WARNING: recipient was not found in your organization roster — the dispatch may fail. Verify the agent_id via agent_list_colleagues.';
         } else if (recipientWoken) {
           notice = 'Recipient was stopped; you woken it, so it will process the message shortly. Use recall_context with the channel_key or conversation_id to review the exchange.';
+        } else if (recipientStoppedByHuman) {
+          notice = 'The recipient was STOPPED BY THE HUMAN, so it will not start for this message (the message is queued). Do not retry with wake_recipient — that path is deliberately blocked. If you need it running, ask the human with request_user_input.';
         } else if (recipientStopped) {
           notice = 'WARNING: recipient is STOPPED and will not process this message until woken — it will sit in their mailbox. To wake them, resend with wake_recipient: true (or use agent_start if you manage them).';
         } else {
@@ -153,7 +164,7 @@ export function createA2ATools(ctx: A2AContext): AgentToolHandler[] {
             // 'started' = we just woke it; the live roster state when it's up;
             // 'stopped' = no wake, message queued in mailbox until woken;
             // 'unknown' = recipient not in roster (cannot determine liveness).
-            status: recipientWoken ? 'started' : (!recipient ? 'unknown' : (recipientAlive ? (recipient.status || 'online') : 'stopped')),
+            status: recipientWoken ? 'started' : (recipientStoppedByHuman ? 'stopped_by_human' : (!recipient ? 'unknown' : (recipientAlive ? (recipient.status || 'online') : 'stopped'))),
           },
           ...(recipientWoken ? { recipient_woken: true } : {}),
           message: notice,

@@ -538,6 +538,10 @@
     "message": "未配置 LLM 提供商 — 智能体无法处理请求。",
     "goToSettings": "前往配置"
   },
+  "lanNotice": {
+    "message": "已对局域网开放（{{host}}），同一网络内的其他设备可访问 Markus（需要登录）。",
+    "goToSettings": "网络设置"
+  },
   "license": {
     "upgradeLicense": "升级"
   },

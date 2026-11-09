@@ -636,16 +636,6 @@ describe('APIServer extended route coverage', () => {
   });
 
   describe('Workflows, group chats, message routing', () => {
-    it('GET /api/workflows/:executionId without engine returns 404', async () => {
-      const res = await request(ctx.server, 'GET', '/api/workflows/exec-1');
-      expect(res.status).toBe(404);
-    });
-
-    it('DELETE /api/workflows/:executionId without engine returns 404', async () => {
-      const res = await request(ctx.server, 'DELETE', '/api/workflows/exec-1');
-      expect(res.status).toBe(404);
-    });
-
     it('POST /api/group-chats/:id/members', async () => {
       const res = await request(ctx.server, 'POST', '/api/group-chats/gc-1/members', {
         memberId: AGENT_B, memberName: 'Agent B', memberType: 'agent',

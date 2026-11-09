@@ -203,6 +203,11 @@
       "stopAgent": "⏹ Detener",
       "openClaw": "OpenClaw",
       "detailsToggle": "Detalles de uso y almacenamiento",
+      "stopAgentConfirm": {
+        "title": "¿Detener este agente?",
+        "message": "Un agente detenido no se reinicia solo: los despertares de otros agentes, los mensajes y Reanudar todo lo omiten. Solo tú puedes iniciarlo de nuevo, o responder su propia aprobación/pregunta.",
+        "confirm": "Detener"
+      },
       "lifetimeCaption": "Acumulado desde que se creó el agente",
       "storageDepthLimited": "El árbol de directorios es profundo: el uso real puede ser mayor",
       "sections": {

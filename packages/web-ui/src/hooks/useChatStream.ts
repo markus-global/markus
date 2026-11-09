@@ -1018,6 +1018,14 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         });
         if (result.userMessage) addRecentMsgId(result.userMessage.id);
         if (result.agentMessage) addRecentMsgId(result.agentMessage.id);
+        // 被人类停止的 agent：消息没投递。必须说出来 —— 否则“发了但没反应”看起来像平台丢了消息。
+        if (result.agentStopped) {
+          updateConvMsgs(sendKey, prev => [...prev, {
+            id: `stopped_${Date.now()}`, sender: 'agent',
+            text: result.notice ?? t('page.agentStopped'),
+            time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
+          }]);
+        }
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           const newMsgs: ChatMsg[] = [];

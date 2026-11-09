@@ -26,7 +26,9 @@ export default defineConfig({
   },
   plugins: [react(), tailwindcss()],
   server: {
-    host: '0.0.0.0',
+    // Dev server only. Loopback by default, like the API: starting `pnpm dev`
+    // should not turn a laptop into a network service.
+    host: process.env['WEB_UI_HOST'] ?? '127.0.0.1',
     port: webPort,
     proxy: {
       '/api': {

@@ -169,29 +169,6 @@ describe('AgentManager integration (real Agent)', () => {
     expect(restored.getState().tokensUsedToday).toBe(100);
   });
 
-  it('stopAllAgents emits system:pause-all event', async () => {
-    const eventBus = new EventBus();
-    const manager = createManager({ eventBus });
-    const handler = vi.fn();
-    eventBus.on('system:pause-all', handler);
-
-    await manager.createAgent({ name: 'P1', roleName: 'custom', tools: [] });
-    await manager.stopAllAgents('maintenance');
-    expect(handler).toHaveBeenCalledWith(expect.objectContaining({ reason: 'maintenance' }));
-  });
-
-  it('startAllAgents emits system:resume-all event', async () => {
-    const eventBus = new EventBus();
-    const manager = createManager({ eventBus });
-    const handler = vi.fn();
-    eventBus.on('system:resume-all', handler);
-
-    await manager.createAgent({ name: 'R1', roleName: 'custom', tools: [] });
-    await manager.stopAllAgents();
-    await manager.startAllAgents();
-    expect(handler).toHaveBeenCalled();
-  });
-
   it('buildPathPolicy includes workspace and role paths', async () => {
     const manager = createManager();
     const agent = await manager.createAgent({ name: 'Policy', roleName: 'developer', tools: [] });
