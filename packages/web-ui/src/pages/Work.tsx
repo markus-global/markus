@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
-import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.ts';
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -2241,11 +2241,20 @@ function TaskDetailPanel({
             {task.title}
             {' '}
             {(() => {
+              // blocked 有子缘由（deps/hold/workflow），必须走 taskStatusPresentation 才能
+              // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
+              // 拿来展示会把 deps 永远渲染成通用「已阻塞」（同一事实两个写者）。
+              if (task.status === 'blocked') {
+                const p = taskStatusPresentation(task.status, t, task.blockedReason);
+                return (
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${p.tone?.chip ?? 'bg-gray-500/15 text-fg-tertiary'}`}>{p.label}</span>
+                );
+              }
               const badge = taskStatusBadges[task.status];
               return badge ? (
                 <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${badge.cls}`}>{badge.label}</span>
               ) : (
-                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t, task.blockedReason)}</span>
+                <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
               );
             })()}
             {isAbnormallyBlocked && (
