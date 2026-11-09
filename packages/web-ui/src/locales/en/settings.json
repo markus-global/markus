@@ -10,6 +10,7 @@
     "storage": "Data & Storage",
     "users": "User Management",
     "remote": "Remote Access",
+    "network": "Network & Access",
     "integrations": "Integrations",
     "license": "License",
     "organization": "Organization",
@@ -298,6 +299,21 @@
     "markusConnectedHint": "Your Markus Cloud AI connection is managed through your Hub account. Visit Settings to manage your subscription and credits.",
     "goToAccount": "Go to Account",
     "connect": "Connect"
+  },
+  "accessScope": {
+    "title": "Access scope",
+    "description": "Controls whether the Markus API can be reached from outside this machine. To reach it from the internet use Remote access instead of opening the LAN.",
+    "localOnly": "This machine only",
+    "lan": "Allow LAN",
+    "current": "Listening on {{host}}:8056",
+    "localOnlyHint": "only browsers and the CLI on this computer can connect",
+    "lanHint": "other devices on the same network can connect (login still required)",
+    "envControlled": "Controlled by the MARKUS_HOST environment variable and read-only here",
+    "save": "Save",
+    "saved": "Saved",
+    "restartRequired": "Saved — restart Markus to apply",
+    "saveFailed": "Save failed",
+    "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN."
   },
   "networkProxy": {
     "title": "Network Proxy",

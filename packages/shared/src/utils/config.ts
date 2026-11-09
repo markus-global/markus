@@ -74,6 +74,13 @@ export interface MarkusConfig {
   server: {
     apiPort: number;
     webPort: number;
+    /**
+     * Interface the HTTP API binds to. `127.0.0.1` (default) keeps it local;
+     * `0.0.0.0` exposes it to the network. `MARKUS_HOST` overrides this.
+     */
+    host?: string;
+    /** Set once the user has been asked which interface to use. */
+    hostDecided?: boolean;
   };
   security?: {
     adminPassword?: string;

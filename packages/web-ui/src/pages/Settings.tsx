@@ -54,7 +54,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -68,7 +68,7 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   // { id: 'coding-tools', labelKey: 'nav.codingTools', adminOnly: true },
   { id: 'search', labelKey: 'nav.search', adminOnly: true },
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
-  { id: 'remote', labelKey: 'nav.remote', adminOnly: true },
+  { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
 ];
 
@@ -76,7 +76,7 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
-  { labelKey: 'nav.group.connections', tabs: ['integrations', 'remote'] },
+  { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
 ];
 
@@ -115,6 +115,7 @@ const SETTINGS_TAB_ICONS: Record<string, string> = {
   search: 'M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16z M21 21l-4.3-4.3',
   integrations: 'M9 17H7A5 5 0 0 1 7 7h2 M15 7h2a5 5 0 1 1 0 10h-2 M8 12h8',
   remote: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
+  network: 'M2 8.5a15 15 0 0 1 20 0 M5 12a10 10 0 0 1 14 0 M8.5 15.5a5 5 0 0 1 7 0 M12 19h.01',
   account: 'M19 21v-2a4 4 0 0 0-4-4H9a4 4 0 0 0-4 4v2 M12 7a4 4 0 1 0 0 8 4 4 0 0 0 0-8Z',
   _default: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6z',
 };
@@ -127,7 +128,7 @@ function SettingsTabIcon({ id, className }: { id: string; className?: string }) 
   );
 }
 
-const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account' };
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', remote: 'network' };
 
 /**
  * Pure hash → tab resolver. `hash` may carry a leading `#` (as `window.location.hash`
@@ -231,6 +232,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   // Network / Proxy state
   const [proxyUrl, setProxyUrl] = useState('');
   const [proxyEnabled, setProxyEnabled] = useState(true);
+  // Access scope: which interface the API binds to, and whether that was decided.
+  const [bindHostValue, setBindHostValue] = useState('127.0.0.1');
+  const [bindHostEffective, setBindHostEffective] = useState('127.0.0.1');
+  const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
+  const [bindHostNotice, setBindHostNotice] = useState('');
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -307,11 +313,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
   const loadNetworkSettings = useCallback(() => {
     fetch('/api/settings/network')
-      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string } }> : Promise.reject(r.status))
+      .then(r => r.ok ? r.json() as Promise<{ network: { proxy?: string; proxyEnabled?: boolean }; effective: { proxy: string | null; source: string }; server?: { host?: string; effectiveHost?: string; source?: string } }> : Promise.reject(r.status))
       .then(d => {
         setProxyUrl(d.network?.proxy ?? '');
         setProxyEnabled(d.network?.proxyEnabled !== false);
         setProxyEffective(d.effective);
+        setBindHostValue(d.server?.host ?? '127.0.0.1');
+        setBindHostEffective(d.server?.effectiveHost ?? '127.0.0.1');
+        setBindHostFromEnv(d.server?.source === 'env');
       })
       .catch(() => {});
   }, []);
@@ -2062,6 +2071,69 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           />
         </Section>
 
+        </>}
+
+        {resolvedTab === 'network' && <>
+        {/* ───── Access scope (bind host) ───── */}
+        <CollapsibleSection title={t('accessScope.title')} defaultOpen={false}>
+          <div className="bg-surface-elevated rounded-xl p-5 space-y-3">
+            <p className="text-xs text-fg-tertiary">{t('accessScope.description')}</p>
+            <div className="flex flex-wrap gap-2">
+              {(['127.0.0.1', '0.0.0.0'] as const).map(option => (
+                <button
+                  key={option}
+                  disabled={bindHostFromEnv}
+                  onClick={() => setBindHostValue(option)}
+                  className={`px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                    bindHostValue === option
+                      ? 'bg-brand-500/15 border-brand-500/40 text-brand-500'
+                      : 'bg-surface-secondary border-border-default text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv ? 'opacity-50 cursor-not-allowed' : ''}`}
+                >
+                  {option === '127.0.0.1' ? t('accessScope.localOnly') : t('accessScope.lan')}
+                </button>
+              ))}
+              <input
+                type="text"
+                disabled={bindHostFromEnv}
+                value={bindHostValue}
+                onChange={e => setBindHostValue(e.target.value)}
+                placeholder="192.168.1.10"
+                className="px-3 py-1.5 text-xs bg-surface-secondary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/50 focus:border-brand-500 outline-none disabled:opacity-50"
+              />
+            </div>
+            <p className="text-[11px] text-fg-muted">
+              {t('accessScope.current', { host: bindHostEffective })}
+              {bindHostEffective === '127.0.0.1' ? ` — ${t('accessScope.localOnlyHint')}` : ` — ${t('accessScope.lanHint')}`}
+            </p>
+            {bindHostFromEnv && <p className="text-[11px] text-amber-500">{t('accessScope.envControlled')}</p>}
+            <div className="flex items-center gap-3">
+              <button
+                disabled={authUser?.role !== 'owner' || bindHostFromEnv}
+                onClick={async () => {
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ host: bindHostValue }),
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const d = await res.json() as { restartRequired?: boolean };
+                    setBindHostNotice(d.restartRequired ? t('accessScope.restartRequired') : t('accessScope.saved'));
+                    loadNetworkSettings();
+                  } catch {
+                    setBindHostNotice(t('accessScope.saveFailed'));
+                  }
+                }}
+                className="px-3 py-1.5 text-xs rounded-lg bg-brand-500 text-on-brand hover:bg-brand-600 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+              >
+                {t('accessScope.save')}
+              </button>
+              {bindHostNotice && <span className="text-[11px] text-fg-secondary">{bindHostNotice}</span>}
+            </div>
+            <p className="text-[11px] text-fg-muted">{t('accessScope.remoteNote')}</p>
+          </div>
+        </CollapsibleSection>
+
         {/* ───── Network / Proxy ───── */}
         <CollapsibleSection title={t('networkProxy.title')} defaultOpen={false}>
           <div className="bg-surface-elevated rounded-xl p-5 space-y-4">
@@ -2156,6 +2228,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
           </div>
         </CollapsibleSection>
+
+        <RemoteAccessSection />
 
         </>}
 
@@ -2828,8 +2902,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </>}
 
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
-
-        {resolvedTab === 'remote' && <RemoteAccessSection />}
 
         {resolvedTab === 'integrations' && <>
           <section>

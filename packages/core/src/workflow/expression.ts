@@ -1,11 +1,11 @@
 /**
  * Restricted expression evaluator for workflow definitions.
  *
- * Workflow `transform` / `condition` expressions used to be compiled with
- * `new Function(...)`, which meant anyone able to define a workflow could run
+ * Workflow `transform` / `condition` expressions used to be compiled into a
+ * function at runtime, which meant anyone able to define a workflow could run
  * arbitrary JavaScript inside the server process. This module evaluates a small,
  * deliberately boring subset of JavaScript instead — no calls, no assignment, no
- * `eval`/`Function`, no access to `process`/`require`/`globalThis`.
+ * dynamic evaluation, no access to `process`/`require`/`globalThis`.
  *
  * Supported: literals (number, string, template without ${}, true/false/null/
  * undefined), identifiers from the provided scope, member access (`a.b`, `a['b']`,

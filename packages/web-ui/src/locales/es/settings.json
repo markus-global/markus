@@ -10,6 +10,7 @@
     "storage": "Almacenamiento de datos",
     "users": "Gestión de usuarios",
     "remote": "Acceso remoto",
+    "network": "Red y acceso",
     "integrations": "Integración",
     "license": "Licencia",
     "organization": "Organización",
@@ -298,6 +299,21 @@
     "markusConnectedHint": "Su conexión de Markus Cloud AI se gestiona a través de su cuenta de Hub. Visit Settings para administrar su suscripción y créditos.",
     "goToAccount": "Ir a la cuenta",
     "connect": "Conectar"
+  },
+  "accessScope": {
+    "title": "Alcance de acceso",
+    "description": "Controla si la API de Markus puede alcanzarse desde fuera de este equipo. Para acceder desde internet usa Acceso remoto en lugar de abrir la red local.",
+    "localOnly": "Solo este equipo",
+    "lan": "Permitir red local",
+    "current": "Escuchando en {{host}}:8056",
+    "localOnlyHint": "solo el navegador y la CLI de este equipo pueden conectarse",
+    "lanHint": "otros dispositivos de la misma red pueden conectarse (seguirá pidiendo inicio de sesión)",
+    "envControlled": "Controlado por la variable de entorno MARKUS_HOST; aquí es de solo lectura",
+    "save": "Guardar",
+    "saved": "Guardado",
+    "restartRequired": "Guardado: reinicia Markus para aplicarlo",
+    "saveFailed": "Error al guardar",
+    "remoteNote": "El túnel de acceso remoto conecta a 127.0.0.1, así que habilitar el acceso remoto no requiere abrir la red local."
   },
   "networkProxy": {
     "title": "Proxy de red",

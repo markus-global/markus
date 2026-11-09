@@ -20,6 +20,10 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
   const { t } = useTranslation(['onboarding', 'common']);
   const [step, setStep] = useState(0);
 
+  // Access scope chosen during first run; written through the network settings API
+  // (default stays loopback if the write fails, e.g. before a session exists).
+  const [accessScopeChoice, setAccessScopeChoice] = useState<'local' | 'lan'>('local');
+
   // Profile setup state
   const [profileName, setProfileName] = useState('');
   const [profileEmail, setProfileEmail] = useState('');
@@ -304,6 +308,41 @@ export function Onboarding({ onComplete, theme, onThemeChange, skipProfile, onPr
           >
             {profileSaving ? t('common:saving') : t('profile.saveProfile')}
           </button>
+        </div>
+      ),
+    },
+    // Step: Access scope — who can reach this API on the network
+    {
+      id: 'accessScope',
+      title: t('settings:accessScope.title'),
+      subtitle: t('settings:accessScope.description'),
+      content: (
+        <div className="space-y-3">
+          {([
+            { id: 'local' as const, label: t('settings:accessScope.localOnly'), desc: t('settings:accessScope.localOnlyHint'), host: '127.0.0.1' },
+            { id: 'lan' as const, label: t('settings:accessScope.lan'), desc: t('settings:accessScope.lanHint'), host: '0.0.0.0' },
+          ]).map(opt => (
+            <button
+              key={opt.id}
+              onClick={() => {
+                setAccessScopeChoice(opt.id);
+                fetch('/api/settings/network', {
+                  method: 'POST',
+                  headers: { 'Content-Type': 'application/json' },
+                  body: JSON.stringify({ host: opt.host }),
+                }).catch(() => {});
+              }}
+              className={`w-full text-left p-3 rounded-lg border transition-colors ${
+                accessScopeChoice === opt.id
+                  ? 'border-brand-500 bg-brand-500/10'
+                  : 'border-border-default bg-surface-elevated/30'
+              }`}
+            >
+              <div className="text-sm text-fg-primary">{opt.label}</div>
+              <div className="text-[11px] text-fg-tertiary mt-0.5">{opt.desc}</div>
+            </button>
+          ))}
+          <p className="text-[11px] text-fg-muted">{t('settings:accessScope.remoteNote')}</p>
         </div>
       ),
     },

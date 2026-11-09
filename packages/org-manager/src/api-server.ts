@@ -182,6 +182,8 @@ const anyOf = (...prefixes: string[]) => {
 const ROLE_RULES: RoleRule[] = [
   // ── owner ──────────────────────────────────────────────────────────────
   { path: underPrefix('/api/settings/remote'), minRole: 'owner' },
+  // Machine-level network config (bind address, outbound proxy) is owner-only.
+  { path: underPrefix('/api/settings/network'), methods: ['POST', 'PUT', 'PATCH'], minRole: 'owner' },
   { path: underPrefix('/api/settings/subscription-key'), minRole: 'owner' },
   { path: underPrefix('/api/license'), minRole: 'owner' },
   { path: anyOf('/api/settings/import', '/api/settings/export'), minRole: 'owner' },
@@ -14154,6 +14156,24 @@ EXPLANATION_END`;
       exact('/api/external-agents', 'GET'),
       exact('/api/external-agents/register', 'POST'),
       regex(/^\/api\/external-agents\/[^/]+$/, 'DELETE'),
+
+      // ── Handled in route(), previously missing from this table ───────────
+      // Without an entry here a wrong-method request falls through to 404 instead
+      // of the 405 it deserves, which made the surface look smaller than it is.
+      exact('/api/auth/status', 'GET'),
+      exact('/api/auth/init', 'POST'),
+      exact('/api/unread', 'GET'),
+      startsWith('/api/unread/', 'POST'),
+      startsWith('/api/settings/remote', 'GET', 'POST'),
+      exact('/api/settings/coding-tools', 'GET', 'POST'),
+      exact('/api/settings/coding-tools/detect', 'GET'),
+      exact('/api/settings/oauth/device-code', 'POST'),
+      startsWith('/api/models/live/', 'GET'),
+      exact('/api/models/routing-candidates', 'GET'),
+      exact('/api/models/suggested-assignments', 'GET'),
+      exact('/api/llm/provider-catalog', 'GET'),
+      exact('/api/sessions/has-any', 'GET'),
+      exact('/api/sessions/stream/status', 'POST'),
     ];
   }
 
