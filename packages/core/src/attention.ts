@@ -536,32 +536,9 @@ export class AttentionController {
       const aggregated = this.aggregateState();
       if (this.running && this.activeWorkerCount() === 0 && (aggregated === 'idle' || aggregated === 'deciding')) {
         try {
-          const cleaned = this.mailbox.cleanStaleProcessing();
-          if (cleaned > 0) {
-            log.warn('Watchdog: cleaned stale processing items from DB', {
-              agentId: this.agentId,
-              cleaned,
-            });
-          }
-          // P0 租约：回收过期租约（崩溃/超时的 worker 不永久占位），退回的项重新入队。
-          const reclaimed = this.mailbox.reclaimExpiredLeases();
-          if (reclaimed > 0) {
-            log.warn('Watchdog: reclaimed mailbox items with expired leases', {
-              agentId: this.agentId,
-              reclaimed,
-            });
-          }
-          // Also age-out stale informational/callback ghosts while idle so the
-          // queue cannot fill with items that never reach pre-triage cleanup.
-          if (this.mailbox.depth > 0) {
-            const purged = this.mailbox.purgeStaleItems();
-            if (purged > 0) {
-              log.info('Watchdog: purged stale mailbox items', {
-                agentId: this.agentId,
-                purged,
-              });
-            }
-          }
+          // Mailbox upkeep (defer release / lease reclaim / stale cleanup / ghost
+          // purge) is owned by the agent clock now — one owner for time-driven
+          // transitions. The watchdog keeps only liveness duties.
           // Self-heal lost-wakeup: idle with a non-empty queue means the loop
           // is parked without having seen the enqueue signal — nudge it.
           if (aggregated === 'idle' && this.mailbox.depth > 0) {

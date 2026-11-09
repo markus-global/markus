@@ -1493,6 +1493,35 @@ export class AgentMailbox {
   }
 
   /**
+   * Single entry for **time-driven mailbox upkeep**. Called by the agent clock
+   * on a fixed cadence, independent of queue activity — this is what releases a
+   * due deferred item on an otherwise idle agent (the attention loop only calls
+   * `resurfaceDue()` when it iterates, which it does not do while parked on an
+   * empty queue).
+   *
+   * Each step is independently guarded: a partial persistence backend or a
+   * throwing reconcile never blocks the others.
+   */
+  runMaintenance(): { resurfaced: number; reclaimed: number; cleaned: number; purged: number } {
+    const safe = (label: string, fn: () => number): number => {
+      try {
+        return fn();
+      } catch (err) {
+        log.warn('Mailbox maintenance step failed', { agentId: this.agentId, step: label, error: String(err) });
+        return 0;
+      }
+    };
+    const resurfaced = safe('resurfaceDue', () => this.resurfaceDue());
+    const reclaimed = safe('reclaimExpiredLeases', () => this.reclaimExpiredLeases());
+    const cleaned = safe('cleanStaleProcessing', () => this.cleanStaleProcessing());
+    const purged = safe('purgeStaleItems', () => this.purgeStaleItems());
+    if (resurfaced || reclaimed || cleaned || purged) {
+      log.info('Mailbox maintenance', { agentId: this.agentId, resurfaced, reclaimed, cleaned, purged });
+    }
+    return { resurfaced, reclaimed, cleaned, purged };
+  }
+
+  /**
    * Auto-drop stale informational items from the queue.
    * Called before triage to keep the queue lean — old informational items
    * (task_status_update, heartbeat, etc.) carry context that has already
