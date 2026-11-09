@@ -24,7 +24,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   MailboxPriorityLevel,
-  MAILBOX_TYPE_REGISTRY,
+  routeMailboxItem,
   HEARTBEAT_DAILY_LOG_CHARS,
   END_TURN_REPLY_SENTINEL,
   stripLegacyCompletionToken,
@@ -2314,11 +2314,10 @@ export class Agent {
 
     const ts = Date.now();
 
-    const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
     // Whether this item's turn should be closed out with the typed completion check.
     // Chat replies are exempt (see the `!== 'human_chat'` guard at the call sites),
     // and the retired text marker means nothing is appended to the prompt any more.
-    const needsTurnCompletion = !!registry?.invokesLLM;
+    const needsTurnCompletion = routeMailboxItem(item).invokesLLM;
 
     const buildHandleOpts = (defaults: HandleMessageOptions = {}): HandleMessageOptions => {
       const opts: HandleMessageOptions = { ...defaults };

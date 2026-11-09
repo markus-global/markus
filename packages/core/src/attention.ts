@@ -13,7 +13,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   MailboxPriorityLevel,
-  MAILBOX_TYPE_REGISTRY,
+  routeMailboxItem,
   MAILBOX_ITEM_MAX_RETRIES,
   END_TURN_REPLY_SENTINEL,
   MAILBOX_PROCESSING_TIMEOUT_MS,
@@ -56,8 +56,7 @@ export function detectAbnormalCompletion(
   reply: string | void,
   item: MailboxItem,
 ): string | undefined {
-  const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
-  if (!registry?.invokesLLM) return undefined;
+  if (!routeMailboxItem(item).invokesLLM) return undefined;
 
   if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
   if (reply === END_TURN_REPLY_SENTINEL) return undefined;
@@ -1715,12 +1714,9 @@ export class AttentionController {
 
     // R8: Same priority but current is background/system work → preempt
     // (R7 was removed — it was redundant with R1 which already handles human_chat preempting all non-human work)
-    const bgTypes = (Object.entries(MAILBOX_TYPE_REGISTRY) as [MailboxItemType, typeof MAILBOX_TYPE_REGISTRY[MailboxItemType]][])
-      .filter(([, d]) => d.category === 'system')
-      .map(([k]) => k);
     if (
       newItem.priority === currentItem.priority &&
-      bgTypes.includes(currentItem.sourceType)
+      routeMailboxItem(currentItem).backgroundWork
     ) {
       return 'preempt';
     }

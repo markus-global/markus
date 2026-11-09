@@ -84,17 +84,53 @@ export const ENTITY_SCOPE_ORDER: readonly MailboxEntityScope[] = [
   'task', 'requirement', 'user', 'conversation', 'channel', 'system',
 ];
 
-export interface MailboxTypeDescriptor {
+/**
+ * **展示面** —— 给人看的：文案 / 图标 / 分组。
+ *
+ * 改这里永远不会碰到运行时：并发锁、调度、幂等都在 `policy` 里。
+ * （这正是 R1 的切线：过去一个结构混住四种关注点，改 UI 文案会碰到并发规则。）
+ */
+export interface MailboxTypePresentation {
   label: string;
-  defaultPriority: MailboxPriority;
-  category: MailboxCategory;
   icon: string;
+  category: MailboxCategory;
+}
+
+/**
+ * **路由策略面** —— 给运行时看的。唯一读者是 {@link routeMailboxItem}。
+ *
+ * 别处**不得**直接读 `MAILBOX_TYPE_REGISTRY[t].policy.*`：所有消费者一律走
+ * `routeMailboxItem(item)`，这样「一个 item 怎么被路由」永远只有一个答案。
+ */
+export interface MailboxTypePolicy {
+  /** 调度：默认优先级（数字越小越先）。 */
+  priority: MailboxPriority;
+  /** 回合语义：处理该类型是否欠一个 LLM 回合。 */
   invokesLLM: boolean;
   /**
-   * 该类型参与实体亲和的维度，**按优先级降序**，最后一项必须是 `'system'`。
-   * 运行时取第一个能解析出值的维度作为实体锁键（见 `resolveEntityKey`）。
+   * 并发亲和：参与实体锁的维度（优先级降序，最后一项必须是 `'system'`）。
+   * 运行时每个能解析出值的维度都会上锁（见 {@link resolveEntityKeys}）。
    */
-  entityScopes: readonly MailboxEntityScope[];
+  affinity: readonly MailboxEntityScope[];
+  /** 幂等：按 `(type, taskId, round)` 至多一条（见 {@link routeMailboxItem}）。 */
+  dedupePerRound: boolean;
+  /** 陈旧可丢：triage 时按年龄直接丢（list 由 limits 的 TRIAGE_STALE_DROP_TYPES 派生）。 */
+  triageStaleDrop: boolean;
+  /**
+   * 后台工作：抢占判定里「当前在处理的是后台/系统工作」的判据。
+   * **不得**再用展示字段 `category === 'system'` 表达这件运行时事实。
+   */
+  backgroundWork: boolean;
+  /**
+   * 权威态：命中即不得 defer / drop / merge / 批处理。为谓词时用于
+   * 「依赖 payload 才成立」的类型。`extra.triggerExecution` 的判定与类型无关，
+   * 由 {@link routeMailboxItem} 统一施加，不在这里重复。
+   */
+  strictState: boolean | ((item: MailboxItemLite) => boolean);
+}
+
+export interface MailboxTypeDescriptor extends MailboxTypePresentation {
+  policy: MailboxTypePolicy;
 }
 
 // Two fields were removed here on 2026-10-25 — not renamed, deleted:
@@ -110,23 +146,100 @@ export interface MailboxTypeDescriptor {
 //   when it falls through to handleMessage — the outcome is contextual. Nothing
 //   read the field, so it recorded a rule the runtime never followed.
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
-  //                                                                                                        ── entity affinity scopes (precedence order; MUST end with 'system')
-  system_event:         { label: 'System Event',         defaultPriority: 1, category: 'system',       icon: '⚙',  invokesLLM: true,  entityScopes: ['system'] },
-  human_chat:           { label: 'Chat',                 defaultPriority: 0, category: 'interaction',   icon: '💬', invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
-  task_comment:         { label: 'Task Comment',         defaultPriority: 2, category: 'task',          icon: '💬', invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
-  mention:              { label: 'Mention',              defaultPriority: 1, category: 'interaction',   icon: '@',  invokesLLM: true,  entityScopes: ['task', 'requirement', 'user', 'conversation', 'system'] },
-  session_reply:        { label: 'Session Reply',        defaultPriority: 1, category: 'task',          icon: '↩',  invokesLLM: true,  entityScopes: ['task', 'requirement', 'conversation', 'system'] },
-  task_status_update:   { label: 'Task Status',          defaultPriority: 1, category: 'task',          icon: '📋', invokesLLM: false, entityScopes: ['task', 'system'] },
-  a2a_message:          { label: 'Agent Message',        defaultPriority: 2, category: 'interaction',   icon: '🔗', invokesLLM: true,  entityScopes: ['task', 'requirement', 'channel', 'system'] },
-  review_request:       { label: 'Review Request',       defaultPriority: 1, category: 'task',          icon: '👀', invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
-  requirement_comment:  { label: 'Requirement Comment',  defaultPriority: 2, category: 'task',          icon: '💬', invokesLLM: false, entityScopes: ['task', 'requirement', 'system'] },
-  requirement_update:   { label: 'Requirement Update',   defaultPriority: 1, category: 'notification',  icon: '📝', invokesLLM: false, entityScopes: ['requirement', 'system'] },
-  daily_report:         { label: 'Daily Report',         defaultPriority: 2, category: 'system',        icon: '📊', invokesLLM: true,  entityScopes: ['system'] },
-  heartbeat:            { label: 'Heartbeat',            defaultPriority: 3, category: 'system',        icon: '♡',  invokesLLM: true,  entityScopes: ['system'] },
-  memory_consolidation: { label: 'Memory Consolidation', defaultPriority: 4, category: 'system',        icon: '🧠', invokesLLM: true,  entityScopes: ['system'] },
-  workflow_update:      { label: 'Workflow Update',      defaultPriority: 2, category: 'task',          icon: '🔄', invokesLLM: true,  entityScopes: ['task', 'requirement', 'system'] },
-  callback_result:      { label: 'Callback Result',      defaultPriority: 1, category: 'system',        icon: '↩',  invokesLLM: true,  entityScopes: ['conversation', 'system'] },
+  //                                                                                     ── policy.affinity (precedence order; MUST end with 'system')
+  system_event:         { label: 'System Event',         category: 'system',       icon: '⚙',  policy: { priority: 1, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false } },
+  human_chat:           { label: 'Chat',                 category: 'interaction',  icon: '💬', policy: { priority: 0, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  task_comment:         { label: 'Task Comment',         category: 'task',         icon: '💬', policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  mention:              { label: 'Mention',              category: 'interaction',  icon: '@',  policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  session_reply:        { label: 'Session Reply',        category: 'task',         icon: '↩',  policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  task_status_update:   { label: 'Task Status',          category: 'task',         icon: '📋', policy: { priority: 1, invokesLLM: false, affinity: ['task', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: false, strictState: false } },
+  a2a_message:          { label: 'Agent Message',        category: 'interaction',  icon: '🔗', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  review_request:       { label: 'Review Request',       category: 'task',         icon: '👀', policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: true,  triageStaleDrop: false, backgroundWork: false, strictState: true } },
+  requirement_comment:  { label: 'Requirement Comment',  category: 'task',         icon: '💬', policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
+  heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
+  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
+  workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false } },
+  callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false } },
 };
+
+// ─── The single routing decision point ───────────────────────────────────────
+//
+// Every runtime question of the form "how is this item routed?" — priority,
+// whether it owes an LLM turn, which entities it locks, whether its state is
+// authoritative, whether it may be dropped when stale, what its idempotency key
+// is — is answered HERE and nowhere else. Consumers call `routeMailboxItem()`
+// instead of reading `MAILBOX_TYPE_REGISTRY[...].policy.*` or writing their own
+// `sourceType === '…'` chains.
+//
+// Pure: no IO, no clock, no randomness. Same input → same output (cacheable, and
+// lockable by table-driven golden tests).
+
+export type MailboxItemLite = Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>;
+
+export interface MailboxRoute {
+  type: MailboxItemType;
+  priority: MailboxPriority;
+  invokesLLM: boolean;
+  affinity: readonly MailboxEntityScope[];
+  strictState: boolean;
+  triageStaleDrop: boolean;
+  /** 抢占判定用：该项是否属于后台/系统工作。 */
+  backgroundWork: boolean;
+  /** `undefined` = the item carries no idempotency constraint. */
+  dedupeKey?: string;
+}
+
+/** Type-independent authority flag: `triggerExecution` means "run real work". */
+function hasAuthorityFlag(item: MailboxItemLite): boolean {
+  const extra = item.payload?.extra ?? {};
+  if (extra.triggerExecution) return true;
+  const t = item.sourceType;
+  if ((t === 'requirement_update' || t === 'workflow_update') && extra.actionRequired) {
+    return true;
+  }
+  return false;
+}
+
+/** `(sourceType, taskId, round)` — the only writer of the idempotency key shape. */
+function buildRoundDedupKey(item: MailboxItemLite): string | undefined {
+  const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
+  const roundRaw = item.payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.round;
+  const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
+  if (!taskId || round === undefined) return undefined;
+  return `${item.sourceType}:${taskId}:${round}`;
+}
+
+/** Conservative fallback for an unregistered type: run, don't drop, don't throw. */
+const UNKNOWN_ROUTE: Omit<MailboxRoute, 'type'> = {
+  priority: 2,
+  invokesLLM: true,
+  affinity: ['system'],
+  strictState: false,
+  triageStaleDrop: false,
+  backgroundWork: false,
+  dedupeKey: undefined,
+};
+
+export function routeMailboxItem(item: MailboxItemLite): MailboxRoute {
+  const descriptor = MAILBOX_TYPE_REGISTRY[item.sourceType];
+  if (!descriptor) return { type: item.sourceType, ...UNKNOWN_ROUTE };
+  const p = descriptor.policy;
+  const strictState = hasAuthorityFlag(item)
+    || (typeof p.strictState === 'function' ? p.strictState(item) : p.strictState);
+  const dedupeKey = p.dedupePerRound ? buildRoundDedupKey(item) : undefined;
+  return {
+    type: item.sourceType,
+    priority: p.priority,
+    invokesLLM: p.invokesLLM,
+    affinity: p.affinity,
+    strictState,
+    triageStaleDrop: p.triageStaleDrop,
+    backgroundWork: p.backgroundWork,
+    dedupeKey,
+  };
+}
 
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
@@ -160,7 +273,7 @@ export function resolveEntityKeys(
   item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
   agentId: string,
 ): string[] {
-  const scopes = MAILBOX_TYPE_REGISTRY[item.sourceType]?.entityScopes ?? ENTITY_SCOPE_ORDER;
+  const scopes = routeMailboxItem(item).affinity;
   const keys: string[] = [];
   for (const scope of scopes) {
     if (scope === 'system') break; // fallback handled below
@@ -264,11 +377,7 @@ export function isStrictStateItem(item: {
   sourceType: MailboxItemType;
   payload: MailboxPayload;
 }): boolean {
-  if (item.payload.extra?.triggerExecution) return true;
-  if (item.sourceType === 'review_request') return true;
-  if (item.sourceType === 'requirement_update' && item.payload.extra?.actionRequired) return true;
-  if (item.sourceType === 'workflow_update' && item.payload.extra?.actionRequired) return true;
-  return false;
+  return routeMailboxItem(item).strictState;
 }
 
 /** 是否为「正式任务执行」item（triggerExecution）。是 isStrictStateItem 的特例。 */
