@@ -196,9 +196,9 @@ describe('blocked 的原因：等待依赖 ≠ 已挂起', () => {
     });
   }
 
-  it('zh-CN 用词：deps = 等待前置（中性），hold = 已挂起（警示），都不叫「故障」', () => {
+  it('zh-CN 用词：deps = 等待依赖（中性），hold = 已挂起（警示），都不叫「故障」', () => {
     const t = translatorFor('zh-CN');
-    expect(taskStatusLabel('blocked', t, 'deps')).toBe('等待前置');
+    expect(taskStatusLabel('blocked', t, 'deps')).toBe('等待依赖');
     expect(taskStatusLabel('blocked', t, 'hold')).toBe('已挂起');
   });
 

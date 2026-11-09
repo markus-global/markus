@@ -95,7 +95,7 @@
     "pending": "Pendiente",
     "inProgress": "En curso",
     "blocked": "Bloqueado",
-    "waitingDeps": "Esperando prerrequisitos",
+    "waitingDeps": "Esperando dependencias",
     "onHold": "Suspendida",
     "workflowPaused": "Flujo en pausa",
     "review": "En revisión",

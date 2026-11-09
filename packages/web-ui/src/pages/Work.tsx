@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
 import { taskStatusLabel } from '../lib/stateVocabulary.ts';
+import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
@@ -2000,7 +2001,7 @@ function TaskDetailPanel({
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history' | 'reviews'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
@@ -2011,7 +2012,7 @@ function TaskDetailPanel({
       setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
     } catch { /* ok */ }
   }, [task.id]);
-  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history') => {
+  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history' | 'reviews') => {
     setActiveTab(tab);
     // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
     if (tab === 'deliverables') void loadUnifiedDeliverables();
@@ -2019,8 +2020,18 @@ function TaskDetailPanel({
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, [loadUnifiedDeliverables]);
-  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }, { id: 'reviews' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
+
+  // 评审会话从**权威状态历史**派生（不新增后端/表）：一次「→ review」即一条。
+  const [reviewSessions, setReviewSessions] = useState<ReviewSession[]>([]);
+  useEffect(() => {
+    let live = true;
+    api.tasks.getHistory(task.id)
+      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId })); })
+      .catch(() => { if (live) setReviewSessions([]); });
+    return () => { live = false; };
+  }, [task.id, task.status, task.reviewerId]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -2272,6 +2283,12 @@ function TaskDetailPanel({
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {(() => { const c = unifiedDeliverables.filter(d => typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
+          {(reviewSessions.length > 0 || task.status === 'review') && (
+            <button onClick={() => switchTab('reviews')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'reviews' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+              {t('work:task.reviewsTab')}{reviewSessions.length > 0 ? ` (${reviewSessions.length})` : ''}
+              {hasLiveReview(reviewSessions) && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />}
+            </button>
+          )}
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
           </button>
@@ -2643,6 +2660,23 @@ function TaskDetailPanel({
             <StatusHistoryTimeline entityType="task" entityId={task.id} />
           </div>
 
+          <div className={activeTab === 'reviews' ? 'min-w-0 min-h-full' : 'hidden'}>
+            {reviewSessions.length === 0 ? (
+              <div className="px-6 py-4 text-xs text-fg-tertiary italic">{task.status === 'review' ? t('work:task.reviewsEmptyPending') : t('work:task.reviewsEmpty')}</div>
+            ) : (
+              <div className="px-6 pt-3 pb-1 space-y-1.5">
+                {reviewSessions.map(s => (
+                  <div key={s.id} className="flex items-center gap-2 text-[11px] text-fg-secondary">
+                    <span className={`w-1.5 h-1.5 rounded-full ${s.status === 'reviewing' ? 'bg-purple-400 animate-pulse' : 'bg-green-400'}`} />
+                    <span className="font-medium">{s.reviewerName}</span>
+                    <span className="text-fg-tertiary">{s.status === 'reviewing' ? t('work:task.reviewsTab') : (s.completedAt ? new Date(s.completedAt).toLocaleString() : '')}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+            <TaskExecutionLogs task={task} isRunning={task.status === 'review'} authUser={authUser} agents={agents} />
+          </div>
+
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
               {(() => {
                 const validDeliverables = unifiedDeliverables.filter(
@@ -2793,6 +2827,16 @@ function TaskDetailPanel({
                 )}
               </div>
             )}
+          </div>
+        )}
+
+        {task.status === 'review' && activeReviewSession(reviewSessions) && (
+          <div className="mx-6 mt-3 flex items-start gap-2.5 rounded-lg border border-purple-500/30 bg-purple-500/8 px-3 py-2">
+            <span className="mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400 animate-pulse" />
+            <div className="min-w-0 flex-1 text-xs text-fg-primary">
+              {t('work:task.reviewInProgressBy', { agent: activeReviewSession(reviewSessions)!.reviewerName })}
+            </div>
+            <button onClick={() => switchTab('reviews')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
           </div>
         )}
 

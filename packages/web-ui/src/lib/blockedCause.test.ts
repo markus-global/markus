@@ -4,7 +4,7 @@ import { needsHumanDecision } from './blockedReason.ts';
 
 describe('blocked cause — user-visible distinction', () => {
   it('maps each blocked reason to a distinct, user-facing label key', () => {
-    expect(BLOCKED_REASON_KEY[blockedReasonOf('deps')]).toBe('waitingDeps');   // 等待前置
+    expect(BLOCKED_REASON_KEY[blockedReasonOf('deps')]).toBe('waitingDeps');   // 等待依赖
     expect(BLOCKED_REASON_KEY[blockedReasonOf('hold')]).toBe('onHold');        // 已挂起
     expect(BLOCKED_REASON_KEY[blockedReasonOf('workflow')]).toBe('workflowPaused');
   });
