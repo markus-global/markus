@@ -142,12 +142,18 @@ const INVARIANT_RULES = [
       },
       {
         file: 'packages/shared/src/types/mailbox.ts',
-        label: 'isStrictStateItem() 把 review_request 判为 strict-state',
+        label: 'routeMailboxItem 把 review_request 判为 strict-state（registry 表）',
         hint: 'shared strict-state 语义与 core 受保护集合不一致 → 停机恢复会误 drop 未完成的评审请求',
-        detect: t => /isStrictStateItem[\s\S]{0,900}?['"]review_request['"]/.test(t),
+        // 2026-11-10: 这条原先直接 grep `isStrictStateItem()` 函数体里的字面量
+        // 'review_request'。cut1 把该函数改成委托 `routeMailboxItem(item).strictState`
+        // （一个判别位、一个执行点）之后，函数体里就不再有字面量了 —— 守卫随即红在
+        // 「实现形状变了」而不是「不变量破了」。检测目标因此改指向**新的单一事实源**：
+        // 类型注册表里 review_request 那一行。仍然是行为等价的断言（strictState 真值
+        // 来自这张表），且 bad 夹具证明它依旧会咬人。
+        detect: t => /review_request:\s*\{[^\n]*strictState:\s*true/.test(t),
         fixtures: {
-          ok: "export function isStrictStateItem(item) { const strict = new Set(['review_request', 'task_execution']); return strict.has(item.sourceType); }",
-          bad: 'export function isStrictStateItem(item) { return item.sourceType === "task_execution"; }',
+          ok: "  review_request:       { label: 'Review Request', category: 'task', icon: '👀', policy: { priority: 1, invokesLLM: true, affinity: ['task'], dedupePerRound: true, triageStaleDrop: false, backgroundWork: false, strictState: true } },",
+          bad: "  review_request:       { label: 'Review Request', category: 'task', icon: '👀', policy: { priority: 1, invokesLLM: true, affinity: ['task'], dedupePerRound: true, triageStaleDrop: false, backgroundWork: false, strictState: false } },",
         },
       },
     ],
