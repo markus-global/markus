@@ -69,6 +69,12 @@ export interface AttentionItem {
   isNew: boolean;
   /** 一行辅助信息：来自哪个 agent / 谁提的 */
   meta?: string;
+  /**
+   * 这一行代表的**未读通知**（可能多于一。同一实体的通知会并进更精确的那一行）。
+   * 点击时由 `markNotificationThreadRead` 逐个标已读 —— 去重后若不再标已读，
+   * 徽标会继续把它们算进数字，出现「数字 5、列表 4 行」。
+   */
+  notices?: NotificationInfo[];
 }
 
 /** 同一刻的排序权重：要你决定的排在做之前。提问阻塞的是 Agent 的整个回合，所以排最前。 */
@@ -98,6 +104,17 @@ function iso(value: string | undefined | null, fallback: string): string {
 function isNewSince(waitingSince: string, lastSeenAt: string | null): boolean {
   if (!lastSeenAt) return false;
   return waitingSince > lastSeenAt;
+}
+
+/** 一个落点指向的实体键（只认 Work 页的具体实体；聊天类返回空）。 */
+function entityKeysOf(target: AttentionTarget): string[] {
+  if (target.page !== 'WORK') return [];
+  const keys: string[] = [];
+  const task = target.params.openTask;
+  const req = target.params.openRequirement;
+  if (task) keys.push(`task:${task}`);
+  if (req) keys.push(`requirement:${req}`);
+  return keys;
 }
 
 export interface AttentionInput {
@@ -228,6 +245,19 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
     }
   }
 
+  /**
+   * 实体键 → 已有行：**同一实体只出一行**。
+   *
+   * 实例（Owner 2026-11-10 截图）：reviewer 是人时，同一张待审卡既有任务行（task_review）、
+   * 又有 `task_review` 通知行（unread_message），两条内容重复。任务行口径更精确
+   * （`statusChangedAt` vs 通知 `createdAt`），保留它，把通知并到它的 `notices` 上，
+   * 点击时一起标已读。
+   */
+  const byEntity = new Map<string, AttentionItem>();
+  for (const item of items) {
+    for (const k of entityKeysOf(item.target)) if (!byEntity.has(k)) byEntity.set(k, item);
+  }
+
   if (includeUnread) {
     for (const n of notifications) {
       if (n.read) continue;
@@ -251,7 +281,14 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
         else if (agentId) params.preferMain = '1';
         target = { page: 'TEAM', params };
       }
-      items.push({
+      // 同一实体已经有更精确的一行 → 并进去，不重复出队。
+      const keys = entityKeysOf(target);
+      const covered = keys.map(k => byEntity.get(k)).find((x): x is AttentionItem => Boolean(x));
+      if (covered) {
+        covered.notices = [...(covered.notices ?? []), n];
+        continue;
+      }
+      const item: AttentionItem = {
         id: `notice:${n.id}`,
         kind: 'unread_message',
         // 文案：带 `metadata.i18n` 的通知按当前语言渲染（`notifyText.notifTitle`），
@@ -263,7 +300,10 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
         target,
         // 未读消息的「新」由服务端 read 标记定义，不看本地时间戳。
         isNew: true,
-      });
+        notices: [n],
+      };
+      items.push(item);
+      for (const k of keys) byEntity.set(k, item);
     }
   }
 
