@@ -23,6 +23,7 @@
  */
 import type { ApprovalInfo, NotificationInfo, RequirementInfo, TaskInfo } from '../api.ts';
 import { blockedReasonOf } from './blockedReason.ts';
+import { notificationTarget } from './notifyNavigate.ts';
 
 export type AttentionKind =
   | 'agent_question'
@@ -110,6 +111,8 @@ export interface AttentionInput {
   /** 依赖查找，用于旧行 blockedReason 的回退推断 */
   taskById?: (id: string) => TaskInfo | undefined;
   lastSeenAt?: string | null;
+  /** 未读通知的标题渲染器（注入 `notifyText.notifTitle`）——保持本函数纯、可测。 */
+  notifyTitle?: (n: NotificationInfo) => string;
   /** 未读消息是否进队列（Owner 2026-11-08：放进来，排在审批/验收之后） */
   includeUnread?: boolean;
 }
@@ -123,7 +126,7 @@ export interface AttentionInput {
 export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
   const {
     tasks, requirements, approvals, notifications,
-    taskById, lastSeenAt = null, includeUnread = true,
+    taskById, lastSeenAt = null, includeUnread = true, notifyTitle,
   } = input;
   const nowIso = new Date(0).toISOString(); // 仅作缺值兜底，不引入时序噪声
   const items: AttentionItem[] = [];
@@ -230,20 +233,34 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
       if (n.read) continue;
       const since = iso(n.createdAt, nowIso);
       const meta = (n.metadata ?? {}) as Record<string, unknown>;
-      const params: Record<string, string> = {};
-      const agentId = typeof meta['agentId'] === 'string' ? meta['agentId'] : undefined;
-      const sessionId = typeof meta['sessionId'] === 'string' ? meta['sessionId'] : undefined;
-      if (agentId) params.agentId = agentId;
-      if (sessionId) params.sessionId = sessionId;
-      else if (agentId) params.preferMain = '1';
+      // 落点交给 `notifyNavigate.notificationTarget`（唯一实现）。
+      // 旧代码在这里写死 `page: 'TEAM'`，于是带 taskId / requirementId 的
+      // 「任务已完成 / 任务待审核 / 需求已批准」一律被送去团队聊天 ——
+      // 铃铛那边早就分流到 Work 页了，同一事实两个写者。
+      const resolved = notificationTarget(n);
+      let target: AttentionTarget;
+      if (resolved) {
+        target = resolved;
+      } else {
+        // 需上下文才能定的类型（审批实体反解）→ 退回发送者会话
+        const params: Record<string, string> = {};
+        const agentId = typeof meta['agentId'] === 'string' ? meta['agentId'] : undefined;
+        const sessionId = typeof meta['sessionId'] === 'string' ? meta['sessionId'] : undefined;
+        if (agentId) params.agentId = agentId;
+        if (sessionId) params.sessionId = sessionId;
+        else if (agentId) params.preferMain = '1';
+        target = { page: 'TEAM', params };
+      }
       items.push({
         id: `notice:${n.id}`,
         kind: 'unread_message',
-        title: n.title,
+        // 文案：带 `metadata.i18n` 的通知按当前语言渲染（`notifyText.notifTitle`），
+        // 旧行没有该字段才回落原文。此前直接取 `n.title`，把后端英文兜底当了终稿。
+        title: notifyTitle ? notifyTitle(n) : n.title,
         priority: n.priority ?? 'none',
         waitingSince: since,
         waitingBasis: 'created',
-        target: { page: 'TEAM', params },
+        target,
         // 未读消息的「新」由服务端 read 标记定义，不看本地时间戳。
         isNew: true,
       });
