@@ -17,7 +17,7 @@
  */
 import type { TaskInfo } from '../api.ts';
 
-export type BlockedReasonValue = 'deps' | 'hold';
+export type BlockedReasonValue = 'deps' | 'hold' | 'workflow';
 
 type BlockedShape = Pick<TaskInfo, 'blockedReason' | 'blockedBy'>;
 
@@ -32,7 +32,9 @@ export function blockedReasonOf(
   lookupDep?: (id: string) => { status: string } | undefined,
 ): BlockedReasonValue {
   // 1) 服务端记下的缘由是事实，直接用它。
-  if (task.blockedReason === 'deps' || task.blockedReason === 'hold') return task.blockedReason;
+  if (task.blockedReason === 'deps' || task.blockedReason === 'hold' || task.blockedReason === 'workflow') {
+    return task.blockedReason;
+  }
 
   // 2) 旧数据：沿用它当年的推断口径 ——
   //    没有依赖却说 blocked，或者依赖全都完成了却仍 blocked，都意味着「引擎本该恢复却没恢复」，

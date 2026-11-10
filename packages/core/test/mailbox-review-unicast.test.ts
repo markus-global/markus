@@ -251,7 +251,7 @@ describe('P2 · 被丢弃的重复投递（items 唯一键 / 入队幂等键拦�
     const resolve = vi.fn();
     const reject = vi.fn();
     const dup = mb.enqueue('review_request', REVIEW('tsk_E', 1) as never, {
-      metadata: { responsePromise: { resolve, reject } } as never,
+      runtime: { responsePromise: { resolve, reject } } as never,
     });
 
     expect(dup.status).toBe('dropped');

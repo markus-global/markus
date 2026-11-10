@@ -3,16 +3,17 @@ import {
   generateId,
   MAILBOX_QUEUED_TTL_MS,
   TRIAGE_STALE_INFO_TTL_MS,
-  TRIAGE_STALE_DROP_TYPES,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPayload,
   type MailboxItemMetadata,
+  type MailboxItemRuntime,
   type MailboxItemStatus,
   type MailboxPriority,
   MAILBOX_TYPE_REGISTRY,
   resolveEntityKeys,
   isStrictStateItem,
+  routeMailboxItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
@@ -32,7 +33,7 @@ export class MailboxCancelledError extends Error {
 
 /** Derived from the centralised MAILBOX_TYPE_REGISTRY in @markus/shared. */
 const DEFAULT_PRIORITY: Record<MailboxItemType, MailboxPriority> = Object.fromEntries(
-  Object.entries(MAILBOX_TYPE_REGISTRY).map(([k, v]) => [k, v.defaultPriority]),
+  Object.entries(MAILBOX_TYPE_REGISTRY).map(([k, v]) => [k, v.policy.priority]),
 ) as Record<MailboxItemType, MailboxPriority>;
 
 /**
@@ -47,16 +48,9 @@ export const MAILBOX_LEASE_TTL_MS = 15 * 60_000;
 /** 续租间隔 = TTL 的 1/3（留两次失败重试余量）。 */
 export const MAILBOX_LEASE_RENEW_INTERVAL_MS = Math.floor(MAILBOX_LEASE_TTL_MS / 3);
 
-/**
- * 「每 (task, round) 至多一条」的类型集合（P0 幂等键作用域）。
- *
- * 只对**语义上确实至多一次**的类型生效，且必须同时具备 `taskId` 与 `round`
- * —— 否则不加约束。这样既拿到跨进程去重，又不会误伤「同一任务同一轮可有多条」
- * 的类型（如 task_comment：同轮可发表多条评论），守住「不改产品语义」的边界。
- */
-const AT_MOST_ONCE_PER_ROUND_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType>([
-  'review_request',
-]);
+// 「每 (task, round) 至多一条」不再是这里的私有集合：它已下沉到
+// MAILBOX_TYPE_REGISTRY[type].policy.dedupePerRound，由 routeMailboxItem() 统一裁决
+// （唯一决策点）。见 @markus/shared `routeMailboxItem`。
 
 /**
  * 单播唤醒类型（P1 · 根因 #3）：这类 item 语义上「一次事件只需一个 worker 处理」，
@@ -106,17 +100,18 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
 export function mailboxDedupKey(
   item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
 ): string | undefined {
-  if (!AT_MOST_ONCE_PER_ROUND_TYPES.has(item.sourceType)) return undefined;
-  const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-  const roundRaw = item.payload.extra?.round ?? (item.metadata as Record<string, unknown> | undefined)?.round;
-  const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
-  if (!taskId || round === undefined) return undefined;
-  return `${item.sourceType}:${taskId}:${round}`;
+  return routeMailboxItem(item).dedupeKey;
 }
 
 export interface EnqueueOptions {
   priority?: MailboxPriority;
   metadata?: MailboxItemMetadata;
+  /**
+   * In-process runtime callbacks (never persisted — see `MailboxItemRuntime`).
+   * Persistence serializes only `payload` + `metadata`, so callbacks here cannot
+   * reach the database.
+   */
+  runtime?: MailboxItemRuntime;
   /**
    * P1.x (a)(R2)：调用方明确声明「我正在交还这一条既有行」——停停机重投 / 崩溃恢复时，
    * 该 item 的持久行正是「本实例刚取走、未处理完就停机」的那一条。
@@ -330,14 +325,13 @@ export class AgentMailbox {
     let expired = 0;
     const now = Date.now();
     const queuedItems = this.persistence?.loadQueued?.(this.agentId) ?? [];
-    const staleTypes = new Set(TRIAGE_STALE_DROP_TYPES);
     for (const item of queuedItems) {
       if (this.queue.some(q => q.id === item.id)) continue;
 
       const age = now - new Date(item.queuedAt).getTime();
       // Hard TTL for everything; informational/callback ghosts expire sooner so a
       // long-running agent does not keep replaying stale background completions.
-      const ttl = staleTypes.has(item.sourceType) ? TRIAGE_STALE_INFO_TTL_MS : MAILBOX_QUEUED_TTL_MS;
+      const ttl = routeMailboxItem(item).triageStaleDrop ? TRIAGE_STALE_INFO_TTL_MS : MAILBOX_QUEUED_TTL_MS;
       if (age > ttl) {
         this.persistence?.updateStatus(item.id, 'dropped');
         expired++;
@@ -673,7 +667,7 @@ export class AgentMailbox {
         // 实测路径：HB 处理完 resolve 后、complete() 清 _processingHeartbeatId 前的
         // 窗口内再入队 HB → 被折叠 → 原实现让其 promise 悬挂 → 测试 10s 超时）。
         const foldedPromise = pendingHeartbeat.id === this._processingHeartbeatId
-          ? options?.metadata?.responsePromise
+          ? options?.runtime?.responsePromise
           : undefined;
         if (foldedPromise) {
           try { foldedPromise.resolve('[heartbeat-collapsed]'); } catch { /* caller gone */ }
@@ -695,6 +689,7 @@ export class AgentMailbox {
       payload,
       metadata: options?.metadata,
       queuedAt: new Date().toISOString(),
+      runtime: options?.runtime,
     };
 
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）
@@ -823,7 +818,7 @@ export class AgentMailbox {
    * 实体亲和键**集合**：一个 item 可同时属于多个实体维度（如 human_chat 既是
    * `user:{senderId}` 又是 `conv:{sessionId}`），**全部**需要锁定。
    *
-   * 作用域映射是**声明式**的 —— 由 `MAILBOX_TYPE_REGISTRY[type].entityScopes`
+   * 作用域映射是**声明式**的 —— 由 `MAILBOX_TYPE_REGISTRY[type].policy.affinity`
    * 定义（见 @markus/shared `resolveEntityKeys`），而不是在这里硬编码 if 链，
    * 因此新增 mailbox 类型不会静默绕过并发保护。
    *
@@ -1415,7 +1410,7 @@ export class AgentMailbox {
     // 投递方可能在 await responsePromise（如 notifyReviewer 的 .then）：
     // 重复投递既然被抑制，就必须显式了结该 Promise，否则调用方永久挂起
     // （其内存态 activeReviews 会残留 → 后续轮次的评审通知被误抑制）。
-    const pending = item.metadata?.responsePromise;
+    const pending = item.runtime?.responsePromise;
     if (pending) {
       try { pending.resolve('[duplicate-delivery-suppressed]'); } catch { /* caller gone */ }
     }
@@ -1506,6 +1501,35 @@ export class AgentMailbox {
   }
 
   /**
+   * Single entry for **time-driven mailbox upkeep**. Called by the agent clock
+   * on a fixed cadence, independent of queue activity — this is what releases a
+   * due deferred item on an otherwise idle agent (the attention loop only calls
+   * `resurfaceDue()` when it iterates, which it does not do while parked on an
+   * empty queue).
+   *
+   * Each step is independently guarded: a partial persistence backend or a
+   * throwing reconcile never blocks the others.
+   */
+  runMaintenance(): { resurfaced: number; reclaimed: number; cleaned: number; purged: number } {
+    const safe = (label: string, fn: () => number): number => {
+      try {
+        return fn();
+      } catch (err) {
+        log.warn('Mailbox maintenance step failed', { agentId: this.agentId, step: label, error: String(err) });
+        return 0;
+      }
+    };
+    const resurfaced = safe('resurfaceDue', () => this.resurfaceDue());
+    const reclaimed = safe('reclaimExpiredLeases', () => this.reclaimExpiredLeases());
+    const cleaned = safe('cleanStaleProcessing', () => this.cleanStaleProcessing());
+    const purged = safe('purgeStaleItems', () => this.purgeStaleItems());
+    if (resurfaced || reclaimed || cleaned || purged) {
+      log.info('Mailbox maintenance', { agentId: this.agentId, resurfaced, reclaimed, cleaned, purged });
+    }
+    return { resurfaced, reclaimed, cleaned, purged };
+  }
+
+  /**
    * Auto-drop stale informational items from the queue.
    * Called before triage to keep the queue lean — old informational items
    * (task_status_update, heartbeat, etc.) carry context that has already
@@ -1513,14 +1537,13 @@ export class AgentMailbox {
    */
   purgeStaleItems(): number {
     const now = Date.now();
-    const staleTypes = new Set(TRIAGE_STALE_DROP_TYPES);
     const toRemove: number[] = [];
 
     for (let i = this.queue.length - 1; i >= 0; i--) {
       const item = this.queue[i];
       if (item.status !== 'queued') continue;
       // Only drop informational types, never human messages / A2A / execution triggers
-      if (!staleTypes.has(item.sourceType)) continue;
+      if (!routeMailboxItem(item).triageStaleDrop) continue;
       // …and even within the stale types, anything the agent still owes must survive
       // age expiry — otherwise a real message vanishes with no trace.
       if (this.isNeverPurgeable(item)) {
@@ -1536,11 +1559,13 @@ export class AgentMailbox {
       }
     }
 
+    const droppedTypes = new Set<string>();
     for (const idx of toRemove) {
       const [item] = this.queue.splice(idx, 1);
       item.status = 'dropped';
       // The persisted row is retained (status flipped, never deleted), so this is an
       // *archive* rather than a destructive drop — but it must still be reportable.
+      droppedTypes.add(item.sourceType);
       this.persistence?.updateStatus(item.id, 'dropped');
     }
 
@@ -1548,7 +1573,7 @@ export class AgentMailbox {
       log.info('Stale purge archived informational items', {
         agentId: this.agentId,
         count: toRemove.length,
-        types: [...staleTypes].join(','),
+        types: [...droppedTypes].join(','),
       });
     }
     return toRemove.length;

@@ -12,6 +12,8 @@ import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
 import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
 import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
+import { notifTitle } from '../lib/notifyText.ts';
+import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
 import { TONE, taskTone, type Tone } from '../lib/tone.ts';
 import { subscribeHistoryModal } from '../lib/historyModal.ts';
@@ -542,7 +544,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     notifications: unreadNotices,
     taskById: id => allTasksMap.get(id),
     lastSeenAt: attentionLastSeen,
-  }), [allTasksFlat, allRequirements, pendingApprovals, unreadNotices, allTasksMap, attentionLastSeen]);
+    // 标题的本地化也只走一处：
+    notifyTitle: n => notifTitle(n, t),
+  }), [allTasksFlat, allRequirements, pendingApprovals, unreadNotices, allTasksMap, attentionLastSeen, t]);
 
   const actionables = useMemo(() => actionableCount(attentionQueue), [attentionQueue]);
   const newCount = useMemo(() => attentionQueue.filter(i => i.isNew).length, [attentionQueue]);
@@ -571,8 +575,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   }, [previewMode, isActive, attentionQueue.length]);
 
   const openAttention = useCallback((item: AttentionItem) => {
+    // 「点开 = 读过」：这一行代表的未读通知（含并入的同实体通知）一并标已读。
+    // 去重后若不再标已读，徽标会继续把它们算进数字，出现「数字 5、列表 4 行」。
+    // 规则只有一处：`notifyRead.markNotificationThreadRead`（它自己处理 agent_report 的延后）。
+    const first = item.notices?.[0];
+    if (first) markNotificationThreadRead(first, unreadNotices);
     navBus.navigate(item.target.page === 'WORK' ? PAGE.WORK : PAGE.TEAM, item.target.params);
-  }, []);
+  }, [unreadNotices]);
 
   // 未读数单独取、合并发布：用户看到的徒标就一个数字，但两个来源得各自更新。
   useEffect(() => {

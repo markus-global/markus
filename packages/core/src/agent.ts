@@ -24,7 +24,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   MailboxPriorityLevel,
-  MAILBOX_TYPE_REGISTRY,
+  routeMailboxItem,
   HEARTBEAT_DAILY_LOG_CHARS,
   END_TURN_REPLY_SENTINEL,
   stripLegacyCompletionToken,
@@ -66,6 +66,7 @@ import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
 import { HeartbeatScheduler, heartbeatStateFingerprint } from './heartbeat.js';
+import { AgentClock } from './clock.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
 import { stabilizeToolOrder } from './tool-order.js';
@@ -712,7 +713,6 @@ export class Agent {
     agentId: string,
     state: { status: string; tokensUsedToday: number; activeTaskIds: string[]; lastError?: string; lastErrorAt?: string; currentActivity?: AgentActivity; lastHeartbeat?: string }
   ) => void;
-  private memoryConsolidationTimer?: ReturnType<typeof setInterval>;
   private loopDetector = new ToolLoopDetector();
   private dataDir: string;
   private stopReason?: string;
@@ -830,8 +830,14 @@ export class Agent {
   private _maxToolIterations: number;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
-  private wakeupTimer?: ReturnType<typeof setInterval>;
   private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
+  private static readonly MAILBOX_MAINTENANCE_INTERVAL_MS = 30_000;
+  /**
+   * The single periodic driver for this agent's time-driven transitions
+   * (mailbox upkeep, memory consolidation, wakeup sweep). One interval, N
+   * cadenced sources — instead of one timer per concern.
+   */
+  private readonly clock: AgentClock;
 
   /** Mailbox for single-threaded attention model */
   private mailbox: AgentMailbox;
@@ -971,6 +977,7 @@ export class Agent {
       intervalMs: this.config.heartbeatIntervalMs,
       enabled: true,
     });
+    this.clock = new AgentClock(this.id);
 
     this.tools = new Map();
     this.toolSelector = new ToolSelector();
@@ -1296,25 +1303,36 @@ export class Agent {
     // where all agents fire LLM-heavy consolidation cycles simultaneously.
     this.scheduleConsolidationTimer();
 
+    // Time-driven mailbox upkeep gets a single runtime owner: one clock tick
+    // releases due defers, reclaims expired leases, cleans stale rows and purges
+    // ghosts — regardless of whether the attention loop is idle or parked on an
+    // empty queue. (Previously a due defer on an idle agent could sit forever.)
+    this.clock.register({
+      name: 'mailbox-maintenance',
+      everyMs: Agent.MAILBOX_MAINTENANCE_INTERVAL_MS,
+      fn: () => { this.mailbox.runMaintenance(); },
+    });
+    this.clock.start();
+
     this.eventBus.emit('agent:started', { agentId: this.id });
     log.info(`Agent started: ${this.config.name}`);
   }
 
-  private consolidationInitialTimer?: ReturnType<typeof setTimeout>;
-
   private scheduleConsolidationTimer(): void {
+    // Random initial delay staggers agents so they don't all run LLM-heavy
+    // consolidation at once ("dream storm"). Registered as a clock source —
+    // no dedicated timer of its own.
     const jitter = Math.floor(Math.random() * Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
-    this.consolidationInitialTimer = setTimeout(() => {
-      this.consolidationInitialTimer = undefined;
-      this.consolidateMemory().catch(e =>
-        log.warn('Memory consolidation failed', { error: String(e) })
-      );
-      this.memoryConsolidationTimer = setInterval(() => {
+    this.clock.register({
+      name: 'memory-consolidation',
+      everyMs: Agent.MEMORY_CONSOLIDATION_INTERVAL_MS,
+      initialDelayMs: jitter,
+      fn: () => {
         this.consolidateMemory().catch(e =>
           log.warn('Memory consolidation failed', { error: String(e) })
         );
-      }, Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
-    }, jitter);
+      },
+    });
   }
 
   private static acquireDreamSlot(): Promise<void> {
@@ -1343,10 +1361,7 @@ export class Agent {
     this.attentionController.stop();
     this.cancelActiveStream();
     this.heartbeat.stop();
-    if (this.wakeupTimer) {
-      clearInterval(this.wakeupTimer);
-      this.wakeupTimer = undefined;
-    }
+    this.clock.stop();
     this._bgCompletionUnsub?.();
     this._heartbeatUnsub?.();
     // Synchronous notebook persist on shutdown
@@ -1355,14 +1370,6 @@ export class Agent {
       this.notebookSaveTimer = undefined;
     }
     this.persistNotebookSync();
-    if (this.consolidationInitialTimer) {
-      clearTimeout(this.consolidationInitialTimer);
-      this.consolidationInitialTimer = undefined;
-    }
-    if (this.memoryConsolidationTimer) {
-      clearInterval(this.memoryConsolidationTimer);
-      this.memoryConsolidationTimer = undefined;
-    }
     this.metricsCollector.flush();
     this.stopReason = reason;
     this.transitionStatus({ to: 'offline' });
@@ -1510,8 +1517,8 @@ export class Agent {
           dbSessionId: options?.sessionRestore === null
             ? undefined
             : (options?.sessionRestore?.dbSessionId ?? options?.sessionId),
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1608,8 +1615,8 @@ export class Agent {
               // at a completely different conversation.
               ?? options?.sessionId
               ?? (this.getDbSessionId() || undefined)),
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1658,8 +1665,8 @@ export class Agent {
         priority: 1,
         metadata: {
           taskId,
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -1690,8 +1697,8 @@ export class Agent {
           senderId,
           senderName: senderInfo?.name,
           senderRole: senderInfo?.role,
-          responsePromise: { resolve, reject },
         },
+        runtime: { responsePromise: { resolve, reject } },
       });
     });
   }
@@ -2302,23 +2309,22 @@ export class Agent {
       ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'user', isFirstConversation: item.metadata.isFirstConversation as boolean | undefined }
       : undefined;
     const resolveResponse = (reply: string) => {
-      if (typeof item.metadata?.responsePromise?.resolve === 'function') {
-        item.metadata.responsePromise.resolve(stripCompletionMarker(reply));
+      if (typeof item.runtime?.responsePromise?.resolve === 'function') {
+        item.runtime?.responsePromise?.resolve(stripCompletionMarker(reply));
       }
     };
     const rejectResponse = (err: unknown) => {
-      if (typeof item.metadata?.responsePromise?.reject === 'function') {
-        item.metadata.responsePromise.reject(err);
+      if (typeof item.runtime?.responsePromise?.reject === 'function') {
+        item.runtime?.responsePromise?.reject(err);
       }
     };
 
     const ts = Date.now();
 
-    const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
     // Whether this item's turn should be closed out with the typed completion check.
     // Chat replies are exempt (see the `!== 'human_chat'` guard at the call sites),
     // and the retired text marker means nothing is appended to the prompt any more.
-    const needsTurnCompletion = !!registry?.invokesLLM;
+    const needsTurnCompletion = routeMailboxItem(item).invokesLLM;
 
     const buildHandleOpts = (defaults: HandleMessageOptions = {}): HandleMessageOptions => {
       const opts: HandleMessageOptions = { ...defaults };
@@ -2480,7 +2486,7 @@ export class Agent {
           // 从 DB 拉不到回复（刷新也不显示）。正常路径（发起方 promise 存活）由发起方
           // persistAssistantMessage，这里不写（避免双写）——判据见 shouldPersistRecoveredReply。
           if (item.sourceType === 'human_chat') {
-            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata);
+            await this.persistRecoveredReplyIfNeeded(reply, extra, item.metadata, item.runtime);
           }
           resolveResponse(reply);
           return reply;
@@ -4759,12 +4765,13 @@ export class Agent {
   async persistRecoveredReplyIfNeeded(
     reply: string,
     extra: Record<string, unknown>,
-    metadata: { dbSessionId?: unknown; responsePromise?: { resolve?: unknown } } | undefined,
+    metadata: { dbSessionId?: unknown } | undefined,
+    runtime: { responsePromise?: { resolve?: unknown } } | undefined,
   ): Promise<void> {
     if (!reply || typeof reply !== 'string' || !reply.trim()) return;
     if (!this.assistantReplyPersister) return;
     const decision = shouldPersistRecoveredReply({
-      resolveIsFunction: typeof (metadata?.responsePromise as { resolve?: unknown } | undefined)?.resolve === 'function',
+      resolveIsFunction: typeof runtime?.responsePromise?.resolve === 'function',
       sessionId: extra.sessionId,
       dbSessionId: metadata?.dbSessionId,
     });
@@ -5624,8 +5631,8 @@ export class Agent {
         if (chatYield.decision === 'merge' && chatYield.item) {
           const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(chatYield.item)}`;
           this.memory.appendMessage(sessionId, { role: 'user', content: mergeMsg });
-          if (typeof chatYield.item.metadata?.responsePromise?.resolve === 'function') {
-            chatYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof chatYield.item.runtime?.responsePromise?.resolve === 'function') {
+            chatYield.item.runtime.responsePromise.resolve('[merged]');
           }
         }
 
@@ -6371,8 +6378,8 @@ export class Agent {
         if (streamYield.decision === 'merge' && streamYield.item) {
           const mergeMsg = `[LIVE UPDATE]\n\n${turnContentOf(streamYield.item)}`;
           this.memory.appendMessage(this.currentSessionId!, { role: 'user', content: mergeMsg });
-          if (typeof streamYield.item.metadata?.responsePromise?.resolve === 'function') {
-            streamYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof streamYield.item.runtime?.responsePromise?.resolve === 'function') {
+            streamYield.item.runtime.responsePromise.resolve('[merged]');
           }
         } else if (streamYield.decision === 'cancel') {
           // B3: an explicit revocation (e.g. "stop / cancel that") must cut the stream
@@ -7105,8 +7112,8 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE]\n\n${turnContentOf(yieldResult.item)}`,
           });
-          if (typeof yieldResult.item.metadata?.responsePromise?.resolve === 'function') {
-            yieldResult.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof yieldResult.item.runtime?.responsePromise?.resolve === 'function') {
+            yieldResult.item.runtime.responsePromise.resolve('[merged]');
           }
           log.debug('Merged mailbox item into active task session', {
             taskId,
@@ -7624,8 +7631,8 @@ export class Agent {
             role: 'user',
             content: `[LIVE UPDATE]\n\n${turnContentOf(risYield.item)}`,
           });
-          if (typeof risYield.item.metadata?.responsePromise?.resolve === 'function') {
-            risYield.item.metadata.responsePromise.resolve('[merged]');
+          if (typeof risYield.item.runtime?.responsePromise?.resolve === 'function') {
+            risYield.item.runtime.responsePromise.resolve('[merged]');
           }
         }
 
@@ -7986,9 +7993,12 @@ export class Agent {
   }
 
   private startWakeupSweep(): void {
-    if (this.wakeupTimer) return;
-    this.wakeupTimer = setInterval(() => this.sweepDueWakeups(), Agent.WAKEUP_SWEEP_INTERVAL_MS);
-    if (typeof this.wakeupTimer.unref === 'function') this.wakeupTimer.unref();
+    this.clock.register({
+      name: 'wakeup-sweep',
+      everyMs: Agent.WAKEUP_SWEEP_INTERVAL_MS,
+      initialDelayMs: Agent.WAKEUP_SWEEP_INTERVAL_MS,
+      fn: () => this.sweepDueWakeups(),
+    });
   }
 
   /**

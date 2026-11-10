@@ -13,7 +13,7 @@ import {
   type TriageResult,
   type DeliberationResult,
   MailboxPriorityLevel,
-  MAILBOX_TYPE_REGISTRY,
+  routeMailboxItem,
   MAILBOX_ITEM_MAX_RETRIES,
   END_TURN_REPLY_SENTINEL,
   MAILBOX_PROCESSING_TIMEOUT_MS,
@@ -56,8 +56,7 @@ export function detectAbnormalCompletion(
   reply: string | void,
   item: MailboxItem,
 ): string | undefined {
-  const registry = MAILBOX_TYPE_REGISTRY[item.sourceType];
-  if (!registry?.invokesLLM) return undefined;
+  if (!routeMailboxItem(item).invokesLLM) return undefined;
 
   if (reply === '[preempted]' || reply === '[cancelled]') return undefined;
   if (reply === END_TURN_REPLY_SENTINEL) return undefined;
@@ -537,32 +536,9 @@ export class AttentionController {
       const aggregated = this.aggregateState();
       if (this.running && this.activeWorkerCount() === 0 && (aggregated === 'idle' || aggregated === 'deciding')) {
         try {
-          const cleaned = this.mailbox.cleanStaleProcessing();
-          if (cleaned > 0) {
-            log.warn('Watchdog: cleaned stale processing items from DB', {
-              agentId: this.agentId,
-              cleaned,
-            });
-          }
-          // P0 租约：回收过期租约（崩溃/超时的 worker 不永久占位），退回的项重新入队。
-          const reclaimed = this.mailbox.reclaimExpiredLeases();
-          if (reclaimed > 0) {
-            log.warn('Watchdog: reclaimed mailbox items with expired leases', {
-              agentId: this.agentId,
-              reclaimed,
-            });
-          }
-          // Also age-out stale informational/callback ghosts while idle so the
-          // queue cannot fill with items that never reach pre-triage cleanup.
-          if (this.mailbox.depth > 0) {
-            const purged = this.mailbox.purgeStaleItems();
-            if (purged > 0) {
-              log.info('Watchdog: purged stale mailbox items', {
-                agentId: this.agentId,
-                purged,
-              });
-            }
-          }
+          // Mailbox upkeep (defer release / lease reclaim / stale cleanup / ghost
+          // purge) is owned by the agent clock now — one owner for time-driven
+          // transitions. The watchdog keeps only liveness duties.
           // Self-heal lost-wakeup: idle with a non-empty queue means the loop
           // is parked without having seen the enqueue signal — nudge it.
           if (aggregated === 'idle' && this.mailbox.depth > 0) {
@@ -631,7 +607,7 @@ export class AttentionController {
             // Direct a2a_message with a live responsePromise is also dropped
             // (the promise is stale after restart). Group chat a2a_messages
             // (no responsePromise) ARE re-enqueued to avoid silent message loss.
-            const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.metadata?.responsePromise;
+            const hasLiveCallback = item.sourceType === 'a2a_message' && !!item.runtime?.responsePromise;
             if (item.sourceType !== 'human_chat' && !hasLiveCallback) {
               try {
                 // P1.x (a)(R2)：**显式复用原行**回队（而不仅仅是重投）。
@@ -1715,12 +1691,9 @@ export class AttentionController {
 
     // R8: Same priority but current is background/system work → preempt
     // (R7 was removed — it was redundant with R1 which already handles human_chat preempting all non-human work)
-    const bgTypes = (Object.entries(MAILBOX_TYPE_REGISTRY) as [MailboxItemType, typeof MAILBOX_TYPE_REGISTRY[MailboxItemType]][])
-      .filter(([, d]) => d.category === 'system')
-      .map(([k]) => k);
     if (
       newItem.priority === currentItem.priority &&
-      bgTypes.includes(currentItem.sourceType)
+      routeMailboxItem(currentItem).backgroundWork
     ) {
       return 'preempt';
     }

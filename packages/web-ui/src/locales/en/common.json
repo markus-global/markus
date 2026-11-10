@@ -98,6 +98,7 @@
     "blocked": "Blocked",
     "waitingDeps": "Waiting on Dependencies",
     "onHold": "On Hold",
+    "workflowPaused": "Workflow paused",
     "review": "In Review",
     "completed": "Completed",
     "failed": "Failed",

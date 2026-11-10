@@ -1016,7 +1016,7 @@ export interface TaskInfo {
    * 为什么被 blocked（`deps` = 等上游依赖，引擎会自恢复；`hold` = 有人主动挂起，等人决定）。
    * `null` / 缺省 = 本字段引入前写入的旧行，消费方用 `lib/blockedReason.ts` 回退推断。
    */
-  blockedReason?: 'deps' | 'hold' | null;
+  blockedReason?: 'deps' | 'hold' | 'workflow' | null;
   notes?: string[];
   deliverables?: Array<{
     type: string;

@@ -416,7 +416,7 @@ export class WorkflowRunner {
         if (task && task.status === 'in_progress') {
           this.taskService.pauseTask(taskId, pausedBy, 'system');
         } else if (task && task.status === 'pending') {
-          this.taskService.updateTaskStatus(taskId, 'blocked', pausedBy, true, false, 'system');
+          this.taskService.updateTaskStatus(taskId, 'blocked', pausedBy, true, false, 'system', undefined, 'workflow');
         }
       } catch (err) {
         log.warn('Failed to pause task in workflow run', { taskId, error: String(err) });
@@ -810,13 +810,17 @@ export class WorkflowRunner {
 
     try {
       stepCfg.retriesUsed = (stepCfg.retriesUsed ?? 0) + 1;
-      this.taskService.updateTaskStatus(task.id, 'pending', 'system', true, false, 'system', `Workflow auto-retry ${stepCfg.retriesUsed}/${stepCfg.retryCount}`);
+      // A retry is a LEGAL re-entry into work, not a reset to the initial `pending`
+      // state — `pending` is not a transition target in TASK_TRANSITIONS, so writing
+      // it here threw and was swallowed below: the retry was silently dead.
+      this.taskService.updateTaskStatus(task.id, 'in_progress', 'system', true, false, 'system', `Workflow auto-retry ${stepCfg.retriesUsed}/${stepCfg.retryCount}`);
       log.info('Retrying failed workflow step', {
         runId: run.id, taskId: task.id, retry: stepCfg.retriesUsed, maxRetries: stepCfg.retryCount,
       });
       return true;
     } catch (err) {
-      log.warn('Failed to retry workflow step', { taskId: task.id, error: String(err) });
+      // Must be visible: a swallowed retry failure looks exactly like "no retry needed".
+      log.error('Failed to retry workflow step', { taskId: task.id, error: String(err) });
       return false;
     }
   }

@@ -98,6 +98,7 @@
     "blocked": "已阻塞",
     "waitingDeps": "等待依赖",
     "onHold": "已挂起",
+    "workflowPaused": "流程暂停",
     "review": "评审中",
     "completed": "已完成",
     "failed": "失败",

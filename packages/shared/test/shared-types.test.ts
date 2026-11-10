@@ -54,8 +54,8 @@ describe('mailbox registries', () => {
 
   it('registers all mailbox item types', () => {
     expect(MAILBOX_TYPE_REGISTRY.human_chat.label).toBe('Chat');
-    expect(MAILBOX_TYPE_REGISTRY.heartbeat.defaultPriority).toBe(3);
-    expect(MAILBOX_TYPE_REGISTRY.review_request.invokesLLM).toBe(true);
+    expect(MAILBOX_TYPE_REGISTRY.heartbeat.policy.priority).toBe(3);
+    expect(MAILBOX_TYPE_REGISTRY.review_request.policy.invokesLLM).toBe(true);
   });
 
   it('groups types into categories', () => {
@@ -78,8 +78,8 @@ describe('mailbox entity affinity scopes', () => {
 
   it('每个类型都声明了 entityScopes，且以 system 兜底结尾', () => {
     for (const type of ALL_TYPES) {
-      const scopes = MAILBOX_TYPE_REGISTRY[type].entityScopes;
-      expect(scopes.length, `${type} 未声明 entityScopes`).toBeGreaterThan(0);
+      const scopes = MAILBOX_TYPE_REGISTRY[type].policy.affinity;
+      expect(scopes.length, `${type} 未声明 affinity`).toBeGreaterThan(0);
       expect(scopes[scopes.length - 1], `${type} 的最后一个作用域必须是 system（安全兜底）`).toBe('system');
     }
   });
@@ -87,7 +87,7 @@ describe('mailbox entity affinity scopes', () => {
   it('作用域列表无重复且取值合法', () => {
     const valid = new Set<string>(ENTITY_SCOPE_ORDER);
     for (const type of ALL_TYPES) {
-      const scopes = MAILBOX_TYPE_REGISTRY[type].entityScopes as readonly MailboxEntityScope[];
+      const scopes = MAILBOX_TYPE_REGISTRY[type].policy.affinity as readonly MailboxEntityScope[];
       expect(new Set(scopes).size, `${type} 作用域重复`).toBe(scopes.length);
       for (const s of scopes) expect(valid.has(s), `${type} 含非法作用域 ${s}`).toBe(true);
     }
@@ -96,7 +96,7 @@ describe('mailbox entity affinity scopes', () => {
   it('system 之前的作用域按 ENTITY_SCOPE_ORDER 的相对顺序声明（优先级不乱）', () => {
     const rank = new Map(ENTITY_SCOPE_ORDER.map((s, i) => [s, i]));
     for (const type of ALL_TYPES) {
-      const scopes = MAILBOX_TYPE_REGISTRY[type].entityScopes;
+      const scopes = MAILBOX_TYPE_REGISTRY[type].policy.affinity;
       const ranks = scopes.map(s => rank.get(s) ?? -1);
       const sorted = [...ranks].sort((a, b) => a - b);
       expect(ranks, `${type} 作用域优先级顺序不符合 ENTITY_SCOPE_ORDER`).toEqual(sorted);
