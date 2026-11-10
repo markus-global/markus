@@ -40,7 +40,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
-import { needsHumanDecision } from '../lib/blockedReason.ts';
+import { needsHumanDecision, blockedReasonOf } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -2245,7 +2245,7 @@ function TaskDetailPanel({
               // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
               // 拿来展示会把 deps 永远渲染成通用「已阻塞」（同一事实两个写者）。
               if (task.status === 'blocked') {
-                const p = taskStatusPresentation(task.status, t, task.blockedReason);
+                const p = taskStatusPresentation(task.status, t, blockedReasonOf(task));
                 return (
                   <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${p.tone?.chip ?? 'bg-gray-500/15 text-fg-tertiary'}`}>{p.label}</span>
                 );

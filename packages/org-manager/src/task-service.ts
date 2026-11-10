@@ -2516,6 +2516,10 @@ export class TaskService implements ApprovalTargetPort {
           requirementId: (row as any).requirementId ?? undefined,
           subtasks,
           blockedBy,
+          // blockedReason 是 blocked 的子缘由（deps/hold/workflow）。此处漏了它，
+          // 重启后内存任务就没有该字段，列表/详情接口随之丢失，前端退回通用「已阻塞」
+          // （updateTaskStatus 写入时是有值的，DB 也有——只有重启装载这条链路丢了）。
+          blockedReason: (((row as any).blockedReason ?? (row as any).blocked_reason) ?? null) as Task['blockedReason'],
           result: (row.result as Task['result']) ?? undefined,
           deliverables: Array.isArray((row as any).deliverables) ? ((row as any).deliverables as Task['deliverables']) : undefined,
           completionSummary: (row as any).completionSummary ?? undefined,
