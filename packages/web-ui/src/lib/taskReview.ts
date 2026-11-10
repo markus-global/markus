@@ -30,7 +30,7 @@ export interface ReviewSession {
  */
 export function deriveReviewSessions(
   history: readonly StatusTransitionInfo[],
-  opts: { reviewerId?: string; reviewerNameOf?: (id: string | null) => string | undefined } = {},
+  opts: { reviewerId?: string; reviewerName?: string; reviewerNameOf?: (id: string | null) => string | undefined } = {},
 ): ReviewSession[] {
   const sessions: ReviewSession[] = [];
   for (let i = 0; i < history.length; i++) {
@@ -40,8 +40,11 @@ export function deriveReviewSessions(
     const open = !next; // 停在 review 的必是最后一条
     const id = `review:${h.id}`;
     const reviewerId = opts.reviewerId ?? h.changedById ?? '';
+    // 评审人 = 任务的指定 reviewer（opts.reviewerName / reviewerId），**不是**把任务推进
+    // review 的提交者（h.changedByName）——否则会把「CTO 提交评审」显示成「CTO 正在评审」。
     const reviewerName =
-      (h.changedByName ?? undefined)
+      (opts.reviewerName ?? undefined)
+      ?? (h.changedByName ?? undefined)
       ?? (h.changedById ? opts.reviewerNameOf?.(h.changedById) : undefined)
       ?? reviewerId
       ?? 'reviewer';

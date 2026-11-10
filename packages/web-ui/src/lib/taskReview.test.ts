@@ -45,6 +45,14 @@ describe('deriveReviewSessions — from authoritative status history', () => {
     expect(hasLiveReview(s)).toBe(false);
   });
 
+  it('attributes the session to the assigned reviewer, not the submitter', () => {
+    const s = deriveReviewSessions(
+      [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', { changedByName: 'Submitter' })],
+      { reviewerId: 'agt_rev', reviewerName: 'Real Reviewer' },
+    );
+    expect(s[0]!.reviewerName).toBe('Real Reviewer');
+  });
+
   it('falls back to the task reviewer when the transition has no name', () => {
     const s = deriveReviewSessions(
       [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', { changedById: null, changedByName: null })],

@@ -2028,10 +2028,10 @@ function TaskDetailPanel({
   useEffect(() => {
     let live = true;
     api.tasks.getHistory(task.id)
-      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId })); })
+      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: agents.find(a => a.id === task.reviewerId)?.name })); })
       .catch(() => { if (live) setReviewSessions([]); });
     return () => { live = false; };
-  }, [task.id, task.status, task.reviewerId]);
+  }, [task.id, task.status, task.reviewerId, agents]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
