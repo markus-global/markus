@@ -49,6 +49,22 @@ export function isReviewTurnActivity(a: { label?: string | null }): boolean {
 }
 
 /**
+ * 某个时刻是否落在这一轮评审的窗口内。
+ *
+ * 抽出来是因为两个调用方需要**同一个口径**：历史快照的匹配（matchReviewActivities）
+ * 与实时流（`agent:activity_log` 逐条到达时的归属判定）。两处各写一份必定漂。
+ */
+export function isWithinReviewWindow(at: string, session: ReviewSessionWindow): boolean {
+  const t = new Date(at).getTime();
+  if (Number.isNaN(t)) return false;
+  const start = new Date(session.queuedAt).getTime();
+  if (Number.isNaN(start)) return false;
+  const end = session.completedAt ? new Date(session.completedAt).getTime() : Number.POSITIVE_INFINITY;
+  if (Number.isNaN(end)) return false;
+  return t >= start - WINDOW_TOLERANCE_MS && t <= end + WINDOW_TOLERANCE_MS;
+}
+
+/**
  * 返回属于这一轮评审的活动（按时间升序）。
  * 纯函数：同输入同输出，不读时钟、不读网络。
  */
@@ -75,15 +91,8 @@ export function matchReviewActivities<T extends ReviewActivityLike>(
       if (a.taskId && a.taskId !== session.taskId) return false;
 
       // 2) 无论有无 taskId，都必须落在**本轮**的时间窗内 —— 这才是「按轮次分组」的判据。
-      //    历史行没有 taskId 时，同样靠这一条定位。
-      const started = new Date(a.startedAt).getTime();
-      if (Number.isNaN(started)) return false;
-      const ended = a.endedAt ? new Date(a.endedAt).getTime() : Number.POSITIVE_INFINITY;
-      const safeEnded = Number.isNaN(ended) ? Number.POSITIVE_INFINITY : ended;
-      return (
-        started <= windowEnd + WINDOW_TOLERANCE_MS &&
-        safeEnded >= windowStart - WINDOW_TOLERANCE_MS
-      );
+      //    与实时流共用 isWithinReviewWindow，两处不会各自漂。
+      return isWithinReviewWindow(a.startedAt, session);
     })
     .sort((x, y) => new Date(x.startedAt).getTime() - new Date(y.startedAt).getTime());
 }
