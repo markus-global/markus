@@ -1251,6 +1251,14 @@ function TaskLogTimeline({
 
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
+/**
+ * @deprecated 已被 `components/TaskActivityTimeline.tsx` 取代（2026-11-12 合并 tab）：
+ * 执行轮次与评审轮次现在合成一条「活动」时间线，每条各自渲染、各自懒加载。
+ * 本组件曾是「执行日志」tab 的宿主，因此也带走了评论线程的旧实现；评论现在由
+ * `TaskActivitySection` 提供（详情 tab，行 2659 附近）。
+ * 当前全文件已无引用 —— 保留仅为避免在同一个改动里同时改数据源与删 500+ 行，
+ * 待「活动」tab 在真实数据上验收通过后整块删除（条件：`grep -c TaskExecutionLogs` 仍为 1）。
+ */
 function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
   const taskId = task.id;
   const { t } = useTranslation(['work', 'common']);
