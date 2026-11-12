@@ -46,11 +46,16 @@ export class MockServerResponse {
 
   writeHead(statusCode: number, statusMessageOrHeaders?: string | Record<string, string>, headers?: Record<string, string>): this {
     this.statusCode = statusCode;
+    // Node MERGES headers set via setHeader() with the writeHead() object
+    // (writeHead wins on duplicates). Replacing the map instead made every
+    // earlier setHeader() invisible to tests — e.g. a session-renewal
+    // `Set-Cookie` written before `json()` was silently dropped.
+    const merge = (extra?: Record<string, string>) => { if (extra) this.headers = { ...this.headers, ...extra }; };
     if (typeof statusMessageOrHeaders === 'string') {
       this.statusMessage = statusMessageOrHeaders;
-      if (headers) this.headers = headers;
+      merge(headers);
     } else if (statusMessageOrHeaders) {
-      this.headers = statusMessageOrHeaders;
+      merge(statusMessageOrHeaders);
     }
     return this;
   }
