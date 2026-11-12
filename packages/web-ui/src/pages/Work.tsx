@@ -6,7 +6,8 @@ import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { TaskActivityTimeline } from '../components/TaskActivityTimeline.tsx';
+import { buildActivityTimeline } from '../lib/activityTimeline.ts';
+import { matchReviewActivities } from '../lib/reviewActivities.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -1252,14 +1253,12 @@ function TaskLogTimeline({
 // ─── Execution Log Panel ────────────────────────────────────────────────────────
 
 /**
- * @deprecated 已被 `components/TaskActivityTimeline.tsx` 取代（2026-11-12 合并 tab）：
- * 执行轮次与评审轮次现在合成一条「活动」时间线，每条各自渲染、各自懒加载。
- * 本组件曾是「执行日志」tab 的宿主，因此也带走了评论线程的旧实现；评论现在由
- * `TaskActivitySection` 提供（详情 tab，行 2659 附近）。
- * 当前全文件已无引用 —— 保留仅为避免在同一个改动里同时改数据源与删 500+ 行，
- * 待「活动」tab 在真实数据上验收通过后整块删除（条件：`grep -c TaskExecutionLogs` 仍为 1）。
+ * 执行日志渲染器（**保持原样**，不要再改它的内部形式）。
+ * 自 2026-11-12 起，它同时负责把评审轮次按时间插入——用**同一套**轮次容器与
+ * `TaskLogTimeline`（正文 + 就地折叠的思考/工具行 + 评论穿插），
+ * 这样执行和评审看起来完全一致，而不是另造一种排版。
  */
-function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[] }) {
+function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions = [] }: { task: TaskInfo; isRunning: boolean; authUser?: { id: string; name: string }; agents: AgentInfo[]; reviewSessions?: ReviewSession[] }) {
   const taskId = task.id;
   const { t } = useTranslation(['work', 'common']);
   const [roundsSummary, setRoundsSummary] = useState<RoundSummary[]>([]);
@@ -1280,6 +1279,55 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
   const [loadingActivities, setLoadingActivities] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
+
+  // ── 评审轮次（与执行轮次共用容器与 TaskLogTimeline）───────────────────
+  const [reviewEntries, setReviewEntries] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
+  const [loadingReviewIds, setLoadingReviewIds] = useState<Set<string>>(new Set());
+  const [expandedReviews, setExpandedReviews] = useState<Set<string>>(new Set());
+
+  const loadReviewEntries = useCallback(async (s: ReviewSession) => {
+    setLoadingReviewIds(prev => new Set(prev).add(s.id));
+    try {
+      const { activities } = await api.agents.getActivities(s.reviewerId, { limit: 200 });
+      const matched = matchReviewActivities(activities, {
+        taskId,
+        queuedAt: s.queuedAt,
+        completedAt: s.completedAt,
+      });
+      const collected: ExecutionStreamEntryUI[] = [];
+      for (const act of matched) {
+        const { logs } = await api.agents.getActivityLogs(s.reviewerId, act.id);
+        for (const log of logs) {
+          const e = activityLogToStreamEntry(log, act.id, s.reviewerId);
+          if (e) collected.push(e as unknown as ExecutionStreamEntryUI);
+        }
+      }
+      setReviewEntries(prev => new Map(prev).set(s.id, collected));
+    } catch {
+      setReviewEntries(prev => new Map(prev).set(s.id, []));
+    } finally {
+      setLoadingReviewIds(prev => { const n = new Set(prev); n.delete(s.id); return n; });
+    }
+  }, [taskId]);
+
+  const toggleReview = (s: ReviewSession) => {
+    setExpandedReviews(prev => {
+      const n = new Set(prev);
+      if (n.has(s.id)) { n.delete(s.id); return n; }
+      n.add(s.id);
+      return n;
+    });
+    if (!reviewEntries.has(s.id) && !loadingReviewIds.has(s.id)) void loadReviewEntries(s);
+  };
+
+  // 执行轮次 + 评审轮次按时间合并（各用各自编号）。排序逻辑只在 lib/activityTimeline.ts 一处。
+  const segments = useMemo(() => {
+    return buildActivityTimeline(roundsSummary, reviewSessions, 'all').map(it => {
+      if (it.kind === 'review') return { kind: 'review' as const, session: it.session };
+      const rsIdx = roundsSummary.findIndex(r => r.round === it.round);
+      return { kind: 'execution' as const, rs: roundsSummary[rsIdx]!, rsIdx };
+    });
+  }, [roundsSummary, reviewSessions]);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 
@@ -1451,7 +1499,9 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
     [allLoadedLogs],
   );
 
-  const hasMultipleRounds = roundsSummary.length > 1;
+  // 只要不止「一个执行轮」就必须走分段渲染：有评审轮时也得进同一条时间线，
+  // 否则 1 轮执行 + 1 轮评审会被单轮分支吃掉，评审永远看不到。
+  const hasMultipleRounds = roundsSummary.length > 1 || reviewSessions.length > 0;
 
   const handleImageUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
@@ -1656,7 +1706,55 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
             {commentsBeforeFirstRound.map(c => <CommentBubble key={c.id} comment={c} agents={agents} />)}
           </div>
         )}
-        {roundsSummary.map((rs, rsIdx) => {
+        {segments.map(seg => {
+          if (seg.kind === 'review') {
+            const s = seg.session;
+            const isOpen = expandedReviews.has(s.id);
+            const live = s.status === 'reviewing';
+            const rEntries = reviewEntries.get(s.id);
+            const rLoading = loadingReviewIds.has(s.id);
+            const icon = live ? '🔄'
+              : s.outcome === 'approved' ? '✅'
+              : s.outcome === 'revision_requested' ? '↩️'
+              : '⏹';
+            return (
+              <div key={s.id} className="border border-border-default/50 rounded-lg overflow-hidden">
+                <button
+                  onClick={() => toggleReview(s)}
+                  className="w-full flex items-center justify-between px-3 py-2 bg-surface-elevated/30 hover:bg-surface-elevated/50 transition-colors"
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="text-sm">{icon}</span>
+                    <span className="text-xs text-fg-secondary font-medium">{t('work:task.reviewRoundLabel', { round: s.round })}</span>
+                    <span className="text-[10px] text-fg-tertiary">{s.reviewerName}</span>
+                    {live && <span className="text-[10px] text-purple-400">{t('work:task.reviewLive')}</span>}
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <span className="text-[10px] text-fg-tertiary tabular-nums">{new Date(s.queuedAt).toLocaleString()}</span>
+                    <svg className={`w-3 h-3 text-fg-tertiary transition-transform ${isOpen ? 'rotate-180' : ''}`} viewBox="0 0 20 20" fill="currentColor">
+                      <path fillRule="evenodd" d="M5.23 7.21a.75.75 0 011.06.02L10 11.168l3.71-3.938a.75.75 0 111.08 1.04l-4.25 4.5a.75.75 0 01-1.08 0l-4.25-4.5a.75.75 0 01.02-1.06z" clipRule="evenodd" />
+                    </svg>
+                  </div>
+                </button>
+                {isOpen && (
+                  <div className="px-3 py-1.5 space-y-0.5">
+                    {s.note && (
+                      <p className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-secondary">{s.note}</p>
+                    )}
+                    {rLoading && <div className="text-xs text-fg-tertiary py-2 text-center">{t('work:task.reviewLoading')}</div>}
+                    {rEntries && rEntries.length > 0 && (
+                      <TaskLogTimeline entries={rEntries} comments={[]} agents={agents} isExecuting={false} />
+                    )}
+                    {rEntries && rEntries.length === 0 && (
+                      <div className="text-xs text-fg-tertiary py-2 text-center">{t('work:task.reviewNoTurns')}</div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          }
+          const rs = seg.rs;
+          const rsIdx = seg.rsIdx;
           const isExpanded = expandedRounds.has(rs.round);
           const isLatest = rs.round === roundsSummary[roundsSummary.length - 1]!.round;
           const logs = roundLogs.get(rs.round);
@@ -2316,8 +2414,8 @@ function TaskDetailPanel({
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
-              {/* 执行轮次与评审轮次合成一条时间线，各算各的编号（第 N 轮执行 / 第 N 轮评审） */}
-              <TaskActivityTimeline taskId={task.id} reviewSessions={reviewSessions} />
+              {/* 执行轮次与评审轮次合成一条时间线，各用各自编号，共用同一套渲染 */}
+              <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} reviewSessions={reviewSessions} />
           </div>
 
           <div className={activeTab === 'details' ? '' : 'hidden'}>
