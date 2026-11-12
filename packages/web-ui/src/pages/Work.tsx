@@ -6,7 +6,7 @@ import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
-import { ReviewSessionCard } from '../components/ReviewSessionCard.tsx';
+import { TaskActivityTimeline } from '../components/TaskActivityTimeline.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -2002,7 +2002,7 @@ function TaskDetailPanel({
   const [scheduleDraft, setScheduleDraft] = useState<ScheduleDraft | null>(null);
   const [actionInFlight, setActionInFlight] = useState(false);
   const [sendToChatOpen, setSendToChatOpen] = useState(false);
-  const [activeTab, setActiveTab] = useState<'details' | 'logs' | 'deliverables' | 'history' | 'reviews'>('details');
+  const [activeTab, setActiveTab] = useState<'details' | 'activity' | 'deliverables' | 'history'>('details');
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollState, setScrollState] = useState<'top' | 'bottom' | 'middle' | 'none'>('none');
   const [deliverablesPage, setDeliverablesPage] = useState(1);
@@ -2013,7 +2013,7 @@ function TaskDetailPanel({
       setUnifiedDeliverables(results.filter((d: any) => d.status !== 'outdated'));
     } catch { /* ok */ }
   }, [task.id]);
-  const switchTab = useCallback((tab: 'details' | 'logs' | 'deliverables' | 'history' | 'reviews') => {
+  const switchTab = useCallback((tab: 'details' | 'activity' | 'deliverables' | 'history') => {
     setActiveTab(tab);
     // 用户主动切到交付物页时拉取最新（覆盖任何未通过事件到达的更新）
     if (tab === 'deliverables') void loadUnifiedDeliverables();
@@ -2021,7 +2021,7 @@ function TaskDetailPanel({
       scrollContainerRef.current?.scrollTo({ top: 0, behavior: 'instant' });
     });
   }, [loadUnifiedDeliverables]);
-  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'logs' as const }, { id: 'deliverables' as const }, { id: 'history' as const }, { id: 'reviews' as const }], []);
+  const detailTabs = useMemo(() => [{ id: 'details' as const }, { id: 'activity' as const }, { id: 'deliverables' as const }, { id: 'history' as const }], []);
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   // 评审会话从**权威状态历史**派生（不新增后端/表）：一次「→ review」即一条。
@@ -2139,7 +2139,7 @@ function TaskDetailPanel({
   };
 
   const resumeTask = async () => {
-    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('activity');
     try { await api.tasks.resume(task.id); onRefresh(); } catch (err) {
       setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
@@ -2172,14 +2172,14 @@ function TaskDetailPanel({
   };
 
   const retryFresh = async () => {
-    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('activity');
     try { await api.tasks.retry(task.id); onRefresh(); } catch (err) {
       setRunError(taskActionErrorMessage(err));
     } finally { setActionInFlight(false); }
   };
 
   const runScheduledNow = async () => {
-    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('logs');
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null); switchTab('activity');
     try { await api.tasks.runNow(task.id); onRefresh(); } catch (err) {
       setRunError(taskActionErrorMessage(err));
       onRefresh();
@@ -2286,19 +2286,13 @@ function TaskDetailPanel({
         {/* Tabs — fixed at top */}
         <div className="flex gap-1 px-6 pt-2 pb-0 shrink-0">
           <button onClick={() => switchTab('details')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'details' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>{t('work:task.detailsTab')}</button>
-          <button onClick={() => switchTab('logs')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'logs' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-            {t('work:task.executionLogTab')}
-            {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
+          <button onClick={() => switchTab('activity')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'activity' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
+            {t('work:task.activityTab')}
+            {(isRunning || hasLiveReview(reviewSessions)) && <span className="w-1.5 h-1.5 rounded-full bg-brand-400 animate-pulse" />}
           </button>
           <button onClick={() => switchTab('deliverables')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'deliverables' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {(() => { const c = unifiedDeliverables.filter(d => typeof d.reference === 'string' && d.reference.length > 0).length; return c > 0 ? t('work:task.deliverablesCount', { count: c }) : t('work:task.deliverables'); })()}
           </button>
-          {(reviewSessions.length > 0 || task.status === 'review') && (
-            <button onClick={() => switchTab('reviews')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors flex items-center gap-1.5 ${activeTab === 'reviews' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
-              {t('work:task.reviewsTab')}{reviewSessions.length > 0 ? ` (${reviewSessions.length})` : ''}
-              {hasLiveReview(reviewSessions) && <span className="w-1.5 h-1.5 rounded-full bg-purple-400 animate-pulse" />}
-            </button>
-          )}
           <button onClick={() => switchTab('history')} className={`px-3 py-1.5 text-xs rounded-t-md transition-colors ${activeTab === 'history' ? 'bg-surface-elevated text-fg-primary font-medium' : 'text-fg-tertiary hover:text-fg-secondary'}`}>
             {t('work:task.historyTab')}
           </button>
@@ -2308,13 +2302,14 @@ function TaskDetailPanel({
         <div className="flex-1 min-h-0 relative">
         <div ref={scrollContainerRef} data-swipe-owner className="h-full overflow-y-auto overflow-x-hidden" onTouchStart={detailSwipe.onTouchStart} onTouchEnd={detailSwipe.onTouchEnd}>
 
-          <div className={activeTab === 'logs' ? 'min-w-0 min-h-full' : 'hidden'}>
+          <div className={activeTab === 'activity' ? 'min-w-0 min-h-full' : 'hidden'}>
               {runError && (
                 <div className="mx-4 mt-3 px-3 py-2 bg-red-500/10 border border-red-500/30 rounded-lg text-xs text-red-500">
                   <span className="font-medium">{t('work:task.failedToStart')}</span> {runError}
                 </div>
               )}
-              <TaskExecutionLogs task={task} isRunning={task.status === 'in_progress'} authUser={authUser} agents={agents} />
+              {/* 执行轮次与评审轮次合成一条时间线，各算各的编号（第 N 轮执行 / 第 N 轮评审） */}
+              <TaskActivityTimeline taskId={task.id} reviewSessions={reviewSessions} />
           </div>
 
           <div className={activeTab === 'details' ? '' : 'hidden'}>
@@ -2670,20 +2665,6 @@ function TaskDetailPanel({
             <StatusHistoryTimeline entityType="task" entityId={task.id} />
           </div>
 
-          <div className={activeTab === 'reviews' ? 'min-w-0 min-h-full' : 'hidden'}>
-            {reviewSessions.length === 0 ? (
-              <div className="px-6 py-4 text-xs text-fg-tertiary italic">{task.status === 'review' ? t('work:task.reviewsEmptyPending') : t('work:task.reviewsEmpty')}</div>
-            ) : (
-              // 每轮评审一张可展开卡片：头部是结论，展开后是该轮评审的**全过程**
-              // （正文 / 思考 / 工具调用），复用执行日志那套渲染器，但喂的是
-              // **评审人自己的回合**数据 —— 不是把执行日志再显示一遍。
-              <div className="px-6 pt-3 pb-4 space-y-2">
-                {reviewSessions.map(s => (
-                  <ReviewSessionCard key={s.id} session={s} taskId={task.id} />
-                ))}
-              </div>
-            )}
-          </div>
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
               {(() => {
@@ -2844,7 +2825,7 @@ function TaskDetailPanel({
             <div className="min-w-0 flex-1 text-xs text-fg-primary">
               {t('work:task.reviewInProgressBy', { agent: activeReviewSession(reviewSessions)!.reviewerName })}
             </div>
-            <button onClick={() => switchTab('reviews')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
+            <button onClick={() => switchTab('activity')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
           </div>
         )}
 
