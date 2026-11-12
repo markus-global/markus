@@ -2255,8 +2255,11 @@ function TaskDetailPanel({
   };
 
   const reopenTask = async () => {
-    if (actionInFlight) return; setActionInFlight(true);
-    try { await api.tasks.updateStatus(task.id, 'in_progress'); onRefresh(); } finally { setActionInFlight(false); }
+    if (actionInFlight) return; setActionInFlight(true); setRunError(null);
+    try { await api.tasks.updateStatus(task.id, 'in_progress'); onRefresh(); } catch (err) {
+      // 曾无 catch：后端拒绝时（如 terminal-revert 守卫）页面毫无反馈，表现就是「按钮没用」。
+      setRunError(taskActionErrorMessage(err));
+    } finally { setActionInFlight(false); }
   };
 
   const retryFresh = async () => {
