@@ -22,7 +22,7 @@
  */
 import { useCallback, useRef, type RefObject } from 'react';
 import {
-  api,
+  api, isAuthExpiredError,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo,
   type ChatSessionInfo, type AuthUser, type ChannelMessageInfo,
   type GroupChatInfo, type SubagentProgressEvent,
@@ -985,6 +985,10 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         });
       } catch (e) {
         if (isMarkusCreditError(e)) dispatchCreditNotification();
+        // Session gone ⇒ NOTHING was persisted. Hand the text back to the composer
+        // instead of leaving an optimistic bubble that lies about delivery and a
+        // message that can never be recovered.
+        if (isAuthExpiredError(e)) { setInput(text); setPendingImages(volatile.pendingImages); }
         updateConvMsgs(sendKey, prev => {
           const without = prev.filter(m => m.id !== optId);
           return [...without, {
@@ -1035,11 +1039,18 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
         });
       } catch (e) {
         if (isMarkusCreditError(e)) dispatchCreditNotification();
+        const authExpired = isAuthExpiredError(e);
+        if (authExpired) { setInput(text); setPendingImages(volatile.pendingImages); }
         const friendly = friendlyAgentError(e, t) || t('page.errorWithMessage', { message: String(e) });
-        updateConvMsgs(sendKey, prev => [...prev, {
-          id: `err_${Date.now()}`, sender: 'agent', text: friendly,
-          time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
-        }]);
+        updateConvMsgs(sendKey, prev => {
+          // Nothing was persisted — drop the optimistic user bubble rather than
+          // showing a message the server never recorded.
+          const base = authExpired ? prev.filter(m => m.id !== optId) : prev;
+          return [...base, {
+            id: `err_${Date.now()}`, sender: 'agent', text: friendly,
+            time: new Date().toLocaleTimeString(), agentName: t('page.systemName'), isError: true,
+          }];
+        });
       }
       decrementSending(sendKey);
       if (currentConvKeyRef.current === sendKey) setSending(false);

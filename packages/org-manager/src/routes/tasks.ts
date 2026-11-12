@@ -647,7 +647,7 @@ export async function handleTasksRoutes(
           mentions, undefined,
           { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
-        server.json(res, 201, { comment: result.comment });
+        server.json(res, 201, { comment: result.comment, notifiedAgentIds: result.notifiedAgentIds });
       } catch (err) {
         server.json(res, 500, { error: String(err) });
       }

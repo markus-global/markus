@@ -2355,6 +2355,59 @@ export class APIServer {
     return ownerId;
   }
 
+  // ── Local session lifetime (single source of truth) ───────────────────────
+  /**
+   * How long a session survives **without being used**.
+   *
+   * 7 days was too short for the real usage pattern: the desktop app stays open
+   * across a week of not being touched, then the first message of the day hit a
+   * dead cookie. 30 days covers "opened, unused for a while" by a wide margin
+   * while still retiring an abandoned session. Active sessions never expire —
+   * see renewSessionIfStale().
+   */
+  static readonly SESSION_TTL_SECONDS = 30 * 24 * 3600;
+  /** Sliding renewal: refresh the cookie once the token is a day old. */
+  static readonly SESSION_RENEW_AFTER_SECONDS = 24 * 3600;
+
+  /**
+   * Issue (or re-issue) the local session cookie. THE ONLY place that formats
+   * it: six hand-rolled copies of this block used to exist, which is exactly how
+   * a lifetime becomes impossible to reason about.
+   */
+  private async issueSessionCookie(
+    res: ServerResponse,
+    user: { userId: string; orgId: string; role: string },
+  ): Promise<void> {
+    if (res.headersSent) return;
+    const exp = Math.floor(Date.now() / 1000) + APIServer.SESSION_TTL_SECONDS;
+    const token = await signToken({ ...user, exp }, this.jwtSecret);
+    res.setHeader(
+      'Set-Cookie',
+      `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${APIServer.SESSION_TTL_SECONDS}`
+    );
+  }
+
+  /**
+   * Sliding-window session renewal.
+   *
+   * The cookie is HttpOnly, so ONLY the server can keep a session alive. A
+   * desktop app left open across days used to hit a hard 7-day cliff while the
+   * renderer still looked signed in: every request 401'd, nothing was persisted,
+   * and the UI reported the 401 as a model-credential failure. Invariant now:
+   * **a session never expires while it is in use**.
+   */
+  private async renewSessionIfStale(
+    res: ServerResponse,
+    payload: Record<string, unknown>,
+    user: { userId: string; orgId: string; role: string },
+  ): Promise<void> {
+    const exp = typeof payload['exp'] === 'number' ? payload['exp'] : null;
+    if (!exp) return; // legacy token carrying no expiry — leave it alone
+    const remaining = exp - Math.floor(Date.now() / 1000);
+    if (remaining > APIServer.SESSION_TTL_SECONDS - APIServer.SESSION_RENEW_AFTER_SECONDS) return;
+    await this.issueSessionCookie(res, user);
+  }
+
   private get jwtSecret(): string {
     // resolveJwtSecret() uses the JWT_SECRET env var when set, otherwise a
     // strong random secret persisted at ~/.markus/jwt-secret.
@@ -2366,9 +2419,13 @@ export class APIServer {
     return process.env['AUTH_ENABLED'] !== 'false';
   }
 
-  /** Returns user payload from JWT cookie, or null if not authenticated */
+  /**
+   * Returns user payload from JWT cookie, or null if not authenticated.
+   * Pass `res` to enable sliding renewal (the auth gate always does).
+   */
   private async getAuthUser(
-    req: IncomingMessage
+    req: IncomingMessage,
+    res?: ServerResponse,
   ): Promise<{ userId: string; orgId: string; role: string } | null> {
     if (!this.authEnabled) {
       // Auth-disabled mode is a local single-user convenience. Handing out an
@@ -2385,7 +2442,9 @@ export class APIServer {
     if (!token) return null;
     const payload = await verifyToken(token, this.jwtSecret);
     if (!payload) return null;
-    return payload as { userId: string; orgId: string; role: string };
+    const user = payload as { userId: string; orgId: string; role: string };
+    if (res) await this.renewSessionIfStale(res, payload, user);
+    return user;
   }
 
   /** Returns user or sends 401 and returns null */
@@ -2393,9 +2452,13 @@ export class APIServer {
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<{ userId: string; orgId: string; role: string } | null> {
-    const user = await this.getAuthUser(req);
+    const user = await this.getAuthUser(req, res);
     if (!user) {
-      this.json(res, 401, { error: 'Unauthorized' });
+      // `code` is the machine-readable half: the renderer must be able to tell
+      // "your local session ended" (re-login) apart from "the model provider
+      // rejected the key" (check Settings). Without it both surfaced as the
+      // same misleading "模型 API 认证失败" message.
+      this.json(res, 401, { error: 'Unauthorized', code: 'AUTH_REQUIRED' });
       return null;
     }
     return user;
@@ -3199,15 +3262,7 @@ export class APIServer {
       // A real owner now exists — the bootstrap password is no longer valid.
       clearInitialAdminPassword();
       await this.storage.userRepo.updateLastLogin(userId);
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken(
-        { userId, orgId: 'default', role: 'owner', exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId, orgId: 'default', role: 'owner' });
       this.json(res, 200, {
         user: { id: userId, name, email, role: 'owner', orgId: 'default' },
         needsOnboarding: true,
@@ -3271,15 +3326,7 @@ export class APIServer {
       }
       const isFirstLogin = !userRow.lastLoginAt;
       await this.storage!.userRepo.updateLastLogin(userRow.id);
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken(
-        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId: userRow.id, orgId: userRow.orgId, role: userRow.role });
       this.json(res, 200, {
         user: {
           id: userRow.id,
@@ -3482,15 +3529,7 @@ export class APIServer {
 
       const finalUser = userRow!;
       await this.storage.userRepo.updateLastLogin(finalUser.id);
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken(
-        { userId: finalUser.id, orgId: 'default', role: finalUser.role, exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId: finalUser.id, orgId: 'default', role: finalUser.role });
       this.json(res, 200, {
         user: {
           id: finalUser.id,
@@ -3515,9 +3554,9 @@ export class APIServer {
     }
 
     if (path === '/api/auth/me' && req.method === 'GET') {
-      const authUser = await this.getAuthUser(req);
+      const authUser = await this.getAuthUser(req, res);
       if (!authUser) {
-        this.json(res, 401, { error: 'Unauthorized' });
+        this.json(res, 401, { error: 'Unauthorized', code: 'AUTH_REQUIRED' });
         return;
       }
       if (!this.authEnabled) {
@@ -3604,15 +3643,7 @@ export class APIServer {
       const newHash = await hashPassword(newPassword);
       await this.storage.userRepo.updatePassword(authUser.userId, newHash);
       // Re-issue token so session stays valid
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken(
-        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId: userRow.id, orgId: userRow.orgId, role: userRow.role });
       this.json(res, 200, { ok: true });
       return;
     }
@@ -3646,15 +3677,7 @@ export class APIServer {
       await this.storage.userRepo.updatePassword(userRow.id as string, hash);
       this.storage.userRepo.clearInviteToken(userRow.id as string);
       await this.storage.userRepo.updateLastLogin(userRow.id as string);
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const jwtToken = await signToken(
-        { userId: userRow.id, orgId: userRow.orgId, role: userRow.role, exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${jwtToken}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId: userRow.id as string, orgId: userRow.orgId as string, role: userRow.role as string });
 
       this.json(res, 200, { ok: true, email: userRow.email });
       return;
@@ -3721,15 +3744,7 @@ export class APIServer {
         email || updated.email || undefined,
       );
       // Re-issue token with updated info
-      const exp = Math.floor(Date.now() / 1000) + 7 * 24 * 3600;
-      const token = await signToken(
-        { userId: updated.id, orgId: updated.orgId, role: updated.role, exp },
-        this.jwtSecret
-      );
-      res.setHeader(
-        'Set-Cookie',
-        `markus_token=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${7 * 24 * 3600}`
-      );
+      await this.issueSessionCookie(res, { userId: updated.id, orgId: updated.orgId, role: updated.role });
       this.json(res, 200, {
         user: {
           id: updated.id,
@@ -13506,7 +13521,7 @@ EXPLANATION_END`;
           mentions, undefined,
           { authorType: (body['authorType'] as string) ?? 'human', attachments: body['attachments'] as unknown[] | undefined, replyToId: body['replyTo'] as string | undefined },
         );
-        this.json(res, 201, { comment: result.comment });
+        this.json(res, 201, { comment: result.comment, notifiedAgentIds: result.notifiedAgentIds });
       } catch (err) {
         this.json(res, 500, { error: String(err) });
       }

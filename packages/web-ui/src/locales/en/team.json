@@ -306,6 +306,7 @@
     "ai402": "⚠ AI service error: {{detail}}. Please top up the API balance or contact your administrator.",
     "aiContextOverflow": "⚠ Context exceeds the model limit (this request: {{asked}} tokens, limit: {{limit}}). Have the agent compact its session and retry — this is prompt length, not an API key or configuration problem.",
     "ai401": "⚠ AI service authentication failed: {{detail}}. Please check the configuration.",
+    "sessionExpired": "⚠ Your Markus session has expired, so this message was NOT sent. It is still in the input box — sign in again and press send.",
     "ai429": "⚠ Rate limit exceeded: {{detail}}. Please wait a moment and try again.",
     "ai409": "⚠ Request conflict: {{detail}}. Please retry.",
     "ai502": "⚠ AI upstream service error: {{detail}}. The LLM provider may be temporarily down. Please try again later.",
