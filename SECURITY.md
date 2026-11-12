@@ -40,6 +40,12 @@ reports are measured against:
 
 1. `/api/*` is deny-by-default — every route needs a session unless it is listed in
    the public allowlist (auth, health, gateway with its own bearer token, license).
+   The corollary we got wrong once: an endpoint the login flow itself depends on
+   must live under that allowlist, not under an authenticated prefix. The Hub
+   connect handshake (`GET /api/auth/hub-connect-status`) is the poll that returns
+   a finished Hub sign-in to a page that has no session yet; it carries the random
+   per-attempt `cs_…` session id as its credential and never borrows the locally
+   stored Hub token.
 2. Interfaces that decide *what this machine can reach* (remote access, bind
    address, file writes to the local filesystem) are owner-only.
 3. User-supplied workflow expressions are evaluated by a restricted evaluator, never
