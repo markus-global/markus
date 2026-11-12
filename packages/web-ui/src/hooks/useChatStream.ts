@@ -22,7 +22,7 @@
  */
 import { useCallback, useRef, type RefObject } from 'react';
 import {
-  api,
+  api, isAuthExpiredError,
   type AgentInfo, type AgentToolEvent, type StreamCommitEvent, type HumanUserInfo,
   type ChatSessionInfo, type AuthUser, type ChannelMessageInfo,
   type GroupChatInfo, type SubagentProgressEvent,
@@ -50,7 +50,6 @@ import { decideOnStreamEnd, normalizeServerStreamStatus } from '../lib/streamLiv
 import { sessionStreamState } from '../lib/sessionStreamState.ts';
 import { newMessageId } from '../lib/messageId.ts';
 import { friendlyAgentError, isMarkusCreditError, dispatchCreditNotification } from '../pages/ChatComponents.tsx';
-import { isAuthExpiredError } from '../api.ts';
 import type { ActivityStep } from '../components/ActivityIndicator.tsx';
 
 /* ── Volatile read-only state snapshot (refreshed every Team render) ───────── */
