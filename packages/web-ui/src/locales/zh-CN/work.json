@@ -139,6 +139,8 @@
     "reviewOutcomeRevision": "已打回",
     "reviewOutcomeClosed": "已关闭",
     "reviewDecidedBy": "{{name}} 决定",
+    "reviewLoading": "正在加载该轮评审过程…",
+    "reviewNoTurns": "未找到这一轮的评审记录（当时未记录归属，可能属于更早的版本）",
     "loadingHistory": "加载历史...",
     "noHistory": "暂无状态变更记录。",
     "statusHistory": "状态历史",

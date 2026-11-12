@@ -800,6 +800,12 @@ export class Agent {
    * decisions / card stuck in `review`). Retrying a human-level stall cannot fix it.
    */
   private reviewUndecidedTurns = new Map<string, number>();
+  /**
+   * The review task this turn belongs to, if any. Read once when the turn's activity is
+   * created so the activity RECORDS its task. Without it, review activities carry
+   * `task_id = NULL` and the UI can only guess attribution from time windows.
+   */
+  private currentReviewTaskId?: string;
   /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
   private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
@@ -2715,14 +2721,23 @@ export class Agent {
           const reviewRound = (item.metadata as { round?: number } | undefined)?.round;
           const reviewSessionId = `review_${this.id}_${reviewTaskId ?? 'unknown'}`
             + (reviewRound === undefined ? '' : `_r${reviewRound}`);
-          let reply = await this.handleMessage(
-            item.payload.content,
-            item.metadata?.senderId,
-            item.metadata?.senderName
-              ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
-              : undefined,
-            buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
-          );
+          // Stamp the review task on the activity this turn creates, so "which card did this
+          // review turn belong to" is a RECORDED fact instead of something the UI infers
+          // from time windows (review activities otherwise carry task_id = NULL).
+          this.currentReviewTaskId = reviewTaskId;
+          let reply: string;
+          try {
+            reply = await this.handleMessage(
+              item.payload.content,
+              item.metadata?.senderId,
+              item.metadata?.senderName
+                ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
+                : undefined,
+              buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
+            );
+          } finally {
+            this.currentReviewTaskId = undefined;
+          }
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
           // A review is finished only when the CARD changed. A closed turn is not evidence:
           // the `end_turn` sentinel is produced whenever the turn stops, including when the
@@ -5325,7 +5340,11 @@ export class Agent {
           actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
           break;
       }
-      chatActivityId = this.startActivity(actType, actLabel);
+      chatActivityId = this.startActivity(
+        actType,
+        actLabel,
+        this.currentReviewTaskId ? { taskId: this.currentReviewTaskId } : undefined,
+      );
     }
 
     // Run input guardrails

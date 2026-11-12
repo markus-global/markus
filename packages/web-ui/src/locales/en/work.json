@@ -139,6 +139,8 @@
     "reviewOutcomeRevision": "Changes requested",
     "reviewOutcomeClosed": "Closed",
     "reviewDecidedBy": "decided by {{name}}",
+    "reviewLoading": "Loading this review turn…",
+    "reviewNoTurns": "No transcript found for this round (attribution was not recorded at the time).",
     "loadingHistory": "Loading history...",
     "noHistory": "No status change history.",
     "statusHistory": "Status History",

@@ -6,6 +6,7 @@ import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { ReviewSessionCard } from '../components/ReviewSessionCard.tsx';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -2673,39 +2674,13 @@ function TaskDetailPanel({
             {reviewSessions.length === 0 ? (
               <div className="px-6 py-4 text-xs text-fg-tertiary italic">{task.status === 'review' ? t('work:task.reviewsEmptyPending') : t('work:task.reviewsEmpty')}</div>
             ) : (
-              // 每个评审会话一行：轮次 / 评审人 / 结论 / 谁决定的 / 时间跨度 / 评审说明。
-              // 这里**不复用执行日志**：那是执行者的回合，和「谁审的、审成什么」是两件事，
-              // 抄一遍只会让两个 tab 内容一模一样。
+              // 每轮评审一张可展开卡片：头部是结论，展开后是该轮评审的**全过程**
+              // （正文 / 思考 / 工具调用），复用执行日志那套渲染器，但喂的是
+              // **评审人自己的回合**数据 —— 不是把执行日志再显示一遍。
               <div className="px-6 pt-3 pb-4 space-y-2">
-                {reviewSessions.map(s => {
-                  const live = s.status === 'reviewing';
-                  const outcomeLabel = s.outcome === 'approved' ? t('work:task.reviewOutcomeApproved')
-                    : s.outcome === 'revision_requested' ? t('work:task.reviewOutcomeRevision')
-                    : t('work:task.reviewOutcomeClosed');
-                  const badgeTone = live ? 'text-purple-400 border-purple-500/30'
-                    : s.outcome === 'approved' ? 'text-green-500 border-green-500/30'
-                    : 'text-amber-500 border-amber-500/30';
-                  return (
-                    <div key={s.id} className="rounded-md border border-border-subtle bg-surface-elevated/40 px-3 py-2">
-                      <div className="flex items-center gap-2 text-[11px]">
-                        <span className={`w-1.5 h-1.5 rounded-full ${live ? 'bg-purple-400 animate-pulse' : s.outcome === 'approved' ? 'bg-green-400' : 'bg-amber-400'}`} />
-                        <span className="font-medium text-fg-secondary">{s.reviewerName}</span>
-                        <span className="text-fg-tertiary">{t('work:task.reviewRound', { round: s.round })}</span>
-                        <span className={`ml-auto shrink-0 rounded border px-1.5 py-0.5 text-[10px] font-medium ${badgeTone}`}>
-                          {live ? t('work:task.reviewLive') : outcomeLabel}
-                        </span>
-                      </div>
-                      <div className="mt-1 text-[10px] text-fg-tertiary">
-                        {new Date(s.queuedAt).toLocaleString()}
-                        {s.completedAt ? ` → ${new Date(s.completedAt).toLocaleString()}` : ''}
-                        {s.decidedByName ? ` · ${t('work:task.reviewDecidedBy', { name: s.decidedByName })}` : ''}
-                      </div>
-                      {s.note && (
-                        <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-relaxed text-fg-secondary">{s.note}</p>
-                      )}
-                    </div>
-                  );
-                })}
+                {reviewSessions.map(s => (
+                  <ReviewSessionCard key={s.id} session={s} taskId={task.id} />
+                ))}
               </div>
             )}
           </div>

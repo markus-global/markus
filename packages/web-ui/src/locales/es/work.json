@@ -138,6 +138,8 @@
     "reviewOutcomeRevision": "Cambios solicitados",
     "reviewOutcomeClosed": "Cerrado",
     "reviewDecidedBy": "decidido por {{name}}",
+    "reviewLoading": "Cargando esta ronda de revisión…",
+    "reviewNoTurns": "No se encontró transcripción para esta ronda (no se registró la atribución entonces).",
     "loadingHistory": "Cargando historia...",
     "noHistory": "No hay historia de cambio de estado.",
     "statusHistory": "Situación",
