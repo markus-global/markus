@@ -324,7 +324,13 @@ export async function handleTasksRoutes(
       const body = await server.readBody(req);
 
       if (body['status']) {
-        const task = server.taskService.updateTaskStatus(taskId, body['status'] as TaskStatus, authUser?.userId);
+        // `updatedByType` 必须显式给 'human'：这个路由背后是已认证的人（requireAuth）。
+        // 不传的话 updateTaskStatus 会按 `updatedBy ? 'agent' : 'system'` 默认成 agent，
+        // 于是「重新打开」（completed → in_progress）撞上 terminal-revert 守卫，
+        // 人自己点按钮也会被当成 agent 翻案抛错 —— 前端又没 catch，表现就是「点了没反应」。
+        const task = server.taskService.updateTaskStatus(
+          taskId, body['status'] as TaskStatus, authUser?.userId, false, false, 'human',
+        );
         server.json(res, 200, { task });
         return true;
       }
