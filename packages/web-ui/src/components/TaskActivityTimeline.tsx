@@ -10,7 +10,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, taskLogToStreamEntry } from '../api.ts';
-import { CompactExecutionCard, FullExecutionLog, type ExecutionStreamEntryUI } from './ExecutionTimeline.tsx';
+import { FullExecutionLog, type ExecutionStreamEntryUI } from './ExecutionTimeline.tsx';
 import { ReviewSessionCard } from './ReviewSessionCard.tsx';
 import { buildActivityTimeline, type ActivityFilter } from '../lib/activityTimeline.ts';
 import type { ReviewSession } from '../lib/taskReview.ts';
@@ -93,7 +93,6 @@ function ExecutionRoundCard({
   const [open, setOpen] = useState(false);
   const [entries, setEntries] = useState<ExecutionStreamEntryUI[]>([]);
   const [loaded, setLoaded] = useState(false);
-  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
 
   useEffect(() => {
     if (!open || loaded) return;
@@ -131,18 +130,15 @@ function ExecutionRoundCard({
             <div className="py-2 text-[11px] italic text-fg-tertiary">{t('task.noExecutionLogAvailable')}</div>
           )}
           {entries.length > 0 && (
-            viewMode === 'compact' ? (
-              <CompactExecutionCard entries={entries} isActive={false} onExpand={() => setViewMode('full')} embedded />
-            ) : (
-              <FullExecutionLog
-                entries={entries}
-                isActive={false}
-                onCollapse={() => setViewMode('compact')}
-                embedded
-                expandThinking={false}
-                showRounds={false}
-              />
-            )
+            // 和执行日志完全同一种形式：一条时间线，正文与折叠的思考/工具行相间出现。
+            // 不要再套一层 CompactExecutionCard —— 那会把整轮压成一坨摘要。
+            <FullExecutionLog
+              entries={entries}
+              isActive={false}
+              embedded
+              expandThinking={false}
+              showRounds={false}
+            />
           )}
         </div>
       )}
