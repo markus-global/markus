@@ -5343,7 +5343,14 @@ export class Agent {
       chatActivityId = this.startActivity(
         actType,
         actLabel,
-        this.currentReviewTaskId ? { taskId: this.currentReviewTaskId } : undefined,
+        // 只允许 scenario==='review' 的回合携带 taskId。
+        // 否则 currentReviewTaskId 是实例级字段：评审回合还没跑完时，另一个并发的
+        // chat / comment_response 回合会读到同一个值，把自己的活动错误地标成
+        // 「属于这张卡」——那会经由 taskId 精确匹配直接污染评审轮次的展示
+        // （实测：12:21:22 Reviewing task from CTO 之后 52 秒的 Chat from CTO 也带上了同一个 task_id）。
+        scenario === 'review' && this.currentReviewTaskId
+          ? { taskId: this.currentReviewTaskId }
+          : undefined,
       );
     }
 
