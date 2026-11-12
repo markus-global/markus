@@ -800,12 +800,6 @@ export class Agent {
    * decisions / card stuck in `review`). Retrying a human-level stall cannot fix it.
    */
   private reviewUndecidedTurns = new Map<string, number>();
-  /**
-   * The review task this turn belongs to, if any. Read once when the turn's activity is
-   * created so the activity RECORDS its task. Without it, review activities carry
-   * `task_id = NULL` and the UI can only guess attribution from time windows.
-   */
-  private currentReviewTaskId?: string;
   /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
   private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
@@ -2721,23 +2715,22 @@ export class Agent {
           const reviewRound = (item.metadata as { round?: number } | undefined)?.round;
           const reviewSessionId = `review_${this.id}_${reviewTaskId ?? 'unknown'}`
             + (reviewRound === undefined ? '' : `_r${reviewRound}`);
-          // Stamp the review task on the activity this turn creates, so "which card did this
-          // review turn belong to" is a RECORDED fact instead of something the UI infers
-          // from time windows (review activities otherwise carry task_id = NULL).
-          this.currentReviewTaskId = reviewTaskId;
+          // 评审回合跑在 taskAsyncContext 里——与任务执行回合**同一个**回合作用域机制，
+          // 所以 taskId 通过结构传给活动，而不是实例字段。
+          // 旧实现用实例字段 `currentReviewTaskId`，评审还没跑完时另一个并发回合会读到它，
+          // 把 `Chat from …` 也标成这张卡（实测：12:21:22 评审，12:22:14 聊天，同一个 task_id）。
           let reply: string;
-          try {
-            reply = await this.handleMessage(
-              item.payload.content,
-              item.metadata?.senderId,
-              item.metadata?.senderName
-                ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
-                : undefined,
-              buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
-            );
-          } finally {
-            this.currentReviewTaskId = undefined;
-          }
+          const runReviewTurn = () => this.handleMessage(
+            item.payload.content,
+            item.metadata?.senderId,
+            item.metadata?.senderName
+              ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
+              : undefined,
+            buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
+          );
+          reply = reviewTaskId
+            ? await taskAsyncContext.run({ taskId: reviewTaskId }, runReviewTurn)
+            : await runReviewTurn();
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
           // A review is finished only when the CARD changed. A closed turn is not evidence:
           // the `end_turn` sentinel is produced whenever the turn stops, including when the
@@ -5340,11 +5333,11 @@ export class Agent {
           actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
           break;
       }
-      chatActivityId = this.startActivity(
-        actType,
-        actLabel,
-        this.currentReviewTaskId ? { taskId: this.currentReviewTaskId } : undefined,
-      );
+      // taskId 来自**回合作用域**（taskAsyncContext），不是 agent 实例字段：
+      // 同一 agent 的并发回合各自读到自己的 taskId，不会互相污染；
+      // 评审回合、任务执行回合走同一个机制，不再为前端关掉关联能力。
+      const turnTaskId = taskAsyncContext.getStore()?.taskId;
+      chatActivityId = this.startActivity(actType, actLabel, turnTaskId ? { taskId: turnTaskId } : undefined);
     }
 
     // Run input guardrails
