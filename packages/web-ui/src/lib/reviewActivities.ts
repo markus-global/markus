@@ -13,6 +13,8 @@
 export interface ReviewActivityLike {
   id: string;
   taskId?: string | null;
+  /** 活动标签。评审回合由 core 写成 `Reviewing task from <peer>` / `Task Review`。 */
+  label?: string | null;
   startedAt: string;
   endedAt?: string | null;
 }
@@ -27,6 +29,24 @@ export interface ReviewSessionWindow {
 
 /** 容忍时钟/写入抖动：活动与窗口边界相差 1 分钟内仍视为重叠。 */
 const WINDOW_TOLERANCE_MS = 60_000;
+
+/**
+ * 这个 activity 是不是**评审回合**。
+ *
+ * 为什么需要它：历史行没有 taskId，只能靠时间窗兜底；而同一时间窗里评审人可能还在
+ * 做别的事（`Comment reply to …` 回复评论、`Requirement action from …`、a2a 聊天）。
+ * 只按时间窗过滤，就会把「回复评论的 session」当成评审轮次展示出来。
+ *
+ * 判据来源：`packages/core/src/agent.ts` 的 `scenario==='review'` 分支写入的 label
+ * 只有两种形态（peerName 可选）：`Reviewing task from <peer>` / `Task Review`。
+ */
+const REVIEW_TURN_LABEL = /^(Reviewing task from\b|Task Review$)/;
+
+export function isReviewTurnActivity(a: { label?: string | null }): boolean {
+  const label = (a.label ?? '').trim();
+  if (!label) return false;
+  return REVIEW_TURN_LABEL.test(label);
+}
 
 /**
  * 返回属于这一轮评审的活动（按时间升序）。
@@ -44,6 +64,10 @@ export function matchReviewActivities<T extends ReviewActivityLike>(
 
   return activities
     .filter(a => {
+      // 0) 先排除根本不是评审回合的活动（回复评论 / 需求动作 / 聊天 ……）。
+      //    这一步是必须的：下面的时间窗兜底对「同一段时间里干的任何事」都成立。
+      if (!isReviewTurnActivity(a)) return false;
+
       // 1) 有归属事实：严格按 taskId，不经时间窗
       if (a.taskId) return a.taskId === session.taskId;
 

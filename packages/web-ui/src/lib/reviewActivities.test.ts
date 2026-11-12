@@ -1,8 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import { matchReviewActivities } from './reviewActivities.ts';
 
-function act(id: string, startedAt: string, extra: { taskId?: string | null; endedAt?: string | null } = {}) {
-  return { id, startedAt, taskId: extra.taskId ?? null, endedAt: extra.endedAt ?? null };
+function act(id: string, startedAt: string, extra: { taskId?: string | null; endedAt?: string | null; label?: string } = {}) {
+  return { id, startedAt, taskId: extra.taskId ?? null, endedAt: extra.endedAt ?? null, label: extra.label ?? 'Reviewing task from CTO' };
 }
 
 const SESSION = { taskId: 'tsk_1', queuedAt: '2026-01-01T10:00:00Z', completedAt: '2026-01-01T10:30:00Z' };
@@ -45,5 +45,30 @@ describe('matchReviewActivities — 把评审活动归到哪一轮', () => {
   it('时间戳非法 → 丢弃，不抛异常', () => {
     const bad = act('bad', 'not-a-date');
     expect(matchReviewActivities([bad], SESSION)).toEqual([]);
+  });
+
+  // ── 回归：回复评论 / 其它会话绝不能被当成评审轮次 ──────────────────────
+  it('时间窗内的「回复评论」回合 → 排除（它不是评审）', () => {
+    const a = act('comment', '2026-01-01T10:10:00Z', { label: 'Comment reply to CTO' });
+    expect(matchReviewActivities([a], SESSION)).toEqual([]);
+  });
+
+  it('时间窗内的需求动作 / a2a 聊天 / 心跳 → 排除', () => {
+    const list = [
+      act('req', '2026-01-01T10:05:00Z', { label: 'Requirement action from System' }),
+      act('a2a', '2026-01-01T10:06:00Z', { label: 'Chat from Secretary' }),
+      act('hb', '2026-01-01T10:07:00Z', { label: 'Internal Operation' }),
+    ];
+    expect(matchReviewActivities(list, SESSION)).toEqual([]);
+  });
+
+  it('label 为 Task Review 也认（无 peer 名时的形态）', () => {
+    const a = act('t', '2026-01-01T10:10:00Z', { label: 'Task Review' });
+    expect(matchReviewActivities([a], SESSION).map(x => x.id)).toEqual(['t']);
+  });
+
+  it('即使 taskId 匹配，非评审回合也不进评审块', () => {
+    const a = act('c', '2026-01-01T10:10:00Z', { taskId: 'tsk_1', label: 'Comment reply to CTO' });
+    expect(matchReviewActivities([a], SESSION)).toEqual([]);
   });
 });
