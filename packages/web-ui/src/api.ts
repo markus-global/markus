@@ -483,10 +483,38 @@ export interface ReportFeedbackInfo {
 
 export class ApiError extends Error {
   code?: string;
-  constructor(message: string, code?: string) {
+  /** HTTP status when the error came from a response (undefined for transport failures). */
+  status?: number;
+  constructor(message: string, code?: string, status?: number) {
     super(message);
     this.code = code;
+    this.status = status;
   }
+}
+
+/**
+ * "Your local Markus session ended" — emitted once per transition, so the app
+ * can drop to the login screen instead of leaving a signed-in-looking shell
+ * that fails every write. Distinct from a model-provider 401 on purpose: the
+ * two used to share one misleading "模型 API 认证失败" message.
+ */
+export const AUTH_EXPIRED_EVENT = 'markus:auth-expired';
+
+/** True when this error means the LOCAL session is gone (re-login fixes it). */
+export function isAuthExpiredError(err: unknown): boolean {
+  return err instanceof ApiError && (err.code === 'AUTH_REQUIRED' || (err.status === 401 && err.code !== undefined));
+}
+
+let _authExpiredNotified = false;
+function notifyAuthExpired(): void {
+  if (_authExpiredNotified) return;
+  _authExpiredNotified = true;
+  window.dispatchEvent(new CustomEvent(AUTH_EXPIRED_EVENT));
+}
+
+/** Clearing the flag belongs to whoever handles the event (App on re-login). */
+export function resetAuthExpiredNotice(): void {
+  _authExpiredNotified = false;
 }
 
 /**
@@ -626,7 +654,11 @@ async function request<T>(path: string, opts?: RequestInit): Promise<T> {
         detail = body.error ?? body.message ?? '';
         code = body.code;
       } catch { /* ignore parse failures */ }
-      throw new ApiError(detail || `API error: ${res.status}`, code);
+      // Session expiry is a STATE CHANGE, not a failed call: surface it once so
+      // the app leaves the signed-in shell. `/auth/*` 401s are ordinary login
+      // failures (bad password) and must never trigger this.
+      if (res.status === 401 && !path.startsWith('/auth')) notifyAuthExpired();
+      throw new ApiError(detail || `API error: ${res.status}`, code, res.status);
     }
     return res.json() as Promise<T>;
   })();
@@ -1841,7 +1873,7 @@ export const api = {
     getComments: (id: string) => request<{ comments: TaskComment[] }>(`/tasks/${id}/comments`),
     getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/tasks/${id}/history`),
     addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string, mentions?: string[], replyTo?: string) =>
-      request<{ comment: TaskComment }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
+      request<{ comment: TaskComment; /** Agents actually woken by this comment (server truth). */ notifiedAgentIds?: string[] }>(`/tasks/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
     pauseSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/pause`, { method: 'POST' }),
     resumeSchedule: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}/schedule/resume`, { method: 'POST' }),
     runNow: (id: string) => request<{ status: string; taskId: string }>(`/tasks/${id}/schedule/run-now`, { method: 'POST' }),
@@ -1936,7 +1968,7 @@ export const api = {
     getComments: (id: string) => request<{ comments: RequirementComment[] }>(`/requirements/${id}/comments`),
     getHistory: (id: string) => request<{ history: StatusTransitionInfo[] }>(`/requirements/${id}/history`),
     addComment: (id: string, content: string, authorName?: string, attachments?: Array<{ type: string; url: string; name: string }>, authorId?: string, mentions?: string[], replyTo?: string) =>
-      request<{ comment: RequirementComment }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
+      request<{ comment: RequirementComment; /** Agents actually woken by this comment (server truth). */ notifiedAgentIds?: string[] }>(`/requirements/${id}/comments`, { method: 'POST', body: JSON.stringify({ content, authorId: authorId ?? 'human', authorName: authorName ?? 'User', authorType: 'human', attachments, mentions, replyTo }) }),
   },
   users: {
     list: (orgId?: string) => request<{ users: HumanUserInfo[] }>(`/users?orgId=${orgId ?? 'default'}`),

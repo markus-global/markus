@@ -40,6 +40,7 @@ import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
 import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
+import { agentsFromIds } from '../lib/commentThinking.ts';
 import { needsHumanDecision, blockedReasonOf } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
@@ -1101,21 +1102,10 @@ function TaskActivitySection({ task, agents, users, authUser }: {
       const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
       attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
     }
-    await api.tasks.addComment(task.id, content, authUser?.name, attachments, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
-    const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-    const seen = new Set<string>();
-    const tryAdd = (agentId: string) => {
-      if (seen.has(agentId) || agentId === authUser?.id) return;
-      seen.add(agentId);
-      const a = agents.find(ag => ag.id === agentId);
-      if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
-    };
-    for (const name of mentions) {
-      const a = agents.find(ag => ag.name.toLowerCase() === name.toLowerCase());
-      if (a) tryAdd(a.id);
-    }
-    if (task.assignedAgentId) tryAdd(task.assignedAgentId);
-    if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
+    const result = await api.tasks.addComment(task.id, content, authUser?.name, attachments, authUser?.id, mentions.length > 0 ? mentions : undefined, replyToId);
+    // "Who is thinking" is the SERVER's answer (it knows whom it actually
+    // enqueued), never a local guess — see agentsFromIds().
+    const notified = agentsFromIds(result.notifiedAgentIds, agents);
     if (notified.length > 0) {
       if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
       setThinkingAgents(notified);
@@ -1473,16 +1463,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents }: { task: TaskIn
       }
       setCommentText('');
       setImageAttachments([]);
-      const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-      const seen = new Set<string>();
-      const tryAdd = (agentId: string) => {
-        if (seen.has(agentId) || agentId === authUser?.id) return;
-        seen.add(agentId);
-        const a = agents.find(ag => ag.id === agentId);
-        if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
-      };
-      if (task.assignedAgentId) tryAdd(task.assignedAgentId);
-      if (task.createdBy?.startsWith('agt_') && task.status !== 'in_progress') tryAdd(task.createdBy);
+      // Server truth only — see agentsFromIds().
+      const notified = agentsFromIds(result.notifiedAgentIds, agents);
       if (notified.length > 0) {
         if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
         setThinkingAgents(notified);
@@ -7399,7 +7381,7 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
       const uploaded = await api.uploads.upload(images.map(img => ({ dataUrl: img.dataUrl, name: img.name })), 'comments');
       attachments = uploaded.files.map(f => ({ type: 'image', url: f.url, name: f.name }));
     }
-    await api.requirements.addComment(
+    const result = await api.requirements.addComment(
       requirementId,
       content,
       authUser?.name,
@@ -7408,19 +7390,8 @@ function RequirementCommentThread({ requirementId, createdBy, agents, users, aut
       mentions.length > 0 ? mentions : undefined,
       replyToId,
     );
-    const notified: Array<{ id: string; name: string; avatarUrl?: string }> = [];
-    const seen = new Set<string>();
-    const tryAdd = (agentId: string) => {
-      if (seen.has(agentId) || agentId === authUser?.id) return;
-      seen.add(agentId);
-      const a = agents.find(ag => ag.id === agentId);
-      if (a) notified.push({ id: a.id, name: a.name, avatarUrl: a.avatarUrl });
-    };
-    for (const name of mentions) {
-      const a = agents.find(ag => ag.name.toLowerCase() === name.toLowerCase());
-      if (a) tryAdd(a.id);
-    }
-    if (createdBy?.startsWith('agt_')) tryAdd(createdBy);
+    // Server truth only — see agentsFromIds().
+    const notified = agentsFromIds(result.notifiedAgentIds, agents);
     if (notified.length > 0) {
       if (thinkingTimeoutRef.current) clearTimeout(thinkingTimeoutRef.current);
       setThinkingAgents(notified);

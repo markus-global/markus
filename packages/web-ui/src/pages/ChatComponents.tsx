@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, useCallback, useMemo, memo, type MouseEven
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { api, type AgentInfo } from '../api.ts';
+import { api, isAuthExpiredError, type AgentInfo } from '../api.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { ActivityIndicator, type ActivityStep } from '../components/ActivityIndicator.tsx';
 import {
@@ -262,6 +262,12 @@ export function friendlyAgentError(err: unknown, t: TFunction): string {
   // All error keys live in the 'team' namespace — use explicit prefix so
   // this function works regardless of the caller's default namespace.
   const e = (key: string, opts?: Record<string, unknown>) => t(`team:errors.${key}`, opts);
+
+  // Local session expiry FIRST. It reaches us as a 401, but it is not a
+  // credential problem: the model keys may be perfectly fine. Reporting it as
+  // "模型 API 认证失败" sent everyone hunting for a broken key while the real
+  // fix was \"sign in again\".
+  if (isAuthExpiredError(err)) return e('sessionExpired');
 
   // Context overflow first: it is the one error with an action the user can take
   // (compact the session), and it must never be mistaken for a credential issue.

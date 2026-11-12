@@ -664,7 +664,13 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   /** Post a structured comment on a task. Called from both agent tools and HTTP API. */
-  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postTaskComment(taskId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown>; notifiedAgentIds: string[] }> {
+    /** Agents actually woken by THIS comment — the authoritative answer to
+     *  "who is now thinking?". The renderer must never re-derive this from the
+     *  mention text: it used to guess (mentions matched by *name*, plus the
+     *  assignee and creator) and ended up showing the task creator as the one
+     *  "thinking" while the agent the human actually mentioned was invisible. */
+    const notifiedAgentIds: string[] = [];
     if (!this.taskCommentRepo) throw new Error('Task comment repo not available');
     const comment = await this.taskCommentRepo.add({
       taskId,
@@ -790,6 +796,7 @@ export class TaskService implements ApprovalTargetPort {
             ...(isHuman ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHuman ? 'user' : 'agent', taskId },
           });
+          notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
       };
 
@@ -829,11 +836,13 @@ export class TaskService implements ApprovalTargetPort {
       replyToContent,
       createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
     };
-    return { id: comment.id, comment: serialized };
+    return { id: comment.id, comment: serialized, notifiedAgentIds };
   }
 
   /** Post a structured comment on a requirement. Called from both agent tools and HTTP API. */
-  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown> }> {
+  async postRequirementComment(requirementId: string, authorId: string, authorName: string, content: string, mentions?: string[], activityId?: string, opts?: { authorType?: string; attachments?: unknown[]; replyToId?: string; commentKind?: RequirementCommentKind }): Promise<{ id: string; comment: Record<string, unknown>; notifiedAgentIds: string[] }> {
+    /** Agents actually woken by THIS comment (see postTaskComment). */
+    const notifiedAgentIds: string[] = [];
     if (!this.requirementCommentRepo) throw new Error('Requirement comment repo not available');
     const comment = await this.requirementCommentRepo.add({
       requirementId,
@@ -937,6 +946,7 @@ export class TaskService implements ApprovalTargetPort {
             ...(isHumanReq ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHumanReq ? 'user' : 'agent' },
           });
+          notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
       };
 
@@ -970,7 +980,7 @@ export class TaskService implements ApprovalTargetPort {
       replyToContent,
       createdAt: comment.createdAt instanceof Date ? comment.createdAt.toISOString() : comment.createdAt,
     };
-    return { id: comment.id, comment: serialized };
+    return { id: comment.id, comment: serialized, notifiedAgentIds };
   }
 
   getRequirementComments(requirementId: string): Array<{ id: string; authorId: string; authorName: string; authorType?: string; content: string; replyToId?: string; replyToAuthor?: string; replyToContent?: string; createdAt: string }> {

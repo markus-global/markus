@@ -21,7 +21,7 @@ import { MobileDrawer } from './components/MobileDrawer.tsx';
 import { Onboarding } from './components/Onboarding.tsx';
 import { Login, InviteSetup } from './pages/Login.tsx';
 import { ChangePassword } from './pages/ChangePassword.tsx';
-import { api, hubApi, clearHubAuth, type AuthUser, wsClient } from './api.ts';
+import { api, hubApi, clearHubAuth, AUTH_EXPIRED_EVENT, resetAuthExpiredNotice, type AuthUser, wsClient } from './api.ts';
 import { fetchLlmSettings } from './lib/llmSettingsCache.ts';
 import { navBus } from './navBus.ts';
 import { useResizablePanel } from './hooks/useResizablePanel.ts';
@@ -792,6 +792,16 @@ export function App() {
   }, []);
 
   useEffect(() => {
+    // Any /api 401 means the local session is gone (see AUTH_EXPIRED_EVENT in
+    // api.ts). Leaving the signed-in shell is the honest response: every write
+    // would 401 anyway, and the failure used to be reported as a model-credential
+    // problem while messages silently vanished.
+    const onExpired = () => setAuthUser(null);
+    window.addEventListener(AUTH_EXPIRED_EVENT, onExpired);
+    return () => window.removeEventListener(AUTH_EXPIRED_EVENT, onExpired);
+  }, []);
+
+  useEffect(() => {
     // Deep link: ?install=ITEM_ID&type=agent|team|skill — always apply (hash may already be #explore)
     const urlParams = new URLSearchParams(window.location.search);
     const installItemId = urlParams.get('install');
@@ -806,6 +816,7 @@ export function App() {
 
     api.auth.me()
       .then(({ user }) => {
+        resetAuthExpiredNotice();
         setAuthUser(user);
         setSystemInitialized(true);
         // 恢复会话不弹全屏向导。只有服务端已持久化 guideHidden（老用户/明确
@@ -947,6 +958,7 @@ export function App() {
       hasOwner={authStatus.hasOwner}
       hasMultipleUsers={authStatus.hasMultipleUsers}
       onLogin={(user, needsOnboarding, opts) => {
+        resetAuthExpiredNotice();
       setAuthUser(user);
       // Re-key the WebSocket to this user. The initial connect() ran anonymously
       // (or not at all when logged out), so without this the socket stays
