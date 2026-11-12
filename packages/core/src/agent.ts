@@ -62,6 +62,7 @@ import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-su
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
+import { resolveReviewTurnOutcome, REVIEW_TURN_MAX_RETRIES } from './review-turn-outcome.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
@@ -789,6 +790,22 @@ export class Agent {
    * catch this. The only honest question is whether the card changed.
    */
   private turnTaskMutations = new Set<string>();
+  /**
+   * Per-task count of CONSECUTIVE review turns that ended without a decision.
+   * Bounded by {@link REVIEW_TURN_MAX_RETRIES}; cleared the moment the card is touched.
+   *
+   * Why a bound exists at all: "no decision" used to be retried forever via `reply=''`,
+   * which kept the review_request in a requeue loop until the stale-processing sweep
+   * silently marked it `dropped` (2026-11-11: 6 turns / 20 tools / 618k tokens / zero
+   * decisions / card stuck in `review`). Retrying a human-level stall cannot fix it.
+   */
+  private reviewUndecidedTurns = new Map<string, number>();
+  /**
+   * The review task this turn belongs to, if any. Read once when the turn's activity is
+   * created so the activity RECORDS its task. Without it, review activities carry
+   * `task_id = NULL` and the UI can only guess attribution from time windows.
+   */
+  private currentReviewTaskId?: string;
   /** Injected by AgentManager; read at skill-activation time so Settings changes apply live. */
   private browserElementSelectionProvider?: () => 'direct' | 'jev';
   private dynamicContextProviders = new Map<string, () => string>();
@@ -2695,30 +2712,79 @@ export class Agent {
         }
 
         case 'review_request': {
-          const reviewSessionId = `review_${this.id}_${ts}`;
+          // Session id is STABLE per (agent, task, round): retrying the same review round
+          // reuses the conversation, so the reviewer keeps what it already verified and the
+          // prompt prefix stays identical (cache-friendly). The old `_${ts}` opened a brand
+          // new session on every retry — 618k tokens of repeated reading in the 2026-11-11
+          // incident, at a 0% cache hit rate.
           const reviewTaskId = (item.payload.taskId ?? item.metadata?.taskId) as string | undefined;
-          let reply = await this.handleMessage(
-            item.payload.content,
-            item.metadata?.senderId,
-            item.metadata?.senderName
-              ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
-              : undefined,
-            buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
-          );
+          const reviewRound = (item.metadata as { round?: number } | undefined)?.round;
+          const reviewSessionId = `review_${this.id}_${reviewTaskId ?? 'unknown'}`
+            + (reviewRound === undefined ? '' : `_r${reviewRound}`);
+          // Stamp the review task on the activity this turn creates, so "which card did this
+          // review turn belong to" is a RECORDED fact instead of something the UI infers
+          // from time windows (review activities otherwise carry task_id = NULL).
+          this.currentReviewTaskId = reviewTaskId;
+          let reply: string;
+          try {
+            reply = await this.handleMessage(
+              item.payload.content,
+              item.metadata?.senderId,
+              item.metadata?.senderName
+                ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
+                : undefined,
+              buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
+            );
+          } finally {
+            this.currentReviewTaskId = undefined;
+          }
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
           // A review is finished only when the CARD changed. A closed turn is not evidence:
           // the `end_turn` sentinel is produced whenever the turn stops, including when the
-          // model produced nothing at all. Reporting the empty reply makes the attention
-          // layer treat this as unfinished (requeue with backoff) instead of silently
-          // marking the review request consumed — see the 2026-10-17 review-stall incident.
-          if (reviewTaskId && !this.turnTaskMutations.has(reviewTaskId)) {
-            log.warn('Review turn left the card untouched — reporting it as unfinished so it is requeued', {
-              agentId: this.id,
-              taskId: reviewTaskId,
-              replyLength: reply?.length ?? 0,
-              endedViaEndTurn: this.endTurnRequested,
+          // model produced nothing at all (2026-10-17 review-stall incident).
+          //
+          // But "no decision" is NOT the same fact as "transient hiccup", and conflating
+          // them caused the 2026-11-11 stall: the empty reply meant both, the attention
+          // layer could only respond by requeueing, and the request was retried until the
+          // stale sweep dropped it. Bounded retry, then hand off to escalation.
+          if (reviewTaskId) {
+            const outcome = resolveReviewTurnOutcome({
+              cardMutated: this.turnTaskMutations.has(reviewTaskId),
+              priorUndecidedTurns: this.reviewUndecidedTurns.get(reviewTaskId) ?? 0,
             });
-            reply = '';
+
+            if (outcome.action === 'settled') {
+              this.reviewUndecidedTurns.delete(reviewTaskId);
+            } else if (outcome.action === 'retry') {
+              this.reviewUndecidedTurns.set(reviewTaskId, outcome.attempts);
+              log.warn('Review turn ended without touching the card — requeueing (bounded)', {
+                agentId: this.id,
+                taskId: reviewTaskId,
+                attempt: outcome.attempts,
+                maxAttempts: REVIEW_TURN_MAX_RETRIES,
+                replyLength: reply?.length ?? 0,
+                endedViaEndTurn: this.endTurnRequested,
+              });
+              reply = '';
+            } else {
+              // Stop retrying: this needs a human, not another replay. Consume the item with
+              // the typed "deliberately closed" sentinel and make the stall loud; the card
+              // stays in `review`, so StaleDetector's review_reminder / maxReviewWait path
+              // keeps chasing it instead of the request vanishing without a trace.
+              this.reviewUndecidedTurns.delete(reviewTaskId);
+              log.error('Review still undecided after bounded retries — escalating instead of requeueing', {
+                agentId: this.id,
+                taskId: reviewTaskId,
+                attempts: outcome.attempts,
+                maxAttempts: REVIEW_TURN_MAX_RETRIES,
+              });
+              this.eventBus.emit('review:undecided-exhausted', {
+                agentId: this.id,
+                taskId: reviewTaskId,
+                attempts: outcome.attempts,
+              });
+              reply = END_TURN_REPLY_SENTINEL;
+            }
           }
           resolveResponse(reply);
           return reply;
@@ -5274,7 +5340,11 @@ export class Agent {
           actLabel = peerName ? `Chat with ${peerName}` : 'Human Chat';
           break;
       }
-      chatActivityId = this.startActivity(actType, actLabel);
+      chatActivityId = this.startActivity(
+        actType,
+        actLabel,
+        this.currentReviewTaskId ? { taskId: this.currentReviewTaskId } : undefined,
+      );
     }
 
     // Run input guardrails

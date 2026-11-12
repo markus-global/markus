@@ -30,7 +30,6 @@ import {
   PROMPT_HUMAN_COMMENTS_MAX,
   PROMPT_PROJECT_DESC_CHARS,
   PROMPT_REQUIREMENT_DESC_CHARS,
-  REVIEWER_NOTES_MAX,
   REVIEWER_FILE_LIST_MAX,
   DELIVERABLE_TITLE_CHARS,
   REVISION_REASON_CHARS,
@@ -5061,26 +5060,49 @@ export class TaskService implements ApprovalTargetPort {
           : task.assignedAgentId)
         : 'unknown';
 
-      // Build rich context for the reviewer
+      // ── Review brief ──────────────────────────────────────────────────────────────
+      // STABLE INSTRUCTION PREFIX FIRST, task facts at the tail. Three properties matter,
+      // and all were violated before 2026-11-12:
+      //
+      //  1. A review is a DECISION, not an execution. The old brief bound "Approve" to
+      //     `git merge` / `gh pr merge`, so a card that must not ship code (evidence
+      //     archival, verification rulings) had no legal approve path — a conscientious
+      //     reviewer could only stall in place.
+      //  2. What a review turn may DO is decided by the task's own context, never by this
+      //     prompt. Tasks are abstract: many are not code at all, and Markus serves many
+      //     users with different mandates. So the brief never hard-codes an action policy
+      //     ("never merge", "never publish"); it states the authority rule instead — judge
+      //     by the card, ask when unclear, and never act without permission.
+      //  3. The prefix must be identical for every review (prompt-cache friendliness).
+      //     Variables live at the tail; no structural branch depends on task content.
+      //
+      // The full description was dropped as well: it made the message read like an
+      // execution spec (7,143 chars in the 2026-11-11 incident) and the reviewer re-read
+      // it on every retry. `task_get` is one call away.
       const parts: string[] = [];
-      parts.push(`[REVIEW REQUEST — ACTION REQUIRED] Task "${task.title}" (ID: ${task.id}) has been submitted for your review by ${assigneeName}.`);
+      parts.push('[REVIEW REQUEST — DECISION REQUIRED]');
+      parts.push('This is a review turn: your job is to decide, not to execute. Read what you need with `task_get`, then make exactly ONE call on this card:');
+      parts.push('- **Approve** → `task_update` with status "completed" plus a review note stating what you verified.');
+      parts.push('- **Request revision** → `task_update` with status "in_progress" plus a note stating exactly what must change.');
+      parts.push('Approving does not authorise extra work. If a decision genuinely needs an additional action, do only what this task\'s own context authorises; if that is unclear, or the action goes beyond what the card authorises, ask the assignee, your supervisor, or a human — and until you have that answer, just review. Never act without permission.');
+      parts.push('Ending the turn without one of those two calls leaves the review unresolved; it is escalated instead of retried indefinitely.');
       parts.push('');
-      parts.push(`**Description:** ${task.description}`);
+      parts.push('---');
+      parts.push(`Task: "${task.title}"`);
+      parts.push(`Task ID: ${task.id}`);
+      parts.push(`Review round: ${reviewRound}`);
+      parts.push(`Submitted by: ${assigneeName}`);
 
-      if (task.completionSummary) {
-        parts.push('');
-        parts.push(`**Summary:** ${task.completionSummary}`);
-      }
+      parts.push(`Completion summary: ${task.completionSummary ? task.completionSummary : '(none provided)'}`);
 
-      if (task.deliverables && task.deliverables.length > 0) {
-        const files = task.deliverables.filter(d => d.type !== 'branch' && d.reference);
-        if (files.length > 0) {
-          parts.push('');
-          parts.push('**Deliverables:**');
-          for (const d of files.slice(0, REVIEWER_FILE_LIST_MAX)) {
-            parts.push(`- [${d.type}] ${d.reference}${d.summary ? ` — ${d.summary}` : ''}`);
-          }
-          if (files.length > REVIEWER_FILE_LIST_MAX) parts.push(`  ... and ${files.length - REVIEWER_FILE_LIST_MAX} more`);
+      const files = (task.deliverables ?? []).filter(d => d.type !== 'branch' && d.reference);
+      if (files.length > 0) {
+        parts.push('Deliverables:');
+        for (const d of files.slice(0, REVIEWER_FILE_LIST_MAX)) {
+          parts.push(`- [${d.type}] ${d.reference}${d.summary ? ` — ${d.summary}` : ''}`);
+        }
+        if (files.length > REVIEWER_FILE_LIST_MAX) {
+          parts.push(`- … and ${files.length - REVIEWER_FILE_LIST_MAX} more (see task_get)`);
         }
       }
 
@@ -5095,16 +5117,8 @@ export class TaskService implements ApprovalTargetPort {
         }
       }
 
-      // Include recent notes
-      if (task.notes && task.notes.length > 0) {
-        parts.push('');
-        parts.push('**Recent Notes:**');
-        for (const note of task.notes.slice(-REVIEWER_NOTES_MAX)) {
-          parts.push(`> ${note}`);
-        }
-      }
-
-      // Include git branch and repo context so the reviewer can diff, merge, or create PRs
+      // Read-only code context so a code review can see the diff target. No write hint:
+      // merging/releasing is the Owner's decision, never a review step.
       if (task.projectId && this.projectService) {
         const project = this.projectService.getProject(task.projectId);
         const repo = project?.repositories?.find(r => r.role === 'primary' && r.localPath) ?? project?.repositories?.find(r => r.localPath);
@@ -5120,9 +5134,10 @@ export class TaskService implements ApprovalTargetPort {
       }
 
       parts.push('');
-      parts.push(`Please review immediately. Use \`task_get\` with task_id "${task.id}" to inspect deliverable files, then either:`);
-      parts.push(`- **Approve**: Review the code, merge the branch (via \`git merge\` or \`gh pr create\` + \`gh pr merge\`), then \`task_update\` with status "completed" and a review note`);
-      parts.push(`- **Request revision**: \`task_update\` with status "in_progress" and a note explaining what needs to change — this triggers a formal revision round with your feedback`);
+      // The decision options are stated ONCE, in the stable prefix above. Repeating them
+      // here is exactly how the old text contradicted itself: a second, merge-bound
+      // definition of "Approve" appeared after the decision-only one, and a reviewer
+      // facing a zero-code card had no legal path forward.
       parts.push('');
       parts.push(`CRITICAL: You MUST ONLY review this specific task (ID: ${task.id}). Do NOT change the status of any other task.`);
 
