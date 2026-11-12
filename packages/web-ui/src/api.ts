@@ -3295,7 +3295,10 @@ interface ConnectStatus {
 
 async function fetchConnectStatus(sessionId: string): Promise<ConnectStatus | null> {
   try {
-    return await request<ConnectStatus>(`/hub/auth/connect-status?session=${encodeURIComponent(sessionId)}&_t=${Date.now()}`);
+    // Lives under /auth (not /hub) on purpose: this poll runs from the login
+    // page, before this browser has a session, and /api/hub is the authenticated
+    // Hub data proxy behind the deny-by-default gate.
+    return await request<ConnectStatus>(`/auth/hub-connect-status?session=${encodeURIComponent(sessionId)}&_t=${Date.now()}`);
   } catch { return null; }
 }
 

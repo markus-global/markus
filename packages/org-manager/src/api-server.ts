@@ -3197,6 +3197,38 @@ export class APIServer {
 
     // ── Auth endpoints (no auth required) ──────────────────────────────────
 
+    // Hub connect handshake — the poll that carries a *finished* Hub login back
+    // into the browser that started it. It runs from the login screen, so it
+    // must answer without a local session: it is how a session is obtained.
+    // The credential is the random `cs_…` connect session id minted for this one
+    // sign-in attempt, never the local cookie.
+    //
+    // Regression (ba26c98c, 2026-11-09): this lived at
+    // `/api/hub/auth/connect-status`, under the prefix that means "authenticated
+    // Hub data proxy". The deny-by-default gate then 401'd every poll from a
+    // signed-out page — the Hub popup reported success, the page never learned
+    // about it, and no error surfaced (the client reads the timeout as a user
+    // cancellation). Hence: handshakes belong under /api/auth, and this route
+    // never borrows the locally stored Hub token.
+    if (path === '/api/auth/hub-connect-status' && req.method === 'GET') {
+      const session = url.searchParams.get('session') ?? '';
+      if (!session) {
+        this.json(res, 400, { error: 'session is required' });
+        return;
+      }
+      try {
+        const hubRes = await this.hubFetch(
+          `${this.hubUrl}/api/auth/connect-status?session=${encodeURIComponent(session)}`,
+          { headers: { Accept: 'application/json' } },
+        );
+        const data = await hubRes.json().catch(() => ({}));
+        this.json(res, hubRes.status, data);
+      } catch (err) {
+        this.json(res, 502, { error: `Hub request failed: ${String(err)}` });
+      }
+      return;
+    }
+
     // System initialization status — tells frontend whether to show Login or InitialSetup
     if (path === '/api/auth/status' && req.method === 'GET') {
       if (!this.storage || !this.authEnabled) {
