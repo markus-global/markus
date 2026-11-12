@@ -10,6 +10,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, activityLogToStreamEntry } from '../api.ts';
 import {
+  CompactExecutionCard,
   FullExecutionLog,
   type ExecutionStreamEntryUI,
 } from './ExecutionTimeline.tsx';
@@ -22,6 +23,13 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
   const [loading, setLoading] = useState(false);
   const [entries, setEntries] = useState<ExecutionStreamEntryUI[]>([]);
   const [loaded, setLoaded] = useState(false);
+  /**
+   * 两态跟执行日志的每一轮完全一致：
+   *   compact = 一行摘要（点开才看？不，这一层已经是卡内展开后了）
+   *   full    = 正文可见、思考与工具调用各自折叠（点那一行才展开）
+   * 直接上 `FullExecutionLog` 会把思考/工具全铺开，所以默认走 compact，再点进 full。
+   */
+  const [viewMode, setViewMode] = useState<'compact' | 'full'>('compact');
   /**
    * In-flight guard as a REF, never state.
    *
@@ -39,6 +47,7 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
     setOpen(false);
     setEntries([]);
     setLoaded(false);
+    setViewMode('compact');
     inFlight.current = false;
   }, [session.id, taskId]);
 
@@ -131,13 +140,23 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
             <div className="py-2 text-[11px] italic text-fg-tertiary">{t('task.reviewNoTurns')}</div>
           )}
           {entries.length > 0 && (
-            <FullExecutionLog
-              entries={entries}
-              isActive={live}
-              embedded
-              expandThinking={live}
-              showRounds={false}
-            />
+            viewMode === 'compact' ? (
+              <CompactExecutionCard
+                entries={entries}
+                isActive={live}
+                onExpand={() => setViewMode('full')}
+                embedded
+              />
+            ) : (
+              <FullExecutionLog
+                entries={entries}
+                isActive={live}
+                onCollapse={() => setViewMode('compact')}
+                embedded
+                expandThinking={false}
+                showRounds={false}
+              />
+            )
           )}
         </div>
       )}
