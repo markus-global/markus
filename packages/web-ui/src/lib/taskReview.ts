@@ -12,6 +12,15 @@ import type { StatusTransitionInfo } from '../api.ts';
 
 export type ReviewSessionStatus = 'queued' | 'reviewing' | 'completed';
 
+/** 一次评审的落点。由**关闭该会话的那条迁移的 toStatus** 决定，不猜文案。 */
+export type ReviewOutcome =
+  /** review → completed：通过 */
+  | 'approved'
+  /** review → in_progress：打回返工 */
+  | 'revision_requested'
+  /** review → cancelled（或任何其它落点）：关闭，未通过 */
+  | 'closed';
+
 export interface ReviewSession {
   /** 稳定身份：进入 review 的那条迁移 id */
   id: string;
@@ -20,6 +29,14 @@ export interface ReviewSession {
   status: ReviewSessionStatus;
   queuedAt: string;
   completedAt: string | null;
+  /** 第几轮评审（1-based，按 → review 迁移出现的顺序） */
+  round: number;
+  /** 本次评审的结论；仍在评审中为 null */
+  outcome: ReviewOutcome | null;
+  /** 做出结论的人（通过者 / 打回者）；仍在评审中为 null */
+  decidedByName: string | null;
+  /** 关闭迁移携带的说明（评审结论 / 打回原因），没有就是 null */
+  note: string | null;
 }
 
 /**
@@ -56,9 +73,23 @@ export function deriveReviewSessions(
       status: open ? 'reviewing' : 'completed',
       queuedAt: h.createdAt,
       completedAt: next ? next.createdAt : null,
+      round: sessions.length + 1,
+      outcome: next ? outcomeOf(next.toStatus) : null,
+      decidedByName: next ? (next.changedByName ?? null) : null,
+      note: next ? (next.reason ?? null) : null,
     });
   }
   return sessions;
+}
+
+/**
+ * 评审的落点只看 FSM 的真实可达集：`TASK_TRANSITIONS.review = { completed, in_progress, cancelled }`。
+ * 任何其它落点一律归为「关闭」——宁可少说，不编造第三种语义。
+ */
+function outcomeOf(toStatus: string): ReviewOutcome {
+  if (toStatus === 'completed') return 'approved';
+  if (toStatus === 'in_progress') return 'revision_requested';
+  return 'closed';
 }
 
 /** 当前正在评审的那条（决定是否展示脉冲动画 / 横幅）。 */
