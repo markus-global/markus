@@ -7,7 +7,7 @@ import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSe
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { buildActivityTimeline } from '../lib/activityTimeline.ts';
-import { matchReviewActivities } from '../lib/reviewActivities.ts';
+import { matchReviewActivities, isWithinReviewWindow } from '../lib/reviewActivities.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -1318,6 +1318,37 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
       return { kind: 'execution' as const, rs: roundsSummary[rsIdx]!, rsIdx };
     });
   }, [roundsSummary, reviewSessions]);
+
+  // 评审轮的实时更新。
+  //
+  // 执行轮靠 `task:log` / `task:log:delta` 流式推送；评审轮是 **agent activity**，
+  // 走的是 `agent:activity_log`。之前只“展开时拉一次快照”，所以评审中看不到进展。
+  // 归属判定复用 isWithinReviewWindow — 与历史快照同一个口径，不另写一套。
+  useEffect(() => {
+    const liveSessions = reviewSessions.filter(s => s.status === 'reviewing' && expandedReviews.has(s.id));
+    if (liveSessions.length === 0) return;
+    const unsub = wsClient.on('agent:activity_log', (event: { payload?: Record<string, unknown> }) => {
+      const p = event.payload as Record<string, unknown> | undefined;
+      if (!p) return;
+      const agentId = p['agentId'] as string | undefined;
+      if (!agentId) return;
+      const entry = wsPayloadToStreamEntry(p);
+      if (!entry) return;
+      for (const s of liveSessions) {
+        if (s.reviewerId !== agentId) continue;
+        if (!isWithinReviewWindow(entry.createdAt, { taskId, queuedAt: s.queuedAt, completedAt: s.completedAt })) continue;
+        setReviewEntries(prev => {
+          const cur = prev.get(s.id) ?? [];
+          // 同一活动同一 seq 只收一次（WS 重连会重放）
+          if (cur.some(e => e.sourceId === entry.sourceId && e.seq === entry.seq)) return prev;
+          const next = new Map(prev);
+          next.set(s.id, [...cur, entry]);
+          return next;
+        });
+      }
+    });
+    return unsub;
+  }, [reviewSessions, expandedReviews, taskId]);
 
   useEffect(() => { setIsExecuting(isRunning); }, [isRunning]);
 

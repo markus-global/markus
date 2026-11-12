@@ -8,9 +8,17 @@ function act(id: string, startedAt: string, extra: { taskId?: string | null; end
 const SESSION = { taskId: 'tsk_1', queuedAt: '2026-01-01T10:00:00Z', completedAt: '2026-01-01T10:30:00Z' };
 
 describe('matchReviewActivities — 把评审活动归到哪一轮', () => {
-  it('已记录 taskId 且一致 → 计入（不看时间）', () => {
-    const a = act('a1', '2026-01-01T03:00:00Z', { taskId: 'tsk_1' });
+  it('已记录 taskId 且落在本轮窗口内 → 计入', () => {
+    const a = act('a1', '2026-01-01T10:05:00Z', { taskId: 'tsk_1' });
     expect(matchReviewActivities([a], SESSION).map(x => x.id)).toEqual(['a1']);
+  });
+
+  // 关键回归（2026-11-12 tsk_1fa331f0）：同一张卡的**另一个**评审回合带同一个 taskId，
+  // 但时间上属于上一轮 → 绝不能出现在这一轮里（用户看到的就是「旧内容」）。
+  it('同一 taskId 但属于其它轮次（窗口外）→ 排除', () => {
+    const previousRound = act('older', '2026-01-01T03:00:00Z', { taskId: 'tsk_1', endedAt: '2026-01-01T03:02:00Z' });
+    const thisRound = act('now', '2026-01-01T10:10:00Z', { taskId: 'tsk_1' });
+    expect(matchReviewActivities([previousRound, thisRound], SESSION).map(x => x.id)).toEqual(['now']);
   });
 
   it('已记录 taskId 但不一致 → 排除，即使时间窗重叠', () => {

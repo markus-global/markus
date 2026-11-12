@@ -3178,11 +3178,13 @@ export class TaskService implements ApprovalTargetPort {
     updatedByType?: 'human' | 'agent' | 'system',
     reason?: string,
     blockedReason?: BlockedReason | null,
+    /** 调用方已经自己开过新一轮（如 retryTaskFresh）→ 迁移时不要再自增。 */
+    _skipRoundBump = false,
   ): Task {
     const byType = updatedByType ?? (updatedBy ? 'agent' : 'system');
 
     // Phase 1: Validate + Mutate
-    const result = this.validateAndApplyTransition(id, status, updatedBy, _internal, byType);
+    const result = this.validateAndApplyTransition(id, status, updatedBy, _internal, byType, _skipRoundBump);
     if (!result) return this.tasks.get(id)!; // no-op (same status)
 
     // 「为什么被 blocked」在**唯一的状态写入点**定下来：
@@ -3296,6 +3298,7 @@ export class TaskService implements ApprovalTargetPort {
   private validateAndApplyTransition(
     id: string, status: TaskStatus, updatedBy?: string, _internal = false,
     actorType?: 'human' | 'agent' | 'system',
+    _skipRoundBump = false,
   ): { task: Task; prevStatus: TaskStatus } | null {
     const task = this.tasks.get(id);
     if (!task) throw new Error(`Task not found: ${id}`);
@@ -3359,6 +3362,29 @@ export class TaskService implements ApprovalTargetPort {
     if (updatedBy) task.updatedBy = updatedBy;
     if (status === 'in_progress' && !task.startedAt) task.startedAt = now;
     if (TERMINAL_STATUSES.has(status) && !task.completedAt) task.completedAt = now;
+
+    // 重新打开（terminal → in_progress）= **新的一轮**，不是在上一轮里接着跑。
+    //
+    // 轮次不是显示号：它决定执行日志的分组（`getLogs(taskId, round)`）与执行会话 id
+    // （`task_${taskId}_r${round}`）。不 bump 的后果：重开后的新执行会写回旧轮次，
+    // 与上一轮混在一起，也给不出一个干净的上下文。
+    //
+    // 这里的判据是「从 terminal 回到 in_progress」：
+    //  · requestRevision 走 review → in_progress，review 不是 terminal → 不会重复自增；
+    //  · blocked → in_progress（依赖解除）也不是 terminal → 不会自增。
+    if (status === 'in_progress' && TERMINAL_STATUSES.has(prevStatus) && !_skipRoundBump) {
+      task.executionRound = (task.executionRound ?? 1) + 1;
+      task.result = undefined;
+      task.startedAt = now;
+      task.completedAt = undefined;
+      if (this.taskRepo) {
+        (this.taskRepo as any).updateExecutionRound?.(task.id, task.executionRound)
+          ?.catch?.((err: Error) => log.warn('Failed to persist execution round', { taskId: task.id, error: String(err) }));
+      }
+      log.info('Reopened from a terminal state — starting a new execution round', {
+        taskId: task.id, from: prevStatus, round: task.executionRound,
+      });
+    }
 
     return { task, prevStatus };
   }
@@ -5941,7 +5967,7 @@ export class TaskService implements ApprovalTargetPort {
     }
 
     // Transition via updateTaskStatus (skip auto-start; the fresh start is requested below)
-    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, true, 'system', 'Retry (fresh start)');
+    this.updateTaskStatus(taskIdStr, 'in_progress', undefined, true, true, 'system', 'Retry (fresh start)', undefined, true);
 
     // Start execution WITHOUT previous context —— terminate-then-start：旧执行实际 settle 后才起。
     if (this.agentManager) {

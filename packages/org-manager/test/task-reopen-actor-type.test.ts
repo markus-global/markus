@@ -77,4 +77,31 @@ describe('重新打开已完成的卡：FMS 允许，但只允许人', () => {
     const id = await completedTask(svc);
     expect(() => svc.updateTaskStatus(id, 'in_progress', AGENT, false, false, 'agent')).toThrow(/Terminal state guard/i);
   });
+
+  it('重新打开会新起一轮：executionRound + 1，并清掉上一轮的完成痕迹', async () => {
+    const svc = makeService();
+    const id = await completedTask(svc);
+    const before = svc.getTask(id)!.executionRound ?? 1;
+    expect(svc.getTask(id)!.completedAt).toBeTruthy();
+
+    const reopened = svc.updateTaskStatus(id, 'in_progress', HUMAN, false, false, 'human');
+
+    expect(reopened.executionRound).toBe(before + 1);
+    // 新轮次不应该拖着上一轮的完成时间/结果
+    expect(svc.getTask(id)!.completedAt).toBeFalsy();
+    expect(svc.getTask(id)!.result).toBeUndefined();
+  });
+
+  it('未结束的卡不会被误加轮次（blocked → in_progress 不是重开）', async () => {
+    const svc = makeService();
+    const task = svc.createTask({
+      orgId: ORG, title: 'hold', description: 'd',
+      assignedAgentId: AGENT, reviewerId: REVIEWER, creatorRole: 'human',
+    } as never);
+    svc.approveTask(task.id, HUMAN);
+    svc.updateTaskStatus(task.id, 'blocked', HUMAN, false, false, 'human');
+    const before = svc.getTask(task.id)!.executionRound ?? 1;
+    svc.updateTaskStatus(task.id, 'in_progress', HUMAN, false, false, 'human');
+    expect(svc.getTask(task.id)!.executionRound ?? 1).toBe(before);
+  });
 });

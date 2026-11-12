@@ -49,6 +49,22 @@ export function isReviewTurnActivity(a: { label?: string | null }): boolean {
 }
 
 /**
+ * 某个时刻是否落在这一轮评审的窗口内。
+ *
+ * 抽出来是因为两个调用方需要**同一个口径**：历史快照的匹配（matchReviewActivities）
+ * 与实时流（`agent:activity_log` 逐条到达时的归属判定）。两处各写一份必定漂。
+ */
+export function isWithinReviewWindow(at: string, session: ReviewSessionWindow): boolean {
+  const t = new Date(at).getTime();
+  if (Number.isNaN(t)) return false;
+  const start = new Date(session.queuedAt).getTime();
+  if (Number.isNaN(start)) return false;
+  const end = session.completedAt ? new Date(session.completedAt).getTime() : Number.POSITIVE_INFINITY;
+  if (Number.isNaN(end)) return false;
+  return t >= start - WINDOW_TOLERANCE_MS && t <= end + WINDOW_TOLERANCE_MS;
+}
+
+/**
  * 返回属于这一轮评审的活动（按时间升序）。
  * 纯函数：同输入同输出，不读时钟、不读网络。
  */
@@ -65,21 +81,18 @@ export function matchReviewActivities<T extends ReviewActivityLike>(
   return activities
     .filter(a => {
       // 0) 先排除根本不是评审回合的活动（回复评论 / 需求动作 / 聊天 ……）。
-      //    这一步是必须的：下面的时间窗兜底对「同一段时间里干的任何事」都成立。
       if (!isReviewTurnActivity(a)) return false;
 
-      // 1) 有归属事实：严格按 taskId，不经时间窗
-      if (a.taskId) return a.taskId === session.taskId;
+      // 1) taskId 是**排除性**判据：记了且不是这张卡 → 不属于本卡。
+      //    它**不能**代替下面的时间窗：同一张卡有多轮评审，每轮的回合都带**同一个** taskId。
+      //    只按 taskId 收，就会把上一轮的评审内容塞进这一轮。
+      //    实证（2026-11-12 tsk_1fa331f0）：同一 taskId 下有 12:21 与 13:32 两个评审回合，
+      //    当前轮因此显示了三小时前的旧内容。
+      if (a.taskId && a.taskId !== session.taskId) return false;
 
-      // 2) 历史行无归属：只要与该会话区间有重叠就计入
-      const started = new Date(a.startedAt).getTime();
-      if (Number.isNaN(started)) return false;
-      const ended = a.endedAt ? new Date(a.endedAt).getTime() : Number.POSITIVE_INFINITY;
-      const safeEnded = Number.isNaN(ended) ? Number.POSITIVE_INFINITY : ended;
-      return (
-        started <= windowEnd + WINDOW_TOLERANCE_MS &&
-        safeEnded >= windowStart - WINDOW_TOLERANCE_MS
-      );
+      // 2) 无论有无 taskId，都必须落在**本轮**的时间窗内 —— 这才是「按轮次分组」的判据。
+      //    与实时流共用 isWithinReviewWindow，两处不会各自漂。
+      return isWithinReviewWindow(a.startedAt, session);
     })
     .sort((x, y) => new Date(x.startedAt).getTime() - new Date(y.startedAt).getTime());
 }
