@@ -6,7 +6,7 @@
  * 历史教训：这个 tab 曾经直接渲染 `<TaskExecutionLogs>`，两个 tab 内容一模一样。
  * 复用渲染器是对的，复用**同一份数据**才是错的。
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, activityLogToStreamEntry } from '../api.ts';
 import {
@@ -22,6 +22,15 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
   const [loading, setLoading] = useState(false);
   const [entries, setEntries] = useState<ExecutionStreamEntryUI[]>([]);
   const [loaded, setLoaded] = useState(false);
+  /**
+   * In-flight guard as a REF, never state.
+   *
+   * History: this was `loading` in the dependency array AND set inside the effect, so
+   * `setLoading(true)` re-ran the effect, the cleanup flipped `cancelled = true`, and the
+   * terminal `setLoading(false)/setLoaded(true)` were guarded out — the card sat on
+   * "loading…" forever. A self-referential dependency can never settle.
+   */
+  const inFlight = useRef(false);
 
   const live = session.status === 'reviewing';
 
@@ -30,15 +39,20 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
     setOpen(false);
     setEntries([]);
     setLoaded(false);
+    inFlight.current = false;
   }, [session.id, taskId]);
 
   useEffect(() => {
-    if (!open || loaded || loading) return;
+    if (!open || loaded) return;
+    if (inFlight.current) return;
+    inFlight.current = true;
     let cancelled = false;
     setLoading(true);
     (async () => {
       try {
-        const { activities } = await api.agents.getActivities(session.reviewerId, { limit: 50 });
+        // limit is generous on purpose: the window fallback has to be able to reach
+        // historical rows that predate taskId attribution.
+        const { activities } = await api.agents.getActivities(session.reviewerId, { limit: 200 });
         const matched = matchReviewActivities(activities, {
           taskId,
           queuedAt: session.queuedAt,
@@ -50,7 +64,7 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
           for (const log of logs) {
             const e = activityLogToStreamEntry(log, act.id, session.reviewerId);
             if (!e) continue;
-            // ExecutionStreamEntryAPI 与 UI 形状一致；这里显式转一层避免跨层类型漂移
+            // ExecutionStreamEntryAPI 与 UI 形状一致；显式转一层避免跨层类型漂移
             collected.push(e as unknown as ExecutionStreamEntryUI);
           }
         }
@@ -58,11 +72,16 @@ export function ReviewSessionCard({ session, taskId }: { session: ReviewSession;
       } catch {
         if (!cancelled) setEntries([]);
       } finally {
-        if (!cancelled) { setLoading(false); setLoaded(true); }
+        inFlight.current = false;
+        // Always settle the UI. `cancelled` only guards writes, never the spinner.
+        if (!cancelled) {
+          setLoading(false);
+          setLoaded(true);
+        }
       }
     })();
     return () => { cancelled = true; };
-  }, [open, loaded, loading, session.reviewerId, session.queuedAt, session.completedAt, taskId]);
+  }, [open, loaded, session.reviewerId, session.queuedAt, session.completedAt, taskId]);
 
   const outcomeLabel = useMemo(() => {
     if (live) return t('task.reviewLive');
