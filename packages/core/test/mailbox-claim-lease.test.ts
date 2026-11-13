@@ -121,21 +121,25 @@ const REVIEW = (taskId: string, round: number) => ({
   summary: `Review ${taskId} r${round}`,
   content: 'please review',
   taskId,
-  extra: { round },
 });
+/** 生产侧评审投递（第六刀 C2）：轮次是**结构字段**，不再写 `payload.extra.round`。 */
+const enqueueReview = (
+  mb: AgentMailbox, taskId: string, round: number,
+  options?: Parameters<AgentMailbox['enqueue']>[2],
+) => mb.enqueue('review_request', REVIEW(taskId, round), { ...options, round });
 
 // ─── 幂等键推导 ─────────────────────────────────────────────────────────────
 
 describe('mailboxDedupKey · 幂等键推导（agent_id + source_type + task_id + round）', () => {
   it('review_request 且 taskId + round 齐备 → 产出确定性键', () => {
-    const item = { sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 2) as never, metadata: {} };
+    const item = { sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 2) as never, metadata: {}, round: 2 };
     expect(mailboxDedupKey(item)).toBe('review_request:tsk_1:2');
   });
 
   it('同 (task, round) 键相同；不同 round 键不同（多轮评审不被误去重）', () => {
-    const k1 = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 1) as never, metadata: {} });
-    const k1b = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 1) as never, metadata: {} });
-    const k2 = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 2) as never, metadata: {} });
+    const k1 = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 1) as never, metadata: {}, round: 1 });
+    const k1b = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 1) as never, metadata: {}, round: 1 });
+    const k2 = mailboxDedupKey({ sourceType: 'review_request' as const, payload: REVIEW('tsk_1', 2) as never, metadata: {}, round: 2 });
     expect(k1).toBe(k1b);
     expect(k1).not.toBe(k2);
   });
@@ -159,7 +163,7 @@ describe('P0 原子认领 · 验收 1/2', () => {
     const a = makeMailbox(table);
     const b = makeMailbox(table);
 
-    const item = a.enqueue('review_request', REVIEW('tsk_9', 1) as never);
+    const item = enqueueReview(a, 'tsk_9', 1);
     // 模拟另一个实例把同一行载入自己的内存队列（共享同一持久层）。
     b.getQueuedItems();
     (b as unknown as { queue: unknown[] }).queue.push({ ...item });
@@ -180,8 +184,8 @@ describe('P0 原子认领 · 验收 1/2', () => {
     const a = makeMailbox(table);
     const b = makeMailbox(table);
 
-    a.enqueue('review_request', REVIEW('tsk_7', 3) as never);
-    b.enqueue('review_request', REVIEW('tsk_7', 3) as never); // 重复投递
+    a.enqueue('review_request', REVIEW('tsk_7', 3) as never, { round: 3 });
+    b.enqueue('review_request', REVIEW('tsk_7', 3) as never, { round: 3 }); // 重复投递
 
     expect(table.insertOk, '只应落库一行').toBe(1);
     expect(table.rejected, '第二次插入被唯一键拒绝').toBe(1);
@@ -195,8 +199,8 @@ describe('P0 原子认领 · 验收 1/2', () => {
   it('不同 round 的评审不被去重（多轮评审各自可投递）', () => {
     const table = new SharedTable();
     const a = makeMailbox(table);
-    a.enqueue('review_request', REVIEW('tsk_7', 1) as never);
-    a.enqueue('review_request', REVIEW('tsk_7', 2) as never);
+    a.enqueue('review_request', REVIEW('tsk_7', 1) as never, { round: 1 });
+    a.enqueue('review_request', REVIEW('tsk_7', 2) as never, { round: 2 });
     expect(table.insertOk).toBe(2);
     expect(table.rejected).toBe(0);
   });
@@ -218,7 +222,7 @@ describe('P0 租约 · 验收 3', () => {
   it('租约过期后：原实例失守、item 可被重新认领', () => {
     const table = new SharedTable();
     const a = makeMailbox(table);
-    const item = a.enqueue('review_request', REVIEW('tsk_5', 1) as never);
+    const item = enqueueReview(a, 'tsk_5', 1);
 
     // 认领时给一个「已过期」的租约，模拟实例崩溃/超时未续租。
     const claimed = table.claim(item.id, 'dead-instance', new Date(Date.now() - 60_000).toISOString(), new Date().toISOString());
@@ -237,7 +241,7 @@ describe('P0 租约 · 验收 3', () => {
   it('租约未过期时不可被抢占（防重复处理）', () => {
     const table = new SharedTable();
     const a = makeMailbox(table);
-    const item = a.enqueue('review_request', REVIEW('tsk_6', 1) as never);
+    const item = enqueueReview(a, 'tsk_6', 1);
 
     expect(table.claim(item.id, 'live-instance', new Date(Date.now() + 600_000).toISOString(), new Date().toISOString())).toBe(true);
     expect(table.releaseExpired(new Date().toISOString()), '未过期不回收').toBe(0);
@@ -247,7 +251,7 @@ describe('P0 租约 · 验收 3', () => {
   it('续租仅限认领者本人；释放只清本人认领', () => {
     const table = new SharedTable();
     const a = makeMailbox(table);
-    const item = a.enqueue('review_request', REVIEW('tsk_8', 1) as never);
+    const item = enqueueReview(a, 'tsk_8', 1);
 
     const got = a.dequeue();
     expect(got).toBeTruthy();
@@ -267,13 +271,13 @@ describe('P0 认领释放', () => {
     const table = new SharedTable();
 
     const m1 = makeMailbox(table);
-    const it1 = m1.enqueue('review_request', REVIEW('tsk_a', 1) as never);
+    const it1 = enqueueReview(m1, 'tsk_a', 1);
     expect(m1.dequeue()).toBeTruthy();
     m1.complete(it1.id);
     expect(table.rows.get(it1.id)!.claimedBy, 'complete 后释放').toBeNull();
 
     const m2 = makeMailbox(table);
-    const it2 = m2.enqueue('review_request', REVIEW('tsk_b', 1) as never);
+    const it2 = enqueueReview(m2, 'tsk_b', 1);
     expect(m2.dequeue()).toBeTruthy();
     m2.drop(it2.id);
     expect(table.rows.get(it2.id)!.claimedBy, 'drop 后释放').toBeNull();
@@ -294,10 +298,11 @@ describe('P0 重复投递 · 入队层显式拒绝', () => {
       claimItem: (itemId, ownerId, leaseUntil, nowIso) => table.claim(itemId, ownerId, leaseUntil, nowIso),
     } as unknown as MailboxPersistence);
 
-    const first = mb.enqueue('review_request', REVIEW('tsk_dup', 1) as never);
+    const first = enqueueReview(mb, 'tsk_dup', 1);
     expect(table.insertOk, '首次落库').toBe(1);
 
     const second = mb.enqueue('review_request', REVIEW('tsk_dup', 1) as never, {
+      round: 1,
       runtime: { responsePromise: { resolve: (v: string) => resolved.push(v), reject: () => {} } },
     });
 

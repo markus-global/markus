@@ -31,8 +31,12 @@ const REVIEW = (taskId: string, round: number) => ({
   summary: `Review ${taskId} r${round}`,
   content: 'please review',
   taskId,
-  extra: { round },
 });
+/** 生产侧评审投递（第六刀 C2）：轮次是结构字段。 */
+const enqueueReview = (
+  mb: AgentMailbox, taskId: string, round: number,
+  options?: Parameters<AgentMailbox['enqueue']>[2],
+) => mb.enqueue('review_request', REVIEW(taskId, round), { ...options, round });
 /** 与 core `mailboxDedupKey()` 同形，用于按幂等键定位持久层行。 */
 const DEDUP = (taskId: string, round: number) => `review_request:${taskId}:${round}`;
 
@@ -98,8 +102,7 @@ function fanOutCopy(target: AgentMailbox, item: MailboxItem): void {
 describe('验收 #1 · 重复投递 + N 并发分身 → 同一 item 仅被处理一次', () => {
   it('同一 (task, round) 被 3 个分身重复投递 → 库中仅 1 行、仅 1 个分身能取件', () => {
     const personas = [newPersona(), newPersona(), newPersona()];
-    const payload = REVIEW('tsk_fan', 1);
-    const returned = personas.map(mb => mb.enqueue('review_request', payload));
+    const returned = personas.map(mb => enqueueReview(mb, 'tsk_fan', 1));
 
     // 幂等键：同 (agent, review_request, task, round) 只允许一行
     expect(rows(DEDUP('tsk_fan', 1))).toHaveLength(1);
@@ -124,7 +127,7 @@ describe('验收 #1 · 重复投递 + N 并发分身 → 同一 item 仅被处�
     const a = newPersona();
     const b = newPersona();
     const c = newPersona();
-    const item = a.enqueue('review_request', REVIEW('tsk_race', 1));
+    const item = enqueueReview(a, 'tsk_race', 1);
 
     fanOutCopy(b, item);
     fanOutCopy(c, item);
@@ -145,8 +148,8 @@ describe('验收 #1 · 重复投递 + N 并发分身 → 同一 item 仅被处�
 
   it('不同 round 不被误去重（多轮评审各自可投递）', () => {
     const mb = newPersona();
-    mb.enqueue('review_request', REVIEW('tsk_multi', 1));
-    mb.enqueue('review_request', REVIEW('tsk_multi', 2));
+    enqueueReview(mb, 'tsk_multi', 1);
+    enqueueReview(mb, 'tsk_multi', 2);
     expect(rows()).toHaveLength(2);
   });
 });
@@ -166,7 +169,7 @@ describe('验收 #3 · 租约过期可重新认领 / items 唯一键拒绝重复
 
   it('租约过期 → 回收为 queued → 恰可被重新认领一次（不重复收口）', () => {
     const a = newPersona();
-    const item = a.enqueue('review_request', REVIEW('tsk_lease', 1));
+    const item = enqueueReview(a, 'tsk_lease', 1);
 
     // 模拟认领者崩溃：processing + 已过期租约 + 异构 ownerId
     expect(repo.claimItem(item.id, 'agt_fanout_reg#999#1', iso(-60_000), iso(-120_000))).toBe(true);
@@ -188,7 +191,7 @@ describe('验收 #3 · 租约过期可重新认领 / items 唯一键拒绝重复
 
   it('租约未过期不可抢占（防重复处理）', () => {
     const a = newPersona();
-    const item = a.enqueue('review_request', REVIEW('tsk_hold', 1));
+    const item = enqueueReview(a, 'tsk_hold', 1);
     expect(repo.claimItem(item.id, 'other-instance#1#1', iso(600_000), iso(0))).toBe(true);
 
     const b = newPersona();

@@ -50,11 +50,63 @@ const ORG_RESERVED: ReadonlySet<string> = new Set([
 export const MAX_LOCAL_LENGTH = 32;
 export const MAX_ORG_SLUG_LENGTH = 30;
 
-/** 判别联合：信封 from/to 的形状（第六刀 H1），verified 由信封单独携带，不塞进地址对象。 */
-export type AddressRef =
+/**
+ * **邮件地址**的判别联合 —— `parseAddress()` / `formatAddress()` 的取值域。
+ *
+ * 只有这三种：命名空间由点数决定（0 点平台 / 1 点组织 / ≥2 点保留为外部域）。
+ * `parseAddress` 永远不会产出 `agent` / `im`：那两种不是邮箱，是**投递方身份**
+ * （见 {@link AddressRef}）。把两者混成一个「解析结果」类型，就会给出
+ * 「长得像内部地址就当内部身份」这条错误捷径（主计划 §4.9.4 / H1）。
+ */
+export type MailAddressRef =
   | { kind: 'markus'; address: string; local: string; orgSlug: string }
   | { kind: 'platform'; address: string; local: string }
   | { kind: 'external'; address: string };
+
+/**
+ * 判别联合：信封 `from` / `to` 的形状（第六刀 §2.1 / H1）。
+ *
+ * 在邮件地址三种之上增加两种**投递方**身份：
+ * - `agent`  —— 平台内 agent，身份就是 id，不伪造一个邮箱地址；
+ * - `im`     —— 外部 IM 平台上的自然人（platform + nativeUserId），也不是邮箱。
+ *
+ * `verified` 由信封单独携带（见 `DeliveryEnvelope.fromVerified`），不塞进地址对象：
+ * 「外部域字符串」与「已验证的内部身份」是两件事，混在一个字段里必然有人读错。
+ */
+export type AddressRef =
+  | MailAddressRef
+  | { kind: 'agent'; agentId: string }
+  | { kind: 'im'; platform: string; nativeUserId: string };
+
+/** 渲染投递方身份，仅用于日志/展示；**不是**可解析回身份的格式（parse 只认邮箱）。 */
+export function describeAddress(ref: AddressRef): string {
+  switch (ref.kind) {
+    case 'agent': return `agent:${ref.agentId}`;
+    case 'im': return `im:${ref.platform}:${ref.nativeUserId}`;
+    default: return ref.address;
+  }
+}
+
+/** 平台内 agent 的投递方身份。唯一构造点：别处不得拼 `agent:` 字符串。 */
+export function agentAddressRef(agentId: string): AddressRef {
+  return { kind: 'agent', agentId };
+}
+
+/** 外部 IM 自然人身份。唯一构造点。 */
+export function imAddressRef(platform: string, nativeUserId: string): AddressRef {
+  return { kind: 'im', platform, nativeUserId };
+}
+
+/**
+ * 平台保留地址（0 点，如 `noreply@markus.global`）的唯一构造点。
+ *
+ * 只接受 {@link PLATFORM_RESERVED_ADDRESSES} 闭集成员：越界返回 `undefined`，
+ * 而不是悄悄拼出一个不存在的平台邮箱。域名的唯一写者仍在本模块。
+ */
+export function platformAddressRef(local: string): AddressRef | undefined {
+  if (!PLATFORM_RESERVED_ADDRESSES.includes(local)) return undefined;
+  return { kind: 'platform', address: `${local}@${MARKUS_MAIL_DOMAIN}`, local };
+}
 
 export type AddressRejectReason =
   | 'malformed'
@@ -64,7 +116,7 @@ export type AddressRejectReason =
   | 'team_level_reserved';
 
 export type AddressResult =
-  | { ok: true; value: AddressRef }
+  | { ok: true; value: MailAddressRef }
   | { ok: false; reason: AddressRejectReason; hint: string };
 
 /** 所有拒绝共用一条可行动提示，保证调用方能建模下一步，而不是只拿到 false。 */

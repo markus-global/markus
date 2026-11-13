@@ -45,6 +45,7 @@ import {
   SESSION_REQUEST_HISTORY_MIN,
   SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
+  isTaskExecutionItem,
   NOTEBOOK_MAX_ENTRIES,
   NOTEBOOK_MAX_CHARS_PER_ENTRY,
   NOTEBOOK_PROMPT_MAX_CHARS,
@@ -100,7 +101,7 @@ import { createSubagentTool, createParallelSubagentTool, type SubagentContext, t
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
-import { AgentMailbox, type EnqueueOptions } from './mailbox.js';
+import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
@@ -1442,7 +1443,7 @@ export class Agent {
       requirementId?: string;
       /**
        * 「每 (task, round) 至多一次」类型的轮次（P1 · 根因 #1）：透传到
-       * `payload.extra.round`，供 mailbox 计算**跨进程幂等键**
+       * 结构字段 `round`，供 mailbox 计算**跨进程幂等键**
        * `(agent_id, sourceType, taskId, round)` 并做单播路由。
        * 缺省时 mailbox 不施加约束（旧行为），不改变事件语义。
        */
@@ -1461,6 +1462,11 @@ export class Agent {
        * 分裂到两个存储）。所以 DB 身份单独走一个字段，只进 extra、只用于写绑定。
        */
       dbSessionId?: string;
+      /**
+       * 投递来源（谁发的 / 外部 messageId）—— 第六刀 C2：信封在 mailbox 唯一
+       * 装配点生成，入口只需交出它真正知道的事。缺省 = 平台自身（`noreply@`）。
+       */
+      origin?: DeliveryOrigin;
       sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null;
     },
   ): Promise<string> {
@@ -1483,8 +1489,6 @@ export class Agent {
       taskId: options?.taskId,
       requirementId: options?.requirementId,
       extra: {
-        // P1：轮次（幂等键 / 单播路由用）。缺省 undefined → mailbox 不施加约束。
-        round: options?.round,
         sessionId: options?.sessionId,
         // 仅用于「写 DB→memory 绑定」的请求身份，不会被当成内存会话 key。
         dbSessionId: options?.dbSessionId,
@@ -1518,6 +1522,11 @@ export class Agent {
 
     return new Promise<string>((resolve, reject) => {
       this.mailbox.enqueue(sourceType, payload, {
+        // P1：轮次是**结构字段**（不再塞进 payload.extra）：幂等键 / 单播路由都用它。
+        // 缺省 undefined → mailbox 不施加约束。
+        round: options?.round,
+        // C2：投递来源 → mailbox 用它构造信封（from/messageId）。
+        origin: options?.origin,
         priority: options?.priority,
         metadata: {
           senderId,
@@ -1575,7 +1584,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: summarizeForMailbox(userMessage),
@@ -1607,6 +1616,8 @@ export class Agent {
     return new Promise<string>((resolve, reject) => {
       this.mailbox.enqueue('human_chat', payload, {
         priority: 0,
+        // C2：投递来源 → 信封从这里长出来（人类入口同样有身份）。
+        origin: options?.origin,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -1637,7 +1648,7 @@ export class Agent {
    * promise resolves when the agent finishes (or errors out), but the caller
    * does not need to await it.
    *
-   * Internally enqueues a `task_status_update` with `extra.triggerExecution`
+   * Internally enqueues a `task_status_update` with `intent='trigger_execution'`
    * so the attention controller triggers `executeTask()` instead of a
    * lightweight notification.
    */
@@ -1662,7 +1673,6 @@ export class Agent {
       taskId,
       requirementId,
       extra: {
-        triggerExecution: true,
         onLog,
         cancelToken,
         taskProjectContext,
@@ -1674,6 +1684,8 @@ export class Agent {
     return new Promise<string>((resolve, reject) => {
       this.mailbox.enqueue('task_status_update', payload, {
         priority: 1,
+        // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
+        intent: 'trigger_execution',
         metadata: {
           taskId,
         },
@@ -2504,7 +2516,7 @@ export class Agent {
         }
 
         case 'task_status_update': {
-          if (extra.triggerExecution && item.payload.taskId) {
+          if (isTaskExecutionItem(item) && item.payload.taskId) {
             if (typeof extra.onLog !== 'function') {
               // Resurfaced from persistence after preemption/defer — closures (onLog,
               // cancelToken, responsePromise) were lost during JSON serialization.
@@ -2621,7 +2633,7 @@ export class Agent {
         }
 
         case 'requirement_update': {
-          if (extra.actionRequired) {
+          if (item.envelope?.intent === 'action_required') {
             const reqId = item.payload.requirementId ?? 'unknown';
             const reply = await this.handleMessage(
               item.payload.content,
@@ -2660,7 +2672,7 @@ export class Agent {
         }
 
         case 'workflow_update': {
-          if (extra.actionRequired) {
+          if (item.envelope?.intent === 'action_required') {
             const wfEvent = extra.event ?? 'update';
             const reply = await this.handleMessage(
               item.payload.content,
@@ -2919,7 +2931,7 @@ export class Agent {
     const extra = item.payload.extra ?? {};
     switch (item.sourceType) {
       case 'task_status_update':
-        return extra.triggerExecution ? 'executed' : 'noted (informational)';
+        return isTaskExecutionItem(item) ? 'executed' : 'noted (informational)';
       case 'review_request':
         return 'reviewed';
       case 'a2a_message':
@@ -2933,7 +2945,7 @@ export class Agent {
       case 'requirement_comment':
         return 'responded to requirement comment';
       case 'requirement_update':
-        return (extra.actionRequired) ? 'processed (action required)' : 'noted (informational)';
+        return item.envelope?.intent === 'action_required' ? 'processed (action required)' : 'noted (informational)';
       case 'heartbeat':
         return 'heartbeat processed';
       case 'session_reply':
