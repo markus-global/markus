@@ -170,6 +170,12 @@ export interface EnqueueOptions {
   intent?: MailboxIntent;
   /** 轮次（结构化）：幂等键 `(sourceType, taskId, round)` 的输入。 */
   round?: number;
+  /**
+   * 第七刀 C7-A：本条投递所属的 WorkUnit ref（`work_units.ref`）。
+   *
+   * 只在 WU 已存在时传；缺省 `undefined` = 不挂身份（旧行为）。
+   */
+  workUnitRef?: string | null;
   /** 投递来源（谁发的 / 外部 messageId）；缺省 = 平台自身（`noreply@`）。 */
   origin?: DeliveryOrigin;
   /**
@@ -1099,6 +1105,7 @@ export class AgentMailbox {
       metadata: options?.metadata,
       envelope,
       round: options?.round,
+      workUnitRef: options?.workUnitRef ?? null,
       queuedAt: new Date().toISOString(),
       runtime: options?.runtime,
     };

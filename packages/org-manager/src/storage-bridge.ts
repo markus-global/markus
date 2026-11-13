@@ -55,6 +55,8 @@ export interface StorageBridge {
   groupChatRepo?: any;
   auditRepo?: any;
   statusTransitionRepo?: any;
+  /** 第七刀 C7-A：WorkUnit 的存储写者（唯一一处 SQL）。 */
+  workUnitRepo?: any;
   readCursorRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
@@ -262,6 +264,8 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       groupChatRepo: new storage.SqliteGroupChatRepo(db),
       auditRepo: new storage.SqliteAuditRepo(db),
       statusTransitionRepo: new storage.SqliteStatusTransitionRepo(db),
+      // 第七刀 C7-A：WorkUnit 的唯一存储写者。
+      workUnitRepo: new storage.SqliteWorkUnitRepo(db),
       readCursorRepo: new storage.SqliteReadCursorRepo(db),
       workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
       workflowScheduleRepo: new storage.SqliteWorkflowScheduleRepo(db),
