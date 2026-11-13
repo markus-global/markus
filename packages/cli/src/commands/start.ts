@@ -1142,6 +1142,16 @@ async function startServerCore(
   apiServer.setTelemetryService(telemetryService);
   apiServer.setAuditService(auditService);
 
+  // ── 第七刀 C7-A：WorkUnit 装配（一个实例，三个写入面共用）──────────────
+  // 一个实例而不是三个：`failures/created` 计数与 `onEvent` 只有一份，
+  // 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
+  if (apiServer.workUnits) {
+    taskService.setWorkUnitService(apiServer.workUnits);
+    agentManager.setWorkUnitStatusProvider((agentId, opts) =>
+      apiServer.workUnits!.workStatus(agentId, opts),
+    );
+  }
+
   // session_rename tool → persist chat (cs_*) session titles to Sqlite and
   // broadcast so the Team chat History panel refreshes the title live.
   agentManager.setSessionTitleUpdater((sessionId, title) => {

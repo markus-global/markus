@@ -176,7 +176,8 @@ export type StatusActorType = 'human' | 'agent' | 'system';
 
 export interface StatusTransition {
   id: number;
-  entityType: 'task' | 'requirement';
+  /** `signal` 由 C3 扩入；`work_unit` 由 C7-A 扩入（只加一个值，无 DDL）。 */
+  entityType: 'task' | 'requirement' | 'signal' | 'work_unit';
   entityId: string;
   fromStatus: string;
   toStatus: string;

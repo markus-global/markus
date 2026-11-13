@@ -12,8 +12,10 @@ import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, isMarkusOrgAddress, parseAddress,
   normalizeSignalStatus, catchAllTargetOf,
   pickOrgSecretary, toStringArray,
+  assertWorkUnitTransition,
   type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
+  type WorkUnitRecord, type WorkUnitStatus,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
 import { BlobStore, projectJsonForStorage, resolveJsonFromStorage } from './blob-store.js';
@@ -712,6 +714,42 @@ CREATE TABLE IF NOT EXISTS status_transitions (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_st_entity ON status_transitions(entity_type, entity_id, created_at);
+
+-- 第七刀 C7-A：WorkUnit —— 一条「活」的身份对象。
+--
+-- 注意：本段整体位于 SCHEMA_SQL 模板字面量内，注释里禁止出现反引号
+-- （反引号会提前终止模板字符串，报错位置指向几十行之后，极难定位）。
+--
+-- 字段严格按执行计划 §2，不建 thread 表、不给 ContextSession 加 status：
+-- 「这条活是谁、还在不在跑」只有一个权威答案，不引入第二个近似物。
+--
+-- ref 是幂等键（唯一索引兜底）：三个生产者（chat / task / a2a）只许用
+-- shared 包的 WORK_UNIT_REF 生成它 —— 两套命名 = 同一个执行纪元长出
+-- 两个 WU，之后谁也说不清哪条是它。
+--
+-- budget / used 沿用 iteration 语义（C7-A 只建列不解释，语义归 C7-B）；
+-- parent_id 自引用，C7-A 恒为 NULL（父子委派是 C7-B 的行为变更）。
+CREATE TABLE IF NOT EXISTS work_units (
+  id            TEXT PRIMARY KEY,
+  parent_id     TEXT REFERENCES work_units(id),
+  ref           TEXT NOT NULL,
+  agent_id      TEXT NOT NULL,
+  address_ref   TEXT,
+  task_id       TEXT,
+  model         TEXT,
+  status        TEXT NOT NULL,
+  budget        INTEGER,
+  used          INTEGER NOT NULL DEFAULT 0,
+  claimed_by    TEXT,
+  lease_until   TEXT,
+  stop_reason   TEXT,
+  result_ref    TEXT,
+  context_ref   TEXT,
+  archived_at   TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);
+CREATE INDEX IF NOT EXISTS idx_work_units_agent_status ON work_units(agent_id, status);
+CREATE INDEX IF NOT EXISTS idx_work_units_parent ON work_units(parent_id);
 
 CREATE TABLE IF NOT EXISTS user_read_cursors (
   user_id TEXT NOT NULL,
@@ -5143,8 +5181,8 @@ export class SqliteMailboxRepo {
     const res = this.db
       .prepare(
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
-                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
@@ -6161,7 +6199,8 @@ export class SqliteStatusTransitionRepo {
   constructor(private db: DatabaseSync) {}
 
   record(data: {
-    entityType: 'task' | 'requirement';
+    /** C7-A：`work_unit` 是本卡新增的唯一值；`signal` 由 C3 扩入。 */
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit';
     entityId: string;
     fromStatus: string;
     toStatus: string;
@@ -6186,7 +6225,11 @@ export class SqliteStatusTransitionRepo {
     );
   }
 
-  getByEntity(entityType: 'task' | 'requirement', entityId: string, limit = 50): StatusTransitionRow[] {
+  getByEntity(
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit',
+    entityId: string,
+    limit = 50,
+  ): StatusTransitionRow[] {
     return this.db.prepare(
       `SELECT id,
               entity_type  AS entityType,
@@ -6202,6 +6245,244 @@ export class SqliteStatusTransitionRepo {
        WHERE entity_type = ? AND entity_id = ?
        ORDER BY created_at ASC, id ASC LIMIT ?`
     ).all(entityType, entityId, limit) as unknown as StatusTransitionRow[];
+  }
+}
+
+// ─── 第七刀 C7-A：WorkUnit（唯一写者）────────────────────────────────────────
+
+/** `ensure()` 的入参：调用方只交出它真正知道的事，其余留空。 */
+export interface WorkUnitSeed {
+  ref: string;
+  agentId: string;
+  status?: WorkUnitStatus;
+  parentId?: string | null;
+  addressRef?: string | null;
+  taskId?: string | null;
+  model?: string | null;
+  budget?: number | null;
+  contextRef?: string | null;
+  claimedBy?: string | null;
+  leaseUntil?: string | null;
+}
+
+export interface WorkUnitTransitionOptions {
+  changedById?: string | null;
+  changedByType?: 'human' | 'agent' | 'system';
+  changedByName?: string | null;
+  reason?: string | null;
+  claimedBy?: string | null;
+  leaseUntil?: string | null;
+  stopReason?: string | null;
+  resultRef?: string | null;
+}
+
+export interface WorkUnitEnsureResult {
+  row: WorkUnitRecord;
+  /** `true` = 本次调用真的插入了行；`false` = 命中既有 ref（幂等）。 */
+  created: boolean;
+}
+
+/**
+ * WorkUnit 的**唯一 SQL 写者**。
+ *
+ * 「唯一」是被 `scripts/architecture-guard.mjs` 的 `work-unit-single-writer`
+ * 契约强制的：`INSERT INTO work_units` / `UPDATE work_units` 只允许出现在本文件，
+ * 且只允许由 `WorkUnitService` 调用（契约同时检查 service 是唯一调用方）。
+ *
+ * 为什么不把矩阵判定也写在这里：矩阵属于**概念**（`@markus/shared/work-unit`），
+ * SQL 属于**存储**。两者分开，测试才能不起库直接断言矩阵，而库里只有一处兜底断言。
+ */
+export class SqliteWorkUnitRepo {
+  /** 迁移记录的唯一执行点：把状态迁移写成 `status_transitions` 行。 */
+  private readonly transitions: SqliteStatusTransitionRepo;
+
+  constructor(private db: DatabaseSync) {
+    this.transitions = new SqliteStatusTransitionRepo(db);
+  }
+
+  /**
+   * 幂等建（或取回）一个 WorkUnit。
+   *
+   * **并发同一 ref 必须恰好一行** —— 由 `uq_work_units_ref` 兜底，不靠调用方自觉：
+   * `ON CONFLICT(ref) DO NOTHING` 让「谁先到」由数据库裁决，随后按 ref 读回唯一那一行。
+   * 先查后插（check-then-insert）在并发下不成立，两个 worker 都会看到「不存在」。
+   */
+  ensure(seed: WorkUnitSeed): WorkUnitEnsureResult {
+    const status = seed.status ?? 'running';
+    const res = this.db
+      .prepare(
+        `INSERT INTO work_units
+           (id, parent_id, ref, agent_id, address_ref, task_id, model, status, budget, used,
+            claimed_by, lease_until, context_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
+         ON CONFLICT(ref) DO NOTHING`,
+      )
+      .run(
+        `wu_${randomUUID()}`,
+        seed.parentId ?? null,
+        seed.ref,
+        seed.agentId,
+        seed.addressRef ?? null,
+        seed.taskId ?? null,
+        seed.model ?? null,
+        status,
+        seed.budget ?? null,
+        seed.claimedBy ?? null,
+        seed.leaseUntil ?? null,
+        seed.contextRef ?? null,
+      );
+    const created = ((res as { changes?: number }).changes ?? 0) === 1;
+    const row = this.getByRef(seed.ref);
+    if (!row) {
+      // 走到这里说明「插入没成功、读也读不到」——只可能是 ref 被并发删除了。
+      // 宁可让调用方看到失败（上层会记结构化 warn），也不返回一个假对象。
+      throw new Error(`WorkUnit ensure failed: ref "${seed.ref}" not found after insert`);
+    }
+    return { row, created };
+  }
+
+  getByRef(ref: string): WorkUnitRecord | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE ref = ?`,
+      )
+      .get(ref) as WorkUnitRecord | undefined;
+    return row;
+  }
+
+  /**
+   * 状态迁移 —— 矩阵的**唯一执行点**。
+   *
+   * 三道闸，缺一不可：
+   *   1. 矩阵判定（`assertWorkUnitTransition`）：非法迁移抛结构化错误；
+   *   2. 乐观并发（`WHERE id = ? AND status = ?`）：读到 running 却被别人先改成
+   *      terminated 时，`changes === 0` → 抛错，而不是把终态覆盖回 running；
+   *   3. 迁移行（`status_transitions`，`entity_type='work_unit'`）：每次迁移都留痕，
+   *      否则「它什么时候停的」只能靠猜。
+   */
+  transition(ref: string, to: WorkUnitStatus, opts?: WorkUnitTransitionOptions): WorkUnitRecord {
+    const current = this.getByRef(ref);
+    if (!current) throw new Error(`WorkUnit transition failed: ref "${ref}" not found`);
+    assertWorkUnitTransition(current.status, to, ref);
+
+    const sets: string[] = ['status = ?'];
+    const params: SqlParams = [to];
+    if (opts?.claimedBy !== undefined) {
+      sets.push('claimed_by = ?');
+      params.push(opts.claimedBy);
+    }
+    if (opts?.leaseUntil !== undefined) {
+      sets.push('lease_until = ?');
+      params.push(opts.leaseUntil);
+    }
+    if (opts?.stopReason !== undefined) {
+      sets.push('stop_reason = ?');
+      params.push(opts.stopReason);
+    }
+    if (opts?.resultRef !== undefined) {
+      sets.push('result_ref = ?');
+      params.push(opts.resultRef);
+    }
+    if (to === 'archived') {
+      sets.push('archived_at = ?');
+      params.push(now());
+    }
+    params.push(current.id, current.status);
+
+    const res = this.db
+      .prepare(`UPDATE work_units SET ${sets.join(', ')} WHERE id = ? AND status = ?`)
+      .run(...params);
+    if (((res as { changes?: number }).changes ?? 0) !== 1) {
+      throw new Error(
+        `WorkUnit transition failed: ref "${ref}" changed concurrently ` +
+          `(expected status "${current.status}")`,
+      );
+    }
+
+    this.transitions.record({
+      entityType: 'work_unit',
+      entityId: current.id,
+      fromStatus: current.status,
+      toStatus: to,
+      changedById: opts?.changedById ?? null,
+      changedByType: opts?.changedByType ?? 'system',
+      changedByName: opts?.changedByName ?? null,
+      reason: opts?.reason ?? null,
+    });
+
+    const updated = this.getByRef(ref);
+    if (!updated) throw new Error(`WorkUnit transition failed: ref "${ref}" vanished`);
+    return updated;
+  }
+
+  /**
+   * 自省读面：「我这个 agent 现在有哪些 WU」。
+   *
+   * 只读 `work_units`，**不碰 payload、不读会话文本** —— 结构问题必须由结构回答
+   * （需求 §10.1 缺口 A：今天的答案是从文本注入块现算的，会漂移）。
+   */
+  listByAgent(
+    agentId: string,
+    opts?: { statuses?: WorkUnitStatus[]; includeArchived?: boolean; limit?: number },
+  ): WorkUnitRecord[] {
+    const limit = opts?.limit ?? 50;
+    const statuses = opts?.statuses?.length
+      ? opts.statuses
+      : opts?.includeArchived
+        ? null
+        : ['running', 'idle', 'paused_budget', 'terminated'] as WorkUnitStatus[];
+    if (statuses) {
+      const placeholders = statuses.map(() => '?').join(', ');
+      return this.db
+        .prepare(
+          `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                  task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                  lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                  context_ref AS contextRef, archived_at AS archivedAt
+             FROM work_units WHERE agent_id = ? AND status IN (${placeholders})
+             ORDER BY rowid ASC LIMIT ?`,
+        )
+        .all(agentId, ...statuses, limit) as unknown as WorkUnitRecord[];
+    }
+    return this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE agent_id = ? ORDER BY rowid ASC LIMIT ?`,
+      )
+      .all(agentId, limit) as unknown as WorkUnitRecord[];
+  }
+
+  /** 子 WU（C7-B 才产生；本卡读面先就位，读空集是诚实答案）。 */
+  listChildren(parentId: string): WorkUnitRecord[] {
+    return this.db
+      .prepare(
+        `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
+                task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
+                lease_until AS leaseUntil, stop_reason AS stopReason, result_ref AS resultRef,
+                context_ref AS contextRef, archived_at AS archivedAt
+           FROM work_units WHERE parent_id = ? ORDER BY rowid ASC`,
+      )
+      .all(parentId) as unknown as WorkUnitRecord[];
+  }
+
+  /**
+   * 让 C6 的墓碑变活：把 `mailbox_items.work_unit_ref` 写成本 WU 的 ref。
+   *
+   * 只有这一处写这列（本文件 + 本方法），而且只在**实体已存在之后**写：
+   * 顺序反过来就是 C6 刻意避免的「先建引用后建实体」。
+   */
+  linkMailboxItem(itemId: string, ref: string): boolean {
+    const res = this.db
+      .prepare('UPDATE mailbox_items SET work_unit_ref = ? WHERE id = ?')
+      .run(ref, itemId);
+    return ((res as { changes?: number }).changes ?? 0) === 1;
   }
 }
 

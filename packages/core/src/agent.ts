@@ -346,6 +346,15 @@ interface HandleMessageOptions {
    * on each other. An answering agent can still ask the HUMAN (request_user_input).
    */
   peerQueryDepth?: number;
+  /**
+   * 第七刀 C7-A：本次入队产生的 mailbox item 身份，入队后**立刻**回调给入口。
+   *
+   * 为什么入口需要它：WorkUnit 的 `ref` 只有在会话身份解析出来之后才能确定
+   * （chat 的 ref 依赖 DB 会话 id），而「这条 item 属于哪个 WU」必须在 WU 建好
+   * 之后写回 `mailbox_items.work_unit_ref`。没有这个回调，入口只能靠「最近一条」
+   * 之类的猜测去关联 —— 那是从载荷/时序推断结构（R3），本项目明确禁止。
+   */
+  onItemEnqueued?: (item: { id: string; sourceType: string }) => void;
 }
 
 /** Context-usage percentage (0-100) at/above which a turn-level memory flush preflight fires. */
@@ -1521,7 +1530,7 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue(sourceType, payload, {
+      const enqueued = this.mailbox.enqueue(sourceType, payload, {
         // P1：轮次是**结构字段**（不再塞进 payload.extra）：幂等键 / 单播路由都用它。
         // 缺省 undefined → mailbox 不施加约束。
         round: options?.round,
@@ -1540,6 +1549,7 @@ export class Agent {
         },
         runtime: { responsePromise: { resolve, reject } },
       });
+      options?.onItemEnqueued?.({ id: enqueued.id, sourceType });
     });
   }
 
@@ -1584,7 +1594,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null; onItemEnqueued?: (item: { id: string; sourceType: string }) => void },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: summarizeForMailbox(userMessage),
@@ -1614,7 +1624,7 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue('human_chat', payload, {
+      const enqueued = this.mailbox.enqueue('human_chat', payload, {
         priority: 0,
         // C2：投递来源 → 信封从这里长出来（人类入口同样有身份）。
         origin: options?.origin,
@@ -1640,6 +1650,7 @@ export class Agent {
         },
         runtime: { responsePromise: { resolve, reject } },
       });
+      options?.onItemEnqueued?.({ id: enqueued.id, sourceType: 'human_chat' });
     });
   }
 

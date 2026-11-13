@@ -117,6 +117,7 @@ import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { AgentDelivery, newChainId } from './agent-delivery.js';
+import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -469,11 +470,50 @@ export class APIServer {
           if (participants.length > 0) this.ws.sendToUsers(participants, event);
           else this.ws.broadcast(event);
         },
+        // 第七刀 C7-A：A2A 投递也产生 WU 身份（未接线则跳过）。
+        workUnits: this.workUnits ?? undefined,
       });
     }
     return this._delivery;
   }
   private _delivery?: AgentDelivery;
+
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（惰性构造）。
+   *
+   * 未接线（无 storage / 无 workUnitRepo）时返回 `null` —— 所有生产者在
+   * `?.` 之后静默跳过，业务照常。这是「观测设施不得成为业务故障点」的落地：
+   * 没有 WU 是可知的降级，不是隐藏的崩溃。
+   */
+  private _workUnits?: WorkUnitService | null;
+  get workUnits(): WorkUnitService | null {
+    if (this._workUnits !== undefined) return this._workUnits;
+    const repo = this.storage?.workUnitRepo;
+    this._workUnits = repo
+      ? new WorkUnitService({
+          repo,
+          onEvent: (event) => {
+            // 事件 → 结构化日志：`work_unit.ensure_failed` 之类必须可计数，
+            // 而不是让人去 grep 一句自然语言。
+            if (event.type.endsWith('_failed')) {
+              log.warn('WorkUnit write failed (observation degraded, business continues)', {
+                event: event.type,
+                ref: event.ref,
+                itemId: event.itemId,
+                agentId: event.agentId,
+                error: event.error,
+              });
+            }
+          },
+        })
+      : null;
+    return this._workUnits;
+  }
+
+  /** 第七刀 C7-A：装配时注入唯一实例（未注入则按 storage 惰性自建）。 */
+  setWorkUnitService(service: WorkUnitService | null): void {
+    this._workUnits = service;
+  }
 
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   /** Per-provider live key/model validation budget when a routing-candidates
@@ -2497,7 +2537,13 @@ export class APIServer {
     reply: string,
     senderId?: string,
     tokensUsed = 0,
-    metadata?: unknown
+    metadata?: unknown,
+    /**
+     * 第七刀 C7-A：触发这一轮的 mailbox item 身份（由入口的 `onItemEnqueued`
+     * 回调带回来）。没有它就无法把 `mailbox_items.work_unit_ref` 指向本轮 WU ——
+     * 而「猜最近一条」是从时序推断结构，明确禁止。缺省 = 不挂引用（如历史重放）。
+     */
+    mailboxItemId?: string,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2506,6 +2552,10 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 轮次必须在**追加之前**取：一轮 = 一问一答两条消息，追加后计数会把
+      // 本轮的 assistant 也算进去，导致同一轮重复递增（ref 漂移）。
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
+      const round = Math.floor(priorMessages / 2) + 1;
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
@@ -2517,6 +2567,17 @@ export class APIServer {
         metadata
       );
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+
+      // ── 第七刀 C7-A：一轮对话 = 一个 WorkUnit ─────────────────────────────
+      // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
+      // 反过来就是 C6 刻意避免的「先建引用后建实体」，一行指向不存在 WU 的
+      // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
+      const units = this.workUnits;
+      if (units) {
+        const ref = WORK_UNIT_REF.chat(session.id, round);
+        units.ensure({ ref, agentId, contextRef: session.id });
+        units.linkMailboxItem(mailboxItemId, ref);
+      }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
     }

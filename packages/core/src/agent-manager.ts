@@ -1817,6 +1817,10 @@ export class AgentManager {
       // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
+      // 第七刀 C7-A：自省端口（未接线 ⇒ 工具不注册）。
+      ...(this.workUnitStatusProvider
+        ? { workStatus: (opts: { limit?: number }) => this.workUnitStatusProvider!(id, opts) }
+        : {}),
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
 
@@ -2746,6 +2750,9 @@ export class AgentManager {
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
+      ...(this.workUnitStatusProvider
+        ? { workStatus: (opts: { limit?: number }) => this.workUnitStatusProvider!(id, opts) }
+        : {}),
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
@@ -3625,6 +3632,20 @@ export class AgentManager {
   }
 
   /** 单一注册点：两个建 Agent 的路径都调这里，避免两套工具集漂移。 */
+  /**
+   * 第七刀 C7-A：`work_status()` 自省端口的接入口（org-manager 装配时注入）。
+   *
+   * 为什么用 setter 而不是构造函数参数：core 不认识 org-manager 的
+   * `WorkUnitService`（依赖方向），只能拿到一个「给定 agent 返回其 WU 视图」的函数。
+   * 未注入 ⇒ 工具不注册（空能力不注册，而不是注册一个永远报错的空壳）。
+   */
+  private workUnitStatusProvider?: (agentId: string, opts: { limit?: number }) => unknown;
+  setWorkUnitStatusProvider(
+    fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
+  ): void {
+    this.workUnitStatusProvider = fn;
+  }
+
   private registerAddressTools(agent: Agent, agentId: string): void {
     const port = this.addressBindingPort;
     if (!port) return;

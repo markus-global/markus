@@ -1,3 +1,4 @@
+import type { WorkUnitService } from './work-unit-service.js';
 import {
   createLogger,
   taskId,
@@ -18,6 +19,7 @@ import {
   type TaskQueryResult,
   type TaskSortField,
   isValidTaskTransition,
+  WORK_UNIT_REF,
   TERMINAL_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
@@ -1027,6 +1029,17 @@ export class TaskService implements ApprovalTargetPort {
 
   setStatusTransitionRepo(repo: typeof this.statusTransitionRepo): void {
     this.statusTransitionRepo = repo;
+  }
+
+  /**
+   * 第七刀 C7-A：接上 WorkUnit 作者。未接线 ⇒ 任务照常，只是不建 WU。
+   *
+   * 为什么只 import **type**：TaskService 不应在编译期依赖 `WorkUnitService`
+   * 的实现（它由 `start.ts` 装配），只依赖形状。
+   */
+  private workUnitService?: WorkUnitService;
+  setWorkUnitService(service: WorkUnitService | undefined): void {
+    this.workUnitService = service;
   }
 
   private isHumanUser(userId: string): boolean {
@@ -2781,6 +2794,23 @@ export class TaskService implements ApprovalTargetPort {
     };
 
     this.tasks.set(task.id, task);
+
+    // ── 第七刀 C7-A：一个执行纪元 = 一个 WorkUnit ──────────────────────────
+    // `ref` 复用既有身份 `task_<id>_r<round>`（执行会话 id、在飞登记表用的是
+    // 同一个字符串）：不新造第二套命名，否则同一个纪元会有两张身份证。
+    //
+    // 状态只表达「现在在不在跑」：`pending` 还没开始执行 → `idle`。
+    // **本卡不做 task.status → WU.status 的镜像**：WU 有自己的状态机，镜像会制造
+    // 第二个执行点（R2）。真正驱动它的是执行本身，那是 C7-B 的事。
+    if (this.workUnitService) {
+      this.workUnitService.ensure({
+        ref: WORK_UNIT_REF.task(task.id, task.executionRound),
+        agentId: task.assignedAgentId,
+        taskId: task.id,
+        status: task.status === 'in_progress' ? 'running' : 'idle',
+        contextRef: WORK_UNIT_REF.task(task.id, task.executionRound),
+      });
+    }
 
     if (this.taskRepo) {
       this.taskRepo

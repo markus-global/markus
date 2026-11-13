@@ -16,7 +16,7 @@
  * 不存在"投递了但没唤醒"这种半状态：deliver 只有成功（已入队）或抛错两种结果。
  */
 
-import { createLogger, agentAddressRef } from '@markus/shared';
+import { createLogger, agentAddressRef, WORK_UNIT_REF } from '@markus/shared';
 
 const log = createLogger('agent-delivery');
 
@@ -123,6 +123,19 @@ export interface DeliveryDeps {
     text: string;
     messageId?: string;
   }) => void;
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口。未接线 ⇒ A2A 投递照常，但不建 WU
+   * （可知的降级，不是隐藏的失败）。
+   */
+  workUnits?: {
+    ensure(seed: {
+      ref: string;
+      agentId: string;
+      contextRef?: string | null;
+      taskId?: string | null;
+    }): unknown;
+    linkMailboxItem(itemId: string | null | undefined, ref: string): boolean;
+  };
 }
 
 let deliverySeq = 0;
@@ -170,7 +183,7 @@ export class AgentDelivery {
         // 那才是缓存最怕的。
         const addressedCount = req.addressedTargetIds?.length ?? 0;
         const othersAddressed = Math.max(0, addressedCount - 1);
-        agent.enqueueToMailbox('a2a_message', {
+        const item = agent.enqueueToMailbox('a2a_message', {
           summary: req.mentions?.length
             ? `@mention from ${req.fromAgentName}`
             : `A2A message from ${req.fromAgentName}`,
@@ -217,6 +230,16 @@ export class AgentDelivery {
             ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
             : undefined,
         });
+        // ── 第七刀 C7-A：一次投递 = 一个 WorkUnit ────────────────────────────
+        // `context_ref` 取 `channelKey`：A2A 消息的会话身份就是这条频道
+        // （mailbox 侧 sessionHint 也用同一个值），所以它就是「发送方上下文」。
+        // 顺序仍是先实体后引用：WU 建好之后才写 `mailbox_items.work_unit_ref`。
+        const units = this.deps.workUnits;
+        if (units) {
+          const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
+          units.ensure({ ref, agentId: targetId, contextRef: req.channelKey });
+          units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
+        }
         deliveredTo.push(targetId);
       } catch (err) {
         // 投递失败必须可见：不吞。调用方据此决定是否重试。

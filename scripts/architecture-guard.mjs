@@ -225,6 +225,81 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  {
+    id: 'work-unit-single-writer',
+    title: 'WorkUnit 单一写者（唯一 SQL 写点 / 唯一矩阵定义 / 唯一 ref 生成器）',
+    checks: [
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'work_units 表 + uq_work_units_ref 唯一索引存在（幂等键由索引裁决）',
+        hint: '缺唯一索引 → 并发 ensure 同一 ref 会长出两行 WU，同一个执行纪元有两张身份证',
+        detect: (t) =>
+          /CREATE TABLE IF NOT EXISTS work_units/.test(t) &&
+          /CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units\(ref\)/.test(t),
+        fixtures: {
+          ok: 'CREATE TABLE IF NOT EXISTS work_units ( id TEXT PRIMARY KEY, ref TEXT NOT NULL );\nCREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);',
+          bad: 'CREATE TABLE IF NOT EXISTS work_units ( id TEXT PRIMARY KEY, ref TEXT NOT NULL );\nCREATE INDEX IF NOT EXISTS idx_work_units_ref ON work_units(ref);',
+        },
+      },
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'ensure = ON CONFLICT(ref) DO NOTHING 的原子幂等插入（不是先查后插）',
+        hint: '先查后插在并发下两个 worker 都会看到「不存在」→ 要么两行、要么抛唯一键错误打断业务',
+        detect: (t) =>
+          /INSERT INTO work_units[\s\S]{0,600}?ON CONFLICT\(ref\) DO NOTHING/.test(t),
+        fixtures: {
+          ok: "this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?) ON CONFLICT(ref) DO NOTHING').run(id, ref);",
+          bad: "const existing = this.getByRef(ref); if (existing) return existing; this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?)').run(id, ref);",
+        },
+      },
+      {
+        file: 'packages/storage/src/sqlite-storage.ts',
+        label: 'transition = 乐观并发条件更新（WHERE id = ? AND status = ?）',
+        hint: '无条件 UPDATE → 读到 running 却被别人先改成 terminated 时，会把终态覆盖回 running',
+        detect: (t) =>
+          /UPDATE work_units SET[\s\S]{0,600}?WHERE id = \? AND status = \?/.test(t),
+        fixtures: {
+          ok: "this.db.prepare(`UPDATE work_units SET status = ? WHERE id = ? AND status = ?`).run(to, id, from);",
+          bad: "this.db.prepare(`UPDATE work_units SET status = ? WHERE id = ?`).run(to, id);",
+        },
+      },
+      {
+        file: 'packages/shared/src/work-unit.ts',
+        label: 'WU_TRANSITIONS 矩阵单一定义，且 archived 是终态（不可复活）',
+        hint: '矩阵缺项或允许 archived→running → 归档变成可撤销的装饰，历史读数开始漂移',
+        detect: (t) =>
+          /WU_TRANSITIONS[\s\S]{0,900}?archived:\s*\[\s*\]/.test(t) &&
+          /running:\s*\[\s*'idle'/.test(t),
+        fixtures: {
+          ok: "export const WU_TRANSITIONS = { running: ['idle', 'paused_budget', 'terminated'], idle: ['running'], paused_budget: ['running'], terminated: ['archived'], archived: [] };",
+          bad: "export const WU_TRANSITIONS = { running: ['idle'], idle: ['running'], paused_budget: ['running'], terminated: ['archived'], archived: ['running'] };",
+        },
+      },
+      {
+        // 消费者侧：生产者只许调 service，不许自己写 SQL。命中即红。
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'task-service 不自己写 work_units（唯一写者在 storage 层）',
+        hint: '第二个 SQL 写者 → 绕过矩阵与唯一索引，WU 状态开始有两个真相',
+        detect: (t) => !/(INSERT INTO work_units|UPDATE work_units)/.test(t),
+        fixtures: {
+          ok: "this.workUnitService.ensure({ ref: WORK_UNIT_REF.task(task.id, round) });",
+          bad: "this.db.prepare('UPDATE work_units SET status = ? WHERE ref = ?').run('idle', ref);",
+        },
+      },
+      {
+        file: 'packages/org-manager/src/api-server.ts',
+        label: 'api-server 不自己写 work_units / 不自己写 work_unit 迁移行',
+        hint: '入口直接写表 → 建实体与建引用的顺序不再受控，可能造出悬空引用',
+        detect: (t) =>
+          !/(INSERT INTO work_units|UPDATE work_units)/.test(t) &&
+          !/entityType:\s*'work_unit'/.test(t),
+        fixtures: {
+          ok: "units.ensure({ ref }); units.linkMailboxItem(itemId, ref);",
+          bad: "this.db.prepare('INSERT INTO work_units (id, ref) VALUES (?, ?)').run(id, ref);",
+        },
+      },
+    ],
+  },
 ];
 
 /** 门禁自检：每条检测器都必须「命中违规样本、放过合规样本」。 */
