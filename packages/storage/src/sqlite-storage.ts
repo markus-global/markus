@@ -9,7 +9,9 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, isMarkusOrgAddress, parseAddress,
+  pickOrgSecretary, toStringArray,
+  type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
@@ -796,6 +798,11 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
   native_id TEXT,
   kind TEXT,
   agent_id TEXT NOT NULL,
+  -- 邮箱地址绑定（第六刀 §2.1）：同一张表上的另一种「谁拥有这个入口」。
+  -- 可空 = 既有路由行；不接受回填（旧行 NULL 合法）。
+  address TEXT,
+  -- 撤销用时间戳表达，不删行（审计与「撤销后地址可重新认领」都需要历史）。
+  revoked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(org_id, scope, instance_id, native_id)
 );
@@ -937,6 +944,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
+    { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
   ];
     const addedColumns: string[] = [];
     for (const m of migrations) {
@@ -975,6 +985,32 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+
+    // 第六刀 C1：地址绑定的两个结构对象，都依赖上面的 `address` / `revoked_at` 列，
+    // 因此必须在列迁移之后创建（否则既有库会在 SCHEMA_SQL 阶段报 no such column）。
+    //
+    // 1) **全局**部分唯一索引：键里只有 `address`，**不含 `org_id`**（§2.8 H4）。邮箱
+    //    地址是全局身份——把 org_id 放进键里，I1「一个 active 地址至多一个 target_ref」
+    //    就会退化成「同地址可以绑两次」。撤销行保留 address 供审计，故谓词是
+    //    `revoked_at IS NULL`；旧行 address 为 NULL，SQLite 视 NULL 互不相等，既不冲突
+    //    也不需要回填。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bindings_address_active ' +
+        'ON channel_bindings(address) WHERE revoked_at IS NULL',
+    );
+    // 2) 唯一读面：地址解析（C2 的 resolve）与 `address_list` 工具都只读这个视图，
+    //    不各自拼 SQL —— 一处定义「active 地址绑定长什么样」。`target_ref` 由
+    //    `agent_id` 派生（`agent:<id>`），不是第二列存储：目标只有一个写者，才不会漂移。
+    _db.exec(`CREATE VIEW IF NOT EXISTS address_bindings AS
+      SELECT id,
+             org_id,
+             address,
+             'agent:' || agent_id AS target_ref,
+             agent_id,
+             revoked_at,
+             created_at
+        FROM channel_bindings
+       WHERE address IS NOT NULL`);
 
     _db.exec('COMMIT');
   } catch (err) {
@@ -3304,6 +3340,23 @@ export class SqliteChannelMessageRepo {
 export class SqliteUserRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * A4 人类邮箱隔离：`users.email` 只放人类邮箱，不得占用组织邮箱格式
+   * `<local>.<org>@markus.global`（平台保留地址、外部域地址不受限）。
+   *
+   * 唯一执行点：所有写 email 的路径（create / upsert / updateProfile）都经过这里。
+   * 拒绝而不是自动改写 —— 自动 slugify/小写化会让「写进去的」与「查得到的」
+   * 变成两个事实，并且让人永远不知道自己写错了。
+   */
+  private assertHumanEmail(email: string | undefined): void {
+    if (!email || !isMarkusOrgAddress(email)) return;
+    throw new Error(
+      `users.email cannot be an organisation address (${email}). ` +
+        `Organisation mailboxes are <local>.<org>@markus.global and are claimed via bind_address; ` +
+        `use the person's own mailbox instead.`,
+    );
+  }
+
   create(data: {
     id: string;
     orgId: string;
@@ -3315,6 +3368,7 @@ export class SqliteUserRepo {
     hubUserId?: string;
     avatarUrl?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         'INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, avatar_url, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
@@ -3344,6 +3398,7 @@ export class SqliteUserRepo {
     passwordHash?: string;
     hubUserId?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, created_at)
@@ -3435,6 +3490,7 @@ export class SqliteUserRepo {
   }
 
   updateProfile(id: string, data: { name?: string; email?: string; role?: string; avatarUrl?: string | null }) {
+    this.assertHumanEmail(data.email);
     const sets: string[] = [];
     const vals: SqlParams = [];
     if (data.name !== undefined) {
@@ -5691,7 +5747,7 @@ export class SqliteApprovalRepo {
 
 // ─── Group Chat Repo ──────────────────────────────────────────────────────────
 
-import type { GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+import type { AddressBindingRow, GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteGroupChatRepo {
   constructor(private db: DatabaseSync) {}
@@ -5892,7 +5948,7 @@ export class SqliteStatusTransitionRepo {
 
 // ─── Integration ─────────────────────────────────────────────────────────────
 
-export type { IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+export type { AddressBindingRow, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteIntegrationRepo {
   constructor(private db: DatabaseSync) {}
@@ -6135,6 +6191,189 @@ export class SqliteChannelBindingRepo {
 }
 
 // ─── Messaging gateway migration (legacy integrations → instances + bindings) ─
+
+// ─── 邮箱地址绑定（第六刀 C1）─────────────────────────────────────────────────
+
+/** `agent:<id>` —— `target_ref` 的唯一拼装点（§2.2，别处不得手拼）。 */
+export function addressTargetRef(agentId: string): string {
+  return `agent:${agentId}`;
+}
+
+/** SQLite 唯一约束违规：地址冲突的裁决依据是这个错误，不是读-再-写。 */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { errcode?: number }).errcode;
+  // 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
+  if (code === 2067 || code === 1555) return true;
+  return /UNIQUE constraint failed/i.test(err.message);
+}
+
+/**
+ * 地址绑定的唯一写者与唯一读面（§2.2 / §2.4）。
+ *
+ * 三条纪律，都是为了让同一类 bug 在结构上无法表达：
+ * 1. **唯一性由索引裁决**：`bind()` 直接 INSERT，让
+ *    `uq_channel_bindings_address_active` 决定谁赢。先 SELECT 再 INSERT 会让两个
+ *    并发写入者同时通过检查（TOCTOU），那正是 I1 要禁止的。
+ * 2. **不按 org 限定解析**（H4）：`resolve()` / `findActive()` 的 WHERE 里没有
+ *    `org_id`。地址是全局身份；org 只出现在「列表可见范围」这种展示语义里。
+ * 3. **只能写自己**：`bind()` / `revoke()` 的入参没有 target 字段，目标恒为
+ *    `agentId`。「改他人绑定」在这层 API 上**不可表达**（I5 的正面回答在工具面）。
+ */
+export class SqliteAddressBindingRepo {
+  constructor(private db: DatabaseSync) {}
+
+  /** 认领一个地址。唯一冲突的裁决权在 DB 部分唯一索引上。 */
+  bind(input: { orgId: string; agentId: string; address: string }): AddressBindOutcome {
+    const rejected = this.rejectUnbindable(input.address);
+    if (rejected) return rejected;
+
+    const address = input.address;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id, address, created_at)
+           VALUES (?, ?, 'address', NULL, NULL, 'mail', ?, ?, ?)`,
+        )
+        .run(generateId('cb'), input.orgId, input.agentId, address, new Date().toISOString());
+      return { status: 'bound', address, targetRef: addressTargetRef(input.agentId) };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const existing = this.findActive(address);
+      // 幂等：再绑一次自己的地址是 no-op，不是冲突 —— 同一个事实只有一种结局。
+      if (existing && existing.agentId === input.agentId) {
+        return { status: 'bound', address, targetRef: existing.targetRef, unchanged: true };
+      }
+      return {
+        status: 'conflict',
+        address,
+        hint: `${address} is already bound to a different target. Ask its owner to release it (address_revoke) before claiming it; two active targets for one address is not representable.`,
+      };
+    }
+  }
+
+  /** 撤销自己的绑定：打 `revoked_at`，行保留（地址随即可以被重新认领）。 */
+  revoke(input: { orgId: string; agentId: string; address: string }): AddressRevokeOutcome {
+    const rejected = this.rejectUnbindable(input.address);
+    if (rejected) return rejected;
+
+    const address = input.address;
+    const result = this.db
+      .prepare(
+        'UPDATE channel_bindings SET revoked_at = ? WHERE address = ? AND revoked_at IS NULL AND agent_id = ?',
+      )
+      .run(new Date().toISOString(), address, input.agentId);
+    if (result.changes > 0) return { status: 'revoked', address };
+
+    const existing = this.findActive(address);
+    if (!existing) {
+      return {
+        status: 'not_bound',
+        address,
+        hint: `${address} has no active binding, so there is nothing to revoke.`,
+      };
+    }
+    return {
+      status: 'forbidden',
+      address,
+      hint: `${address} is bound to another target; only its owner can revoke it (I5). Ask the owner, or bind an address of your own.`,
+    };
+  }
+
+  /**
+   * 列出可见绑定：自己的（含已撤销，带状态）+ 可选本组织 active 绑定。
+   * 只读；可见范围是展示语义，解析语义在 {@link resolve}。
+   */
+  listVisible(input: { orgId: string; agentId: string; includeOrg?: boolean }): AddressBindingRow[] {
+    const own = this.db
+      .prepare('SELECT * FROM address_bindings WHERE agent_id = ? ORDER BY created_at, id')
+      .all(input.agentId) as Record<string, unknown>[];
+    if (!input.includeOrg) return own.map((r) => this.mapRow(r));
+
+    const orgRows = this.db
+      .prepare(
+        `SELECT * FROM address_bindings
+          WHERE org_id = ? AND revoked_at IS NULL AND agent_id <> ?
+          ORDER BY address`,
+      )
+      .all(input.orgId, input.agentId) as Record<string, unknown>[];
+    return [...own, ...orgRows].map((r) => this.mapRow(r));
+  }
+
+  /** 一个地址当前是否被占用；被谁占用是 `agentId`，不是字符串推断。 */
+  findActive(address: string): AddressBindingRow | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM address_bindings WHERE address = ? AND revoked_at IS NULL')
+      .get(address) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  /**
+   * 唯一解析入口（C2 的 `resolve()` 与 C3 的退信共用）：命中唯一 active 目标，
+   * 或明确「没有」。**没有第三种悄悄丢掉**，也**不按当前 org 限定**（H4）。
+   */
+  resolve(address: string): AddressResolution {
+    const parsed = parseAddress(address);
+    // 非本域 / 格式非法 / 0 点平台地址 / ≥2 点：都不是可解析的内部收件人。
+    if (!parsed.ok || parsed.value.kind !== 'markus') {
+      return { matched: false, address, reason: 'unresolved_address' };
+    }
+    const row = this.findActive(parsed.value.address);
+    if (!row) return { matched: false, address, reason: 'no_active_target' };
+    return { matched: true, address: row.address, targetRef: row.targetRef, agentId: row.agentId };
+  }
+
+  /**
+   * 解析阶段的拒绝，统一在这里产出：只有 `kind='markus'` 的地址可以认领。
+   * bind / revoke 共用同一套判定，避免两条写路径各写一份规则。
+   */
+  private rejectUnbindable(raw: string): Extract<AddressBindOutcome, { status: 'bounced' }> | null {
+    const parsed = parseAddress(raw);
+    if (!parsed.ok) {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: parsed.reason,
+        hint: parsed.hint,
+        catchAllId: null,
+      };
+    }
+    if (parsed.value.kind === 'platform') {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: 'platform_reserved',
+        hint: `${raw} is a platform-reserved 0-dot address. Organisations cannot claim it; bind <local>.<org>@markus.global instead.`,
+        catchAllId: null,
+      };
+    }
+    if (parsed.value.kind === 'external') {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: 'external_domain',
+        hint: `${raw} is an external domain. Only <local>.<org>@markus.global addresses can be claimed on this platform.`,
+        catchAllId: null,
+      };
+    }
+    return null;
+  }
+
+  private mapRow(r: Record<string, unknown>): AddressBindingRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      address: r['address'] as string,
+      targetRef: r['target_ref'] as string,
+      agentId: r['agent_id'] as string,
+      revokedAt: (r['revoked_at'] as string | null) ?? null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
 
 /** Outcome counters for {@link migrateMessagingGateway} (observability + tests). */
 export interface MessagingGatewayMigrationStats {

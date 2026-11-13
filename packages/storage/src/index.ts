@@ -2,7 +2,7 @@
 export type {
   TaskRepo, TaskLogRepo, TaskCommentRepo, RequirementCommentRepo, DeliverableRepo,
   IntegrationRepo,
-  PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope,
+  PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope, AddressBindingRow,
   PlatformInstanceRepo, ChannelBindingRepo,
   TaskLogType, TaskLogRow,
   TaskCommentRow, RequirementCommentRow,
@@ -53,6 +53,8 @@ export {
   SqliteIntegrationRepo,
   SqlitePlatformInstanceRepo,
   SqliteChannelBindingRepo,
+  SqliteAddressBindingRepo,
+  addressTargetRef,
   migrateMessagingGateway,
   resolveInstanceConfig,
   SqliteReadCursorRepo,
