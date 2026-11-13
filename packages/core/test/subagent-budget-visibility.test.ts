@@ -153,7 +153,8 @@ describe('H6: per-child budget exhaustion is explicit, never an empty success', 
     }
     // Both children were stopped by their OWN budget — one did not steal the other's.
     expect(parsed.results.every((r: { status: string }) => r.status === 'budget_exhausted')).toBe(true);
-    expect(parsed.budgetExceeded).toBe(true);
+    // C7-B: there is no shared pool anymore, so no `budgetExceeded` reading exists.
+    expect(parsed.budgetExceeded).toBeUndefined();
     // Summary must make the partial outcome legible at a glance.
     expect(parsed.summary).toMatch(/stopped early|incomplete|budget/i);
   });
