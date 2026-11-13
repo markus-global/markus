@@ -146,11 +146,12 @@ export interface DeliveryDeps {
       parentRef?: string | null;
     }): { status: string } | null;
     /**
-     * C7-B：读「发送方现在跑在哪条 WU 上」。
+     * C7-B：读「发送方**本轮**跑在哪条 WU 上」。
      *
-     * 必填而非可选（同一纪律）：`NULL_WORK_UNITS` 让它显式返回 null。
+     * 名字里的 turn 是约束：只读该 agent 内存中由 `onFocusChanged` 设置的回合 ref，
+     * 禁止用库查询实现。必填而非可选：`NULL_WORK_UNITS` 让它显式返回 null。
      */
-    currentWorkUnitRef(agentId: string): string | null;
+    turnWorkUnitRef(agentId: string): string | null;
     linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean;
     transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
   };
@@ -164,7 +165,7 @@ export interface DeliveryDeps {
  */
 export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
   ensure: () => null,
-  currentWorkUnitRef: () => null,
+  turnWorkUnitRef: () => null,
   linkMailboxItem: () => false,
   transition: () => undefined,
 };
@@ -273,7 +274,7 @@ export class AgentDelivery {
         const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
         // C7-B：跨团队委派也要有父子链 —— 父 = 发送方本轮 WU（从 agent 的回合状态
         // 读，不从载荷推断）。没有回合（后台发送 / 定时）时显式 null，ref 不改写。
-        const parentRef = units.currentWorkUnitRef(req.fromAgentId);
+        const parentRef = units.turnWorkUnitRef(req.fromAgentId);
         const wu = units.ensure({ ref, agentId: req.fromAgentId, contextRef: req.channelKey, parentRef });
         units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
         // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`

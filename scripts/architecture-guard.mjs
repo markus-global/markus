@@ -276,6 +276,22 @@ const INVARIANT_RULES = [
         },
       },
       {
+        // C7-B：名字里的 turn 就是约束 —— 只读内存里的回合 ref，禁止用库查询实现。
+        // 库里只有历史，没有「当前」；按 agentId 反查得到的是错的那一条（父链静默挂错）。
+        file: 'packages/core/src/agent-manager.ts',
+        label: 'turnWorkUnitRef 只读内存回合 ref（禁止库查询实现）',
+        hint: '按 agentId 去库里反查「当前 WU」在结构上无法成立 → 会把子 WU 挂到历史里某条旧 WU 上',
+        detect: (t) => {
+          const m = t.match(/turnWorkUnitRef\(agentId: string\): string \| null \{([\s\S]*?)\n  \}/);
+          if (!m) return false;
+          return !/listByAgent|SELECT|\.repo\./.test(m[1]);
+        },
+        fixtures: {
+          ok: "turnWorkUnitRef(agentId: string): string | null {\n    const agent = this.agents.get(agentId);\n    return agent ? agent.turnWorkUnitRef() : null;\n  }",
+          bad: "turnWorkUnitRef(agentId: string): string | null {\n    const rows = this.repo.listByAgent(agentId);\n    return rows[0]?.ref ?? null;\n  }",
+        },
+      },
+      {
         // 消费者侧：生产者只许调 service，不许自己写 SQL。命中即红。
         file: 'packages/org-manager/src/task-service.ts',
         label: 'task-service 不自己写 work_units（唯一写者在 storage 层）',

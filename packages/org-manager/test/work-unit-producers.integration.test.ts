@@ -57,13 +57,13 @@ function service(): WorkUnitService {
 /**
  * 投递端口与 `APIServer.delivery` 同形：**不是**把 `WorkUnitService` 直接当端口传。
  *
- * C7-B 给端口加了一个读方法（`currentWorkUnitRef`，跨团队委派的父链来源），
+ * C7-B 给端口加了一个读方法（`turnWorkUnitRef`，跨团队委派的父链来源），
  * 服务本身没有它 —— 这也是「端口只声明能力、不泄漏服务形状」的实证。
  */
 function deliveryPort(units: WorkUnitService, currentRef: string | null = null) {
   return {
     ensure: (seed: Parameters<WorkUnitService['ensure']>[0]) => units.ensure(seed),
-    currentWorkUnitRef: () => currentRef,
+    turnWorkUnitRef: () => currentRef,
     linkMailboxItem: (itemId: string | null | undefined, ref: string | null) =>
       units.linkMailboxItem(itemId, ref),
     transition: (ref: string, to: string, opts?: unknown) =>

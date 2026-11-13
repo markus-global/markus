@@ -84,10 +84,16 @@ export interface SubagentContext {
    */
   workUnits?: DelegationWorkUnitPort;
   /**
-   * C7-B：当前回合的父 WU ref（回合进行中才有；首轮/未接线为 null）。
-   * 子 WU 的 `parent_id` 只能来自这里 —— 不猜「最近那条」。
+   * C7-B：本回合父 WU 的 ref（回合进行中才有；首轮/未接线为 null）。
+   *
+   * **必填而非可选**：`?` 会让「忘了接线」与「确实没有父 WU」在类型上无法区分，
+   * 而两者后果不同（前者是装配缺陷，后者是 root 回合）。装配处没有父 WU 时
+   * 显式写 `() => null`。
+   *
+   * 只读内存中由 `onFocusChanged` 设置的当前回合 ref —— **不得**用库查询实现
+   * （库里没有「当前」这个概念，只有历史，按 agentId 反查得到的是错的那一条）。
    */
-  currentWorkUnitRef?: () => string | null;
+  turnWorkUnitRef: () => string | null;
 }
 
 /**
@@ -614,7 +620,7 @@ function resolveChildBudget(requested: unknown): number {
  *
  * 纪律：
  *   · 端口未注入 ⇒ 返回 null（没有台账），子代理照常跑；
- *   · 父 ref 只能来自 `currentWorkUnitRef()`（这一轮的真实身份）；没有就用
+ *   · 父 ref 只能来自 `turnWorkUnitRef()`（这一轮的真实身份）；没有就用
  *     `root:<agentId>` 显式表态 —— **不猜**「最近那条」（那是从时序推断结构）；
  *   · ref 只能由 `WORK_UNIT_REF.delegation` 生成（禁止第二套命名）。
  */
@@ -626,7 +632,7 @@ function beginDelegation(
   const port = ctx.workUnits;
   if (!port) return null;
   try {
-    const parentRef = ctx.currentWorkUnitRef?.() ?? null;
+    const parentRef = ctx.turnWorkUnitRef();
     const parent = parentRef ? port.resolve(parentRef) : null;
     return port.ensureChild({
       ref: WORK_UNIT_REF.delegation(parent?.ref ?? `root:${ctx.agentId}`, childKey),

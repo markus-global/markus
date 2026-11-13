@@ -107,7 +107,7 @@ function makeCtx(
     offloadLargeResult: (_name, result) => result,
     dataDir,
     workUnits: port,
-    currentWorkUnitRef: () => parentRef,
+    turnWorkUnitRef: () => parentRef,
   };
 }
 

@@ -623,10 +623,10 @@ export class Agent {
   /**
    * C7-B：本回合父 WU 的 ref（`onFocusChanged` 从 item 上取；无 item = null）。
    *
-   * 公开而不是让调用方去翻 mailbox：跨团队委派（A2A `deliver()`）只知道「发送方」
-   * 这个 agent，父链只能从 agent 自己的回合状态里读，不能从载荷推断。
+   * 名字里的 turn 是约束：它只回答「这一回合跑在哪条 WU 上」，不是「按 agentId
+   * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
-  getCurrentWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
+  turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -1058,7 +1058,7 @@ export class Agent {
         ensureChild: (seed) => this.workUnitPort?.ensureChild(seed) ?? null,
         settle: (ref, opts) => { this.workUnitPort?.settle(ref, opts); },
       },
-      currentWorkUnitRef: () => this.currentTurnWorkUnitRef,
+      turnWorkUnitRef: () => this.currentTurnWorkUnitRef,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
