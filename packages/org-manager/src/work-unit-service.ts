@@ -185,11 +185,12 @@ export class WorkUnitService {
   /**
    * 让 C6 墓碑变活：把本次执行的 WU ref 写到触发它的 mailbox 行上。
    *
-   * 调用纪律：**WU 已存在之后**才写（先实体后引用）。itemId 未知就直接跳过 ——
-   * 宁可这一行留 NULL，也不猜「大概是最近那条」。
+   * 调用纪律：**WU 已存在之后**才写（先实体后引用）。itemId 或 ref 未知就直接跳过 ——
+   * 宁可这一行留 NULL，也不猜「大概是最近那条」、更不为了凑一个 ref 临时造一行 WU。
+   * `ref === null` 是调用方的显式表态（这条活此刻没有 WU），静默 no-op 不抛。
    */
-  linkMailboxItem(itemId: string | null | undefined, ref: string): boolean {
-    if (!itemId) return false;
+  linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean {
+    if (!itemId || !ref) return false;
     try {
       const ok = this.deps.repo.linkMailboxItem(itemId, ref);
       if (!ok) {

@@ -42,7 +42,14 @@ export interface SSEMessageHandlerOptions {
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
-  onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;
+  /**
+   * 第七刀 C7-A：第 4 参 = 触发本轮的那个 mailbox item 身份（`onItemEnqueued` 带回）。
+   *
+   * **必填 `string | null`**：`null` = 本轮没有 item 身份（历史重放 / 恢复 / 直接调用）。
+   * 写成可选参数等于「漏传也能编译过」，实现者只能退回「猜最近一条」之类的时序推断
+   * （R3）；必填会把每个调用点变成编译错，逼每条路径表态。
+   */
+  onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number, enqueuedItemId: string | null) => Promise<void>;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
@@ -68,6 +75,11 @@ export class SSEHandler {
   private totalTokens = 0;
   private processedTokens = 0;
   private isProcessing = false;
+  /**
+   * 本轮 mailbox item 身份：只由 `agent.sendMessageStream()` 的 `onItemEnqueued`
+   * 回调写入（入队后立刻回填）。拿不到就保持 `null`，由 `onComplete` 显式传 `null`。
+   */
+  private enqueuedItemId: string | null = null;
   private isComplete = false;
   private sseDisconnected = false;
   private cancelToken: { cancelled: boolean; userStopped?: boolean } = { cancelled: false };
@@ -229,6 +241,9 @@ export class SSEHandler {
           // item resolve the memory session BOUND to this conversation instead of
           // trusting its own (possibly stale) workspace pointer.
           ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+          // 第七刀 C7-A：item id 只能来自入队回调。SSEHandler 自己发起入队，
+          // 所以必须自己挂这个回调 —— 上层入口拿不到这一层的入队时机。
+          onItemEnqueued: (item) => { this.enqueuedItemId = item.id; },
         },
       );
 
@@ -388,7 +403,7 @@ export class SSEHandler {
       }
 
       if (this.options.onComplete) {
-        await this.options.onComplete(reply, this.msgSegments, this.options.agent.getState().tokensUsedToday);
+        await this.options.onComplete(reply, this.msgSegments, this.options.agent.getState().tokensUsedToday, this.enqueuedItemId);
       }
 
       this.persistSegmentsToExecutionStream();
