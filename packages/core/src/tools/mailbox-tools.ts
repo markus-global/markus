@@ -318,9 +318,14 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
     ...(ctx.workStatus ? [{
       name: 'work_status',
       description:
-        'Report what work units you are running right now. Answers from the work_units object ' +
-        '(NOT from mailbox payload text), so the answer cannot drift from execution. ' +
-        'Each unit carries ref / status / parentId / claimedBy / leaseUntil / budget / used. Read-only.',
+        'Read the WorkUnit ledger for this agent: one row per unit of work (a chat turn, a task ' +
+        'execution epoch, or one A2A delivery), answered from the work_units object — NOT from ' +
+        'mailbox payload text — so the rows cannot drift from execution. ' +
+        'Each row carries ref / status / parentId / claimedBy / leaseUntil / budget / used. Read-only. ' +
+        'IMPORTANT — what this does NOT tell you: in cut 7 the chat WorkUnit is created when the turn ' +
+        'settles, so `status` is `idle` for finished work and **no `running` row appears for an ' +
+        'in-flight turn**. Treat an empty result as "no unit on record", never as "nothing is running"; ' +
+        'live-turn observability is C7-B scope.',
       inputSchema: {
         type: 'object',
         properties: {

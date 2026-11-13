@@ -51,9 +51,9 @@ real `persistChatTurn` / `createTask` / `deliver`, zero mocks in the persistence
 
 | Channel | Reading |
 |---|---|
-| chat | `mailbox_items.work_unit_ref = session:cs_…:r1`, WU `status=running`, `agent_id` = 收件 agent; second turn → second WU (ref does not collide) |
+| chat | `mailbox_items.work_unit_ref = session:cs_…:r1`, `agent_id` = 收件 agent；**WU 建于回合收口时**（回复已落库），建完立即 `running → idle`，所以最终读到的是 `status=idle` 且 `status_transitions` 有一条 `reason='chat_turn_settled'`；第二轮 → 第二个 WU（ref 不碰撞） |
 | task | WU `ref = task_<taskId>_r<round>` (byte-identical to the existing execution identity), `task_id` set |
-| a2a | `mailbox_items.work_unit_ref = a2a:dm:a2a:x:y:dlv_…`, WU belongs to the **recipient** |
+| a2a | `mailbox_items.work_unit_ref = a2a:<channelKey>:<deliveryId>`（**两段，不含 targetId**），WU 归**发送方**（`agent_id = req.fromAgentId`）—— 一次投递 = 一个 WU（`state-machines.md` §16）；N 个接收方共享同一 ref 是定义，不是缺陷 |
 
 **Gate run** (all on this worktree):
 
