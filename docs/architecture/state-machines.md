@@ -559,7 +559,7 @@ After `processFocusedItem` runs, exactly one terminal outcome is chosen (impleme
 | Outcome | Trigger | Persistence effect | Resumable? |
 |---------|---------|--------------------|-----------|
 | **completed** | Normal finish (marker present, or accepted without-retry case) | `complete(id)` | No (done) |
-| **dropped** | Explicit `cancel` decision / `[cancelled]` reply | `complete(id)` (permanent) | No |
+| **bounced** | Explicit `cancel` decision / `[cancelled]` reply / abnormal terminal | `drop(id, why, dropReason)` → `bounced` → `catch_all` | No (reason queryable) |
 | **deferred** | `preempt` decision / `[preempted]` reply | `deferDequeued(item)` | Yes — `resurfaceDue()` re-queues when idle |
 | **requeued** | Backstop **timeout**, agent stopped mid-flight, or abnormal reply on a background type (< max retries) | `requeue(item)` | Yes — re-processed from queue |
 | **completed (incomplete)** | Marker still missing after in-session continuation, or abnormal reply on a user-interaction item | `complete(id)` | No |

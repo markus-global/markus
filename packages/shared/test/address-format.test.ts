@@ -5,8 +5,8 @@
  * 任何一次实现改动只要放宽语法、把保留字开放给组织、或让外部地址
  * 伪装成内部身份，这里就会变红。
  *
- * 标准全文：markus-master-refactor-plan-2026-11-11.md §4.9
- * 口子清单：markus-cut6-mailbox-address-design-2026-11-10.md §2.8
+ * 标准全文：docs/architecture/mailbox-system.md §28.2
+ * 执行记录：docs/records/cut6-mailbox-address-envelope-design-2026-11-12.md §2.8
  */
 import { describe, it, expect } from 'vitest';
 import {

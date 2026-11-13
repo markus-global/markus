@@ -42,7 +42,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [cognitive-architecture.md](./architecture/cognitive-architecture.md) | Cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./architecture/memory-system.md) | Memory layers, storage compaction, memory flush |
 | [prompt-engineering.md](./architecture/prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, caching |
-| [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel) |
+| [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); addresses, delivery envelopes and bounce/catch-all (§28) |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [state-ownership.md](./architecture/state-ownership.md) | State-ownership contract: who owns what, who may read it, in which execution context |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
@@ -92,3 +92,5 @@ want to know *why*, not *what*.
 | [audit-fixes-2026-09.md](./records/audit-fixes-2026-09.md) | 2026-09 core-mechanism audit → concentrated fix batch |
 | [branch-consolidation.md](./records/branch-consolidation.md) | Branch consolidation of `refactor/team-chat-state-machine` |
 | [settings-model-routing-first-visit-fix.md](./records/settings-model-routing-first-visit-fix.md) | Settings page: model routing options empty on first visit |
+| [cut6-mailbox-address-envelope-design-2026-11-12.md](./records/cut6-mailbox-address-envelope-design-2026-11-12.md) | Cut 6 execution: address format, delivery envelope, bounce/catch-all (durable contract now in architecture/mailbox-system.md §28) |
+| [cut6-c4-verification-2026-11-12.md](./records/cut6-c4-verification-2026-11-12.md) | Cut 6 C4 verification: full regression, real-instance probes, rebuild |

@@ -1,8 +1,8 @@
 /**
  * 邮件地址标准 v1 —— 唯一写入点（formatAddress）与唯一解析器（parseAddress）。
  *
- * 契约：markus-master-refactor-plan-2026-11-11.md §4.9
- * 口子：markus-cut6-mailbox-address-design-2026-11-10.md §2.8（H1/H2/H12、A1–A4）
+ * 契约：docs/architecture/mailbox-system.md §28.2（地址格式 v1）
+ * 执行与证据：docs/records/cut6-mailbox-address-envelope-design-2026-11-12.md §2.8
  *
  * 三条设计纪律：
  * 1. 结构不从载荷推断：点数决定命名空间（0 点平台 / 1 点组织 / ≥2 点保留），

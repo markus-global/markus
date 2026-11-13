@@ -4,7 +4,11 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
+    # `feat/**` are feature-integration branches: work lands there first and only
+    # reaches `main` once the feature is complete. Without this pattern, retargeting
+    # a PR to a feature branch would silently stop all CI on it — the PR would look
+    # quiet and mergeable while nothing was ever checked.
+    branches: [main, 'feat/**']
 
 # ─────────────────────────────────────────────────────────────────────────────
 # 发版门禁（2026-09-19 加固）

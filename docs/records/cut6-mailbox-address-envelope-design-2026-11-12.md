@@ -1,7 +1,7 @@
 # 第六刀 · 马上执行：三件收口 + 地址/信封/退信
 
-> 状态：**马上执行**（Owner 2026-11-11 概念定稿，唯一依赖门禁已过）· 版本 v3.1 · CTO
-> 唯一事实源：[`markus-master-refactor-plan-2026-11-11.md`](./markus-master-refactor-plan-2026-11-11.md) §2 概念 / §4 设计（含 §4.9 邮件地址标准 v1）/ §5 C6 / §6 验证。本文是**执行文档**，不另立概念、不重复定义。
+> 状态：**已交付（C0–C5）** · 版本 v3.1 · CTO
+> 耐久契约已上提：[`../architecture/mailbox-system.md`](../architecture/mailbox-system.md) §28（地址 / 信封 / 退信）——**那份是规范**，本文是**执行与证据记录**（冻结）。
 > 图：全部内联 `plantuml` 代码块（Markus 原生渲染），不依赖 SVG 构建产物。
 > 硬边界：本刀动共享基础设施（入站路由、新列、视图），**改前通知团队、改后等确认**；merge main / 发版 / 删数据 / 改他人绑定一律 Owner 明确批准才动。
 
@@ -511,7 +511,7 @@ end note
 - **DNS / MX / SPF / DKIM / DMARC / 出站签名密钥**：全部属生产基础设施与品牌域变更，Owner 明确批准才动；本刀只改代码与文档，不碰域名配置。
 - **merge main / 发版 / 打 tag / 删数据**：Owner 明确批准才动；本刀只到「PR 为止」+ 验证证据。
 - **一次提交 = 一个可回滚单元**；绝不 force-push main；不把密钥入库。
-- 本文是执行文档；概念与完整设计以 [`markus-master-refactor-plan-2026-11-11.md`](./markus-master-refactor-plan-2026-11-11.md) 为唯一事实源。历史报告（四刀复盘 / 第五刀 checklist / superagent-01 / 协作报告）只作证据，不作规范。
+- 本文是执行记录；**当前行为**以 [`../architecture/mailbox-system.md`](../architecture/mailbox-system.md) §28 为准。历史报告（四刀复盘 / 第五刀 checklist / superagent-01 / 协作报告）只作证据，不作规范。
 
 ---
 
@@ -848,7 +848,7 @@ end note
 - **真实实例探针**（同提交构建产物，端口 8071）：human_chat 6 + a2a_message 1 + task_status_update 1 = **信封覆盖 7/7**；`dropped` 增量 **0**、`work_unit_ref` 非 NULL **0**、`catch_all` **1**。那 1 行 `catch_all` 来自探针自身报文缺字段（chat 报文体误用 `message` 而非 `text`），**无静默丢弃 → V4 语义成立**；其退信原因与事件名当时对不上真实原因（记成 `stale_signal` / `duplicate_delivery_dropped`），C4 按事实记为上观察项、**未修**；该口径缺陷已由 **C5 收口卡**按真实原因投影修复（原因闭集补 `payload_invalid`、入参校验错误结构化、事件名改 `mailbox.signal_bounced`），见 §7.10。
 - **全仓回归** 8361 例 / 5 红**全部定性**：2 红为本刀引入已修（上述）；3 红为环境性 / 既有 flaky —— 其中 `agent-concurrent-cancel-isolation`「两侧状态收敛」已在基线 `79a8421e` 的干净工作树复现同一条（12.1s 超时），`shell-session-tools` 隔离单跑全绿，`commands-start-integration` 为真实桌面实例占用 8056 端口（`EADDRINUSE`）。
 - **重新 build**（web-ui + desktop electron）在同一 worktree 成功（输出含 `Done → dist/main.js + dist/preload.js`）；横幅归属 `16a28403` 的 **DOM 级复验未取证**——重启运行包会终止本 Agent 自身运行时，只确认到代码与构建产物层面，如实记录为未取证。
-- **完整证据见 `markus-cut6-c4-verification-report-2026-11-12.md`**（命令、原始读数、逐条现象/归因/处理、DoD 五条勾销、每卡回滚映射、已知边界）。**本节只留指针，不复制第二份事实。**
+- **完整证据见 [`cut6-c4-verification-2026-11-12.md`](./cut6-c4-verification-2026-11-12.md)**（命令、原始读数、逐条现象/归因/处理、DoD 五条勾销、每卡回滚映射、已知边界）。**本节只留指针，不复制第二份事实。**
 
 ### 7.10 C5 收口补正：退信原因按真实原因投影（2026-11-12，本卡）
 

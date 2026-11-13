@@ -3,7 +3,7 @@
 - 日期：2026-11-12
 - 卡片：第六刀 C4（收口卡）
 - 角色：本报告只记录**本人实跑读数**；未取证的项显式标注「未取证」，不做推断性结论。
-- 配套文档：`markus-cut6-mailbox-address-design-2026-11-10.md`（执行文档，本卡在末尾追加 §7.9 指针，不复制第二份事实）
+- 配套文档：[`cut6-mailbox-address-envelope-design-2026-11-12.md`](./cut6-mailbox-address-envelope-design-2026-11-12.md)（执行记录，本卡在末尾追加 §7.9 指针，不复制第二份事实）；当前行为以 [`../architecture/mailbox-system.md`](../architecture/mailbox-system.md) §28 为准
 
 ---
 
@@ -215,7 +215,7 @@ Error: Test timed out in 60000ms.
 |---|---|
 | `packages/web-ui/src/lib/toolCategories.ts` | `mailbox` 分组补入 C1/C3 新增的 5 个工具名（附中文注释） |
 | `packages/org-manager/test/api-server.test.ts` | recover-stale 断言 `dropped` → `bounced`（附改名理由注释） |
-| `markus-cut6-c4-verification-report-2026-11-12.md` | 本报告（新增） |
-| `markus-cut6-mailbox-address-design-2026-11-10.md` | 末尾追加 §7.9（指针，不复制事实） |
+| `docs/records/cut6-c4-verification-2026-11-12.md` | 本报告 |
+| `docs/records/cut6-mailbox-address-envelope-design-2026-11-12.md` | 末尾追加 §7.9（指针，不复制事实） |
 
 **未改动任何生产逻辑代码**：两处代码改动分别是「分类表常量补登记」与「测试断言跟随字段改名」，都不改变运行时行为。

@@ -69,8 +69,12 @@ export function isActiveBounceReason(value: string): value is ActiveBounceReason
 // 本卡只落**形状**：不实现外部邮件的收发与 SPF/DKIM/DMARC 校验（H5/H6），
 // `auth` / `replyTo` 是预留槽位，恒为 null；`workUnitRef` 恒 null（C7 才有写者）。
 
-import type { AddressRef, MailAddressRef } from './address.js';
-import { agentAddressRef, platformAddressRef } from './address.js';
+import {
+  agentAddressRef,
+  platformAddressRef,
+  type AddressRef,
+  type MailAddressRef,
+} from './address.js';
 
 /** 六类信号类别（一列可聚合，不再靠 sourceType 字符串现场归类）。 */
 export type SignalClass = 'chat' | 'a2a' | 'callback' | 'governance_event' | 'record' | 'system';
