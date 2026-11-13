@@ -65,8 +65,24 @@ export interface RepoBindingLookupDeps {
   orgDefaultAgent?: (orgId: string) => string | undefined;
 }
 
-function asScope(scope: string): ScopeBinding['scope'] {
-  return scope === 'channel' || scope === 'instance' ? scope : 'global';
+/**
+ * Stored rows route at exactly two scopes: `global` and `channel`.
+ *
+ * Anything else is **not a route** — and must not become one by default. The old
+ * `else → 'global'` fallback answered a different question than the one asked:
+ * a row whose `scope` we do not recognise (a future column-carrier such as a
+ * mailbox-address binding, `scope='address'`) was silently promoted to the
+ * org-wide fallback, so it would have become the answer for *every* unbound
+ * inbound message in the org. That is the same defect family as reading a
+ * persona out of a payload: structure inferred from a value that does not mean
+ * it. `instance` is **derived** from the instance row (see `bindings()`), never
+ * read from a stored binding row.
+ *
+ * Returning `null` (skip) keeps legitimate legacy rows untouched: production
+ * only ever holds `global` / `channel` / `instance`.
+ */
+function storedRoutingScope(scope: string): 'global' | 'channel' | null {
+  return scope === 'global' || scope === 'channel' ? scope : null;
 }
 
 /** A bot's answering agent, read from its own row — its `config.agentId`. */
@@ -96,10 +112,11 @@ export class RepoBindingLookup implements BindingLookup {
     const out: ScopeBinding[] = [];
 
     for (const row of this.deps.bindingRepo.listByOrg(orgId)) {
-      const scope = asScope(row.scope);
       // Instance scope is derived below — a stored row would be a stale second
-      // copy of the bot's own `config.agentId`.
-      if (scope === 'instance') continue;
+      // copy of the bot's own `config.agentId`. Any other unknown scope
+      // (e.g. `address`) is not a route at all: skip, never promote.
+      const scope = storedRoutingScope(row.scope);
+      if (scope === null) continue;
       if (scope !== 'global' && (row.instanceId === null || !instanceIds.has(row.instanceId))) {
         continue;
       }

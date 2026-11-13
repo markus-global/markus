@@ -63,6 +63,8 @@ export interface StorageBridge {
   /** Messaging gateway: bot instances + channel bindings (G1 tables). */
   platformInstanceRepo?: any;
   channelBindingRepo?: any;
+  /** 邮箱地址绑定（第六刀 C1）：channel_bindings 上的 address 语义 + address_bindings 视图。 */
+  addressBindingRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -266,6 +268,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       integrationRepo: new storage.SqliteIntegrationRepo(db),
       platformInstanceRepo: new storage.SqlitePlatformInstanceRepo(db),
       channelBindingRepo: new storage.SqliteChannelBindingRepo(db),
+      addressBindingRepo: new storage.SqliteAddressBindingRepo(db),
       pendingCallbackRepo: new storage.SqlitePendingCallbackRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });

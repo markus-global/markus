@@ -2296,6 +2296,17 @@ async function startServerCore(
     agentManager.setSessionRepo(storage.chatSessionRepo);
   }
 
+  // 邮箱地址自助工具（第六刀 C1）：把 storage 的唯一写者/解析器接进 Agent 工具面。
+  // 未接线 ⇒ 工具不注册（见 AgentManager.setAddressBindingPort 的说明）。
+  if (storage?.addressBindingRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    agentManager.setAddressBindingPort({
+      bind: (input) => addressRepo.bind(input),
+      revoke: (input) => addressRepo.revoke(input),
+      list: (input) => addressRepo.listVisible(input),
+    });
+  }
+
   // Wire mailbox + decision persistence to SQLite
   if (storage?.mailboxRepo && storage?.decisionRepo) {
     const mbRepo = storage.mailboxRepo;
