@@ -15,6 +15,7 @@ import type { ExternalSkillFormat, NormalizedSkill, SkillImportOptions, SkillImp
 import { detectSkillPackageFormat } from './detect.js';
 import { parseSkillPackage } from './parse.js';
 import { renderSkill } from './render.js';
+import { isCursorRulesPackage, parseCursorRules } from './cursor-rules.js';
 
 const MARKUS_SKILLS_DIR = markusPath('skills');
 
@@ -65,7 +66,8 @@ export function importSkillPackage(
   opts: SkillImportOptions = {},
 ): SkillImportResult {
   const format = detectSkillPackageFormat(srcDir);
-  const normalized = parseSkillPackage(srcDir, opts, format);
+  const cursor = isCursorRulesPackage(srcDir) ? parseCursorRules(srcDir) : undefined;
+  const normalized = cursor?.skill ?? parseSkillPackage(srcDir, opts, format);
 
   const name = sanitizeName(opts.name ?? normalized.name);
   const targetDir = resolve(opts.targetDir ?? join(MARKUS_SKILLS_DIR, name));
@@ -118,7 +120,7 @@ export function importSkillPackage(
   written.push(...copied.map(c => `extras/${c}`));
   if (extras.length > copied.length) copyWarnings.push(`${extras.length - copied.length} 个附加文件因不可读被跳过`);
 
-  return { format, name, version: normalized.version, path: targetDir, filesWritten: written, warnings: copyWarnings };
+  return { format, name, version: normalized.version, path: targetDir, filesWritten: written, warnings: [...(cursor?.warnings ?? []), ...copyWarnings] };
 }
 
 /**
@@ -134,7 +136,7 @@ export function exportSkillPackage(
     // Allow exporting any parseable skill dir (normalizes implicitly).
     // parseSkillPackage handles non-markus too.
   }
-  const normalized = parseSkillPackage(sourceDir, {}, fmt);
+  const normalized = isCursorRulesPackage(sourceDir) ? parseCursorRules(sourceDir).skill : parseSkillPackage(sourceDir, {}, fmt);
 
   const name = sanitizeName(normalized.name);
   const outDir = resolve(opts.outDir ?? join(process.cwd(), `${name}-${format}`));
