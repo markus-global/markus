@@ -334,6 +334,7 @@ export function createMockStorage(): StorageBridge {
       getUnreadCounts: vi.fn(() => ({ 'agent:agent-a': 2 })),
       getSessionAgentMap: vi.fn(() => ({ 'sess-1': AGENT_A })),
       setReadCursor: vi.fn(),
+      setReadCursors: vi.fn(),
       markAllRead: vi.fn(),
     },
     integrationRepo: {

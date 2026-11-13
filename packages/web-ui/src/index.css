@@ -540,22 +540,33 @@ html[data-anim-paused='true'] *::after {
 
 /* 2. The never-ending indicators are driven by the 4 Hz tick from
       animationBudget.ts instead of by an infinite CSS animation.
-      Measured on the renderer: with these CSS animations running the main thread
-      does 120.0 style recalculations/s (one per frame, 12-16% of a core); driven
-      by the tick it is ~4/s. Quantising with steps() was tried and did NOT help
-      (95-107/s), so the animation is removed outright rather than slowed down.
 
-      The per-phase values live on :root as custom properties, so changing the tick
-      only invalidates the handful of elements that read them - not the whole tree. */
+      The tick is worth keeping: on a realistic busy scene (1 shimmer + 2 dots +
+      1 spinner + 1 conic border) a live measurement put the infinite CSS
+      animations at 240 style recalcs / 205 ms of main-thread time per 4 s, and
+      the same motion driven by the tick at 16 recalcs / 106 ms. The saving is
+      real, and it comes from the paint-bound pieces — `background-position`
+      (activity-text-shimmer) and the conic gradient. Transform/opacity
+      indicators are compositor-only and measure ~0 recalcs either way.
 
-html[data-anim-tick='0'] { --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
-html[data-anim-tick='1'] { --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
-html[data-anim-tick='2'] { --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
-html[data-anim-tick='3'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
-html[data-anim-tick='4'] { --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
-html[data-anim-tick='5'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
-html[data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
-html[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
+      What the tick must NOT do is write its phase on :root. `--anim-*` are
+      inherited custom properties, so stamping them on <html> invalidates style
+      matching for the whole document: on a 4 900-node transcript that is ~82 ms
+      of style recalculation per 4 s for only 16 writes. The attribute therefore
+      goes on the consuming elements themselves (see TICK_SELECTOR in
+      animationBudget.ts), which costs ~7 ms for the same motion.
+
+      So the phase values below are scoped by `[data-anim-tick]` rather than
+      `html[data-anim-tick]` — they must match whichever element carries it. */
+
+[data-anim-tick='0'] { --anim-pulse: 1;      --anim-bounce: -25%; --anim-spin: 0deg;   --anim-shimmer: 100%;  --anim-border: 0deg; }
+[data-anim-tick='1'] { --anim-pulse: 0.875;  --anim-bounce: -13%; --anim-spin: 45deg;  --anim-shimmer: 71%;   --anim-border: 45deg; }
+[data-anim-tick='2'] { --anim-pulse: 0.75;   --anim-bounce: 0%;   --anim-spin: 90deg;  --anim-shimmer: 43%;   --anim-border: 90deg; }
+[data-anim-tick='3'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 135deg; --anim-shimmer: 14%;   --anim-border: 135deg; }
+[data-anim-tick='4'] { --anim-pulse: 0.5;    --anim-bounce: 0%;   --anim-spin: 180deg; --anim-shimmer: -14%;  --anim-border: 180deg; }
+[data-anim-tick='5'] { --anim-pulse: 0.625;  --anim-bounce: 0%;   --anim-spin: 225deg; --anim-shimmer: -43%;  --anim-border: 225deg; }
+[data-anim-tick='6'] { --anim-pulse: 0.75;   --anim-bounce: -13%; --anim-spin: 270deg; --anim-shimmer: -71%;  --anim-border: 270deg; }
+[data-anim-tick='7'] { --anim-pulse: 0.875;  --anim-bounce: -25%; --anim-spin: 315deg; --anim-shimmer: -100%; --anim-border: 315deg; }
 
 .animate-pulse {
   animation: none !important;
@@ -724,8 +735,21 @@ html.electron-darwin .electron-mac-top-safe {
   min-height: 2.5rem;
   border-radius: 0.75rem;
 }
-.streaming-bubble::after {
-  content: '';
+/* The ring is TWO parts, and the split is the whole point:
+     · `.streaming-ring`      — the static 1px band (mask, never animated)
+     · `.streaming-ring-spin` — an oversized conic gradient rotated by transform
+   The obvious implementation — animating the gradient's `from` angle through a
+   registered custom property (`--border-angle`) — repaints that gradient every
+   frame on the main thread. Measured on the renderer: pausing it recovered
+   197 ms of the 633 ms spent per 4 idle seconds (~4.9% of a core), and the
+   saving showed up in TaskDuration while RecalcStyleCount did not move — i.e.
+   the cost was PAINT, not style recalc, so no amount of quantising helps.
+   Rotating a layer that is already rasterized is a compositor op instead: the
+   measured main-thread delta of a transform animation on this DOM was +1 style
+   recalc and +8 ms of TaskDuration across 3 s (i.e. noise).
+   A circle is used rather than a square: its silhouette is rotation-invariant,
+   so the sweep never exposes a corner no matter how the bubble is stretched. */
+.streaming-ring {
   position: absolute;
   /* Sits just OUTSIDE the content: the ring never crowds the text, and — more
      importantly — starting/stopping the effect reflows nothing (no padding
@@ -734,24 +758,50 @@ html.electron-darwin .electron-mac-top-safe {
   border-radius: 1.0625rem; /* concentric: 0.75rem + the 5px outset */
   padding: 1px;
   pointer-events: none;
+  overflow: hidden; /* keeps the oversized rotor from escaping its own band */
+  /* Size containment so the rotor can ask for the band's exact diagonal below. */
+  container-type: size;
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  mask-composite: exclude;
+}
+.streaming-ring-spin {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* The rotor is a CIRCLE (silhouette is rotation-invariant, so the sweep never
+     exposes a corner however the bubble is stretched) and must be big enough to
+     still cover the band at every angle: diameter = the band's diagonal. `hypot`
+     gives that exactly, so the layer is never larger than it has to be (a fixed
+     300% would allocate a huge texture for a wide, short bubble). The `300%`
+     first is the fallback for engines without hypot()/container units. */
+  width: 300%;
+  width: hypot(100cqw, 100cqh);
+  aspect-ratio: 1;
+  translate: -50% -50%;
+  border-radius: 50%;
   background: conic-gradient(
-    from var(--border-angle),
+    from 0deg,
     transparent 0deg,
     color-mix(in oklab, var(--color-brand-500) 40%, transparent) 60deg,
     var(--color-brand-500) 120deg,
     color-mix(in oklab, var(--color-brand-400) 65%, transparent) 180deg,
     transparent 280deg
   );
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor;
-  mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  animation: border-rotate 2.6s linear infinite;
+  animation: border-rotate-spin 2.6s linear infinite;
+  will-change: transform;
+}
+@keyframes border-rotate-spin {
+  to { transform: rotate(360deg); }
 }
 @media (prefers-reduced-motion: reduce) {
-  .streaming-bubble::after {
-    animation: none;
+  /* Same end state as before: a flat brand ring, no motion. */
+  .streaming-ring {
     background: color-mix(in oklab, var(--color-brand-500) 45%, transparent);
+  }
+  .streaming-ring-spin {
+    display: none;
   }
 }
 

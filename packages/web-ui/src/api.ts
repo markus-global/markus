@@ -2695,6 +2695,9 @@ export const api = {
     getCounts: () => request<{ counts: Record<string, number>; sessionAgentMap: Record<string, string> }>('/unread'),
     markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
       request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
+    /** One request for many conversations — see /api/unread/mark-read-batch. */
+    markReadBatch: (items: ReadonlyArray<{ conversationKey: string; lastReadAt: string; lastReadId?: string }>) =>
+      request<{ success: boolean; count: number }>('/unread/mark-read-batch', { method: 'POST', body: JSON.stringify({ items }) }),
     markAllRead: () =>
       request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
   },

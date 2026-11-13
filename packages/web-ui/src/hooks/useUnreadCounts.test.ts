@@ -11,7 +11,47 @@ vi.hoisted(() => {
   return true;
 });
 
-import { sumTeamChatUnread, isAgentOnlyConversationKey, reconcileServerCounts } from './useUnreadCounts.ts';
+import { sumTeamChatUnread, isAgentOnlyConversationKey, reconcileServerCounts, planCursorAdvance } from './useUnreadCounts.ts';
+
+describe('planCursorAdvance (one user action must not fan out into N requests)', () => {
+  const THROTTLE = 2_000;
+
+  it('returns every stale conversation in one batch — the 247-request bug', () => {
+    // Opening one agent's chat puts every session belonging to that agent into
+    // `_activeKeys`, and reconcileServerCounts reports all of them as "server
+    // still thinks unread". Each used to become its own POST: measured 247
+    // distinct keys inside 315 ms on a real account.
+    const keys = Array.from({ length: 247 }, (_, i) => `session:cs_${i}`);
+    const due = planCursorAdvance(keys, new Map(), 1_000_000);
+
+    // All 247 are due in ONE call -> the caller can send a single batch request.
+    expect(due).toHaveLength(247);
+    expect(due).toEqual(keys);
+  });
+
+  it('skips a conversation written less than the throttle ago', () => {
+    const now = 1_000_000;
+    const last = new Map([['session:recent', now - (THROTTLE - 1)], ['session:old', now - THROTTLE]]);
+    const due = planCursorAdvance(['session:recent', 'session:old'], last, now);
+    expect(due).toEqual(['session:old']);
+  });
+
+  it('force ignores the throttle (leaving a conversation persists its read state)', () => {
+    const now = 1_000_000;
+    const last = new Map([['session:x', now - 1]]);
+    expect(planCursorAdvance(['session:x'], last, now)).toEqual([]);
+    expect(planCursorAdvance(['session:x'], last, now, { force: true })).toEqual(['session:x']);
+  });
+
+  it('returns nothing when no conversation is stale (the steady state)', () => {
+    expect(planCursorAdvance([], new Map(), 1_000_000)).toEqual([]);
+  });
+
+  it('preserves input order and duplicates are not invented', () => {
+    const due = planCursorAdvance(['b', 'a', 'b'], new Map(), 1_000_000);
+    expect(due).toEqual(['b', 'a', 'b']);
+  });
+});
 
 describe('reconcileServerCounts (an open conversation is read by definition)', () => {
   it('drops the conversation the reader has open, keeps every other one', () => {

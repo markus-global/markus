@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useMemo } from 'react';
 import { api, wsClient } from '../api.ts';
+import { createCursorWriter } from '../lib/cursorWriter.ts';
 
 const POLL_INTERVAL_MS = 60_000;
 
@@ -82,15 +83,81 @@ export function reconcileServerCounts(
  * AUTO_READ_THROTTLE_MS (unless forced - see clearActiveKey).
  */
 function _advanceReadCursor(key: string, opts?: { force?: boolean }) {
-  const now = Date.now();
-  const last = _lastAutoReadAt.get(key) ?? 0;
-  if (!opts?.force && now - last < AUTO_READ_THROTTLE_MS) return;
-  _lastAutoReadAt.set(key, now);
-  if (key in _globalCounts) {
-    delete _globalCounts[key];
-    notify();
+  _advanceReadCursors([key], opts);
+}
+
+/**
+ * Which cursors are actually due to be written right now?
+ *
+ * Pure on purpose: "one user action fans out to N conversations" is the bug this
+ * whole path exists to avoid, and it is only testable if the decision is a
+ * function instead of a side effect buried in the poll loop.
+ */
+export function planCursorAdvance(
+  keys: readonly string[],
+  lastAutoReadAt: ReadonlyMap<string, number>,
+  now: number,
+  opts?: { force?: boolean },
+): string[] {
+  const due: string[] = [];
+  for (const key of keys) {
+    const last = lastAutoReadAt.get(key) ?? 0;
+    if (!opts?.force && now - last < AUTO_READ_THROTTLE_MS) continue;
+    due.push(key);
   }
-  void api.unread.markRead(key, new Date().toISOString()).catch(() => { /* silent */ });
+  return due;
+}
+
+/**
+ * Advance many cursors with ONE request.
+ *
+ * Why this exists: opening one agent's chat puts every session belonging to that
+ * agent into `_activeKeys` (Team.tsx — so their badges stop flickering), and
+ * `reconcileServerCounts` then reports all of them as "the server still thinks
+ * this is unread". Each used to become its own POST: measured 247 distinct
+ * conversation keys inside 315 ms on a real account, every one of them a
+ * separate SQLite commit.
+ *
+ * Same keys, same throttle, same optimistic count clearing — only the number of
+ * round trips changes.
+ */
+/**
+ * Every read-cursor write goes through this. Callers say what became read; the
+ * writer decides how many requests that is.
+ *
+ * Why centralised: "mark read" turned out to have three independent write paths
+ * (the count poll, the leave-conversation cleanup, and marking every session of
+ * an agent). Fixing them one at a time kept missing the next one — measured on
+ * the wire, opening one agent's chat still fired 495 POSTs in 435 ms because that
+ * agent owns 247 sessions and the effect ran twice (247 x 2).
+ *
+ * With coalescing here, a burst of any size becomes one request, so a future
+ * caller that loops cannot reintroduce the fan-out.
+ */
+const _cursorWriter = createCursorWriter((items) => {
+  const req = items.length === 1
+    ? api.unread.markRead(items[0].conversationKey, items[0].lastReadAt)
+    : api.unread.markReadBatch(items);
+  void req.catch(() => { /* silent */ });
+});
+
+// A queued write must not be lost if the window goes away mid-burst.
+if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+  window.addEventListener('pagehide', () => _cursorWriter.flushNow(), { passive: true });
+}
+
+function _advanceReadCursors(keys: readonly string[], opts?: { force?: boolean }) {
+  const now = Date.now();
+  const due = planCursorAdvance(keys, _lastAutoReadAt, now, opts);
+  let cleared = false;
+  for (const key of due) {
+    _lastAutoReadAt.set(key, now);
+    if (key in _globalCounts) { delete _globalCounts[key]; cleared = true; }
+  }
+  if (cleared) notify();
+  if (due.length === 0) return;
+  // Local state is settled above; the wire write is coalesced.
+  _cursorWriter.queue(due, new Date(now).toISOString());
 }
 
 async function _fetchCounts() {
@@ -101,7 +168,8 @@ async function _fetchCounts() {
     _globalSessionAgentMap = resp.sessionAgentMap ?? {};
     notify();
     // Converge the server on the screen state: an open conversation is read.
-    for (const key of staleActiveKeys) _advanceReadCursor(key);
+    // One batch request rather than one POST per conversation.
+    _advanceReadCursors(staleActiveKeys);
   } catch { /* silent */ }
 }
 
@@ -140,14 +208,33 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     await _fetchCounts();
   }, []);
 
-  const markRead = useCallback(async (conversationKey: string) => {
-    const ts = new Date().toISOString();
-    delete _globalCounts[conversationKey];
-    notify();
-    try {
-      await api.unread.markRead(conversationKey, ts);
-    } catch { /* silent */ }
+  /**
+   * Mark conversations read — ONE request no matter how many keys.
+   *
+   * This is the third and last write path for "this conversation is read", and it
+   * is the one that actually produced the 495-POST burst: opening one agent's
+   * chat marks every session belonging to that agent, and the caller looped
+   * `markRead` over ~247 sessions (Team.tsx `markAgentNotificationsRead`). The
+   * effect also depends on `sessionAgentMap`, so the count refresh re-ran it:
+   * 247 x 2 = 495.
+   *
+   * Batched on purpose rather than left to callers to remember: a loop that
+   * forgets is invisible until someone counts requests on the wire.
+   */
+  const markReadMany = useCallback(async (conversationKeys: readonly string[]) => {
+    if (conversationKeys.length === 0) return;
+    let cleared = false;
+    for (const key of conversationKeys) {
+      if (key in _globalCounts) { delete _globalCounts[key]; cleared = true; }
+    }
+    if (cleared) notify();
+    // Explicit user action (they opened the conversation), so bypass the throttle.
+    _advanceReadCursors(conversationKeys, { force: true });
   }, []);
+
+  const markRead = useCallback(async (conversationKey: string) => {
+    await markReadMany([conversationKey]);
+  }, [markReadMany]);
 
   const markAllRead = useCallback(async () => {
     _globalCounts = {};
@@ -158,16 +245,33 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
   }, []);
 
   const setActiveKey = useCallback((key: string) => { _activeKeys.add(key); }, []);
-  const clearActiveKey = useCallback((key: string) => {
-    _activeKeys.delete(key);
+
+  /**
+   * Leave a set of conversations — ONE request for the whole set.
+   *
+   * Why batched: Team.tsx marks every session belonging to the selected agent as
+   * active, so the cleanup is a loop over ~250 keys. The per-key version forced a
+   * cursor advance for each one, which is how a single page load produced 495
+   * POSTs (247 on enter-cleanup + 247 when the effect re-ran after
+   * `sessionAgentMap` refreshed). The poll path was batched first; this is the
+   * second fan-out and it was the bigger one.
+   */
+  const clearActiveKeys = useCallback((keys: readonly string[]) => {
+    if (keys.length === 0) return;
+    for (const key of keys) {
+      _activeKeys.delete(key);
+      // A message that arrived inside the throttle window was masked client-side
+      // but never confirmed to the server, so drop the throttle stamp: the forced
+      // write below must not be skipped even if we just wrote this key.
+      _lastAutoReadAt.delete(key);
+    }
     _graceUntil = Date.now() + 150;
-    // Leaving the conversation persists its read state. A message that arrived
-    // inside the throttle window was masked client-side but never confirmed to
-    // the server, so without this last write the badge would pop back on the
-    // next poll for a conversation the reader had open the whole time.
-    _lastAutoReadAt.delete(key);
-    _advanceReadCursor(key, { force: true });
+    // Leaving the conversation persists its read state, otherwise the badge pops
+    // back on the next poll for a conversation the reader had open the whole time.
+    _advanceReadCursors(keys, { force: true });
   }, []);
+
+  const clearActiveKey = useCallback((key: string) => { clearActiveKeys([key]); }, [clearActiveKeys]);
 
   useEffect(() => {
     if (!enabled) return;
@@ -211,7 +315,7 @@ export function useUnreadCounts(opts?: { enabled?: boolean }) {
     return counts[`channel:${channelKey}`] ?? 0;
   }, [counts]);
 
-  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markAllRead, refresh, setActiveKey, clearActiveKey };
+  return { counts, totalUnread, sessionAgentMap, getSessionUnread, getChannelUnread, markRead, markReadMany, markAllRead, refresh, setActiveKey, clearActiveKey, clearActiveKeys };
 }
 
 /**
