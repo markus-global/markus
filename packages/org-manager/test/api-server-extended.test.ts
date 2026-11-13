@@ -427,6 +427,37 @@ describe('APIServer extended route coverage', () => {
       expect(res.status).toBe(200);
     });
 
+    it('POST /api/unread/mark-read-batch: rejects a missing items array', async () => {
+      const res = await request(ctx.server, 'POST', '/api/unread/mark-read-batch', { items: 'nope' });
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /api/unread/mark-read-batch: rejects an item without lastReadAt', async () => {
+      const res = await request(ctx.server, 'POST', '/api/unread/mark-read-batch', {
+        items: [{ conversationKey: 'session:a' }],
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it('POST /api/unread/mark-read-batch: advances many cursors in one request', async () => {
+      // The bug this replaces: opening one agent's chat marked every session of
+      // that agent as read via one POST per conversation (247 measured on a real
+      // account, 315ms of simultaneous requests, one SQLite commit each).
+      const items = Array.from({ length: 50 }, (_, i) => ({
+        conversationKey: `session:bulk_${i}`,
+        lastReadAt: '2026-01-01T00:00:00Z',
+      }));
+      const res = await request(ctx.server, 'POST', '/api/unread/mark-read-batch', { items });
+      expect(res.status).toBe(200);
+      expect((res.json as { count: number }).count).toBe(50);
+    });
+
+    it('POST /api/unread/mark-read-batch: empty array is a valid no-op', async () => {
+      const res = await request(ctx.server, 'POST', '/api/unread/mark-read-batch', { items: [] });
+      expect(res.status).toBe(200);
+      expect((res.json as { count: number }).count).toBe(0);
+    });
+
     it('POST /api/unread/mark-all-read', async () => {
       const res = await request(ctx.server, 'POST', '/api/unread/mark-all-read');
       expect(res.status).toBe(200);

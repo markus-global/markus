@@ -4491,8 +4491,24 @@ export class SqliteDeliverableRepo {
     this.db.prepare('DELETE FROM deliverables WHERE id = ?').run(id);
   }
 
-  async listAll(limit = 500) {
-    const rows = this.db.prepare("SELECT * FROM deliverables WHERE status != 'outdated' ORDER BY updated_at DESC LIMIT ?").all(limit) as Record<string, unknown>[];
+  /**
+   * Load deliverables for the in-memory cache that backs search.
+   *
+   * `limit` used to default to 500 and the service passed 5000, so the cache —
+   * and therefore `search()`'s `total` — could never exceed 5000 while the table
+   * held 8 216 non-outdated rows. The UI showed "产出(5000)" as if that were the
+   * complete archive; 3 216 deliverables were unreachable, and nothing surfaced
+   * the truncation.
+   *
+   * Omitting `limit` now returns everything. That is affordable here: the whole
+   * non-outdated set is ~3.4 MB of content, and the cache is the thing search
+   * scores against. Callers that genuinely want a page still pass a limit.
+   */
+  async listAll(limit?: number) {
+    const base = "SELECT * FROM deliverables WHERE status != 'outdated' ORDER BY updated_at DESC";
+    const rows = (limit === undefined
+      ? this.db.prepare(base).all()
+      : this.db.prepare(`${base} LIMIT ?`).all(limit)) as Record<string, unknown>[];
     return rows.map(r => this.mapRow(r));
   }
 
@@ -6309,14 +6325,42 @@ export class SqliteReadCursorRepo {
   constructor(private db: DatabaseSync) {}
 
   setReadCursor(userId: string, conversationKey: string, lastReadAt: string, lastReadId?: string): void {
-    this.db.prepare(
+    this.setReadCursors(userId, [{ conversationKey, lastReadAt, lastReadId }]);
+  }
+
+  /**
+   * Advance several read cursors in ONE transaction.
+   *
+   * Opening one agent's chat marks every session that belongs to that agent as
+   * read (Team.tsx pushes them as "active"), so a single page load was issuing
+   * one POST — and therefore one autocommit/fsync — per conversation. Measured
+   * on a real account: 247 distinct keys, 315 ms of simultaneous requests, and
+   * 495 requests when several UI surfaces reacted at once.
+   *
+   * The semantics are unchanged (each key keeps its own cursor); only the number
+   * of commits drops from N to 1.
+   */
+  setReadCursors(
+    userId: string,
+    entries: ReadonlyArray<{ conversationKey: string; lastReadAt: string; lastReadId?: string }>,
+  ): void {
+    if (entries.length === 0) return;
+    const stmt = this.db.prepare(
       `INSERT INTO user_read_cursors (user_id, conversation_key, last_read_at, last_read_id, updated_at)
        VALUES (?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id, conversation_key) DO UPDATE SET
          last_read_at = excluded.last_read_at,
          last_read_id = COALESCE(excluded.last_read_id, last_read_id),
          updated_at = datetime('now')`
-    ).run(userId, conversationKey, lastReadAt, lastReadId ?? null);
+    );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const e of entries) stmt.run(userId, e.conversationKey, e.lastReadAt, e.lastReadId ?? null);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   getReadCursors(userId: string): ReadCursorRow[] {

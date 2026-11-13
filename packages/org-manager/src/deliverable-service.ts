@@ -21,7 +21,10 @@ export class DeliverableService {
 
   async load(): Promise<void> {
     if (!this.repo) return;
-    const rows = await this.repo.listAll(5000);
+    // No limit: the cache IS the search index, so capping it silently caps both
+    // the results and the reported total. (Was listAll(5000) against a table of
+    // 8 216 non-outdated rows — the UI showed "产出(5000)" as if that were all.)
+    const rows = await this.repo.listAll();
     for (const r of rows) {
       this.cache.set(r.id, this.rowToDeliverable(r));
     }

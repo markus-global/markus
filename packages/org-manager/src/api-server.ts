@@ -7601,6 +7601,44 @@ EXPLANATION_END`;
       return;
     }
 
+    /**
+     * Advance many read cursors at once — the shape the client actually needs.
+     *
+     * Opening one agent's chat marks every session belonging to that agent as
+     * read, so the single-key endpoint turned one user action into one request
+     * per conversation: measured 247 distinct keys / 315 ms of simultaneous
+     * POSTs on a real account, each its own SQLite commit.
+     *
+     * Deliberately NOT implemented by calling markAllRead: that means "clear
+     * everything" and would also mark conversations the reader never opened.
+     */
+    if (path === '/api/unread/mark-read-batch' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const items = (body as { items?: unknown })?.items;
+      if (!Array.isArray(items)) { this.json(res, 400, { error: 'items array required' }); return; }
+      if (items.length > 1000) { this.json(res, 400, { error: 'too many items (max 1000)' }); return; }
+
+      const entries: Array<{ conversationKey: string; lastReadAt: string; lastReadId?: string }> = [];
+      for (const raw of items) {
+        const it = raw as { conversationKey?: unknown; lastReadAt?: unknown; lastReadId?: unknown };
+        if (typeof it?.conversationKey !== 'string' || !it.conversationKey) { this.json(res, 400, { error: 'each item needs conversationKey' }); return; }
+        if (typeof it.lastReadAt !== 'string' || !it.lastReadAt) { this.json(res, 400, { error: 'each item needs lastReadAt' }); return; }
+        entries.push({
+          conversationKey: it.conversationKey,
+          lastReadAt: it.lastReadAt,
+          ...(typeof it.lastReadId === 'string' ? { lastReadId: it.lastReadId } : {}),
+        });
+      }
+
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true, count: entries.length }); return; }
+      repo.setReadCursors(authUser.userId, entries);
+      this.json(res, 200, { success: true, count: entries.length });
+      return;
+    }
+
     if (path === '/api/unread/mark-all-read' && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
