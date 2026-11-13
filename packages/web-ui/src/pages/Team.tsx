@@ -1369,7 +1369,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   }, [selectedAgent, chatMode, previewMode]);
 
   // ── Chat unread counts (unified single-source read cursor system) ────────────
-  const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead, setActiveKey, clearActiveKey } = useUnreadCounts({ enabled: !previewMode });
+  const { counts: chatUnreadCounts, sessionAgentMap, markRead: markChatRead, markReadMany: markChatReadMany, setActiveKey, clearActiveKeys } = useUnreadCounts({ enabled: !previewMode });
   const unreadByChannel = useMemo(() => {
     const result: Record<string, number> = {};
     for (const [key, count] of Object.entries(chatUnreadCounts)) {
@@ -1394,10 +1394,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
 
   const unreadByAgent = unreadByAgentFromCursors;
   const markAgentNotificationsRead = useCallback(async (agentId: string) => {
+    // One batched write, not a loop of single POSTs. This loop is over every
+    // session the agent owns (247 on a real account) and it runs again whenever
+    // `sessionAgentMap` refreshes, which is what produced the 495-POST burst:
+    // 247 keys x 2 runs. Measured on the wire, not inferred.
+    const keys: string[] = [];
     for (const [sid, aid] of Object.entries(sessionAgentMap)) {
-      if (aid === agentId) markChatRead(`session:${sid}`);
+      if (aid === agentId) keys.push(`session:${sid}`);
     }
-  }, [sessionAgentMap, markChatRead]);
+    await markChatReadMany(keys);
+  }, [sessionAgentMap, markChatReadMany]);
 
   // Mark-read + suppress unread increments for the active conversation (merged to avoid race)
   useEffect(() => {
@@ -1431,7 +1437,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       keys.push(`channel:dm:${[authUser.id, activeDmUserId].sort().join(':')}`);
     }
     for (const k of keys) setActiveKey(k);
-    return () => { for (const k of keys) clearActiveKey(k); };
+    // One batched leave, not one request per key: `keys` holds every session of
+    // the selected agent (~250), and a per-key clear forced a cursor advance for
+    // each — that was the 495-POST burst on entering Team.
+    return () => { clearActiveKeys(keys); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewMode, chatMode, activeChannel, activeSessionId, activeDmUserId, selectedAgent, mobileLayer, mainTab, sessionAgentMap]);
 
@@ -5738,6 +5747,16 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     <div className={`mt-0.5 ${msg.sender === 'agent' ? 'py-1' : 'bg-surface-secondary rounded-2xl px-3.5 py-2.5 w-fit max-w-full'} ${
                       showStreamingBubble && msg.sender === 'agent' ? 'streaming-bubble' : ''
                     }`}>
+                      {/* The "agent is producing" ring. Two elements because the band
+                          (static, masked) and the rotor (rotating) must be able to move
+                          independently — a single pseudo-element cannot nest them, and
+                          fading/rotating the band would break the mask. See index.css
+                          `.streaming-ring` for why the rotation is a compositor op. */}
+                      {showStreamingBubble && msg.sender === 'agent' && (
+                        <span className="streaming-ring" aria-hidden="true">
+                          <span className="streaming-ring-spin" />
+                        </span>
+                      )}
                       {msg.sender === 'user'
                         ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
                             {msg.images && msg.images.length > 0 && (

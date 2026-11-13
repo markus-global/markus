@@ -16,7 +16,7 @@
  * 不存在"投递了但没唤醒"这种半状态：deliver 只有成功（已入队）或抛错两种结果。
  */
 
-import { createLogger } from '@markus/shared';
+import { createLogger, agentAddressRef } from '@markus/shared';
 
 const log = createLogger('agent-delivery');
 
@@ -98,6 +98,10 @@ export interface DeliveryDeps {
       payload: { summary: string; content: string; extra?: Record<string, unknown> },
       options?: {
         metadata?: Record<string, unknown>;
+        /** 第六刀 C2：投递来源（from / messageId），由 mailbox 在唯一装配点长成信封。 */
+        origin?: { from: unknown; messageId?: string; externalThreadRef?: string | null; subject?: string };
+        intent?: 'deliver' | 'trigger_execution' | 'action_required';
+        round?: number;
         runtime?: { responsePromise?: { resolve: (v: string) => void; reject: (r: unknown) => void } };
       },
     ) => unknown;
@@ -200,6 +204,14 @@ export class AgentDelivery {
             senderId: req.fromAgentId,
             senderName: req.fromAgentName,
             senderRole: 'agent',
+          },
+          // 第六刀 C2（§2.3 投递点 3）：A2A 唯一出口交出信封的“谁发的”。
+          // `messageId` 用本次投递 id：同一 chainId 下同一跳的两条**不同**消息都是合法消息，
+          // 按 chainId/深度去重会静默吞掉真消息；而 IM/邮件入口用的是对方给的 native id。
+          origin: {
+            from: agentAddressRef(req.fromAgentId),
+            messageId: deliveryId,
+            externalThreadRef: req.chainId,
           },
           runtime: resolveReply
             ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }

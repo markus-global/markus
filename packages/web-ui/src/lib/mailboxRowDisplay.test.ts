@@ -30,8 +30,11 @@ describe('deriveMailboxRowDisplayStatus — 「处理中」展示以在途流为
     })).toBe('stale');
   });
 
-  it('非 processing 状态原样透传（completed/queued/dropped…）', () => {
-    for (const s of ['completed', 'queued', 'dropped', 'deferred', 'merged']) {
+  it('非 processing 状态原样透传（completed/queued/bounced/catch_all…）', () => {
+    // 只枚举**当前取值域**。历史 `dropped` 不入枚举：读路径（storage `mapRow` /
+    // `getStatusCounts` / `getHistory` 的筛选键）已统一归一为 `bounced`，
+    // 「历史行会不会到 UI」这件事由 storage 侧的归一用例守（见 blob-store-and-maintenance）。
+    for (const s of ['completed', 'queued', 'bounced', 'catch_all', 'deferred', 'merged']) {
       expect(deriveMailboxRowDisplayStatus({
         itemStatus: s, agentRunning: true, currentFocusMailboxItemId: 'mbx_1', itemId: 'mbx_1',
       })).toBe(s);

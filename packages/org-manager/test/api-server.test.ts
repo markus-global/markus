@@ -1090,8 +1090,11 @@ describe('APIServer route handlers', () => {
     it('POST /api/agents/:id/mailbox/recover-stale (stale processing 手动恢复入口)', async () => {
       const res = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
       expect(res.status).toBe(200);
-      expect(typeof (res.json.dropped as number)).toBe('number');
-      // 幂等：再调一次不炸（无陈旧行时 dropped=0）
+      // C3 起 recover-stale 的结局是 `bounced(lease_expired)`（进 catch-all 概览），
+      // 旧 `dropped` 终态已删除，响应字段随之改名 —— 与 web-ui api.ts 的
+      // `{ bounced: number }` 同名，两处描述同一事实。
+      expect(typeof (res.json.bounced as number)).toBe('number');
+      // 幂等：再调一次不炸（无陈旧行时 bounced=0）
       const again = await request(ctx.server, 'POST', `/api/agents/${AGENT_A}/mailbox/recover-stale`);
       expect(again.status).toBe(200);
     });

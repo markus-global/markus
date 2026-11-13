@@ -32,6 +32,8 @@ import {
   resolveActionSecret,
   resolveHostLocale,
   installEgress,
+  imAddressRef,
+  catchAllTargetOf,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -45,6 +47,7 @@ import {
   type GatewayStore,
   type ExternalAgentRegistration,
   proxyFetch,
+  rehydrateStructuredFields,
 } from '@markus/core';
 import {
   OrganizationService,
@@ -2296,6 +2299,17 @@ async function startServerCore(
     agentManager.setSessionRepo(storage.chatSessionRepo);
   }
 
+  // 邮箱地址自助工具（第六刀 C1）：把 storage 的唯一写者/解析器接进 Agent 工具面。
+  // 未接线 ⇒ 工具不注册（见 AgentManager.setAddressBindingPort 的说明）。
+  if (storage?.addressBindingRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    agentManager.setAddressBindingPort({
+      bind: (input) => addressRepo.bind(input),
+      revoke: (input) => addressRepo.revoke(input),
+      list: (input) => addressRepo.listVisible(input),
+    });
+  }
+
   // Wire mailbox + decision persistence to SQLite
   if (storage?.mailboxRepo && storage?.decisionRepo) {
     const mbRepo = storage.mailboxRepo;
@@ -2314,6 +2328,12 @@ async function startServerCore(
                 metadata: (item.metadata ?? {}) as Record<string, unknown>,
                 queuedAt: item.queuedAt,
                 dedupKey,
+                // 第六刀 C2：信封与它的结构投影一起落库（单一写入点）。
+                envelope: item.envelope ? JSON.stringify(item.envelope) : null,
+                messageId: item.envelope?.messageId ?? null,
+                signalClass: item.envelope?.signalClass ?? null,
+                intent: item.envelope?.intent ?? null,
+                dropReason: item.dropReason ?? null,
               });
               if (!inserted) {
                 // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
@@ -2334,8 +2354,8 @@ async function startServerCore(
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
-          markStaleProcessingAsDropped: (aid: string, nowIso?: string, ownerId?: string) =>
-            mbRepo.markStaleProcessingAsDropped(aid, nowIso, ownerId),
+          markStaleProcessingAsBounced: (aid: string, nowIso?: string, ownerId?: string) =>
+            mbRepo.markStaleProcessingAsBounced(aid, nowIso, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -2346,6 +2366,8 @@ async function startServerCore(
               status: r.status as 'queued',
               payload: r.payload,
               metadata: r.metadata,
+              // C2：信封/轮次结构字段（含旧行唯一一次回填解码，见 rehydrateStructuredFields）
+              ...rehydrateStructuredFields(r),
               queuedAt: r.queuedAt,
               startedAt: r.startedAt ?? undefined,
               completedAt: r.completedAt ?? undefined,
@@ -2364,6 +2386,8 @@ async function startServerCore(
               status: r.status as 'deferred',
               payload: r.payload,
               metadata: r.metadata,
+              // C2：同 loadQueued（同一解码函数，不写第二份）。
+              ...rehydrateStructuredFields(r),
               queuedAt: r.queuedAt,
               startedAt: r.startedAt ?? undefined,
               completedAt: r.completedAt ?? undefined,
@@ -2386,9 +2410,41 @@ async function startServerCore(
           requeueItem: (itemId: string, opts?: { queuedAt?: string }) => mbRepo.requeueItem(itemId, opts),
           // findByDedupKey：只读，供 mailbox 三态判定（新增/幂等抑制/复用原行回队）取既有行状态。
           findByDedupKey: (aid: string, dedupKey: string) => mbRepo.findByDedupKey(aid, dedupKey),
+          // ── 第六刀 C2：信封幂等（V5）与退信行写入 ────────────────────────
+          // findByMessageId：同一 messageId 已在队/已收口 → mailbox 写一条
+          //   `duplicate_message_id` 退信行后返回（不再静默 suppressed）。
+          findByMessageId: (aid: string, messageId: string) => mbRepo.findByMessageId(aid, messageId),
+          saveBounced: (item, dropReason) => {
+            try {
+              mbRepo.save({
+                id: item.id, agentId: item.agentId, sourceType: item.sourceType,
+                priority: item.priority, status: 'bounced',
+                payload: item.payload as unknown as Record<string, unknown>,
+                metadata: (item.metadata ?? {}) as Record<string, unknown>,
+                queuedAt: item.queuedAt,
+                dedupKey: undefined,
+                envelope: item.envelope ? JSON.stringify(item.envelope) : null,
+                // 退信行**不占** messageId 唯一键（它记录的是“这次没进去”，
+                // 不是同一条消息的第二份）——见 uq_mailbox_agent_message 的谓词。
+                messageId: null,
+                signalClass: item.envelope?.signalClass ?? null,
+                intent: item.envelope?.intent ?? null,
+                dropReason,
+                // 第六刀 C3：退信行直接带上归集桶（构造时就已确定，不靠后续 UPDATE 补）。
+                bounceTarget: catchAllTargetOf(agentId),
+              });
+            } catch (e) {
+              log.warn('Failed to persist bounced mailbox item', { id: item.id, dropReason, error: String(e) });
+            }
+          },
+          // 第六刀 C3：路由取证 / catch-all 概览（工具面的两个只读端口）。
+          findRouteByMessageId: (aid: string, messageId: string) => mbRepo.findRouteByMessageId(aid, messageId),
+          listCatchAll: (aid: string, limit?: number) => mbRepo.listCatchAll(aid, limit),
+          // ghost drop 读真实状态，让状态机矩阵能裁制它（不盲写）。
+          getStatus: (id: string) => mbRepo.getStatus(id),
         });
-        const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
-        if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
+        const { bounced, restored, expired, merged } = mailbox.recoverStaleItems();
+        if (bounced > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, bounced, restored, expired, merged });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {
@@ -2591,7 +2647,18 @@ async function startServerCore(
       // (no per-channel key).
       const channelKey =
         target.conversationKey === MAIN_CONVERSATION_KEY ? undefined : target.conversationKey;
-      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, { channelKey });
+      const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, {
+        channelKey,
+        // 第六刀 C2（§2.3 投递点 1）：IM 入站交出信封的 from/messageId。
+        // `message.id` 是平台自己的 native 消息 id → 同一条群消息被适配器重投时
+        // 只能落一行 queued + 一条 duplicate_message_id 退信（V5）。
+        origin: {
+          from: imAddressRef(message.platform, message.senderId),
+          messageId: message.id,
+          externalThreadRef: message.threadId ?? null,
+          subject: (message.content.text ?? '').slice(0, 120),
+        },
+      });
       auditService.record({
         orgId: 'default',
         agentId,

@@ -1042,10 +1042,9 @@ describe('performDeliberation and cognitive pipeline', () => {
         content: 'Run the integration tests',
         taskId: 'task_mbx_exec',
         extra: {
-          triggerExecution: true,
           onLog: (entry: { type: string; content: string }) => { logs.push(entry.type); },
         },
-      }, { metadata: { taskId: 'task_mbx_exec' }, runtime: { responsePromise: { resolve: () => resolve(), reject } } });
+      }, { metadata: { taskId: 'task_mbx_exec' }, intent: 'trigger_execution', runtime: { responsePromise: { resolve: () => resolve(), reject } } });
     });
 
     expect(logs).toContain('status');

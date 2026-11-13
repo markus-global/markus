@@ -9,7 +9,10 @@ import { randomUUID, createHash } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, pickOrgSecretary, toStringArray,
+  createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, isMarkusOrgAddress, parseAddress,
+  normalizeSignalStatus, catchAllTargetOf,
+  pickOrgSecretary, toStringArray,
+  type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
 } from '@markus/shared';
 import { StreamWriteBatcher } from './stream-write-batcher.js';
@@ -572,7 +575,15 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  -- 第六刀 C2：信封与投递状态（全部可空；旧行 NULL = 无信封，读路径 warn + fallback，不回填）
+  envelope TEXT,
+  work_unit_ref TEXT,
+  signal_class TEXT,
+  intent TEXT,
+  message_id TEXT,
+  drop_reason TEXT,
+  bounce_target TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 
@@ -796,6 +807,11 @@ CREATE TABLE IF NOT EXISTS channel_bindings (
   native_id TEXT,
   kind TEXT,
   agent_id TEXT NOT NULL,
+  -- 邮箱地址绑定（第六刀 §2.1）：同一张表上的另一种「谁拥有这个入口」。
+  -- 可空 = 既有路由行；不接受回填（旧行 NULL 合法）。
+  address TEXT,
+  -- 撤销用时间戳表达，不删行（审计与「撤销后地址可重新认领」都需要历史）。
+  revoked_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(org_id, scope, instance_id, native_id)
 );
@@ -937,6 +953,22 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    // ─── 第六刀 C2：信封列（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ───
+    // `work_unit_ref` 只加列、**不写值**：C7 才有唯一写者，避免先建引用后建实体。
+    // `message_id` 是 `envelope.messageId` 的投影列：唯一性必须由**索引**裁决，
+    // 而 JSON blob 无法可靠索引 —— 投影 + 部分唯一索引，才能让「同一条消息投两次」
+    // 在结构上不可表达（V5）。
+    { table: 'mailbox_items', column: 'envelope', sql: 'ALTER TABLE mailbox_items ADD COLUMN envelope TEXT' },
+    { table: 'mailbox_items', column: 'work_unit_ref', sql: 'ALTER TABLE mailbox_items ADD COLUMN work_unit_ref TEXT' },
+    { table: 'mailbox_items', column: 'signal_class', sql: 'ALTER TABLE mailbox_items ADD COLUMN signal_class TEXT' },
+    { table: 'mailbox_items', column: 'intent', sql: 'ALTER TABLE mailbox_items ADD COLUMN intent TEXT' },
+    { table: 'mailbox_items', column: 'message_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN message_id TEXT' },
+    { table: 'mailbox_items', column: 'drop_reason', sql: 'ALTER TABLE mailbox_items ADD COLUMN drop_reason TEXT' },
+    { table: 'mailbox_items', column: 'bounce_target', sql: 'ALTER TABLE mailbox_items ADD COLUMN bounce_target TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
+    { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
   ];
     const addedColumns: string[] = [];
     for (const m of migrations) {
@@ -975,6 +1007,44 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+    // 第六刀 C2（V5）：同一 agent 下同一 `messageId` 至多一行 —— **幂等身份由索引裁决**，
+    // 不靠调用方自觉。`message_id` 为 NULL（C2 之前的旧行）不受约束：SQLite 视 NULL 互不相等。
+    // 退信行（`bounced` / `catch_all`）是「这次投递没进去」的**记录**，不是第二条消息，
+    // 所以它们不参与这一约束：同一 messageId 被重复投递时，恰好一行 queued + 一条退信行。
+    // 第六刀 C3：谓词从 `status <> 'bounced'` 扩为 `NOT IN ('bounced','catch_all')` ——
+    // 退信行归集到概览后状态变 `catch_all`，若不排除它，同一条消息的第二次退信
+    // 会撞唯一键（= 把「可重复记录的退信」判成「重复消息」）。
+    // 依赖 `message_id` 列，必须在列迁移之后创建。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_message ' +
+        "ON mailbox_items(agent_id, message_id) WHERE message_id IS NOT NULL AND status NOT IN ('bounced','catch_all')",
+    );
+
+    // 第六刀 C1：地址绑定的两个结构对象，都依赖上面的 `address` / `revoked_at` 列，
+    // 因此必须在列迁移之后创建（否则既有库会在 SCHEMA_SQL 阶段报 no such column）。
+    //
+    // 1) **全局**部分唯一索引：键里只有 `address`，**不含 `org_id`**（§2.8 H4）。邮箱
+    //    地址是全局身份——把 org_id 放进键里，I1「一个 active 地址至多一个 target_ref」
+    //    就会退化成「同地址可以绑两次」。撤销行保留 address 供审计，故谓词是
+    //    `revoked_at IS NULL`；旧行 address 为 NULL，SQLite 视 NULL 互不相等，既不冲突
+    //    也不需要回填。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bindings_address_active ' +
+        'ON channel_bindings(address) WHERE revoked_at IS NULL',
+    );
+    // 2) 唯一读面：地址解析（C2 的 resolve）与 `address_list` 工具都只读这个视图，
+    //    不各自拼 SQL —— 一处定义「active 地址绑定长什么样」。`target_ref` 由
+    //    `agent_id` 派生（`agent:<id>`），不是第二列存储：目标只有一个写者，才不会漂移。
+    _db.exec(`CREATE VIEW IF NOT EXISTS address_bindings AS
+      SELECT id,
+             org_id,
+             address,
+             'agent:' || agent_id AS target_ref,
+             agent_id,
+             revoked_at,
+             created_at
+        FROM channel_bindings
+       WHERE address IS NOT NULL`);
 
     _db.exec('COMMIT');
   } catch (err) {
@@ -3304,6 +3374,23 @@ export class SqliteChannelMessageRepo {
 export class SqliteUserRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * A4 人类邮箱隔离：`users.email` 只放人类邮箱，不得占用组织邮箱格式
+   * `<local>.<org>@markus.global`（平台保留地址、外部域地址不受限）。
+   *
+   * 唯一执行点：所有写 email 的路径（create / upsert / updateProfile）都经过这里。
+   * 拒绝而不是自动改写 —— 自动 slugify/小写化会让「写进去的」与「查得到的」
+   * 变成两个事实，并且让人永远不知道自己写错了。
+   */
+  private assertHumanEmail(email: string | undefined): void {
+    if (!email || !isMarkusOrgAddress(email)) return;
+    throw new Error(
+      `users.email cannot be an organisation address (${email}). ` +
+        `Organisation mailboxes are <local>.<org>@markus.global and are claimed via bind_address; ` +
+        `use the person's own mailbox instead.`,
+    );
+  }
+
   create(data: {
     id: string;
     orgId: string;
@@ -3315,6 +3402,7 @@ export class SqliteUserRepo {
     hubUserId?: string;
     avatarUrl?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         'INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, avatar_url, created_at) VALUES (?,?,?,?,?,?,?,?,?,?)'
@@ -3344,6 +3432,7 @@ export class SqliteUserRepo {
     passwordHash?: string;
     hubUserId?: string;
   }) {
+    this.assertHumanEmail(data.email);
     this.db
       .prepare(
         `INSERT INTO users (id, org_id, name, email, role, team_id, password_hash, hub_user_id, created_at)
@@ -3435,6 +3524,7 @@ export class SqliteUserRepo {
   }
 
   updateProfile(id: string, data: { name?: string; email?: string; role?: string; avatarUrl?: string | null }) {
+    this.assertHumanEmail(data.email);
     const sets: string[] = [];
     const vals: SqlParams = [];
     if (data.name !== undefined) {
@@ -4491,8 +4581,24 @@ export class SqliteDeliverableRepo {
     this.db.prepare('DELETE FROM deliverables WHERE id = ?').run(id);
   }
 
-  async listAll(limit = 500) {
-    const rows = this.db.prepare("SELECT * FROM deliverables WHERE status != 'outdated' ORDER BY updated_at DESC LIMIT ?").all(limit) as Record<string, unknown>[];
+  /**
+   * Load deliverables for the in-memory cache that backs search.
+   *
+   * `limit` used to default to 500 and the service passed 5000, so the cache —
+   * and therefore `search()`'s `total` — could never exceed 5000 while the table
+   * held 8 216 non-outdated rows. The UI showed "产出(5000)" as if that were the
+   * complete archive; 3 216 deliverables were unreachable, and nothing surfaced
+   * the truncation.
+   *
+   * Omitting `limit` now returns everything. That is affordable here: the whole
+   * non-outdated set is ~3.4 MB of content, and the cache is the thing search
+   * scores against. Callers that genuinely want a page still pass a limit.
+   */
+  async listAll(limit?: number) {
+    const base = "SELECT * FROM deliverables WHERE status != 'outdated' ORDER BY updated_at DESC";
+    const rows = (limit === undefined
+      ? this.db.prepare(base).all()
+      : this.db.prepare(`${base} LIMIT ?`).all(limit)) as Record<string, unknown>[];
     return rows.map(r => this.mapRow(r));
   }
 
@@ -4948,6 +5054,20 @@ export interface MailboxItemRow {
   leaseUntil?: string | null;
   /** P0：幂等键（无幂等语义的项为 null）。 */
   dedupKey?: string | null;
+  /** C2：信封（JSON 原文；旧行为 null）。 */
+  envelope?: string | null;
+  /** C2：`envelope.messageId` 的投影（唯一性由 `uq_mailbox_agent_message` 裁决）。 */
+  messageId?: string | null;
+  /** C2：信号类别（六类闭集）。 */
+  signalClass?: string | null;
+  /** C2：投递意图。 */
+  intent?: string | null;
+  /** C2：`work_unit_ref`（本卡恒 null，C7 才有写者）。 */
+  workUnitRef?: string | null;
+  /** C2：退信原因（`status='bounced'` 时必填）。 */
+  dropReason?: string | null;
+  /** C2：catch-all 概览项 id（C3 写值）。 */
+  bounceTarget?: string | null;
 }
 
 /**
@@ -4962,6 +5082,26 @@ export interface MailboxDedupRow {
   claimedBy: string | null;
   leaseUntil: string | null;
   queuedAt: string;
+}
+
+/**
+ * 第六刀 C3：`message_route()` / catch-all 概览的行形状。
+ *
+ * 只含结构列，不含 `payload` —— 取证问的是「投到哪 / 为什么没投到」，
+ * 那是信封与状态列回答的问题，不是内容回答的。
+ */
+export interface MailboxRouteRow {
+  id: string;
+  agentId: string;
+  status: string;
+  envelope: string | null;
+  messageId: string | null;
+  signalClass: string | null;
+  intent: string | null;
+  dropReason: string | null;
+  bounceTarget: string | null;
+  queuedAt: string;
+  completedAt: string | null;
 }
 
 export class SqliteMailboxRepo {
@@ -4988,19 +5128,133 @@ export class SqliteMailboxRepo {
     queuedAt: string;
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
+    /** C2：信封原文（JSON）。缺省 = 无信封（旧调用方）。 */
+    envelope?: string | null;
+    /** C2：`envelope.messageId` 投影，供 `uq_mailbox_agent_message` 幂等裁决。 */
+    messageId?: string | null;
+    /** C2：信号类别 / 投递意图（信封的结构投影，供聚合与路由查询）。 */
+    signalClass?: string | null;
+    intent?: string | null;
+    /** C2：退信原因（仅 `status='bounced'` 写）。 */
+    dropReason?: string | null;
+    /** C3：catch-all 概览桶 id（退信行归集目标）。 */
+    bounceTarget?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
+        item.envelope ?? null, item.messageId ?? null,
+        item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
+        item.bounceTarget ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * C2（V5）：按 `(agent, messageId)` 查既有的**非退信**行。
+   *
+   * 只回传判定需要的最小字段（不拉 payload）——它在入队热路径上被调用。
+   * 退信行被排除：它们记录的是「这次没投进去」，不是同一消息的第二份。
+   */
+  findByMessageId(agentId: string, messageId: string): MailboxDedupRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, claimed_by AS claimedBy, lease_until AS leaseUntil, queued_at AS queuedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ? AND status NOT IN ('bounced','catch_all')
+          LIMIT 1`,
+      )
+      .get(agentId, messageId) as MailboxDedupRow | undefined;
+    return row;
+  }
+
+  /**
+   * 第六刀 C3：`message_route(messageId)` 的**只读**取证入口。
+   *
+   * 不区分退信行与非退信行：取证要的就是「这条消息最后怎么了」。同一 messageId 可能同时有
+   * 1 条正经行 + N 条退信行（重投多次），所以返回数组而不是单行：只返回一行会让人误以为「只发生过一次」。
+   * 新→旧排序，调用方取第一条即最近一次。
+   *
+   * 不拉 `payload`：路由事实全在结构列上（信封 / signal_class / intent / 状态 / 原因）。
+   */
+  findRouteByMessageId(agentId: string, messageId: string, limit = 10): MailboxRouteRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, messageId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r['id'] as string,
+      agentId: r['agentId'] as string,
+      status: normalizeSignalStatus(r['status'] as string),
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['messageId'] as string | null) ?? null,
+      signalClass: (r['signalClass'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      dropReason: (r['dropReason'] as string | null) ?? null,
+      bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+      queuedAt: r['queuedAt'] as string,
+      completedAt: (r['completedAt'] as string | null) ?? null,
+    }));
+  }
+
+  /**
+   * 第六刀 C3：catch-all 概览**唯一读入口**。
+   *
+   * 判据是 `bounce_target = ?` 而不是 `status = 'catch_all'`：归集桶是结构事实，
+   * 状态只是它的一个簇。这样即便归集前（`bounced`）也已经能查出「它将被归到哪个概览」，
+   * 且归集是幂等的（重复归集不改行数）。
+   *
+   * `legacyDropped` 计数单独回：历史 `dropped` 行没有 `bounce_target`，不在归集桶里 ——
+   * 它们保留只读且不被回填，所以概览看不到它们。这是**诚实的缺陷记录**：旧行的原因
+   * 已经永久丢失，把它伪装成归集行只会造出第二份谎言。
+   */
+  listCatchAll(agentId: string, limit = 100): { items: MailboxRouteRow[]; legacyDropped: number } {
+    const catchAll = catchAllTargetOf(agentId);
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND bounce_target = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, catchAll, limit) as Array<Record<string, unknown>>;
+    const legacy = this.db
+      .prepare("SELECT COUNT(*) AS n FROM mailbox_items WHERE agent_id = ? AND status = 'dropped'")
+      .get(agentId) as { n: number } | undefined;
+    return {
+      items: rows.map((r) => ({
+        id: r['id'] as string,
+        agentId: r['agentId'] as string,
+        status: normalizeSignalStatus(r['status'] as string),
+        envelope: (r['envelope'] as string | null) ?? null,
+        messageId: (r['messageId'] as string | null) ?? null,
+        signalClass: (r['signalClass'] as string | null) ?? null,
+        intent: (r['intent'] as string | null) ?? null,
+        dropReason: (r['dropReason'] as string | null) ?? null,
+        bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+        queuedAt: r['queuedAt'] as string,
+        completedAt: (r['completedAt'] as string | null) ?? null,
+      })),
+      legacyDropped: legacy?.n ?? 0,
+    };
   }
 
   /**
@@ -5084,8 +5338,8 @@ export class SqliteMailboxRepo {
       .prepare(
         `UPDATE mailbox_items
             SET status = 'queued', queued_at = ?, started_at = NULL, completed_at = NULL,
-                claimed_by = NULL, lease_until = NULL
-          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed')`
+                claimed_by = NULL, lease_until = NULL, drop_reason = NULL, bounce_target = NULL
+          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed', 'bounced')`
       )
       .run(options?.queuedAt ?? now(), itemId);
     return ((res as { changes?: number }).changes ?? 0) === 1;
@@ -5171,7 +5425,21 @@ export class SqliteMailboxRepo {
    *
    * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
-  markStaleProcessingAsDropped(agentId: string, nowIso?: string, currentOwnerId?: string): number {
+  /**
+   * 把陈旧 `processing` 行结案 —— **写 `bounced` + `drop_reason='lease_expired'`**（第六刀 C3）。
+   *
+   * 名字从 `markStaleProcessingAsDropped` 改掉：`dropped` 已不是取值域，留着旧名就是
+   * 一个当场说谎的标识符（它写的是 bounced，名字说 dropped）。
+   *
+   * 为什么原因必须**同一条 UPDATE** 写入：分两步会产生「终态已定、原因未到」的中间态，
+   * 而那正是旧 `dropped` 的病理（≥28,621 行终态没有原因、也没有回声）。
+   *
+   * `bounce_target` 直接指向本 agent 的 catch-all 概览桶 —— 租约失效是「没投进去」的一种，
+   * 必须同样在概览里恰好可见一次，而不是只活在日志里。
+   *
+   * @returns 被判 `bounced` 的条数（回队的 strict-state 行不计入）。
+   */
+  markStaleProcessingAsBounced(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
 
     // 陈旧判据（SELECT 与 UPDATE 共用同一实现，不复制）：无认领 / 无租约 / 租约过期，
@@ -5204,10 +5472,16 @@ export class SqliteMailboxRepo {
       });
     }
 
-    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续 drop。
+    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续结案。
+    // 第六刀 C3：终态从 `dropped` 改为 `bounced`，并同一条语句写入原因与概览桶。
+    const catchAll = catchAllTargetOf(agentId);
     const result = this.db
-      .prepare(`UPDATE mailbox_items SET status = 'dropped' WHERE ${staleWhere}`)
-      .run(...params);
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'bounced', drop_reason = 'lease_expired', bounce_target = ?
+          WHERE ${staleWhere}`,
+      )
+      .run(catchAll, ...params);
     return (result as { changes?: number }).changes ?? 0;
   }
 
@@ -5221,6 +5495,10 @@ export class SqliteMailboxRepo {
     if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
     // P0：priority 走 updateStatus（save 为幂等插入语义，不再覆盖既有行）。
     if (extra?.priority !== undefined) { parts.push('priority = ?'); params.push(extra.priority as number); }
+    // 第六刀 C3：退信的两列必须能**随状态一起**写。分开写会出现「状态已是 bounced、
+    // 原因还没到」的中间态，而那正是旧 `dropped` 的病理（终态行没有原因）。
+    if (extra?.dropReason !== undefined) { parts.push('drop_reason = ?'); params.push((extra.dropReason as string) ?? null); }
+    if (extra?.bounceTarget !== undefined) { parts.push('bounce_target = ?'); params.push((extra.bounceTarget as string) ?? null); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
@@ -5239,12 +5517,40 @@ export class SqliteMailboxRepo {
     return row ? this.mapRow(row) : undefined;
   }
 
+  /**
+   * C3：只读一行的当前状态（ghost 路径让矩阵裁决用）。
+   *
+   * 单独一条轻量查询：调用方（`AgentMailbox.drop` 对不在内存队列的 id）只需要
+   * `from` 状态来判迁移合法性，拉整行（payload/envelope）是浪费，而且会把热路径
+   * 变成“为了判一条规则读一整行”。归一与 `mapRow` 同源（`normalizeSignalStatus`）。
+   */
+  getStatus(id: string): string | undefined {
+    const row = this.db.prepare('SELECT status FROM mailbox_items WHERE id = ?').get(id) as
+      | { status: string }
+      | undefined;
+    return row ? normalizeSignalStatus(row.status) : undefined;
+  }
+
+  /**
+   * 状态计数（读路径归一）。
+   *
+   * 为什么不能直接 `GROUP BY status` 返回原始列：C3 删掉 `dropped` 终态后，历史行
+   * 仍是 `dropped`，而新行是 `bounced`。直接分组会让调用方（UI 状态筛选片）同时看到
+   * 「dropped」与「bounced」两个键 —— 同一个事实两个名字，且旧键的计数会永远停在
+   * 历史量级不再增长，读的人无法判断现在到底还有没有退信。
+   *
+   * 归一放在这里（而不是每个消费者各做一次）：拿到计数的地方就是聚合读者，
+   * 与 `mapRow()` 对**单行**的归一构成同一策略的两个侧面。
+   */
   getStatusCounts(agentId: string): Record<string, number> {
     const rows = this.db
       .prepare('SELECT status, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY status')
       .all(agentId) as Array<{ status: string; cnt: number }>;
     const counts: Record<string, number> = {};
-    for (const r of rows) counts[r.status] = r.cnt;
+    for (const r of rows) {
+      const status = normalizeSignalStatus(r.status);
+      counts[status] = (counts[status] ?? 0) + r.cnt;
+    }
     return counts;
   }
 
@@ -5265,8 +5571,20 @@ export class SqliteMailboxRepo {
       params.push(...opts.sourceTypes);
     }
     if (opts?.status) {
-      conditions.push('status = ?');
-      params.push(opts.status);
+      // 读归一的第二个面：**筛选键也要归一**。
+      //
+      // 只归一 `mapRow()` 的返回值是不够的：行被 `status = ?` 过滤掉了就永远走不到
+      // mapRow，调用方（UI 状态筛选片）会看到「按 bounced 筛为空」，而库里明明躺着
+      // 一批历史 `dropped` 退信行。反过来，按旧名 `dropped` 筛也必须能命中当前
+      // `bounced` 行 —— 两个名字指向同一个事实，筛选不能只在其中一个上生效。
+      const wanted = normalizeSignalStatus(opts.status);
+      if (wanted === 'bounced') {
+        // 历史 `dropped` 与当前 `bounced` 都属于「这条信号没投进去」。
+        conditions.push("status IN ('bounced', 'dropped')");
+      } else {
+        conditions.push('status = ?');
+        params.push(wanted);
+      }
     }
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
@@ -5282,7 +5600,13 @@ export class SqliteMailboxRepo {
       agentId: r['agent_id'] as string,
       sourceType: r['source_type'] as string,
       priority: r['priority'] as number,
-      status: r['status'] as string,
+      /**
+       * 第六刀 C3：**读路径唯一归一**。历史 `dropped` 行（真实库 ≥28,621 行、
+       * 没有 `drop_reason`）只读保留，在这里映射为 `bounced`，**不 UPDATE 任何行**。
+       * 归一放在 mapRow 而不是每个消费者：拿到 row 的地方就一定是读取方，
+       * 让「同一状态两种写法」在持久层就消失。
+       */
+      status: normalizeSignalStatus(r['status'] as string),
       payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
       queuedAt: r['queued_at'] as string,
@@ -5294,6 +5618,13 @@ export class SqliteMailboxRepo {
       claimedBy: (r['claimed_by'] as string | null) ?? null,
       leaseUntil: (r['lease_until'] as string | null) ?? null,
       dedupKey: (r['dedup_key'] as string | null) ?? null,
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['message_id'] as string | null) ?? null,
+      signalClass: (r['signal_class'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
+      dropReason: (r['drop_reason'] as string | null) ?? null,
+      bounceTarget: (r['bounce_target'] as string | null) ?? null,
     };
   }
 }
@@ -5675,7 +6006,7 @@ export class SqliteApprovalRepo {
 
 // ─── Group Chat Repo ──────────────────────────────────────────────────────────
 
-import type { GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+import type { AddressBindingRow, GroupChat, GroupChatMember, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteGroupChatRepo {
   constructor(private db: DatabaseSync) {}
@@ -5876,7 +6207,7 @@ export class SqliteStatusTransitionRepo {
 
 // ─── Integration ─────────────────────────────────────────────────────────────
 
-export type { IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
+export type { AddressBindingRow, IntegrationRow, PlatformInstanceRow, ChannelBindingRow, ChannelBindingScope } from './types.ts';
 
 export class SqliteIntegrationRepo {
   constructor(private db: DatabaseSync) {}
@@ -6120,6 +6451,189 @@ export class SqliteChannelBindingRepo {
 
 // ─── Messaging gateway migration (legacy integrations → instances + bindings) ─
 
+// ─── 邮箱地址绑定（第六刀 C1）─────────────────────────────────────────────────
+
+/** `agent:<id>` —— `target_ref` 的唯一拼装点（§2.2，别处不得手拼）。 */
+export function addressTargetRef(agentId: string): string {
+  return `agent:${agentId}`;
+}
+
+/** SQLite 唯一约束违规：地址冲突的裁决依据是这个错误，不是读-再-写。 */
+function isUniqueViolation(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const code = (err as { errcode?: number }).errcode;
+  // 2067 = SQLITE_CONSTRAINT_UNIQUE, 1555 = SQLITE_CONSTRAINT_PRIMARYKEY
+  if (code === 2067 || code === 1555) return true;
+  return /UNIQUE constraint failed/i.test(err.message);
+}
+
+/**
+ * 地址绑定的唯一写者与唯一读面（§2.2 / §2.4）。
+ *
+ * 三条纪律，都是为了让同一类 bug 在结构上无法表达：
+ * 1. **唯一性由索引裁决**：`bind()` 直接 INSERT，让
+ *    `uq_channel_bindings_address_active` 决定谁赢。先 SELECT 再 INSERT 会让两个
+ *    并发写入者同时通过检查（TOCTOU），那正是 I1 要禁止的。
+ * 2. **不按 org 限定解析**（H4）：`resolve()` / `findActive()` 的 WHERE 里没有
+ *    `org_id`。地址是全局身份；org 只出现在「列表可见范围」这种展示语义里。
+ * 3. **只能写自己**：`bind()` / `revoke()` 的入参没有 target 字段，目标恒为
+ *    `agentId`。「改他人绑定」在这层 API 上**不可表达**（I5 的正面回答在工具面）。
+ */
+export class SqliteAddressBindingRepo {
+  constructor(private db: DatabaseSync) {}
+
+  /** 认领一个地址。唯一冲突的裁决权在 DB 部分唯一索引上。 */
+  bind(input: { orgId: string; agentId: string; address: string }): AddressBindOutcome {
+    const rejected = this.rejectUnbindable(input.address);
+    if (rejected) return rejected;
+
+    const address = input.address;
+    try {
+      this.db
+        .prepare(
+          `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id, address, created_at)
+           VALUES (?, ?, 'address', NULL, NULL, 'mail', ?, ?, ?)`,
+        )
+        .run(generateId('cb'), input.orgId, input.agentId, address, new Date().toISOString());
+      return { status: 'bound', address, targetRef: addressTargetRef(input.agentId) };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      const existing = this.findActive(address);
+      // 幂等：再绑一次自己的地址是 no-op，不是冲突 —— 同一个事实只有一种结局。
+      if (existing && existing.agentId === input.agentId) {
+        return { status: 'bound', address, targetRef: existing.targetRef, unchanged: true };
+      }
+      return {
+        status: 'conflict',
+        address,
+        hint: `${address} is already bound to a different target. Ask its owner to release it (address_revoke) before claiming it; two active targets for one address is not representable.`,
+      };
+    }
+  }
+
+  /** 撤销自己的绑定：打 `revoked_at`，行保留（地址随即可以被重新认领）。 */
+  revoke(input: { orgId: string; agentId: string; address: string }): AddressRevokeOutcome {
+    const rejected = this.rejectUnbindable(input.address);
+    if (rejected) return rejected;
+
+    const address = input.address;
+    const result = this.db
+      .prepare(
+        'UPDATE channel_bindings SET revoked_at = ? WHERE address = ? AND revoked_at IS NULL AND agent_id = ?',
+      )
+      .run(new Date().toISOString(), address, input.agentId);
+    if (result.changes > 0) return { status: 'revoked', address };
+
+    const existing = this.findActive(address);
+    if (!existing) {
+      return {
+        status: 'not_bound',
+        address,
+        hint: `${address} has no active binding, so there is nothing to revoke.`,
+      };
+    }
+    return {
+      status: 'forbidden',
+      address,
+      hint: `${address} is bound to another target; only its owner can revoke it (I5). Ask the owner, or bind an address of your own.`,
+    };
+  }
+
+  /**
+   * 列出可见绑定：自己的（含已撤销，带状态）+ 可选本组织 active 绑定。
+   * 只读；可见范围是展示语义，解析语义在 {@link resolve}。
+   */
+  listVisible(input: { orgId: string; agentId: string; includeOrg?: boolean }): AddressBindingRow[] {
+    const own = this.db
+      .prepare('SELECT * FROM address_bindings WHERE agent_id = ? ORDER BY created_at, id')
+      .all(input.agentId) as Record<string, unknown>[];
+    if (!input.includeOrg) return own.map((r) => this.mapRow(r));
+
+    const orgRows = this.db
+      .prepare(
+        `SELECT * FROM address_bindings
+          WHERE org_id = ? AND revoked_at IS NULL AND agent_id <> ?
+          ORDER BY address`,
+      )
+      .all(input.orgId, input.agentId) as Record<string, unknown>[];
+    return [...own, ...orgRows].map((r) => this.mapRow(r));
+  }
+
+  /** 一个地址当前是否被占用；被谁占用是 `agentId`，不是字符串推断。 */
+  findActive(address: string): AddressBindingRow | undefined {
+    const row = this.db
+      .prepare('SELECT * FROM address_bindings WHERE address = ? AND revoked_at IS NULL')
+      .get(address) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  /**
+   * 唯一解析入口（C2 的 `resolve()` 与 C3 的退信共用）：命中唯一 active 目标，
+   * 或明确「没有」。**没有第三种悄悄丢掉**，也**不按当前 org 限定**（H4）。
+   */
+  resolve(address: string): AddressResolution {
+    const parsed = parseAddress(address);
+    // 非本域 / 格式非法 / 0 点平台地址 / ≥2 点：都不是可解析的内部收件人。
+    if (!parsed.ok || parsed.value.kind !== 'markus') {
+      return { matched: false, address, reason: 'unresolved_address' };
+    }
+    const row = this.findActive(parsed.value.address);
+    if (!row) return { matched: false, address, reason: 'no_active_target' };
+    return { matched: true, address: row.address, targetRef: row.targetRef, agentId: row.agentId };
+  }
+
+  /**
+   * 解析阶段的拒绝，统一在这里产出：只有 `kind='markus'` 的地址可以认领。
+   * bind / revoke 共用同一套判定，避免两条写路径各写一份规则。
+   */
+  private rejectUnbindable(raw: string): Extract<AddressBindOutcome, { status: 'bounced' }> | null {
+    const parsed = parseAddress(raw);
+    if (!parsed.ok) {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: parsed.reason,
+        hint: parsed.hint,
+        catchAllId: null,
+      };
+    }
+    if (parsed.value.kind === 'platform') {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: 'platform_reserved',
+        hint: `${raw} is a platform-reserved 0-dot address. Organisations cannot claim it; bind <local>.<org>@markus.global instead.`,
+        catchAllId: null,
+      };
+    }
+    if (parsed.value.kind === 'external') {
+      return {
+        status: 'bounced',
+        address: raw,
+        reason: 'unresolved_address',
+        detail: 'external_domain',
+        hint: `${raw} is an external domain. Only <local>.<org>@markus.global addresses can be claimed on this platform.`,
+        catchAllId: null,
+      };
+    }
+    return null;
+  }
+
+  private mapRow(r: Record<string, unknown>): AddressBindingRow {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      address: r['address'] as string,
+      targetRef: r['target_ref'] as string,
+      agentId: r['agent_id'] as string,
+      revokedAt: (r['revoked_at'] as string | null) ?? null,
+      createdAt: r['created_at'] as string,
+    };
+  }
+}
+
 /** Outcome counters for {@link migrateMessagingGateway} (observability + tests). */
 export interface MessagingGatewayMigrationStats {
   instancesCreated: number;
@@ -6309,14 +6823,42 @@ export class SqliteReadCursorRepo {
   constructor(private db: DatabaseSync) {}
 
   setReadCursor(userId: string, conversationKey: string, lastReadAt: string, lastReadId?: string): void {
-    this.db.prepare(
+    this.setReadCursors(userId, [{ conversationKey, lastReadAt, lastReadId }]);
+  }
+
+  /**
+   * Advance several read cursors in ONE transaction.
+   *
+   * Opening one agent's chat marks every session that belongs to that agent as
+   * read (Team.tsx pushes them as "active"), so a single page load was issuing
+   * one POST — and therefore one autocommit/fsync — per conversation. Measured
+   * on a real account: 247 distinct keys, 315 ms of simultaneous requests, and
+   * 495 requests when several UI surfaces reacted at once.
+   *
+   * The semantics are unchanged (each key keeps its own cursor); only the number
+   * of commits drops from N to 1.
+   */
+  setReadCursors(
+    userId: string,
+    entries: ReadonlyArray<{ conversationKey: string; lastReadAt: string; lastReadId?: string }>,
+  ): void {
+    if (entries.length === 0) return;
+    const stmt = this.db.prepare(
       `INSERT INTO user_read_cursors (user_id, conversation_key, last_read_at, last_read_id, updated_at)
        VALUES (?, ?, ?, ?, datetime('now'))
        ON CONFLICT(user_id, conversation_key) DO UPDATE SET
          last_read_at = excluded.last_read_at,
          last_read_id = COALESCE(excluded.last_read_id, last_read_id),
          updated_at = datetime('now')`
-    ).run(userId, conversationKey, lastReadAt, lastReadId ?? null);
+    );
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const e of entries) stmt.run(userId, e.conversationKey, e.lastReadAt, e.lastReadId ?? null);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
+    }
   }
 
   getReadCursors(userId: string): ReadCursorRow[] {

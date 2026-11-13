@@ -67,6 +67,7 @@ import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
+import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
@@ -525,6 +526,8 @@ export class AgentManager {
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
+  /** 邮箱地址绑定端口（第六刀 C1）。未接线 ⇒ 地址工具不注册（见 setAddressBindingPort）。 */
+  private addressBindingPort?: AddressBindingPort;
   private delegationManager: DelegationManager;
   private _maxToolIterations = Infinity;
   private _concurrentConfig?: AgentConcurrentConfig;
@@ -1810,8 +1813,15 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      // 第六刀 C3：路由取证 + catch-all 概览。两者都直读持久层；未接线时
+      // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
+
+    // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
+    this.registerAddressTools(agent, id);
 
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
@@ -2734,8 +2744,12 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
+
+    this.registerAddressTools(agent, id);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -3599,6 +3613,31 @@ export class AgentManager {
     }
   }
 
+  /**
+   * 接线邮箱地址绑定端口（第六刀 C1）。缺省 ⇒ 不注册地址工具。
+   *
+   * 为什么是可选的：工具存在但每次调用必然失败，比工具不存在更坏——Agent 会据此
+   * 建模出一个它其实没有的能力。没接线就让它「看不见」这个能力。
+   */
+  setAddressBindingPort(port: AddressBindingPort): void {
+    this.addressBindingPort = port;
+    for (const [id, agent] of this.agents) this.registerAddressTools(agent, id);
+  }
+
+  /** 单一注册点：两个建 Agent 的路径都调这里，避免两套工具集漂移。 */
+  private registerAddressTools(agent: Agent, agentId: string): void {
+    const port = this.addressBindingPort;
+    if (!port) return;
+    const orgId = agent.config.orgId ?? 'default';
+    const ctx: AddressToolContext = {
+      agentId,
+      orgId,
+      bind: (input) => port.bind(input),
+      revoke: (input) => port.revoke(input),
+      list: (input) => port.list(input),
+    };
+    for (const tool of createAddressTools(ctx)) agent.registerTool(tool);
+  }
   /**
    * Legacy wiring hook kept for API compatibility. The session tool is now
    * ALWAYS Memory-backed (createSessionRepo) — the agent's context is built

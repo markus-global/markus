@@ -1489,13 +1489,13 @@ export const api = {
       }),
     /** 丢弃单条 mailbox 项（带理由，可回溯）——与 cancelProcessing（打断）不同。 */
     dropMailboxItem: (id: string, itemId: string, reason?: string) =>
-      request<{ status: string; itemId: string; dropped: boolean }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
+      request<{ status: string; itemId: string; applied: boolean; dropReason?: string }>(`/agents/${id}/mailbox/${encodeURIComponent(itemId)}/drop`, {
         method: 'POST',
         body: JSON.stringify({ reason }),
         headers: { 'Content-Type': 'application/json' },
       }),
     recoverStaleMailbox: (id: string) =>
-      request<{ dropped: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
+      request<{ bounced: number }>(`/agents/${id}/mailbox/recover-stale`, { method: 'POST' }),
     evolveFromMessage: (
       id: string,
       body: {
@@ -2695,6 +2695,9 @@ export const api = {
     getCounts: () => request<{ counts: Record<string, number>; sessionAgentMap: Record<string, string> }>('/unread'),
     markRead: (conversationKey: string, lastReadAt: string, lastReadId?: string) =>
       request<{ success: boolean }>('/unread/mark-read', { method: 'POST', body: JSON.stringify({ conversationKey, lastReadAt, lastReadId }) }),
+    /** One request for many conversations — see /api/unread/mark-read-batch. */
+    markReadBatch: (items: ReadonlyArray<{ conversationKey: string; lastReadAt: string; lastReadId?: string }>) =>
+      request<{ success: boolean; count: number }>('/unread/mark-read-batch', { method: 'POST', body: JSON.stringify({ items }) }),
     markAllRead: () =>
       request<{ success: boolean }>('/unread/mark-all-read', { method: 'POST' }),
   },

@@ -23,6 +23,13 @@ export { createSubagentTool, createParallelSubagentTool, runSubagentLoop, type S
 export { createSettingsTools, type SettingsToolsContext } from './settings.js';
 export { createRecallTool, type RecallContext, type RecallCallbacks } from './recall.js';
 export { createMailboxTools, type MailboxToolContext } from './mailbox-tools.js';
+export {
+  createAddressTools,
+  parseTargetRef,
+  type AddressBindingPort,
+  type AddressBindingRecord,
+  type AddressToolContext,
+} from './address-tools.js';
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';
 export { createFeishuTools, type FeishuToolsConfig } from './feishu.js';

@@ -140,7 +140,8 @@
   },
   "count": {
     "partial": "{{loaded}} / {{total}} deliverables",
-    "total": "{{total}} deliverables"
+    "total": "{{total}} deliverables",
+    "loadMore": "Load more ({{remaining}} left)"
   },
   "sidebar": {
     "collapse": "Collapse sidebar",

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -2204,7 +2204,7 @@ export class APIServer {
           self.taskService.updateTaskStatus(taskId, status as TaskStatus, updatedBy);
         },
         createTask(req) {
-          return self.taskService.createTask({
+          const task = self.taskService.createTask({
             title: req.title, description: req.description,
             priority: req.priority as TaskPriority,
             orgId: req.orgId,
@@ -2212,6 +2212,32 @@ export class APIServer {
             reviewerId: req.reviewerId,
             createdBy: req.createdBy,
           });
+          // 第六刀 C2 / §2.3 投递点 2：外部网关建任务时同时写一条**带信封**的投递记录。
+          // 形状选 `task_status_update` + `intent='deliver'`：它是 record 类（invokesLLM=false），
+          // 不会凭空多烧一个 LLM 回合；但它把“谁建了这活、发给谁”落成可查的一行（I4 任务链路）。
+          try {
+            const assignee = self.orgService.getAgentManager().getAgent(req.assignedAgentId);
+            assignee?.enqueueToMailbox('task_status_update', {
+              summary: `Task created via gateway: ${task.title}`,
+              content: req.description ?? task.title,
+              taskId: task.id,
+            }, {
+              intent: 'deliver',
+              metadata: { taskId: task.id },
+              origin: {
+                from: agentAddressRef(req.createdBy ?? 'gateway'),
+                // 任务创建事件的身份 = 该任务本身（同一任务重投不产生第二条记录）。
+                messageId: `gateway-task:${task.id}`,
+                subject: `Task created: ${task.title}`,
+              },
+            });
+          } catch (err) {
+            // 投递记录写失败不得让建任务失败（任务已建成）。但也不静默：打日志。
+            log.warn('Gateway createTask: failed to write delivery record', {
+              taskId: task.id, error: String(err),
+            });
+          }
+          return task;
         },
       },
       {
@@ -5915,14 +5941,17 @@ export class APIServer {
 
     // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
     // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
-    // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
+    // 标为 bounced(lease_expired) 并归集到 catch-all（租约感知，不误杀其它实例/在飞项），
+    // 让运行中可自愈而不必重启。
     // 对应 docs/records/message-stop-cancel-fix-plan.md §2.3c 残余 → §2.6 步骤 2c。
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().cleanStaleProcessing();
-        this.json(res, 200, { dropped });
+        // C3：写的是 bounced 行（原因 lease_expired），响应字段必须同名 ——
+        // 继续叫 `dropped` 会让调用方以为那个终态还在。
+        const bounced = agent.getMailbox().cleanStaleProcessing();
+        this.json(res, 200, { bounced });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -5933,8 +5962,8 @@ export class APIServer {
     // cancel-processing (打断 = stop the running turn and requeue its item) and
     // from recover-stale (bulk cleanup of stuck rows): here the operator says
     // "this particular item should not be handled", and why. The reason is
-    // logged and broadcast as `mailbox:dropped`, so a dropped message is
-    // traceable instead of just never arriving.
+    // logged and broadcast, and the item becomes a `bounced(stale_signal)` row in
+    // the catch-all overview — C3 deleted the old reason-less `dropped` terminal.
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -5947,8 +5976,15 @@ export class APIServer {
         : 'operator';
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().drop(itemId, `operator: ${reason}`);
-        this.json(res, 200, { status: 'dropped', itemId, dropped: Boolean(dropped) });
+        const bounced = agent.getMailbox().drop(itemId, `operator: ${reason}`);
+        // C3：终态是 bounced→catch_all（drop_reason='stale_signal'），不再是 dropped。
+        this.json(res, 200, {
+          status: 'bounced',
+          dropReason: 'stale_signal',
+          itemId,
+          // 「这次丢弃是否真的生效」——不叫 dropped：那个终态已不存在。
+          applied: Boolean(bounced),
+        });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -7598,6 +7634,44 @@ EXPLANATION_END`;
       if (!repo) { this.json(res, 200, { success: true }); return; }
       repo.setReadCursor(authUser.userId, conversationKey, lastReadAt, lastReadId);
       this.json(res, 200, { success: true });
+      return;
+    }
+
+    /**
+     * Advance many read cursors at once — the shape the client actually needs.
+     *
+     * Opening one agent's chat marks every session belonging to that agent as
+     * read, so the single-key endpoint turned one user action into one request
+     * per conversation: measured 247 distinct keys / 315 ms of simultaneous
+     * POSTs on a real account, each its own SQLite commit.
+     *
+     * Deliberately NOT implemented by calling markAllRead: that means "clear
+     * everything" and would also mark conversations the reader never opened.
+     */
+    if (path === '/api/unread/mark-read-batch' && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const body = await this.readBody(req);
+      const items = (body as { items?: unknown })?.items;
+      if (!Array.isArray(items)) { this.json(res, 400, { error: 'items array required' }); return; }
+      if (items.length > 1000) { this.json(res, 400, { error: 'too many items (max 1000)' }); return; }
+
+      const entries: Array<{ conversationKey: string; lastReadAt: string; lastReadId?: string }> = [];
+      for (const raw of items) {
+        const it = raw as { conversationKey?: unknown; lastReadAt?: unknown; lastReadId?: unknown };
+        if (typeof it?.conversationKey !== 'string' || !it.conversationKey) { this.json(res, 400, { error: 'each item needs conversationKey' }); return; }
+        if (typeof it.lastReadAt !== 'string' || !it.lastReadAt) { this.json(res, 400, { error: 'each item needs lastReadAt' }); return; }
+        entries.push({
+          conversationKey: it.conversationKey,
+          lastReadAt: it.lastReadAt,
+          ...(typeof it.lastReadId === 'string' ? { lastReadId: it.lastReadId } : {}),
+        });
+      }
+
+      const repo = this.storage?.readCursorRepo;
+      if (!repo) { this.json(res, 200, { success: true, count: entries.length }); return; }
+      repo.setReadCursors(authUser.userId, entries);
+      this.json(res, 200, { success: true, count: entries.length });
       return;
     }
 

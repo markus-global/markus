@@ -46,10 +46,28 @@ async function loadModule(): Promise<BudgetModule> {
   return await import('../src/animationBudget.ts');
 }
 
+/**
+ * The phase is stamped on the CONSUMER elements, not on <html>: `--anim-*` are
+ * inherited custom properties, so writing them at the root invalidates style
+ * matching for the whole document (~82 ms / 4 s on a 4 900-node transcript),
+ * against ~3 ms when the write lands on the leaf that reads it.
+ * See TICK_SELECTOR in animationBudget.ts.
+ */
+let consumer: HTMLElement;
+
 function tickValue(): number | null {
-  const raw = document.documentElement.getAttribute(TICK_ATTR);
+  const raw = consumer.getAttribute(TICK_ATTR);
   return raw === null ? null : Number(raw);
 }
+
+/** Every class the tick must drive. Keep in sync with TICK_SELECTOR. */
+const CONSUMER_CLASSES = [
+  'animate-pulse',
+  'animate-spin',
+  'animate-bounce',
+  'activity-text-shimmer',
+  'exec-card-active',
+];
 
 beforeEach(() => {
   visState = 'visible';
@@ -57,6 +75,10 @@ beforeEach(() => {
   applyEnv();
   document.documentElement.removeAttribute(PAUSED_ATTR);
   document.documentElement.removeAttribute(TICK_ATTR);
+
+  consumer = document.createElement('span');
+  consumer.className = 'animate-pulse';
+  document.body.appendChild(consumer);
 
   // 真实计时器会被 tick 用到，统一用 fake timers 避免 250ms 真实定时器在用例之间泄漏。
   vi.useFakeTimers();
@@ -79,6 +101,8 @@ afterEach(() => {
 
   vi.useRealTimers();
   vi.restoreAllMocks();
+  consumer?.remove();
+  document.querySelectorAll(`[${TICK_ATTR}]`).forEach(el => el.removeAttribute(TICK_ATTR));
   document.documentElement.removeAttribute(PAUSED_ATTR);
   document.documentElement.removeAttribute(TICK_ATTR);
 });
@@ -282,5 +306,89 @@ describe('animationBudget — 测试钩子行为', () => {
 
     __setTickForTest(8);
     expect(tickValue()).toBe(0); // 8 % 8
+  });
+});
+
+describe('animationBudget — tick 作用域（禁止写 :root）', () => {
+  it('相位写在每个消费者元素上，而不是 documentElement', async () => {
+    // 为什么较真这件事：`--anim-*` 是可继承的自定义属性。写在 :root 上，
+    // 每写一次都是整篇文档的样式失效 —— 4900 节点的会话树实测 82ms/4s，
+    // 而同样 16 次写入落在叶子元素上只要 3ms。
+    const extras = CONSUMER_CLASSES.map(cls => {
+      const el = document.createElement('span');
+      el.className = cls;
+      document.body.appendChild(el);
+      return el;
+    });
+
+    try {
+      const { installAnimationBudget } = await loadModule();
+      installAnimationBudget();
+
+      // 每一个消费者都必须拿到相位……
+      for (const el of [...extras, consumer]) {
+        expect(el.getAttribute(TICK_ATTR)).toBe('0');
+      }
+      // ……而根节点必须一个都没有。
+      expect(document.documentElement.hasAttribute(TICK_ATTR)).toBe(false);
+
+      // 推进一拍，所有消费者同步推进，根节点始终干净。
+      vi.advanceTimersByTime(250);
+      for (const el of [...extras, consumer]) {
+        expect(el.getAttribute(TICK_ATTR)).toBe('1');
+      }
+      expect(document.documentElement.hasAttribute(TICK_ATTR)).toBe(false);
+    } finally {
+      extras.forEach(el => el.remove());
+    }
+  });
+
+  it('后挂载的消费者在下一拍拿到相位（每次 tick 重新查询）', async () => {
+    const { installAnimationBudget } = await loadModule();
+    installAnimationBudget();
+    expect(tickValue()).toBe(0);
+
+    // 模拟 React 在回合开始时才挂出指示灯。
+    const late = document.createElement('span');
+    late.className = 'activity-text-shimmer';
+    document.body.appendChild(late);
+
+    // 挂载的一瞬间它还拿不到（不是持续轮询的代价，只是下一拍补上）。
+    expect(late.hasAttribute(TICK_ATTR)).toBe(false);
+
+    vi.advanceTimersByTime(250);
+    expect(late.getAttribute(TICK_ATTR)).toBe('1');
+
+    late.remove();
+  });
+
+  it('TICK_SELECTOR 覆盖 index.css 里所有 [data-anim-tick] 消费者', async () => {
+    // 这条防的是「代码里加了一个动画类，忘了把它加进 TICK_SELECTOR」：
+    // 症状不是崩溃，而是那个指示灯永远停在初始帧 —— 很难被人发现。
+    // 反过来（TICK_SELECTOR 多了一个类）无害，只是多写几次属性。
+    const { readFileSync, existsSync } = await import('node:fs');
+    const { resolve } = await import('node:path');
+    // vitest 的 import.meta.url 在本项目不是 file: 协议，按目录向上找。
+    const cssRel = 'packages/web-ui/src/index.css';
+    let dir = process.cwd();
+    let cssPath = '';
+    for (let i = 0; i < 6; i++) {
+      const cand = resolve(dir, cssRel);
+      if (existsSync(cand)) { cssPath = cand; break; }
+      dir = resolve(dir, '..');
+    }
+    expect(cssPath, `找不到 ${cssRel}（从 cwd 向上找了 6 层）`).not.toBe('');
+    const css = readFileSync(cssPath, 'utf8');
+
+    // index.css 中把 --anim-* 消费掉的类：`var(--anim-…)` 出现在哪个规则里。
+    const readClasses = new Set<string>();
+    for (const m of css.matchAll(/\.([a-zA-Z0-9_-]+)\s*\{[^}]*var\(--anim-/g)) {
+      readClasses.add(m[1]);
+    }
+
+    expect(readClasses.size).toBeGreaterThan(0);
+    for (const cls of readClasses) {
+      expect(CONSUMER_CLASSES).toContain(cls);
+    }
   });
 });

@@ -670,8 +670,7 @@ describe('applyDeliberationResult edge cases', () => {
           summary: 'Task: execute T1',
           content: 'do the work',
           taskId: 'tsk_1',
-          extra: { triggerExecution: true },
-        }, { priority: 1 as MailboxPriority });
+        }, { priority: 1 as MailboxPriority, intent: 'trigger_execution' });
         return {
           processItemId: allItems[0].id,
           inlineCompletedIds: [],
@@ -893,14 +892,12 @@ describe('triage and deliberation scheduling', () => {
       summary: 'Task: execute T2',
       content: 'do the work',
       taskId: 'tsk_1',
-      extra: { triggerExecution: true },
-    }, { priority: 1 as MailboxPriority });
+    }, { priority: 1 as MailboxPriority, intent: 'trigger_execution' });
     mailbox.enqueue('task_status_update', {
       summary: 'Task: execute T3',
       content: 'do the work',
       taskId: 'tsk_2',
-      extra: { triggerExecution: true },
-    }, { priority: 1 as MailboxPriority });
+    }, { priority: 1 as MailboxPriority, intent: 'trigger_execution' });
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
 
     controller.start();
@@ -947,8 +944,7 @@ describe('triage and deliberation scheduling', () => {
       summary: 'Requirement action needed',
       content: 'approve or adjust',
       requirementId: 'req_1',
-      extra: { actionRequired: true },
-    });
+    }, { intent: 'action_required' });
     mailbox.enqueue('a2a_message', { summary: 'msg A', content: 'A body' });
     mailbox.enqueue('a2a_message', { summary: 'msg B', content: 'B body' });
 

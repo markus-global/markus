@@ -33,7 +33,7 @@ type MailboxItemType =
   | 'daily_report'
   | 'memory_consolidation';
 
-type MailboxItemStatus = 'queued' | 'processing' | 'completed' | 'dropped';
+type MailboxItemStatus = 'queued' | 'processing' | 'completed' | 'bounced' | 'catch_all';
 
 interface MailboxItem {
   id: string;
@@ -72,11 +72,11 @@ class InMemoryPersistence implements MailboxPersistence {
     }
   }
 
-  markStaleProcessingAsDropped(agentId: string): number {
+  markStaleProcessingAsBounced(agentId: string): number {
     let count = 0;
     for (const item of this.items.values()) {
       if (item.agentId === agentId && item.status === 'processing') {
-        item.status = 'dropped';
+        item.status = 'bounced';
         count++;
       }
     }
@@ -132,7 +132,7 @@ describe('Mailbox Recovery — service restart', () => {
 
     const result = newMailbox.recoverStaleItems();
     expect(result.restored).toBe(2);
-    expect(result.dropped).toBe(0);
+    expect(result.bounced).toBe(0);
     expect(result.expired).toBe(0);
     expect(newMailbox.depth).toBe(2);
   });
@@ -153,13 +153,13 @@ describe('Mailbox Recovery — service restart', () => {
     const newMailbox = makeMailbox(persistence);
     const result = newMailbox.recoverStaleItems();
 
-    expect(result.dropped).toBe(1);
+    expect(result.bounced).toBe(1);
     expect(result.restored).toBe(0);
     expect(newMailbox.depth).toBe(0);
 
-    // Confirm the item is marked as dropped in persistence
+    // Confirm the item is archived as bounced in persistence (C3: no reason-less terminal)
     const droppedItem = persistence.items.get(item!.id);
-    expect(droppedItem?.status).toBe('dropped');
+    expect(droppedItem?.status).toBe('bounced');
   });
 
   it('does not restore expired items (older than TTL)', () => {
@@ -187,7 +187,7 @@ describe('Mailbox Recovery — service restart', () => {
     const newMailbox = makeMailbox(persistence);
     const result = newMailbox.recoverStaleItems();
 
-    expect(result.dropped).toBe(0);
+    expect(result.bounced).toBe(0);
     expect(result.restored).toBe(0);
     expect(result.expired).toBe(0);
     expect(result.merged).toBe(0);
@@ -209,7 +209,7 @@ describe('Mailbox Recovery — service restart', () => {
 
     // 1 dropped (was processing), 1 queued restored (the first was dequeued)
     // Actually we enqueued 2, dequeued 1 → 1 processing, 1 queued
-    expect(result.dropped).toBe(1);
+    expect(result.bounced).toBe(1);
     expect(result.restored).toBe(1);
     expect(newMailbox.depth).toBe(1);
   });
@@ -270,14 +270,12 @@ describe('Mailbox Deduplication — enqueue-time', () => {
       summary: 'trigger-A',
       content: 'body-A',
       taskId: 'task-trigger',
-      extra: { triggerExecution: true },
-    });
+    }, { intent: 'trigger_execution' });
     mailbox.enqueue('task_comment', {
       summary: 'trigger-B',
       content: 'body-B',
       taskId: 'task-trigger',
-      extra: { triggerExecution: true },
-    });
+    }, { intent: 'trigger_execution' });
 
     // Both should remain separate because triggerExecution prevents merge
     expect(mailbox.depth).toBe(2);

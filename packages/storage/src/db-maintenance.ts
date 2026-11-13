@@ -203,13 +203,23 @@ export interface PruneResult {
 /**
  * 清理终态邮件项（M5）。
  *
- * 为什么安全：`completed` / `dropped` / `merged` / `failed` / `cancelled` 都是终态，
+ * 为什么安全：`completed` / `merged` / `failed` / `cancelled` / `catch_all` 都是终态，
  * 没有消费者会再读它们；实测这台机器上 >30 天的终态项有 2.3 GB。
+ *
+ * 第六刀 C3（`dropped` 终态删除）**必须同步到这里**：状态改名若不跟上下游消费者，
+ * `catch_all`（退信归集后的真终态）就永远不被清理，2.3 GB 的问题原样回来。
+ *  - `catch_all` —— 当前退信终态。它已在本 agent 概览里露过面，认领窗口（默认 30 天）
+ *    过后就是归档；运维先跑 dry-run 看候选数，再决定是否真删。
+ *  - `dropped`   —— **历史行**（C3 之前写入）。仍留在默认集合里，让旧库照旧可清理；
+ *    读路径已把它归一为 `bounced`，不回填、也不再新增。
+ *  - `bounced`   —— **刻意不清理**。它是 `bounced → catch_all` 的第一步，正常情况下在
+ *    同一次调用里走完；一行长期停在 `bounced` 说明归集没完成（bug 信号），
+ *    按龄删掉它等于把信号静默抹掉。
  */
 export function pruneTerminalMailboxItems(db: DatabaseSync, opts: PruneOptions = {}): PruneResult {
   const days = opts.olderThanDays ?? 30;
   const dryRun = opts.dryRun ?? true;
-  const statuses = opts.statuses ?? ['completed', 'dropped', 'merged', 'failed', 'cancelled'];
+  const statuses = opts.statuses ?? ['completed', 'merged', 'failed', 'cancelled', 'catch_all', 'dropped'];
   const batchSize = Math.max(1, opts.batchSize ?? 2000);
   const cutoff = `-${days} days`;
 

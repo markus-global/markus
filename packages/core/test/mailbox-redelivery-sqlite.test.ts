@@ -13,18 +13,25 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { MAILBOX_QUEUED_TTL_MS, type MailboxItem } from '@markus/shared';
-import { AgentMailbox, type MailboxPersistence } from '../src/mailbox.js';
+import { MAILBOX_QUEUED_TTL_MS, type MailboxItem, type MailboxPayload } from '@markus/shared';
+import { AgentMailbox, type EnqueueOptions, type MailboxPersistence } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import { openSqlite, closeSqlite, SqliteMailboxRepo } from '../../storage/src/sqlite-storage.js';
 
 const AGENT = 'agt_p1x_e2e';
-const REVIEW = (taskId: string, round: number) => ({
+/**
+ * 生产侧评审载荷。第六刀 C2：轮次是**结构字段**（`enqueue(..., { round })` → `item.round`），
+ * 不再写 `payload.extra.round`（`routeMailboxItem()` 已不从载荷推断结构）。
+ */
+const REVIEW = (taskId: string, round: number): MailboxPayload => ({
   summary: `Review ${taskId} r${round}`,
   content: 'please review',
   taskId,
-  extra: { round },
 });
+/** 生产侧投递形态：轮次走结构化选项，而不是塞进载荷。 */
+const enqueueReview = (
+  mb: AgentMailbox, taskId: string, round: number, options?: EnqueueOptions,
+) => mb.enqueue('review_request', REVIEW(taskId, round), { ...options, round });
 const DEDUP = (taskId: string, round: number) => `review_request:${taskId}:${round}`;
 const iso = (msFromNow: number) => new Date(Date.now() + msFromNow).toISOString();
 
@@ -61,7 +68,7 @@ function makePersistence(repoRef: SqliteMailboxRepo): MailboxPersistence {
       });
     },
     updateStatus: (itemId, status, extra) => repoRef.updateStatus(itemId, status, extra as Record<string, unknown>),
-    markStaleProcessingAsDropped: (aid) => repoRef.markStaleProcessingAsDropped(aid),
+    markStaleProcessingAsBounced: (aid) => repoRef.markStaleProcessingAsBounced(aid),
     loadQueued: (aid) => repoRef.getByAgent(aid, { status: 'queued' }).map(toItem),
     loadDeferred: (aid) => repoRef.getByAgent(aid, { status: 'deferred' }).map(toItem),
     claimItem: (id, ownerId, leaseUntil, nowIso) => repoRef.claimItem(id, ownerId, leaseUntil, nowIso),
@@ -87,6 +94,8 @@ function rowCount(dedupKey?: string): number {
 function reinjectOnShutdown(mb: AgentMailbox, item: MailboxItem): MailboxItem {
   return mb.enqueue(item.sourceType, item.payload, {
     priority: item.priority, metadata: item.metadata, reuseItemId: item.id,
+    // 轮次也要跟着走：它是幂等键 (sourceType, taskId, round) 的输入（结构字段，不在载荷里）。
+    round: item.round,
   });
 }
 
@@ -103,7 +112,7 @@ function predateQueuedAt(id: string, msAgo = 60_000) {
 describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）', () => {
   it('①⑤ 重投复用原行回队，返回 queued（非 dropped），跨实例可重新认领处理', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_1', 1));
+    const enq = enqueueReview(a, 'tsk_1', 1);
     const inflight = a.dequeue()!;                       // 取件 → processing（claimed_by = A）
     expect(inflight.id).toBe(enq.id);
     expect(repo.getById(enq.id)!.claimedBy).toBe(a.getOwnerId());
@@ -130,7 +139,7 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
 
   it('② 重投不新增行：同键仍仅 1 行', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_2', 1));
+    const enq = enqueueReview(a, 'tsk_2', 1);
     const inflight = a.dequeue()!;
     reinjectOnShutdown(a, inflight);
     reinjectOnShutdown(a, inflight);                     // 重复重投幂等
@@ -142,7 +151,7 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
 
   it('③ 持久层回读：claimed_by/lease_until/started_at 已释放 + queued_at 已刷新', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_3', 1));
+    const enq = enqueueReview(a, 'tsk_3', 1);
     const inflight = a.dequeue()!;
     predateQueuedAt(enq.id, MAILBOX_QUEUED_TTL_MS + 60_000);   // 这条投递「早已排队很久」
 
@@ -160,7 +169,7 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
 
   it('④ 回队刷新 queued_at：年龄超 MAILBOX_QUEUED_TTL_MS 也不会被同轮恢复判 expired（含反证）', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_4', 1));
+    const enq = enqueueReview(a, 'tsk_4', 1);
     const inflight = a.dequeue()!;
     predateQueuedAt(enq.id, MAILBOX_QUEUED_TTL_MS + 60_000);
 
@@ -179,7 +188,8 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
     const c = newMailbox();
     const rec2 = c.recoverStaleItems();
     expect(rec2.expired, '不刷 queued_at = 白修（回队行同轮被 TTL 判死）').toBe(1);
-    expect(repo.getById(enq.id)!.status).toBe('dropped');
+    expect(repo.getById(enq.id)!.status).toBe('catch_all');
+    expect(repo.getById(enq.id)!.dropReason).toBe('stale_signal');
   });
 });
 
@@ -188,7 +198,7 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
 describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => {
   it('⑥a-1 启动恢复：strict-state + 已过期租约 → 回 queued（基线 1bacd0c1 上为 dropped = 改造对象）', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_5', 1));
+    const enq = enqueueReview(a, 'tsk_5', 1);
     seedExpiredLeaseClaim(enq.id);
     expect(repo.getById(enq.id)!.status).toBe('processing');
     predateQueuedAt(enq.id);
@@ -197,7 +207,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();                              // 崩溃后重启（新实例、异构 ownerId）
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped, '⑥a-1 不得被 drop').toBe(0);
+    expect(rec.bounced, '⑥a-1 不得被结案').toBe(0);
     expect(rec.restored).toBe(1);
     const row = repo.getById(enq.id)!;
     expect(row.status).toBe('queued');
@@ -210,7 +220,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
 
   it('⑥a-2 运行期看门狗 reclaimExpiredLeases() 端到端：过期租约回收为 queued（防回归）', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_6', 1));
+    const enq = enqueueReview(a, 'tsk_6', 1);
     seedExpiredLeaseClaim(enq.id);
     predateQueuedAt(enq.id);
     const beforeQueuedAt = repo.getById(enq.id)!.queuedAt;
@@ -229,7 +239,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
 
   it('⑦ 孤儿行（processing + claimed_by/lease_until 皆 NULL）经启动恢复不得被无条件 dropped', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_7', 1));
+    const enq = enqueueReview(a, 'tsk_7', 1);
     // 孤儿真源：legacy/pre-lease 行，或 dequeueById 的无 claimItem 回落支（仅测试替身可达）。
     // 注意：**非 (a)/R2 路径产生**；R2 行由 claimItem 写入，命中的是「已过期租约」支。
     db.prepare("UPDATE mailbox_items SET status = 'processing', started_at = ? WHERE id = ?")
@@ -240,7 +250,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped).toBe(0);
+    expect(rec.bounced).toBe(0);
     const row = repo.getById(enq.id)!;
     expect(row.status, '⑦ 不得无条件 dropped').toBe('queued');
     expect(row.claimedBy).toBeNull();
@@ -260,9 +270,10 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped, '非 strict-state 逐字保持 drop').toBe(2);
-    expect(repo.getById(hb.id)!.status).toBe('dropped');
-    expect(repo.getById(a2a.id)!.status).toBe('dropped');
+    expect(rec.bounced, '非 strict-state → 结案计数').toBe(2);
+    expect(repo.getById(hb.id)!.status).toBe('bounced');
+    expect(repo.getById(a2a.id)!.status).toBe('bounced');
+    expect(repo.getById(hb.id)!.dropReason).toBe('lease_expired');
     expect(b.depth).toBe(0);
   });
 });
@@ -272,30 +283,31 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
 describe('P1.x (c) · 同键投递四态判定（真实 findByDedupKey）', () => {
   it('(c.1) 行不存在 → 正常插入', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_8', 1));
+    const enq = enqueueReview(a, 'tsk_8', 1);
     expect(enq.status).toBe('queued');
     expect(repo.findByDedupKey(AGENT, DEDUP('tsk_8', 1))!.id).toBe(enq.id);
   });
 
   it('(c.2) 行在飞（processing，有效租约）→ 重复投递被幂等抑制，不新增行', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_9', 1));
+    const enq = enqueueReview(a, 'tsk_9', 1);
     a.dequeue();
     expect(repo.getById(enq.id)!.status).toBe('processing');
 
-    const dup = a.enqueue('review_request', REVIEW('tsk_9', 1));
+    const dup = enqueueReview(a, 'tsk_9', 1);
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(repo.getByAgent(AGENT).length).toBe(1);
     expect(repo.getById(enq.id)!.status, '在飞项不被回队、不新增行').toBe('processing');
   });
 
-  it('(c.3) 行 dropped 且该轮未收口 → 允许复用原行补偿重投（不新增行）', () => {
+  it('(c.3) 行 bounced 且该轮未收口 → 允许复用原行补偿重投（不新增行）', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_10', 1));
-    repo.updateStatus(enq.id, 'dropped');
+    const enq = enqueueReview(a, 'tsk_10', 1);
+    repo.updateStatus(enq.id, 'bounced', { dropReason: 'stale_signal' } as never);
 
-    const again = a.enqueue('review_request', REVIEW('tsk_10', 1));
+    const again = enqueueReview(a, 'tsk_10', 1);
 
     expect(again.status, '补偿重投成功').toBe('queued');
     expect(again.id, '复用原行').toBe(enq.id);
@@ -305,12 +317,12 @@ describe('P1.x (c) · 同键投递四态判定（真实 findByDedupKey）', () =
 
   it('(c.4) 行已收口（completed）→ 拒重投，返回当前状态、不复活', () => {
     const a = newMailbox();
-    const enq = a.enqueue('review_request', REVIEW('tsk_11', 1));
+    const enq = enqueueReview(a, 'tsk_11', 1);
     repo.updateStatus(enq.id, 'completed', { completedAt: iso(0) });
 
-    const out = a.enqueue('review_request', REVIEW('tsk_11', 1));
+    const out = enqueueReview(a, 'tsk_11', 1);
 
-    expect(out.status).toBe('dropped');
+    expect(out.status).toBe('bounced');
     expect(repo.getById(enq.id)!.status).toBe('completed');
     expect(repo.getByAgent(AGENT).length).toBe(1);
   });

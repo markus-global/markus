@@ -405,6 +405,23 @@ export interface ChannelBindingRepo {
   delete(id: string): Promise<void>;
 }
 
+/**
+ * 一个邮箱地址绑定（视图 `address_bindings` 的行，第六刀 §2.1 / §2.2）。
+ *
+ * `scope='address'` 的行只活在地址语义里：`instance_id` / `native_id` 恒为 NULL，
+ * 因此它在结构上不可能成为任何路由候选（不是靠守卫排除，而是没有可路由的字段）。
+ */
+export interface AddressBindingRow {
+  id: string;
+  orgId: string;
+  address: string;
+  /** 形如 `agent:<agentId>`，由 `agent_id` 派生，不是独立存储列（单一写者）。 */
+  targetRef: string;
+  agentId: string;
+  revokedAt: string | null;
+  createdAt: string;
+}
+
 // ─── Repo interfaces (structural contracts for dependency injection) ──────────
 
 /** Contract for task persistence used by org-manager consumers */

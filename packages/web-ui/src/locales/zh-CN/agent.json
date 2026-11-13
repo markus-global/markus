@@ -484,7 +484,8 @@
         "completed": "已完成",
         "merged": "已合并",
         "deferred": "已推迟",
-        "dropped": "已丢弃"
+        "bounced": "投递失败",
+        "catch_all": "退信概览"
       },
       "activityFilters": {
         "all": "全部",

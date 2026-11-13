@@ -28,7 +28,9 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'communication', prefixes: ['agent_send_message', 'agent_ask_agent', 'agent_list_colleagues', 'agent_send_group_message', 'agent_create_group_chat', 'agent_list_group_chats', 'agent_broadcast_status', 'agent_delegate_task', 'feishu_'] },
   { id: 'memory', prefixes: ['memory_', 'recall_context', 'recall_activity', 'notebook_upsert', 'notebook_clear', 'notebook_read', 'session'] },
   { id: 'knowledge', prefixes: ['kb_search', 'kb_list', 'kb_read'] },
-  { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message'] },
+  // 第六刀新增的邮箱工具（地址绑定 C1 / 路由与 catch-all 概览 C3）与投递域同一处分组：
+  // 它们的读面都是 mailbox，放在这里才不会被归到「其他」。
+  { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message', 'bind_address', 'address_revoke', 'address_list', 'message_route', 'catch_all'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
   { id: 'reasoning', prefixes: ['decide'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },

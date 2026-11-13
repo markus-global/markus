@@ -671,11 +671,12 @@ Historical activities without `mailbox_item_id` remain valid but lack the causal
 6. **Completed** → `mailbox_items.status = 'completed'`, `completed_at` set; activity `ended_at` set
 7. If **deferred** → `status = 'deferred'` with optional `deferred_until`
 8. If **merged** → `status = 'merged'` with `merged_into` pointing to the absorbing item
-9. If **abandoned** → `status = 'dropped'`. This includes stale rows that recovery
-   refused to requeue, retry-exhausted background items, and duplicates spliced out
-   by dedup. `dropped` is a first-class terminal state, not an error case — the
-   earlier revision of this list omitted it even though it is the most frequent
-   terminal status written by `mailbox.ts`.
+9. If **abandoned** → `status = 'bounced'` with a mandatory `drop_reason`, then collected into
+   `catch_all` with `bounce_target`. This includes stale rows that recovery refused to
+   requeue, retry-exhausted background items, duplicates spliced out by dedup, and explicit
+   cancel decisions (see §28.5). `dropped` **is not in the status value domain** — historical
+   rows carrying it are read-only and normalised to `bounced` on the read path.
+   A bounce is a first-class terminal state, not an error case — and never a silent one.
 
 ---
 
@@ -749,7 +750,7 @@ The Agent Mind tab provides a unified view of the agent's cognitive state and hi
    `callback_result`. Labels stay in i18n: copying English labels here would fight
    the translation layer.
 4. **Expandable detail** — clicking a mailbox item shows: (a) decision badge(s), (b) activity summary, (c) lazy-loaded activity logs.
-5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `dropped` (red), `queued` (amber).
+5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `bounced` (red), `catch_all` (amber-red, triage), `queued` (amber).
 
 ---
 
@@ -1332,7 +1333,8 @@ The frontend Agent Mind view supports filtering by both **category** and **statu
 | `completed` | Green | Successfully processed |
 | `merged` | Blue | Absorbed into another item |
 | `deferred` | Purple | Postponed for later |
-| `dropped` | Red | Discarded |
+| `bounced` | Red | Delivery failed — `drop_reason` is mandatory |
+| `catch_all` | Amber-red | Bounce collected into the overview, awaiting triage |
 
 Both category and status filters are passed as query parameters to the mailbox API endpoint.
 
@@ -1361,7 +1363,7 @@ agent_id = ? AND status = 'processing'
    Those carry work that cannot be recreated from scratch, so dropping them would lose
    it. After requeue the row no longer matches the predicate, so the next step leaves
    it alone.
-3. **Drop the remainder** (`UPDATE ... SET status='dropped'`).
+3. **Bounce the remainder** (`status='bounced'` + `drop_reason='stale_signal'` → `catch_all`).
 
 If the candidate SELECT or the payload parse throws, the method logs and **falls back
 to drop-only** — the conservative pre-existing behaviour — rather than proceeding with
@@ -1370,7 +1372,7 @@ a half-computed split.
 This is safe because:
 - `resumeInProgressTasks()` already re-creates execution items for any tasks that need to continue.
 - The stale items' callbacks (`onLog`, `cancelToken`, etc.) are garbage-collected references that cannot be resumed.
-- Marking as `dropped` (not `completed`) preserves the audit trail — these items did not complete successfully.
+- Marking as `bounced` (not `completed`) preserves the audit trail — these items did not complete successfully, and the reason is queryable.
 
 ### Post-Recovery Deduplication
 
@@ -1933,3 +1935,219 @@ The chain is allowed to **stall (bounded) but never to block silently forever**.
 `await` inserted into the main loop or attention/triage path must be either (a) bounded by
 a timeout/backstop, or (b) explicitly justified as blocking by design. Watchdog + backstop
 values are single-source constants in `packages/core/src/` — do not fork them per caller.
+
+---
+
+## 28. Addresses, Envelopes and Bounces
+
+> Last updated: 2026-11-12. This is the **canonical description of current behaviour**.
+> Execution narrative and evidence live in
+> [records/cut6-mailbox-address-envelope-design-2026-11-12.md](../records/cut6-mailbox-address-envelope-design-2026-11-12.md)
+> and [records/cut6-c4-verification-2026-11-12.md](../records/cut6-c4-verification-2026-11-12.md).
+
+### 28.1 The problem this layer removes
+
+Before this layer, "who is this signal from, and who is it for" existed only as an
+**inference** over `payload.extra` flags and a handful of `sourceType === '…'` branches,
+and a signal that could not be routed was written as `status = 'dropped'` — a terminal
+state with no reason field, no echo, and no reader. The production DB held ≥28,621 such
+rows. Structure was being derived from payload; nothing was queryable.
+
+Three structural rules replace that:
+
+1. **Structure is never inferred from payload.** Identity is a column, not a guess.
+2. **A signal that cannot be delivered is never silently discarded.** It becomes a
+   *bounce*: a row with a structured reason, collected into a catch-all overview that a
+   human or agent can claim.
+3. **One fact, one writer.** One address format writer, one envelope builder, one
+   resolver, one status-transition execution point.
+
+### 28.2 Address format (v1)
+
+An internal mailbox address is `<local>.<org>@markus.global`: exactly one dot, lowercase
+ASCII `[a-z0-9-]`, no leading/trailing/doubled hyphens, `local` ≤ 32 chars, `org` ≤ 30.
+The dot count defines the namespace: **0 dots = platform-reserved**, **1 dot = org**,
+**≥2 dots = external domain (kept opaque)**.
+
+| Rule | Enforcement point |
+|---|---|
+| `formatAddress()` / `parseAddress()` are the **only** format entry points | `packages/shared/src/address.ts`; no other module may `split('.')` an address |
+| Reserved names (platform + ops/host names) are a **closed set** | `PLATFORM_RESERVED_ADDRESSES` / `LOCAL_RESERVED` / `ORG_RESERVED`, locked by tests |
+| Out-of-range input is **rejected with an actionable hint**, never silently rewritten | `AddressResult` carries `{ ok: false, reason, hint }` |
+| A string that looks like an internal address is **not** an identity | `parseAddress()` returns `MailAddressRef`, which cannot produce `agent` / `im` |
+| Human `users.email` may not be an org-format `markus.global` address | single guard in `SqliteUserRepo.assertHumanEmail()` (all three write paths) |
+
+`AddressRef` (the envelope's `from`/`to` type) is a discriminated union wider than
+`MailAddressRef`: it adds `{ kind: 'agent', agentId }` and
+`{ kind: 'im', platform, nativeUserId }` — **delivery-party identities, not mailboxes**.
+`fromVerified` rides on the envelope, not on the address object, so an external string
+can never be mistaken for a verified internal identity.
+
+### 28.3 Bindings and the resolver
+
+Addresses are bound to targets in `channel_bindings` (`address` + `revoked_at`, plus the
+`address_bindings` view). The unique index is
+`uq_channel_bindings_address_active ON channel_bindings(address) WHERE revoked_at IS NULL`
+— **`org_id` is deliberately absent from the key**: the org slug is already encoded in the
+address, and scoping by the *current* org would make `cto.acme@markus.global` unresolvable
+from any other org's instance. Revoking stamps `revoked_at`; rows are never deleted.
+
+`resolveEnvelopeTarget(envelope, catchAllOwner, lookup?)` is the **single resolver** and
+reads the envelope only — its signature makes `payload` / `sourceType` physically
+unreachable (rule 1 expressed as a type boundary, not a comment). It returns exactly two
+shapes: `{ matched: true, targetRef, agentId }` or
+`{ matched: false, reason, catchAll }`. There is no third "quietly undefined" outcome.
+
+| `to.kind` | Behaviour |
+|---|---|
+| `agent` | Direct internal delivery — the target identity is already given |
+| `markus` | Look up the address book; hit ⇒ unique active target, miss ⇒ `no_active_target` |
+| `platform` / `external` / `im` | Not a delivery recipient in v1 ⇒ `unresolved_address` (platform addresses are senders, external mail is not implemented, `im` is a sender identity) |
+
+### 28.4 The delivery envelope
+
+Every inbound signal carries a `DeliveryEnvelope` persisted in `mailbox_items.envelope`
+(JSON). `buildDeliveryEnvelope()` in `packages/shared/src/mail.ts` is the **only** shape
+writer; no module may hand-write the object literal.
+
+| Field | Role |
+|---|---|
+| `from` / `to` | `AddressRef` — identity, queryable |
+| `messageId` | Idempotency identity. Projected into `mailbox_items.message_id` because uniqueness must be adjudicated by an **index**, not by parsing a JSON blob |
+| `intent` | `deliver` \| `trigger_execution` \| `action_required` — promoted out of `payload.extra.{triggerExecution,actionRequired}` |
+| `signalClass` | `chat` \| `a2a` \| `callback` \| `governance_event` \| `record` \| `system` — assigned by the single routing decision |
+| `externalThreadRef` | Causal chain (In-Reply-To / References). **Read-only**: never routes, never dedups |
+| `auth` / `replyTo` / `workUnitRef` | Reserved slots, **always `null`** in v1 (no SPF/DKIM/DMARC, no replies, no WorkUnit writer yet) |
+
+Reserved slots are written as explicit `null`s rather than omitted: omitting makes the
+JSON shape vary with the input, which forces a branch per shape on the read side.
+`parseEnvelope()` returns `undefined` for NULL / empty / malformed JSON and **never
+synthesises** a plausible-looking envelope.
+
+Three delivery points supply only what they actually know; assembly happens once, in
+`AgentMailbox.enqueue()`:
+
+| # | Delivery point | Supplies |
+|---|---|---|
+| 1 | IM inbound (`cli/src/commands/start.ts` `messageRouter.setAgentHandler`) | `from = im:<platform>:<senderId>`, `messageId = message.id` (adapter re-delivery lands one row) |
+| 2 | Gateway `createTask()` (`org-manager/src/api-server.ts`) | `from = agent:<createdBy>`, `messageId = gateway-task:<taskId>` |
+| 3 | A2A `AgentDelivery.deliver()` | `from = agent:<fromAgentId>`, `messageId = deliveryId`, `externalThreadRef = chainId` |
+
+A2A deliberately does **not** dedup on `chainId`: two different messages in the same chain
+at the same hop are both legitimate, and deduping on the chain would silently swallow one.
+
+### 28.5 Bounces and the catch-all overview
+
+`dropped` is **no longer in the status value domain**. Historical rows are read-only and
+are normalised to `bounced` on the read path by `normalizeSignalStatus()`; no `UPDATE` is
+ever run against them.
+
+```
+queued ─▶ processing ─▶ completed | deferred | merged
+   │            │
+   └────────────┴──▶ bounced ──▶ catch_all ──▶ queued (claimed by a human/agent)
+                        ▲            ▲
+                   reason + why   bounce_target
+```
+
+`drop_reason` is mandatory and draws from a **closed set** — six producible reasons plus
+one reserved:
+
+| Reason | Meaning |
+|---|---|
+| `unresolved_address` | The `to` kind is not a delivery recipient in v1 |
+| `no_active_target` | Org address has no active binding |
+| `lease_expired` | Claim expired mid-flight |
+| `duplicate_message_id` | Same `(agent, messageId)` delivered twice |
+| `stale_signal` | Superseded / TTL-expired / deliberately discarded. **Only** this meaning |
+| `payload_invalid` | The signal cannot be read as a turn at all — request-shape validation rejected it (`SignalPayloadInvalidError`) |
+| `processing_error` | The platform threw while handling a signal it *could* read. Not the sender's fault, and not a decision: this is the platform's own regression surfaced as data |
+| `dsn_bounce` *(reserved)* | External DSN; shape fixed, **never produced** in v1 |
+
+**Each reason names one actor and one action** — that is the whole point of the closed set, and the
+criterion used to decide what belongs in it:
+
+| Reason family | Who acts | Action |
+|---|---|---|
+| `unresolved_address`, `no_active_target` | operator / org admin | fix the binding |
+| `payload_invalid` | sender / ingest site | fix the payload |
+| `duplicate_message_id` | sender | none (idempotency worked) |
+| `lease_expired` | platform | observe (self-heals) |
+| `processing_error` | platform | fix the code; a rising rate is a regression signal |
+| `stale_signal` | **nobody** | it is a *decision*, not a failure |
+
+`processing_error` exists because without it "the platform broke" had no name and kept being
+recorded as `stale_signal` — which asserts that someone decided the signal was not worth handling.
+Recording "we failed" as "this was worthless" is the same lie as the C5 defect, one layer down.
+`stale_signal` is therefore narrowed to exactly one meaning: a human or agent deliberately decided
+not to handle this signal. Both directions are pinned by tests — the failure family may not write
+`stale_signal`, the decision family may not write `processing_error`.
+
+`payload_invalid` exists because the first real-instance probe exposed a lying reason:
+a chat request missing `payload.content` was recorded as `stale_signal` under the event
+name `duplicate_delivery_dropped`. A reason that lies is worse than no reason — the
+overview aggregating by reason conflated "expired" with "malformed". The observability
+event is `mailbox.signal_bounced`.
+
+**The classification predicate is a fact, not an exception class.** A second
+real-instance probe (2026-11-13) caught the first fix still lying on one path: the same
+missing-`content` request this time threw a plain `TypeError` (`… reading 'trim'`) from a
+line *earlier* than the validation layer, so an `instanceof SignalPayloadInvalidError`
+check returned `undefined` and `drop()` fell back to its `stale_signal` default. In other
+words "what reason gets recorded" depended on **which line threw first** — coincidence,
+not a criterion. The projection is now
+`bounceReasonOfFailure(err, item)`: any failure on an item whose payload cannot be read
+as a turn (`isPayloadUnreadable()`, the *same* predicate `turnContentOf()` validates
+with) is `payload_invalid`. The reverse edge stays closed: an unknown exception on a
+**readable** payload is not projected, so `payload_invalid` cannot become the next
+catch-all bucket, and no exception at all yields no failure-family reason (deliberate
+drops stay `stale_signal`).
+
+`bounceSignal()` performs two real transitions through the single execution point
+(`AgentMailbox.updateSignalStatus()`): `X → bounced` (the fact that delivery failed) and
+`bounced → catch_all` (the fact that it is now someone's to triage). Collapsing them into
+one state would make "recorded but not yet collected" inexpressible.
+
+### 28.6 Invariants (guarded by behavioural tests)
+
+| # | Invariant | Test |
+|---|---|---|
+| I1 | At most one active target per address | Concurrent binds ⇒ exactly one success; the partial unique index is the backstop |
+| I2 | `resolve()` never reads payload | Mutating `payload.extra` leaves the resolution unchanged |
+| I3 | No silent discard | A recipient-less signal yields a `bounced` row with a non-empty reason, visible in the catch-all overview; `dropped` delta = 0 |
+| I4 | All three links carry an envelope | Triggering chat / task / a2a yields `envelope IS NOT NULL` on each row |
+| I5 | Binding someone else's address is refused | Binding as another identity ⇒ rejection with an actionable hint |
+| — | Envelope uniqueness is index-adjudicated | `uq_mailbox_agent_message ON (agent_id, message_id) WHERE message_id IS NOT NULL AND status <> 'bounced'` (bounce rows record a *failed* delivery, not a second copy) |
+
+### 28.7 Tool surface
+
+| Tool | Semantics |
+|---|---|
+| `bind_address` | Claim / rebind an address; omitting `targetRef` means self. Binding another agent's address is refused |
+| `address_list` | Read own (optionally org-wide) active bindings |
+| `address_revoke` | Stamp `revoked_at` on one's own binding |
+| `message_route` | Read one signal's resolution, `drop_reason` and catch-all bucket — the取证 path for I3 |
+| `catch_all` | Read/claim the catch-all overview |
+
+Failure returns are written from the caller's point of view: a resolution failure returns
+`{ status: 'bounced', reason, catchAll }` rather than only logging — the agent cannot see
+logs, it can only model from the return value.
+
+### 28.8 Migration and rollback
+
+Idempotent `ALTER TABLE … ADD COLUMN` for every new column (`mailbox_items.envelope`,
+`work_unit_ref`, `signal_class`, `intent`, `message_id`, `drop_reason`, `bounce_target`;
+`channel_bindings.address`, `revoked_at`) and `CREATE VIEW IF NOT EXISTS address_bindings`.
+**No backfill**: historical rows keep `NULL` and the read path warns and falls back to
+`agent_id`. Old rows without `intent` / `round` are decoded once at the persistence →
+memory boundary (`rehydrateStructuredFields()`); that shim's removal condition is
+"`envelope IS NULL` rows = 0". Rollback is `git revert` per card; the resolver has an
+off-switch that restores the legacy `explicitAgentId → channel → instance` chain.
+
+### 28.9 Explicit boundaries (what v1 does not do)
+
+No mail send/receive, no DNS/MX/SPF/DKIM/DMARC, no `org_slug` / `agent_alias` /
+`role_slug` columns, no cross-org delivery, no alias self-service, no global address
+registry. `work_unit_ref` is a column with a **write count of zero** — the only writer
+arrives with WorkUnits, and creating a reference before the entity would be a dangling
+reference by construction.

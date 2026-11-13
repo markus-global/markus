@@ -485,7 +485,8 @@
         "completed": "Completed",
         "merged": "Merged",
         "deferred": "Deferred",
-        "dropped": "Dropped"
+        "bounced": "Bounced",
+        "catch_all": "Catch-all"
       },
       "activityFilters": {
         "all": "All",
