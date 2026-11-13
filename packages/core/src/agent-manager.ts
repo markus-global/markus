@@ -3478,12 +3478,17 @@ export class AgentManager {
   }
 
   /**
-   * C7-B：某个 agent 本轮父 WU 的 ref（agent 不在内存 / 没有回合 = null）。
+   * C7-B：某个 agent **本轮**父 WU 的 ref（读内存中由 `onFocusChanged` 设置的回合 ref）。
    *
-   * 供 A2A 投递把子 WU 挂到发送方回合上；**不抛** —— 台账缺失不该让投递失败。
+   * 名字里的 turn 就是约束：**只许读内存**，禁止用库查询实现（按 agentId 反查
+   * 「当前 WU」在结构上不成立 —— 库里只有历史，查到的会是错的那一条）。
+   * architecture-guard 守这条：本方法实现体内出现 `listByAgent` / `SELECT` / `repo.` 判红。
+   *
+   * agent 不在内存 / 尚未进入回合 = null（具名表态，不吞异常）。
    */
-  getCurrentWorkUnitRef(agentId: string): string | null {
-    return this.agents.get(agentId)?.getCurrentWorkUnitRef() ?? null;
+  turnWorkUnitRef(agentId: string): string | null {
+    const agent = this.agents.get(agentId);
+    return agent ? agent.turnWorkUnitRef() : null;
   }
 
   hasAgent(agentId: string): boolean {

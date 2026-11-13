@@ -481,8 +481,12 @@ export class APIServer {
               ensure: (seed) => this.workUnits!.ensure(seed),
               // C7-B：跨团队委派的父链 —— 读发送方 agent 本轮的 WU ref。
               // 不抛：agent 不在内存（已停 / 冷启动）就不是「有回合」，显式 null。
-              currentWorkUnitRef: (agentId) => {
-                try { return this.orgService.getAgentManager().getCurrentWorkUnitRef(agentId); } catch { return null; }
+              turnWorkUnitRef: (agentId) => {
+                const manager = this.orgService.getAgentManager();
+                // C7-B：只把「agent 不在内存」这一种可识别情况当成 null；其余意外
+                // 照常抛 —— `try/catch { return null }` 会把「父链断了」micron成
+                // 「本来就没有父」，静默且不可察觉。
+                return manager.hasAgent(agentId) ? manager.turnWorkUnitRef(agentId) : null;
               },
               linkMailboxItem: (itemId, ref) => this.workUnits!.linkMailboxItem(itemId, ref),
               transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
@@ -2546,6 +2550,20 @@ export class APIServer {
     return user;
   }
 
+  /**
+   * C7-B —— 读记忆会话 id（`sess_*`）。**失败只能降级，不能让一次对话 500。**
+   *
+   * 这是增强信息：没有它，回合 WU 的 `context_ref` 走 fallback，锁键仍然正确。
+   * 但它是 HTTP 屏障上的一次**同步**读（参数求值处）——直接写 `agent.getMemorySessionId()`
+   * 会在 agent 对象不完整时抛 TypeError，把一个能正常工作的对话变成 500（实测：三条
+   * `/api/message` 用例就是这么红的）。所以这里只做**能力判定**（方法不存在 = 没有该
+   * 能力），不吞掉方法内部的异常。
+   */
+  private memorySessionIdOf(agent: unknown): string | null {
+    const fn = (agent as { getMemorySessionId?: () => string | undefined }).getMemorySessionId;
+    return typeof fn === 'function' ? (fn.call(agent) ?? null) : null;
+  }
+
   /** Persist a chat turn (user + assistant) to DB if storage is available */
   private async persistChatTurn(
     agentId: string,
@@ -2639,13 +2657,14 @@ export class APIServer {
    *
    * ref 与 `persistChatTurn()` 同源（session + round）：round 在两个函数里都用
    * 「追加消息之前」的消息数推导，所以收口时命中同一行，`running → idle` 只写一次。
-   * `context_ref` 此刻还不知道 → 显式 null，收口时由 `adoptContextRef` 补。
+   * `context_ref` 此刻**就是不知道**（还没决定跑进哪个会话）→ 显式 null，收口时由
+   * `adoptContextRef` 补。不要在这里读 `agent.getMemorySessionId()`：那一读可能抛，而
+   * 它发生在本函数体外（参数求值处），会把一次正常对话变成 500 —— 已经踩过。
    */
   private async openChatTurnWorkUnit(
     agentId: string,
     senderId: string | undefined,
     mailboxItemId: string | null,
-    memorySessionId: string | null,
   ): Promise<void> {
     const units = this.workUnits;
     if (!units || !this.storage) return;
@@ -2656,7 +2675,7 @@ export class APIServer {
       const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
       const round = Math.floor(priorMessages / 2) + 1;
       const ref = WORK_UNIT_REF.chat(session.id, round);
-      units.ensure({ ref, agentId, status: 'running', contextRef: memorySessionId });
+      units.ensure({ ref, agentId, status: 'running', contextRef: null });
       units.linkMailboxItem(mailboxItemId, ref);
     } catch (err) {
       log.warn('Failed to open chat turn WorkUnit', { agentId, error: String(err) });
@@ -4619,7 +4638,7 @@ export class APIServer {
             enqueuedItemId = item.id;
             // C7-B：入队 = 回合开始，立刻给这一轮发 WU 身份（mid-turn 可读 running）。
             if (routedAgentId) {
-              void this.openChatTurnWorkUnit(routedAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+              void this.openChatTurnWorkUnit(routedAgentId, senderId, item.id);
             }
           },
         });
@@ -4691,7 +4710,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, agent.getMemorySessionId() ?? null);
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent));
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -7272,11 +7291,11 @@ EXPLANATION_END`;
           executionStreamRepo: this.storage?.executionStreamRepo,
           // C7-B：流式路径的 item id 由 SSEHandler 自己产生，回合开始同样要发身份。
           onItemEnqueued: (item) => {
-            void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+            void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id);
           },
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, agent.getMemorySessionId() ?? null);
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent));
           },
         });
 
@@ -7293,7 +7312,7 @@ EXPLANATION_END`;
             onItemEnqueued: (item) => {
               enqueuedItemId = item.id;
               // C7-B：同上 —— 回合开始就发 WU 身份（不靠收口时才创建）。
-              void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+              void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id);
             },
           });
         } catch (err) {
@@ -7305,7 +7324,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, agent.getMemorySessionId() ?? null);
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent));
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
