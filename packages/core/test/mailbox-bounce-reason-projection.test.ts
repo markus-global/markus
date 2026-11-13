@@ -1,7 +1,7 @@
 /**
  * 第六刀 C5 —— 退信原因必须按**真实原因**投影（V4「无静默丢弃」的可信度前提）
  *
- * 真实事故（C4 真实实例探针，`markus-cut6-c4-verification-report-2026-11-12.md` §4.4）：
+ * 真实事故（C4 真实实例探针，`docs/records/cut6-c4-verification-2026-11-12.md` §4.4）：
  * 一条 chat 报文把报文体写成 `message` 而不是 `text`，于是 payload 里没有 `content`。
  * agent 侧的读取器 `turnContentOf()` 拒收它（"refusing to build the turn from a
  * display excerpt"），这本是**正确的入参校验**；但该行最终以
