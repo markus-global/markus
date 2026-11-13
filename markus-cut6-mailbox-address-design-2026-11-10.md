@@ -839,4 +839,14 @@ end note
 - **显式归属（不是“待补”）**：`work_unit_ref` 写者 → C7；真实实例探针（V3 三条链路各写一行带信封的记录）+ 重新 build 复验 → C4（本卡完成后 C4 解锁）。
 - **未做（本卡硬边界，已决定）**：DNS/MX/SPF/DKIM/DMARC、收发信、外部地址校验、跨组织投递。已按硬边界 A2A 通知 Markus Platform Dev Manager。**未 merge、未发版**（等 Owner 明确批准）。
 
+### 7.9 C4 落地记录：全量回归、真实实例探针、重新 build 与文档收口（2026-11-12，本卡）
+
+本卡不开新功能，只做四件事：**全量回归定性**、**真实实例探针**（三条链路带信封）、**重新 build 复验**、**两处回归红项的三同步修复**与文档收口。
+
+- **两处红项修复**（同一事实的三个读者对齐，均不改运行时行为）：① `packages/web-ui/src/lib/toolCategories.ts` 的 `mailbox` 分组补登记 C1/C3 新增的 5 个工具（`bind_address`/`address_revoke`/`address_list`/`message_route`/`catch_all`）——分类表是「工具名 → UI 分组」的唯一映射，漏登记即漂移；② `packages/org-manager/test/api-server.test.ts` 的 recover-stale 断言跟随 C3 字段改名 `dropped` → `bounced`（与 web-ui `api.ts` 的 `{ bounced: number }` 同名）。复跑分别 **2 passed** / **1 passed（292 tests | 291 skipped）**。
+- **真实实例探针**（同提交构建产物，端口 8071）：human_chat 6 + a2a_message 1 + task_status_update 1 = **信封覆盖 7/7**；`dropped` 增量 **0**、`work_unit_ref` 非 NULL **0**、`catch_all` **1**。那 1 行 `catch_all` 来自探针自身报文缺字段（chat 报文体误用 `message` 而非 `text`），**无静默丢弃 → V4 语义成立**；但其退信原因（`stale_signal`）与事件名（`duplicate_delivery_dropped`）对不上真实原因，属既有 C3 状态机口径问题，已作为**待 Owner 裁决的观察项**上报，本卡**未修**、本节也不写成已修。
+- **全仓回归** 8361 例 / 5 红**全部定性**：2 红为本刀引入已修（上述）；3 红为环境性 / 既有 flaky —— 其中 `agent-concurrent-cancel-isolation`「两侧状态收敛」已在基线 `79a8421e` 的干净工作树复现同一条（12.1s 超时），`shell-session-tools` 隔离单跑全绿，`commands-start-integration` 为真实桌面实例占用 8056 端口（`EADDRINUSE`）。
+- **重新 build**（web-ui + desktop electron）在同一 worktree 成功（输出含 `Done → dist/main.js + dist/preload.js`）；横幅归属 `16a28403` 的 **DOM 级复验未取证**——重启运行包会终止本 Agent 自身运行时，只确认到代码与构建产物层面，如实记录为未取证。
+- **完整证据见 `markus-cut6-c4-verification-report-2026-11-12.md`**（命令、原始读数、逐条现象/归因/处理、DoD 五条勾销、每卡回滚映射、已知边界）。**本节只留指针，不复制第二份事实。**
+
 
