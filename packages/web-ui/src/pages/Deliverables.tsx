@@ -494,27 +494,21 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
     openDeliverableById(id);
   }, [items, openDeliverableById]);
 
-  const checkNeedMore = useCallback(() => {
-    const el = listRef.current;
-    if (!el || loading || loadingMore || items.length >= totalCount) return;
-    // The list pane is not the scroller on mobile (the document is), so "is the
-    // viewport taller than its content" must be measured on the real scroller.
-    const m = scrollMetrics(el);
-    if (m.scrollHeight <= m.clientHeight + 100) {
-      loadMore();
-    }
-  }, [loading, loadingMore, items.length, totalCount, loadMore]);
-
-  useEffect(() => {
-    const handleScroll = () => {
-      // One measurement for both layouts: element scroller (desktop) or document
-      // root (mobile document scrolling).
-      if (scrollMetrics(listRef.current).atBottom) loadMore();
-    };
-    return onScrollAnywhere(handleScroll);
-  }, [loadMore]);
-
-  useEffect(() => { checkNeedMore(); }, [checkNeedMore, defaultCollapsed, groupOverrides]);
+  /**
+   * Pagination here is EXPLICIT (a "加载更多" button), not automatic.
+   *
+   * It used to load on scroll. Two problems with that:
+   *  · The list is not virtualized, so every append re-renders every row. Firing
+   *    that on scroll made the page stutter exactly while the reader was scrolling.
+   *  · The trigger was fragile in a way that took three rounds to get right — a
+   *    hidden page (`display:none`) reports 0 for every measurement, which makes
+   *    "content shorter than the viewport" and "at the bottom" both trivially true.
+   *    That is what once made this page pull its entire result set (5 000 rows /
+   *    29 504 nodes) in the background for a page nobody had opened.
+   *
+   * A button removes both: the reader decides when to pay the render cost, and
+   * nothing can fire while the page is not on screen.
+   */
 
   const grouped = useMemo(() => {
     const groups = new Map<string, { label: string; items: DeliverableInfo[] }>();
@@ -1395,9 +1389,21 @@ export function DeliverablesPage({ authUser: _authUser, previewMode, previewData
               </div>
             );
           })}
-          {loadingMore && (
-            <div className="flex items-center justify-center gap-2 py-3 text-fg-tertiary">
-              <Spinner /> <span className="text-[10px]">{t('common:loadingMore')}</span>
+          {items.length < totalCount && (
+            <div className="flex justify-center py-3">
+              <button
+                type="button"
+                disabled={loadingMore}
+                onClick={() => void loadMore()}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] font-medium rounded-lg
+                           border border-border-default text-fg-secondary bg-surface-elevated/60
+                           hover:text-fg-primary hover:bg-surface-elevated hover:border-brand-400/40
+                           disabled:opacity-60 disabled:cursor-not-allowed transition-colors"
+              >
+                {loadingMore
+                  ? <><Spinner /> <span>{t('common:loadingMore')}</span></>
+                  : <span>{t('count.loadMore', { remaining: totalCount - items.length })}</span>}
+              </button>
             </div>
           )}
           {!loading && items.length > 0 && (

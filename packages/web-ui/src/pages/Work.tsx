@@ -3735,7 +3735,7 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   );
 }
 
-function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask }: {
+function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onReqClick, onRefresh, selectedTaskId, selectedReqId, onQuickCreateReq, onQuickCreateTask, onLoadMore, hasMore, loadingMore }: {
   tasks: TaskInfo[];
   requirements: RequirementInfo[];
   agents: AgentInfo[];
@@ -3747,6 +3747,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   selectedReqId?: string | null;
   onQuickCreateReq: (title: string) => void;
   onQuickCreateTask: (title: string) => void;
+  /** Called when the reader scrolls near the bottom while more rows exist. */
+  onLoadMore?: () => void;
+  hasMore?: boolean;
+  loadingMore?: boolean;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const isMobile = useIsMobile();
@@ -3886,7 +3890,16 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
   }, [rows, sortMode]);
 
   return (
-    <div className={`flex-1 min-h-0 overflow-auto bg-surface-primary ${isMobile ? 'overflow-x-hidden w-full' : ''}`}>
+    <div
+      className={`flex-1 min-h-0 overflow-auto bg-surface-primary ${isMobile ? 'overflow-x-hidden w-full' : ''}`}
+      onScroll={e => {
+        // Near-bottom preload: wait until the reader is within 240px of the end so
+        // the fetch has time to land before they hit the bottom.
+        if (!onLoadMore || !hasMore) return;
+        const el = e.currentTarget;
+        if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) onLoadMore();
+      }}
+    >
       <div className={isMobile ? 'w-full' : 'w-fit min-w-full'}>
       {/* Table header with integrated sort */}
       {!isMobile && (
@@ -3935,6 +3948,17 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           rows.map((row, idx) => (
             <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
           ))
+        )}
+        {loadingMore && (
+          <div className="flex items-center justify-center gap-2 py-3 text-[11px] text-fg-tertiary">
+            <span className="w-3 h-3 border-2 border-fg-muted/40 border-t-brand-500 rounded-full animate-spin" />
+            {t('work:task.loadingMore', '正在加载更多…')}
+          </div>
+        )}
+        {!loadingMore && hasMore && rows.length > 0 && (
+          <div className="py-3 text-center text-[11px] text-fg-muted">
+            {t('work:task.scrollForMore', '滚动到底部继续加载')}
+          </div>
         )}
         {rows.length === 0 && (
           <div className="flex flex-col items-center justify-center py-16 gap-3 max-w-sm mx-auto text-center">
@@ -5081,6 +5105,16 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
   const [rightDetailMode, setRightDetailMode] = useState<RightDetailMode>('closed');
   const [navFocus, setNavFocus] = useState<NavFocus>('projects');
   const [board, setBoard] = useState<Record<string, TaskInfo[]>>(previewData?.board ?? {});
+  /**
+   * Authoritative per-status totals from the server, independent of any bucket cap.
+   *
+   * The board arrays are truncated server-side (terminal statuses keep only the
+   * most recent DEFAULT_BOARD_TERMINAL_LIMIT rows) so a lifetime of archived work
+   * cannot bloat every load. Deriving the displayed count from `board` therefore
+   * under-reports it — measured: the "已归档" label said 100 while the org had
+   * 1 611 archived tasks, which reads exactly like data loss.
+   */
+  const [boardCounts, setBoardCounts] = useState<Record<string, number>>({});
   const [agents, setAgents] = useState<AgentInfo[]>(previewData?.agents ?? []);
   const [teams, setTeams] = useState<Array<{ id: string; name: string }>>([]);
   const [users, setUsers] = useState<HumanUserInfo[]>(previewData?.users ?? []);
@@ -5261,11 +5295,77 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     if (viewMode === 'project' && selectedProjectId) {
       filters.projectId = selectedProjectId;
     }
+    // Deliberately NOT ?full=1. Measured: the uncapped board for this org is
+    // 9.9 MB / 1 738 rows against 2.2 MB / 204 capped, and it would be re-fetched
+    // on the 45 s poll and on every WS board event — plus 1 738 unvirtualized
+    // rows in the DOM. The archive stays capped; the label now reports the true
+    // total from `counts`, and a run's own tasks are loaded per requirement
+    // (api.tasks.list({ requirementId }), verified complete: 32/32).
     try {
-      const { board: b } = await api.tasks.board(filters);
+      const { board: b, counts: c } = await api.tasks.board(filters);
       setBoard(b);
+      setBoardCounts(c ?? {});
     } catch { /* */ }
   }, [viewMode, selectedProjectId]);
+
+  /**
+   * Statuses the server truncated (board holds fewer rows than the true count).
+   *
+   * Derived rather than hard-coded: whichever buckets the server caps show up here
+   * automatically, so this keeps working if DEFAULT_BOARD_TERMINAL_LIMIT changes.
+   * `board` holds the raw rows; client-side filters apply at render, so this count
+   * is "how many rows we have", which is exactly what the page offset needs.
+   */
+  const truncatedStatuses = useMemo(
+    () => Object.keys(boardCounts).filter(s => (board[s]?.length ?? 0) < (boardCounts[s] ?? 0)),
+    [board, boardCounts],
+  );
+
+  const [loadingMoreTasks, setLoadingMoreTasks] = useState(false);
+
+  /**
+   * Fetch the next page for every truncated status and append it.
+   *
+   * Why this exists: the board payload is capped per terminal status (100) so that
+   * a lifetime of archived work does not bloat every poll. That cap is right, but
+   * it left the list with no way to reach the rest — the reader scrolled to the
+   * bottom and simply stopped. Loading one page on demand keeps the poll cheap and
+   * still lets the whole history be reached.
+   *
+   * Pages by `board[status].length` (rows already held) and dedupes by id, so a
+   * double-fire of the scroll listener cannot duplicate rows.
+   */
+  const loadMoreTasks = useCallback(async () => {
+    if (loadingMoreTasks) return;
+    const pending = truncatedStatuses;
+    if (pending.length === 0) return;
+    setLoadingMoreTasks(true);
+    try {
+      const pageSize = 100;
+      const filtersBase: { projectId?: string } = {};
+      if (viewMode === 'project' && selectedProjectId) filtersBase.projectId = selectedProjectId;
+      const pages = await Promise.all(pending.map(async status => {
+        const have = board[status]?.length ?? 0;
+        const page = Math.floor(have / pageSize) + 1;
+        try {
+          const res = await api.tasks.list({ ...filtersBase, status, page, pageSize });
+          return { status, tasks: res.tasks ?? [] };
+        } catch { return { status, tasks: [] as TaskInfo[] }; }
+      }));
+      setBoard(prev => {
+        const next = { ...prev };
+        for (const { status, tasks } of pages) {
+          if (!tasks.length) continue;
+          const seen = new Set((next[status] ?? []).map(t => t.id));
+          const add = tasks.filter(t => !seen.has(t.id));
+          if (add.length) next[status] = [...(next[status] ?? []), ...add];
+        }
+        return next;
+      });
+    } finally {
+      setLoadingMoreTasks(false);
+    }
+  }, [loadingMoreTasks, truncatedStatuses, board, viewMode, selectedProjectId]);
 
   const refreshAgents = useCallback(async () => {
     try { const { agents: a } = await api.agents.list(); setAgents(a); } catch { /* */ }
@@ -6028,7 +6128,13 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     return true;
   });
 
-  const closedCount = Object.values(board).flat().filter(t => isClosed(t)).length
+  // Count closed work from the server's authoritative totals, not from `board`:
+  // the board's terminal buckets are capped (DEFAULT_BOARD_TERMINAL_LIMIT), so
+  // counting them reported "100 archived" for an org that has 1 611. Fall back to
+  // the board length only when no counts are available yet (first paint / offline).
+  const closedTaskCount =
+    (boardCounts['archived'] ?? 0) + (boardCounts['rejected'] ?? 0) + (boardCounts['cancelled'] ?? 0);
+  const closedCount = (closedTaskCount || Object.values(board).flat().filter(t => isClosed(t)).length)
     + allRequirements.filter(r => isClosed(r)).length;
 
   const sortedAgents = useMemo(() => {
@@ -6729,6 +6835,9 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
             selectedReqId={selectedReq?.id}
             onQuickCreateReq={handleQuickCreateReq}
             onQuickCreateTask={handleQuickCreateTask}
+            onLoadMore={() => void loadMoreTasks()}
+            hasMore={truncatedStatuses.length > 0}
+            loadingMore={loadingMoreTasks}
           />
           </div>
         ) : boardType === 'workflows' ? (
@@ -6803,7 +6912,17 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
           )}
           </div>
         ) : (
-          <div ref={kanbanScrollRef} className="flex-1 min-h-0 overflow-auto px-4 py-5">
+          <div
+            ref={kanbanScrollRef}
+            className="flex-1 min-h-0 overflow-auto px-4 py-5"
+            onScroll={e => {
+              // Columns are rendered inside this one vertical scroller, so reaching
+              // its bottom means every truncated column was scrolled to its end.
+              if (truncatedStatuses.length === 0) return;
+              const el = e.currentTarget;
+              if (el.scrollTop + el.clientHeight >= el.scrollHeight - 240) void loadMoreTasks();
+            }}
+          >
             <div className="flex gap-3 items-stretch">
               {visibleColumns.map(col => {
                 const colTasks = getColumnTasks(col);
