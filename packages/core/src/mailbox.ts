@@ -97,6 +97,15 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
   /** 重复投递被丢弃：幂等键（items 唯一键 / 入队幂等键）拦截，未入队。 */
   duplicateDeliveryDropped: 'mailbox.duplicate_delivery_dropped',
   /**
+   * 信号退信并归集到 catch-all（第六刀 C5 补入）。
+   *
+   * 为什么需要它：这条日志此前复用了 `duplicateDeliveryDropped`，于是「陈旧信号过期 /
+   * 心跳折叠 / 报文缺字段 / 操作员丢弃」全都记成同一个「重复投递被拒」——事件名在撒谎，
+   * 按 event 聚合得到的「重复投递数」是个混合口径。现在起：`duplicate*` 只描述真正的
+   * 重复投递，本条描述其余全部退信，真实原因看 `dropReason` 字段。
+   */
+  signalBounced: 'mailbox.signal_bounced',
+  /**
    * 重投复用原行回队（P1.x (a)(R6)）：同键冲突但既有行未收口（`dropped`/`failed`）
    * 或调用方显式交还在飞项 → 复用原行回队，**不新增行**。
    * count=1（按 event 求和 = 累计补偿重投数）。
@@ -610,7 +619,7 @@ export class AgentMailbox {
     this.updateSignalStatus(item, 'bounced', { dropReason, why });
     this.updateSignalStatus(item, 'catch_all', { bounceTarget, why });
     log.warn('Mailbox signal bounced and collected into catch-all', {
-      event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
+      event: MAILBOX_OBSERVABILITY_EVENTS.signalBounced,
       agentId: this.agentId,
       itemId: item.id,
       type: item.sourceType,
@@ -1622,8 +1631,13 @@ export class AgentMailbox {
    *
    * If the item is not in the in-memory queue (ghost / already dequeued), still
    * write the bounce in persistence so agent tools can clear orphans idempotently.
+   *
+   * `dropReason`（第六刀 C5）：调用方若知道**更真实的**原因（例如入参校验失败的
+   * `payload_invalid`），必须显式传入；默认值 `stale_signal` 只覆盖「主动决定丢弃」
+   * 这一族（陈旧过期、被新状态取代、人/Agent 判断不必处理）。默认值不是万能桶：
+   * 处理中途因报文不合格而终结的路径必须传原因，否则旧语义被悄悄扩大。
    */
-  drop(itemId: string, reason?: string): MailboxItem | undefined {
+  drop(itemId: string, reason?: string, dropReason: ActiveBounceReason = 'stale_signal'): MailboxItem | undefined {
     const why = reason ?? 'unspecified';
     const idx = this.queue.findIndex(i => i.id === itemId);
     if (idx === -1) {
@@ -1647,7 +1661,7 @@ export class AgentMailbox {
         metadata: {},
         queuedAt: new Date().toISOString(),
       };
-      this.bounceSignal(ghost, 'stale_signal', why);
+      this.bounceSignal(ghost, dropReason, why);
       this.releaseClaim(itemId);
       log.info('Mailbox ghost item bounced (not in queue)', {
         agentId: this.agentId, itemId, reason: why, fromStatus: current ?? 'unknown',
@@ -1657,7 +1671,7 @@ export class AgentMailbox {
     }
 
     const [item] = this.queue.splice(idx, 1);
-    this.bounceSignal(item, 'stale_signal', why);
+    this.bounceSignal(item, dropReason, why);
     this.releaseClaim(item.id);
     // A drop is a *decision*, not an accident: make who/why/what observable so a
     // disappearing message can be traced back instead of just not arriving.

@@ -28,7 +28,7 @@ import {
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
-import { displayLabelOf } from './mailbox-summary.js';
+import { displayLabelOf, bounceReasonOfError } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -954,6 +954,12 @@ export class AttentionController {
     let timedOut = false;
     /** backstop 超时后，上一次尝试在宽限期内仍未结束 → 禁止重排（防重复副作用）。 */
     let orphanAbandoned = false;
+    /**
+     * 处理中途抛出的异常（第六刀 C5）。必须保留它：终态原因要按**真实原因**投影。
+     * 只丢掉 reply 而不记住「为什么没有 reply」，就只能靠猜，猜出来的就是那个
+     * 会说谎的 `stale_signal` —— 缺字段的报文与过期信号在台账上变成同一件事。
+     */
+    let processingError: unknown = undefined;
     /** Inactivity backstop 定时器（处理结束 / 超时后清理）。 */
     let backstopTimer: ReturnType<typeof setInterval> | undefined;
     // P0 租约续租：处理期间周期续租。不续租 → 租约到期后该项会被其它 worker
@@ -1054,6 +1060,7 @@ export class AttentionController {
         }
       }
     } catch (err) {
+      processingError = err;
       log.warn('Error processing mailbox item', {
         agentId: this.agentId,
         itemId: item.id,
@@ -1072,6 +1079,11 @@ export class AttentionController {
 
     this.processingStartedAt = undefined;
 
+    // 终态原因投影（第六刀 C5）：入参校验失败（报文缺必填字段 / 类型不对）不是「陈旧信号」。
+    // 只覆盖**失败**族；决策型终态（用户取消 / 主动丢弃）仍走 `drop()` 的默认
+    // `stale_signal`，两个方向都不允许「就近使用」。
+    const failureReason = bounceReasonOfError(processingError);
+
     let statusResolved = false;
     if (timedOut) {
       if (orphanAbandoned) {
@@ -1083,7 +1095,7 @@ export class AttentionController {
           item,
           'backstop timeout — in-flight turn did not settle within grace; not requeued to avoid duplicate side effects',
         );
-        this.mailbox.drop(item.id);
+        this.mailbox.drop(item.id, undefined, failureReason);
       } else {
         this.mailbox.requeue(item);
       }
@@ -1139,7 +1151,7 @@ export class AttentionController {
             reason: abnormalReason,
           });
           this.emitIncomplete(item, abnormalReason);
-          this.mailbox.drop(item.id);
+          this.mailbox.drop(item.id, undefined, failureReason);
         } else {
           // Empty reply for background type — transient errors may self-correct.
           log.warn('Abnormal completion detected, requeueing for retry', {
@@ -1162,7 +1174,7 @@ export class AttentionController {
           reason: abnormalReason,
         });
         this.emitIncomplete(item, abnormalReason);
-        this.mailbox.drop(item.id);
+        this.mailbox.drop(item.id, undefined, failureReason);
       } else {
         // 正常完成（reply 有效、无异常、agent 明确结束）→ completed 是唯一合法终态。
         this.mailbox.complete(item.id);

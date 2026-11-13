@@ -6,7 +6,7 @@
  * 否则概览无法按原因聚合，「一个没投进去的信号恰好出现一次、原因可查」这条
  * 判据就永远无法验证。
  *
- * 第 6 类 `dsn_bounce`（`MAILER-DAEMON` / DSN 退信）本刀**只预留枚举位**：
+ * 第 7 类 `dsn_bounce`（`MAILER-DAEMON` / DSN 退信）本刀**只预留枚举位**：
  * 形状定稿，但 C1 不产生、不发 DSN（§2.8 H8）。C10 接外部邮件时直接复用
  * `bounced → catch_all` 通道，避免将来临时加分支。判据见 {@link RESERVED_BOUNCE_REASONS}：
  * 预留位不在「可产生」集合里。
@@ -14,13 +14,25 @@
  * 唯一事实源：主计划 §4.9.5 H8 / 执行文档 §2.5。
  */
 
-/** 本刀可产生的五类退信原因（投递状态机 C3 的写值域）。 */
+/**
+ * 本刀可产生的六类退信原因（投递状态机 C3 的写值域）。
+ *
+ * `payload_invalid`（C5 补入）的判据：这条信号**根本读不成一个回合** ——
+ * 报文缺必填字段 / 类型不对，入参校验层（`turnContentOf`）主动拒收。
+ * 它此前被就近写成 `stale_signal`，于是台账上「陈旧信号」这个原因要同时
+ * 承担两件完全不同的事（信号过期 vs 报文坏了），概览按原因聚合就失去意义。
+ *
+ * 纪律：`payload_invalid` 只描述**入参不合格**，不得被用来兜住「处理中途抛错」
+ * 的一般异常；反过来 `stale_signal` 也**只**表示陈旧/被取代/主动丢弃的决定。
+ * 两个方向上都不允许「就近使用」。
+ */
 export const ACTIVE_BOUNCE_REASONS = [
   'unresolved_address',
   'no_active_target',
   'lease_expired',
   'duplicate_message_id',
   'stale_signal',
+  'payload_invalid',
 ] as const;
 
 /** 预留位：形状已定，本刀不得产生（C10 接外部邮件时才启用）。 */
@@ -29,7 +41,7 @@ export const RESERVED_BOUNCE_REASONS = ['dsn_bounce'] as const;
 export type ActiveBounceReason = (typeof ACTIVE_BOUNCE_REASONS)[number];
 export type ReservedBounceReason = (typeof RESERVED_BOUNCE_REASONS)[number];
 
-/** 六类原因的闭集（持久化列 `mailbox_items.drop_reason` 的取值域）。 */
+/** 七类原因的闭集（持久化列 `mailbox_items.drop_reason` 的取值域）：六类可产生 + 一类预留。 */
 export type BounceReason = ActiveBounceReason | ReservedBounceReason;
 
 export const BOUNCE_REASONS: readonly BounceReason[] = Object.freeze([

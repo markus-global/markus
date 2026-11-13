@@ -105,11 +105,38 @@ function isItemLike(target: PayloadLike | ItemLike): target is ItemLike {
  * worse than failing loudly. System events legitimately carry only a summary,
  * so they fall back.
  */
+/**
+ * 入参校验失败的**结构化**错误（第六刀 C5）。
+ *
+ * 为什么不是裸 `Error`：退信台账的 `drop_reason` 是闭集，而「报文读不成一个回合」
+ * 与「信号陈旧」是两件完全不同的事。只有当校验层用**类型**表态，终态那一步才可能
+ * 按真实原因投影（`payload_invalid`）；靠 `err.message.includes('payload.content')`
+ * 这类文本匹配去还原原因，会在下一次改文案时静默失效（且字符串不是结构）。
+ */
+export class SignalPayloadInvalidError extends Error {
+  readonly code = 'payload_invalid' as const;
+  constructor(message: string) {
+    super(message);
+    this.name = 'SignalPayloadInvalidError';
+  }
+}
+
+/**
+ * 把「处理中途抛出的异常」映射为原因闭集里的退信原因。
+ *
+ * 只认结构化信号：不是入参校验错误的异常一律返回 `undefined`，调用方保持既有语义。
+ * 绝不把 `payload_invalid` 当万能桶 —— 否则它立刻变成下一个 `stale_signal`，
+ * 只是换了个更好听的名字。
+ */
+export function bounceReasonOfError(err: unknown): 'payload_invalid' | undefined {
+  return err instanceof SignalPayloadInvalidError ? 'payload_invalid' : undefined;
+}
+
 export function turnContentOf(item: ItemLike): string {
   const content = item.payload?.content;
   if (typeof content === 'string' && content.trim().length > 0) return content;
   if (AUTHORITATIVE_TURN_TYPES.has(item.sourceType)) {
-    throw new Error(
+    throw new SignalPayloadInvalidError(
       `mailbox item ${item.id ?? '(no id)'} of type ${item.sourceType} has no payload.content — ` +
         `refusing to build the turn from a display excerpt ` +
         `(summary="${item.payload?.summary ?? ''}"). Fix the enqueue site; do not degrade here.`,

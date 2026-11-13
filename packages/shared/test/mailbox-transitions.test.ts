@@ -21,6 +21,7 @@ import {
   BOUNCE_REASONS,
   catchAllTargetOf,
   isActiveBounceReason,
+  isBounceReason,
   resolveEnvelopeTarget,
   type SignalAddressLookup,
 } from '../src/mail.js';
@@ -159,11 +160,17 @@ describe('resolveEnvelopeTarget —— 唯一解析器（只读信封 / 两种�
   });
 });
 
-describe('退信原因闭集 —— 只产生五类，第六类只预留', () => {
-  it('本刀可产生的原因恰好五类', () => {
+describe('退信原因闭集 —— 只产生六类，第七类只预留', () => {
+  it('可产生的原因恰好六类（C5 补 payload_invalid）', () => {
     expect([...ACTIVE_BOUNCE_REASONS]).toEqual([
       'unresolved_address', 'no_active_target', 'lease_expired', 'duplicate_message_id', 'stale_signal',
+      'payload_invalid',
     ]);
+  });
+
+  it('payload_invalid 可产生且可写库（入参校验失败必须有一个真实名字）', () => {
+    expect(isActiveBounceReason('payload_invalid')).toBe(true);
+    expect(isBounceReason('payload_invalid')).toBe(true);
   });
 
   it('dsn_bounce 在闭集里但不属于「可产生」集合（写入侧必须拒绝它）', () => {

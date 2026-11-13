@@ -226,7 +226,7 @@ end note
 @enduml
 ```
 
-五类 `bounced` 原因全部结构化：`unresolved_address` / `no_active_target` / `lease_expired` / `duplicate_message_id` / `stale_signal`。`drop_reason` 必填，`bounce_target` 指向 catch-all 概览 id。**旧 `dropped` 行保留只读，读路径归一为 `bounced`**，不改写历史数据。
+六类 `bounced` 原因全部结构化：`unresolved_address` / `no_active_target` / `lease_expired` / `duplicate_message_id` / `stale_signal` / `payload_invalid`（C5 补入，见 §7.10）。`drop_reason` 必填，`bounce_target` 指向 catch-all 概览 id。**旧 `dropped` 行保留只读，读路径归一为 `bounced`**，不改写历史数据。
 
 第 6 类 `dsn_bounce`（`MAILER-DAEMON` / DSN 退信）**本刀只预留枚举位、不启用**，留给 C10 接外部邮件时直接复用这条 `bounced → catch_all` 通道，避免将来临时加分支（主计划 §4.9.5 H8）。
 
@@ -701,7 +701,7 @@ end note
 | `packages/storage/src/db-maintenance.ts` | 终态清理默认集合：加 `catch_all`，保留 `dropped`（历史行），**刻意排除 `bounced`**（注释写明三条理由） | 状态改名的下游消费者。不跟到这里，`catch_all` 永不被清理 → 2.3 GB 终态堆积原样回来；而 `bounced` 长期停留 = 归集未完成 = bug 信号，按龄删掉等于静默抹掉信号 |
 | `packages/web-ui/src/{api.ts,lib/mailboxCancelable.ts,pages/AgentProfile.tsx}` | drop / recover-stale 响应类型对齐（`applied` / `bounced`）；`bounced` / `catch_all` 纳入「可取消性」与展示派生的枚举覆盖 | UI 是状态取值域的下游读者：退信行**不可取消**（只能从概览认领/归档），这条事实必须有断言守着，不能靠「反正非 processing 就 return false」碰巧正确 |
 
-**五类 `bounced` 原因的**实际**产生点（闭集，写入侧 `isBounceReason` 校验）**：
+**六类 `bounced` 原因的**实际**产生点（闭集，写入侧 `isBounceReason` 校验；`payload_invalid` 由 C5 补入，见 §7.10）**：
 
 | 原因 | 谁产生 |
 |---|---|
@@ -709,7 +709,8 @@ end note
 | `no_active_target` | 同上：`to` 是 markus 地址但没有 active 绑定；或 `to` 解析到**别的 agent**（本邮箱不是收件人，不允许错投） |
 | `lease_expired` | storage `markStaleProcessingAsBounced()`：processing 行无认领 / 租约过期 / 异主死认领 |
 | `duplicate_message_id` | `enqueue()` 命中同一 `messageId`（C2 通道）+ dedup-key 抑制 |
-| `stale_signal` | 队列 TTL 过期、triage 陈旧清理、被新状态取代的 status update、心跳折叠、agent/操作员主动 drop |
+| `stale_signal` | 队列 TTL 过期、triage 陈旧清理、被新状态取代的 status update、心跳折叠、agent/操作员主动 drop（**只**覆盖「陈旧 / 被取代 / 主动决定丢弃」这一族，不得再兜「报文坏了」，见下一条） |
+| `payload_invalid` | **C5 补入**：`turnContentOf()` 的入参校验拒收——权威报文（`human_chat` / `a2a_message`）缺 `payload.content` 或类型不对，**根本读不成一个回合**。结构化错误 `SignalPayloadInvalidError`，由 `bounceReasonOfError()` 在终态按真实原因投影 |
 | `dsn_bounce` | **只预留**：在闭集里但 `isActiveBounceReason()` 拒绝写入（C10 接外部邮件时启用） |
 
 #### 7.8.2 三处刻意偏离草案（每处都给理由）
@@ -832,7 +833,7 @@ end note
 **零残余声明（逐条可核）**
 
 - **矩阵 / 唯一执行点**：全仓仅 2 处 `persistence.updateStatus`，均在 `mailbox.ts` 的两个具名方法内（`updateSignalStatus` 迁移 / `updateFields` 同状态字段写），其余直接状态赋值只能在 3 个具名投影里且投影不碰 persistence —— 以上均由 `mailbox-transition-sink-guard.test.ts` 逐行验证（含检测器自测）。
-- **五类退信原因与真实产生点**、`bounce_target` 归集、`message_route` / `catch_all` 两个只读工具、comms dual-read 收口、旧测试迁移：均已在位并有断言。
+- **六类退信原因（C5 补 `payload_invalid`）与真实产生点**、`bounce_target` 归集、`message_route` / `catch_all` 两个只读工具、comms dual-read 收口、旧测试迁移：均已在位并有断言。
 - **读归一的三个面**：单行（`mapRow`）、聚合（`getStatusCounts`）、筛选（`getHistory` 的 `status` 键 + `bounced` 展开为 `IN ('bounced','dropped')`）。
 - **`status_transitions(entity_type='signal')` 台账本卡不写入**（已决定，非遗漏）：当前没有任何读者，而每次迁移都已在 `mailbox_items` 自身落状态；热路径上再写一份无人读的台账只增加一倍写放大，违反「一个事实一个写者」。接入点已收敛到 `updateSignalStatus()` 一处——C7 统一台账时若出现读者，改动面是 1 个函数。
 - 历史 `dropped` 行：**只读、不回填**；读路径归一为 `bounced`，`listCatchAll()` 单独回 `legacyDropped` 计数（不把没有原因的行伪装成有原因的归集行）。
@@ -844,9 +845,27 @@ end note
 本卡不开新功能，只做四件事：**全量回归定性**、**真实实例探针**（三条链路带信封）、**重新 build 复验**、**两处回归红项的三同步修复**与文档收口。
 
 - **两处红项修复**（同一事实的三个读者对齐，均不改运行时行为）：① `packages/web-ui/src/lib/toolCategories.ts` 的 `mailbox` 分组补登记 C1/C3 新增的 5 个工具（`bind_address`/`address_revoke`/`address_list`/`message_route`/`catch_all`）——分类表是「工具名 → UI 分组」的唯一映射，漏登记即漂移；② `packages/org-manager/test/api-server.test.ts` 的 recover-stale 断言跟随 C3 字段改名 `dropped` → `bounced`（与 web-ui `api.ts` 的 `{ bounced: number }` 同名）。复跑分别 **2 passed** / **1 passed（292 tests | 291 skipped）**。
-- **真实实例探针**（同提交构建产物，端口 8071）：human_chat 6 + a2a_message 1 + task_status_update 1 = **信封覆盖 7/7**；`dropped` 增量 **0**、`work_unit_ref` 非 NULL **0**、`catch_all` **1**。那 1 行 `catch_all` 来自探针自身报文缺字段（chat 报文体误用 `message` 而非 `text`），**无静默丢弃 → V4 语义成立**；但其退信原因（`stale_signal`）与事件名（`duplicate_delivery_dropped`）对不上真实原因，属既有 C3 状态机口径问题，已作为**待 Owner 裁决的观察项**上报，本卡**未修**、本节也不写成已修。
+- **真实实例探针**（同提交构建产物，端口 8071）：human_chat 6 + a2a_message 1 + task_status_update 1 = **信封覆盖 7/7**；`dropped` 增量 **0**、`work_unit_ref` 非 NULL **0**、`catch_all` **1**。那 1 行 `catch_all` 来自探针自身报文缺字段（chat 报文体误用 `message` 而非 `text`），**无静默丢弃 → V4 语义成立**；其退信原因与事件名当时对不上真实原因（记成 `stale_signal` / `duplicate_delivery_dropped`），C4 按事实记为上观察项、**未修**；该口径缺陷已由 **C5 收口卡**按真实原因投影修复（原因闭集补 `payload_invalid`、入参校验错误结构化、事件名改 `mailbox.signal_bounced`），见 §7.10。
 - **全仓回归** 8361 例 / 5 红**全部定性**：2 红为本刀引入已修（上述）；3 红为环境性 / 既有 flaky —— 其中 `agent-concurrent-cancel-isolation`「两侧状态收敛」已在基线 `79a8421e` 的干净工作树复现同一条（12.1s 超时），`shell-session-tools` 隔离单跑全绿，`commands-start-integration` 为真实桌面实例占用 8056 端口（`EADDRINUSE`）。
 - **重新 build**（web-ui + desktop electron）在同一 worktree 成功（输出含 `Done → dist/main.js + dist/preload.js`）；横幅归属 `16a28403` 的 **DOM 级复验未取证**——重启运行包会终止本 Agent 自身运行时，只确认到代码与构建产物层面，如实记录为未取证。
 - **完整证据见 `markus-cut6-c4-verification-report-2026-11-12.md`**（命令、原始读数、逐条现象/归因/处理、DoD 五条勾销、每卡回滚映射、已知边界）。**本节只留指针，不复制第二份事实。**
+
+### 7.10 C5 收口补正：退信原因按真实原因投影（2026-11-12，本卡）
+
+**为什么修**：C4 真实实例探针里那 1 行 `catch_all` 的 `drop_reason='stale_signal'` 与事件名 `mailbox.duplicate_delivery_dropped` 都在撒谎——真实原因是「chat 报文缺 `payload.content`，入参校验拒收」。V4「无静默丢弃」成立，但**一个会说谎的原因等于没有原因**：概览按原因聚合时，「信号过期」与「报文坏了」被混成同一桶。
+
+**改了什么（三处，一条因果链）**
+
+| 层 | 文件 | 改动 |
+|---|---|---|
+| 原因闭集 | `packages/shared/src/mail.ts` | `ACTIVE_BOUNCE_REASONS` 补 `payload_invalid`（六类可产生 + `dsn_bounce` 预留）。纪律写进注释：它**只**描述入参不合格，不得当兜底；`stale_signal` 也**只**描述陈旧/被取代/主动丢弃 |
+| 校验层表态 | `packages/core/src/mailbox-summary.ts` | 新增 `SignalPayloadInvalidError`（`code='payload_invalid'`），`turnContentOf()` 改抛它；新增 `bounceReasonOfError(err)` 只把**该类型**映射为 `payload_invalid` |
+| 终态投影 | `packages/core/src/attention.ts` + `mailbox.ts` | `processFocusedItem` 的 catch 保留 `processingError`（不再丢），失败族终态用 `failureReason` 投影；`drop(itemId, reason?, dropReason='stale_signal')` 增加显式原因参数；`bounceSignal()` 的事件名从 `mailbox.duplicate_delivery_dropped` 改为 `mailbox.signal_bounced` |
+
+**为什么错误要结构化而不是文本匹配**：靠 `err.message.includes('payload.content')` 还原原因，会在下一次改文案时静默失效——原因会悄悄退回默认值，且没有任何测试会红。类型是结构，文案是载荷（§2 的 R3' 纪律在错误分类上的同一条）。
+
+**先红后绿**：新增 `packages/core/test/mailbox-bounce-reason-projection.test.ts`（4 例，行为断言，非源码文本栅栏）。实现前跑出 **2 failed / 2 passed**，两条红正是上面两句谎（`code` 为 `undefined`；`drop_reason` 为 `stale_signal`）。实现后同批 9 文件 **158 passed**。
+
+**未扩大旧语义**：`drop()` 的默认值仍是 `stale_signal`，并由测试第 4 例钉住（主动丢弃的决定仍是 `stale_signal`）；用户取消（决策）不走失败族投影。两个方向都不可「就近使用」。
 
 
