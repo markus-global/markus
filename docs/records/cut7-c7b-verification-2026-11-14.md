@@ -57,6 +57,22 @@ Cross-team parent chain is asserted in `work-unit-producers.integration.test.ts`
 sent while the sender has a turn WorkUnit produces a child whose `parent_id` is that parent's
 id — read back from the database, not from the return value.
 
+## Final gate (after the review pass)
+
+- `npx vitest run --project node` → 539 files passed, **2 failed**, both the documented baseline
+  reds on this machine (`cli/commands-start-integration > auto-runs quickInit` binds the product
+  default 8056, occupied by the desktop app; `agent-concurrent-cancel-isolation` is
+  load-sensitive and green isolated). A pristine baseline worktree, same command, same 2.
+- Touched surface: 9 files / 86 tests green; `api-server-final` + `api-server-extended` 203/203.
+- `architecture-guard` invariants **18/18** — the new one fails any implementation of
+  `turnWorkUnitRef` that reads the ledger (`listByAgent` / `SELECT` / `.repo.`): a "current
+  WorkUnit by agent id" cannot exist in a store that only has history.
+- Regression found and fixed by bisection: `/api/message` returned 500 on three route tests.
+  `0eca3464` passes, `ebdda914` fails — the handler evaluated `agent.getMemorySessionId()`
+  synchronously while building arguments, so an incomplete agent object threw inside the
+  request path. That read is enrichment only, so it now goes through `memorySessionIdOf()`
+  (capability detection; the method's own errors are not swallowed).
+
 ## Honest boundaries
 
 - The chat WorkUnit exists at turn **start**, but its `context_ref` is only known at close;
@@ -66,4 +82,9 @@ id — read back from the database, not from the return value.
   fall back by design (`sessionLockKeyOfContextRef` returns `undefined` for them).
 - Budget unit stays **iterations**; token accounting is a later column, not a reinterpretation
   of `budget`.
+- **web-ui project is not verified in this worktree**: those tests are red here and only here
+  (React duplicate copy + happy-dom AbortError, stack inside this worktree's `node_modules`),
+  green in a clean baseline worktree, and this diff touches zero `packages/web-ui` files. That
+  is a broken dependency topology in one worktree, not a pre-existing red — CI on a clean
+  checkout is the authority.
 - Heartbeat / dream triggering was not touched (that is C8).
