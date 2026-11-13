@@ -725,8 +725,8 @@ export const SUBAGENT_MAX_AGGREGATE_ITERATIONS = 100;
  * C7-B — the **finite** per-child iteration budget when neither the caller
  * (`iteration_budget`) nor a WorkUnit ledger supplies one.
  *
- * Why finite: `DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity` was the 6b patch. An
- * infinite child budget meant a wide fan-out had no per-child rope at all, so the
+ * Why finite: the 6b patch made the per-child default unbounded (`Infinity`). An
+ * unbounded child budget meant a wide fan-out had no per-child rope at all, so the
  * only stop was the shared pool — de facto "the circuit breaker is the schedule".
  * A finite default is what makes sibling independence real: each child owns exactly
  * this many iterations and can never spend a sibling's.
