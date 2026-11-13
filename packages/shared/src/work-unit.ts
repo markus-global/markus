@@ -122,9 +122,17 @@ export function assertWorkUnitTransition(
  * - **task** `task_<taskId>_r<round>` —— **沿用既有格式**。这个字符串今天已经是
  *   「执行纪元」的身份：在飞登记表的键、执行会话 id 都用它。再造一套命名等于
  *   给同一个纪元发两张身份证，所以这里只是把既有格式**收敛到单一生成器**。
- * - **a2a** `a2a:<channelKey>:<deliveryId>` —— 一次投递 = 一个 WU。`deliveryId`
- *   与信封 `messageId` 是同一个值（投递身份在 C6 已经唯一），重投同一跳不会
- *   生成第二个 WU。
+ * - **a2a** `a2a:<channelKey>:<deliveryId>` —— 一次投递 = 一个 WU。
+ *   `deliveryId` 与信封 `messageId` 是同一个值（投递身份在 C6 已经唯一），重投同一跳
+ *   不会生成第二个 WU。
+ *
+ *   **不带接收方**：`work_unit_ref` 回答的是「这条 item 属于哪个 WU」，而 WU 由
+ *   **产生它的那一方**拥有。a2a 是「发送方发出的一次投递」，所以 N 个接收方共享
+ *   同一个 `ref` 不是缺陷，是定义 —— 它们确实是同一条活产出的 N 份投递。
+ *   `work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
+ *
+ *   反过来说，「每个接收方各建一个 WU」（谁认领、租约、预算归它）是**接收方视角**
+ *   的工作单元，属于 C7-B 的语义；本卡没有它的生产者，也不该替它先占位。
  */
 export const WORK_UNIT_REF = {
   chat(sessionId: string, round: number): string {

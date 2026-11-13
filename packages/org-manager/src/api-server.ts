@@ -116,7 +116,7 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
-import { AgentDelivery, newChainId } from './agent-delivery.js';
+import { AgentDelivery, newChainId, NULL_WORK_UNITS } from './agent-delivery.js';
 import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
@@ -470,8 +470,19 @@ export class APIServer {
           if (participants.length > 0) this.ws.sendToUsers(participants, event);
           else this.ws.broadcast(event);
         },
-        // 第七刀 C7-A：A2A 投递也产生 WU 身份（未接线则跳过）。
-        workUnits: this.workUnits ?? undefined,
+        // 第七刀 C7-A：A2A 投递也产生 WU 身份（§16：一次投递 = 一个 WU，owner=发送方）。
+        // `transition` 在这里包成 service 的业务路径版（`tryTransition`）：记账失败
+        // 不得打断投递（观测设施不是故障点），矩阵错误照抛。
+        // 必填而非可选：没有 WU 服务的装配路径显式传 `NULL_WORK_UNITS`，让可选性
+        // 从调用点消失、变成这里一个看得见的决定。写成 `?` 的话，「没装配」和
+        // 「这条路本来就没有 WU」在类型上无法区分，整条链路静默跳过且没人发现。
+        workUnits: this.workUnits
+          ? {
+              ensure: (seed) => this.workUnits!.ensure(seed),
+              linkMailboxItem: (itemId, ref) => this.workUnits!.linkMailboxItem(itemId, ref),
+              transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
+            }
+          : NULL_WORK_UNITS,
       });
     }
     return this._delivery;
@@ -2535,15 +2546,22 @@ export class APIServer {
     agentId: string,
     userMessage: string,
     reply: string,
-    senderId?: string,
-    tokensUsed = 0,
-    metadata?: unknown,
+    /**
+     * 必填 `string | undefined`（不是 `?`）：`mailboxItemId` 必须必填，而 TS 不允许
+     * 必填参数跟在可选参数后面。把可选性换成显式 `undefined`，调用点就得表态。
+     */
+    senderId: string | undefined,
+    tokensUsed: number,
+    metadata: unknown,
     /**
      * 第七刀 C7-A：触发这一轮的 mailbox item 身份（由入口的 `onItemEnqueued`
      * 回调带回来）。没有它就无法把 `mailbox_items.work_unit_ref` 指向本轮 WU ——
-     * 而「猜最近一条」是从时序推断结构，明确禁止。缺省 = 不挂引用（如历史重放）。
+     * 而「猜最近一条」是从时序推断结构，明确禁止。
+     *
+     * 必填 `string | null`：`null` = 本轮没有 item 身份（历史重放 / 直接调用），
+     * 由调用点显式表态。写成 `?:` 会让「漏传」与「确实没有」在类型上无法区分。
      */
-    mailboxItemId?: string,
+    mailboxItemId: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2575,8 +2593,19 @@ export class APIServer {
       const units = this.workUnits;
       if (units) {
         const ref = WORK_UNIT_REF.chat(session.id, round);
-        units.ensure({ ref, agentId, contextRef: session.id });
+        const wu = units.ensure({ ref, agentId, contextRef: session.id });
         units.linkMailboxItem(mailboxItemId, ref);
+        // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
+        // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
+        // 「这一轮什么时候结束的」只能从消息时间戳猜，那又是一次时序推断。
+        // 只在 `running` 上迁：重放同一轮时 ensure 会命中既有 `idle` 行，
+        // 那不是「回合未收口」，不该再迁一次（idle→idle 不在矩阵里）。
+        if (wu?.status === 'running') {
+          units.tryTransition(ref, 'idle', {
+            changedByType: 'system',
+            reason: 'chat_turn_settled',
+          });
+        }
       }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -4522,6 +4551,10 @@ export class APIServer {
       const channelContext = await buildChannelContext();
 
       let reply: string;
+      // 入口不知道自己这条消息在 mailbox 里的 id —— 它由 mailbox 在入队时生成。
+      // 只有 `onItemEnqueued` 回调带回来的那个 id 才是真的；任何「最近一条」的
+      // 猜测都是时序推断（R3），一旦有并发就会挂错行。
+      let enqueuedItemId: string | null = null;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
@@ -4531,6 +4564,7 @@ export class APIServer {
           fileNames,
           imagePaths,
           toolEventCollector: toolEvents,
+          onItemEnqueued: (item) => { enqueuedItemId = item.id; },
         });
       } catch (err) {
         const raw = String(err);
@@ -4600,7 +4634,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId);
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId);
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -7179,9 +7213,9 @@ EXPLANATION_END`;
           senderInfo,
           sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
-          onComplete: async (reply, segments, tokensUsed) => {
+          onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta);
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId);
           },
         });
 
@@ -7190,8 +7224,13 @@ EXPLANATION_END`;
         const userText = body['text'] as string;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
+        // 与 SSE 路径同源：item id 只能来自入队回调，不能猜。
+        let enqueuedItemId: string | null = null;
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
+            onItemEnqueued: (item) => { enqueuedItemId = item.id; },
+          });
         } catch (err) {
           throw err;
         }
@@ -7201,7 +7240,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta);
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });

@@ -98,8 +98,17 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
 
     const wu = new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!;
     expect(wu.agentId).toBe('agt_a');
-    expect(wu.status).toBe('running');
+    // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
+    // 新建时默认 `running`，`persistChatTurn` 在落库后立刻收口，所以这里读到 `idle`。
+    expect(wu.status).toBe('idle');
     expect(wu.contextRef).toBeTruthy();
+    // 收口必须**留痕**：不留痕的话「这一轮什么时候结束的」只能从消息时间戳猜。
+    // `status_transitions.entity_id` 记的是 WU 行的数字 id，不是 ref（见
+    // SqliteWorkUnitRepo.transition 里的 `entityId: current.id`）。
+    const transitions = db.prepare(
+      "SELECT reason FROM status_transitions WHERE entity_type='work_unit' AND entity_id=? ORDER BY id DESC LIMIT 1",
+    ).all(String(wu.id)) as Array<{ reason: string | null }>;
+    expect(transitions[0]?.reason).toBe('chat_turn_settled');
     // 一轮 = 一个 WU：第二轮必须产生新 ref，不能复用
     await (server as unknown as {
       persistChatTurn: (agentId: string, u: string, r: string) => Promise<void>;
@@ -170,8 +179,11 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     expect(outcome.state).toBe('queued');
     const rows = mailboxRowsWithWu();
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.work_unit_ref.startsWith('a2a:dm:a2a:x:y:')).toBe(true);
-    expect(new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!.agentId).toBe('agt_y');
+    expect(rows[0]!.work_unit_ref.startsWith('a2a:dm:a2a:x:y')).toBe(true);
+    // `work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
+    // 一次投递给 N 个接收方 → N 个 item 共享同一个 ref，这是定义不是缺陷。
+    expect(rows[0]!.work_unit_ref).toBe('a2a:dm:a2a:x:y:<id>'.replace('<id>', outcome.deliveryId));
+    expect(new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!.agentId).toBe('agt_x');
   });
 
   it('三条链路合起来：三种 ref 前缀各自出现，实体全部可查（终极读数）', async () => {

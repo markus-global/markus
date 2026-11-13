@@ -124,19 +124,38 @@ export interface DeliveryDeps {
     messageId?: string;
   }) => void;
   /**
-   * 第七刀 C7-A：WorkUnit 的唯一业务入口。未接线 ⇒ A2A 投递照常，但不建 WU
-   * （可知的降级，不是隐藏的失败）。
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（§16：一次 A2A 投递 = 一个 WU）。
+   *
+   * 必填而非可选：`workUnits?:` 会让「没有 WU 服务」和「忘了装配」在类型上无法区分，
+   * 整条链路静默跳过且没人发现。真的没有 WU 的装配路径显式传 `NULL_WORK_UNITS`。
+   *
+   * `transition` 是**装配处**包好 `WorkUnitService.tryTransition()` 的版本（业务路径
+   * 用的那个：非矩阵失败记事件、不打断投递；矩阵错误照样抛）—— 端口只声明「迁移」
+   * 这件事，不声明「怎么处理失败」，那是 service 的职责。
    */
-  workUnits?: {
+  workUnits: {
     ensure(seed: {
       ref: string;
       agentId: string;
       contextRef?: string | null;
       taskId?: string | null;
-    }): unknown;
-    linkMailboxItem(itemId: string | null | undefined, ref: string): boolean;
+    }): { status: string } | null;
+    linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean;
+    transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
   };
 }
+
+/**
+ * 具名空实现：这条装配路径确实没有 WU 服务（CLI 无 storage、单测直接构造）。
+ *
+ * 用显式对象而不是 `undefined`，是让「这里没有 WU」成为装配处一个**看得见**的决定，
+ * 而不是一个悄悄成立的可选性。
+ */
+export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
+  ensure: () => null,
+  linkMailboxItem: () => false,
+  transition: () => undefined,
+};
 
 let deliverySeq = 0;
 
@@ -230,15 +249,23 @@ export class AgentDelivery {
             ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
             : undefined,
         });
-        // ── 第七刀 C7-A：一次投递 = 一个 WorkUnit ────────────────────────────
+        // ── 第七刀 C7-A：一次 A2A 投递 = 一个 WorkUnit（state-machines §16）──
+        // WU 由**发送方**拥有：`deliver()` 是发送方的动作，所以 `agent_id` 记发送方
+        // （干活的那个），不是接收方。一次投递给 N 个接收方 → N 个 item 共享同一个
+        // ref，这是定义不是缺陷（它们确实是同一条活产出的 N 份投递）；接收方视角的
+        // 工作单元（认领/租约/预算）是 C7-B 的语义，本卡没有它的生产者。
         // `context_ref` 取 `channelKey`：A2A 消息的会话身份就是这条频道
-        // （mailbox 侧 sessionHint 也用同一个值），所以它就是「发送方上下文」。
-        // 顺序仍是先实体后引用：WU 建好之后才写 `mailbox_items.work_unit_ref`。
+        // （mailbox 侧 sessionHint 也用同一个值）。
+        // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
         const units = this.deps.workUnits;
-        if (units) {
-          const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
-          units.ensure({ ref, agentId: targetId, contextRef: req.channelKey });
-          units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
+        const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
+        const wu = units.ensure({ ref, agentId: req.fromAgentId, contextRef: req.channelKey });
+        units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
+        // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`
+        // （`entity_type='work_unit'`）：不留痕的话「它什么时候停的」只能靠猜。
+        // 只在 `running` 上迁：重投同一跳会命中既有 `idle` 行（idle→idle 不在矩阵里）。
+        if (wu?.status === 'running') {
+          units.transition(ref, 'idle', { reason: 'a2a_delivery_enqueued' });
         }
         deliveredTo.push(targetId);
       } catch (err) {
