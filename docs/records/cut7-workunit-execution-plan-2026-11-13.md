@@ -106,8 +106,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);
 
 | 项 | 内容 |
 |---|---|
-| 改动 | 三条委派路径（`spawn_subagent` / `spawn_subagents` / 跨团队委派）改写为创建 WU 并落 `parent_id`；预算归并进 `work_units.budget/used`；到线 → `paused_budget` + transition 行；**删除 6b 两处补丁**（`infinity` 回退 + 把断路器当日程）；`sessionLockKey` 改从 `context_ref` 派生 |
-| 做完的判据 | 一次扇出产生 **1 父 + N 子**且父子链可查；预算到线用例：状态 `paused_budget` 且 `status_transitions` 有对应行；`DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity` 与聚合断路器 grep 归零；`subagent-*` / `concurrent-*` / `mailbox-claim-lease` 三族测试全绿 |
+| 改动 | 三条委派路径（`spawn_subagent` / `spawn_subagents` / 跨团队委派）改写为创建 WU 并落 `parent_id`；预算归并进 `work_units.budget/used`；到线 → `paused_budget` + transition 行；**删除 6b 两处补丁**（`infinity` 回退 + 把断路器当日程）；`sessionLockKey` 改从 `context_ref` 派生；**把 chat / task 的 WU 创建点从「回合收口」前移到「回合开始」** —— C7-A 里 chat WU 建于回复落库之后并立即 `running→idle`，因此 `work_status()` 任何时刻都读不到 `running`；「这个 agent 现在在干什么」的可观测性必须在 B 关闭，不能留口头 |
+| 做完的判据 | 一次扇出产生 **1 父 + N 子**且父子链可查；预算到线用例：状态 `paused_budget` 且 `status_transitions` 有对应行；**回合进行中（未收口）调 `work_status()` 能读到 `running` 行，回合收口后同一条变 `idle`**；`DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity` 与聚合断路器 grep 归零；`subagent-*` / `concurrent-*` / `mailbox-claim-lease` 三族测试全绿 |
 | 为什么与 A 分开 | B 改变**行为**（预算、委派、锁），必须能单独回滚；A 只加对象与写入、不改行为。这是唯一值得独立的一刀 |
 | 回滚 | 单提交 revert；6b 补丁可用 revert 恢复 |
 
