@@ -6425,6 +6425,19 @@ export class SqliteWorkUnitRepo {
   }
 
   /**
+   * C7-B —— 迭代记账：`used` 是**唯一口径**（iteration 次数）。
+   *
+   * 只做加法（`used = used + ?`），不做覆盖：覆盖在并发下会丢读数，而记账丢读数
+   * 是不可察觉的错误 —— 台账看起来对，实际少记。
+   */
+  addUsage(ref: string, used: number): void {
+    if (!Number.isFinite(used) || used <= 0) return;
+    this.db
+      .prepare('UPDATE work_units SET used = used + ? WHERE ref = ?')
+      .run(Math.floor(used), ref);
+  }
+
+  /**
    * 自省读面：「我这个 agent 现在有哪些 WU」。
    *
    * 只读 `work_units`，**不碰 payload、不读会话文本** —— 结构问题必须由结构回答

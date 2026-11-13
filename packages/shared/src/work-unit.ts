@@ -144,7 +144,39 @@ export const WORK_UNIT_REF = {
   a2a(channelKey: string, deliveryId: string): string {
     return `a2a:${channelKey}:${deliveryId}`;
   },
+  /**
+   * C7-B —— 一次委派 = 一个子 WU（`spawn_subagent` / `spawn_subagents` / 跨团队委派）。
+   *
+   * `parentRef` 是本轮父 WU 的 ref；本轮没有 WU 身份时用 `root:<agentId>` 显式表态
+   * （**不猜**「最近那条」——那是从时序推断结构）。`childKey` 在该父 WU 内必须稳定：
+   * fan-out 用调用方给的 `task.id`，单发用本次委派的 subagent id。
+   *
+   * 前缀 `delegation:` + 分隔符 `#` 让 ref 可反解且不与 chat / task / a2a 混淆；
+   * 父 ref 里本来就含 `:`，所以子键用 `#` 分隔而不是再叠一层 `:`。
+   */
+  delegation(parentRef: string, childKey: string): string {
+    return `delegation:${parentRef}#${childKey}`;
+  },
 } as const;
+
+// ─── 会话锁键派生（C7-B：单一来源是 context_ref）───────────────────────────
+
+/**
+ * `context_ref` → 并发会话锁键。
+ *
+ * 只有**记忆会话身份**（`sess_*`）能当会话锁键。其它 `context_ref`（chat 的
+ * `cs_*` 库会话 id、task 的 `task_<id>_r<n>`）不是同一个命名空间 —— 把它们当锁键
+ * 会让「同一份记忆会话」看起来是两把不同的键，互斥直接失效（2026-10-22 事故）。
+ * 返回 `undefined` = 调用方必须 fallback 到旧路径，**不得**把它当成「没有会话」。
+ *
+ * 纯函数（不读库、不持状态）：派生规则与“什么算合法键”必须只有一处定义。
+ */
+export function sessionLockKeyOfContextRef(
+  contextRef: string | null | undefined,
+): string | undefined {
+  if (!contextRef) return undefined;
+  return contextRef.startsWith('sess_') ? `session:${contextRef}` : undefined;
+}
 
 // ─── 行结构（读取侧的形状，与 work_units 列一一对应）───────────────────────
 

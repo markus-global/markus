@@ -1150,6 +1150,28 @@ async function startServerCore(
     agentManager.setWorkUnitStatusProvider((agentId, opts) =>
       apiServer.workUnits!.workStatus(agentId, opts),
     );
+    // ── 第七刀 C7-B：委派 WU 端口（父子结构 + 预算记账的唯一入口）──────
+    // 端口而不是 WorkUnitService 本身：core 不反向依赖 org-manager。
+    // 读面走 storage 的唯一 SQL 点（`SqliteWorkUnitRepo.getByRef`），写面走
+    // `WorkUnitService`（唯一业务写者）—— 不在这里另算一份预算。
+    const units = apiServer.workUnits;
+    agentManager.setWorkUnitPort({
+      resolve: (ref) => {
+        const row = storage?.workUnitRepo?.getByRef(ref) as
+          | { id: string; ref: string; status: string; contextRef: string | null }
+          | undefined;
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      ensureChild: (seed) => {
+        const row = units.ensure({ ...seed, status: 'running' });
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      settle: (ref, opts) => units.settle(ref, opts),
+    });
   }
 
   // session_rename tool → persist chat (cs_*) session titles to Sqlite and

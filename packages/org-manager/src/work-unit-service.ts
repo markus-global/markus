@@ -31,6 +31,8 @@ export interface WorkUnitPort {
   ensure(seed: WorkUnitSeedLike): { row: WorkUnitRecord; created: boolean };
   transition(ref: string, to: WorkUnitStatus, opts?: WorkUnitTransitionOptionsLike): WorkUnitRecord;
   getByRef(ref: string): WorkUnitRecord | undefined;
+  /** C7-B：迭代记账（`used` 唯一口径）。 */
+  addUsage(ref: string, used: number): void;
   listByAgent(
     agentId: string,
     opts?: { statuses?: WorkUnitStatus[]; includeArchived?: boolean; limit?: number },
@@ -74,6 +76,7 @@ export interface WorkUnitEvent {
     | 'work_unit.ensure_failed'
     | 'work_unit.transition_failed'
     | 'work_unit.link_failed'
+    | 'work_unit.usage_failed'
     | 'work_unit.created';
   ref?: string;
   itemId?: string;
@@ -232,6 +235,37 @@ export class WorkUnitService {
   /** 子 WU 的只读视图（C7-B 才有写入者；本卡读空集是对的）。 */
   children(parentId: string): WorkUnitRecord[] {
     return this.deps.repo.listChildren(parentId);
+  }
+
+  /**
+   * C7-B —— 迭代记账。`used` 的单位是 **iteration 次数**（与 `budget` 同口径）。
+   *
+   * 为什么记账必须走这里而不是各委派路径自己 UPDATE：一个事实只能有一个写者。
+   * 委派路径只负责「我花了多少次」这一个输入，落库口径在这里统一。
+   * 非矩阵错误吞掉并记结构化事件（观测不得成为业务故障点）。
+   */
+  recordUsage(ref: string, used: number): void {
+    if (!Number.isFinite(used) || used <= 0) return;
+    try {
+      this.deps.repo.addUsage(ref, Math.floor(used));
+    } catch (err) {
+      this.fail('work_unit.usage_failed', ref, undefined, String(err));
+    }
+  }
+
+  /**
+   * C7-B —— 子 WU 收口：先记账（`used`），再迁移状态。
+   *
+   * `paused_budget` 与 `idle` 的差别是结构性的：「被预算停下的」与「干完了的」
+   * 必须能从状态（和 `status_transitions` 行）读出来，不能只写在结果文本里。
+   * 迁移用 `tryTransition`：业务路径不该因为记账失败而失败，但**非法迁移照样抛**。
+   */
+  settle(
+    ref: string,
+    opts: { used: number; status: 'idle' | 'paused_budget'; reason: string },
+  ): void {
+    this.recordUsage(ref, opts.used);
+    this.tryTransition(ref, opts.status, { changedByType: 'system', reason: opts.reason });
   }
 
   private emit(event: WorkUnitEvent): void {

@@ -97,7 +97,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { resolveOutputReserve } from './context-budgets.js';
-import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
+import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback, type DelegationWorkUnitPort } from './tools/subagent.js';
+import { sessionLockKeyOfContextRef } from '@markus/shared';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
@@ -596,6 +597,28 @@ export class Agent {
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
+  /**
+   * C7-B：委派 WU 端口（装配处注入，core 不反向依赖 org-manager）。
+   *
+   * 未注入 ⇒ 子代理照常跑，只是没有 WU 身份；会话锁键退回旧路径
+   * （`peekTurnSessionId`）—— 可知的降级，不是隐藏的崩溃。
+   */
+  private workUnitPort?: DelegationWorkUnitPort;
+  /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
+  private currentTurnWorkUnitRef: string | null = null;
+
+  /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
+    this.workUnitPort = port;
+  }
+
+  /**
+   * C7-B：当前记忆会话 id（`sess_*`）。
+   *
+   * chat WU 的 `context_ref` 必须是它 —— 只有记忆会话身份能当会话锁键；
+   * 库会话 id（`cs_*`）是另一个命名空间，拿它当锁键会让同一份会话看起来两把键。
+   */
+  getMemorySessionId(): string | undefined { return this.currentSessionId; }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -1021,6 +1044,13 @@ export class Agent {
       getProgressCallback: () =>
         taskAsyncContext.getStore()?.subagentProgress
         ?? chatSubagentContext.getStore()?.subagentProgress,
+      // C7-B：委派即产生子 WU（端口惰性读取：装配发生在构造之后）。
+      workUnits: {
+        resolve: (ref) => this.workUnitPort?.resolve(ref) ?? null,
+        ensureChild: (seed) => this.workUnitPort?.ensureChild(seed) ?? null,
+        settle: (ref, opts) => { this.workUnitPort?.settle(ref, opts); },
+      },
+      currentWorkUnitRef: () => this.currentTurnWorkUnitRef,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -1849,6 +1879,9 @@ export class Agent {
         });
       },
       onFocusChanged: (item: MailboxItem | undefined) => {
+        // C7-B：回合开始（获得焦点）= 设置本轮父 WU。子 WU 的 `parent_id` 只能来自
+        // 这里 —— 不在别的时刻猜「最近那条」。
+        this.currentTurnWorkUnitRef = item?.workUnitRef ?? null;
         this.eventBus.emit('agent:focus-changed', {
           agentId: this.id,
           focus: item ? {
@@ -3053,6 +3086,23 @@ export class Agent {
    * 本方法是**只读窥视**——不切换 `currentSessionId`、不建会话、不写绑定。
    */
   sessionLockKey(item: MailboxItem): string | undefined {
+    // C7-B：锁键的**单一来源**收敛到 WU 台账的 `context_ref`（结构事实），
+    // 而不是从 payload 再推一次。派生是纯函数（`sessionLockKeyOfContextRef`）：
+    // 只有记忆会话身份（`sess_*`）才算会话锁键。
+    //
+    // **收益**：从 WU 台账派生天然不依赖 ALS（AsyncLocalStorage）—— 旧路径必须在
+    // 本 worker 的会话上下文里求值，否则读到 `rootWorkspace` 的指针（2026-10-22
+    // 事故）。新路径不读内存指针，所以在 ALS 之外求值也安全。
+    //
+    // **fallback 是必须的**：`work_unit_ref` 为空（旧行 / 非 WU 链路 / 首轮入队时
+    // WU 尚未产生）或 context_ref 不是 `sess_*` 时，必须回到旧路径 ——
+    // 空值直接返回 undefined 会让互斥静默失效，那是最坏的退步。
+    const ref = item.workUnitRef ?? null;
+    if (ref) {
+      const handle = this.workUnitPort?.resolve(ref) ?? null;
+      const fromLedger = sessionLockKeyOfContextRef(handle?.contextRef ?? null);
+      if (fromLedger) return fromLedger;
+    }
     const sessionId = this.peekTurnSessionId(item);
     return sessionId ? `session:${sessionId}` : undefined;
   }

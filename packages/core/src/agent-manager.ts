@@ -25,6 +25,7 @@ import {
   MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import type { DelegationWorkUnitPort } from './tools/subagent.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
 
 /**
@@ -1604,6 +1605,7 @@ export class AgentManager {
     };
 
     const agent = new Agent(agentOpts);
+    this.applyWorkUnitPort(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
@@ -2532,6 +2534,7 @@ export class AgentManager {
       maxToolIterations: this._maxToolIterations,
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
+    this.applyWorkUnitPort(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
@@ -3644,6 +3647,23 @@ export class AgentManager {
     fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
   ): void {
     this.workUnitStatusProvider = fn;
+  }
+
+  /**
+   * C7-B：委派 WU 端口的接入口（org-manager 装配时注入）。
+   *
+   * 与 `workUnitStatusProvider` 同方向：core 只认最小端口，不认识 WorkUnitService。
+   * 注入时对**已经存在**的 agent 逐个补装；此后新建的 agent 在建时就接上
+   * （`applyWorkUnitPort`）—— 两条建 Agent 的路径都要走，否则必有一半没身份。
+   */
+  private workUnitPort?: DelegationWorkUnitPort;
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
+    this.workUnitPort = port;
+    for (const agent of this.agents.values()) agent.setWorkUnitPort(port);
+  }
+
+  private applyWorkUnitPort(agent: Agent): void {
+    if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
   }
 
   private registerAddressTools(agent: Agent, agentId: string): void {

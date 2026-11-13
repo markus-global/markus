@@ -803,3 +803,96 @@ One deliberate exception: an illegal transition is a program error, not a recove
 It reads no payload and no session text. A structural question must be answered by structure: the pre-cut-7 answer was recomputed from an injected text block every turn, which is a snapshot that can drift from what is really executing.
 
 See [mailbox-system.md](./mailbox-system.md) for the delivery envelope and mailbox columns this identity is attached to.
+
+### C7-B — budget has exactly one meaning now
+
+C7-A deliberately left `budget` / `used` as empty columns. C7-B gives them semantics, and
+the point of writing it here is that **there must never be a second budget notion**.
+
+| Fact | Single source | What is forbidden |
+|---|---|---|
+| Unit of `budget` / `used` | **iteration count** (same unit as today's loop caps) | A second unit (e.g. tokens) computed anywhere; token quota is a future column, not a reinterpretation |
+| Who writes `used` | `WorkUnitService.recordUsage()` → `SqliteWorkUnitRepo.addUsage()` (`used = used + ?`) | Any delegation path computing or writing its own tally |
+| Who decides "budget reached" | `WorkUnitService.settle()` → the matrix | A path letting a child stop without a state + transition row |
+
+Token accounting is not in this cut. When it arrives it gets its own columns; reusing
+`budget` for tokens would silently rewrite the meaning of every existing row.
+
+#### `paused_budget` — entry and exit
+
+| Direction | Condition | Transition |
+|---|---|---|
+| Enter | the child's own iteration budget is exhausted (`used >= budget`, reported as `budgetHit: 'own'`) | `running → paused_budget` |
+| Leave | budget is topped up | `paused_budget → running` |
+| Leave | the work is cancelled | `paused_budget → terminated` |
+
+`idle` and `paused_budget` are **not** the same fact: `idle` means "this unit finished its
+turn", `paused_budget` means "this unit was stopped by money, not by completion". That
+distinction lives in the state (and in the `status_transitions` row), never only in the
+result text — otherwise "why did it stop" has to be re-derived from prose.
+
+#### The circuit breaker is a breaker again
+
+`SUBAGENT_MAX_AGGREGATE_ITERATIONS` (100) is **not** a schedule. The history is worth
+recording because the prompt text was already right and the code was not: the fan-out used
+to pre-allocate it as a shared pool (`{ remaining: 100 }`), so a wide fan-out consumed it as
+its budget and siblings starved each other — the "zero-product fan-out" failure. The prompt
+said `circuit breaker` the whole time.
+
+What is true now:
+
+- each child gets a **finite, independent** per-child budget (`iteration_budget`, else
+  `SUBAGENT_DEFAULT_ITERATION_BUDGET`); no child can spend a sibling's rope;
+- scheduling lives in `work_units.budget` / `used` — one ledger, one writer;
+- the aggregate constant survives only as an **abnormal fallback ceiling**, and the per-child
+  default is derived from it (`breaker / max parallel`), so a correctly configured full-width
+  fan-out lands exactly on the ceiling instead of silently exceeding it;
+- an exhausted child returns a structured result (`status`, `budgetHit`, `iterations`,
+  `filesTouched`, `toolCalls`, and — from C7-B — its `workUnitRef`), never an empty success.
+
+#### Delegation produces the parent/child chain
+
+Every delegation (single, fan-out, cross-team) asks the injected `DelegationWorkUnitPort` to
+create the child **before** running it, with `parent_id` taken from the current turn's
+WorkUnit (`onFocusChanged`). There is no "guess the most recent row": when the turn has no
+WorkUnit identity the child is created with `parent_id = NULL` and its `ref` says so
+explicitly (`delegation:root:<agentId>#<childKey>`).
+
+`ref` comes from the single generator `WORK_UNIT_REF.delegation(parentRef, childKey)`; the
+`childKey` is the caller's `task.id` for fan-outs, so re-running the same fan-out collapses
+onto the same rows instead of multiplying identity.
+
+#### `sessionLockKey` derives from `context_ref`
+
+The concurrency lock key answers "which memory session will this turn write to". C7-B takes
+it from the WorkUnit ledger (`mailbox_items.work_unit_ref → work_units.context_ref`) instead
+of re-deriving it from the payload, and a pure function
+(`sessionLockKeyOfContextRef`) owns the rule: **only a memory session identity (`sess_*`)
+can be a session lock key**. Anything else (`cs_*` database session ids, `task_…`,
+`delegation:…`) returns `undefined` and the caller falls back to the legacy
+`peekTurnSessionId` path.
+
+Two properties follow, and both are load-bearing:
+
+- **Equivalence**: for the same memory session, ledger and legacy paths produce the same key
+  (`session:<sess_*>`). Semantic drift is the only real risk of this change, so a test pins
+  the two paths to each other rather than testing the new one alone.
+- **Fallback is mandatory**: an empty `work_unit_ref` (old rows, non-WorkUnit paths, a chat
+  item enqueued before its WorkUnit exists) must fall back, never return `undefined`, because
+  a missing lock key silently disables mutual exclusion — the worst possible regression
+  (2026-10-22 shape).
+
+One benefit is structural: deriving from the ledger does not read the in-memory workspace
+pointer, so it is safe outside the worker's ALS context — the trap the legacy path had to
+document. The legacy path is kept as the fallback and stays the one that must be evaluated
+inside ALS.
+
+#### Current state after C7-B (honest boundaries)
+
+| Thing | State |
+|---|---|
+| `budget` / `used` | Produced by delegation; unit = iterations; single writer as above |
+| `paused_budget` | Reachable (child budget exhaustion) |
+| `parent_id` | Written for every delegation, when the turn has a WorkUnit |
+| `sessionLockKey` | Derived from `context_ref` for chat turns (memory session id), `task`/`a2a`/`delegation` context refs fall back |
+| chat/task WorkUnit creation point | **Still at turn close.** Moving it to turn start (so `work_status()` can observe `running` mid-turn) is not in this delivery |

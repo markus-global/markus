@@ -2562,6 +2562,15 @@ export class APIServer {
      * 由调用点显式表态。写成 `?:` 会让「漏传」与「确实没有」在类型上无法区分。
      */
     mailboxItemId: string | null,
+    /**
+     * C7-B：本轮的**记忆会话 id**（`sess_*`，即 `Agent.currentSessionId`）。
+     *
+     * 为什么要显式传而不是在这里现算：`work_units.context_ref` 是会话锁键的
+     * 单一来源（`sessionLockKeyOfContextRef`），而**只有 `sess_*` 能当会话锁键**。
+     * 库会话 id（`cs_*`）是另一个命名空间；把它存进 `context_ref` 会让新路径
+     * 永远 fallback，等于这条收敛没生效。没有记忆会话（历史重放）时显式 null。
+     */
+    memorySessionId: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2593,7 +2602,8 @@ export class APIServer {
       const units = this.workUnits;
       if (units) {
         const ref = WORK_UNIT_REF.chat(session.id, round);
-        const wu = units.ensure({ ref, agentId, contextRef: session.id });
+        // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
+        const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
         units.linkMailboxItem(mailboxItemId, ref);
         // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
         // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
@@ -4634,7 +4644,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId);
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, agent.getMemorySessionId() ?? null);
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -7215,7 +7225,7 @@ EXPLANATION_END`;
           executionStreamRepo: this.storage?.executionStreamRepo,
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId);
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, agent.getMemorySessionId() ?? null);
           },
         });
 
@@ -7240,7 +7250,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId);
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, agent.getMemorySessionId() ?? null);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
