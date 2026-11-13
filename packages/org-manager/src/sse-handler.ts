@@ -50,6 +50,14 @@ export interface SSEMessageHandlerOptions {
    * （R3）；必填会把每个调用点变成编译错，逼每条路径表态。
    */
   onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number, enqueuedItemId: string | null) => Promise<void>;
+  /**
+   * C7-B：入队时机的转发钩子。
+   *
+   * item id 只在这里产生（`sendMessageStream` 的 `onItemEnqueued`），上层入口拿不到
+   * 这个时机；不转发的话，流式回合只能在收口时才有 WU 身份 —— "回合进行中读到
+   * running" 就在流式路径上永远不成立。
+   */
+  onItemEnqueued?: (item: { id: string }) => void;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
@@ -243,7 +251,10 @@ export class SSEHandler {
           ...(this.sessionId ? { sessionId: this.sessionId } : {}),
           // 第七刀 C7-A：item id 只能来自入队回调。SSEHandler 自己发起入队，
           // 所以必须自己挂这个回调 —— 上层入口拿不到这一层的入队时机。
-          onItemEnqueued: (item) => { this.enqueuedItemId = item.id; },
+          onItemEnqueued: (item) => {
+            this.enqueuedItemId = item.id;
+            this.options.onItemEnqueued?.({ id: item.id });
+          },
         },
       );
 

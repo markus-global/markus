@@ -207,7 +207,7 @@ describe('injectFollowUp and sendTaskExecution', () => {
     const promise = agent.sendTaskExecution('task_abc', 'Implement feature X', {
       taskId: 'task_abc',
       title: 'Feature X',
-    });
+    } as never, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
     expect(agent.getMailbox().depth).toBeGreaterThan(0);
     expect(promise).toBeInstanceOf(Promise);
   });

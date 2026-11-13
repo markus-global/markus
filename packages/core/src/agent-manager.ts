@@ -3477,6 +3477,15 @@ export class AgentManager {
     return agent;
   }
 
+  /**
+   * C7-B：某个 agent 本轮父 WU 的 ref（agent 不在内存 / 没有回合 = null）。
+   *
+   * 供 A2A 投递把子 WU 挂到发送方回合上；**不抛** —— 台账缺失不该让投递失败。
+   */
+  getCurrentWorkUnitRef(agentId: string): string | null {
+    return this.agents.get(agentId)?.getCurrentWorkUnitRef() ?? null;
+  }
+
   hasAgent(agentId: string): boolean {
     return this.agents.has(agentId);
   }

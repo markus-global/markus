@@ -852,15 +852,48 @@ What is true now:
 
 #### Delegation produces the parent/child chain
 
-Every delegation (single, fan-out, cross-team) asks the injected `DelegationWorkUnitPort` to
-create the child **before** running it, with `parent_id` taken from the current turn's
-WorkUnit (`onFocusChanged`). There is no "guess the most recent row": when the turn has no
-WorkUnit identity the child is created with `parent_id = NULL` and its `ref` says so
-explicitly (`delegation:root:<agentId>#<childKey>`).
+All **three** delegation paths create the child before running it, and all three land
+`parent_id`. They differ only in where the parent comes from, and in each case it is a
+structural fact, never an inference:
 
-`ref` comes from the single generator `WORK_UNIT_REF.delegation(parentRef, childKey)`; the
-`childKey` is the caller's `task.id` for fan-outs, so re-running the same fan-out collapses
-onto the same rows instead of multiplying identity.
+| Path | Child is created by | `parent_id` source | `ref` |
+|---|---|---|---|
+| `spawn_subagent` | `DelegationWorkUnitPort.ensureChild()` | the current turn's WorkUnit (`onFocusChanged`) | `WORK_UNIT_REF.delegation(parentRef, childKey)` |
+| `spawn_subagents` (fan-out) | same port, once per child | same; `childKey` = caller's `task.id` | same generator |
+| cross-team (A2A `deliver()`) | `DeliveryDeps.workUnits.ensure()` | the **sender** agent's current turn WorkUnit (`currentWorkUnitRef`) | `WORK_UNIT_REF.a2a(channelKey, deliveryId)` |
+
+There is no "guess the most recent row". When a turn has no WorkUnit identity the child is
+created with `parent_id = NULL` and its `ref` says so explicitly
+(`delegation:root:<agentId>#<childKey>`); a delivery sent outside any turn (scheduled,
+background) does the same.
+
+The two inputs a caller may hand over are `parentId` (a handle it already holds) and
+`parentRef` (it only knows *which* WorkUnit) — and `WorkUnitService.ensure()` owns the
+`ref → id` resolution, with `parentId` winning when both are present. That keeps one
+resolver: if every call site looked the parent up itself, the same fact would grow several
+translations and they would drift.
+
+Re-running the same fan-out collapses onto the same rows instead of multiplying identity —
+the ref is idempotent by construction (`uq_work_units_ref` is the arbiter).
+
+#### Where each chain's mailbox item comes from
+
+`mailbox_items.work_unit_ref` is only honest when the item identity comes from the enqueue
+that actually created it. Each chain has exactly one such moment:
+
+| Chain | Item enqueued by | Linked at |
+|---|---|---|
+| chat | the turn's entry enqueue | `openChatTurnWorkUnit()` (turn **start**) |
+| task | the enqueue **inside** `Agent.sendTaskExecution()` | `TaskService` run / retry call sites, via that call's `onItemEnqueued` |
+| a2a | `AgentDelivery.deliver()` | `deliver()` itself, right after the enqueue |
+
+The task chain is worth stating because the obvious guess is wrong: the item is **not**
+produced by TaskService's notification enqueues (`task_comment`, `requirement_comment`,
+`task_status_update`). Those address *other* agents or can be sent many times per execution
+round, so they cannot identify "the item that triggered this round" — one epoch, many items.
+The trigger item is the one `sendTaskExecution()` enqueues, and its id exists only as that
+call's return value, which is why the callback is a required parameter rather than an
+optional one: an optional callback would let a caller silently leave the column NULL again.
 
 #### `sessionLockKey` derives from `context_ref`
 
@@ -893,6 +926,7 @@ inside ALS.
 |---|---|
 | `budget` / `used` | Produced by delegation; unit = iterations; single writer as above |
 | `paused_budget` | Reachable (child budget exhaustion) |
-| `parent_id` | Written for every delegation, when the turn has a WorkUnit |
-| `sessionLockKey` | Derived from `context_ref` for chat turns (memory session id), `task`/`a2a`/`delegation` context refs fall back |
-| chat/task WorkUnit creation point | **Still at turn close.** Moving it to turn start (so `work_status()` can observe `running` mid-turn) is not in this delivery |
+| `parent_id` | Written for all three delegation paths (subagent, fan-out, cross-team A2A) when the turn has a WorkUnit |
+| `sessionLockKey` | Derived from `context_ref` for chat turns (memory session id, adopted at turn close), `task`/`a2a`/`delegation` context refs fall back |
+| chat WorkUnit creation point | **Turn start** (`openChatTurnWorkUnit`), so `work_status()` can read `running` mid-turn; the close path only settles it to `idle` |
+| task mailbox link | Written from `sendTaskExecution()`'s enqueue callback |
