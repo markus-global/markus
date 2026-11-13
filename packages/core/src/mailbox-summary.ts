@@ -132,17 +132,58 @@ export function bounceReasonOfError(err: unknown): 'payload_invalid' | undefined
   return err instanceof SignalPayloadInvalidError ? 'payload_invalid' : undefined;
 }
 
-export function turnContentOf(item: ItemLike): string {
+/** 报文是否带了可用的正文 —— 与 {@link isPayloadUnreadable} 是同一个判据的前半段。 */
+function hasTurnContent(item: ItemLike): boolean {
   const content = item.payload?.content;
-  if (typeof content === 'string' && content.trim().length > 0) return content;
-  if (AUTHORITATIVE_TURN_TYPES.has(item.sourceType)) {
+  return typeof content === 'string' && content.trim().length > 0;
+}
+
+/**
+ * 「这条报文能不能读成一个回合」—— **唯一判据**。
+ *
+ * `turnContentOf()`（校验层）与失败族分类（{@link bounceReasonOfFailure}）共用它，
+ * 因为这是**同一个事实**的两个读者。分开写两份判断，迟早一份被改另一份没改。
+ */
+export function isPayloadUnreadable(item: ItemLike): boolean {
+  return !hasTurnContent(item) && AUTHORITATIVE_TURN_TYPES.has(item.sourceType);
+}
+
+/**
+ * 失败族的原因投影 —— 判据是**事实**（报文读不读得成回合），不是「异常是哪个类」。
+ *
+ * 真实实例探针（2026-11-13）暴露的 C5 漏洞：同一条缺 `content` 的 chat 报文，这次
+ * 处理中途更早的一行先抛了普通 `TypeError`（`...reading 'trim'`），于是
+ * `bounceReasonOfError()` 认不出来 → `undefined` → `drop()` 取默认值 → 台账又写成
+ * `stale_signal`。也就是说「原因是什么」曾经取决于**哪一行先抛错**，那是巧合，不是判据。
+ *
+ * 现在的口径：只要有异常、且这条报文本来就读不成一个回合 → `payload_invalid`；
+ * 报文**可读**时的未知异常 → `processing_error`（平台在处理过程中坏了，不是报文坏）；
+ * 没有异常 → 不产出失败族原因：决策型终态（用户取消 / 主动丢弃）仍走 `stale_signal`。
+ *
+ * 为什么必须有 `processing_error`：`drop_reason` 的唯一用途是让操作者知道**该由谁去修**。
+ * 六类旧原因里每一类都能指向一个责任方（运维补绑定 / 发送方修报文 / 平台自愈租约），
+ * 只有「平台自己崩了」没有名字 —— 于是被塞进 `stale_signal`，而 `stale_signal` 的语义
+ * 是「有人决定不处理它」。把「我们坏了」记成「你没价值」，与 C5 修的那条谎同构。
+ */
+export function bounceReasonOfFailure(
+  err: unknown,
+  item: ItemLike,
+): 'payload_invalid' | 'processing_error' | undefined {
+  if (!err) return undefined;
+  if (bounceReasonOfError(err)) return 'payload_invalid';
+  return isPayloadUnreadable(item) ? 'payload_invalid' : 'processing_error';
+}
+
+export function turnContentOf(item: ItemLike): string {
+  if (isPayloadUnreadable(item)) {
     throw new SignalPayloadInvalidError(
       `mailbox item ${item.id ?? '(no id)'} of type ${item.sourceType} has no payload.content — ` +
         `refusing to build the turn from a display excerpt ` +
         `(summary="${item.payload?.summary ?? ''}"). Fix the enqueue site; do not degrade here.`,
     );
   }
-  return item.payload?.summary ?? '';
+  // 非权威类型回退到 summary：系统事件本来只带摘要，这是合法形状。
+  return hasTurnContent(item) ? (item.payload?.content as string) : (item.payload?.summary ?? '');
 }
 
 /**

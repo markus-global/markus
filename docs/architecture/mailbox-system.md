@@ -2061,14 +2061,47 @@ one reserved:
 | `duplicate_message_id` | Same `(agent, messageId)` delivered twice |
 | `stale_signal` | Superseded / TTL-expired / deliberately discarded. **Only** this meaning |
 | `payload_invalid` | The signal cannot be read as a turn at all — request-shape validation rejected it (`SignalPayloadInvalidError`) |
+| `processing_error` | The platform threw while handling a signal it *could* read. Not the sender's fault, and not a decision: this is the platform's own regression surfaced as data |
 | `dsn_bounce` *(reserved)* | External DSN; shape fixed, **never produced** in v1 |
+
+**Each reason names one actor and one action** — that is the whole point of the closed set, and the
+criterion used to decide what belongs in it:
+
+| Reason family | Who acts | Action |
+|---|---|---|
+| `unresolved_address`, `no_active_target` | operator / org admin | fix the binding |
+| `payload_invalid` | sender / ingest site | fix the payload |
+| `duplicate_message_id` | sender | none (idempotency worked) |
+| `lease_expired` | platform | observe (self-heals) |
+| `processing_error` | platform | fix the code; a rising rate is a regression signal |
+| `stale_signal` | **nobody** | it is a *decision*, not a failure |
+
+`processing_error` exists because without it "the platform broke" had no name and kept being
+recorded as `stale_signal` — which asserts that someone decided the signal was not worth handling.
+Recording "we failed" as "this was worthless" is the same lie as the C5 defect, one layer down.
+`stale_signal` is therefore narrowed to exactly one meaning: a human or agent deliberately decided
+not to handle this signal. Both directions are pinned by tests — the failure family may not write
+`stale_signal`, the decision family may not write `processing_error`.
 
 `payload_invalid` exists because the first real-instance probe exposed a lying reason:
 a chat request missing `payload.content` was recorded as `stale_signal` under the event
 name `duplicate_delivery_dropped`. A reason that lies is worse than no reason — the
-overview aggregating by reason conflated "expired" with "malformed". The failure family
-now projects its terminal reason through `bounceReasonOfError()`, and the observability
+overview aggregating by reason conflated "expired" with "malformed". The observability
 event is `mailbox.signal_bounced`.
+
+**The classification predicate is a fact, not an exception class.** A second
+real-instance probe (2026-11-13) caught the first fix still lying on one path: the same
+missing-`content` request this time threw a plain `TypeError` (`… reading 'trim'`) from a
+line *earlier* than the validation layer, so an `instanceof SignalPayloadInvalidError`
+check returned `undefined` and `drop()` fell back to its `stale_signal` default. In other
+words "what reason gets recorded" depended on **which line threw first** — coincidence,
+not a criterion. The projection is now
+`bounceReasonOfFailure(err, item)`: any failure on an item whose payload cannot be read
+as a turn (`isPayloadUnreadable()`, the *same* predicate `turnContentOf()` validates
+with) is `payload_invalid`. The reverse edge stays closed: an unknown exception on a
+**readable** payload is not projected, so `payload_invalid` cannot become the next
+catch-all bucket, and no exception at all yields no failure-family reason (deliberate
+drops stay `stale_signal`).
 
 `bounceSignal()` performs two real transitions through the single execution point
 (`AgentMailbox.updateSignalStatus()`): `X → bounced` (the fact that delivery failed) and

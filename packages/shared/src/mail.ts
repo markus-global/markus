@@ -33,6 +33,7 @@ export const ACTIVE_BOUNCE_REASONS = [
   'duplicate_message_id',
   'stale_signal',
   'payload_invalid',
+  'processing_error',
 ] as const;
 
 /** 预留位：形状已定，本刀不得产生（C10 接外部邮件时才启用）。 */
@@ -41,7 +42,7 @@ export const RESERVED_BOUNCE_REASONS = ['dsn_bounce'] as const;
 export type ActiveBounceReason = (typeof ACTIVE_BOUNCE_REASONS)[number];
 export type ReservedBounceReason = (typeof RESERVED_BOUNCE_REASONS)[number];
 
-/** 七类原因的闭集（持久化列 `mailbox_items.drop_reason` 的取值域）：六类可产生 + 一类预留。 */
+/** 八类原因的闭集（持久化列 `mailbox_items.drop_reason` 的取值域）：七类可产生 + 一类预留。 */
 export type BounceReason = ActiveBounceReason | ReservedBounceReason;
 
 export const BOUNCE_REASONS: readonly BounceReason[] = Object.freeze([

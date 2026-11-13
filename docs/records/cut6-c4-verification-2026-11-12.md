@@ -218,4 +218,51 @@ Error: Test timed out in 60000ms.
 | `docs/records/cut6-c4-verification-2026-11-12.md` | 本报告 |
 | `docs/records/cut6-mailbox-address-envelope-design-2026-11-12.md` | 末尾追加 §7.9（指针，不复制事实） |
 
+---
+
+## 9. 2026-11-13 追加：真实实例受控退信探针（发现并修复 C5 漏洞）
+
+Owner 批准在**本机 live 实例**（`:8056` API / `:8057` web，`~/.markus/data.db` 12.7GB）上做一次受控退信，验证升级后退信链路。做法：走真实入口 `POST /api/message`，报文故意用错字段名（`message` 而非契约要求的 `text`），使其在读回合时被拒。
+
+### 9.1 结果：抓到一个真缺陷
+
+| 项 | 读数 |
+|---|---|
+| 落库行 | `mbx_176351d1b1e9411b7f3018a8`（Secretary 信箱） |
+| 终态 | `catch_all`，`bounce_target=catchall:agt_5f7658fa…`，信封齐全 |
+| `drop_reason` | **`stale_signal`** ← **错**，真实原因是「报文读不成回合」 |
+
+运行时日志（`~/.markus/logs/runtime-2026-11-13.log`）给出完整因果链：
+
+```
+12:53:24.386 [attention] Error processing mailbox item
+             error: "TypeError: Cannot read properties of undefined (reading 'trim')"
+12:53:24.386 [attention] Abnormal completion for user interaction — marking dropped without retry
+12:53:24.387 [mailbox] signal_bounced  dropReason=stale_signal  reason=unspecified
+```
+
+**根因**（不是"少写一个 instanceof"，而是判据错了）：C5 的投影是
+`bounceReasonOfError(err) = err instanceof SignalPayloadInvalidError`。这条路径上先抛的是
+处理过程自己撞到的普通 `TypeError`，**在**校验层之前 → 投影返回 `undefined` →
+`drop()` 取默认 `stale_signal`。也就是说"记成什么原因"取决于**哪一行先抛错**，那是巧合。
+
+### 9.2 修复（一次到位，判据改为事实）
+
+- `mailbox-summary.ts` 新增 `isPayloadUnreadable(item)` —— **唯一判据**，`turnContentOf()` 校验与失败族分类共用同一个谓词；
+- 新增 `bounceReasonOfFailure(err, item)`：有异常且报文读不成回合 → `payload_invalid`；报文**可读**时的未知异常**不投影**（不让 `payload_invalid` 变成下一个万能桶）；无异常 → 不产出失败族原因（决策型终态仍 `stale_signal`）；
+- `attention.ts` 失败族改用 `bounceReasonOfFailure(processingError, item)`。
+
+### 9.3 验证（单测 + 真实实例双证）
+
+- 行为测试先红后绿：`packages/core/test/mailbox-bounce-reason-projection.test.ts` 新增 4 例（含"普通 TypeError + 缺 content → payload_invalid"端到端例），修复前 4 failed → 修复后 8/8 passed。
+- **隔离实例真实探针**（`HOME=/tmp/cut6probe/home`，端口 8073，同一份构建产物）：同一条缺 `text` 的报文 → 落库 `human_chat | catch_all | drop_reason=payload_invalid | bounce_target=catchall:…`，信封齐全 —— 原因不再撒谎。探针实例已关（8073 无监听）。
+- live 实例上的那条错记录按"历史只读"保留，不回填（符合硬边界）。
+
+### 9.4 本实例已核实但**未被本探针触发**的部分
+
+- 迁移结构：`mailbox_items` 七个新列、`channel_bindings.address/revoked_at`、视图 `address_bindings`、两个唯一索引均在位；`work_unit_ref` 写入数 **0**（C7 才有写者）；历史 `dropped` 28,633 行**原样未动**。
+- 信封写入按构建时刻分界生效（20:44 重建 → 之后的行带信封，之前不带）。
+- UI 筛选片与真实库计数逐项一致（completed 8580 / 投递失败 449 / merged 39 / processing 1），`已丢弃` 死片已消失，`退信概览` 入口存在；工具面五个新工具（`bind_address` / `address_list` / `address_revoke` / `message_route` / `catch_all`）均在。
+- 地址绑定仍只有 1 行历史空地址：`bind_address` 在本实例上**尚未被真实使用**。
+
 **未改动任何生产逻辑代码**：两处代码改动分别是「分类表常量补登记」与「测试断言跟随字段改名」，都不改变运行时行为。
