@@ -5180,9 +5180,14 @@ export class SqliteMailboxRepo {
   }): boolean {
     const res = this.db
       .prepare(
+        // `work_unit_ref` **故意不在这个 INSERT 里**：入队那一刻还不知道这条 item
+        // 属于哪个 WU（WU 在活开始/结束时才有身份），这一列的唯一写者是
+        // `linkMailboxItem()` 的 UPDATE。之前它列在列名里却没传实参（16 列 / 16
+        // 占位符 / 15 实参），node:sqlite 少参**不抛、静默绑 NULL** —— 看起来正常，
+        // 实际上是靠一个静默失败在维持「单写者」。删掉列名让形状与意图一致。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
-                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
