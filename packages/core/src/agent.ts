@@ -54,6 +54,7 @@ import {
   cancelExecutionToken,
   type ExecutionStopReason,
   type ExecutionCancelToken,
+  sessionLockKeyOfContextRef,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -98,7 +99,6 @@ import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { resolveOutputReserve } from './context-budgets.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback, type DelegationWorkUnitPort } from './tools/subagent.js';
-import { sessionLockKeyOfContextRef } from '@markus/shared';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
