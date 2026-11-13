@@ -160,11 +160,11 @@ describe('resolveEnvelopeTarget —— 唯一解析器（只读信封 / 两种�
   });
 });
 
-describe('退信原因闭集 —— 只产生六类，第七类只预留', () => {
-  it('可产生的原因恰好六类（C5 补 payload_invalid）', () => {
+describe('退信原因闭集 —— 只产生七类，第八类只预留', () => {
+  it('可产生的原因恰好七类（C5 payload_invalid；11-13 processing_error）', () => {
     expect([...ACTIVE_BOUNCE_REASONS]).toEqual([
       'unresolved_address', 'no_active_target', 'lease_expired', 'duplicate_message_id', 'stale_signal',
-      'payload_invalid',
+      'payload_invalid', 'processing_error',
     ]);
   });
 

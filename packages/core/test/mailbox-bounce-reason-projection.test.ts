@@ -24,7 +24,7 @@ import { Logger, type MailboxItem, type MailboxItemType, type MailboxPriority, t
 import { AttentionController, type AttentionDelegate } from '../src/attention.js';
 import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
-import { turnContentOf, SignalPayloadInvalidError } from '../src/mailbox-summary.js';
+import { turnContentOf, SignalPayloadInvalidError, bounceReasonOfFailure } from '../src/mailbox-summary.js';
 
 const AGENT_ID = 'attn-projection-agent';
 
@@ -142,5 +142,78 @@ describe('缺字段报文的终态投影（真实事故的形状）', () => {
 
     expect(out!.status).toBe('catch_all');
     expect(out!.dropReason).toBe('stale_signal');
+  });
+});
+
+/**
+ * 真实实例探针（2026-11-13，在本机 :8057 实例上做的受控退信）暴露的 C5 漏洞：
+ *
+ * 同一个「缺 content 的 chat 报文」事故，这次**没有**走到 `turnContentOf()` ——
+ * 处理中途更早的一行先抛了普通 `TypeError: Cannot read properties of undefined
+ * (reading 'trim')`。`bounceReasonOfError()` 只认 `SignalPayloadInvalidError`，
+ * 于是返回 `undefined`，`drop()` 取默认值 → 台账又写成 `stale_signal`。
+ *
+ * 根因不是「少写了一个 instanceof」，而是**分类只有一个来源、且那个来源要求异常
+ * 恰好由校验层抛出**。判据要改成问事实：**这条报文能不能读成一个回合**（与
+ * `turnContentOf()` 共用同一个谓词）。哪一行先抛错不影响结论。
+ *
+ * 同时守住反向边界：报文**可读**时的未知异常不能被硬塞成 `payload_invalid`
+ * （否则它立刻变成下一个万能桶）。
+ */
+describe('失败族分类的判据是「报文能否读成回合」，而不是「异常是哪个类」', () => {
+  it('普通 TypeError + 缺 content 的权威报文 → payload_invalid', () => {
+    const item = makeItem({ sourceType: 'human_chat', payload: payloadWithoutContent() });
+    const err = new TypeError("Cannot read properties of undefined (reading 'trim')");
+    expect(bounceReasonOfFailure(err, item)).toBe('payload_invalid');
+  });
+
+  it('报文可读时的未知异常 → processing_error（平台坏了≠报文坏了≠信号陈旧）', () => {
+    const item = makeItem({
+      sourceType: 'human_chat',
+      payload: { summary: 's', content: 'real body' } as MailboxPayload,
+    });
+    expect(bounceReasonOfFailure(new TypeError('boom mid-flight'), item)).toBe('processing_error');
+  });
+
+  it('端到端：可读报文处理中途抛错，终态原因是 processing_error 而不是 stale_signal', async () => {
+    const { controller, mailbox } = makeController({
+      processMailboxItem: vi.fn(async () => {
+        throw new TypeError('boom mid-flight');
+      }),
+    });
+    controller['running'] = true;
+    const item = mailbox.enqueue('human_chat', { summary: 's', content: 'real body' });
+
+    await controller['processFocusedItem'](item);
+
+    // 失败族绝不能把「我们坏了」记成「有人决定不处理它」。
+    expect(item.status).toBe('catch_all');
+    expect(item.dropReason).toBe('processing_error');
+    expect(item.dropReason).not.toBe('stale_signal');
+  });
+
+  it('没有异常 → 不产出失败族原因（决策型终态仍走 stale_signal）', () => {
+    const item = makeItem({ sourceType: 'human_chat', payload: payloadWithoutContent() });
+    expect(bounceReasonOfFailure(undefined, item)).toBeUndefined();
+  });
+
+  it('端到端：处理中途抛普通 TypeError 的缺字段报文，终态原因是 payload_invalid', async () => {
+    const warnSpy = vi.spyOn(Logger.prototype, 'warn');
+    const { controller, mailbox } = makeController({
+      // 更早的一行先炸：不是校验层抛的，是处理过程自己撞上的 TypeError。
+      processMailboxItem: vi.fn(async () => {
+        throw new TypeError("Cannot read properties of undefined (reading 'trim')");
+      }),
+    });
+    controller['running'] = true;
+    const item = mailbox.enqueue('human_chat', payloadWithoutContent());
+
+    await controller['processFocusedItem'](item);
+
+    expect(item.status).toBe('catch_all');
+    expect(item.dropReason).toBe('payload_invalid');
+    const bounced = eventOf(warnSpy, 'mailbox.signal_bounced');
+    expect(bounced).toHaveLength(1);
+    expect(bounced[0]![1]).toMatchObject({ dropReason: 'payload_invalid' });
   });
 });

@@ -28,7 +28,7 @@ import {
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
-import { displayLabelOf, bounceReasonOfError } from './mailbox-summary.js';
+import { displayLabelOf, bounceReasonOfFailure } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
 // ─── Abnormal Completion Detection ──────────────────────────────────────────
@@ -1082,7 +1082,7 @@ export class AttentionController {
     // 终态原因投影（第六刀 C5）：入参校验失败（报文缺必填字段 / 类型不对）不是「陈旧信号」。
     // 只覆盖**失败**族；决策型终态（用户取消 / 主动丢弃）仍走 `drop()` 的默认
     // `stale_signal`，两个方向都不允许「就近使用」。
-    const failureReason = bounceReasonOfError(processingError);
+    const failureReason = bounceReasonOfFailure(processingError, item);
 
     let statusResolved = false;
     if (timedOut) {
