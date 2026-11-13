@@ -6438,6 +6438,20 @@ export class SqliteWorkUnitRepo {
   }
 
   /**
+   * C7-B —— 后补 `context_ref`（只填空值）。
+   *
+   * `WHERE context_ref IS NULL` 不是防御性代码，是语义：一旦允许覆盖，
+   * "这一轮跑在哪个会话"就有了第二个写者，锁键来源随即不可信。
+   * 返回是否真的写入了（0 行 = 已有值或行不存在）。
+   */
+  adoptContextRef(ref: string, contextRef: string): boolean {
+    const res = this.db
+      .prepare('UPDATE work_units SET context_ref = ? WHERE ref = ? AND context_ref IS NULL')
+      .run(contextRef, ref);
+    return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
    * 自省读面：「我这个 agent 现在有哪些 WU」。
    *
    * 只读 `work_units`，**不碰 payload、不读会话文本** —— 结构问题必须由结构回答

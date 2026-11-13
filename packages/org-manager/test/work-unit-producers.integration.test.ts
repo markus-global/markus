@@ -54,6 +54,23 @@ function service(): WorkUnitService {
   return new WorkUnitService({ repo: new SqliteWorkUnitRepo(db) });
 }
 
+/**
+ * 投递端口与 `APIServer.delivery` 同形：**不是**把 `WorkUnitService` 直接当端口传。
+ *
+ * C7-B 给端口加了一个读方法（`currentWorkUnitRef`，跨团队委派的父链来源），
+ * 服务本身没有它 —— 这也是「端口只声明能力、不泄漏服务形状」的实证。
+ */
+function deliveryPort(units: WorkUnitService, currentRef: string | null = null) {
+  return {
+    ensure: (seed: Parameters<WorkUnitService['ensure']>[0]) => units.ensure(seed),
+    currentWorkUnitRef: () => currentRef,
+    linkMailboxItem: (itemId: string | null | undefined, ref: string | null) =>
+      units.linkMailboxItem(itemId, ref),
+    transition: (ref: string, to: string, opts?: unknown) =>
+      units.tryTransition(ref, to as never, opts as never),
+  };
+}
+
 function mailboxRowsWithWu(): Array<{ id: string; work_unit_ref: string }> {
   return db
     .prepare('SELECT id, work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL')
@@ -162,7 +179,7 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
           return item;
         },
       }),
-      workUnits: units,
+      workUnits: deliveryPort(units),
     } as never);
 
     const outcome = delivery.deliver({
@@ -184,6 +201,43 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     // 一次投递给 N 个接收方 → N 个 item 共享同一个 ref，这是定义不是缺陷。
     expect(rows[0]!.work_unit_ref).toBe('a2a:dm:a2a:x:y:<id>'.replace('<id>', outcome.deliveryId));
     expect(new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!.agentId).toBe('agt_x');
+  });
+
+  it('a2a：发送方有本轮 WU 时，投递产生的子 WU 落 parent_id（跨团队委派的父子链）', () => {
+    const units = service();
+    const parent = units.ensure({
+      ref: 'task_tsk_parent_r1',
+      agentId: 'agt_x',
+      status: 'running',
+      contextRef: 'sess_parent_x',
+    })!;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (_sourceType: string, _payload: unknown) => ({
+          id: `mbx_a2a_parent_${agentId}`,
+          agentId,
+          workUnitRef: null,
+        }),
+      }),
+      workUnits: deliveryPort(units, 'task_tsk_parent_r1'),
+    } as never);
+
+    const outcome = delivery.deliver({
+      orgId: 'org_1',
+      channelKey: 'dm:a2a:x:y',
+      fromAgentId: 'agt_x',
+      fromAgentName: 'X',
+      content: 'delegated work',
+      targetAgentIds: ['agt_y'],
+      chainId: 'chain_2',
+      depth: 0,
+    });
+
+    const repo = new SqliteWorkUnitRepo(db);
+    const child = repo.getByRef(`a2a:dm:a2a:x:y:${outcome.deliveryId}`)!;
+    // 父链是结构字段，不是从 chainId / 文本推断出来的。
+    expect(child.parentId).toBe(parent.id);
   });
 
   it('三条链路合起来：三种 ref 前缀各自出现，实体全部可查（终极读数）', async () => {
@@ -226,7 +280,7 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
           return item;
         },
       }),
-      workUnits: units,
+      workUnits: deliveryPort(units),
     } as never);
     delivery.deliver({
       orgId: 'org_1', channelKey: 'dm:a2a:p:q', fromAgentId: 'agt_p', fromAgentName: 'P',

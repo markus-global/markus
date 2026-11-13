@@ -619,6 +619,14 @@ export class Agent {
    * 库会话 id（`cs_*`）是另一个命名空间，拿它当锁键会让同一份会话看起来两把键。
    */
   getMemorySessionId(): string | undefined { return this.currentSessionId; }
+
+  /**
+   * C7-B：本回合父 WU 的 ref（`onFocusChanged` 从 item 上取；无 item = null）。
+   *
+   * 公开而不是让调用方去翻 mailbox：跨团队委派（A2A `deliver()`）只知道「发送方」
+   * 这个 agent，父链只能从 agent 自己的回合状态里读，不能从载荷推断。
+   */
+  getCurrentWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -1697,16 +1705,31 @@ export class Agent {
     taskId: string,
     taskDescription: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
-    cancelToken?: { cancelled: boolean },
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
-    taskTitle?: string,
-    requirementId?: string,
+    /**
+     * 尾部参数全部必填 `T | undefined`（不是 `?`）：C7-B 的 `onItemEnqueued` 必须
+     * 必填，TS 不允许必填跟在可选后面；顺带逼每个调用点对「没传的东西」表态。
+     */
+    cancelToken: { cancelled: boolean } | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    executionRound: number | undefined,
+    taskTitle: string | undefined,
+    requirementId: string | undefined,
     /**
      * 「本轮为什么重启」的权威说明（TaskService 生成，core 原样送达模型）。
      * 必须是**唯一写者**：core 内不得再有第二处编造重启原因。
+     *
+     * 必填 `string | undefined`（不是 `?`）：C7-B 的 `onItemEnqueued` 必须必填，
+     * 而 TS 不允许必填参数跟在可选参数之后；顺带让「没有重启说明」成为表态。
      */
-    resumeNotice?: string,
+    resumeNotice: string | undefined,
+    /**
+     * C7-B：本轮 enqueue 产生的 mailbox item 身份。
+     *
+     * 必填而不是可选：item id 只存在于 `mailbox.enqueue` 的返回值里，「漏传」
+     * 等于让 task 链路的 `work_unit_ref` 永远留空（C6 的墓碑态）。TaskService 用
+     * 它把这一纪元的 WU 挂到那条 item 上（先实体后引用）。
+     */
+    onItemEnqueued: (item: { id: string }) => void,
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
@@ -1723,7 +1746,7 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue('task_status_update', payload, {
+      const item = this.mailbox.enqueue('task_status_update', payload, {
         priority: 1,
         // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
         intent: 'trigger_execution',
@@ -1732,6 +1755,8 @@ export class Agent {
         },
         runtime: { responsePromise: { resolve, reject } },
       });
+      // C7-B：入队后立刻回填，调用方据此写 `mailbox_items.work_unit_ref`。
+      onItemEnqueued({ id: item.id });
     });
   }
 

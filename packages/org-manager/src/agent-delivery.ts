@@ -139,7 +139,18 @@ export interface DeliveryDeps {
       agentId: string;
       contextRef?: string | null;
       taskId?: string | null;
+      /**
+       * C7-B：发送方本轮父 WU 的 ref。一次 A2A 投递就是「某个回合里发出的一次
+       * 委派」，父只能是那个回合的 WU；ref → id 的解析归 `WorkUnitService.ensure()`。
+       */
+      parentRef?: string | null;
     }): { status: string } | null;
+    /**
+     * C7-B：读「发送方现在跑在哪条 WU 上」。
+     *
+     * 必填而非可选（同一纪律）：`NULL_WORK_UNITS` 让它显式返回 null。
+     */
+    currentWorkUnitRef(agentId: string): string | null;
     linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean;
     transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
   };
@@ -153,6 +164,7 @@ export interface DeliveryDeps {
  */
 export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
   ensure: () => null,
+  currentWorkUnitRef: () => null,
   linkMailboxItem: () => false,
   transition: () => undefined,
 };
@@ -259,7 +271,10 @@ export class AgentDelivery {
         // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
         const units = this.deps.workUnits;
         const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
-        const wu = units.ensure({ ref, agentId: req.fromAgentId, contextRef: req.channelKey });
+        // C7-B：跨团队委派也要有父子链 —— 父 = 发送方本轮 WU（从 agent 的回合状态
+        // 读，不从载荷推断）。没有回合（后台发送 / 定时）时显式 null，ref 不改写。
+        const parentRef = units.currentWorkUnitRef(req.fromAgentId);
+        const wu = units.ensure({ ref, agentId: req.fromAgentId, contextRef: req.channelKey, parentRef });
         units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
         // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`
         // （`entity_type='work_unit'`）：不留痕的话「它什么时候停的」只能靠猜。

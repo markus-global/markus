@@ -2458,6 +2458,11 @@ export class TaskService implements ApprovalTargetPort {
         task.title,
         task.requirementId,
         retryNotice,
+        // C7-B：task 链路的 mailbox item 由 `sendTaskExecution` 内部的 enqueue 产生，
+        // 这是拿到它 id 的唯一时机（猜「最近一条」= 从时序推断结构）。
+        (item) => {
+          this.workUnitService?.linkMailboxItem(item.id, WORK_UNIT_REF.task(taskId, executionRound));
+        },
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -6279,6 +6284,11 @@ export class TaskService implements ApprovalTargetPort {
         executionRound,
         task.title,
         task.requirementId,
+        undefined,
+        // C7-B：同主执行路径 —— item id 只能来自 sendTaskExecution 的入队回调。
+        (item) => {
+          this.workUnitService?.linkMailboxItem(item.id, WORK_UNIT_REF.task(taskId, executionRound));
+        },
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });

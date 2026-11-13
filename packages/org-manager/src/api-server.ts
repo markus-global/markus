@@ -479,6 +479,11 @@ export class APIServer {
         workUnits: this.workUnits
           ? {
               ensure: (seed) => this.workUnits!.ensure(seed),
+              // C7-B：跨团队委派的父链 —— 读发送方 agent 本轮的 WU ref。
+              // 不抛：agent 不在内存（已停 / 冷启动）就不是「有回合」，显式 null。
+              currentWorkUnitRef: (agentId) => {
+                try { return this.orgService.getAgentManager().getCurrentWorkUnitRef(agentId); } catch { return null; }
+              },
               linkMailboxItem: (itemId, ref) => this.workUnits!.linkMailboxItem(itemId, ref),
               transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
             }
@@ -2604,6 +2609,9 @@ export class APIServer {
         const ref = WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
         const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
+        // C7-B：回合开始时建的那一行还不带会话身份（那一刻还没定跑进哪个会话），
+        // 这里补上 —— 只填空值。补不上就退化为旧路径，那仍然正确，只是少一层结构事实。
+        units.adoptContextRef(ref, memorySessionId ?? session.id);
         units.linkMailboxItem(mailboxItemId, ref);
         // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
         // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
@@ -2619,6 +2627,39 @@ export class APIServer {
       }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
+    }
+  }
+
+  /**
+   * C7-B —— 回合**开始**就给这一轮 chat 发身份。
+   *
+   * 为什么必须前移到开始：`work_status()` 要能回答「这个 agent 现在在干什么」。
+   * 若 WU 只在回复落库后创建，任何 mid-turn 查询都读不到 `running` —— 那正是
+   * 需求 §10.1 缺口 A 的关闭点，不能靠「其实创建了」自证。
+   *
+   * ref 与 `persistChatTurn()` 同源（session + round）：round 在两个函数里都用
+   * 「追加消息之前」的消息数推导，所以收口时命中同一行，`running → idle` 只写一次。
+   * `context_ref` 此刻还不知道 → 显式 null，收口时由 `adoptContextRef` 补。
+   */
+  private async openChatTurnWorkUnit(
+    agentId: string,
+    senderId: string | undefined,
+    mailboxItemId: string | null,
+    memorySessionId: string | null,
+  ): Promise<void> {
+    const units = this.workUnits;
+    if (!units || !this.storage) return;
+    try {
+      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
+      let session = sessions[0];
+      if (!session) session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
+      const round = Math.floor(priorMessages / 2) + 1;
+      const ref = WORK_UNIT_REF.chat(session.id, round);
+      units.ensure({ ref, agentId, status: 'running', contextRef: memorySessionId });
+      units.linkMailboxItem(mailboxItemId, ref);
+    } catch (err) {
+      log.warn('Failed to open chat turn WorkUnit', { agentId, error: String(err) });
     }
   }
 
@@ -4574,7 +4615,13 @@ export class APIServer {
           fileNames,
           imagePaths,
           toolEventCollector: toolEvents,
-          onItemEnqueued: (item) => { enqueuedItemId = item.id; },
+          onItemEnqueued: (item) => {
+            enqueuedItemId = item.id;
+            // C7-B：入队 = 回合开始，立刻给这一轮发 WU 身份（mid-turn 可读 running）。
+            if (routedAgentId) {
+              void this.openChatTurnWorkUnit(routedAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+            }
+          },
         });
       } catch (err) {
         const raw = String(err);
@@ -7223,6 +7270,10 @@ EXPLANATION_END`;
           senderInfo,
           sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
+          // C7-B：流式路径的 item id 由 SSEHandler 自己产生，回合开始同样要发身份。
+          onItemEnqueued: (item) => {
+            void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+          },
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
             void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, agent.getMemorySessionId() ?? null);
@@ -7239,7 +7290,11 @@ EXPLANATION_END`;
         try {
           reply = await agent.sendMessage(userText, senderId, senderInfo, {
             images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
-            onItemEnqueued: (item) => { enqueuedItemId = item.id; },
+            onItemEnqueued: (item) => {
+              enqueuedItemId = item.id;
+              // C7-B：同上 —— 回合开始就发 WU 身份（不靠收口时才创建）。
+              void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id, agent.getMemorySessionId() ?? null);
+            },
           });
         } catch (err) {
           throw err;

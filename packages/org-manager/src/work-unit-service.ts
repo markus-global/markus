@@ -33,6 +33,8 @@ export interface WorkUnitPort {
   getByRef(ref: string): WorkUnitRecord | undefined;
   /** C7-B：迭代记账（`used` 唯一口径）。 */
   addUsage(ref: string, used: number): void;
+  /** C7-B：回合开始时未知的 `context_ref` 后补（只填空值，绝不覆盖）。 */
+  adoptContextRef(ref: string, contextRef: string): boolean;
   listByAgent(
     agentId: string,
     opts?: { statuses?: WorkUnitStatus[]; includeArchived?: boolean; limit?: number },
@@ -46,6 +48,13 @@ export interface WorkUnitSeedLike {
   agentId: string;
   status?: WorkUnitStatus;
   parentId?: string | null;
+  /**
+   * C7-B：父 WU 的 **ref**（调用方只知道「这一轮跑在哪条 WU 上」时用它）。
+   *
+   * ref → id 的解析归台账（唯一写者）：让每个调用点各自查一次，就是同一个事实
+   * 长出多个解析器。`parentId` 优先；`parentRef` 解析不到时显式落 NULL（不猜）。
+   */
+  parentRef?: string | null;
   addressRef?: string | null;
   taskId?: string | null;
   model?: string | null;
@@ -125,7 +134,8 @@ export class WorkUnitService {
       return null;
     }
     try {
-      const { row, created } = this.deps.repo.ensure(seed);
+      const resolved = this.withParentId(seed);
+      const { row, created } = this.deps.repo.ensure(resolved);
       if (created) {
         this.created += 1;
         this.emit({ type: 'work_unit.created', ref: row.ref, agentId: row.agentId });
@@ -266,6 +276,34 @@ export class WorkUnitService {
   ): void {
     this.recordUsage(ref, opts.used);
     this.tryTransition(ref, opts.status, { changedByType: 'system', reason: opts.reason });
+  }
+
+  /**
+   * `parentRef` → `parentId` 的**唯一**解析点（C7-B）。
+   *
+   * 解析不到就落 NULL，也不改写 ref —— 子 WU 仍然成立，只是父子链缺一环。
+   * 不抛：父 WU 可能属于另一个已归档的回合，那不该阻断新一条活。
+   */
+  private withParentId(seed: WorkUnitSeedLike): WorkUnitSeedLike {
+    if (seed.parentId !== undefined || !seed.parentRef) return seed;
+    const parent = this.deps.repo.getByRef(seed.parentRef);
+    return { ...seed, parentId: parent ? parent.id : null };
+  }
+
+  /**
+   * C7-B —— 回合开始时还确定不了的 `context_ref` 后补（chat 一轮的会话身份）。
+   *
+   * 只填空值、绝不覆盖：一处「后补」如果可以改写已有值，它就成了第二个写者，
+   * `work_units.context_ref` 也就不再是会话锁键的可信来源。
+   */
+  adoptContextRef(ref: string, contextRef: string | null | undefined): boolean {
+    if (!ref || !contextRef) return false;
+    try {
+      return this.deps.repo.adoptContextRef(ref, contextRef);
+    } catch (err) {
+      this.fail('work_unit.link_failed', ref, undefined, String(err));
+      return false;
+    }
   }
 
   private emit(event: WorkUnitEvent): void {
