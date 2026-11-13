@@ -479,7 +479,8 @@
         "completed": "Completado",
         "merged": "Fusión",
         "deferred": "Diferido",
-        "dropped": "Suelto"
+        "bounced": "Rebotado",
+        "catch_all": "Buzón de rebotes"
       },
       "activityFilters": {
         "all": "Todos",

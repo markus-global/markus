@@ -43,31 +43,19 @@ export type AgentMessageHandler = (
 ) => Promise<string | undefined>;
 
 /**
- * Compose lookups so the authoritative source wins and the in-memory bootstrap
- * is only consulted when it has no answer (design §5.2 dual-read).
+ * The authoritative binding source, or the in-memory startup seed — **never both at once**.
+ *
+ * 第六刀 C3（§2.2）：这里曾有一个 `compositeLookup()` 把 DB 与内存 bootstrap 合并读
+ * （"authoritative wins, bootstrap fills gaps"，design §5.2 dual-read）。它是同一个问题
+ * （"谁该回答这条入站消息"）的**第二个读者**：DB 里删了一条绑定、内存里还留着旧快照时，
+ * 两条来源给出的答案会不一致，而且没有任何办法从外部看出当前用的是哪个。
+ *
+ * 现在：DB 已在（`setBindingLookup`）→ 它就是唯一来源；内存 map 只在 DB lookup 缺席时充当
+ * **启动期 seed**（首次接线前的窗口、以及测试/嵌入式用法）。两者不再合并，所以「现在到底
+ * 谁在回答」永远只有一个答案。
  */
-function compositeLookup(lookups: readonly BindingLookup[]): BindingLookup {
-  return {
-    bindings: (orgId, platform) => {
-      const out: ScopeBinding[] = [];
-      for (const lookup of lookups) out.push(...lookup.bindings(orgId, platform));
-      return out;
-    },
-    platformDefaultAgent: (orgId, platform) => {
-      for (const lookup of lookups) {
-        const agentId = lookup.platformDefaultAgent(orgId, platform);
-        if (agentId) return agentId;
-      }
-      return undefined;
-    },
-    orgDefaultAgent: (orgId) => {
-      for (const lookup of lookups) {
-        const agentId = lookup.orgDefaultAgent?.(orgId);
-        if (agentId) return agentId;
-      }
-      return undefined;
-    },
-  };
+function seedOnlyLookup(seed: BindingLookup): BindingLookup {
+  return seed;
 }
 
 /** One live bot connection: the adapter plus the instance it belongs to. */
@@ -224,17 +212,29 @@ export class MessageRouter {
   }
 
   /**
-   * Inject the authoritative binding source (the DB in production). Once set it
-   * is the single writer for resolution; the in-memory bootstrap is only a
-   * fallback.
+   * Inject the authoritative binding source (the DB in production). Once set it is
+   * the **only** reader for resolution; the in-memory bootstrap is a startup seed
+   * and is no longer consulted (C3: the previous dual-read had two readers for one
+   * question).
+   *
+   * When the seed still holds bindings the DB will not answer for, say so loudly:
+   * those routes would otherwise be silently lost the moment the DB lookup is wired
+   * — an invisible failure of exactly the kind this refactor keeps digging out.
    */
   setBindingLookup(lookup: BindingLookup): void {
     this.bindingLookup = lookup;
+    const seeded = [...this.agentChannelMap.keys(), ...this.platformAgentMap.keys()];
+    if (seeded.length > 0) {
+      log.warn(
+        'Binding lookup injected — the in-memory startup seed is now ignored for resolution',
+        { seededBindings: seeded.join(','), hint: 'Re-save the integration in Settings so the binding lands in the database.' },
+      );
+    }
   }
 
   private effectiveLookup(): BindingLookup {
-    const bootstrap = this.bootstrapLookup();
-    return this.bindingLookup ? compositeLookup([this.bindingLookup, bootstrap]) : bootstrap;
+    // 唯一来源：DB 在就用 DB，否则用启动期 seed。**不合并**（C3 删 dual-read）。
+    return this.bindingLookup ?? seedOnlyLookup(this.bootstrapLookup());
   }
 
   /**

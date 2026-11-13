@@ -309,7 +309,8 @@ describe('P0 重复投递 · 入队层显式拒绝', () => {
     expect(table.insertOk, '仍只落库一行').toBe(1);
     expect(table.rejected, '第二次插入被唯一键拒绝').toBe(1);
     expect(mb.getQueuedItems(), '被拒的重复投递不得进入内存队列').toHaveLength(1);
-    expect(second.status, '被拒项标记为 dropped（不误导调用方）').toBe('dropped');
+    expect(second.status, '被拒项标记为 bounced（C3：dropped 已不是取值域，原因可查）').toBe('bounced');
+    expect(second.dropReason, 'C3：退信必带闭集原因').toBe('duplicate_message_id');
     expect(resolved, '投递方 responsePromise 被了结，不悬挂').toEqual(['[duplicate-delivery-suppressed]']);
     expect(mb.dequeue()?.id, '胜者仍是首次投递').toBe(first.id);
   });

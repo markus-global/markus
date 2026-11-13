@@ -98,8 +98,8 @@ describe('P1.x (c) · resolveReinjectDecision 四态（唯一判定实现）', (
     }
   });
 
-  it('未收口终态（dropped / failed）→ reuse（允许补偿重投）', () => {
-    for (const s of ['dropped', 'failed']) {
+  it('未收口终态（bounced / failed / 历史 dropped）→ reuse（允许补偿重投）', () => {
+    for (const s of ['bounced', 'failed', 'dropped']) {
       const d = resolveReinjectDecision(row(s));
       expect(d.action, s).toBe('reuse');
     }
@@ -170,8 +170,8 @@ describe('P1.x (a)(b) · enqueue 复用原行回队（返回 queued）', () => {
 
     const out = enqueueReview(mb, 'task_7', 1);
 
-    expect(out.status).toBe('dropped');
-    expect(rows.get('mbx_done')!.status).toBe('completed');
+    expect(out.status).toBe('bounced');
+    expect(out.dropReason).toBe('duplicate_message_id');
     expect(mb.depth).toBe(0);
   });
 });
@@ -186,7 +186,8 @@ describe('P1.x · 既有 P0/P1 语义不回归', () => {
     const resolve = vi.fn();
     const dup = enqueueReview(mb, 'task_5', 3, { runtime: { responsePromise: { resolve } } } as never);
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(resolve).toHaveBeenCalledWith('[duplicate-delivery-suppressed]');
     expect(rows.size).toBe(1);
     expect(warn.mock.calls.some(c => (c[1] as Record<string, unknown> | undefined)?.['event']
@@ -200,7 +201,7 @@ describe('P1.x · 既有 P0/P1 语义不回归', () => {
     };
     const mb = makeMailbox(legacy, 'agt_legacy');
 
-    expect(enqueueReview(mb, 'task_1', 1).status).toBe('dropped');
+    expect(enqueueReview(mb, 'task_1', 1).status).toBe('bounced');
   });
 
   it('putBack 走 requeueItem，不再依赖 releaseClaim（D1）', () => {

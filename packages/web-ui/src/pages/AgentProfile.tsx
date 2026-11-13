@@ -10,6 +10,7 @@ import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsT
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
+import { MAILBOX_STATUS_FILTERS, statusFilterParam } from '../lib/mailboxStatusFilters.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
@@ -2233,7 +2234,9 @@ const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'sys
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
-  deferred: 'bg-purple-400', merged: 'bg-brand-400', queued: 'bg-amber-400', dropped: 'bg-red-500',
+  deferred: 'bg-purple-400', merged: 'bg-brand-400', queued: 'bg-amber-400',
+  // C3：`dropped` 终态已删（读路径归一为 bounced），这里给两个新退信态上色。
+  bounced: 'bg-red-500', catch_all: 'bg-red-700',
 };
 
 const ACTIVITY_FILTER_KEYS: Array<AgentActivityType | 'all'> = ['all', 'task', 'chat', 'heartbeat', 'a2a', 'internal', 'respond_in_session'];
@@ -2417,7 +2420,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     if (reset) setLoading(true);
     try {
       const catParam = catFilter === 'all' ? undefined : catFilter;
-      const statusParam = statusFilter === 'all' ? undefined : statusFilter;
+      const statusParam = statusFilterParam(statusFilter);
       const [m, mb] = await Promise.all([
         api.agents.getMindState(agentId),
         api.agents.getMailbox(agentId, { limit: PAGE, category: catParam, status: statusParam }),
@@ -2429,7 +2432,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     setLoading(false);
   }, [agentId, catFilter, statusFilter]);
 
-  /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——对齐后端的 mailbox:dropped 审计。 */
+  /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——终态是 bounced(stale_signal) 并进 catch-all 概览。 */
   const handleDrop = useCallback(async (itemId: string) => {
     setActionBusyId(itemId);
     try {
@@ -2442,7 +2445,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const loadMore = useCallback(async () => {
     if (!mailbox) return;
     const catParam = catFilter === 'all' ? undefined : catFilter;
-    const statusParam = statusFilter === 'all' ? undefined : statusFilter;
+    const statusParam = statusFilterParam(statusFilter);
     try {
       const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
       setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
@@ -2451,8 +2454,8 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   }, [agentId, mailbox, catFilter, statusFilter]);
 
   // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
-  // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 dropped，刷新后即自愈，
-  // 不再只能重启。租约感知，不误杀其它实例/在飞项。
+  // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 bounced(lease_expired) 并归集到
+  // catch-all 概览，刷新后即自愈，不再只能重启。租约感知，不误杀其它实例/在飞项。
   const recoverStaleMailbox = useCallback(async () => {
     try {
       await api.agents.recoverStaleMailbox(agentId);
@@ -2782,15 +2785,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           </div>
         </div>
         <div className="flex gap-1 mb-2 flex-wrap">
-          {[
-            { key: 'all', dot: '' },
-            { key: 'queued', dot: 'bg-amber-400' },
-            { key: 'processing', dot: 'bg-blue-400' },
-            { key: 'completed', dot: 'bg-green-500' },
-            { key: 'merged', dot: 'bg-brand-400' },
-            { key: 'deferred', dot: 'bg-purple-400' },
-            { key: 'dropped', dot: 'bg-red-500' },
-          ].map(f => {
+          {MAILBOX_STATUS_FILTERS.map(f => {
             const sc = mailbox?.statusCounts;
             const cnt = f.key === 'all'
               ? (sc ? Object.values(sc).reduce((a, b) => a + b, 0) : undefined)

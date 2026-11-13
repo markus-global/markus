@@ -109,8 +109,10 @@ describe('验收 #1 · 重复投递 + N 并发分身 → 同一 item 仅被处�
     expect(rows()).toHaveLength(1);
 
     // 被抑制的重复投递不得入队 → 不产生第二次处理
-    expect(returned[1]!.status).toBe('dropped');
-    expect(returned[2]!.status).toBe('dropped');
+    // C3：被拒的重复投递现在是 bounced + 原因（不再是无声的 dropped）。
+    expect(returned[1]!.status).toBe('bounced');
+    expect(returned[2]!.status).toBe('bounced');
+    expect(returned[1]!.dropReason).toBe('duplicate_message_id');
 
     // 唯一胜者：三个分身中恰好一个取到件
     const winners = personas.map(mb => mb.dequeue()).filter(Boolean);

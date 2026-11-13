@@ -68,7 +68,7 @@ function makePersistence(repoRef: SqliteMailboxRepo): MailboxPersistence {
       });
     },
     updateStatus: (itemId, status, extra) => repoRef.updateStatus(itemId, status, extra as Record<string, unknown>),
-    markStaleProcessingAsDropped: (aid) => repoRef.markStaleProcessingAsDropped(aid),
+    markStaleProcessingAsBounced: (aid) => repoRef.markStaleProcessingAsBounced(aid),
     loadQueued: (aid) => repoRef.getByAgent(aid, { status: 'queued' }).map(toItem),
     loadDeferred: (aid) => repoRef.getByAgent(aid, { status: 'deferred' }).map(toItem),
     claimItem: (id, ownerId, leaseUntil, nowIso) => repoRef.claimItem(id, ownerId, leaseUntil, nowIso),
@@ -188,7 +188,8 @@ describe('P1.x ①②③⑤ · 优雅停机重投（真实 SQLite，跨实例）
     const c = newMailbox();
     const rec2 = c.recoverStaleItems();
     expect(rec2.expired, '不刷 queued_at = 白修（回队行同轮被 TTL 判死）').toBe(1);
-    expect(repo.getById(enq.id)!.status).toBe('dropped');
+    expect(repo.getById(enq.id)!.status).toBe('catch_all');
+    expect(repo.getById(enq.id)!.dropReason).toBe('stale_signal');
   });
 });
 
@@ -206,7 +207,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();                              // 崩溃后重启（新实例、异构 ownerId）
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped, '⑥a-1 不得被 drop').toBe(0);
+    expect(rec.bounced, '⑥a-1 不得被结案').toBe(0);
     expect(rec.restored).toBe(1);
     const row = repo.getById(enq.id)!;
     expect(row.status).toBe('queued');
@@ -249,7 +250,7 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped).toBe(0);
+    expect(rec.bounced).toBe(0);
     const row = repo.getById(enq.id)!;
     expect(row.status, '⑦ 不得无条件 dropped').toBe('queued');
     expect(row.claimedBy).toBeNull();
@@ -269,9 +270,10 @@ describe('P1.x ⑥a / ⑦ · 崩溃恢复：启动清理按类型分流', () => 
     const b = newMailbox();
     const rec = b.recoverStaleItems();
 
-    expect(rec.dropped, '非 strict-state 逐字保持 drop').toBe(2);
-    expect(repo.getById(hb.id)!.status).toBe('dropped');
-    expect(repo.getById(a2a.id)!.status).toBe('dropped');
+    expect(rec.bounced, '非 strict-state → 结案计数').toBe(2);
+    expect(repo.getById(hb.id)!.status).toBe('bounced');
+    expect(repo.getById(a2a.id)!.status).toBe('bounced');
+    expect(repo.getById(hb.id)!.dropReason).toBe('lease_expired');
     expect(b.depth).toBe(0);
   });
 });
@@ -294,15 +296,16 @@ describe('P1.x (c) · 同键投递四态判定（真实 findByDedupKey）', () =
 
     const dup = enqueueReview(a, 'tsk_9', 1);
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(repo.getByAgent(AGENT).length).toBe(1);
     expect(repo.getById(enq.id)!.status, '在飞项不被回队、不新增行').toBe('processing');
   });
 
-  it('(c.3) 行 dropped 且该轮未收口 → 允许复用原行补偿重投（不新增行）', () => {
+  it('(c.3) 行 bounced 且该轮未收口 → 允许复用原行补偿重投（不新增行）', () => {
     const a = newMailbox();
     const enq = enqueueReview(a, 'tsk_10', 1);
-    repo.updateStatus(enq.id, 'dropped');
+    repo.updateStatus(enq.id, 'bounced', { dropReason: 'stale_signal' } as never);
 
     const again = enqueueReview(a, 'tsk_10', 1);
 
@@ -319,7 +322,7 @@ describe('P1.x (c) · 同键投递四态判定（真实 findByDedupKey）', () =
 
     const out = enqueueReview(a, 'tsk_11', 1);
 
-    expect(out.status).toBe('dropped');
+    expect(out.status).toBe('bounced');
     expect(repo.getById(enq.id)!.status).toBe('completed');
     expect(repo.getByAgent(AGENT).length).toBe(1);
   });
