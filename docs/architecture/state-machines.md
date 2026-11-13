@@ -663,3 +663,143 @@ agent stop
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
 
 See [memory-system.md](./memory-system.md) and [cognitive-architecture.md](./cognitive-architecture.md) for storage format and deterministic context assembly.
+
+---
+
+## 16. WorkUnit Lifecycle
+
+A `WorkUnit` is the identity object for **one piece of work** — one chat turn, one task execution epoch, or one A2A delivery. Before cut 7 the same work was described by five mechanisms and had no queryable identity: "what is this agent doing" could only be inferred from a context block assembled per turn, so the answer could drift from what was actually running.
+
+Everything below is taken from the code, not from the design plan:
+
+| Fact | Source of truth |
+|---|---|
+| State set and transition matrix | `packages/shared/src/work-unit.ts` (`WU_TRANSITIONS`) |
+| Schema and the only SQL writes | `packages/storage/src/sqlite-storage.ts` (`SqliteWorkUnitRepo`) |
+| Business writer and event contract | `packages/org-manager/src/work-unit-service.ts` (`WorkUnitService`) |
+
+### State Set (closed)
+
+| State | Meaning |
+|---|---|
+| `running` | executing right now |
+| `idle` | turn settled; the work is still alive and waiting for its next input |
+| `paused_budget` | paused because the budget line was reached (no producer in C7-A) |
+| `terminated` | cancelled or closed as failed |
+| `archived` | terminal; takes part in no scheduling afterwards |
+
+Every state is answerable from structure. None of them is inferred from a payload or from prose.
+
+### State Diagram
+
+```
+        (new turn)
+             │
+             ▼
+   ┌──► running ──────────► idle
+   │      │  │                │
+   │      │  └──► paused_budget ──┐
+   │      │                       │ (budget topped up)
+   │      └──────────────┐        │
+   │                     ▼        ▼
+   │                 terminated ◄─┘
+   │                     │
+   │                     ▼
+   └───── refused ──── archived   (terminal — no outgoing edge)
+```
+
+### Transitions
+
+Copied verbatim from `WU_TRANSITIONS` — this table is a read of that constant, never a second definition of it.
+
+| from | allowed to | trigger |
+|---|---|---|
+| `running` | `idle` / `paused_budget` / `terminated` | turn settled / budget line reached / cancelled |
+| `idle` | `running` / `terminated` | new turn / cancelled |
+| `paused_budget` | `running` / `terminated` | budget topped up / cancelled |
+| `terminated` | `archived` | archived |
+| `archived` | — | terminal |
+
+`archived` has no outgoing edge on purpose: archiving is the only way to say "this is over". Resuming the work means a **new** WorkUnit (new `ref`, or a new round) — never resurrecting the old one. Allowing `archived → running` would make archiving a revocable decoration and historical readings would start to drift. The enforcement is a guard fixture, not a convention: `work-unit-single-writer` fails if `archived` stops being `[]`.
+
+### Single Writer
+
+Three layers, one responsibility each, and no layer reaches into another's:
+
+| Layer | File | Owns |
+|---|---|---|
+| Concept | `packages/shared/src/work-unit.ts` | State set, matrix, `ref` format — pure functions, no I/O |
+| Storage | `SqliteWorkUnitRepo` | The **only** SQL that writes `work_units` and `status_transitions` rows for `entity_type='work_unit'` |
+| Business | `WorkUnitService` | The **only** caller of those write methods; decides whether a failed write may interrupt the business path |
+
+Both entry points are idempotent or conditional by construction:
+
+- `ensure(ref)` uses `INSERT ... ON CONFLICT(ref) DO NOTHING` and then reads back by `ref`. Check-then-insert is not equivalent: under concurrency both workers observe "absent" and the execution epoch ends up with two identities, or the unique index aborts a real delivery. Exactly one row per `ref` is decided by `uq_work_units_ref`, not by caller discipline.
+- `transition(ref, to)` is an optimistic conditional update (`WHERE id = ? AND status = ?`). An unconditional update would overwrite a terminal state back to `running` when two writers race, and the state machine would become decoration.
+
+`scripts/architecture-guard.mjs` enforces the boundary as rule group `work-unit-single-writer`, with six checks — each carrying its own compliant/violating fixture, so the detector cannot silently stop detecting:
+
+| # | Check |
+|---|---|
+| 1 | `work_units` table and `uq_work_units_ref` unique index exist (identity decided by the index) |
+| 2 | `ensure()` is the atomic `ON CONFLICT(ref) DO NOTHING` insert, not check-then-insert |
+| 3 | `transition()` is the conditional update `WHERE id = ? AND status = ?` |
+| 4 | `WU_TRANSITIONS` is defined in one place and `archived` is terminal |
+| 5 | `task-service.ts` contains no `INSERT INTO work_units` / `UPDATE work_units` |
+| 6 | `api-server.ts` contains no `work_units` SQL and no `entityType: 'work_unit'` |
+
+Checks 5 and 6 exist because the realistic regression is not "someone rewrites the repo" — it is "someone adds one convenient UPDATE in the service that already has the data". That is a second writer, and it bypasses both the matrix and the unique index.
+
+### Producers and `ref` formats
+
+Three producers, one generator (`WORK_UNIT_REF` in `packages/shared/src/work-unit.ts`). A second generator would mean the same execution epoch can grow two WorkUnits, and nobody could later say which one it was.
+
+| Producer | Call site | `ref` |
+|---|---|---|
+| Chat turn | `persistChatTurn()` in `org-manager/src/api-server.ts` | `session:<dbSessionId>:r<round>` |
+| Task execution epoch | `TaskService.createTask()` in `org-manager/src/task-service.ts` | `task_<taskId>_r<round>` |
+| A2A delivery | `AgentDelivery.deliver()` in `org-manager/src/agent-delivery.ts` | `a2a:<channelKey>:<deliveryId>` |
+
+`task_<taskId>_r<round>` is **reused, not invented**: that string is already the execution-epoch identity (the in-flight registry key and the execution session id). Giving the same epoch a second naming scheme would hand it two identity cards, so this cut only routes the existing format through a single generator.
+
+The A2A producer binds the row to the **recipient** (`agentId: targetId`, `contextRef: channelKey`), because the WorkUnit answers "which work is this delivery part of" for the side that owns the delivered mailbox row. `deliveryId` is the same value as the envelope `messageId`, so a retried hop cannot produce a second WorkUnit.
+
+### Fact-Source Boundary
+
+A message's WorkUnit identity is written in exactly one place: the `mailbox_items.work_unit_ref` column. `DeliveryEnvelope.workUnitRef` stays `null` in cut 7.
+
+The reason is structural: two writers of the same fact always drift, and of the two the column is the one that can be indexed and joined while the envelope is a JSON projection. If a projection is ever needed (cross-org delivery carrying WU identity inside the envelope), derive it from the column — do not write both.
+
+The write order is fixed and must not be reversed: `ensure()` first, `linkMailboxItem()` second. Writing the reference before the entity exists is precisely the dangling reference that cut 6 avoided by adding the column and writing zero rows.
+
+### Current State in C7-A (what is deliberately not in force)
+
+| Thing | State in C7-A |
+|---|---|
+| `work_units.budget` / `used` | Columns only. No producer writes `budget`; `used` stays `0`. No budget semantics exist. |
+| `paused_budget` | Expressible in the matrix, **no producer**. Nothing reaches it in this cut. |
+| `parent_id` | Column exists, written `NULL` only. Parent/child delegation is C7-B. |
+| Subagent budget | `DEFAULT_MAX_SUBAGENT_ITERATIONS` is still `Infinity` (`packages/core/src/tools/subagent.ts`); the aggregate breaker is still `SUBAGENT_MAX_AGGREGATE_ITERATIONS` (`packages/shared/src/limits.ts`). Two budget notions still exist. |
+
+Budget unification, `paused_budget` production, `sessionLockKey` derivation from `context_ref`, and parent/child rows all belong to **C7-B**. This section must not describe a single budget semantic until that code exists — a document that runs ahead of the code teaches the next reader that the work is already done.
+
+### Failure Semantics
+
+Observation must never become a business fault, and it must never fail silently either — cut 6's lesson was a column that stayed empty with nothing to notice it. All business-path writers swallow write errors and emit a structured event. The four event names are the contract; tests assert on names and counters, never on log text:
+
+| Event | Meaning |
+|---|---|
+| `work_unit.created` | A row was actually inserted (an idempotent hit is **not** this) |
+| `work_unit.ensure_failed` | The row could not be created; business proceeds without identity, and the miss is counted |
+| `work_unit.transition_failed` | Status update failed for a non-matrix reason (storage, or a concurrent write won) |
+| `work_unit.link_failed` | The WorkUnit exists but the mailbox row could not be pointed at it |
+
+One deliberate exception: an illegal transition is a program error, not a recoverable branch. `transition()` throws with `code='invalid_work_unit_transition'` and leaves the state unchanged. Returning `false` instead would let callers believe "the transition failed but the world is fine", which makes the matrix decorative.
+
+### Reading It Back
+
+`work_status()` answers "which WorkUnits does this agent have" from `work_units` alone, returning `ref / status / parentId / claimedBy / leaseUntil / budget / used`.
+
+It reads no payload and no session text. A structural question must be answered by structure: the pre-cut-7 answer was recomputed from an injected text block every turn, which is a snapshot that can drift from what is really executing.
+
+See [mailbox-system.md](./mailbox-system.md) for the delivery envelope and mailbox columns this identity is attached to.
