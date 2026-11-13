@@ -964,7 +964,10 @@ export class WorkflowRunner {
       const agentManager = this.orgService.getAgentManager();
       const manager = agentManager.getAgent(team.managerId);
 
-      const actionRequired = !!data.actionRequired;
+      const actionRequired = data.actionRequired === true;
+      // 第六刀 C2：`actionRequired` 是**投递意图**，不是业务载荷 —— 从 extra 里拿走，
+      // 改由结构参数 `intent` 表达（mailbox 不再从 extra 推断权威态）。
+      const { actionRequired: _omitIntent, ...businessData } = data;
       const summary = this.buildNotificationSummary(event, data);
       const content = this.buildNotificationContent(event, data);
 
@@ -972,12 +975,12 @@ export class WorkflowRunner {
         summary,
         content,
         extra: {
-          ...data,
+          ...businessData,
           event,
-          actionRequired,
         },
       }, {
         priority: actionRequired ? 1 : 2,
+        ...(actionRequired ? { intent: 'action_required' as const } : {}),
       });
     } catch (err) {
       log.warn('Failed to notify manager about workflow event', { teamId, event, error: String(err) });

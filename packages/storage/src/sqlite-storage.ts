@@ -574,7 +574,15 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   retry_count INTEGER NOT NULL DEFAULT 0,
   claimed_by TEXT,
   lease_until TEXT,
-  dedup_key TEXT
+  dedup_key TEXT,
+  -- 第六刀 C2：信封与投递状态（全部可空；旧行 NULL = 无信封，读路径 warn + fallback，不回填）
+  envelope TEXT,
+  work_unit_ref TEXT,
+  signal_class TEXT,
+  intent TEXT,
+  message_id TEXT,
+  drop_reason TEXT,
+  bounce_target TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_status ON mailbox_items(agent_id, status);
 
@@ -945,6 +953,19 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'deliverables', column: 'knowledge_root', sql: 'ALTER TABLE deliverables ADD COLUMN knowledge_root TEXT' },
     { table: 'deliverables', column: 'content', sql: 'ALTER TABLE deliverables ADD COLUMN content TEXT' },
     // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
+    // ─── 第六刀 C2：信封列（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ───
+    // `work_unit_ref` 只加列、**不写值**：C7 才有唯一写者，避免先建引用后建实体。
+    // `message_id` 是 `envelope.messageId` 的投影列：唯一性必须由**索引**裁决，
+    // 而 JSON blob 无法可靠索引 —— 投影 + 部分唯一索引，才能让「同一条消息投两次」
+    // 在结构上不可表达（V5）。
+    { table: 'mailbox_items', column: 'envelope', sql: 'ALTER TABLE mailbox_items ADD COLUMN envelope TEXT' },
+    { table: 'mailbox_items', column: 'work_unit_ref', sql: 'ALTER TABLE mailbox_items ADD COLUMN work_unit_ref TEXT' },
+    { table: 'mailbox_items', column: 'signal_class', sql: 'ALTER TABLE mailbox_items ADD COLUMN signal_class TEXT' },
+    { table: 'mailbox_items', column: 'intent', sql: 'ALTER TABLE mailbox_items ADD COLUMN intent TEXT' },
+    { table: 'mailbox_items', column: 'message_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN message_id TEXT' },
+    { table: 'mailbox_items', column: 'drop_reason', sql: 'ALTER TABLE mailbox_items ADD COLUMN drop_reason TEXT' },
+    { table: 'mailbox_items', column: 'bounce_target', sql: 'ALTER TABLE mailbox_items ADD COLUMN bounce_target TEXT' },
+    // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
     { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
     { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
   ];
@@ -985,6 +1006,15 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
+    // 第六刀 C2（V5）：同一 agent 下同一 `messageId` 至多一行 —— **幂等身份由索引裁决**，
+    // 不靠调用方自觉。`message_id` 为 NULL（C2 之前的旧行）不受约束：SQLite 视 NULL 互不相等。
+    // 退信行（status='bounced'）是「这次投递没进去」的**记录**，不是第二条消息，
+    // 所以它们不参与这一约束：同一 messageId 被重复投递时，恰好一行 queued + 一条退信行。
+    // 依赖 `message_id` 列，必须在列迁移之后创建。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_message ' +
+        "ON mailbox_items(agent_id, message_id) WHERE message_id IS NOT NULL AND status <> 'bounced'",
+    );
 
     // 第六刀 C1：地址绑定的两个结构对象，都依赖上面的 `address` / `revoked_at` 列，
     // 因此必须在列迁移之后创建（否则既有库会在 SCHEMA_SQL 阶段报 no such column）。
@@ -5020,6 +5050,20 @@ export interface MailboxItemRow {
   leaseUntil?: string | null;
   /** P0：幂等键（无幂等语义的项为 null）。 */
   dedupKey?: string | null;
+  /** C2：信封（JSON 原文；旧行为 null）。 */
+  envelope?: string | null;
+  /** C2：`envelope.messageId` 的投影（唯一性由 `uq_mailbox_agent_message` 裁决）。 */
+  messageId?: string | null;
+  /** C2：信号类别（六类闭集）。 */
+  signalClass?: string | null;
+  /** C2：投递意图。 */
+  intent?: string | null;
+  /** C2：`work_unit_ref`（本卡恒 null，C7 才有写者）。 */
+  workUnitRef?: string | null;
+  /** C2：退信原因（`status='bounced'` 时必填）。 */
+  dropReason?: string | null;
+  /** C2：catch-all 概览项 id（C3 写值）。 */
+  bounceTarget?: string | null;
 }
 
 /**
@@ -5060,19 +5104,49 @@ export class SqliteMailboxRepo {
     queuedAt: string;
     /** P0 幂等键；缺省 / undefined 表示不加约束（落库为 NULL）。 */
     dedupKey?: string;
+    /** C2：信封原文（JSON）。缺省 = 无信封（旧调用方）。 */
+    envelope?: string | null;
+    /** C2：`envelope.messageId` 投影，供 `uq_mailbox_agent_message` 幂等裁决。 */
+    messageId?: string | null;
+    /** C2：信号类别 / 投递意图（信封的结构投影，供聚合与路由查询）。 */
+    signalClass?: string | null;
+    intent?: string | null;
+    /** C2：退信原因（仅 `status='bounced'` 写）。 */
+    dropReason?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
-        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
+                                    envelope, message_id, signal_class, intent, drop_reason)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
         item.id, item.agentId, item.sourceType, item.priority,
         item.status, projectJson(toJson(item.payload)), projectJson(toJson(item.metadata ?? {})),
         item.queuedAt, item.dedupKey ?? null,
+        item.envelope ?? null, item.messageId ?? null,
+        item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
+  }
+
+  /**
+   * C2（V5）：按 `(agent, messageId)` 查既有的**非退信**行。
+   *
+   * 只回传判定需要的最小字段（不拉 payload）——它在入队热路径上被调用。
+   * 退信行被排除：它们记录的是「这次没投进去」，不是同一消息的第二份。
+   */
+  findByMessageId(agentId: string, messageId: string): MailboxDedupRow | undefined {
+    const row = this.db
+      .prepare(
+        `SELECT id, status, claimed_by AS claimedBy, lease_until AS leaseUntil, queued_at AS queuedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ? AND status <> 'bounced'
+          LIMIT 1`,
+      )
+      .get(agentId, messageId) as MailboxDedupRow | undefined;
+    return row;
   }
 
   /**
@@ -5366,6 +5440,13 @@ export class SqliteMailboxRepo {
       claimedBy: (r['claimed_by'] as string | null) ?? null,
       leaseUntil: (r['lease_until'] as string | null) ?? null,
       dedupKey: (r['dedup_key'] as string | null) ?? null,
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['message_id'] as string | null) ?? null,
+      signalClass: (r['signal_class'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
+      dropReason: (r['drop_reason'] as string | null) ?? null,
+      bounceTarget: (r['bounce_target'] as string | null) ?? null,
     };
   }
 }

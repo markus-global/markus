@@ -270,14 +270,12 @@ describe('Mailbox Deduplication — enqueue-time', () => {
       summary: 'trigger-A',
       content: 'body-A',
       taskId: 'task-trigger',
-      extra: { triggerExecution: true },
-    });
+    }, { intent: 'trigger_execution' });
     mailbox.enqueue('task_comment', {
       summary: 'trigger-B',
       content: 'body-B',
       taskId: 'task-trigger',
-      extra: { triggerExecution: true },
-    });
+    }, { intent: 'trigger_execution' });
 
     // Both should remain separate because triggerExecution prevents merge
     expect(mailbox.depth).toBe(2);

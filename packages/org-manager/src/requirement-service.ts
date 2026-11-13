@@ -799,9 +799,10 @@ export class RequirementService implements ApprovalTargetPort {
               `2. If more work is needed, create additional tasks with task_create(requirement_id="${requirementId}", ...)`,
             ].join('\n'),
             requirementId,
-            extra: { actionRequired: true },
           }, {
             priority: 2,
+            // 第六刀 C2：意图是结构字段（不再写 payload.extra.actionRequired）。
+            intent: 'action_required',
             metadata: { senderName: 'System', senderRole: 'manager' },
           });
         }
@@ -1003,9 +1004,10 @@ export class RequirementService implements ApprovalTargetPort {
         summary: `Requirement "${req.title}" ${decision === 'changes_requested' ? 'needs changes' : decision}`,
         content: parts.join('\n'),
         requirementId: req.id,
-        extra: { actionRequired: true },
       }, {
         priority: 1,
+        // 第六刀 C2：意图是结构字段（不再写 payload.extra.actionRequired）。
+        intent: 'action_required',
         metadata: { senderName: 'System', senderRole: 'manager' },
       });
 

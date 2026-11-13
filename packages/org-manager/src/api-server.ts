@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -2204,7 +2204,7 @@ export class APIServer {
           self.taskService.updateTaskStatus(taskId, status as TaskStatus, updatedBy);
         },
         createTask(req) {
-          return self.taskService.createTask({
+          const task = self.taskService.createTask({
             title: req.title, description: req.description,
             priority: req.priority as TaskPriority,
             orgId: req.orgId,
@@ -2212,6 +2212,32 @@ export class APIServer {
             reviewerId: req.reviewerId,
             createdBy: req.createdBy,
           });
+          // 第六刀 C2 / §2.3 投递点 2：外部网关建任务时同时写一条**带信封**的投递记录。
+          // 形状选 `task_status_update` + `intent='deliver'`：它是 record 类（invokesLLM=false），
+          // 不会凭空多烧一个 LLM 回合；但它把“谁建了这活、发给谁”落成可查的一行（I4 任务链路）。
+          try {
+            const assignee = self.orgService.getAgentManager().getAgent(req.assignedAgentId);
+            assignee?.enqueueToMailbox('task_status_update', {
+              summary: `Task created via gateway: ${task.title}`,
+              content: req.description ?? task.title,
+              taskId: task.id,
+            }, {
+              intent: 'deliver',
+              metadata: { taskId: task.id },
+              origin: {
+                from: agentAddressRef(req.createdBy ?? 'gateway'),
+                // 任务创建事件的身份 = 该任务本身（同一任务重投不产生第二条记录）。
+                messageId: `gateway-task:${task.id}`,
+                subject: `Task created: ${task.title}`,
+              },
+            });
+          } catch (err) {
+            // 投递记录写失败不得让建任务失败（任务已建成）。但也不静默：打日志。
+            log.warn('Gateway createTask: failed to write delivery record', {
+              taskId: task.id, error: String(err),
+            });
+          }
+          return task;
         },
       },
       {

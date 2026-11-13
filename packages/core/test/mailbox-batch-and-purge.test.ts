@@ -109,7 +109,7 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
   it('陈旧但携带 actionRequired ⇒ 不得回收', () => {
     withFakeClock(() => {
       const mailbox = makeMailbox();
-      mailbox.enqueue('heartbeat', { summary: 'h', content: 'h', extra: { actionRequired: true } } as never);
+      mailbox.enqueue('heartbeat', { summary: 'h', content: 'h' } as never, { intent: 'action_required' });
       vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
       expect(mailbox.purgeStaleItems()).toBe(0);
       expect(mailbox.getQueuedItems()).toHaveLength(1);
@@ -139,14 +139,14 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
       const mailbox = makeMailbox();
       // 用不同 sourceType，避免心跳「折叠」干扰本用例的意图
       mailbox.enqueue('task_status_update', { summary: 'plain', content: 'plain' } as never);
-      mailbox.enqueue('daily_report', { summary: 'act', content: 'act', extra: { actionRequired: true } } as never);
+      mailbox.enqueue('daily_report', { summary: 'act', content: 'act' } as never, { intent: 'action_required' });
       mailbox.enqueue('memory_consolidation', { summary: 'rep', content: 'rep' } as never);
       vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
 
       expect(mailbox.purgeStaleItems()).toBe(2);
       const left = mailbox.getQueuedItems();
       expect(left).toHaveLength(1);
-      expect((left[0] as MailboxItem).payload.extra?.actionRequired).toBe(true);
+      expect(left[0]!.envelope?.intent).toBe('action_required');
     });
   });
 });
@@ -190,7 +190,7 @@ describe('enqueue 心跳折叠 · 不得吞掉带动作的心跳', () => {
   it('带 actionRequired 的心跳不得被折叠（否则待办动作静默消失）', () => {
     const mailbox = makeMailbox();
     mailbox.enqueue('heartbeat', { summary: 'h1', content: 'h1' } as never);
-    mailbox.enqueue('heartbeat', { summary: 'act', content: 'act', extra: { actionRequired: true } } as never);
+    mailbox.enqueue('heartbeat', { summary: 'act', content: 'act' } as never, { intent: 'action_required' });
     expect(mailbox.depth).toBe(2);
   });
 

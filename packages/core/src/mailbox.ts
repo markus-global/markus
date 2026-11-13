@@ -3,6 +3,12 @@ import {
   generateId,
   MAILBOX_QUEUED_TTL_MS,
   TRIAGE_STALE_INFO_TTL_MS,
+  buildDeliveryEnvelope,
+  parseEnvelope,
+  agentAddressRef,
+  platformOriginRef,
+  type DeliveryEnvelope,
+  type MailboxIntent,
   type MailboxItem,
   type MailboxItemType,
   type MailboxPayload,
@@ -98,14 +104,49 @@ export const MAILBOX_OBSERVABILITY_EVENTS = {
  * 返回 `undefined` 表示**不加约束**（类型不在作用域内，或缺少 taskId/round）。
  */
 export function mailboxDedupKey(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & {
+    envelope?: Pick<DeliveryEnvelope, 'intent'>;
+    round?: number;
+  },
 ): string | undefined {
   return routeMailboxItem(item).dedupeKey;
+}
+
+/**
+ * 投递来源 —— 投递点**真正知道**的那几件事（第六刀 §2.3）。
+ *
+ * 为什么不是把整份信封交给调用方：信封是「谁发给谁」的完整身份头，其中 `to`
+ * 由 mailbox 自己知道（就是本 agentId），`signalClass` 由注册表派生，`intent`
+ * 由调用方用结构化参数给出。让三个投递点各拼一份完整信封，就是三份形状定义。
+ */
+export interface DeliveryOrigin {
+  /** 谁发的。`agent:<id>` / `im:<platform>:<user>` / 邮件地址，均只从 shared 构造点构造。 */
+  from: DeliveryEnvelope['from'];
+  /**
+   * 平台内唯一 id（外部邮件 = RFC Message-ID）。缺省用本 item 的 `mbx_*` id。
+   * 提供它就让「同一条外部消息投两次」在结构上只能落一行（V5）。
+   */
+  messageId?: string;
+  /** 因果链（In-Reply-To / References 等价物）；只读保存，不参与路由/去重。 */
+  externalThreadRef?: string | null;
+  /** `from` 是否已验证（只有 `kind='external'` 有意义）；本卡恒 false。 */
+  fromVerified?: boolean;
+  /** 展示摘要；缺省用 `payload.summary`。 */
+  subject?: string;
 }
 
 export interface EnqueueOptions {
   priority?: MailboxPriority;
   metadata?: MailboxItemMetadata;
+  /**
+   * 投递意图（结构化）：`deliver`（默认）/ `trigger_execution` / `action_required`。
+   * 取代 `payload.extra.triggerExecution` / `extra.actionRequired` 两个布尔推断。
+   */
+  intent?: MailboxIntent;
+  /** 轮次（结构化）：幂等键 `(sourceType, taskId, round)` 的输入。 */
+  round?: number;
+  /** 投递来源（谁发的 / 外部 messageId）；缺省 = 平台自身（`noreply@`）。 */
+  origin?: DeliveryOrigin;
   /**
    * In-process runtime callbacks (never persisted — see `MailboxItemRuntime`).
    * Persistence serializes only `payload` + `metadata`, so callbacks here cannot
@@ -131,6 +172,19 @@ export interface MailboxPersistence {
    *          `true` / `undefined`（旧实现或未接线）= 已落库。
    */
   save(item: MailboxItem, dedupKey?: string): void | boolean;
+  /**
+   * 第六刀 C2（V5）：按 `(agent, messageId)` 查既有的**非退信**行（只读最小字段）。
+   * 未实现时跳过 messageId 幂等判定（旧持久层降级，行为同 C2 之前）。
+   */
+  findByMessageId?(agentId: string, messageId: string): MailboxExistingRow | undefined;
+  /**
+   * 第六刀 C2（§2.5）：把一次**没投进去**的投递写成 `status='bounced'` 的结构化退信行。
+   *
+   * 为什么必须落行而不是只写日志：旧实现把「没投进去」写成 `dropped` 终态，
+   * 真实库 ≥28621 行没有任何回声，人被静默丢弃。退信必须可查、可按原因聚合。
+   * catch-all 归集（`bounce_target`）是 C3 的事，本卡只保证「原因可查」。
+   */
+  saveBounced?(item: MailboxItem, dropReason: string): void;
   updateStatus(itemId: string, status: MailboxItemStatus, extra?: Partial<MailboxItem>): void;
   /** Mark all items stuck in 'processing' as 'dropped' (stale after restart).
    *  When `currentOwnerId` is supplied, rows claimed by a DIFFERENT instance are also
@@ -234,6 +288,57 @@ export function resolveReinjectDecision(
     return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'settled' };
   }
   return { action: 'suppress', itemId: existing.id, status: existing.status, reason: 'in-flight' };
+}
+
+/**
+ * 持久化行 → 结构化字段（**唯一一处**）。
+ *
+ * C2 之前落库的行没有 `envelope` / `intent` / `round` 列（值为 NULL）。这些行的语义
+ * （任务执行指令、评审轮次）必须继续成立，否则 resurface 后一个真实任务会被当成
+ * 信息类信号 → 任务永久卡死。就在这里解码**一次**，下游只看到结构字段。
+ *
+ * **移除条件**：一旦真实库里 `envelope IS NULL` 的 mailbox_items 行数为 0（C4 实测后）。
+ */
+export function rehydrateStructuredFields(row: {
+  id: string;
+  agentId: string;
+  sourceType: MailboxItemType;
+  envelope?: string | null;
+  payload: Record<string, unknown>;
+  metadata?: Record<string, unknown>;
+}): { envelope?: DeliveryEnvelope; round?: number } {
+  const payload = (row.payload ?? {}) as unknown as MailboxPayload;
+  const extra = (payload.extra ?? {}) as Record<string, unknown>;
+  const legacyRoundRaw = extra['round'] ?? row.metadata?.['round'];
+  const round = typeof legacyRoundRaw === 'number' && Number.isFinite(legacyRoundRaw)
+    ? legacyRoundRaw
+    : undefined;
+
+  const stored = parseEnvelope(row.envelope);
+  if (stored) return { envelope: stored, round };
+
+  // 旧行：无信封。只在这里从载荷解码 intent（trigger_execution / action_required），
+  // 并用 item id 做 messageId（永不自撞，不会把历史行误判成重复投递）。
+  const legacyIntent: MailboxIntent = extra['triggerExecution'] === true
+    ? 'trigger_execution'
+    : extra['actionRequired'] === true
+      ? 'action_required'
+      : 'deliver';
+  const route = routeMailboxItem({ sourceType: row.sourceType, payload, metadata: row.metadata as MailboxItemMetadata | undefined, round });
+  log.warn('Mailbox row has no envelope — rehydrated from payload (pre-C2 row)', {
+    itemId: row.id, agentId: row.agentId, sourceType: row.sourceType, legacyIntent,
+  });
+  return {
+    round,
+    envelope: buildDeliveryEnvelope({
+      from: platformOriginRef(),
+      to: agentAddressRef(row.agentId),
+      messageId: row.id,
+      signalClass: route.signalClass,
+      intent: legacyIntent,
+      subject: typeof payload.summary === 'string' ? payload.summary : '',
+    }),
+  };
 }
 
 /**
@@ -599,8 +704,21 @@ export class AgentMailbox {
     payload: MailboxPayload,
     options?: EnqueueOptions,
   ): MailboxItem {
+    // 投递意图 / 轮次：**结构化参数**，不再从 `payload.extra` 推断（R3'）。
+    // 一次路由决策同时给出 strictState / affinity / dedupeKey / signalClass——
+    // 信封的 signalClass 也来自这里，避免出现「第二个分类器」。
+    const intent: MailboxIntent = options?.intent ?? 'deliver';
+    const route = routeMailboxItem({
+      sourceType,
+      payload,
+      metadata: options?.metadata,
+      envelope: { intent },
+      round: options?.round,
+    });
+
     // 注意：显式复用（reuseItemId）不走内存合并 —— 调用方要求把**这一条在飞项**
     // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
+    // 合并进去的那条项的旧信封保留（合并的是内容，不是身份）。
     const reuseItemId = options?.reuseItemId;
     const merged = reuseItemId ? undefined : this.tryMergeIntoExisting(sourceType, payload);
     if (merged) {
@@ -647,7 +765,8 @@ export class AgentMailbox {
       && sourceType === 'heartbeat'
       // 【不得折叠带动作的心跳】折叠保留既有那条、丢弃本次这条；若本次携带
       // actionRequired / directMention，折叠就等于静默丢掉一个待办动作 → 只折叠纯巡检心跳。
-      && payload.extra?.actionRequired !== true
+      // 旧读法 `extra.actionRequired` 已换成结构字段 `intent`（同样由入参决定）。
+      && intent !== 'action_required'
       && payload.extra?.directMention !== true
     ) {
       const queuedHb = this.queue.find(
@@ -680,17 +799,44 @@ export class AgentMailbox {
       }
     }
 
+    const itemId = reuseItemId ?? generateId('mbx');
+    // ── 信封：唯一装配点（第六刀 §2.1 / I4）──────────────────────────────
+    // `to` 由 mailbox 自己知道（就是本 agent）；`signalClass` 来自唯一路由决策；
+    // `from` / `messageId` 由投递点提供。因此每条新信号都必带信封，不存在第三条路径。
+    const origin = options?.origin;
+    const envelope: DeliveryEnvelope = buildDeliveryEnvelope({
+      from: origin?.from ?? platformOriginRef(),
+      to: agentAddressRef(this.agentId),
+      messageId: origin?.messageId ?? itemId,
+      signalClass: route.signalClass,
+      intent,
+      subject: origin?.subject ?? payload.summary,
+      externalThreadRef: origin?.externalThreadRef ?? null,
+      fromVerified: origin?.fromVerified ?? false,
+    });
+
     const item: MailboxItem = {
-      id: reuseItemId ?? generateId('mbx'),
+      id: itemId,
       agentId: this.agentId,
       sourceType,
       priority: options?.priority ?? DEFAULT_PRIORITY[sourceType],
       status: 'queued',
       payload,
       metadata: options?.metadata,
+      envelope,
+      round: options?.round,
       queuedAt: new Date().toISOString(),
       runtime: options?.runtime,
     };
+
+    // ── C2 / V5：同一条消息不得入队两次 ─────────────────────────────────
+    // 幂等身份是 `envelope.messageId`（外部邮件 = RFC Message-ID；平台内 = 发送方给的 id）。
+    // 命中既有非退信行 → 本次投递写一条 `duplicate_message_id` 退信行后返回，
+    // 不产生第二条 queued（旧行为是静默“suppressed”，人看不到任何回声）。
+    if (this.persistence?.findByMessageId) {
+      const existing = this.persistence.findByMessageId(this.agentId, envelope.messageId);
+      if (existing) return this.bounceDuplicateMessage(item, existing);
+    }
 
     // P0 幂等键（根因 #5）：**先落库再入内存队列**。落库被唯一键拒绝（返回 false）
     // 即「同一 (agent, sourceType, taskId, round) 已投递过」——此时**不入队**，
@@ -799,9 +945,9 @@ export class AgentMailbox {
    */
   private static unicastRouteKey(item: MailboxItem): string {
     const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
-    const roundRaw = item.payload.extra?.round
-      ?? (item.metadata as Record<string, unknown> | undefined)?.['round'];
-    const round = typeof roundRaw === 'number' && Number.isFinite(roundRaw) ? roundRaw : undefined;
+    // 结构字段（第六刀 C2）：载荷里的 `extra.round` / `metadata.round` 不再是事实来源 ——
+    // 同一份「这是第几轮」若有两个读法，单播路由和幂等键就会给出不同答案。
+    const round = item.round;
     if (taskId) return `${taskId}:r${round ?? '?'}`;
     return mailboxDedupKey(item) ?? item.id;
   }
@@ -1419,6 +1565,47 @@ export class AgentMailbox {
   }
 
   /**
+   * C2 / V5：同一条 `messageId` 重复投递 → 写一条结构化退信行（`bounced`）。
+   *
+   * 三条纪律：
+   * 1. **不静默**：旧实现只 `log.warn` 就返回，人 / 概览都看不到这次投递失败了；
+   * 2. **不改既有行**：既有 queued/processing 行是另一条信号的状态，改它就是第二写者；
+   * 3. **可建模**：退信行带 `drop_reason='duplicate_message_id'`，`bounce_target` 留空
+   *    （catch-all 归集是 C3 的写者）。
+   */
+  private bounceDuplicateMessage(
+    item: MailboxItem,
+    existing: MailboxExistingRow,
+  ): MailboxItem {
+    log.warn('Duplicate mailbox delivery bounced — same messageId already queued', {
+      event: MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped,
+      agentId: this.agentId,
+      itemId: item.id,
+      type: item.sourceType,
+      messageId: item.envelope?.messageId,
+      existingId: existing.id,
+      existingStatus: existing.status,
+      dropReason: 'duplicate_message_id',
+      count: 1,
+    });
+    this.persistence?.saveBounced?.(item, 'duplicate_message_id');
+    this.eventBus.emit('mailbox:duplicate-rejected', {
+      agentId: this.agentId,
+      itemId: item.id,
+      sourceType: item.sourceType,
+      dedupKey: item.envelope?.messageId,
+    });
+    // 投递方可能在 await responsePromise：被退信就必须显式了结，否则调用方永久挂起。
+    const pending = item.runtime?.responsePromise;
+    if (pending) {
+      try { pending.resolve('[duplicate-message-bounced]'); } catch { /* caller gone */ }
+    }
+    item.status = 'bounced';
+    item.dropReason = 'duplicate_message_id';
+    return item;
+  }
+
+  /**
    * Dequeue a specific item by ID (not just the head of the queue).
    * Used by the triage phase to pick its chosen item.
    */
@@ -1589,7 +1776,9 @@ export class AgentMailbox {
     // callback_result carries a reply the user can see in the Team Chat bubble.
     if (item.sourceType === 'callback_result') return true;
     const extra = item.payload?.extra;
-    if (extra?.actionRequired) return true;
+    // 结构字段优先；`directMention` 本卡不动（§2.1 只授权 triggerExecution /
+    // actionRequired / round 三个字段上提，其余标记留在载荷里，口径已写入文档）。
+    if (item.envelope?.intent === 'action_required') return true;
     if (extra?.directMention) return true;
     return false;
   }

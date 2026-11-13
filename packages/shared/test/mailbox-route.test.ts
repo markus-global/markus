@@ -14,11 +14,18 @@ import {
   type MailboxPayload,
 } from '../src/types/mailbox.js';
 
-function lite(sourceType: MailboxItemType, payload: Partial<MailboxPayload> = {}, metadata?: Record<string, unknown>) {
+function lite(
+  sourceType: MailboxItemType,
+  payload: Partial<MailboxPayload> = {},
+  metadata?: Record<string, unknown>,
+  structured: { intent?: 'deliver' | 'trigger_execution' | 'action_required'; round?: number } = {},
+) {
   return {
     sourceType,
     payload: { summary: '', content: '', ...payload } as MailboxPayload,
     metadata,
+    ...(structured.intent ? { envelope: { intent: structured.intent } } : {}),
+    ...(structured.round !== undefined ? { round: structured.round } : {}),
   };
 }
 
@@ -62,45 +69,54 @@ describe('routeMailboxItem — golden decision table', () => {
   }
 });
 
-describe('routeMailboxItem — strictState predicates', () => {
-  it('triggerExecution is authoritative regardless of type', () => {
-    const r = routeMailboxItem(lite('task_status_update', { extra: { triggerExecution: true } }));
+describe('routeMailboxItem — 权威态只读结构字段（第六刀 C2）', () => {
+  it('intent=trigger_execution 与类型无关地构成权威态', () => {
+    const r = routeMailboxItem(lite('task_status_update', {}, undefined, { intent: 'trigger_execution' }));
     expect(r.strictState).toBe(true);
   });
 
-  it('review_request is authoritative', () => {
+  it('review_request 注册表内置权威态', () => {
     expect(routeMailboxItem(lite('review_request')).strictState).toBe(true);
   });
 
-  it('requirement_update is authoritative only with actionRequired', () => {
-    expect(routeMailboxItem(lite('requirement_update', { extra: { actionRequired: true } })).strictState).toBe(true);
+  it('intent=action_required 只对声明了 actionRequiredStrict 的类型成立', () => {
+    expect(routeMailboxItem(lite('requirement_update', {}, undefined, { intent: 'action_required' })).strictState).toBe(true);
+    expect(routeMailboxItem(lite('workflow_update', {}, undefined, { intent: 'action_required' })).strictState).toBe(true);
+    // 心跳可能带动作（不得折叠），但它**不是**权威态——否则会占满并发锁。
+    expect(routeMailboxItem(lite('heartbeat', {}, undefined, { intent: 'action_required' })).strictState).toBe(false);
     expect(routeMailboxItem(lite('requirement_update')).strictState).toBe(false);
   });
 
-  it('workflow_update is authoritative only with actionRequired', () => {
-    expect(routeMailboxItem(lite('workflow_update', { extra: { actionRequired: true } })).strictState).toBe(true);
-    expect(routeMailboxItem(lite('workflow_update')).strictState).toBe(false);
+  it('改 payload.extra 不影响路由（I2：结构不从载荷推断）', () => {
+    const base = { taskId: 'tsk_x' };
+    const a = routeMailboxItem(lite('task_status_update', { ...base, extra: { triggerExecution: true, round: 7 } }));
+    const b = routeMailboxItem(lite('task_status_update', { ...base, extra: { triggerExecution: false, round: 99, actionRequired: true } }));
+    const c = routeMailboxItem(lite('task_status_update', { ...base }));
+    // 三者除载荷外完全相同 → 路由必须逐字段相同（含 strictState / dedupeKey）。
+    expect(a).toEqual(b);
+    expect(a).toEqual(c);
+    expect(a.strictState).toBe(false);
   });
 });
 
-describe('routeMailboxItem — identity-based idempotency key', () => {
-  it('review_request with taskId+round → type:task:round', () => {
-    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x', extra: { round: 2 } }));
+describe('routeMailboxItem — 幂等键同样只读结构字段', () => {
+  it('review_request + 结构 round → type:task:round（值不变）', () => {
+    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, undefined, { round: 2 }));
     expect(r.dedupeKey).toBe('review_request:tsk_x:2');
   });
 
-  it('reads round from metadata too', () => {
-    const r = routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, { round: 3 }));
-    expect(r.dedupeKey).toBe('review_request:tsk_x:3');
+  it('payload.extra.round / metadata.round 不再进幂等键', () => {
+    expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x', extra: { round: 3 } })).dedupeKey).toBeUndefined();
+    expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x' }, { round: 3 })).dedupeKey).toBeUndefined();
   });
 
-  it('missing taskId or round → no constraint', () => {
+  it('缺 taskId 或缺 round → 不施加约束', () => {
     expect(routeMailboxItem(lite('review_request', { taskId: 'tsk_x' })).dedupeKey).toBeUndefined();
-    expect(routeMailboxItem(lite('review_request', { extra: { round: 1 } })).dedupeKey).toBeUndefined();
+    expect(routeMailboxItem(lite('review_request', {}, undefined, { round: 1 })).dedupeKey).toBeUndefined();
   });
 
-  it('non-deduping types never constrain', () => {
-    expect(routeMailboxItem(lite('task_comment', { taskId: 'tsk_x', extra: { round: 1 } })).dedupeKey).toBeUndefined();
+  it('非幂等类型永不施加约束', () => {
+    expect(routeMailboxItem(lite('task_comment', { taskId: 'tsk_x' }, undefined, { round: 1 })).dedupeKey).toBeUndefined();
   });
 });
 
