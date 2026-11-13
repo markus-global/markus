@@ -78,6 +78,30 @@ The canonical copy now lives in the repo. The CTO's workspace copy could not be 
 session (platform denies cross-agent workspace writes), so the corrected version was added here —
 versioned, reviewable, and moving in the same PR as the code that implements it.
 
+## Durable contract and review-time reproduction
+
+Two documents complete the picture and ship in the same PR:
+
+- `docs/architecture/state-machines.md` **§16 WorkUnit Lifecycle** — the durable contract:
+  state set, the matrix copied from `WU_TRANSITIONS`, the three layers, the six guard checks
+  stated as what they prevent, producers and `ref` formats, the fact-source boundary and the
+  fixed `ensure` → `linkMailboxItem` order, and failure semantics by event name. It states
+  explicitly that budget has **no** semantics in this card and that this section must not
+  describe a unified budget until C7-B's code exists.
+- `docs/records/cut7-c7a-red-green-evidence-2026-11-13.md` — the reproduction a reviewer can
+  repeat: the four committed test files copied onto a throwaway worktree of base `9b8bf879`
+  fail there (4 files / 11 tests: `is not a constructor` ×10, missing `@markus/shared/work-unit`
+  ×3) and pass here (4 files / 38 tests). It is labelled a review-time reproduction — no
+  development-time timestamps are claimed.
+
+The mutation-based red-before-green in §Evidence above and this base-reproduction answer two
+different questions: mutations prove the *assertions* bite, the base reproduction proves the
+*tests could not have passed on the untouched tree*. Neither substitutes for the other.
+
+`docs/architecture/task-attention-economy.md` is deliberately untouched: it covers mailbox
+signals versus records and contains zero budget references. Putting a budget section there
+would give one fact a second home.
+
 ## Deliberately **not** in this card
 
 - `parent_id` is always `NULL`: spawning child WUs on delegation is C7-B (behaviour change).
