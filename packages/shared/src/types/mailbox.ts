@@ -365,13 +365,104 @@ export type MailboxItemStatus =
   | 'completed'
   | 'deferred'
   | 'merged'
-  | 'dropped'
   /**
    * 退信（第六刀 §2.5）：**不再有「静默丢掉」这个终态**。`bounced` 行必带
-   * `drop_reason`（六类闭集），且 C3 会把它归到 catch-all 概览（`bounce_target`）
-   * 里供人认领或归档。旧 `dropped` 行保留只读，读路径归一为 `bounced`。
+   * `drop_reason`（五类可产生原因 + 一类预留的闭集）。
+   *
+   * 与 `catch_all` 的分工：`bounced` = 「这次没投进去」这一事实的记录；
+   * `catch_all` = 该记录**已归集到概览**（`bounce_target` 写值），等人认领或归档。
+   * 两者都是终态行会出现的值，但同一行只停在其中之一（见 {@link MAILBOX_TRANSITIONS}）。
    */
-  | 'bounced';
+  | 'bounced'
+  /**
+   * catch-all 概览态（第六刀 §2.5 `bounced → catch_all`）：退信已被归集，
+   * 在概览里**恰好可见一次**且原因可查。人认领 → `queued`；归档 → 停留（不迁移）。
+   */
+  | 'catch_all';
+
+// ─── FSM-2：投递状态机（声明式矩阵）────────────────────────────────────────
+//
+// 第六刀 §2.5 / 主计划 §4.2（FSM-2）。**唯一**的执行点是
+// `AgentMailbox.updateSignalStatus()`（core），本表是它的判据；任何绕过它的迁移
+// 都被 `architecture-guard` 判红。
+//
+// 矩阵按**真实代码**枚举，而不是按设计稿的简化图。差集是刻意记录下来的事实：
+// 设计稿只画了主链路，而 `defer`/`merge`/`complete` 在 core 的**排队态**上也会发生
+// （`defer()` 从队列 splice、`merge()` 合并两条排队项、triage 的 inline 完成）。
+// 若按设计稿裁剪，这些合法路径会在运行时被判非法 —— 那是把图当事实，不是把代码当事实。
+//
+// | from | to | 触发 |
+// |---|---|---|
+// | queued | processing | 原子认领（claimedBy + leaseUntil）|
+// | queued | deferred / merged / completed / bounced | preempt 前置决策、入队合并、inline 完成、陈旧清理 |
+// | processing | completed / deferred / merged / bounced | 回合收口 / preempt / 合并 / 解析失败·收件人不存在·租约失效 |
+// | processing | queued | 回队（requeue / putBack / 租约过期回收 / 补偿重投）|
+// | deferred | queued | resurfaceDue() |
+// | bounced | catch_all | 归集到概览（写 bounce_target）|
+// | bounced | queued | **补偿重投复用原行**（P1.x R6：同幂等键再投一次时复用既有 bounced 行，不新增行；storage `requeueItem` 的 WHERE 也显式列了 `bounced`）|
+// | catch_all | queued | 人认领（re-queue 给真实目标）|
+// | completed / merged | — | 终态，不迁移 |
+//
+// `bounced → queued` 曾经漏在表外：设计稿只看“归集”一条路径，但真实代码里**补偿重投**
+// 走的就是“复用既有未收口行”，而 `bounced` 正是未收口终态。矩阵不收录它，这条合法路径
+// 就会在运行时被判非法（restart 后重投会静默失败）——又一次“把图当事实”。
+//
+// `dropped` **不在取值域内**：历史行保留只读，读路径经 `normalizeSignalStatus()`
+// 归一为 `bounced`，绝不改写历史数据（不回填、不批量 UPDATE）。
+export const MAILBOX_TRANSITIONS: Readonly<Record<MailboxItemStatus, readonly MailboxItemStatus[]>> = Object.freeze({
+  queued: ['processing', 'deferred', 'merged', 'completed', 'bounced'],
+  processing: ['completed', 'deferred', 'merged', 'bounced', 'queued'],
+  deferred: ['queued'],
+  bounced: ['catch_all', 'queued'],
+  catch_all: ['queued'],
+  completed: [],
+  merged: [],
+});
+
+/**
+ * `from` 是否在当前取值域内。
+ *
+ * 为什么需要它：真实库里有 C3 之前的 `failed` 行（`requeueItem` 的 WHERE 里仍列着它）。
+ * 这类值是**取值域外的历史态**，矩阵没有它的规则，但它们仍必须能被补偿重投回队。
+ * 用这个谓词把“矩阵能判的”与“历史遗留只能由端口 SQL 自律的”分开，
+ * 而不是让 `MAILBOX_TRANSITIONS[未知]` 抛 TypeError（那是把数据问题变成崩溃）。
+ */
+export function isKnownSignalStatus(status: string): status is MailboxItemStatus {
+  return Object.prototype.hasOwnProperty.call(MAILBOX_TRANSITIONS, status);
+}
+
+/**
+ * 迁移是否合法。**同一状态 → 同一状态** 永远允许：那不是迁移，而是字段更新
+ * （例如 `updatePriority()` 在改优先级时顺带写一次同状态）。把它判非法会制造一类
+ * 「改个优先级把队列卡死」的假失败。
+ *
+ * **取值域外的 `from`（历史 `failed`）一律判非法**（不是抛异常）：它没有规则可依，
+ * 不该被任何“默认放行”的写法接住 —— 否则新增一个未知状态就等于自动获得所有出口。
+ */
+export function canTransitionSignal(from: MailboxItemStatus | string, to: MailboxItemStatus): boolean {
+  if (from === to) return true;
+  if (!isKnownSignalStatus(from)) return false;
+  return MAILBOX_TRANSITIONS[from].includes(to);
+}
+
+/**
+ * 历史状态 → 当前取值域。**读路径唯一归一函数**。
+ *
+ * `dropped` 是本刀删掉的终态（真实库 ≥28,621 行、无 `drop_reason`、无回声）。
+ * 历史行**只读**：这里只把读到的值映射成 `bounced`，不 UPDATE 任何行。
+ */
+export function normalizeSignalStatus(raw: string): MailboxItemStatus {
+  if (raw === 'dropped') return 'bounced';
+  return raw as MailboxItemStatus;
+}
+
+/** 已归集/待归集的退信态（概览读者用这一个谓词，别处不得再写 `=== 'bounced'`）。 */
+export function isBounceSignalStatus(status: MailboxItemStatus): boolean {
+  return status === 'bounced' || status === 'catch_all';
+}
+
+// `catchAllTargetOf()` / `CATCH_ALL_PREFIX` 定义在 `mail.ts`（低层，无循环依赖），
+// 由本模块经 index 一并导出。这里不重复定义 —— 同一事实两个写者必然漂移。
 
 export interface MailboxItem {
   id: string;

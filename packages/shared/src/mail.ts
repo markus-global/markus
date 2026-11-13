@@ -204,5 +204,99 @@ export function platformOriginRef(): AddressRef {
   return ref;
 }
 
+/**
+ * catch-all 概览桶 id —— **唯一构造点**。
+ *
+ * 一个 agent 一个桶：概览是「这个 agent 没投进去的信号」的视图，不是全局大表。
+ * 桶 id 写进 `mailbox_items.bounce_target`，因此「某条退信归到哪」永远可查，
+ * 且不需要第二张表/第二个写者。
+ *
+ * 放在 `mail.ts`（低层）而不是 `types/mailbox.ts`：后者要 import 本模块的类型，
+ * 反过来再 import 一个**运行时函数**会形成真实循环（类型 import 会被擦除，函数不会）。
+ * `types/mailbox.ts` 再 re-export 给 UI/工具面用。
+ */
+export const CATCH_ALL_PREFIX = 'catchall:';
+
+export function catchAllTargetOf(agentId: string): string {
+  return `${CATCH_ALL_PREFIX}${agentId}`;
+}
+
 /** 平台内 agent 作为 `from` 的便捷入口（转发到唯一构造点）。 */
 export { agentAddressRef };
+
+// ─── 投递解析：唯一解析器（第六刀 §2.2，FSM-2）────────────────────
+//
+// 判据（I2 / V2）：**只读信封**。函数签名里只有 `envelope.to`，物理上拿不到
+// `payload` / `sourceType` —— 这是「结构不从载荷推断」在类型层面的落实：
+// 模块的入参就是权限边界，而不是靠一句注释约束调用方自觉。
+//
+// 结果只有两种（没有第三种「悄悄丢掉」）：
+//   - 命中唯一 active 目标；
+//   - `catch_all` —— **必须有回声**：带上精确原因 + 概览桶 id，调用方据此写
+//     `status='bounced'` + `drop_reason` + `bounce_target` 的退信行。
+//
+// **不按当前 `org_id` 限定查询**（H4）：地址里已编入组织短名，全局唯一索引裁决归属；
+// 按当前 org 过滤会让 `cto.acme@markus.global` 在组织 B 的实例上永远解析不到。
+
+/** 地址簿只读端口（由 storage 实现；core/comms 不依赖 storage）。 */
+export interface SignalAddressLookup {
+  /** 该地址当前是否有一个 active 目标。被谁占用是结构字段，不是字符串推断。 */
+  findActive(address: string): { agentId: string; targetRef: string } | undefined;
+}
+
+/** 解析结局：唯一 active 目标，或 catch-all（必带回声原因）。 */
+export type EnvelopeResolution =
+  | { matched: true; targetRef: string; agentId: string; address: string }
+  | {
+      matched: false;
+      address: string;
+      reason: Extract<ActiveBounceReason, 'unresolved_address' | 'no_active_target'>;
+      /**
+       * 概览桶 id（`catchall:<agentId>`）。非空 —— 退信必须落在某个人的概览里，
+       * 而不是「没人管」的第三个去处。
+       */
+      catchAll: string;
+    };
+
+/**
+ * **唯一解析器**：`resolve(envelope)`。
+ *
+ * - `to.kind === 'agent'` —— 内部直达（投递点已给出目标身份，不需要地址簿）；
+ * - `to.kind === 'markus'` —— 查地址簿；命中即唯一 active 目标，否则 `no_active_target`；
+ * - `to.kind === 'platform' | 'external' | 'im'` —— 本刀**不向这三类投递**
+ *   （平台保留地址不是收件人；外部域收发是 C10；`im` 是投递方身份，不是邮箱）。
+ *   一律 `unresolved_address`，而不是猜一个收件人或静默丢掉。
+ *
+ * `catchAllOwner` 是退信要归集到的 agent（概览的读者）。它**不是**收件人：
+ * 解析失败时收件人根本不存在，退信必须有一个具体的读者，否则概览无人可看。
+ */
+export function resolveEnvelopeTarget(
+  envelope: Pick<DeliveryEnvelope, 'to'>,
+  catchAllOwner: string,
+  lookup?: SignalAddressLookup,
+): EnvelopeResolution {
+  const to = envelope.to;
+  const catchAll = catchAllTargetOf(catchAllOwner);
+  switch (to.kind) {
+    case 'agent':
+      return {
+        matched: true,
+        targetRef: `agent:${to.agentId}`,
+        agentId: to.agentId,
+        address: `agent:${to.agentId}`,
+      };
+    case 'markus': {
+      const active = lookup?.findActive(to.address);
+      if (!active) return { matched: false, address: to.address, reason: 'no_active_target', catchAll };
+      return { matched: true, targetRef: active.targetRef, agentId: active.agentId, address: to.address };
+    }
+    default:
+      return {
+        matched: false,
+        address: to.kind === 'im' ? `im:${to.platform}:${to.nativeUserId}` : to.address,
+        reason: 'unresolved_address',
+        catchAll,
+      };
+  }
+}
+

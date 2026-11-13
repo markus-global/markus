@@ -174,11 +174,12 @@ describe('启动清理 · 不误杀有效租约', () => {
     repo.updateStatus('mbx_s4', 'processing');
 
     // (d)：strict 回队（不进 dropped 计数），heartbeat（非 strict）孤儿仍 drop。
-    expect(repo.markStaleProcessingAsDropped('agt_1', t), '只清非 strict 孤儿 s4').toBe(1);
+    expect(repo.markStaleProcessingAsBounced('agt_1', t), '只清非 strict 孤儿 s4').toBe(1);
     expect(repo.getById('mbx_s1')!.status, 'strict 孤儿 → 回队').toBe('queued');
     expect(repo.getById('mbx_s2')!.status, '有效租约不被动').toBe('processing');
     expect(repo.getById('mbx_s3')!.status, 'strict 过期租约 → 回队').toBe('queued');
-    expect(repo.getById('mbx_s4')!.status, '非 strict 孤儿 → 维持 dropped（逐字不变）').toBe('dropped');
+    expect(repo.getById('mbx_s4')!.status, '非 strict 孤儿 → bounced（超时结案，不再是无原因的 dropped）').toBe('bounced');
+    expect(repo.getById('mbx_s4')!.dropReason, 'C3：终态行必须带原因').toBe('lease_expired');
   });
 });
 
@@ -208,7 +209,7 @@ describe('P0 watchdog 自愈 · 只回收「无认领/租约过期」的 process
     repo.claimItem('mbx_expired', 'ghost', iso(-60_000), t);   // 租约已过期的孤儿（strict-state）
 
     // review_request 是 strict-state → 过期行回队待重试（不 drop、不 completed）
-    expect(repo.markStaleProcessingAsDropped('agt_1')).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1')).toBe(0);
     expect(repo.getById('mbx_other')!.status, '他人有效租约不被误杀').toBe('processing');
     expect(repo.getById('mbx_mine')!.status, '本实例有效租约不被误杀').toBe('processing');
     expect(repo.getById('mbx_expired')!.status, 'strict-state 过期行回队重试').toBe('queued');
@@ -221,9 +222,10 @@ describe('P0 watchdog 自愈 · 只回收「无认领/租约过期」的 process
     repo.save({ ...row('mbx_nolease'), sourceType: 'heartbeat', payload: { summary: 'hb2', content: 'hb2' } });
     repo.updateStatus('mbx_nolease', 'processing');            // 无认领的 processing 行
 
-    expect(repo.markStaleProcessingAsDropped('agt_1')).toBe(2);
-    expect(repo.getById('mbx_hb')!.status).toBe('dropped');
-    expect(repo.getById('mbx_nolease')!.status).toBe('dropped');
+    expect(repo.markStaleProcessingAsBounced('agt_1')).toBe(2);
+    expect(repo.getById('mbx_hb')!.status).toBe('bounced');
+    expect(repo.getById('mbx_nolease')!.status).toBe('bounced');
+    expect(repo.getById('mbx_hb')!.dropReason).toBe('lease_expired');
   });
 
   it('updateStatus 支持 priority（updatePriority 的落库路径，不再走幂等 save）', () => {
@@ -261,7 +263,7 @@ describe('启动清理 · 跨实例死认领即陈旧（传入 currentOwnerId �
     repo.save({ ...row('mbx_f1'), sourceType: 'memory_consolidation' });
     const t = now().toISOString();
     repo.claimItem('mbx_f1', 'dead#91901#2', iso(600_000), t); // 未来租约的异主认领
-    expect(repo.markStaleProcessingAsDropped('agt_1', t)).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1', t)).toBe(0);
     expect(repo.getById('mbx_f1')!.status).toBe('processing');
   });
 
@@ -269,15 +271,16 @@ describe('启动清理 · 跨实例死认领即陈旧（传入 currentOwnerId �
     repo.save({ ...row('mbx_f2'), sourceType: 'memory_consolidation' });
     const t = now().toISOString();
     repo.claimItem('mbx_f2', 'dead#91901#2', iso(600_000), t);
-    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(1);
-    expect(repo.getById('mbx_f2')!.status).toBe('dropped');
+    expect(repo.markStaleProcessingAsBounced('agt_1', t, 'me#500#1')).toBe(1);
+    expect(repo.getById('mbx_f2')!.status).toBe('bounced');
+    expect(repo.getById('mbx_f2')!.dropReason).toBe('lease_expired');
   });
 
   it('传 ownerId → 本实例认领（有效租约）不误杀', () => {
     repo.save({ ...row('mbx_f3'), sourceType: 'memory_consolidation' });
     const t = now().toISOString();
     repo.claimItem('mbx_f3', 'me#500#1', iso(600_000), t);
-    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1', t, 'me#500#1')).toBe(0);
     expect(repo.getById('mbx_f3')!.status).toBe('processing');
   });
 
@@ -285,7 +288,7 @@ describe('启动清理 · 跨实例死认领即陈旧（传入 currentOwnerId �
     repo.save(row('mbx_f4')); // review_request = strict-state
     const t = now().toISOString();
     repo.claimItem('mbx_f4', 'dead#1', iso(600_000), t);
-    expect(repo.markStaleProcessingAsDropped('agt_1', t, 'me#500#1')).toBe(0);
+    expect(repo.markStaleProcessingAsBounced('agt_1', t, 'me#500#1')).toBe(0);
     expect(repo.getById('mbx_f4')!.status).toBe('queued');
   });
 });

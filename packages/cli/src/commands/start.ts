@@ -33,6 +33,7 @@ import {
   resolveHostLocale,
   installEgress,
   imAddressRef,
+  catchAllTargetOf,
 } from '@markus/shared';
 import {
   AgentManager,
@@ -2353,8 +2354,8 @@ async function startServerCore(
             try { mbRepo.updateStatus(itemId, status, extra as Record<string, unknown>); }
             catch (e) { log.warn('Failed to update mailbox status', { itemId, error: String(e) }); }
           },
-          markStaleProcessingAsDropped: (aid: string, nowIso?: string, ownerId?: string) =>
-            mbRepo.markStaleProcessingAsDropped(aid, nowIso, ownerId),
+          markStaleProcessingAsBounced: (aid: string, nowIso?: string, ownerId?: string) =>
+            mbRepo.markStaleProcessingAsBounced(aid, nowIso, ownerId),
           loadQueued: (aid: string) => {
             const rows = mbRepo.getByAgent(aid, { status: 'queued' });
             return rows.map((r: any) => ({
@@ -2429,14 +2430,21 @@ async function startServerCore(
                 signalClass: item.envelope?.signalClass ?? null,
                 intent: item.envelope?.intent ?? null,
                 dropReason,
+                // 第六刀 C3：退信行直接带上归集桶（构造时就已确定，不靠后续 UPDATE 补）。
+                bounceTarget: catchAllTargetOf(agentId),
               });
             } catch (e) {
               log.warn('Failed to persist bounced mailbox item', { id: item.id, dropReason, error: String(e) });
             }
           },
+          // 第六刀 C3：路由取证 / catch-all 概览（工具面的两个只读端口）。
+          findRouteByMessageId: (aid: string, messageId: string) => mbRepo.findRouteByMessageId(aid, messageId),
+          listCatchAll: (aid: string, limit?: number) => mbRepo.listCatchAll(aid, limit),
+          // ghost drop 读真实状态，让状态机矩阵能裁制它（不盲写）。
+          getStatus: (id: string) => mbRepo.getStatus(id),
         });
-        const { dropped, restored, expired, merged } = mailbox.recoverStaleItems();
-        if (dropped > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, dropped, restored, expired, merged });
+        const { bounced, restored, expired, merged } = mailbox.recoverStaleItems();
+        if (bounced > 0 || restored > 0 || expired > 0 || merged > 0) log.info('Mailbox recovery on startup', { agentId, bounced, restored, expired, merged });
         agent.getAttentionController().setDecisionPersistence({
           save: (decision) => {
             try {

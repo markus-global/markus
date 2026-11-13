@@ -2020,13 +2020,14 @@ export class AttentionController {
     }
     // Ghost / already-handled: not in the live queue. Force-drop in persistence
     // so the agent stops looping on "Item not found" for stale IDs.
+    // C3：`dropped` 已不是取值域 —— 合成占位项用 `bounced`（它确实是一个退信）。
     this.mailbox.drop(itemId);
     const decision = this.recordDecision('drop', {
       id: itemId,
       agentId: this.agentId,
       sourceType: 'system_event',
       priority: 4,
-      status: 'dropped',
+      status: 'bounced',
       payload: { summary: `Ghost/orphan drop: ${reason}`, content: reason },
       metadata: {},
       queuedAt: new Date().toISOString(),

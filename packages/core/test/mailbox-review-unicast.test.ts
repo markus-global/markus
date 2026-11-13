@@ -230,7 +230,8 @@ describe('P2 · 被丢弃的重复投递（items 唯一键 / 入队幂等键拦�
     const dup = enqueueReview(mb, 'tsk_D', 1);
 
     expect(first.status).toBe('queued');
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(mb.getQueuedItems()).toHaveLength(1); // 不产生第二次入队
 
     const logs = eventOf(warnSpy, MAILBOX_OBSERVABILITY_EVENTS.duplicateDeliveryDropped);
@@ -259,7 +260,8 @@ describe('P2 · 被丢弃的重复投递（items 唯一键 / 入队幂等键拦�
       runtime: { responsePromise: { resolve, reject } } as never,
     });
 
-    expect(dup.status).toBe('dropped');
+    expect(dup.status).toBe('bounced');
+    expect(dup.dropReason).toBe('duplicate_message_id');
     expect(resolve).toHaveBeenCalledWith('[duplicate-delivery-suppressed]');
     expect(reject).not.toHaveBeenCalled();
   });

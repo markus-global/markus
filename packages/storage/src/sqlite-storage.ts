@@ -10,6 +10,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   createLogger, DEFAULT_HEARTBEAT_INTERVAL_MS, isStrictStateItem, isMarkusOrgAddress, parseAddress,
+  normalizeSignalStatus, catchAllTargetOf,
   pickOrgSecretary, toStringArray,
   type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
@@ -1008,12 +1009,15 @@ export function openSqlite(dbPath: string): DatabaseSync {
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
     // 第六刀 C2（V5）：同一 agent 下同一 `messageId` 至多一行 —— **幂等身份由索引裁决**，
     // 不靠调用方自觉。`message_id` 为 NULL（C2 之前的旧行）不受约束：SQLite 视 NULL 互不相等。
-    // 退信行（status='bounced'）是「这次投递没进去」的**记录**，不是第二条消息，
+    // 退信行（`bounced` / `catch_all`）是「这次投递没进去」的**记录**，不是第二条消息，
     // 所以它们不参与这一约束：同一 messageId 被重复投递时，恰好一行 queued + 一条退信行。
+    // 第六刀 C3：谓词从 `status <> 'bounced'` 扩为 `NOT IN ('bounced','catch_all')` ——
+    // 退信行归集到概览后状态变 `catch_all`，若不排除它，同一条消息的第二次退信
+    // 会撞唯一键（= 把「可重复记录的退信」判成「重复消息」）。
     // 依赖 `message_id` 列，必须在列迁移之后创建。
     _db.exec(
       'CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_message ' +
-        "ON mailbox_items(agent_id, message_id) WHERE message_id IS NOT NULL AND status <> 'bounced'",
+        "ON mailbox_items(agent_id, message_id) WHERE message_id IS NOT NULL AND status NOT IN ('bounced','catch_all')",
     );
 
     // 第六刀 C1：地址绑定的两个结构对象，都依赖上面的 `address` / `revoked_at` 列，
@@ -5080,6 +5084,26 @@ export interface MailboxDedupRow {
   queuedAt: string;
 }
 
+/**
+ * 第六刀 C3：`message_route()` / catch-all 概览的行形状。
+ *
+ * 只含结构列，不含 `payload` —— 取证问的是「投到哪 / 为什么没投到」，
+ * 那是信封与状态列回答的问题，不是内容回答的。
+ */
+export interface MailboxRouteRow {
+  id: string;
+  agentId: string;
+  status: string;
+  envelope: string | null;
+  messageId: string | null;
+  signalClass: string | null;
+  intent: string | null;
+  dropReason: string | null;
+  bounceTarget: string | null;
+  queuedAt: string;
+  completedAt: string | null;
+}
+
 export class SqliteMailboxRepo {
   constructor(private db: DatabaseSync) {}
 
@@ -5113,12 +5137,14 @@ export class SqliteMailboxRepo {
     intent?: string | null;
     /** C2：退信原因（仅 `status='bounced'` 写）。 */
     dropReason?: string | null;
+    /** C3：catch-all 概览桶 id（退信行归集目标）。 */
+    bounceTarget?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
-                                    envelope, message_id, signal_class, intent, drop_reason)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
@@ -5127,6 +5153,7 @@ export class SqliteMailboxRepo {
         item.queuedAt, item.dedupKey ?? null,
         item.envelope ?? null, item.messageId ?? null,
         item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
+        item.bounceTarget ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
   }
@@ -5142,11 +5169,92 @@ export class SqliteMailboxRepo {
       .prepare(
         `SELECT id, status, claimed_by AS claimedBy, lease_until AS leaseUntil, queued_at AS queuedAt
            FROM mailbox_items
-          WHERE agent_id = ? AND message_id = ? AND status <> 'bounced'
+          WHERE agent_id = ? AND message_id = ? AND status NOT IN ('bounced','catch_all')
           LIMIT 1`,
       )
       .get(agentId, messageId) as MailboxDedupRow | undefined;
     return row;
+  }
+
+  /**
+   * 第六刀 C3：`message_route(messageId)` 的**只读**取证入口。
+   *
+   * 不区分退信行与非退信行：取证要的就是「这条消息最后怎么了」。同一 messageId 可能同时有
+   * 1 条正经行 + N 条退信行（重投多次），所以返回数组而不是单行：只返回一行会让人误以为「只发生过一次」。
+   * 新→旧排序，调用方取第一条即最近一次。
+   *
+   * 不拉 `payload`：路由事实全在结构列上（信封 / signal_class / intent / 状态 / 原因）。
+   */
+  findRouteByMessageId(agentId: string, messageId: string, limit = 10): MailboxRouteRow[] {
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND message_id = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, messageId, limit) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      id: r['id'] as string,
+      agentId: r['agentId'] as string,
+      status: normalizeSignalStatus(r['status'] as string),
+      envelope: (r['envelope'] as string | null) ?? null,
+      messageId: (r['messageId'] as string | null) ?? null,
+      signalClass: (r['signalClass'] as string | null) ?? null,
+      intent: (r['intent'] as string | null) ?? null,
+      dropReason: (r['dropReason'] as string | null) ?? null,
+      bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+      queuedAt: r['queuedAt'] as string,
+      completedAt: (r['completedAt'] as string | null) ?? null,
+    }));
+  }
+
+  /**
+   * 第六刀 C3：catch-all 概览**唯一读入口**。
+   *
+   * 判据是 `bounce_target = ?` 而不是 `status = 'catch_all'`：归集桶是结构事实，
+   * 状态只是它的一个簇。这样即便归集前（`bounced`）也已经能查出「它将被归到哪个概览」，
+   * 且归集是幂等的（重复归集不改行数）。
+   *
+   * `legacyDropped` 计数单独回：历史 `dropped` 行没有 `bounce_target`，不在归集桶里 ——
+   * 它们保留只读且不被回填，所以概览看不到它们。这是**诚实的缺陷记录**：旧行的原因
+   * 已经永久丢失，把它伪装成归集行只会造出第二份谎言。
+   */
+  listCatchAll(agentId: string, limit = 100): { items: MailboxRouteRow[]; legacyDropped: number } {
+    const catchAll = catchAllTargetOf(agentId);
+    const rows = this.db
+      .prepare(
+        `SELECT id, agent_id AS agentId, status, envelope, message_id AS messageId,
+                signal_class AS signalClass, intent, drop_reason AS dropReason,
+                bounce_target AS bounceTarget, queued_at AS queuedAt, completed_at AS completedAt
+           FROM mailbox_items
+          WHERE agent_id = ? AND bounce_target = ?
+          ORDER BY queued_at DESC, id DESC
+          LIMIT ?`,
+      )
+      .all(agentId, catchAll, limit) as Array<Record<string, unknown>>;
+    const legacy = this.db
+      .prepare("SELECT COUNT(*) AS n FROM mailbox_items WHERE agent_id = ? AND status = 'dropped'")
+      .get(agentId) as { n: number } | undefined;
+    return {
+      items: rows.map((r) => ({
+        id: r['id'] as string,
+        agentId: r['agentId'] as string,
+        status: normalizeSignalStatus(r['status'] as string),
+        envelope: (r['envelope'] as string | null) ?? null,
+        messageId: (r['messageId'] as string | null) ?? null,
+        signalClass: (r['signalClass'] as string | null) ?? null,
+        intent: (r['intent'] as string | null) ?? null,
+        dropReason: (r['dropReason'] as string | null) ?? null,
+        bounceTarget: (r['bounceTarget'] as string | null) ?? null,
+        queuedAt: r['queuedAt'] as string,
+        completedAt: (r['completedAt'] as string | null) ?? null,
+      })),
+      legacyDropped: legacy?.n ?? 0,
+    };
   }
 
   /**
@@ -5230,8 +5338,8 @@ export class SqliteMailboxRepo {
       .prepare(
         `UPDATE mailbox_items
             SET status = 'queued', queued_at = ?, started_at = NULL, completed_at = NULL,
-                claimed_by = NULL, lease_until = NULL
-          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed')`
+                claimed_by = NULL, lease_until = NULL, drop_reason = NULL, bounce_target = NULL
+          WHERE id = ? AND status IN ('queued', 'processing', 'dropped', 'failed', 'bounced')`
       )
       .run(options?.queuedAt ?? now(), itemId);
     return ((res as { changes?: number }).changes ?? 0) === 1;
@@ -5317,7 +5425,21 @@ export class SqliteMailboxRepo {
    *
    * @returns 被判 `dropped` 的条数（回队的 strict-state 行不计入）。
    */
-  markStaleProcessingAsDropped(agentId: string, nowIso?: string, currentOwnerId?: string): number {
+  /**
+   * 把陈旧 `processing` 行结案 —— **写 `bounced` + `drop_reason='lease_expired'`**（第六刀 C3）。
+   *
+   * 名字从 `markStaleProcessingAsDropped` 改掉：`dropped` 已不是取值域，留着旧名就是
+   * 一个当场说谎的标识符（它写的是 bounced，名字说 dropped）。
+   *
+   * 为什么原因必须**同一条 UPDATE** 写入：分两步会产生「终态已定、原因未到」的中间态，
+   * 而那正是旧 `dropped` 的病理（≥28,621 行终态没有原因、也没有回声）。
+   *
+   * `bounce_target` 直接指向本 agent 的 catch-all 概览桶 —— 租约失效是「没投进去」的一种，
+   * 必须同样在概览里恰好可见一次，而不是只活在日志里。
+   *
+   * @returns 被判 `bounced` 的条数（回队的 strict-state 行不计入）。
+   */
+  markStaleProcessingAsBounced(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
 
     // 陈旧判据（SELECT 与 UPDATE 共用同一实现，不复制）：无认领 / 无租约 / 租约过期，
@@ -5350,10 +5472,16 @@ export class SqliteMailboxRepo {
       });
     }
 
-    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续 drop。
+    // 原判据逐字保留（同一实现）：非 strict-state 行（及未被回队的行）继续结案。
+    // 第六刀 C3：终态从 `dropped` 改为 `bounced`，并同一条语句写入原因与概览桶。
+    const catchAll = catchAllTargetOf(agentId);
     const result = this.db
-      .prepare(`UPDATE mailbox_items SET status = 'dropped' WHERE ${staleWhere}`)
-      .run(...params);
+      .prepare(
+        `UPDATE mailbox_items
+            SET status = 'bounced', drop_reason = 'lease_expired', bounce_target = ?
+          WHERE ${staleWhere}`,
+      )
+      .run(catchAll, ...params);
     return (result as { changes?: number }).changes ?? 0;
   }
 
@@ -5367,6 +5495,10 @@ export class SqliteMailboxRepo {
     if (extra?.retryCount !== undefined) { parts.push('retry_count = ?'); params.push(extra.retryCount as number); }
     // P0：priority 走 updateStatus（save 为幂等插入语义，不再覆盖既有行）。
     if (extra?.priority !== undefined) { parts.push('priority = ?'); params.push(extra.priority as number); }
+    // 第六刀 C3：退信的两列必须能**随状态一起**写。分开写会出现「状态已是 bounced、
+    // 原因还没到」的中间态，而那正是旧 `dropped` 的病理（终态行没有原因）。
+    if (extra?.dropReason !== undefined) { parts.push('drop_reason = ?'); params.push((extra.dropReason as string) ?? null); }
+    if (extra?.bounceTarget !== undefined) { parts.push('bounce_target = ?'); params.push((extra.bounceTarget as string) ?? null); }
     params.push(itemId);
     this.db.prepare(`UPDATE mailbox_items SET ${parts.join(', ')} WHERE id = ?`).run(...params);
   }
@@ -5385,12 +5517,40 @@ export class SqliteMailboxRepo {
     return row ? this.mapRow(row) : undefined;
   }
 
+  /**
+   * C3：只读一行的当前状态（ghost 路径让矩阵裁决用）。
+   *
+   * 单独一条轻量查询：调用方（`AgentMailbox.drop` 对不在内存队列的 id）只需要
+   * `from` 状态来判迁移合法性，拉整行（payload/envelope）是浪费，而且会把热路径
+   * 变成“为了判一条规则读一整行”。归一与 `mapRow` 同源（`normalizeSignalStatus`）。
+   */
+  getStatus(id: string): string | undefined {
+    const row = this.db.prepare('SELECT status FROM mailbox_items WHERE id = ?').get(id) as
+      | { status: string }
+      | undefined;
+    return row ? normalizeSignalStatus(row.status) : undefined;
+  }
+
+  /**
+   * 状态计数（读路径归一）。
+   *
+   * 为什么不能直接 `GROUP BY status` 返回原始列：C3 删掉 `dropped` 终态后，历史行
+   * 仍是 `dropped`，而新行是 `bounced`。直接分组会让调用方（UI 状态筛选片）同时看到
+   * 「dropped」与「bounced」两个键 —— 同一个事实两个名字，且旧键的计数会永远停在
+   * 历史量级不再增长，读的人无法判断现在到底还有没有退信。
+   *
+   * 归一放在这里（而不是每个消费者各做一次）：拿到计数的地方就是聚合读者，
+   * 与 `mapRow()` 对**单行**的归一构成同一策略的两个侧面。
+   */
   getStatusCounts(agentId: string): Record<string, number> {
     const rows = this.db
       .prepare('SELECT status, COUNT(*) as cnt FROM mailbox_items WHERE agent_id = ? GROUP BY status')
       .all(agentId) as Array<{ status: string; cnt: number }>;
     const counts: Record<string, number> = {};
-    for (const r of rows) counts[r.status] = r.cnt;
+    for (const r of rows) {
+      const status = normalizeSignalStatus(r.status);
+      counts[status] = (counts[status] ?? 0) + r.cnt;
+    }
     return counts;
   }
 
@@ -5411,8 +5571,20 @@ export class SqliteMailboxRepo {
       params.push(...opts.sourceTypes);
     }
     if (opts?.status) {
-      conditions.push('status = ?');
-      params.push(opts.status);
+      // 读归一的第二个面：**筛选键也要归一**。
+      //
+      // 只归一 `mapRow()` 的返回值是不够的：行被 `status = ?` 过滤掉了就永远走不到
+      // mapRow，调用方（UI 状态筛选片）会看到「按 bounced 筛为空」，而库里明明躺着
+      // 一批历史 `dropped` 退信行。反过来，按旧名 `dropped` 筛也必须能命中当前
+      // `bounced` 行 —— 两个名字指向同一个事实，筛选不能只在其中一个上生效。
+      const wanted = normalizeSignalStatus(opts.status);
+      if (wanted === 'bounced') {
+        // 历史 `dropped` 与当前 `bounced` 都属于「这条信号没投进去」。
+        conditions.push("status IN ('bounced', 'dropped')");
+      } else {
+        conditions.push('status = ?');
+        params.push(wanted);
+      }
     }
     const limit = opts?.limit ?? 50;
     const offset = opts?.offset ?? 0;
@@ -5428,7 +5600,13 @@ export class SqliteMailboxRepo {
       agentId: r['agent_id'] as string,
       sourceType: r['source_type'] as string,
       priority: r['priority'] as number,
-      status: r['status'] as string,
+      /**
+       * 第六刀 C3：**读路径唯一归一**。历史 `dropped` 行（真实库 ≥28,621 行、
+       * 没有 `drop_reason`）只读保留，在这里映射为 `bounced`，**不 UPDATE 任何行**。
+       * 归一放在 mapRow 而不是每个消费者：拿到 row 的地方就一定是读取方，
+       * 让「同一状态两种写法」在持久层就消失。
+       */
+      status: normalizeSignalStatus(r['status'] as string),
       payload: fromJson<Record<string, unknown>>(r['payload'] as string) ?? {},
       metadata: fromJson<Record<string, unknown>>(r['metadata'] as string) ?? {},
       queuedAt: r['queued_at'] as string,

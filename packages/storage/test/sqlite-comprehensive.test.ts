@@ -1014,7 +1014,7 @@ describe('SqliteMailboxRepo and SqliteDecisionRepo', () => {
       payload: {},
       queuedAt: new Date().toISOString(),
     });
-    expect(mailbox.markStaleProcessingAsDropped('agent-1')).toBe(1);
+    expect(mailbox.markStaleProcessingAsBounced('agent-1')).toBe(1);
 
     mailbox.save({
       id: 'mb-3',
@@ -1025,9 +1025,10 @@ describe('SqliteMailboxRepo and SqliteDecisionRepo', () => {
       payload: {},
       queuedAt: new Date().toISOString(),
     });
-    expect(mailbox.markStaleProcessingAsDropped('agent-1')).toBe(1);
+    expect(mailbox.markStaleProcessingAsBounced('agent-1')).toBe(1);
 
-    expect(mailbox.getById('mb-3')?.status).toBe('dropped');
+    expect(mailbox.getById('mb-3')?.status).toBe('bounced');
+    expect(mailbox.getById('mb-3')?.dropReason).toBe('lease_expired');
     expect(mailbox.getById('mb-1')?.status).toBe('completed');
     expect(mailbox.getByAgent('agent-1', { status: 'completed' }).length).toBeGreaterThanOrEqual(1);
     expect(mailbox.getStatusCounts('agent-1')['completed']).toBeGreaterThanOrEqual(1);

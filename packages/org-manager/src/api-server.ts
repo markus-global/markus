@@ -5941,14 +5941,17 @@ export class APIServer {
 
     // Agent mailbox — runtime stale-processing recovery (manual「清理」entry).
     // 「运行与注意力」amber 警告条旁的清理按钮调这里：把卡在 processing 的陈旧行
-    // 标为 dropped（租约感知，不误杀其它实例/在飞项），让运行中可自愈而不必重启。
+    // 标为 bounced(lease_expired) 并归集到 catch-all（租约感知，不误杀其它实例/在飞项），
+    // 让运行中可自愈而不必重启。
     // 对应 docs/records/message-stop-cancel-fix-plan.md §2.3c 残余 → §2.6 步骤 2c。
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/recover-stale$/) && req.method === 'POST') {
       const agentId = path.split('/')[3]!;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().cleanStaleProcessing();
-        this.json(res, 200, { dropped });
+        // C3：写的是 bounced 行（原因 lease_expired），响应字段必须同名 ——
+        // 继续叫 `dropped` 会让调用方以为那个终态还在。
+        const bounced = agent.getMailbox().cleanStaleProcessing();
+        this.json(res, 200, { bounced });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }
@@ -5959,8 +5962,8 @@ export class APIServer {
     // cancel-processing (打断 = stop the running turn and requeue its item) and
     // from recover-stale (bulk cleanup of stuck rows): here the operator says
     // "this particular item should not be handled", and why. The reason is
-    // logged and broadcast as `mailbox:dropped`, so a dropped message is
-    // traceable instead of just never arriving.
+    // logged and broadcast, and the item becomes a `bounced(stale_signal)` row in
+    // the catch-all overview — C3 deleted the old reason-less `dropped` terminal.
     if (path.match(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/) && req.method === 'POST') {
       const authUser = await this.requireAuth(req, res);
       if (!authUser) return;
@@ -5973,8 +5976,15 @@ export class APIServer {
         : 'operator';
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
-        const dropped = agent.getMailbox().drop(itemId, `operator: ${reason}`);
-        this.json(res, 200, { status: 'dropped', itemId, dropped: Boolean(dropped) });
+        const bounced = agent.getMailbox().drop(itemId, `operator: ${reason}`);
+        // C3：终态是 bounced→catch_all（drop_reason='stale_signal'），不再是 dropped。
+        this.json(res, 200, {
+          status: 'bounced',
+          dropReason: 'stale_signal',
+          itemId,
+          // 「这次丢弃是否真的生效」——不叫 dropped：那个终态已不存在。
+          applied: Boolean(bounced),
+        });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
       }

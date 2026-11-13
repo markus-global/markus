@@ -1813,6 +1813,10 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      // 第六刀 C3：路由取证 + catch-all 概览。两者都直读持久层；未接线时
+      // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
 
@@ -2740,6 +2744,8 @@ export class AgentManager {
       updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
       clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
+      routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
+      catchAll: () => agent.getMailbox().catchAll(),
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
