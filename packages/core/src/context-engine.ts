@@ -2093,6 +2093,7 @@ export class ContextEngine {
         lines.push('2. **Create follow-up tasks**: `task_create` with the `requirement_id` if additional work is needed to fulfill the requirement.');
         lines.push('3. **Post a comment**: `requirement_comment` to leave notes or reasoning visible in the requirement thread.');
         lines.push('4. **Notify a human**: `notify_user` if the requirement outcome needs human attention or decision.');
+        lines.push('5. **Nothing needs to change**: call `end_turn` — this is a recorded, legitimate disposition, and it is the right choice when the requirement is already in the right state. Do not post a "nothing to do" comment in place of it.');
         lines.push('');
         lines.push('**MANDATORY**: Before deciding, call `requirement_get` to understand the full current state of the requirement, including linked tasks, status, and comments.');
         lines.push('');
