@@ -844,7 +844,6 @@ export class AgentMailbox {
     // Group by taskId
     removed += this.consolidateGroup(
       (item) => item.payload.taskId ?? (item.metadata?.taskId as string | undefined),
-      'task',
     );
 
     // Group by requirementId (only for items that don't also have a taskId)
@@ -853,20 +852,26 @@ export class AgentMailbox {
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         return item.payload.requirementId;
       },
-      'requirement',
     );
 
-    // Group by channel: merge a2a_messages from the same group chat so the
-    // agent reads them as one conversation thread instead of N separate items.
-    // Skip items already grouped by task/requirement above.
+    // Group the remaining a2a messages by **entity**, so the agent reads one
+    // conversation thread instead of N separate items.
+    //
+    // C8-A：这是**呈现层合并**（为了一个线程读一次），不是并发/调度判定 ——
+    // 那两件事由 `resolveEntityKeys()` 回答。既是呈现层，合并键就必须和实体一致：
+    // 有 WorkUnit 的用 `work_unit_ref`（一件事一条），没有的（旧行 / 非 WU 链路）
+    // 才退到 `channelKey`。
+    //
+    // 为什么不能只按 channelKey（旧写法）：同一频道里**两件不同的事**会被并成一条，
+    // agent 只看到一段拼接文本，第二件事的执行理由消失；反过来同一件事经两个频道
+    // 到达又不合并。两种错都由「用投递通道当实体」造成，与 C8-A 的根因同一个。
     removed += this.consolidateGroup(
       (item) => {
         if (item.sourceType !== 'a2a_message') return undefined;
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         if (item.payload.requirementId) return undefined;
-        return item.payload.extra?.channelKey as string | undefined;
+        return item.workUnitRef ?? (item.payload.extra?.channelKey as string | undefined);
       },
-      'channel',
       { skipProtectedCheck: true },
     );
 
@@ -889,9 +894,20 @@ export class AgentMailbox {
     'review_request',
   ]);
 
+  /**
+   * 按 `getKey` 给出的实体键做**呈现层预合并**：队列里同键的 queued 项并成一条，
+   * 让 LLM 一件事只读一次而不是读 N 条散件。
+   *
+   * 它**不**决定调度、不并发互斥、不改身份 —— 那三件事的唯一判定点是
+   * `resolveEntityKeys()` / `routeMailboxItem()`。合并只动 `payload.content`，被并入
+   * 的那条落 `merged` 终态并记 `mergedInto`，内容不会丢。
+   *
+   * （旧签名有个 `_groupType: string` 参数，三个调用点传 `'task'` / `'requirement'` /
+   * `'channel'` 却从没人读 —— 它唯一的作用是让“按频道分组”看起来像一条规则。
+   * C8-A 删掉它：分组读什么，只看 `getKey`。）
+   */
   private consolidateGroup(
     getKey: (item: MailboxItem) => string | undefined,
-    _groupType: string,
     opts?: { skipProtectedCheck?: boolean },
   ): number {
     let removed = 0;
@@ -968,7 +984,9 @@ export class AgentMailbox {
     // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
     // 合并进去的那条项的旧信封保留（合并的是内容，不是身份）。
     const reuseItemId = options?.reuseItemId;
-    const merged = reuseItemId ? undefined : this.tryMergeIntoExisting(sourceType, payload);
+    const merged = reuseItemId
+      ? undefined
+      : this.tryMergeIntoExisting(sourceType, payload, options?.workUnitRef ?? null);
     if (merged) {
       this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: merged });
       this.wakeIdleLoop();
@@ -2212,10 +2230,16 @@ export class AgentMailbox {
    * If a queued (not yet processing) item exists for the same entity and a
    * dedup-eligible type, append the new content into it and return the
    * existing item.  Returns undefined when no merge candidate is found.
+   *
+   * `workUnitRef` 是**入参**而不是从队列里反查：身份只存在于生产方交给我们的那一份
+   * （C8-A）。频道类合并因此按**实体**比，而不是按“这次从哪个频道到的”比 ——
+   * 同一频道里两件不同的事不能被并成一条，否则第二件事的执行理由会消失。
+   * 旧行（无 WU）仍退化到 `channelKey`，行为与之前一致。
    */
   private tryMergeIntoExisting(
     sourceType: MailboxItemType,
     payload: MailboxPayload,
+    workUnitRef: string | null = null,
   ): MailboxItem | undefined {
     // Never merge strict-state items (execution trigger / review / action-required updates)
     // — they must remain standalone。审计 P1-2。
@@ -2244,11 +2268,13 @@ export class AgentMailbox {
       }
     } else if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType)) {
       const channelKey = payload.extra?.channelKey as string | undefined;
-      if (channelKey) {
+      // C8-A：合并键 = 实体（WU ref），旧行才退到频道。
+      const entityKey = workUnitRef ?? channelKey;
+      if (entityKey) {
         existing = this.queue.find(
           i => i.status === 'queued'
             && AgentMailbox.CHANNEL_DEDUP_TYPES.has(i.sourceType)
-            && (i.payload.extra?.channelKey as string | undefined) === channelKey,
+            && (i.workUnitRef ?? (i.payload.extra?.channelKey as string | undefined)) === entityKey,
         );
       }
     }

@@ -10,7 +10,7 @@ import { describe, it, expect } from 'vitest';
 import {
   WORK_UNIT_REF,
   entityKeysOfWorkUnitRef,
-  turnSessionIdOfWorkUnitRef,
+  sessionScopeKeyOfWorkUnitRef,
 } from '../src/work-unit.js';
 
 describe('WORK_UNIT_REF.a2a — 身份是「这件事」，不是「这次投递」', () => {
@@ -56,39 +56,42 @@ describe('entityKeysOfWorkUnitRef — ref 属于哪个实体', () => {
   });
 });
 
-describe('turnSessionIdOfWorkUnitRef — 这一轮跑进哪个记忆会话', () => {
-  it('task ref 沿用既有会话命名（零迁移）', () => {
-    expect(turnSessionIdOfWorkUnitRef('task_tsk_a_r2')).toBe('task_tsk_a_r2');
+describe('sessionScopeKeyOfWorkUnitRef — 这条活的会话作用域键', () => {
+  it('task ref **不**在这一层声明会话身份（否则会造出第二个会话）', () => {
+    // 旧实现对 task ref 返回 ref 本身；消费方会把它塞进 `channelMemorySessionId()`
+    // 包一层，于是同一件事多出 `channel_task_x_r1_<agent>` 这个并列会话 —— 正是本卡
+    // 要删的那个 R1。任务回合的会话 id 由在飞登记表 + 轮次解析，不在这里声明。
+    expect(sessionScopeKeyOfWorkUnitRef('task_tsk_a_r2')).toBeUndefined();
   });
 
-  it('a2a 同一个 task 的三条消息派生同一个会话 id（本卡的可读数判据）', () => {
+  it('a2a 同一个 task 的三条消息派生同一个作用域键（本卡的可读数判据）', () => {
     const ids = [
       WORK_UNIT_REF.a2a('task:tsk_a'),
       WORK_UNIT_REF.a2a('task:tsk_a'),
       WORK_UNIT_REF.a2a('task:tsk_a'),
-    ].map(turnSessionIdOfWorkUnitRef);
+    ].map(sessionScopeKeyOfWorkUnitRef);
     expect(new Set(ids).size).toBe(1);
     expect(ids[0]).toBe('a2a_task_tsk_a');
   });
 
-  it('会话 id 只含安全字符（它同时是落盘文件名的一部分）', () => {
-    const id = turnSessionIdOfWorkUnitRef('a2a:channel:dm:a2a:x:y');
+  it('作用域键只含安全字符（它同时是落盘文件名的一部分）', () => {
+    const id = sessionScopeKeyOfWorkUnitRef('a2a:channel:dm:a2a:x:y');
     expect(id).toBeDefined();
     expect(id as string).toMatch(/^[A-Za-z0-9_.-]+$/);
   });
 
-  it('不同实体 → 不同会话（不误合并）', () => {
-    expect(turnSessionIdOfWorkUnitRef('a2a:task:tsk_a'))
-      .not.toBe(turnSessionIdOfWorkUnitRef('a2a:task:tsk_b'));
+  it('不同实体 → 不同作用域键（不误合并）', () => {
+    expect(sessionScopeKeyOfWorkUnitRef('a2a:task:tsk_a'))
+      .not.toBe(sessionScopeKeyOfWorkUnitRef('a2a:task:tsk_b'));
   });
 
   it('chat 的 ref 不派生会话 —— 交回既有的 DB→内存绑定', () => {
     // 返回 undefined 明确表示「这个 ref 不带会话身份，走旧路径」，
     // 不是「没有会话」。把它当成 null 会话会让聊天回合平白换会话。
-    expect(turnSessionIdOfWorkUnitRef('session:cs_123:r4')).toBeUndefined();
+    expect(sessionScopeKeyOfWorkUnitRef('session:cs_123:r4')).toBeUndefined();
   });
 
   it('无法识别的 ref 不猜会话', () => {
-    expect(turnSessionIdOfWorkUnitRef('delegation:x#y')).toBeUndefined();
+    expect(sessionScopeKeyOfWorkUnitRef('delegation:x#y')).toBeUndefined();
   });
 });

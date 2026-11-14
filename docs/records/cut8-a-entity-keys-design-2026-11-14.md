@@ -62,10 +62,9 @@ entityKeysOfWorkUnitRef(ref): string[]
   delegation:…          → ['wu:<ref>']
   anything else         → ['wu:<ref>']            (never empty)
 
-turnSessionIdOfWorkUnitRef(ref): string | undefined
-  task_<id>_r<n>        → same string           (existing convention, zero migration)
+sessionScopeKeyOfWorkUnitRef(ref): string | undefined
   a2a:<rest>            → 'a2a_' + sanitise(rest)
-  everything else       → undefined             (use the legacy path)
+  everything else       → undefined             (this layer declares no session)
 
 taskIdOfWorkUnitRef(ref): string | undefined
   task_<id>_r<n> / a2a:task:<id> → <id>
@@ -73,6 +72,10 @@ taskIdOfWorkUnitRef(ref): string | undefined
 
 `undefined` means "this ref carries no session identity, use the legacy path" —
 **not** "there is no session". Same discipline as `sessionLockKeyOfContextRef()`.
+It deliberately yields nothing for `task_<id>_r<n>`: the consumer wraps the value
+in `channelMemorySessionId()`, so returning the task ref there would mint
+`channel_task_x_r1_<agent>` beside the task's real execution session — the same
+R1 in a new place (§7.5).
 
 ### 3.2 `WORK_UNIT_REF.a2a` names the thing, not the delivery
 
@@ -151,7 +154,8 @@ empty) is **C8-B** and deliberately not in this card.
 2. `entityKeysOfWorkUnitRef` table, all six shapes.
 3. `a2a:channel:*` yields **no** `channel:` key (would re-introduce the transport writer).
 4. Never empty (an empty key set silently disables mutual exclusion).
-5. `turnSessionIdOfWorkUnitRef` table; `session:*` → `undefined`; safe charset.
+5. `sessionScopeKeyOfWorkUnitRef` table; `session:*` → `undefined`; `task_*` →
+   `undefined` (see §7.5); safe charset for the values it does return.
 
 `packages/shared/test/mailbox-route.test.ts` (extended, +10)
 6. Same task + different `channelKey` + same WU → **identical** entity keys.
@@ -171,6 +175,15 @@ empty) is **C8-B** and deliberately not in this card.
 `packages/core/test/mailbox-concurrent.test.ts` (rewritten)
 17. Same entity serial even across different channels; different entities parallel.
 
+`packages/core/test/mailbox-entity-consolidation.test.ts` (new)
+18. One thing over two channels → **one** queued item (guards pre-triage merge).
+19. Two different things in one channel → **two** items (guards enqueue merge).
+20. Legacy rows (no WorkUnit) still merge by `channelKey` — behaviour preserved.
+
+18 and 19 each bypass the *other* merge layer on purpose (18 pulls the first item
+out of the queue with `dequeue()` / `putBack()`, 19 relies on the enqueue path),
+so neither can be satisfied by a layer other than the one it names.
+
 ## 5. Verification
 
 | gate | result |
@@ -179,16 +192,53 @@ empty) is **C8-B** and deliberately not in this card.
 | `npm run lint` | 0 errors (1001 pre-existing warnings) |
 | `node scripts/architecture-guard.mjs` | 34 hits, all whitelisted; contracts 18/18 |
 | `node scripts/security-guard.mjs` | ok |
-| `npx vitest run` (whole repo, serial) | 8530 passed / 1 failed / 13 skipped |
+| `npx vitest run` (whole repo, serial) | 8533 passed / 1 failed / 13 skipped |
+| `npm run test:web-ui` | 1476 passed / 3 skipped, 0 failed |
 | the 1 failure | `cli: auto-runs quickInit when config is missing` — **also fails at base `0425bd48`** (60 s timeout; reproduced in a clean baseline worktree, see §6) |
+
+Live reading of the rows the **old** code produced (read-only `~/.markus/data.db`):
+
+```
+last 2h, source_type='a2a_message':
+  a2a_rows = 17   distinct_refs = 17   ref_with_delivery_id = 17   null_ref = 0
+```
+
+That is the "before" baseline in one line: one WorkUnit per delivery, and every
+ref embeds the delivery id. Feeding the same entity through the **shipped**
+derivation (`packages/shared/dist/work-unit.js` — no re-implementation of the
+rule in the probe):
+
+```
+three messages on one task    → ref: 1, entity: 1, session scope key: 1, ref contains dlv_: false
+three messages on one channel → ref: 1, entity: 1, session scope key: 1
+```
 
 ## 6. Baseline red-proof
 
-A detached worktree at base `0425bd48` was installed offline and built. It
-reproduces the CLI failure independently of this branch, so that failure is
-**pre-existing**, not introduced here. The new C8-A assertions cannot pass at base
-(the functions and the `workunit` dimension do not exist there), which is what
-makes them non-hollow.
+A detached worktree at base `0425bd48` was installed offline (`pnpm install
+--frozen-lockfile`) and built (`tsc -b`). Two things were proven there.
+
+**The CLI failure is pre-existing.** The identical test fails identically in the
+baseline worktree — 1 failed / 15 passed there, 1 failed / 15 passed here, same
+60 s timeout. This card touches neither the CLI nor `quickInit`.
+
+**The new merge assertions are not hollow.** Copied into the baseline worktree
+and run there:
+
+| assertion | base | head |
+|---|---|---|
+| one thing over two channels → one item | ✗ `expected length 1, got 2` | ✓ |
+| two things in one channel → two items | ✗ `expected length 2, got 1` | ✓ |
+| legacy rows (no WorkUnit) still merge by channel | ✓ | ✓ |
+
+The third row is the control: it proves the fallback path was preserved rather
+than replaced, so the two red rows above are attributable to the entity rule.
+
+One trap worth recording: a fresh baseline worktree fails **every** test in a file
+within single-digit ms until the workspace dependencies are built
+(`Failed to resolve entry for package "@markus/shared"`). That is an install
+artefact and must not be read as "red at base" — the tell is `AssertionError`
+versus module resolution, and per-test duration of ms versus seconds.
 
 ## 7. Where the implementation corrected the plan
 
@@ -200,6 +250,20 @@ makes them non-hollow.
 3. **A third writer was found and removed** (§3.5): core re-derived the A2A
    session from `extra.channelKey` after `resolveTurnSession` had already applied
    the hint. That was a small-scale copy of the same R1.
+4. **The merge key had to move too** (review requirement, §5.1 below): merging
+   a2a items by `channelKey` reproduces the same defect in a new shape — one
+   thing over two channels is *not* merged (read twice, in two contexts), and two
+   things inside one channel *are* merged (the second one's reason to execute
+   disappears). Both merge layers now key on the entity; the dead
+   `_groupType: string` parameter went with it, which is why the `'channel'`
+   literal at the call site is gone rather than renamed.
+5. **`turnSessionIdOfWorkUnitRef` → `sessionScopeKeyOfWorkUnitRef`** (§3.1):
+   the old name promised a session id but the value gets wrapped by
+   `channelMemorySessionId()`, and the `task_*` branch returned the ref itself —
+   which would have produced `channel_task_x_r1_<agent>` beside the task's real
+   execution session. Same R1, re-introduced by a name. No production caller
+   passed a task ref, so behaviour is unchanged; the trap is what is gone. A name
+   is a constraint for the next reader, so it now says what the function answers.
 
 ## 8. Boundaries
 

@@ -223,23 +223,28 @@ export function entityKeysOfWorkUnitRef(ref: string): string[] {
 }
 
 /**
- * `ref` → 这条活**跑进哪个记忆会话**。`undefined` = 这个 ref 不带会话身份，
- * 调用方必须走既有路径（**不是**「没有会话」）。
+ * `ref` → 这条活的**会话作用域键**：同一实体在这里得到同一个值，因此同一件事的
+ * 多条消息落进同一个记忆会话。
  *
- * 与 `sessionLockKeyOfContextRef()` 同一条纪律：只回答能在这一层确定的事。
- * 聊天（`session:<cs>:r<n>`）返回 `undefined` —— 它的会话身份由 DB→内存绑定
- * 解析，在这一层再猜一次就是第二个写者。
+ * ## 为什么叫「作用域键」而不是「会话 id」（改过一次，教训留在这里）
  *
- * 返回值必须是**安全字符集**：它是记忆会话 key，同时充当落盘文件名的一部分。
+ * 唯一消费方是 A2A 投递：它把本值放进 `sessionHint { role:'channel', key }`，再由
+ * `channelMemorySessionId()` 变成真正的记忆会话 id。名字若叫 `turnSessionId…`，
+ * 下一个人会直接把它当 `sess_*` / `cs_*` 用；而**旧实现对 `task_<id>_r<n>` 返回
+ * ref 本身**，一旦被包进频道命名空间就长出与任务执行会话并列的第二个会话 ——
+ * 正是本卡要删掉的那个「一件事两个会话」。名字是给下一个人看的约束，所以改成
+ * 它真正回答的问题。
+ *
+ * `undefined` = **这一层不声明会话身份**（不是「没有会话」），调用方必须走既有路径：
+ * - `task_<id>_r<n>`：任务回合的会话 id 由在飞登记表与轮次解析
+ *   （`getTaskExecutionRound`）；在这里再声明一次就是第二个写者。
+ * - `session:<cs>:r<n>`：聊天会话身份由 DB→内存绑定解析。
+ *
+ * 返回值必须是**安全字符集**：它会进入记忆会话 id，同时充当落盘文件名的一部分。
  */
-export function turnSessionIdOfWorkUnitRef(ref: string): string | undefined {
-  if (ref.startsWith('a2a:')) {
-    const rest = ref.slice('a2a:'.length).replace(/:/g, '_');
-    return `a2a_${rest}`;
-  }
-  // task 的会话命名沿用既有格式（零迁移）：在飞登记表与执行会话 id 都用它。
-  if (/^task_(.+)_r\d+$/.test(ref)) return ref;
-  return undefined;
+export function sessionScopeKeyOfWorkUnitRef(ref: string): string | undefined {
+  if (!ref.startsWith('a2a:')) return undefined;
+  return `a2a_${ref.slice('a2a:'.length).replace(/:/g, '_')}`;
 }
 
 /**

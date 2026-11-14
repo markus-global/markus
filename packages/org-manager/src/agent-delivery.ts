@@ -21,7 +21,7 @@ import {
   agentAddressRef,
   WORK_UNIT_REF,
   taskIdOfWorkUnitRef,
-  turnSessionIdOfWorkUnitRef,
+  sessionScopeKeyOfWorkUnitRef,
 } from '@markus/shared';
 
 const log = createLogger('agent-delivery');
@@ -245,9 +245,10 @@ export class AgentDelivery {
         const parentTaskId = taskIdOfWorkUnitRef(parentRef);
         const entityKey = parentTaskId ? `task:${parentTaskId}` : `channel:${req.channelKey}`;
         const entityRef = WORK_UNIT_REF.a2a(entityKey);
-        // 这一轮的会话身份同样由实体派生 —— 这就是「三条消息一个会话」的机制。
-        // 拿不到派生值时退回频道（与旧行为一致），绝不静默换成一个新会话。
-        const entitySessionKey = turnSessionIdOfWorkUnitRef(entityRef) ?? req.channelKey;
+        // 这一轮的**会话作用域键**同样由实体派生 —— 这就是「三条消息一个会话」的机制。
+        // 它经 `sessionHint{role:'channel', key}` 由 `channelMemorySessionId()` 变成记忆
+        // 会话 id；拿不到派生值时退回频道（与旧行为一致），绝不静默换成一个新会话。
+        const entitySessionKey = sessionScopeKeyOfWorkUnitRef(entityRef) ?? req.channelKey;
 
         // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
         // ensure 现在提到 enqueue 之前：入队那一刻 item 就得带着真实身份，否则
@@ -280,7 +281,7 @@ export class AgentDelivery {
             // channel conversation, not to whatever session the target happens to
             // be in. Without this the turn falls back to the recipient's current
             // session and channel/private context bleed into each other.
-            // C8-A：会话身份由**实体**派生（`turnSessionIdOfWorkUnitRef`），不再是频道。
+            // C8-A：会话身份由**实体**派生（`sessionScopeKeyOfWorkUnitRef`），不再是频道。
             // 同一任务的第三条消息拿到的 key 与前两条相同 → 同一个记忆会话。
             sessionHint: { kind: 'system', role: 'channel', key: entitySessionKey },
             waitForReply: false,
