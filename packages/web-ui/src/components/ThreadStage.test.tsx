@@ -109,6 +109,25 @@ describe('EvidenceFold — "凭什么说做完了"', () => {
     expect(onOpenSource).toHaveBeenCalledWith('cmt_3');
   });
 
+  it('never shows a bare i18n key — all three pointer kinds resolve to copy', () => {
+    // 这条用例是冲着「断言正例挡不住回归」来的：只断言「交付物」渲染出来，第 3 类
+    // （inPlace）拼错键时照样绿。三种指针各渲染一次，直接扫整棵树的可见文本，
+    // 只要冒出 `threadStage.` 或 `common:` 就说明有键没解析。
+    const { container } = render(
+      <EvidenceFold
+        evidence={[evidence({ sourceRefs: ['dlv_9', 'cmt_3', 'fact_7'] })]}
+        onOpenSource={() => {}}
+      />,
+    );
+    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    const text = container.textContent ?? '';
+    expect(text).not.toContain('threadStage.');
+    expect(text).not.toContain('common:');
+    expect(text).toContain('交付物');
+    expect(text).toContain('评论');
+    expect(text).toContain('原始记录');
+  });
+
   it('never dumps raw JSON at the reader', () => {
     render(<EvidenceFold evidence={[evidence({ value: { evidence_refs: ['dlv_9'] } })]} />);
     fireEvent.click(screen.getByText(/凭什么说做完了/));

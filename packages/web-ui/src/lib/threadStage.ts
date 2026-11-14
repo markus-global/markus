@@ -92,12 +92,29 @@ export interface ThreadEvidence {
 }
 
 /** 证据指针的类型：决定点击后是「在本页展开」还是「跳到交付物」。 */
-export type SourceRefKind = 'deliverable' | 'comment' | 'in-place';
+export type SourceRefKind = 'deliverable' | 'comment' | 'inPlace';
+
+/**
+ * 判别位 → locale 键名的**唯一映射**。
+ *
+ * 为什么值不直接当键用：判别位若用连字符拼（`in` + 连字符 + `place`）、locale 键写成
+ * `inPlace`，拼出来就是一个不存在的键，而 i18next 遇到不存在的键不会报错、会把键原样
+ * 上屏——用户看到的就是一整条 `threadStage.evidence.refKind.…` 裸键。这类 bug 不会被类型检查发现，
+ * 也不会被「断言中文标签」的用例发现（那只覆盖了写对的那两类）。
+ *
+ * 所以：判别位和键名分开写，映射表用 `Record<SourceRefKind, string>` 的**全量**类型，
+ * 少一个键就编译不过；组件只许通过这张表拼键（`SOURCE_REF_KEY[kind]`）。
+ */
+export const SOURCE_REF_KEY: Readonly<Record<SourceRefKind, string>> = {
+  deliverable: 'deliverable',
+  comment: 'comment',
+  inPlace: 'inPlace',
+};
 
 export function sourceRefKind(ref: string): SourceRefKind {
   if (ref.startsWith('dlv_')) return 'deliverable';
   if (ref.startsWith('cmt_') || ref.startsWith('comment_')) return 'comment';
-  return 'in-place';
+  return 'inPlace';
 }
 
 /**

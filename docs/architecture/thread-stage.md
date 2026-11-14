@@ -45,9 +45,9 @@ derived from *whether a message existed*, which is why a stopped agent kept show
 |---|---|---|
 | 1 | `failed` | FSM row `failed` / `rejected` |
 | 2 | `waiting_human` | a pending approval/question row; FSM `pending` (awaiting approval); FSM `blocked` + `blocked_reason='hold'` |
-| 3 | `blocked_deps` | an open dependency id (resolved by the caller); or FSM `blocked` when nobody resolved the graph |
-| 4 | `running` | a `work_units` row in `running`; or FSM `in_progress` |
-| 5 | `done` | FSM `cancelled` / `archived` — closed without claiming success |
+| 3 | `done` | FSM `cancelled` / `archived` — closed without claiming success |
+| 4 | `blocked_deps` | an open dependency id (resolved by the caller); or FSM `blocked` when nobody resolved the graph |
+| 5 | `running` | a `work_units` row in `running`; or FSM `in_progress` |
 | 6 | `needs_evidence` | no active `task.completion_evidence` fact |
 | 7 | `in_verification` | evidence exists, no independent `pass` |
 | 8 | `done` | evidence + independent `pass` |

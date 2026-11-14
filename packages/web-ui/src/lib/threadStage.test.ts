@@ -15,8 +15,10 @@ import {
   asThreadStage,
   threadStageLabel,
   sourceRefKind,
+  SOURCE_REF_KEY,
   evidenceSummary,
   type ThreadStage,
+  type SourceRefKind,
 } from './threadStage.ts';
 import { crossVocabularyCollisions, TASK_STATUS_KEY, PROCESS_STATUS_KEY } from './stateVocabulary.ts';
 import enCommon from '../locales/en/common.json';
@@ -109,7 +111,23 @@ describe('guards and pointers', () => {
   it('classifies evidence pointers so each one can be opened', () => {
     expect(sourceRefKind('dlv_123')).toBe('deliverable');
     expect(sourceRefKind('cmt_9')).toBe('comment');
-    expect(sourceRefKind('fact_7')).toBe('in-place');
+    expect(sourceRefKind('fact_7')).toBe('inPlace');
+  });
+
+  it('maps every kind onto a locale key that actually exists', () => {
+    // Discriminator ≠ locale key (hyphenated spelling would miss `inPlace`). The
+    // mapping is a full Record so a missing/extra kind is a TypeScript error, and
+    // this test pins the three values so a rename cannot quietly reintroduce the
+    // bare-key bug.
+    expect(SOURCE_REF_KEY).toEqual({
+      deliverable: 'deliverable',
+      comment: 'comment',
+      inPlace: 'inPlace',
+    });
+    for (const kind of Object.keys(SOURCE_REF_KEY) as SourceRefKind[]) {
+      expect(SOURCE_REF_KEY[kind]).not.toContain('-');
+      expect(SOURCE_REF_KEY[kind]).not.toContain('.');
+    }
   });
 
   it('summarises a fact value without dumping JSON at the reader', () => {

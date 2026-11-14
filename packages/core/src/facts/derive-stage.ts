@@ -184,14 +184,17 @@ function hasUnmetDependencies(fsm: FsmSnapshot): boolean {
  *                           (awaiting approval), or the FSM row is `blocked` + `hold`
  *                           (a human declared the pause). A human is the binding
  *                           constraint, so this outranks execution.
- *  3. `blocked_deps`      ← an open dependency row. The engine resumes this by itself;
+ *  3. `done` (closed)     ← FSM row is cancelled/archived. Closed without anyone
+ *                           claiming success, so there is no claim to verify; what
+ *                           matters to a reader is that nobody is waiting. Terminal
+ *                           outranks every in-flight signal on purpose: a retired row
+ *                           with a stale `blocked_by` (or a WorkUnit that was never
+ *                           closed) would otherwise advertise a false obligation forever.
+ *  4. `blocked_deps`      ← an open dependency row. The engine resumes this by itself;
  *                           no human is involved, which is why it is not `waiting_human`.
- *  4. `running`           ← a WorkUnit row in `running`, or the FSM row is `in_progress`.
+ *  5. `running`           ← a WorkUnit row in `running`, or the FSM row is `in_progress`.
  *                           Positive-only: absence of a WorkUnit proves nothing (a turn
  *                           boundary is not a state change).
- *  5. `done` (closed)     ← FSM row is cancelled/archived. The thread was closed
- *                           without anyone claiming success, so there is no claim to
- *                           verify; what matters to a reader is that nobody is waiting.
  *  6. `needs_evidence`    ← no active `task.completion_evidence` fact. The claim is
  *                           on the table (status is review/completed) and nothing
  *                           backs it.
@@ -200,6 +203,11 @@ function hasUnmetDependencies(fsm: FsmSnapshot): boolean {
  *                           unevidenced, and the load-bearing rule is that only a
  *                           pass can produce `done`.
  *  8. `done`              ← evidence + independent pass.
+ *
+ * `waiting_human` deliberately stays **ahead of** the terminal rule: a pending approval
+ * on a closed row is still someone being asked to do something, and hiding that behind
+ * "done" would strand a real decision. The trade-off is written down in
+ * `docs/architecture/thread-stage.md` §3 and pinned by a test.
  */
 export function deriveStage(input: DeriveStageInput): ThreadStage {
   const { fsm, facts, approvals } = input;
@@ -209,11 +217,17 @@ export function deriveStage(input: DeriveStageInput): ThreadStage {
   const pendingHuman = approvals.some(a => a.status === 'pending');
   if (pendingHuman || fsm.status === 'pending' || isOnHold(fsm)) return 'waiting_human';
 
+  // Closed without anyone claiming success (cancelled / archived). Terminal rows win
+  // over every in-flight signal: a retired row that still carries a stale `blocked_by`
+  // or a WorkUnit that was never closed would otherwise be shown as "waiting" forever,
+  // which is a false obligation — the exact thing C9 exists to remove (live DB:
+  // 1656 cancelled/archived rows, 504 with a non-empty blocked_by, many pointing at
+  // ids that no longer resolve).
+  if (fsm.status === 'cancelled' || fsm.status === 'archived') return 'done';
+
   if (hasUnmetDependencies(fsm)) return 'blocked_deps';
 
   if ((fsm.runningWorkUnits ?? 0) > 0 || fsm.status === 'in_progress') return 'running';
-
-  if (fsm.status === 'cancelled' || fsm.status === 'archived') return 'done';
 
   const evidence = latestActive(facts, COMPLETION_EVIDENCE_PREDICATE);
   if (!evidence) return 'needs_evidence';

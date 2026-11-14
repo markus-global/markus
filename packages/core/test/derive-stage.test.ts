@@ -270,6 +270,25 @@ describe('done — closed out, and only a pass can say so', () => {
     expect(stage({ fsm: fsm({ status: 'archived' }) })).toBe('done');
   });
 
+  it('outranks a stale dependency on a closed row (no false obligation)', () => {
+    // Live DB evidence: 1656 cancelled/archived rows, 504 with a non-empty blocked_by,
+    // many pointing at ids that no longer resolve. Those must not advertise "waiting
+    // on another task" forever.
+    expect(stage({ fsm: fsm({ status: 'archived', unmetDependencies: ['tsk_x'] }) })).toBe('done');
+  });
+
+  it('outranks a WorkUnit that was never closed', () => {
+    // Same reason, other in-flight signal: a retired row keeps a `running` WorkUnit
+    // because收口 never happened. Terminal wins — execution on a closed row is history.
+    expect(stage({ fsm: fsm({ status: 'cancelled', runningWorkUnits: 1 }) })).toBe('done');
+  });
+
+  it('does NOT outrank a pending human need (a decision is still owed)', () => {
+    // The chosen order (documented in §3): `waiting_human` stays ahead of terminal.
+    // Hiding a pending approval behind "done" would strand a real decision.
+    expect(stage({ fsm: fsm({ status: 'archived' }), approvals: pendingApproval })).toBe('waiting_human');
+  });
+
   it('is NOT produced while a work unit is still running', () => {
     expect(stage({ fsm: fsm({ status: 'review', runningWorkUnits: 1 }), facts: [evidenceFact()] })).toBe('running');
   });

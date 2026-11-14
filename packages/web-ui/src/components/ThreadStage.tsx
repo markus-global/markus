@@ -15,6 +15,7 @@ import { useTranslation } from 'react-i18next';
 import { TONE } from '../lib/tone.ts';
 import {
   THREAD_STAGE_TONE,
+  SOURCE_REF_KEY,
   asThreadStage,
   evidenceSummary,
   sourceRefKind,
@@ -91,7 +92,7 @@ export function EvidenceFold({ evidence, onOpenSource }: EvidenceFoldProps) {
                   </span>
                   {item.sourceRefs.map(ref => {
                     const kind = sourceRefKind(ref);
-                    const label = t(`common:threadStage.evidence.refKind.${kind}`);
+                    const label = t(`common:threadStage.evidence.refKind.${SOURCE_REF_KEY[kind]}`);
                     return (
                       <button
                         key={ref}
