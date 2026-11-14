@@ -177,6 +177,19 @@ export interface EnqueueOptions {
    */
   workUnitRef?: string | null;
   /**
+   * C8-P0：本条事实的**身份来源声明**（元数据，不入库）。
+   *
+   * 存在意义：`workUnitRef == null` 有两种含义——「确实没有实体」与「忘了传」，
+   * 而类型上分不出来。2026-11-14 六个同族缺陷全是后者：某条路径没传，下游当默认。
+   *
+   * - `entity` / `turn`：带 ref（实体身份 / 当前回合身份）
+   * - `pending-link`：活开始后才拿到身份 → 登记为待链接，由启动清扫兔底
+   * - `platform-internal`：本质无实体（回执 / 内部事件），不报错
+   *
+   * 不声明且没 ref ⇒ `enqueue()` 报错并计数（不再静默）。
+   */
+  refOrigin?: 'entity' | 'turn' | 'pending-link' | 'platform-internal';
+  /**
    * C8-B：更正链 —— 本条事实替换了哪些既有事实的 id。
    * 结构字段（不解析正文）；非空即「与正在执行的前提矛盾」。
    */
@@ -402,6 +415,32 @@ export function rehydrateStructuredFields(row: {
  * Emits 'mailbox:new-item' on the EventBus whenever a new item is enqueued,
  * which the AttentionController listens to for event-driven interrupts.
  */
+// ─── C8-P0：身份缺失守卫 ────────────────────────────────────────────────
+/**
+ * 本质上**没有实体**的事实类型（回执 / 平台内部事件）。
+ *
+ * 它们带 NULL ref 是正确语义，而不是“忘了传”——把这条名单写成数据，
+ * 比在每个生产者里各写一句注释可审计。
+ */
+const PLATFORM_INTERNAL_SOURCES: ReadonlySet<string> = new Set([
+  'heartbeat',
+  'system_event',
+  'session_reply',
+  'memory_consolidation',
+  'callback_result',
+  'workflow_update',
+]);
+
+/** 累计“没声明的空身份”次数，供诊断接口 / CI 校验读取。 */
+let unclaimedIdentityCount = 0;
+
+/** 读取并重置计数（CI 门禁用）。 */
+export function takeUnclaimedIdentityCount(): number {
+  const n = unclaimedIdentityCount;
+  unclaimedIdentityCount = 0;
+  return n;
+}
+
 export class AgentMailbox {
   private queue: MailboxItem[] = [];
   /**
@@ -1147,6 +1186,22 @@ export class AgentMailbox {
       queuedAt: new Date().toISOString(),
       runtime: options?.runtime,
     };
+
+    // ── C8-P0：缺失不再静默 ───────────────────────────────────────────
+    // 判据：`workUnitRef` 为空时，调用方必须**表态**（pending-link 或
+    // platform-internal）。没表态 = 忘了传 —— 这正是今晚六层缺陷的共同句式。
+    // 测试环境直接抛错（让新代码在 CI 就变红），生产只报错+计数（不把业务打死）。
+    if (!item.workUnitRef && !options?.refOrigin && !PLATFORM_INTERNAL_SOURCES.has(sourceType)) {
+      unclaimedIdentityCount += 1;
+      const msg =
+        `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
+        'identity would be silently NULL (declare refOrigin: "pending-link" | "platform-internal")';
+      // 严格模式（CI 用）直接抛错；默认只报错+计数，不把业务打死。
+      if (process.env['MARKUS_STRICT_IDENTITY'] === '1') {
+        throw new Error(msg);
+      }
+      log.error(msg, { agentId: this.agentId, sourceType, itemId: item.id });
+    }
 
     // ── C2 / V5：同一条消息不得入队两次 ─────────────────────────────────
     // 幂等身份是 `envelope.messageId`（外部邮件 = RFC Message-ID；平台内 = 发送方给的 id）。
