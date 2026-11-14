@@ -5177,21 +5177,21 @@ export class SqliteMailboxRepo {
     dropReason?: string | null;
     /** C3：catch-all 概览桶 id（退信行归集目标）。 */
     bounceTarget?: string | null;
+    /** C8：入队即已知的回合身份（与行同时写入；后补身份仍走 `linkMailboxItem`）。 */
+    workUnitRef?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
-        // `work_unit_ref` **故意不在这个 INSERT 里**：这一列的单一写者是
-        // `SqliteWorkUnitRepo.linkMailboxItem()`（它拥有该列的写入权）。
+        // `work_unit_ref` 在这里**也要写**：C8 之后它是入队参数，入队那一刻就已知。
+        // 2026-11-14 真机证据：生产者（task/requirement/mention/review_request）
+        // 都传了 `workUnitRef`，但 INSERT 不写这一列、又没有一处调 `linkMailboxItem`，
+        // 于是取消投递带上了 `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、
+        // 没身份，`turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
         //
-        // 2026-11-14 真机「正在运行 0」的根因**不在这一层**，也不在「何时写这一列」，
-        // 而在**ref 被解析到了错误的会话**（is_main 排序优先 → 落到早已收口的旧会话，
-        // 见 `APIServer#prepareChatTurnWorkUnit` 的修正 `4612ada3`）。
-        // 之前它列在列名里却没传实参（16 列 / 16 占位符 / 15 实参），node:sqlite
-        // 少参**不抛、静默绑 NULL** —— 看起来正常，实际上是靠一个静默失败在维持
-        // 单写者。删掉列名使形状与意图一致，保留单一写者不变。
+        // 后补身份仍走 `linkMailboxItem()`（活开始后才拿到身份的路径）。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
-                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
@@ -5201,6 +5201,7 @@ export class SqliteMailboxRepo {
         item.envelope ?? null, item.messageId ?? null,
         item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
         item.bounceTarget ?? null,
+        item.workUnitRef ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
   }
