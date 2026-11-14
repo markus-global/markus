@@ -2752,15 +2752,32 @@ export class APIServer {
     try {
       let sid = knownSessionId ?? null;
       if (!sid) {
-        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
-        const existing = sessions[0] ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
+        // ⚠️ 2026-11-14 真机根因：这里原本取 `getSessionsByAgent(..., 1)[0]`，而那个查询
+        // 按 `is_main DESC, last_message_at DESC` 排序 —— 主会话永远排在最前，哪怕它
+        // 是几小时前的。于是每个回合的 ref 都算在主会话上（如 r322，早已 idle），
+        // 真正在跑的那个会话永远没有 running 行 →「运行与注意力」显示「正在运行 0」。
+        //
+        // 「本轮是哪个会话」只能由**入口**回答（它刚落了用户消息），不能靠排序猜。
+        // 拿不到 id 时，退而取**最近活跃**的那个（按 last_message_at），而不是主会话。
+        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 5, senderId);
+        const latest = sessions
+          .slice()
+          .sort((a: { lastMessageAt?: string | null }, b: { lastMessageAt?: string | null }) =>
+            String(b.lastMessageAt ?? '').localeCompare(String(a.lastMessageAt ?? '')))[0];
+        const existing = latest ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
         sid = existing.id;
       }
       if (!sid) return null;
       const priorMessages = this.storage.chatSessionRepo.getMessageCount(sid);
       const round = Math.floor(priorMessages / 2) + 1;
       const ref = WORK_UNIT_REF.chat(sid, round);
-      units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      // 回合正在开始 ⇒ 这一行**必须是** running。`ensure()` 对已存在的行什么都不做，
+      // 所以 ref 撞上一个已收口的 idle 行时（重试 / 同轮重入 / 早先提前收口）
+      // 必须显式拉回 running —— 否则台账说「没在跑」而回合正在输出。
+      const row = units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      if (row && row.status !== 'running') {
+        units.transition(ref, 'running');
+      }
       return ref;
     } catch (err) {
       log.warn('Failed to prepare chat turn WorkUnit', { agentId, error: String(err) });
@@ -5398,7 +5415,9 @@ export class APIServer {
 
           // C7-B：团队聊天的 SSE 入口也要在**入队前**拿到本轮 WU 身份。
           // 漏了这一处，就像 2026-11-14 那次：三个入口只改了两个。
-          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId);
+          // 2026-11-14 二次修正：**必须把入口已知的 sessionId 传进去** —— 不传就让
+          // 函数自己去猜「最新会话」，而它猜的是主会话，于是本轮 WU 落到旧 ref 上。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
