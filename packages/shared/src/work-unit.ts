@@ -122,14 +122,18 @@ export function assertWorkUnitTransition(
  * - **task** `task_<taskId>_r<round>` —— **沿用既有格式**。这个字符串今天已经是
  *   「执行纪元」的身份：在飞登记表的键、执行会话 id 都用它。再造一套命名等于
  *   给同一个纪元发两张身份证，所以这里只是把既有格式**收敛到单一生成器**。
- * - **a2a** `a2a:<channelKey>:<deliveryId>` —— 一次投递 = 一个 WU。
- *   `deliveryId` 与信封 `messageId` 是同一个值（投递身份在 C6 已经唯一），重投同一跳
- *   不会生成第二个 WU。
+ * - **a2a** `a2a:<entityKey>` —— 一条**工作**一个 WU（C8-A 起）。
  *
- *   **不带接收方**：`work_unit_ref` 回答的是「这条 item 属于哪个 WU」，而 WU 由
- *   **产生它的那一方**拥有。a2a 是「发送方发出的一次投递」，所以 N 个接收方共享
- *   同一个 `ref` 不是缺陷，是定义 —— 它们确实是同一条活产出的 N 份投递。
- *   `work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
+ *   `entityKey` 是这件事本身：`task:<taskId>`（发送方本轮 WU 属于某个任务时）或
+ *   `channel:<channelKey>`（一次对话就是一个实体）。**投递 id 不在身份里**。
+ *
+ *   为什么必须这样（C8-A 的根因）：旧形态是 `a2a:<channelKey>:<deliveryId>`，
+ *   于是「同一件事的三条消息」必然产出三个 WU；下游再按 WU 派生会话，就变成三个
+ *   会话、三份互不可见的上下文。**投递是事件，不是身份** —— 把它编进 ref，等于
+ *   让身份随投递次数增长，收敛过的实体键永远收敛不起来。
+ *
+ *   同一实体重复投递命中 `uq_work_units_ref`，是**幂等**而不是冲突：它们确实是
+ *   同一条活。`work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
  *
  *   反过来说，「每个接收方各建一个 WU」（谁认领、租约、预算归它）是**接收方视角**
  *   的工作单元，属于 C7-B 的语义；本卡没有它的生产者，也不该替它先占位。
@@ -141,8 +145,12 @@ export const WORK_UNIT_REF = {
   task(taskId: string, round: number): string {
     return `task_${taskId}_r${round}`;
   },
-  a2a(channelKey: string, deliveryId: string): string {
-    return `a2a:${channelKey}:${deliveryId}`;
+  /**
+   * @param entityKey `task:<taskId>` 或 `channel:<channelKey>` —— 这件事本身，
+   *   不是这次投递。调用方必须给出实体；给不出实体才退到频道（对话本身即实体）。
+   */
+  a2a(entityKey: string): string {
+    return `a2a:${entityKey}`;
   },
   /**
    * C7-B —— 一次委派 = 一个子 WU（`spawn_subagent` / `spawn_subagents` / 跨团队委派）。
@@ -176,6 +184,78 @@ export function sessionLockKeyOfContextRef(
 ): string | undefined {
   if (!contextRef) return undefined;
   return contextRef.startsWith('sess_') ? `session:${contextRef}` : undefined;
+}
+
+// ─── 实体键派生（C8-A：ref → 这件事属于谁）─────────────────────────────────
+
+/**
+ * `ref` → 它代表的**实体键集合**。这是 C8-A 唯一的「这条活属于谁」派生。
+ *
+ * 为什么必须只有这一处：C8-A 的根因是「这件事是谁」有两个写者 —— 投递通道
+ * （`channel:<channelKey>` / `conv:<sessionId>`）和 WorkUnit。通道那个写者赢，
+ * 于是同一件事经不同 transport 到达就变成不同实体，下游跟着分裂成多个会话。
+ * 把派生收敛成一个纯函数，任何试图把 `channel:` 再塞回实体的改动都会让
+ * `work-unit-ref.test.ts` 变红。
+ *
+ * | ref | 实体键 |
+ * |---|---|
+ * | `task_<id>_r<n>` | `task:<id>` |
+ * | `a2a:task:<id>` | `task:<id>`（同一件事：A2A 讨论的就是那个任务） |
+ * | `a2a:channel:<key>` | `wu:<ref>`（对话本身即实体；**不产出 `channel:`**） |
+ * | `session:<cs>:r<n>` | `conv:<cs>`（与 affinity 的 conversation 维度同键，天然收敛） |
+ * | 其它（含 `delegation:…`） | `wu:<ref>`（认不出来时用它自己的身份，不猜） |
+ *
+ * 永不返回空数组：空键集会让并发互斥静默失效（最坏的退步）。
+ */
+export function entityKeysOfWorkUnitRef(ref: string): string[] {
+  const a2aTask = /^a2a:task:(.+)$/.exec(ref);
+  if (a2aTask) return [`task:${a2aTask[1]}`];
+
+  if (ref.startsWith('a2a:')) return [`wu:${ref}`];
+
+  const task = /^task_(.+)_r\d+$/.exec(ref);
+  if (task) return [`task:${task[1]}`];
+
+  const chat = /^session:(.+):r\d+$/.exec(ref);
+  if (chat) return [`conv:${chat[1]}`];
+
+  return [`wu:${ref}`];
+}
+
+/**
+ * `ref` → 这条活**跑进哪个记忆会话**。`undefined` = 这个 ref 不带会话身份，
+ * 调用方必须走既有路径（**不是**「没有会话」）。
+ *
+ * 与 `sessionLockKeyOfContextRef()` 同一条纪律：只回答能在这一层确定的事。
+ * 聊天（`session:<cs>:r<n>`）返回 `undefined` —— 它的会话身份由 DB→内存绑定
+ * 解析，在这一层再猜一次就是第二个写者。
+ *
+ * 返回值必须是**安全字符集**：它是记忆会话 key，同时充当落盘文件名的一部分。
+ */
+export function turnSessionIdOfWorkUnitRef(ref: string): string | undefined {
+  if (ref.startsWith('a2a:')) {
+    const rest = ref.slice('a2a:'.length).replace(/:/g, '_');
+    return `a2a_${rest}`;
+  }
+  // task 的会话命名沿用既有格式（零迁移）：在飞登记表与执行会话 id 都用它。
+  if (/^task_(.+)_r\d+$/.test(ref)) return ref;
+  return undefined;
+}
+
+/**
+ * `ref` → 它所属的 taskId（若本身就是某个任务的活）。
+ *
+ * 用途：幂等键 `(sourceType, taskId, round)` 的 taskId 维度。旧路径读
+ * `payload.taskId` —— **那是载荷推断结构**（R3'）；本函数让有 WU 的 item 从
+ * 结构事实取名，载荷只在旧行上兜底。
+ */
+export function taskIdOfWorkUnitRef(ref: string | null | undefined): string | undefined {
+  if (!ref) return undefined;
+  const task = /^task_(.+)_r\d+$/.exec(ref);
+  if (task) return task[1];
+  const a2a = /^a2a:task:(.+)$/.exec(ref);
+  if (a2a) return a2a[1];
+  return undefined;
 }
 
 // ─── 行结构（读取侧的形状，与 work_units 列一一对应）───────────────────────

@@ -45,7 +45,7 @@ const GOLDEN: Record<MailboxItemType, {
   mention:              { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   session_reply:        { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   task_status_update:   { priority: 1, invokesLLM: false, affinity: ['task', 'system'], strictState: false, triageStaleDrop: true },
-  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], strictState: false, triageStaleDrop: false },
+  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'workunit', 'system'], strictState: false, triageStaleDrop: false },
   review_request:       { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: true,  triageStaleDrop: false },
   requirement_comment:  { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   requirement_update:   { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], strictState: false, triageStaleDrop: false },
@@ -207,9 +207,12 @@ describe('C8-A — resolveEntityKeys yields to the WorkUnit', () => {
     expect(keys).toEqual(['wu:a2a:channel:dm:a2a:a:b']);
   });
 
-  it('legacy row (workUnitRef null) keeps today\'s channel: key — no migration', () => {
+  it('legacy row with no WorkUnit falls back to the conservative system key — `channel:` is deleted, not kept', () => {
+    // C8-A 是「删机制」而不是「加守卫」：`channel` 作用域整个消失，所以旧行不会
+    // 再产出 `channel:` 键，而是落到「未知 = 保守串行」。这是**安全方向**的退化
+    // （串行只是慢），而留着 `channel:` 会让投递通道继续拥有实体身份（分裂会复发）。
     const item = { ...lite('a2a_message', { extra: { channelKey: 'dm:a2a:a:b' } }, { senderId: 'agt_a' }), workUnitRef: null };
-    expect(resolveEntityKeys(item, 'agent1')).toContain('channel:dm:a2a:a:b');
+    expect(resolveEntityKeys(item, 'agent1')).toEqual(['system:agent1']);
   });
 
   it('never empty, even for a WU with no other dimension', () => {
