@@ -163,24 +163,27 @@ describe('AgentMailbox entity scopes (registry-driven, no silent gaps)', () => {
     expect(mailbox.dequeue()).toBeUndefined();
   });
 
-  it('同一 A2A 频道串行、不同频道可并行', () => {
+  it('A2A：同一实体串行、不同实体可并行（实体来自 WorkUnit，不是频道）', () => {
+    // C8-A：`channelKey` 不再是实体身份 —— 同一任务经不同通道到达必须是同一把锁，
+    // 否则同一件事会被并行改写；而不同任务必须能并行。实体由 WU ref 回答。
     const m1 = mailbox.enqueue('a2a_message', {
       summary: 'dm1', content: 'x', extra: { channelKey: 'dm:a2a:agt_a|agt_b' },
-    });
+    }, { workUnitRef: 'a2a:task:tsk_1' });
     const m2 = mailbox.enqueue('a2a_message', {
-      summary: 'dm2', content: 'y', extra: { channelKey: 'dm:a2a:agt_a|agt_b' },
-    });
+      summary: 'dm2', content: 'y', extra: { channelKey: 'group:team_1' },
+    }, { workUnitRef: 'a2a:task:tsk_1' });
     const m3 = mailbox.enqueue('a2a_message', {
-      summary: 'dm3', content: 'z', extra: { channelKey: 'group:team_1' },
-    });
+      summary: 'dm3', content: 'z', extra: { channelKey: 'group:team_2' },
+    }, { workUnitRef: 'a2a:task:tsk_2' });
 
     const k1 = mailbox.entityKeyOf(m1);
-    expect(k1).toBe('channel:dm:a2a:agt_a|agt_b');
+    expect(k1).toBe('task:tsk_1');
+    // 通道变了，实体没变 → 还是同一把锁（这正是旧实现漏掉的那条）
     expect(mailbox.entityKeyOf(m2)).toBe(k1);
-    expect(mailbox.entityKeyOf(m3)).toBe('channel:group:team_1');
+    expect(mailbox.entityKeyOf(m3)).toBe('task:tsk_2');
 
     expect(mailbox.lockEntity(k1, m1.id)).toBe(true);
-    // 同频道被锁 → m2 被跳过；不同频道 m3 照常出队
+    // 同实体被锁 → m2 被跳过；不同实体 m3 照常出队
     expect(mailbox.dequeue()?.id).toBe(m3.id);
   });
 

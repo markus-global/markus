@@ -13,6 +13,11 @@
  *   • After changing, grep for the constant name to find all affected paths.
  */
 
+// The stale-drop set is a **projection of the registry** (see
+// `TRIAGE_STALE_DROP_TYPES` below). The registry is the only writer of
+// "is this type droppable by age"; this module must not keep a second copy.
+import { MAILBOX_TYPE_REGISTRY } from './types/mailbox.js';
+
 // ─── Tool Response Limits ────────────────────────────────────────────────────
 // These control what `task_get` / `task_list` return to the calling agent.
 
@@ -549,13 +554,30 @@ export const TRIAGE_ITEM_CONTENT_CHARS = 3000;
  *  to prevent unbounded queue growth. */
 export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
 
-/** Informational mailbox types eligible for age-based auto-drop before triage.
- *  These types carry context that decays rapidly and do not require LLM processing.
- *  `callback_result` is included so orphaned/unprocessed background completions
- *  (and historically fan-out ghosts) do not wedge the queue forever. */
-export const TRIAGE_STALE_DROP_TYPES: readonly string[] = [
-  'task_status_update', 'heartbeat', 'memory_consolidation', 'daily_report', 'callback_result',
-];
+/**
+ * Informational mailbox types eligible for age-based auto-drop before triage.
+ *
+ * **Derived from the registry — never listed here by hand.** This set used to be
+ * a hand-maintained literal sitting beside the registry's per-type
+ * `triageStaleDrop` flag: the same fact written twice, in two files, with no
+ * mechanism keeping them equal. (The literal had in fact already lost its
+ * readers — the only runtime reader is `routeMailboxItem(item).triageStaleDrop`
+ * — so it was a second writer that looked authoritative and answered nothing.)
+ * Two writers of one fact eventually disagree; now a type's flag is flipped in
+ * one place and this list follows.
+ *
+ * `callback_result` is included so orphaned/unprocessed background completions
+ * (and historically fan-out ghosts) do not wedge the queue forever; the ones
+ * that carry a user-visible reply are still protected by `isNeverPurgeable()`.
+ *
+ * `memory_consolidation` (dream) is deliberately **absent** (C8-A): a dream run
+ * belongs to the background-sleep path, not to attention triage, so age expiry
+ * must not discard it — losing that item loses the work with no trace. It is the
+ * one type whose absence changes behaviour, which is why this card owns it.
+ */
+export const TRIAGE_STALE_DROP_TYPES: readonly string[] = Object.entries(MAILBOX_TYPE_REGISTRY)
+  .filter(([, descriptor]) => descriptor.policy.triageStaleDrop)
+  .map(([type]) => type);
 
 /** Max tool-use iterations allowed during triage deliberation.
  *  6 rounds is sufficient for memory recall + task/requirement lookups

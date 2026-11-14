@@ -53,6 +53,7 @@ import {
   shouldDistillTask,
   getDistillationAllowlist,
   buildDistillationPrompt,
+  pendingCallbackRegistry,
   type AgentManager,
   type TaskProjectContext,
   type ReviewService,
@@ -796,6 +797,12 @@ export class TaskService implements ApprovalTargetPort {
           }, {
             ...(isHuman ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHuman ? 'user' : 'agent', taskId },
+            // 身份精到**该任务**（不是“当前回合”）：实体是 task，所以用
+            // `task_<id>_r<round>`。若接收方正在执行别的任务，这条 ref 自然
+            // 匹配不到任何 running 回合 → 老老实实排队，不会被错误注入。
+            // 修正前：全库 `mention` 5558 条 / `task_comment` 1733 条 ref 全为 NULL，
+            // 于是「有人在评论我正在做的任务」永远不可能在轮内生效。
+            workUnitRef: WORK_UNIT_REF.task(taskId, this.tasks.get(taskId)?.executionRound ?? 1),
           });
           notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
@@ -3716,10 +3723,38 @@ export class TaskService implements ApprovalTargetPort {
     'in_progress->blocked',
   ]);
 
+  /**
+   * Transitions that **overturn the premise** of a running turn.
+   *
+   * `turn-delta` already knows how to react to a contradiction (drop the work
+   * and stop early instead of burning the rest of the turn), but until now no
+   * producer ever set `invalidatesPremise` — the classifier's contradiction
+   * branch was structurally unreachable in production. These are the four
+   * transitions where "keep going" is provably wrong: the task this turn is
+   * executing no longer exists, has already been finished, or has failed.
+   *
+   * Deliberately absent: `rejected` (the reviewer wants a redo — the premise
+   * still stands) and `review` (the assignee itself submitted it).
+   */
+  private static readonly PREMISE_INVALIDATING: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+    'cancelled', 'failed', 'completed', 'archived',
+  ]);
+
   private maybeNotifyAssignee(
     task: Task, from: TaskStatus, to: TaskStatus,
     executionTriggered: boolean, updatedBy?: string,
   ): void {
+    // 前提已终结（取消 / 失败）⇒ 它派出的后台活在回来时不该再唤醒任何人。
+    // 第一性原理：回调是一个答案，前提没了，答案就没有读者。
+    // 丢弃登记即可；后台进程本身照旧跑完，只是不再唤醒回合。
+    if (to === 'cancelled' || to === 'failed') {
+      try {
+        const dropped = pendingCallbackRegistry.discardByCorrelation(task.id, `task_${to}`);
+        if (dropped > 0) {
+          log.info('Terminal task discarded its pending callbacks', { taskId: task.id, status: to, dropped });
+        }
+      } catch { /* registry not wired — 不影响任务状态推进 */ }
+    }
     // Skip when auto-start fires — runTask sends its own execution-mode item.
     if (executionTriggered) return;
     // Skip self-initiated review submission — assignee already knows.
@@ -3743,6 +3778,16 @@ export class TaskService implements ApprovalTargetPort {
           taskId: task.id,
         }, {
           metadata: { taskId: task.id },
+          // 投递必须带**任务级身份**：`turn-delta` 按 ref 匹配「正在执行的那一回合」，
+          // 没有 ref 的事实永远匹配不到 —— 矛盾分支就永远不可达。
+          // 2026-11-14 真机实测：取消投递行 `work_unit_ref = NULL`，而触发执行那行是
+          // `task_<id>_r1`，于是「取消在当轮生效」只靠协作式 cancel token（stopReason
+          // = lifecycle）实现，delta 通道形同虚设。
+          workUnitRef: WORK_UNIT_REF.task(task.id, task.executionRound ?? 1),
+          // The single place that turns "this task is over" into a fact the
+          // running turn can act on. Without it the turn keeps spending tokens
+          // on work whose premise just vanished.
+          ...(TaskService.PREMISE_INVALIDATING.has(to) ? { invalidatesPremise: true } : {}),
         });
       }
     } catch { /* agent not found — skip */ }
@@ -5243,7 +5288,7 @@ export class TaskService implements ApprovalTargetPort {
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id, round: reviewRound },
+        { sourceType: 'review_request', taskId: task.id, round: reviewRound, workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound) },
       ).then(() => {
         // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
         // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。

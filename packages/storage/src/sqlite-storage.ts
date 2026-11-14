@@ -4714,6 +4714,32 @@ export interface ActivityLogRecord {
 export class SqliteActivityRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * C8-P2：收口「僵尸活动」——`ended_at` 仍为空、但**触发它的 mailbox 行已终态**的行。
+   *
+   * 判据与 WorkUnit 纠偏同源：触发这件事的东西已经结束了，它就不可能“还在进行”。
+   * 2026-11-14 真机：这类行积了 3269 条，UI 一度拿它们派生“进行中”——那是在用
+   * 第二套事实回答一个已经由台账回答的问题。现在它们会被收口，"在跑"只认台账。
+   *
+   * @returns 收口条数（供启动日志，不静默）
+   */
+  closeOrphansAgainstTerminalMailbox(): number {
+    const res = this.db
+      .prepare(
+        `UPDATE agent_activities
+            SET ended_at = COALESCE(
+                  (SELECT m.completed_at FROM mailbox_items m WHERE m.id = agent_activities.mailbox_item_id),
+                  strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          WHERE ended_at IS NULL
+            AND mailbox_item_id IS NOT NULL
+            AND mailbox_item_id IN (
+              SELECT id FROM mailbox_items
+               WHERE status IN ('completed','bounced','catch_all','merged'))`,
+      )
+      .run();
+    return ((res as { changes?: number }).changes ?? 0);
+  }
+
   insertActivity(data: {
     id: string;
     agentId: string;
@@ -5177,17 +5203,21 @@ export class SqliteMailboxRepo {
     dropReason?: string | null;
     /** C3：catch-all 概览桶 id（退信行归集目标）。 */
     bounceTarget?: string | null;
+    /** C8：入队即已知的回合身份（与行同时写入；后补身份仍走 `linkMailboxItem`）。 */
+    workUnitRef?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
-        // `work_unit_ref` **故意不在这个 INSERT 里**：入队那一刻还不知道这条 item
-        // 属于哪个 WU（WU 在活开始/结束时才有身份），这一列的唯一写者是
-        // `linkMailboxItem()` 的 UPDATE。之前它列在列名里却没传实参（16 列 / 16
-        // 占位符 / 15 实参），node:sqlite 少参**不抛、静默绑 NULL** —— 看起来正常，
-        // 实际上是靠一个静默失败在维持「单写者」。删掉列名让形状与意图一致。
+        // `work_unit_ref` 在这里**也要写**：C8 之后它是入队参数，入队那一刻就已知。
+        // 2026-11-14 真机证据：生产者（task/requirement/mention/review_request）
+        // 都传了 `workUnitRef`，但 INSERT 不写这一列、又没有一处调 `linkMailboxItem`，
+        // 于是取消投递带上了 `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、
+        // 没身份，`turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
+        //
+        // 后补身份仍走 `linkMailboxItem()`（活开始后才拿到身份的路径）。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
-                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                    envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT DO NOTHING`
       )
       .run(
@@ -5197,6 +5227,7 @@ export class SqliteMailboxRepo {
         item.envelope ?? null, item.messageId ?? null,
         item.signalClass ?? null, item.intent ?? null, item.dropReason ?? null,
         item.bounceTarget ?? null,
+        item.workUnitRef ?? null,
       );
     return ((res as { changes?: number }).changes ?? 0) === 1;
   }
@@ -6344,6 +6375,42 @@ export class SqliteWorkUnitRepo {
       throw new Error(`WorkUnit ensure failed: ref "${seed.ref}" not found after insert`);
     }
     return { row, created };
+  }
+
+  /**
+   * C8 收口纠偏：`status='running'` 但**触发它的 mailbox 行已终态**的 WU，就地收口。
+   *
+   * 为什么需要：收口（running → idle）在 task 链路根本没有写者，chat 链路又会因
+   * round 漂移而收错行。结果是 `running` 里积满已结束的回合（真机实测 15 条），
+   * 任何「在跑」的读面都会把它当成真的。
+   *
+   * 判据只用已有事实：WU 的 ref 已经写在 mailbox 行上（C6/C7），而那一行是否终态
+   * 是可查的。不靠时间、不靠推断。
+   */
+  reconcileRunningAgainstTerminalMailbox(): number {
+    // 规则一：触发行已终态 → 这条活已经结束。
+    const settledByTerminal = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_terminal_mailbox'
+          WHERE status='running' AND ref IN (
+            SELECT work_unit_ref FROM mailbox_items
+             WHERE work_unit_ref IS NOT NULL
+               AND status IN ('completed','bounced','catch_all','merged'))`,
+      )
+      .run();
+    // 规则二（孤儿）：`session:` 回合的 WU 没有任何 mailbox 行引用它 ——
+    // 自 C8 起 ref 是**入队参数**，活着的回合必然被引用；没被引用 = 链接从未落上，
+    // 这一行不可能是在跑（真机实测 4 条，均为旧构建遗留）。
+    const settledOrphan = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_orphan_turn'
+          WHERE status='running' AND ref LIKE 'session:%'
+            AND ref NOT IN (SELECT work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL)`,
+      )
+      .run();
+    const a = (settledByTerminal as { changes?: number }).changes ?? 0;
+    const b = (settledOrphan as { changes?: number }).changes ?? 0;
+    return a + b;
   }
 
   getByRef(ref: string): WorkUnitRecord | undefined {

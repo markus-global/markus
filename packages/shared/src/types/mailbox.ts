@@ -1,6 +1,7 @@
 // ─── Mailbox Types ──────────────────────────────────────────────────────────
 
 import type { DeliveryEnvelope, SignalClass } from '../mail.js';
+import { entityKeysOfWorkUnitRef, taskIdOfWorkUnitRef } from '../work-unit.js';
 
 export type MailboxItemType =
   | 'human_chat'
@@ -58,15 +59,18 @@ export type MailboxCategory = 'interaction' | 'task' | 'notification' | 'system'
  * | `requirement` | `req:{requirementId}` | 同一需求永不并发 |
  * | `user` | `user:{senderId}` | 同一发起人的消息串行（防同用户矛盾回复） |
  * | `conversation` | `conv:{sessionId}` | 同一会话永不并发 |
- * | `channel` | `channel:{channelKey}` | 同一 A2A DM / 群聊频道永不并发 |
+ * | `workunit` | 由 `entityKeysOfWorkUnitRef(ref)` 派生 | 同一件事永不并发（C8-A） |
  * | `system` | `system:{agentId}` | 兜底：无具体实体 → 同 Agent 内串行 |
+ *
+ * `channel` 已删除（C8-A）：它是**投递通道身份**，不是实体。留着它等于给「同一件事
+ * 经不同 transport 到达」留一个合法入口去分裂实体。（删机制，不加守卫。）
  */
 export type MailboxEntityScope =
   | 'task'
   | 'requirement'
   | 'user'
   | 'conversation'
-  | 'channel'
+  | 'workunit'
   | 'system';
 
 /**
@@ -83,7 +87,7 @@ export type MailboxEntityScope =
  * `user` 仍保留在可选维度中，供确实需要「按人串行」的类型（如 mention）使用。
  */
 export const ENTITY_SCOPE_ORDER: readonly MailboxEntityScope[] = [
-  'task', 'requirement', 'user', 'conversation', 'channel', 'system',
+  'task', 'requirement', 'user', 'conversation', 'workunit', 'system',
 ];
 
 /**
@@ -116,7 +120,13 @@ export interface MailboxTypePolicy {
   affinity: readonly MailboxEntityScope[];
   /** 幂等：按 `(type, taskId, round)` 至多一条（见 {@link routeMailboxItem}）。 */
   dedupePerRound: boolean;
-  /** 陈旧可丢：triage 时按年龄直接丢（list 由 limits 的 TRIAGE_STALE_DROP_TYPES 派生）。 */
+  /**
+   * 陈旧可丢：triage 时按年龄直接丢。
+   *
+   * **本字段是唯一事实源**：`limits.ts` 的 `TRIAGE_STALE_DROP_TYPES` 由它派生。
+   * 别在 limits 里再手写一份名单 —— 同一事实两个写者，今天一致、明天分叉。
+   * 运行时唯一的读者是 `routeMailboxItem(item).triageStaleDrop`。
+   */
   triageStaleDrop: boolean;
   /**
    * 后台工作：抢占判定里「当前在处理的是后台/系统工作」的判据。
@@ -167,13 +177,20 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   mention:              { label: 'Mention',              category: 'interaction',  icon: '@',  signalClass: 'chat',             policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
   session_reply:        { label: 'Session Reply',        category: 'task',         icon: '↩',  signalClass: 'chat',             policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
   task_status_update:   { label: 'Task Status',          category: 'task',         icon: '📋', signalClass: 'record',          policy: { priority: 1, invokesLLM: false, affinity: ['task', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: false, strictState: false, actionRequiredStrict: false } },
-  a2a_message:          { label: 'Agent Message',        category: 'interaction',  icon: '🔗', signalClass: 'a2a',              policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
+  // C8-A：`channel` 已从这个列表里删除，换成 `workunit`。理由：A2A 的实体是
+  // 「这件事」，由 WorkUnit ref 回答；`channelKey` 只是「这次怎么送到的」。
+  // 旧形态（`channel` 参与加锁）让同一任务经 DM / 群聊两条通道到达就变成两个实体、
+  // 两个会话、两份互不可见的上下文 —— 这正是本卡要根除的症状。
+  a2a_message:          { label: 'Agent Message',        category: 'interaction',  icon: '🔗', signalClass: 'a2a',              policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'workunit', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
   review_request:       { label: 'Review Request',       category: 'task',         icon: '👀', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: true,  triageStaleDrop: false, backgroundWork: false, strictState: true,  actionRequiredStrict: false } },
   requirement_comment:  { label: 'Requirement Comment',  category: 'task',         icon: '💬', signalClass: 'record',          policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
   requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', signalClass: 'system',           policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  signalClass: 'system',           policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
-  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  // C8-A：dream **不再**按年龄丢弃。它属于后台休眠路径，不是 attention 分拣的噪音；
+  // 过期即丢 = 这一轮整理无痕消失（正是「静默丢消息」）。affinity 仍是 ['system']，
+  // 那是 C8-C 的战场，本卡不动。
+  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', signalClass: 'governance_event', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  signalClass: 'callback',         policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
 };
@@ -198,6 +215,13 @@ export type MailboxItemLite = Pick<MailboxItem, 'sourceType' | 'payload' | 'meta
   envelope?: Pick<DeliveryEnvelope, 'intent'>;
   /** 轮次（结构化，替代 `payload.extra.round` / `metadata.round` 两处散读）。 */
   round?: number;
+  /**
+   * C8-A：这条 item 属于哪个 WorkUnit（结构事实）。
+   *
+   * 路由的两件事都读它、且**只**读它：实体维度 `workunit`（→ 并发锁键）与
+   * 幂等键的 taskId 维度。`null` / `undefined` = 旧行或非 WU 链路，行为不变。
+   */
+  workUnitRef?: string | null;
 };
 
 export interface MailboxRoute {
@@ -238,7 +262,12 @@ function isAuthoritativeUnderPolicy(item: MailboxItemLite, p: MailboxTypePolicy)
 
 /** `(sourceType, taskId, round)` — 幂等键形状的唯一写者，输入全为结构字段。 */
 function roundDedupKeyOf(item: MailboxItemLite): string | undefined {
-  const taskId = item.payload.taskId ?? (item.metadata?.taskId as string | undefined);
+  // C8-A：taskId 优先取**结构事实**（WorkUnit ref），载荷只在旧行上兜底。
+  // 旧写法只读 `payload.taskId` —— 那是从载荷推断结构（R3'），而没有该字段的
+  // item（A2A 就是典型）会静默失去幂等约束。
+  const taskId = item.payload.taskId
+    ?? (item.metadata?.taskId as string | undefined)
+    ?? taskIdOfWorkUnitRef(item.workUnitRef);
   const round = item.round;
   if (!taskId || typeof round !== 'number' || !Number.isFinite(round)) return undefined;
   return `${item.sourceType}:${taskId}:${round}`;
@@ -304,7 +333,7 @@ export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types:
  * are part of the contract and shared with the handoff log.
  */
 export function resolveEntityKeys(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & { workUnitRef?: string | null },
   agentId: string,
 ): string[] {
   const scopes = routeMailboxItem(item).affinity;
@@ -332,9 +361,11 @@ export function resolveEntityKeys(
         if (id) keys.push(`conv:${id}`);
         break;
       }
-      case 'channel': {
-        const id = item.payload.extra?.channelKey as string | undefined;
-        if (id) keys.push(`channel:${id}`);
+      case 'workunit': {
+        // C8-A：实体由 WorkUnit ref 回答（派生规则只在 `entityKeysOfWorkUnitRef`）。
+        // 这里不做任何 if 判断「要不要用 WU」—— 由注册表声明，不由调用点决定。
+        const ref = item.workUnitRef;
+        if (ref) keys.push(...entityKeysOfWorkUnitRef(ref));
         break;
       }
     }
@@ -349,10 +380,42 @@ export function resolveEntityKeys(
  * `resolveEntityKeys` so that every entity dimension is protected.
  */
 export function resolveEntityKey(
-  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'>,
+  item: Pick<MailboxItem, 'sourceType' | 'payload' | 'metadata'> & { workUnitRef?: string | null },
   agentId: string,
 ): string {
   return resolveEntityKeys(item, agentId)[0];
+}
+
+// ─── 去向：三条轴，一个判定点（C8-A）────────────────────────────────────────
+
+/**
+ * 一条 item 该去哪：**轮内注入 / 队列 / 概览**。
+ *
+ * 三条轴的判据只有「实体对不对得上」，与消息类型无关 —— 类型决定优先级与是否
+ * 欠一个 LLM 回合（那是 `routeMailboxItem` 的事），去向由实体决定（结构，不推断）：
+ *
+ * | 情形 | 去向 | 为什么 |
+ * |---|---|---|
+ * | 解析不出具体实体（只剩 `system:` 兜底） | `overview` | 它不属于任何正在做的事；打断谁都不对 |
+ * | 与当前回合的实体有交集 | `inject` | 同一件事，**排在自己后面就是死锁** |
+ * | 不同实体（或当前空闲） | `queue` | 并行安全；排队等的是资源不是语义 |
+ *
+ * 「当前回合的实体」由调用方给（`undefined` / 空数组 = 空闲或未知）。未知一律
+ * 走 `queue` —— 注入是侵入性动作，只在**确定**同实体时做。
+ */
+export type MailboxDestination = 'inject' | 'queue' | 'overview';
+
+export function resolveMailboxDestination(
+  entityKeys: readonly string[],
+  activeTurnEntityKeys?: readonly string[] | null,
+): MailboxDestination {
+  const concrete = entityKeys.filter(k => !k.startsWith('system:'));
+  if (concrete.length === 0) return 'overview';
+
+  const active = activeTurnEntityKeys ?? [];
+  if (active.length === 0) return 'queue';
+
+  return concrete.some(k => active.includes(k)) ? 'inject' : 'queue';
 }
 
 function dedupeKeys(keys: string[]): string[] {

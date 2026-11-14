@@ -141,6 +141,16 @@ export interface DeliveryEnvelope {
    * 外部字符串绝不被当成内部身份（H1）。
    */
   fromVerified: boolean;
+  /**
+   * C8-B：本条事实**替换**了哪些既有事实（更正链）。结构字段，不解析正文。
+   * 非空即「与正在执行的前提矛盾」——轮内 delta 注入据此判 `cancel`。
+   */
+  supersedes: string[] | null;
+  /**
+   * C8-B：本条事实**推翻**了接收方可能正在执行的前提（撤单 / 驳回 / 回滚）。
+   * 与 `supersedes` 的区别：这是**声明**，不是引用；生产者明确知道「这是撤销」时置 true。
+   */
+  invalidatesPremise: boolean;
 }
 
 /** 信封构造输入：投递点只需要提供它真正知道的那几件事。 */
@@ -153,6 +163,10 @@ export interface DeliveryEnvelopeInput {
   subject?: string;
   externalThreadRef?: string | null;
   fromVerified?: boolean;
+  /** C8-B：更正链（被本条替换的事实 id）。 */
+  supersedes?: string[] | null;
+  /** C8-B：本条是否推翻接收方正在执行的前提。 */
+  invalidatesPremise?: boolean;
 }
 
 /**
@@ -174,6 +188,9 @@ export function buildDeliveryEnvelope(input: DeliveryEnvelopeInput): DeliveryEnv
     workUnitRef: null,
     externalThreadRef: input.externalThreadRef ?? null,
     fromVerified: input.fromVerified ?? false,
+    // C8-B：省略即 `null` / `false`（形状恒定，不随输入变化）。同一输入 → 同一字节序列。
+    supersedes: input.supersedes ? [...input.supersedes] : null,
+    invalidatesPremise: input.invalidatesPremise === true,
   };
 }
 
@@ -202,6 +219,10 @@ export function parseEnvelope(raw: string | null | undefined): DeliveryEnvelope 
       workUnitRef: parsed.workUnitRef ?? null,
       externalThreadRef: parsed.externalThreadRef ?? null,
       fromVerified: parsed.fromVerified === true,
+      supersedes: Array.isArray(parsed.supersedes)
+        ? parsed.supersedes.filter((v): v is string => typeof v === 'string')
+        : null,
+      invalidatesPremise: parsed.invalidatesPremise === true,
     };
   } catch {
     return undefined;

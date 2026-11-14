@@ -198,8 +198,20 @@ describe('generateDailyReport', () => {
 describe('injectFollowUp and sendTaskExecution', () => {
   it('injectFollowUp enqueues without blocking', async () => {
     const agent = createAgent(makeMockRouter());
-    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' });
+    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' }, undefined, { workUnitRef: null });
     expect(agent.getMailbox().depth).toBe(1);
+  });
+
+  it('injectFollowUp 把回合身份落进投递行（删掉转发行就会红）', () => {
+    // 2026-11-14 真机缺陷：这条路径唯一漏传 workUnitRef，导致追随消息的
+    // mailbox 行 `work_unit_ref = NULL`、台账里从未建过该回合 ——
+    // 于是「运行与注意力」显示「正在运行 0」而那回合正在跑。
+    const agent = createAgent(makeMockRouter());
+    agent.injectFollowUp('Follow up question', 'user_1', { name: 'User', role: 'human' }, undefined, {
+      workUnitRef: 'session:cs_probe:r7',
+    });
+    const item = agent.getMailbox().peek()!;
+    expect(item.workUnitRef).toBe('session:cs_probe:r7');
   });
 
   it('sendTaskExecution enqueues task execution item', async () => {

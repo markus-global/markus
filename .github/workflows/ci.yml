@@ -62,6 +62,11 @@ jobs:
       - name: Architecture guard
         run: node scripts/architecture-guard.mjs
 
+      # C8：身份不变量自检。验证五条判据真的会咬人、且修好后归零。
+      # 审的是「判据逻辑」而不是「生产库干净」——后者不属于 CI 的判断范围。
+      - name: Identity invariants (self-test)
+        run: node scripts/identity-audit.mjs --self-test
+
       # ── 2. tests (node project) ────────────────────────────────────────────
       # 带 JSON 报告，供下一步的跳过审计使用。
       - name: Tests (node project)

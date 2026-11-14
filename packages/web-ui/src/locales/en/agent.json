@@ -247,6 +247,10 @@
       "activeTasksCount_one": "{{count}} active task",
       "activeTasksCount_other": "{{count}} active tasks",
       "mailboxQueued": "{{count}} message(s) queued in mailbox",
+      "runningTitle": "Running now",
+      "runningNone": "no unit of work is running",
+      "runningInternal": "internal session",
+      "runningUnavailable": "running state is unavailable right now",
       "startAgent": "▶ Start",
       "stopAgent": "⏹ Stop",
       "openClaw": "OpenClaw"

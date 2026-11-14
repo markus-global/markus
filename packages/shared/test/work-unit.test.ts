@@ -74,7 +74,10 @@ describe('WORK_UNIT_REF（唯一生成器）', () => {
   });
 
   it('a2a = a2a:<channelKey>:<deliveryId>', () => {
-    expect(WORK_UNIT_REF.a2a('dm:a2a:x:y', 'dlv_1')).toBe('a2a:dm:a2a:x:y:dlv_1');
+    // C8-A：身份是「这件事」，不是「这次投递」——同一实体两次投递必须得到同一个 ref，
+    // 否则下游按 WU 派生会话时会一条消息一个会话。
+    expect(WORK_UNIT_REF.a2a('task:tsk_x')).toBe('a2a:task:tsk_x');
+    expect(WORK_UNIT_REF.a2a('task:tsk_x')).toBe(WORK_UNIT_REF.a2a('task:tsk_x'));
   });
 
   it('不同 round 产生不同 ref（同一纪元不会被两轮复用）', () => {

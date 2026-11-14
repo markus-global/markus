@@ -196,10 +196,12 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     expect(outcome.state).toBe('queued');
     const rows = mailboxRowsWithWu();
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.work_unit_ref.startsWith('a2a:dm:a2a:x:y')).toBe(true);
+    // C8-A：身份是「这件事」，不是「这次投递」——`deliveryId` 不再进 ref。
+    // 发送方没有回合 WU 时，实体的正确回答是一次对话本身（`channel:`），
+    // 所以 ref 是 `a2a:channel:<channelKey>`；同一对话的多次投递共享它。
+    expect(rows[0]!.work_unit_ref).toBe('a2a:channel:dm:a2a:x:y');
     // `work_units.agent_id` 记的是**发送方**（干活的那个），不是接收方。
     // 一次投递给 N 个接收方 → N 个 item 共享同一个 ref，这是定义不是缺陷。
-    expect(rows[0]!.work_unit_ref).toBe('a2a:dm:a2a:x:y:<id>'.replace('<id>', outcome.deliveryId));
     expect(new SqliteWorkUnitRepo(db).getByRef(rows[0]!.work_unit_ref)!.agentId).toBe('agt_x');
   });
 
@@ -235,7 +237,8 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     });
 
     const repo = new SqliteWorkUnitRepo(db);
-    const child = repo.getByRef(`a2a:dm:a2a:x:y:${outcome.deliveryId}`)!;
+    // C8-A：发送方本轮 WU 属于 `tsk_parent` → 实体是那个任务，ref 不带投递 id。
+    const child = repo.getByRef('a2a:task:tsk_parent')!;
     // 父链是结构字段，不是从 chainId / 文本推断出来的。
     expect(child.parentId).toBe(parent.id);
   });
@@ -292,6 +295,68 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     expect(refs.some((r) => r.startsWith('a2a:'))).toBe(true);
     // task 链路的 mailbox 行由任务分发入队产生（不在本探针范围），但实体必须存在
     expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a').some((r) => r.ref.startsWith('task_'))).toBe(true);
+  });
+
+  it('C8-A 验收判据（真实 DB）：同一实体两次投递 ⇒ 2 行、1 个 ref，且 ref 里没有投递 id', () => {
+    // 这是卡面上写死的验收读数，在**真实 SQLite** 上执行，而不是靠 mock 数调用次数：
+    //   `COUNT(DISTINCT work_unit_ref)` 必须明显小于消息数，且 ref 不含 `dlv_`。
+    const units = service();
+    const parent = units.ensure({
+      ref: 'task_tsk_accept_r1',
+      agentId: 'agt_x',
+      status: 'running',
+      contextRef: 'sess_accept_x',
+    })!;
+    const mailbox = new SqliteMailboxRepo(db);
+
+    let seq = 900;
+    const delivery = new AgentDelivery({
+      getAgent: (agentId: string) => ({
+        config: { name: agentId },
+        enqueueToMailbox: (
+          sourceType: string,
+          payload: unknown,
+          options?: { workUnitRef?: string | null },
+        ) => {
+          const item = {
+            id: `mbx_acc_${++seq}`,
+            agentId,
+            sourceType,
+            priority: 2,
+            status: 'queued',
+            payload,
+            metadata: {},
+            queuedAt: '2026-11-14T00:00:00.000Z',
+            // 真实链路的 enqueue 会把 WorkUnit 身份带在 item 上（C8-A）
+            workUnitRef: options?.workUnitRef ?? null,
+          };
+          mailbox.save(item as never);
+          return item;
+        },
+      }),
+      workUnits: deliveryPort(units, 'task_tsk_accept_r1'),
+    } as never);
+
+    for (const content of ['m1', 'm2']) {
+      delivery.deliver({
+        orgId: 'org_1', channelKey: 'dm:a2a:x:y', fromAgentId: 'agt_x', fromAgentName: 'X',
+        content, targetAgentIds: ['agt_y'], chainId: 'chain_acc', depth: 0,
+      });
+    }
+
+    const rows = db
+      .prepare("SELECT work_unit_ref FROM mailbox_items WHERE id LIKE 'mbx_acc_%'")
+      .all() as Array<{ work_unit_ref: string }>;
+    expect(rows).toHaveLength(2);
+    // 判据 1：行数 2，ref 数 1（旧实现这里是 2，因为 deliveryId 编进了身份）
+    expect(new Set(rows.map((r) => r.work_unit_ref)).size).toBe(1);
+    // 判据 2：ref 是实体，不含投递 id
+    expect(rows[0]!.work_unit_ref).toBe('a2a:task:tsk_accept');
+    expect(rows[0]!.work_unit_ref.includes('dlv_')).toBe(false);
+    // 父子链仍是结构字段（C7-B 语义未回退）
+    const entity = new SqliteWorkUnitRepo(db).getByRef('a2a:task:tsk_accept')!;
+    expect(entity.parentId).toBe(parent.id);
+    expect(entity.agentId).toBe('agt_x');
   });
 });
 

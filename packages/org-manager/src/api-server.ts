@@ -2045,6 +2045,25 @@ export class APIServer {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
     this.wireWorkUnits();
+    // C8-P2：僵尸活动收口 —— 触发它的投递行已终态的行，不该再挂着“进行中”。
+    // 「是否在跑」的唯一权威是 work_units；activity 只是历史，不是状态。
+    try {
+      const closed = this.storage?.activityRepo?.closeOrphansAgainstTerminalMailbox?.() ?? 0;
+      if (closed > 0) {
+        log.info('Closed orphan activities (trigger row already terminal)', { count: closed });
+      }
+    } catch (err) {
+      log.warn('Failed to close orphan activities', { error: String(err) });
+    }
+    // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
+    // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
+    try {
+      const reconciled = this.storage?.workUnitRepo?.reconcileRunningAgainstTerminalMailbox?.();
+      if (reconciled) log.info('Reconciled stale running WorkUnits', { count: reconciled });
+    } catch (err) {
+      // 纠偏失败不阻断启动，但要说出来（静默失败比不纠偏更坏）。
+      log.warn('Failed to reconcile stale running WorkUnits', { error: String(err) });
+    }
   }
 
   /**
@@ -2645,6 +2664,15 @@ export class APIServer {
      * 永远 fallback，等于这条收敛没生效。没有记忆会话（历史重放）时显式 null。
      */
     memorySessionId: string | null,
+    /**
+     * C8：回合**开始时**就定下的 WU ref（`prepareChatTurnWorkUnit` 的返回值）。
+     *
+     * 必填（`string | null`）：收口必须用同一个身份，不能再在这里解析一次。
+     * 2026-11-14 真机：多会话 agent 上，这里用 `getSessionsByAgent(...)[0]` 重算，
+     * 拿到的是主会话（旧），于是收口落在旧 ref 上，**真正在跑的那一行永远不收口**
+     * （实测 `session:cs_66bc3ebf…:r50/r51/r52` 同时挂着）。
+     */
+    turnWorkUnitRef: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2675,24 +2703,23 @@ export class APIServer {
       // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
       const units = this.workUnits;
       if (units) {
-        const ref = WORK_UNIT_REF.chat(session.id, round);
+        // C8 收口纠偏：优先用**回合开始时写在那条 mailbox 行上的 ref**。
+        //
+        // 真机实测（2026-11-14）：收口时重算 round 会漂移 —— 用户消息先落库，
+        // 消息数变了，算出的 ref 与回合开始建的那一行不是同一个 → 回合开始的行
+        // 永远停在 `running`（一次会话里积了 4 条）。已记录的引用才是事实。
+        const linkedRef = mailboxItemId
+          ? (this.storage?.mailboxRepo?.getById(mailboxItemId)?.workUnitRef ?? null)
+          : null;
+        const ref = turnWorkUnitRef ?? linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
         const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
-        // C7-B：回合开始时建的那一行还不带会话身份（那一刻还没定跑进哪个会话），
-        // 这里补上 —— 只填空值。补不上就退化为旧路径，那仍然正确，只是少一层结构事实。
-        units.adoptContextRef(ref, memorySessionId ?? session.id);
-        units.linkMailboxItem(mailboxItemId, ref);
-        // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
-        // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
-        // 「这一轮什么时候结束的」只能从消息时间戳猜，那又是一次时序推断。
-        // 只在 `running` 上迁：重放同一轮时 ensure 会命中既有 `idle` 行，
-        // 那不是「回合未收口」，不该再迁一次（idle→idle 不在矩阵里）。
-        if (wu?.status === 'running') {
-          units.tryTransition(ref, 'idle', {
-            changedByType: 'system',
-            reason: 'chat_turn_settled',
-          });
-        }
+        void wu;
+        // 收口走唯一执行点（非流式入口同样调它，见 settleChatTurnWorkUnit）。
+        this.settleChatTurnWorkUnit(agentId, ref, {
+          memorySessionId: memorySessionId ?? session.id,
+          mailboxItemId,
+        });
       }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2723,6 +2750,41 @@ export class APIServer {
    *
    * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
    */
+  /**
+   * C8 —— 回合收口的**唯一执行点**。
+   *
+   * 为什么必须有这一个点：2026-11-14 浏览器模拟发现，`/api/agents/:id/message`
+   * 的非流式分支只写 assistant 消息就结束了，**从未走到收口** —— 于是每个回合
+   * 都在 `work_units` 里留下一条永远 `running` 的行（实测一轮一积：1 → 3）。
+   * 「回合结束」这个事实原本有三个写者各自记一遍，漏一个不报错，只是台账说错话。
+   *
+   * 顺序：先补 context_ref（只填空值）→ 回填 mailbox 引用 → running → idle。
+   * 只在 `running` 上迁：重放同一轮会命中已 `idle` 的行，那不是「未收口」。
+   */
+  private settleChatTurnWorkUnit(
+    agentId: string,
+    ref: string | null,
+    opts: { memorySessionId?: string | null; mailboxItemId?: string | null } = {},
+  ): void {
+    if (!ref) return;
+    const units = this.workUnits;
+    if (!units) return;
+    try {
+      const contextRef = opts.memorySessionId ?? null;
+      if (contextRef) units.adoptContextRef(ref, contextRef);
+      if (opts.mailboxItemId) units.linkMailboxItem(opts.mailboxItemId, ref);
+      const row = this.storage?.workUnitRepo?.getByRef(ref);
+      if (row?.status === 'running') {
+        units.tryTransition(ref, 'idle', {
+          changedByType: 'system',
+          reason: 'chat_turn_settled',
+        });
+      }
+    } catch (err) {
+      log.warn('Failed to settle chat turn WorkUnit', { agentId, ref, error: String(err) });
+    }
+  }
+
   private async prepareChatTurnWorkUnit(
     agentId: string,
     senderId: string | undefined,
@@ -2735,15 +2797,32 @@ export class APIServer {
     try {
       let sid = knownSessionId ?? null;
       if (!sid) {
-        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
-        const existing = sessions[0] ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
+        // ⚠️ 2026-11-14 真机根因：这里原本取 `getSessionsByAgent(..., 1)[0]`，而那个查询
+        // 按 `is_main DESC, last_message_at DESC` 排序 —— 主会话永远排在最前，哪怕它
+        // 是几小时前的。于是每个回合的 ref 都算在主会话上（如 r322，早已 idle），
+        // 真正在跑的那个会话永远没有 running 行 →「运行与注意力」显示「正在运行 0」。
+        //
+        // 「本轮是哪个会话」只能由**入口**回答（它刚落了用户消息），不能靠排序猜。
+        // 拿不到 id 时，退而取**最近活跃**的那个（按 last_message_at），而不是主会话。
+        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 5, senderId);
+        const latest = sessions
+          .slice()
+          .sort((a: { lastMessageAt?: string | null }, b: { lastMessageAt?: string | null }) =>
+            String(b.lastMessageAt ?? '').localeCompare(String(a.lastMessageAt ?? '')))[0];
+        const existing = latest ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
         sid = existing.id;
       }
       if (!sid) return null;
       const priorMessages = this.storage.chatSessionRepo.getMessageCount(sid);
       const round = Math.floor(priorMessages / 2) + 1;
       const ref = WORK_UNIT_REF.chat(sid, round);
-      units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      // 回合正在开始 ⇒ 这一行**必须是** running。`ensure()` 对已存在的行什么都不做，
+      // 所以 ref 撞上一个已收口的 idle 行时（重试 / 同轮重入 / 早先提前收口）
+      // 必须显式拉回 running —— 否则台账说「没在跑」而回合正在输出。
+      const row = units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      if (row && row.status !== 'running') {
+        units.transition(ref, 'running');
+      }
       return ref;
     } catch (err) {
       log.warn('Failed to prepare chat turn WorkUnit', { agentId, error: String(err) });
@@ -4226,6 +4305,50 @@ export class APIServer {
       return;
     }
 
+    // C8-E：「在跑」的**唯一权威来源** —— 只读 `work_units`（status + claimed_by +
+    // lease_until），不从 activity 表、也不从内存注册表派生。
+    //
+    // 真实事敀（2026-11-14）：Owner 看到 agent 「还在干活」，而「运行与注意力」页面
+    // 一个进行中的 session 都看不到 —— 因为那个页面在自己派生「进行中」，而且
+    // `agent_activities` 里积了一批 `ended_at` 永远为 NULL 的僵尸回合。
+    // 权威对象是 WU：僵尸回合没有 running 行，因此永远不会出现在这里；
+    // 内部 session（requirement_* / channel_dm:* / session:*）则一定会出现。
+    if (path.match(/^\/api\/agents\/[^/]+\/work-units$/) && req.method === 'GET') {
+      await this.getAuthUser(req);
+      const agentId = path.split('/')[3]!;
+      const repo = this.storage?.workUnitRepo;
+      if (!repo) {
+        this.json(res, 200, { units: [], running: 0, source: 'work_units' });
+        return;
+      }
+      const statusParam = url.searchParams.get('status');
+      const statuses = (statusParam ? [statusParam] : ['running']) as never[];
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50) || 50, 1), 200);
+      type WorkUnitRow = {
+        ref: string; status: string; parentId: string | null; claimedBy: string | null;
+        leaseUntil: string | null; budget: number | null; used: number; contextRef: string | null;
+      };
+      const units = (repo.listByAgent(agentId, { statuses, limit }) as WorkUnitRow[]).filter(u =>
+        // 租约已过期的 running 不是「在跑」，是没被收口的僵尸行。
+        u.status !== 'running' || !u.leaseUntil || new Date(u.leaseUntil).getTime() > Date.now());
+      this.json(res, 200, {
+        source: 'work_units',
+        running: units.filter(u => u.status === 'running').length,
+        units: units.map(u => ({
+          ref: u.ref,
+          status: u.status,
+          parentId: u.parentId,
+          claimedBy: u.claimedBy,
+          leaseUntil: u.leaseUntil,
+          budget: u.budget,
+          used: u.used,
+          contextRef: u.contextRef,
+          internal: /^(requirement_|channel_|session:)/.test(u.ref),
+        })),
+      });
+      return;
+    }
+
     // Active stream status (JSON) — used by Chat UI after refresh
     if (path.match(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/) && req.method === 'GET') {
       const authUser = await this.requireAuth(req, res);
@@ -4781,7 +4904,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent));
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -5289,7 +5412,13 @@ export class APIServer {
           if (this.storage && sessionId) {
             await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, chipsMeta, titleSource);
           }
-          agent.injectFollowUp(agentText, senderId, senderInfo, images);
+          // C8：追随消息（用户在 agent 正在输出时打字）同样是这一回合的工作 ——
+          // 以前这里不传回合身份，于是这一行 `work_unit_ref = NULL`、台账里也
+          // 从未建过该回合的 WorkUnit，最终表现为同一面板上「处理中 1」与
+          // 「正在运行 0」同时存在。round 与回合开始时同源（消息在回合结束后
+          // 才落库），所以这里算出的是**同一个 ref**，不是新开一个。
+          const followUpRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
+          agent.injectFollowUp(agentText, senderId, senderInfo, images, { workUnitRef: followUpRef });
           this.json(res, 200, { injected: true });
           return;
         }
@@ -5331,7 +5460,9 @@ export class APIServer {
 
           // C7-B：团队聊天的 SSE 入口也要在**入队前**拿到本轮 WU 身份。
           // 漏了这一处，就像 2026-11-14 那次：三个入口只改了两个。
-          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId);
+          // 2026-11-14 二次修正：**必须把入口已知的 sessionId 传进去** —— 不传就让
+          // 函数自己去猜「最新会话」，而它猜的是主会话，于是本轮 WU 落到旧 ref 上。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -5370,10 +5501,12 @@ export class APIServer {
           const deferredRestoreNonStream = sessionRestoreData;
           // C7-B：非流式团队聊天同样「身份先于消息」。
           const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, persistedSessionId);
+          let enqueuedItemId: string | null = null;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
               workUnitRef: turnRef,
+              onItemEnqueued: (item) => { enqueuedItemId = item.id; },
               // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
               // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
               // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
@@ -5388,6 +5521,11 @@ export class APIServer {
             throw err;
           }
           this.json(res, 200, { reply, sessionId: persistedSessionId });
+          // 模拟验证发现的缺口：这个分支以前从不收口 → 每个回合留一条永久 running。
+          this.settleChatTurnWorkUnit(agentId!, turnRef, {
+            memorySessionId: this.memorySessionIdOf(agent),
+            mailboxItemId: enqueuedItemId,
+          });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
           // Single shared constructor — keeps this path's segments byte-identical in
           // shape to what the SSE path persists (same fields, incl. `createdAt`).
@@ -7374,7 +7512,7 @@ EXPLANATION_END`;
           workUnitRef: turnRef,
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent));
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
           },
         });
 
@@ -7404,7 +7542,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent));
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
