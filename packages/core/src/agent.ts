@@ -5630,7 +5630,7 @@ export class Agent {
             if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
               commentToolUsed.add(tc.name);
             }
-            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_input', 'request_user_approval'];
+            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_input', 'request_user_approval', 'end_turn'];
             if (REQ_ACTION_TOOLS.includes(tc.name)) {
               requirementActionToolUsed.add(tc.name);
             }
@@ -5863,7 +5863,7 @@ export class Agent {
         });
         this.memory.appendMessage(sessionId, {
           role: 'user',
-          content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action.',
+          content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action. If you have determined that nothing needs to change, call `end_turn` instead — that ends the turn and records the decision.',
         });
 
         const reminderMessages = this.requestHistory(sessionId);
