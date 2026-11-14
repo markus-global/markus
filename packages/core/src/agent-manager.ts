@@ -68,6 +68,10 @@ import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
+// C8-D: action-tool reachability — the whitelist is asserted against the live
+// face at assembly (below), so an "always reachable" tool can never be missing
+// without a loud failure.
+import { assertActionToolReachability, toolFaceNames } from './capability-packs.js';
 import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
@@ -2409,6 +2413,24 @@ export class AgentManager {
     this.eventBus.emit('agent:created', { agentId: id, name: request.name });
     log.info(`Agent created: ${request.name} (${id})`);
 
+    // C8-D fail-fast: the tool face is final at this point, so the action
+    // whitelist must resolve on it. A deployment without a task service states
+    // that capability as not provided — an explicit degradation, not a silent
+    // filter (a task tool the agent is told to call must never just be absent).
+    //
+    // `getTools` is the real registry accessor. Test doubles that replace the
+    // Agent class wholesale expose no registry at all; there is then nothing to
+    // assert, and that is said here rather than pretended — the check is skipped
+    // for "not a real agent", never for "some ids are missing".
+    const actionFace = typeof agent.getTools === 'function'
+      ? toolFaceNames(agent.getTools().keys())
+      : null;
+    if (actionFace) {
+      assertActionToolReachability(actionFace, {
+        notWired: this.taskService ? [] : (['task'] as const),
+      });
+    }
+
     return agent;
   }
 
@@ -3293,6 +3315,18 @@ export class AgentManager {
       tokensUsedToday: row.tokensUsedToday ?? 0,
       activeTaskIds: Array.isArray(row.activeTaskIds) ? (row.activeTaskIds as string[]).length : 0,
     });
+
+    // C8-D fail-fast — same contract as the create path above (including the
+    // "test double has no registry" note).
+    const restoredFace = typeof agent.getTools === 'function'
+      ? toolFaceNames(agent.getTools().keys())
+      : null;
+    if (restoredFace) {
+      assertActionToolReachability(restoredFace, {
+        notWired: this.taskService ? [] : (['task'] as const),
+      });
+    }
+
     return agent;
   }
 
