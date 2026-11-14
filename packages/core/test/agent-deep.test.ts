@@ -724,7 +724,7 @@ describe('skill catalog and context helpers', () => {
 });
 
 describe('mailbox routing extended', () => {
-  it('routes memory_consolidation through mailbox', async () => {
+  it('acknowledges memory_consolidation through mailbox in clock mode (C8-C)', async () => {
     const router = makeMockRouter({
       chatFn: async () => makeResponse(`Consolidated.`, 'end_turn'),
     });
@@ -736,7 +736,9 @@ describe('mailbox routing extended', () => {
       content: 'Consolidate long-term memories',
     });
 
-    expect(reply).toContain('Consolidated');
+    // C8-C: clock mode owns the single dream trigger; the row is drained, not replayed.
+    expect(String(reply)).toMatch(/skip/i);
+    expect(router.chat).not.toHaveBeenCalled();
     await agent.stop();
   });
 

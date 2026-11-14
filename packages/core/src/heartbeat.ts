@@ -89,18 +89,59 @@ export function heartbeatStateFingerprint(
   return `q:[${queue}]|t:[${tasks}]`;
 }
 
+/**
+ * C8-C: which periodic driver owns this heartbeat.
+ *
+ *  · `clock`  (default) — `AgentClock` is the ONLY timer; the scheduler owns none and is
+ *    invoked through a named clock source. One agent ⇒ one periodic driver.
+ *  · `legacy` — the pre-C8-C private `setTimeout` + `setInterval` pair. Kept as an
+ *    independently flippable rollback channel (`MARKUS_HEARTBEAT_CLOCK=legacy`); flipping
+ *    it never changes the dream channel.
+ */
+export type HeartbeatTimerMode = 'clock' | 'legacy';
+
+/** The clock port this scheduler registers itself on (structurally `AgentClock`). */
+export interface HeartbeatClockPort {
+  register(source: { name: string; everyMs: number; initialDelayMs?: number; fn: () => void | Promise<void> }): void;
+  unregister(name: string): void;
+}
+
+/** Name of the clock source that carries the heartbeat cadence. */
+export const HEARTBEAT_CLOCK_SOURCE = 'heartbeat';
+
+export interface HeartbeatSchedulerOptions {
+  /** Cadence owner. Defaults to `clock`. */
+  mode?: HeartbeatTimerMode;
+  /** Required for `clock` mode; without it the scheduler falls back to `legacy`. */
+  clock?: HeartbeatClockPort;
+}
+
 export class HeartbeatScheduler {
   private initialTimer?: ReturnType<typeof setTimeout>;
   private timer?: ReturnType<typeof setInterval>;
   private running = false;
   private startTime = Date.now();
   private effectiveInitialDelayMs = 0;
+  private readonly mode: HeartbeatTimerMode;
+  private readonly clock?: HeartbeatClockPort;
 
   constructor(
     private agentId: string,
     private eventBus: EventBus,
     private config: HeartbeatConfig = { intervalMs: DEFAULT_HEARTBEAT_INTERVAL_MS, enabled: true },
-  ) {}
+    options: HeartbeatSchedulerOptions = {},
+  ) {
+    // `clock` mode without a clock port would silently never fire — that is a missing
+    // wiring bug, so degrade to the legacy timer (which at least runs) and say so loudly
+    // rather than becoming a dead heartbeat nobody notices.
+    this.clock = options.clock;
+    this.mode = options.mode === 'clock' && this.clock ? 'clock' : 'legacy';
+    if (options.mode === 'clock' && !this.clock) {
+      log.warn('Heartbeat requested clock mode without a clock port — using legacy timer', {
+        agentId: this.agentId,
+      });
+    }
+  }
 
   /**
    * @param initialDelayMs - Delay before the first heartbeat fires.
@@ -122,16 +163,32 @@ export class HeartbeatScheduler {
 
     log.info('Starting heartbeat scheduler', {
       agentId: this.agentId,
+      mode: this.mode,
       intervalMs: this.config.intervalMs,
       initialDelayMs: delay,
       activeHours: this.config.activeHours,
     });
+
+    if (this.mode === 'clock') {
+      // One timer for the whole agent: register the cadence, own nothing.
+      this.registerClockSource(delay);
+      return;
+    }
 
     this.initialTimer = setTimeout(() => {
       this.initialTimer = undefined;
       this.tick();
       this.timer = setInterval(() => this.tick(), this.config.intervalMs);
     }, delay);
+  }
+
+  private registerClockSource(initialDelayMs?: number): void {
+    this.clock!.register({
+      name: HEARTBEAT_CLOCK_SOURCE,
+      everyMs: this.config.intervalMs,
+      initialDelayMs: initialDelayMs ?? Math.floor(Math.random() * this.config.intervalMs),
+      fn: () => this.tick(),
+    });
   }
 
   stop(): void {
@@ -143,22 +200,27 @@ export class HeartbeatScheduler {
       clearInterval(this.timer);
       this.timer = undefined;
     }
+    if (this.mode === 'clock') this.clock?.unregister(HEARTBEAT_CLOCK_SOURCE);
     this.running = false;
-    log.info('Heartbeat scheduler stopped', { agentId: this.agentId });
+    log.info('Heartbeat scheduler stopped', { agentId: this.agentId, mode: this.mode });
   }
 
   /**
-   * Change the heartbeat interval and apply it live. If the scheduler is
-   * running, it is restarted so the new cadence takes effect immediately
-   * (with fresh jitter for the next tick to avoid a thundering herd).
+   * Change the heartbeat interval and apply it live. If the scheduler is running,
+   * the cadence is re-armed immediately with fresh jitter (avoiding a thundering
+   * herd) — by re-registering the clock source in `clock` mode, or by restarting
+   * the private timer in `legacy` mode.
    */
   updateInterval(intervalMs: number): void {
     this.config.intervalMs = intervalMs;
     log.info('Heartbeat interval updated', { agentId: this.agentId, intervalMs });
-    if (this.running) {
-      this.stop();
-      this.start();
+    if (!this.running) return;
+    if (this.mode === 'clock') {
+      this.registerClockSource();
+      return;
     }
+    this.stop();
+    this.start();
   }
 
   isRunning(): boolean {
@@ -176,10 +238,17 @@ export class HeartbeatScheduler {
 
   /** Manually trigger a heartbeat (e.g. from API) */
   trigger(): void {
-    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
+    this.emitTrigger();
   }
 
-  private tick(): void {
+  /**
+   * One liveness beat. Public because in `clock` mode the cadence owner is
+   * `AgentClock`, which invokes this through the registered source.
+   *
+   * It emits exactly one observable event and does nothing else: no mailbox row, no
+   * timer. Whether a beat becomes a patrol is the listener's decision (see Agent).
+   */
+  tick(): void {
     if (!this.running) return;
 
     if (this.config.activeHours && !this.isWithinActiveHours()) {
@@ -187,7 +256,20 @@ export class HeartbeatScheduler {
       return;
     }
 
-    this.eventBus.emit('heartbeat:trigger', { agentId: this.agentId, triggeredAt: new Date().toISOString() });
+    this.emitTrigger();
+  }
+
+  private emitTrigger(): void {
+    this.eventBus.emit('heartbeat:trigger', {
+      agentId: this.agentId,
+      triggeredAt: new Date().toISOString(),
+      mode: this.mode,
+    });
+  }
+
+  /** Which periodic driver owns this heartbeat — for status surfaces and probes. */
+  getMode(): HeartbeatTimerMode {
+    return this.mode;
   }
 
   private isWithinActiveHours(): boolean {

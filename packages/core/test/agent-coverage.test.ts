@@ -546,7 +546,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
     });
   }
 
-  it('routes memory_consolidation scenario', async () => {
+  it('acknowledges memory_consolidation in clock mode (C8-C: the clock owns the dream)', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
     await agent.start();
@@ -556,8 +556,12 @@ describe('mailbox scenarios not covered elsewhere', () => {
       content: 'Review and consolidate memories',
     });
 
-    expect(typeof reply).toBe('string');
-    expect(router.chat).toHaveBeenCalled();
+    // C8-C — the named clock source is the single dream producer, so a persisted row is
+    // acknowledged with a typed result instead of being replayed into a second dream.
+    // The rollback path (`MARKUS_DREAM_PATH=dual`, row still replays) is covered by
+    // dream-single-trigger.test.ts.
+    expect(String(reply)).toMatch(/skip/i);
+    expect(router.chat).not.toHaveBeenCalled();
     await agent.stop();
   });
 
