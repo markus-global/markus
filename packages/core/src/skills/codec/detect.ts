@@ -127,6 +127,11 @@ function hasAgentScopeSignals(fs: DetectFs, dir: string): boolean {
   return false;
 }
 
+function hasCursorRules(fs: DetectFs, dir: string): boolean {
+  const rules = join(dir, '.cursor', 'rules');
+  return fs.isDirectory(rules) && fs.listDir(rules).some(n => n.endsWith('.mdc'));
+}
+
 /**
  * Detect the format of a skill package directory.
  * Priority: markus → mcp-server → soul → openclaw → claude → skillhub → agentscope,
@@ -145,6 +150,7 @@ export function detectSkillPackageFormat(dir: string, fs?: DetectFs): ExternalSk
   if (hasSoulMd(fsx, dir) && !hasSkillMd(fsx, dir)) return 'soul';
   if (hasOpenClawSignals(fsx, dir)) return 'openclaw';
   if (hasSkillMd(fsx, dir)) return 'claude';
+  if (hasCursorRules(fsx, dir)) return 'cursor-rules' as ExternalSkillFormat;
   if (hasSkillhubSignals(fsx, dir)) return 'skillhub';
   if (hasAgentScopeSignals(fsx, dir)) return 'agentscope';
 
@@ -164,6 +170,7 @@ export function formatLabel(format: ExternalSkillFormat): string {
     case 'soul': return 'OpenClaw SOUL.md';
     case 'agentscope': return 'AgentScope 工具脚本技能';
     case 'mcp-server': return '通用 MCP-server 技能';
+    default: return 'Cursor Rules (.cursor/rules/*.mdc)';
   }
 }
 
