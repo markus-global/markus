@@ -130,7 +130,7 @@ are byte-identical.
 
 ### 4.3 Where it runs
 
-`Agent.turnDeltaInjection(sessionId)` is called at the one place that is both
+`Agent.injectTurnDelta(sessionId)` is called at the one place that is both
 "after tool results" and "before the next LLM call" — the yield point each tool
 loop already has (`handleMessage`, `chatStream`, `executeTask`, `respondInSession`).
 It:
@@ -152,8 +152,12 @@ It:
 
 ### 4.4 The switch
 
-`turnDeltaInjection` is on by default and can be turned off
-(`AgentOptions.turnDeltaInjection: false` / `setTurnDeltaInjection(false)`).
+`turnDeltaInjection` is on by default and can be turned off at construction
+(`new Agent({ …, turnDeltaInjection: false })` — **constructor-only today**: no
+settings surface reads it yet, so turning it off requires a code change. Wiring
+it to system settings would follow the `maxToolIterations` precedent, where
+`agent-manager.ts` passes `maxToolIterations: this._maxToolIterations` into
+`agentOpts` from configuration).
 Off = the injection step is skipped entirely: no message appended, no decision
 recorded, and the semantics are exactly C8-A's queue semantics. It is one flag
 read at one point — not a second code path.
@@ -210,7 +214,7 @@ The single failure is the known pre-existing CLI one
 (`packages/cli/test/commands-start-integration.test.ts > auto-runs quickInit when
 config is missing`, 60 s timeout) — it also fails on the C8-A base `9908feec`
 and this card touches neither the CLI nor `quickInit`. Test count went from
-8536 (C8-A) to 8553: exactly the 17 new assertions of this card.
+8536 (C8-A) to 8554: exactly the 18 new assertions of this card.
 
 ### 6.2 Red at base, green at head (behavioural, not module-resolution)
 
