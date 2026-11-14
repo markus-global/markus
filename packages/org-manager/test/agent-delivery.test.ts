@@ -246,3 +246,92 @@ describe('AgentDelivery.postReply — 回复只有一个写点', () => {
     expect(enqueued).toHaveLength(0);
   });
 });
+
+// ─── C8-A：身份是「这件事」，不是「这次投递」────────────────────────────────
+
+describe('C8-A — A2A 的身份由实体回答', () => {
+  /** 只关心「ref / 会话 key 怎么算」的端口替身。 */
+  function makeWuDeps(turnRef: string | null) {
+    const ensured: Array<{ ref: string; parentRef?: string | null }> = [];
+    const linked: Array<{ itemId?: string | null; ref: string | null }> = [];
+    const workUnits: DeliveryDeps['workUnits'] = {
+      ensure: vi.fn((seed: { ref: string; parentRef?: string | null }) => {
+        ensured.push({ ref: seed.ref, parentRef: seed.parentRef });
+        return { status: 'running' };
+      }),
+      turnWorkUnitRef: vi.fn(() => turnRef),
+      linkMailboxItem: vi.fn((itemId: string | null | undefined, ref: string | null) => {
+        linked.push({ itemId, ref });
+        return true;
+      }),
+      transition: vi.fn(),
+    };
+    return { workUnits, ensured, linked };
+  }
+
+  it('同一任务连发三条 → 三个 item 共享同一个 ref（旧实现是三个）', () => {
+    const { workUnits, ensured } = makeWuDeps('task_tsk_1_r2');
+    const { deps } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    for (let i = 0; i < 3; i++) delivery.deliver(req({ content: `msg ${i}` }));
+
+    expect(ensured).toHaveLength(3);
+    // 三个 ref 完全相同 —— 这就是「三份分裂会话」被根除的机制
+    expect(new Set(ensured.map(e => e.ref))).toEqual(new Set(['a2a:task:tsk_1']));
+    // 父链仍然是发送方本轮 WU（C7-B 语义不变）
+    expect(ensured[0]!.parentRef).toBe('task_tsk_1_r2');
+  });
+
+  it('同一任务连发三条 → 三个 item 的会话 key 相同（会话不分裂）', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    for (let i = 0; i < 3; i++) delivery.deliver(req({ content: `msg ${i}` }));
+
+    const keys = enqueued.map(e => {
+      const extra = (e.payload as { extra: Record<string, unknown> }).extra;
+      const hint = extra['sessionHint'] as { kind: string; role?: string; key?: string };
+      return hint.key;
+    });
+    expect(new Set(keys)).toEqual(new Set(['a2a_task_tsk_1']));
+  });
+
+  it('identity lands on the item at enqueue time (memory, not only the DB column)', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
+    new AgentDelivery(deps).deliver(req());
+
+    expect(enqueued[0]!.options?.['workUnitRef']).toBe('a2a:task:tsk_1');
+  });
+
+  it('发送方没有回合 WU → 退到「对话即实体」，仍然不把投递 id 编进身份', () => {
+    const { workUnits, ensured } = makeWuDeps(null);
+    const { deps } = makeDeps({ workUnits });
+    const delivery = new AgentDelivery(deps);
+
+    delivery.deliver(req({ content: 'a' }));
+    delivery.deliver(req({ content: 'b' }));
+
+    expect(new Set(ensured.map(e => e.ref))).toEqual(new Set(['a2a:channel:dm:a2a:agt_a:agt_b']));
+  });
+
+  it('不同任务 → 不同 ref（不误合并）', () => {
+    const refs: string[] = [];
+    for (const turn of ['task_tsk_1_r2', 'task_tsk_2_r1']) {
+      const { workUnits, ensured } = makeWuDeps(turn);
+      new AgentDelivery(makeDeps({ workUnits }).deps).deliver(req());
+      refs.push(ensured[0]!.ref);
+    }
+    expect(refs[0]).not.toBe(refs[1]);
+  });
+
+  it('DB 引用仍由 linkMailboxItem 写（该列的唯一写者不变）', () => {
+    const { workUnits, linked } = makeWuDeps('task_tsk_1_r2');
+    const { deps } = makeDeps({ workUnits });
+    new AgentDelivery(deps).deliver(req());
+    expect(linked).toHaveLength(1);
+    expect(linked[0]!.ref).toBe('a2a:task:tsk_1');
+  });
+});

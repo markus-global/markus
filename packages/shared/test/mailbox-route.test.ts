@@ -10,6 +10,7 @@ import {
   MAILBOX_TYPE_REGISTRY,
   isStrictStateItem,
   resolveEntityKeys,
+  resolveMailboxDestination,
   type MailboxItemType,
   type MailboxPayload,
 } from '../src/types/mailbox.js';
@@ -44,13 +45,18 @@ const GOLDEN: Record<MailboxItemType, {
   mention:              { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'user', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   session_reply:        { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'conversation', 'system'], strictState: false, triageStaleDrop: false },
   task_status_update:   { priority: 1, invokesLLM: false, affinity: ['task', 'system'], strictState: false, triageStaleDrop: true },
-  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'channel', 'system'], strictState: false, triageStaleDrop: false },
+  a2a_message:          { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'workunit', 'system'], strictState: false, triageStaleDrop: false },
   review_request:       { priority: 1, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: true,  triageStaleDrop: false },
   requirement_comment:  { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   requirement_update:   { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], strictState: false, triageStaleDrop: false },
   daily_report:         { priority: 2, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
   heartbeat:            { priority: 3, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
-  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
+  // C8-A: the one row that deliberately diverges from the legacy readers.
+  // `memory_consolidation` is the dream run — background work on the sleep path,
+  // not attention noise. Age expiry used to discard it silently, losing the run
+  // with no trace. Affinity stays `['system']` (that is C8-C); only the disposal
+  // fact changes, and `TRIAGE_STALE_DROP_TYPES` is now derived from this flag.
+  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: false },
   workflow_update:      { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   callback_result:      { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], strictState: false, triageStaleDrop: true },
 };
@@ -161,5 +167,96 @@ describe('consumers must not fork from route()', () => {
     expect(keys).toContain('task:t1');
     expect(keys).toContain('req:r1');
     expect(keys).toContain('conv:s1');
+  });
+});
+
+// ─── C8-A: entity identity converges on the WorkUnit ─────────────────────────
+//
+// The symptom this locks down: one piece of work reached the recipient through
+// two different transport routes must NOT look like two entities. Conversely a
+// row that predates the WorkUnit (workUnitRef null) must keep producing exactly
+// today's keys — that is the whole read-only-compatibility promise.
+
+describe('C8-A — resolveEntityKeys yields to the WorkUnit', () => {
+  function withWu(
+    sourceType: MailboxItemType,
+    payload: Partial<MailboxPayload>,
+    metadata: Record<string, unknown> | undefined,
+    workUnitRef: string | null,
+  ) {
+    return { ...lite(sourceType, payload, metadata), workUnitRef };
+  }
+
+  it('same task + different channelKey + same WU → identical entity keys', () => {
+    const a = resolveEntityKeys(
+      withWu('a2a_message', {}, { senderId: 'agt_a' }, 'a2a:task:tsk_1'),
+      'agent1',
+    );
+    const b = resolveEntityKeys(
+      { ...withWu('a2a_message', {}, { senderId: 'agt_a' }, 'a2a:task:tsk_1'),
+        payload: { summary: '', content: '', extra: { channelKey: 'dm:a2a:a:b' } } },
+      'agent1',
+    );
+    expect(a).toEqual(b);
+    expect(a).toContain('task:tsk_1');
+  });
+
+  it('a WU-carrying item emits no channel: or conv: key (transport identity)', () => {
+    const keys = resolveEntityKeys(
+      { ...withWu('a2a_message', {}, { senderId: 'agt_a', dbSessionId: 's1' }, 'a2a:channel:dm:a2a:a:b'),
+        payload: { summary: '', content: '', extra: { channelKey: 'dm:a2a:a:b' } } },
+      'agent1',
+    );
+    expect(keys.some(k => k.startsWith('channel:'))).toBe(false);
+    expect(keys.some(k => k.startsWith('conv:'))).toBe(false);
+    expect(keys).toEqual(['wu:a2a:channel:dm:a2a:a:b']);
+  });
+
+  it('legacy row with no WorkUnit falls back to the conservative system key — `channel:` is deleted, not kept', () => {
+    // C8-A 是「删机制」而不是「加守卫」：`channel` 作用域整个消失，所以旧行不会
+    // 再产出 `channel:` 键，而是落到「未知 = 保守串行」。这是**安全方向**的退化
+    // （串行只是慢），而留着 `channel:` 会让投递通道继续拥有实体身份（分裂会复发）。
+    const item = { ...lite('a2a_message', { extra: { channelKey: 'dm:a2a:a:b' } }, { senderId: 'agt_a' }), workUnitRef: null };
+    expect(resolveEntityKeys(item, 'agent1')).toEqual(['system:agent1']);
+  });
+
+  it('never empty, even for a WU with no other dimension', () => {
+    const keys = resolveEntityKeys(withWu('a2a_message', {}, undefined, 'a2a:channel:c'), 'agent1');
+    expect(keys.length).toBeGreaterThan(0);
+  });
+});
+
+describe('C8-A — dedupeKey derives from the entity, not from the payload', () => {
+  it('takes the task id from the WU ref when the payload is silent', () => {
+    const item = {
+      ...lite('review_request', {}, undefined, { round: 3 }),
+      workUnitRef: 'task_tsk_9_r3',
+    };
+    expect(routeMailboxItem(item).dedupeKey).toBe('review_request:tsk_9:3');
+  });
+
+  it('payload taskId still wins shape-wise for legacy rows (no WU)', () => {
+    const item = lite('review_request', { taskId: 'tsk_x' }, undefined, { round: 2 });
+    expect(routeMailboxItem(item).dedupeKey).toBe('review_request:tsk_x:2');
+  });
+});
+
+describe('C8-A — three destinations, one decision point', () => {
+  it('no entity (system fallback only) → overview', () => {
+    expect(resolveMailboxDestination(['system:agent1'], [])).toBe('overview');
+    expect(resolveMailboxDestination(['system:agent1'], null)).toBe('overview');
+  });
+
+  it('intersects the active turn → inject (never queue behind itself)', () => {
+    expect(resolveMailboxDestination(['task:t1', 'wu:x'], ['task:t1'])).toBe('inject');
+  });
+
+  it('different entity → queue (parallel is safe)', () => {
+    expect(resolveMailboxDestination(['task:t2'], ['task:t1'])).toBe('queue');
+  });
+
+  it('active turn unknown (idle agent) → queue, never inject', () => {
+    expect(resolveMailboxDestination(['task:t1'], null)).toBe('queue');
+    expect(resolveMailboxDestination(['task:t1'], [])).toBe('queue');
   });
 });

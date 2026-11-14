@@ -176,6 +176,13 @@ export interface EnqueueOptions {
    * 只在 WU 已存在时传；缺省 `undefined` = 不挂身份（旧行为）。
    */
   workUnitRef?: string | null;
+  /**
+   * C8-B：更正链 —— 本条事实替换了哪些既有事实的 id。
+   * 结构字段（不解析正文）；非空即「与正在执行的前提矛盾」。
+   */
+  supersedes?: string[] | null;
+  /** C8-B：本条事实推翻了接收方正在执行的前提（撤单 / 驳回 / 回滚）。 */
+  invalidatesPremise?: boolean;
   /** 投递来源（谁发的 / 外部 messageId）；缺省 = 平台自身（`noreply@`）。 */
   origin?: DeliveryOrigin;
   /**
@@ -397,6 +404,17 @@ export function rehydrateStructuredFields(row: {
  */
 export class AgentMailbox {
   private queue: MailboxItem[] = [];
+  /**
+   * C8-B：插入序号（单调、进程内）。轮内 delta 的快照依据。
+   *
+   * 刻意**不用** `Date.now()` / `queued_at`：同秒并列让「谁在后」不可判，
+   * 而时间戳一旦进入渲染字节，同一逻辑输入就会产生两种序列 —— 缓存前缀
+   * 直接失效，且只有 `hitRate`（噪声）会变化，没有测试会发现。
+   * 序号只在**唯一插入点**分配（`insertSorted`），合并时**递增重分配**，
+   * 保证「合并进旧行的事实」不会被 delta 漏掉。
+   */
+  private itemSeq = new Map<string, number>();
+  private seqCounter = 0;
   private readonly agentId: string;
   private readonly eventBus: EventBus;
   private persistence?: MailboxPersistence;
@@ -844,7 +862,6 @@ export class AgentMailbox {
     // Group by taskId
     removed += this.consolidateGroup(
       (item) => item.payload.taskId ?? (item.metadata?.taskId as string | undefined),
-      'task',
     );
 
     // Group by requirementId (only for items that don't also have a taskId)
@@ -853,20 +870,26 @@ export class AgentMailbox {
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         return item.payload.requirementId;
       },
-      'requirement',
     );
 
-    // Group by channel: merge a2a_messages from the same group chat so the
-    // agent reads them as one conversation thread instead of N separate items.
-    // Skip items already grouped by task/requirement above.
+    // Group the remaining a2a messages by **entity**, so the agent reads one
+    // conversation thread instead of N separate items.
+    //
+    // C8-A：这是**呈现层合并**（为了一个线程读一次），不是并发/调度判定 ——
+    // 那两件事由 `resolveEntityKeys()` 回答。既是呈现层，合并键就必须和实体一致：
+    // 有 WorkUnit 的用 `work_unit_ref`（一件事一条），没有的（旧行 / 非 WU 链路）
+    // 才退到 `channelKey`。
+    //
+    // 为什么不能只按 channelKey（旧写法）：同一频道里**两件不同的事**会被并成一条，
+    // agent 只看到一段拼接文本，第二件事的执行理由消失；反过来同一件事经两个频道
+    // 到达又不合并。两种错都由「用投递通道当实体」造成，与 C8-A 的根因同一个。
     removed += this.consolidateGroup(
       (item) => {
         if (item.sourceType !== 'a2a_message') return undefined;
         if (item.payload.taskId || item.metadata?.taskId) return undefined;
         if (item.payload.requirementId) return undefined;
-        return item.payload.extra?.channelKey as string | undefined;
+        return item.workUnitRef ?? (item.payload.extra?.channelKey as string | undefined);
       },
-      'channel',
       { skipProtectedCheck: true },
     );
 
@@ -889,9 +912,20 @@ export class AgentMailbox {
     'review_request',
   ]);
 
+  /**
+   * 按 `getKey` 给出的实体键做**呈现层预合并**：队列里同键的 queued 项并成一条，
+   * 让 LLM 一件事只读一次而不是读 N 条散件。
+   *
+   * 它**不**决定调度、不并发互斥、不改身份 —— 那三件事的唯一判定点是
+   * `resolveEntityKeys()` / `routeMailboxItem()`。合并只动 `payload.content`，被并入
+   * 的那条落 `merged` 终态并记 `mergedInto`，内容不会丢。
+   *
+   * （旧签名有个 `_groupType: string` 参数，三个调用点传 `'task'` / `'requirement'` /
+   * `'channel'` 却从没人读 —— 它唯一的作用是让“按频道分组”看起来像一条规则。
+   * C8-A 删掉它：分组读什么，只看 `getKey`。）
+   */
   private consolidateGroup(
     getKey: (item: MailboxItem) => string | undefined,
-    _groupType: string,
     opts?: { skipProtectedCheck?: boolean },
   ): number {
     let removed = 0;
@@ -968,7 +1002,9 @@ export class AgentMailbox {
     // 送回队列，若被合并进别的 item，原行会永远停在 processing（直到租约过期 / 被 TTL 判死）。
     // 合并进去的那条项的旧信封保留（合并的是内容，不是身份）。
     const reuseItemId = options?.reuseItemId;
-    const merged = reuseItemId ? undefined : this.tryMergeIntoExisting(sourceType, payload);
+    const merged = reuseItemId
+      ? undefined
+      : this.tryMergeIntoExisting(sourceType, payload, options?.workUnitRef ?? null);
     if (merged) {
       this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item: merged });
       this.wakeIdleLoop();
@@ -1061,6 +1097,8 @@ export class AgentMailbox {
       subject: origin?.subject ?? payload.summary,
       externalThreadRef: origin?.externalThreadRef ?? null,
       fromVerified: origin?.fromVerified ?? false,
+      supersedes: options?.supersedes ?? null,
+      invalidatesPremise: options?.invalidatesPremise === true,
     });
 
     // ── C3 / I3：唯一解析器 —— 收件人解析不出来就退信，绝不静默吞掉 ──────────────
@@ -1548,6 +1586,31 @@ export class AgentMailbox {
    */
   getQueuedItems(): MailboxItem[] {
     return [...this.queue];
+  }
+
+  /** C8-B：当前插入序号 —— 回合开始时取一次快照，回合内不变。 */
+  currentSeq(): number {
+    return this.seqCounter;
+  }
+
+  /** C8-B：某条 item 的插入序号（不在表里 = 0，即「快照之前」）。 */
+  seqOf(itemId: string): number {
+    return this.itemSeq.get(itemId) ?? 0;
+  }
+
+  /**
+   * C8-B：**同一件活**上、序号晚于快照的待处理事实。
+   *
+   * 唯一来源是本内存队列 —— 它就是「尚未被处理的同实体事实」的索引。
+   * 不去查库：同一事实的第二个读者必然漂移，而队列正是入队唯一写入点。
+   * 无 `workUnitRef` 时返回空数组（没有实体就不主张相关性，**不猜**）。
+   */
+  deltaSince(workUnitRef: string | null, afterSeq: number): MailboxItem[] {
+    if (!workUnitRef) return [];
+    return this.queue
+      .filter(i => i.status === 'queued' && i.workUnitRef === workUnitRef
+        && (this.itemSeq.get(i.id) ?? 0) > afterSeq)
+      .sort((a, b) => (this.itemSeq.get(a.id) ?? 0) - (this.itemSeq.get(b.id) ?? 0));
   }
 
   /**
@@ -2212,10 +2275,16 @@ export class AgentMailbox {
    * If a queued (not yet processing) item exists for the same entity and a
    * dedup-eligible type, append the new content into it and return the
    * existing item.  Returns undefined when no merge candidate is found.
+   *
+   * `workUnitRef` 是**入参**而不是从队列里反查：身份只存在于生产方交给我们的那一份
+   * （C8-A）。频道类合并因此按**实体**比，而不是按“这次从哪个频道到的”比 ——
+   * 同一频道里两件不同的事不能被并成一条，否则第二件事的执行理由会消失。
+   * 旧行（无 WU）仍退化到 `channelKey`，行为与之前一致。
    */
   private tryMergeIntoExisting(
     sourceType: MailboxItemType,
     payload: MailboxPayload,
+    workUnitRef: string | null = null,
   ): MailboxItem | undefined {
     // Never merge strict-state items (execution trigger / review / action-required updates)
     // — they must remain standalone。审计 P1-2。
@@ -2244,11 +2313,13 @@ export class AgentMailbox {
       }
     } else if (AgentMailbox.CHANNEL_DEDUP_TYPES.has(sourceType)) {
       const channelKey = payload.extra?.channelKey as string | undefined;
-      if (channelKey) {
+      // C8-A：合并键 = 实体（WU ref），旧行才退到频道。
+      const entityKey = workUnitRef ?? channelKey;
+      if (entityKey) {
         existing = this.queue.find(
           i => i.status === 'queued'
             && AgentMailbox.CHANNEL_DEDUP_TYPES.has(i.sourceType)
-            && (i.payload.extra?.channelKey as string | undefined) === channelKey,
+            && (i.workUnitRef ?? (i.payload.extra?.channelKey as string | undefined)) === entityKey,
         );
       }
     }
@@ -2269,6 +2340,9 @@ export class AgentMailbox {
       existing.payload.content += `\n\n---\n\n${payload.content}`;
     }
     bumpMergeCount(existing);
+    // C8-B：合并也是「来了新事实」—— 递增序号，否则 delta 会漏掉这条。
+    // 代价是合并后的整条内容会被再报一次；宁可重报，不可漏报撤销。
+    this.itemSeq.set(existing.id, ++this.seqCounter);
     // 同状态字段写（dedup 合并只是往既有 queued 行里追加内容）。
     this.updateFields(existing, this.persistableFields(existing));
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {
@@ -2285,7 +2359,24 @@ export class AgentMailbox {
    * recent message is processed before older ones — a user's latest
    * instruction may supersede earlier ones.
    */
+  /**
+   * C8-B：序号表只服务「队列里还在的项」。队列长期运行会累积已出队的 id，
+   * 超过阈值时按「仍在队列中」重建一次（不影响单调性：保留的项序号不变）。
+   */
+  private pruneSeqIfNeeded(): void {
+    if (this.itemSeq.size <= 4096) return;
+    const live = new Set(this.queue.map(i => i.id));
+    for (const id of this.itemSeq.keys()) {
+      if (!live.has(id)) this.itemSeq.delete(id);
+    }
+  }
+
   private insertSorted(item: MailboxItem): void {
+    // C8-B：序号只在唯一插入点分配（`Date.now()` 已在上方被否掉，理由见 `itemSeq`）。
+    if (!this.itemSeq.has(item.id)) {
+      this.itemSeq.set(item.id, ++this.seqCounter);
+      this.pruneSeqIfNeeded();
+    }
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
       if (this.queue[i].priority >= item.priority) {

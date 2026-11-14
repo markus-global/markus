@@ -247,6 +247,10 @@
       "activeTasksCount_one": "{{count}} 个进行中任务",
       "activeTasksCount_other": "{{count}} 个进行中任务",
       "mailboxQueued": "mailbox 有 {{count}} 条消息排队中",
+      "runningTitle": "正在运行",
+      "runningNone": "当前没有进行中的工作单元",
+      "runningInternal": "内部会话",
+      "runningUnavailable": "暂时读不到运行状态",
       "startAgent": "▶ 启动",
       "stopAgent": "⏹ 停止",
       "openClaw": "OpenClaw"

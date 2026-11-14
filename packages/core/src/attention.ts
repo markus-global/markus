@@ -351,6 +351,21 @@ export class AttentionController {
     this.decisionPersistence = p;
   }
 
+  /**
+   * C8-B：轮内 delta 注入的决策落账入口。
+   *
+   * **只做一件事**：把「这条事实推翻了当前回合的前提」写进既有台账
+   * （`agent_decisions`，`decision_type='cancel'`）。之所以放在这里而不是
+   * 在新模块里直连 repo：`agent_decisions` 的写者**只有一个**
+   * （`recordDecision` → `decisionPersistence`），第二个写者会让台账出现两套
+   * 语义（谁在什么时机写的）。
+   *
+   * 返回 `void`：调用方只需要「已落账」这个事实，不需要决策对象。
+   */
+  recordTurnDeltaDecision(item: MailboxItem, reasoning: string, outcome: string): void {
+    this.recordDecision('cancel', item, reasoning, outcome);
+  }
+
   setWaitingForApproval(waiting: boolean): void {
     this.waitingForHumanApproval = waiting;
   }
@@ -2088,6 +2103,7 @@ export class AttentionController {
     type: DecisionType,
     item: MailboxItem,
     reasoning: string,
+    outcome?: string,
   ): AttentionDecision {
     const decision: AttentionDecision = {
       id: generateId('dec'),
@@ -2105,6 +2121,9 @@ export class AttentionController {
       },
       reasoning,
       createdAt: new Date().toISOString(),
+      // C8-B：副作用已在回合内发生时，outcome 必须在**落库之前**就带上——
+      // 先 save 再补字段等于写两次（第二次没人读，读到的永远是 null）。
+      ...(outcome ? { outcome } : {}),
     };
 
     this.decisions.push(decision);

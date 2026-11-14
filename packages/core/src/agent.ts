@@ -25,6 +25,7 @@ import {
   type DeliberationResult,
   MailboxPriorityLevel,
   routeMailboxItem,
+  resolveMailboxDestination,
   HEARTBEAT_DAILY_LOG_CHARS,
   END_TURN_REPLY_SENTINEL,
   stripLegacyCompletionToken,
@@ -62,13 +63,16 @@ import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
+import { buildTurnDeltaSegment, turnDeltaMessage, type TurnDeltaRow } from './turn-delta.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { resolveReviewTurnOutcome, REVIEW_TURN_MAX_RETRIES } from './review-turn-outcome.js';
 import { createTokenCounter, type SmartTokenCounter } from './token-counter.js';
 import { GuardrailPipeline } from './guardrails.js';
 import { ToolHookRegistry, generateIdempotencyKey, type ToolHook } from './tool-hooks.js';
-import { HeartbeatScheduler, heartbeatStateFingerprint } from './heartbeat.js';
+import { HeartbeatScheduler, heartbeatStateFingerprint, type HeartbeatTimerMode } from './heartbeat.js';
+import { TriggerRegistry, type Subscription, type TriggerEvent, type WakeCondition } from './trigger.js';
+import { createTriggerTools } from './tools/trigger.js';
 import { AgentClock } from './clock.js';
 import type { LLMRouter } from './llm/router.js';
 import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
@@ -180,6 +184,32 @@ const TASK_MUTATING_TOOLS = new Set([
 ]);
 
 const log = createLogger('agent');
+
+/**
+ * C8-C: which periodic driver owns the heartbeat for this process.
+ *
+ * Default `clock` — `AgentClock` is the only timer. `legacy` restores the pre-C8-C
+ * private timer AND the heartbeat mailbox-row path (the two belong together: the row
+ * exists because the tick had nowhere else to go). Channel-scoped by design: flipping
+ * this never changes the dream channel, so either can be rolled back alone.
+ */
+function heartbeatTimerMode(): HeartbeatTimerMode {
+  return process.env['MARKUS_HEARTBEAT_CLOCK'] === 'legacy' ? 'legacy' : 'clock';
+}
+
+/**
+ * C8-C: which path may produce a dream.
+ *
+ * · `clock` (default) — the named clock source only; a persisted `memory_consolidation`
+ *   row is acknowledged, never replayed into a second dream.
+ * · `dual` — pre-C8-C behaviour (row replays the dream) for rollback.
+ *
+ * Deliberately separate from {@link heartbeatTimerMode}: the two channels must be
+ * revertible one at a time.
+ */
+function dreamPathMode(): 'clock' | 'dual' {
+  return process.env['MARKUS_DREAM_PATH'] === 'dual' ? 'dual' : 'clock';
+}
 
 /**
  * 把文件路径归一化为稳定的锁键（供资源域锁使用）。
@@ -308,6 +338,11 @@ export interface AgentOptions {
   restoredState?: { tokensUsedToday?: number };
   /** Safety cap on tool iterations per agent turn (from system config) */
   maxToolIterations?: number;
+  /**
+   * C8-B：轮内 delta 注入开关（默认开）。
+   * 关掉 = 完全回到 C8-A 的排队语义：不注入、不落 `agent_decisions`、不改任何既有段落。
+   */
+  turnDeltaInjection?: boolean;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
@@ -615,6 +650,19 @@ export class Agent {
   private workUnitPort?: DelegationWorkUnitPort;
   /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
   private currentTurnWorkUnitRef: string | null = null;
+  /**
+   * C8-B：本回合已报告到哪个插入序号（**回合状态**，与回合身份同生共死）。
+   *
+   * 为什么它必须是回合状态而不是每个调用点传进来的常量：调用点分布在四个工具循环里，
+   * 每个循环只会在**回合开始**取一次快照。快照不推进 ⇒ 同一条事实在后续每个 yield
+   * 点被重复注入（实测：两轮工具后同一段 `[LIVE UPDATE @seq=…]` 出现两次）。重复
+   * 注入不是「多说一遍」——它让上下文随回合长度线性膨胀，而新增信息为零。
+   *
+   * 唯一写者就是下面 `injectTurnDelta()`（注入成功即推进到本次扫到的最大序号），
+   * 唯一重置点是 `onFocusChanged()`（回合开始 = 拿到焦点）。不引入第二个「待处理事实」
+   * 存储：它只是**读游标**，事实本身仍然只在邮箱队列里。
+   */
+  private turnDeltaCursor = 0;
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
@@ -636,6 +684,88 @@ export class Agent {
    * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
   turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
+
+  /**
+   * C8-B —— 轮内 delta 注入（唯一入口）。
+   *
+   * 位置纪律：**只在「工具结果之后、下一次 LLM 调用之前」调用**。这是同时满足
+   * 「看得见新事实」与「不浪费已完成工作」的唯一位置；在回合开头调用会漏掉
+   * 回合中途到达的事实，在回合结束调用则是事后补记（台账有行也证明不了任何事）。
+   *
+   * 返回 `null` = 本回合不注入（开关关闭 / 本回合没有 WorkUnit 身份）。
+   * 没有实体就**不主张相关性** —— 不查「该 agent 最近一条」，那是从时序推断结构。
+   *
+   * `'cancel'` = delta 里有推翻前提的事实，且台账已落 `decision_type='cancel'`。
+   * 调用方必须**中止本回合**（`agent_decisions` 里已发生副作用）。
+   */
+  private injectTurnDelta(
+    sessionId: string,
+  ): { decision: 'continue' | 'cancel'; text: string; decisiveItemId: string | null } | null {
+    if (!this.turnDeltaInjectionEnabled) return null;
+    const workUnitRef = this.currentTurnWorkUnitRef;
+    if (!workUnitRef) return null;
+
+    const snapshotSeq = this.turnDeltaCursor;
+    const rows = this.mailbox.deltaSince(workUnitRef, snapshotSeq);
+    // 报过一次就推进 watermark：同一事实本回合只报一次（序号更高的事实仍会被下一轮看到）。
+    // 只推进、不回退；没有新事实时 watermark 不动 —— 空注入的字节形状因此完全稳定。
+    if (rows.length > 0) {
+      this.turnDeltaCursor = rows.reduce(
+        (max, item) => Math.max(max, this.mailbox.seqOf(item.id)),
+        snapshotSeq,
+      );
+    }
+    const deltaRows: TurnDeltaRow[] = rows.map(item => ({
+      id: item.id,
+      sourceType: item.sourceType,
+      seq: this.mailbox.seqOf(item.id),
+      workUnitRef: item.workUnitRef ?? null,
+      payload: item.payload,
+      metadata: item.metadata,
+      envelope: item.envelope
+        ? {
+          intent: item.envelope.intent,
+          supersedes: item.envelope.supersedes ?? null,
+          invalidatesPremise: item.envelope.invalidatesPremise === true,
+        }
+        : undefined,
+    }));
+
+    const segment = buildTurnDeltaSegment({ snapshotSeq, rows: deltaRows });
+
+    // 尾追加：既有消息的字节一个都不动（缓存前缀不变）。
+    this.memory.appendMessage(sessionId, turnDeltaMessage(segment));
+
+    if (segment.decision === 'cancel' && segment.decisive) {
+      const item = rows.find(r => r.id === segment.decisive!.id);
+      const reasoning = `[turn-delta] ${segment.decisive.deltaClass}/`
+        + `${segment.decisive.sourceType} (${segment.decisive.id}) supersedes the premise this turn was executing`;
+      if (item) {
+        this.attentionController.recordTurnDeltaDecision(
+          item,
+          reasoning,
+          'turn_aborted_before_next_llm_call',
+        );
+      }
+      log.info('Turn delta overturned the premise — aborting the turn', {
+        agentId: this.id,
+        workUnitRef,
+        snapshotSeq,
+        decisiveItemId: segment.decisive.id,
+        sideEffectsBeforeDecision: 'recorded in agent_decisions.context',
+      });
+      return { decision: 'cancel', text: segment.text, decisiveItemId: segment.decisive.id };
+    }
+
+    log.debug('Turn delta injected', {
+      agentId: this.id,
+      workUnitRef,
+      snapshotSeq,
+      count: segment.entries.length,
+      omitted: segment.omitted,
+    });
+    return { decision: 'continue', text: segment.text, decisiveItemId: null };
+  }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -889,9 +1019,28 @@ export class Agent {
    *  longer the launching scenario by then — it must be captured at registration. */
   private bgSessionScenario = new Map<string, AgentScenario>();
   private _maxToolIterations: number;
+  /** C8-B：轮内 delta 注入开关（关掉 = C8-A 排队语义，见 `AgentOptions.turnDeltaInjection`）。 */
+  private turnDeltaInjectionEnabled: boolean;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
+  private _triggerUnsub?: () => void;
+  /**
+   * C8-C: the one place that holds "what am I waiting for". Matching is a pure predicate
+   * over events that already exist; expiry is swept by the agent's single clock. No timer
+   * per wait, and no second queue.
+   */
+  private readonly triggers = new TriggerRegistry();
+  /**
+   * C8-C: one patrol at a time. The old "heartbeat folding" inside `Mailbox.enqueue`
+   * existed only because the row path let a second tick start right after the first
+   * patrol finished (7–12s apart in production). With no row there is nothing to fold,
+   * so re-entrancy is guarded at the single place that starts a patrol.
+   */
+  private heartbeatInFlight = false;
   private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
+  /** C8-C: how often expired subscriptions are reaped. Same coarse cadence as the wakeup
+   *  sweep — a wait's expiry is not latency-critical, and this rides the one clock. */
+  private static readonly TRIGGER_EXPIRY_SWEEP_INTERVAL_MS = 60_000;
   private static readonly MAILBOX_MAINTENANCE_INTERVAL_MS = 30_000;
   /**
    * The single periodic driver for this agent's time-driven transitions
@@ -1000,6 +1149,7 @@ export class Agent {
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
+    this.turnDeltaInjectionEnabled = options.turnDeltaInjection !== false;
     this.eventBus = new EventBus();
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
@@ -1034,11 +1184,18 @@ export class Agent {
     this.guardrails = new GuardrailPipeline();
     this.toolHooks = new ToolHookRegistry();
     this.metricsCollector = new AgentMetricsCollector(this.id, options.dataDir);
-    this.heartbeat = new HeartbeatScheduler(this.id, this.eventBus, {
-      intervalMs: this.config.heartbeatIntervalMs,
-      enabled: true,
-    });
+    // C8-C: one periodic driver per agent. The clock is created FIRST so the
+    // heartbeat can register its cadence on it instead of owning a timer.
     this.clock = new AgentClock(this.id);
+    this.heartbeat = new HeartbeatScheduler(
+      this.id,
+      this.eventBus,
+      {
+        intervalMs: this.config.heartbeatIntervalMs,
+        enabled: true,
+      },
+      { mode: heartbeatTimerMode(), clock: this.clock },
+    );
 
     this.tools = new Map();
     this.toolSelector = new ToolSelector();
@@ -1071,6 +1228,48 @@ export class Agent {
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
+
+    // C8-C: `rest(wakeOn)` — wait for a real event instead of polling. Always registered
+    // (not assembly-dependent): an agent that cannot say what it waits for falls back to
+    // spinning the heartbeat, which is exactly the mechanism this cut removes.
+    for (const tool of createTriggerTools({
+      agentId: this.id,
+      rest: input => this.restOn(input),
+      list: () => this.triggers.list(this.id),
+      cancel: id => this.triggers.consume(id),
+    })) {
+      this.tools.set(tool.name, tool);
+    }
+
+    // C8-C: a declared wait is matched by the event that already exists — synchronously,
+    // with no timer. Registered at CONSTRUCTION (not in `start()`) so `rest(wakeOn)` can
+    // never be inert just because the attention loop has not started yet.
+    this._triggerUnsub = this.eventBus.on('mailbox:new-item', ctx => {
+      const { item } = ctx as { agentId?: string; item?: { id?: string; sourceType?: string } };
+      if (!item?.id || !item.sourceType) return;
+      const triggerEvent: TriggerEvent = {
+        type: 'mailbox:new-item',
+        agentId: this.id,
+        sourceType: item.sourceType as TriggerEvent['sourceType'],
+        itemId: item.id,
+      };
+      for (const sub of this.triggers.dispatch(triggerEvent)) {
+        log.info('Trigger matched — waking for the real event', {
+          agentId: this.id,
+          subscriptionId: sub.id,
+          wakeOn: sub.wakeOn,
+          itemId: item.id,
+          note: sub.note,
+        });
+        this.eventBus.emit('trigger:matched', {
+          agentId: this.id,
+          subscriptionId: sub.id,
+          wakeOn: sub.wakeOn,
+          itemId: item.id,
+          note: sub.note ?? null,
+        });
+      }
+    });
 
     // Route background_exec completion through the mailbox for proper attention handling.
     // IMPORTANT: onBackgroundCompletion is a process-wide bus — only the agent that
@@ -1123,8 +1322,8 @@ export class Agent {
     this.stateManager = new AgentStateManager(this.id, this.taskExecutor);
 
     this._heartbeatUnsub = this.eventBus.on('heartbeat:trigger', ctx => {
-      const { triggeredAt } = ctx as { agentId: string; triggeredAt: string };
-      // Do not enqueue a heartbeat LLM turn while the human is in a live chat —
+      const { triggeredAt, mode } = ctx as { agentId: string; triggeredAt: string; mode?: HeartbeatTimerMode };
+      // Do not run a heartbeat patrol while the human is in a live chat —
       // patrol can wait; conversational progress must not be interrupted.
       if (this.shouldDeferHeartbeatForHumanChat()) {
         log.info('Heartbeat trigger deferred — human chat is focused or queued', {
@@ -1133,10 +1332,18 @@ export class Agent {
         });
         return;
       }
-      this.mailbox.enqueue('heartbeat', {
-        summary: 'Scheduled heartbeat check-in',
-        content: `Heartbeat triggered at ${triggeredAt}`,
-      });
+      if (mode === 'legacy') {
+        // Rollback channel: pre-C8-C behaviour — the tick becomes a queue row and the
+        // attention loop turns it into a patrol. Independently revertible.
+        this.mailbox.enqueue('heartbeat', {
+          summary: 'Scheduled heartbeat check-in',
+          content: `Heartbeat triggered at ${triggeredAt}`,
+        });
+        return;
+      }
+      // C8-C: a tick is a liveness beat, not a message. Run the patrol directly —
+      // no mailbox row is produced, so nothing to triage, retain or age out.
+      this.runHeartbeatPatrol(triggeredAt);
     });
 
     // Auto-reload role / heartbeat when agent modifies its own files
@@ -1380,6 +1587,30 @@ export class Agent {
       everyMs: Agent.MAILBOX_MAINTENANCE_INTERVAL_MS,
       fn: () => { this.mailbox.runMaintenance(); },
     });
+
+    // C8-C: expiry of `rest(wakeOn)` waits rides this clock source — never a timer per
+    // subscription. Matching happens at construction time (see `_triggerUnsub` below), so
+    // this source only reaps waits nobody kept.
+    this.clock.register({
+      name: 'trigger-expiry',
+      everyMs: Agent.TRIGGER_EXPIRY_SWEEP_INTERVAL_MS,
+      fn: () => {
+        for (const sub of this.triggers.sweepExpired()) {
+          log.info('Subscription expired — wait ended without the event', {
+            agentId: this.id,
+            subscriptionId: sub.id,
+            wakeOn: sub.wakeOn,
+            note: sub.note,
+          });
+          this.eventBus.emit('trigger:expired', {
+            agentId: this.id,
+            subscriptionId: sub.id,
+            wakeOn: sub.wakeOn,
+            note: sub.note ?? null,
+          });
+        }
+      },
+    });
     this.clock.start();
 
     this.eventBus.emit('agent:started', { agentId: this.id });
@@ -1387,20 +1618,42 @@ export class Agent {
   }
 
   private scheduleConsolidationTimer(): void {
-    // Random initial delay staggers agents so they don't all run LLM-heavy
-    // consolidation at once ("dream storm"). Registered as a clock source —
-    // no dedicated timer of its own.
+    // C8-C: the dream has exactly ONE producer — this named clock source. Jitter stays:
+    // it is what keeps N agents from dreaming at the same instant ("dream storm"), and it
+    // is a cadence input, not a second timer.
+    //
+    // The `memory_consolidation` *mailbox* link is gated in the dispatch below: in `clock`
+    // mode a persisted row no longer replays a dream (second entry point to one decision,
+    // and a row the queue-ageing path could drop before it ever ran).
     const jitter = Math.floor(Math.random() * Agent.MEMORY_CONSOLIDATION_INTERVAL_MS);
     this.clock.register({
       name: 'memory-consolidation',
       everyMs: Agent.MEMORY_CONSOLIDATION_INTERVAL_MS,
       initialDelayMs: jitter,
-      fn: () => {
-        this.consolidateMemory().catch(e =>
-          log.warn('Memory consolidation failed', { error: String(e) })
-        );
-      },
+      fn: () => this.runDreamTick(),
     });
+  }
+
+  /**
+   * C8-C: one dream decision per due clock tick, reported as exactly one `dream:trigger`
+   * event. `ran:false` means "due but deduped in this window" — a deliberate skip, not a
+   * miss — so the event count stays 1:1 with the schedule and the decision keeps exactly
+   * one implementation (`shouldRunDreamCycle`, called only from `consolidateMemory`).
+   */
+  private async runDreamTick(): Promise<void> {
+    try {
+      const result = await this.consolidateMemory();
+      this.eventBus.emit('dream:trigger', {
+        agentId: this.id,
+        windowKey: result.windowKey,
+        ran: result.ran,
+        at: new Date().toISOString(),
+      });
+    } catch (e) {
+      // `consolidateMemory` already contains its own failures; this guards the emit path
+      // so a broken listener can never wedge the clock source.
+      log.warn('Dream tick failed', { agentId: this.id, error: String(e) });
+    }
   }
 
   private static acquireDreamSlot(): Promise<void> {
@@ -1432,6 +1685,9 @@ export class Agent {
     this.clock.stop();
     this._bgCompletionUnsub?.();
     this._heartbeatUnsub?.();
+    this._triggerUnsub?.();
+    this._triggerUnsub = undefined;
+    this.clearSubscriptions();
     // Synchronous notebook persist on shutdown
     if (this.notebookSaveTimer) {
       clearTimeout(this.notebookSaveTimer);
@@ -1920,6 +2176,8 @@ export class Agent {
         // C7-B：回合开始（获得焦点）= 设置本轮父 WU。子 WU 的 `parent_id` 只能来自
         // 这里 —— 不在别的时刻猜「最近那条」。
         this.currentTurnWorkUnitRef = item?.workUnitRef ?? null;
+        // C8-B：回合开始即 watermark —— 只在回合内到达的事实才算 delta。
+        this.turnDeltaCursor = this.mailbox.currentSeq();
         this.eventBus.emit('agent:focus-changed', {
           agentId: this.id,
           focus: item ? {
@@ -2530,8 +2788,22 @@ export class Agent {
               return reply;
             }
           }
-          const msgChannelKey = extra.channelKey as string | undefined;
-          const channelSessionId = msgChannelKey ? channelMemorySessionId(this.id, msgChannelKey) : undefined;
+          // C8-A：会话 key 的**唯一来源**是 `sessionHint`（生产方按实体派生）。
+          //
+          // 旧代码在这里按 `extra.channelKey` 又拼了一次会话 id —— 那是「同一件事
+          // 两个写者」的小号副本：resolveTurnSession 刚按 hint 切到实体会话，这里
+          // 又把 handleMessage 指回频道会话，后写者赢。频道一变（同一任务经 DM 与
+          // 群聊到达）会话就分裂。没有 hint 的旧行才回退到 channelKey。
+          const sessionHintForKey = extra.sessionHint as TurnSessionHint | undefined;
+          const channelSessionKey =
+            sessionHintForKey?.kind === 'system'
+              && sessionHintForKey.role === 'channel'
+              && sessionHintForKey.key
+              ? sessionHintForKey.key
+              : (extra.channelKey as string | undefined);
+          const channelSessionId = channelSessionKey
+            ? channelMemorySessionId(this.id, channelSessionKey)
+            : undefined;
           // In-session A2A delegation: if this message replies to a conversation the
           // agent is awaiting inline (registered via agent_send_message reply_in_session),
           // route the reply into the ORIGIN session so the delegating thread continues
@@ -2778,7 +3050,14 @@ export class Agent {
 
         case 'task_comment': {
           const taskId = item.metadata?.taskId ?? item.payload.taskId;
-          if (taskId && this.activeTasks.has(taskId)) {
+          // C8-A：去向由**实体交集**回答，不再由「这个 taskId 在不在 activeTasks 里」回答。
+          // 旧写法是一个谓词答两个问题（这件事正在跑吗 / 要不要注入），且只认载荷里的
+          // taskId —— 从 WU 得到实体的 item 会被误判成「不在跑」而去排一个多余的回合。
+          const destination = resolveMailboxDestination(
+            this.mailbox.entityKeysOf(item),
+            Array.from(this.activeTasks, t => `task:${t}`),
+          );
+          if (destination === 'inject' && taskId) {
             const round = this.getTaskExecutionRound(taskId);
             const sessionId = `task_${taskId}_r${round}`;
             this.injectUserMessage(sessionId, item.payload.content);
@@ -2915,6 +3194,18 @@ export class Agent {
         }
 
         case 'memory_consolidation': {
+          // C8-C: in `clock` mode the named clock source is the single dream producer, so
+          // a persisted row must not replay it — one decision, one execution point. The row
+          // is acknowledged (typed result) rather than turned into an LLM turn. `dual` mode
+          // (`MARKUS_DREAM_PATH=dual`) keeps the pre-C8-C behaviour for rollback.
+          if (dreamPathMode() === 'clock') {
+            log.info('memory_consolidation row acknowledged — clock mode owns the dream trigger', {
+              agentId: this.id,
+              itemId: item.id,
+            });
+            resolveResponse('memory_consolidation skipped (clock mode owns the single dream trigger)');
+            return 'skipped: clock mode owns the dream trigger';
+          }
           const memSessionId = `sys_${this.id}_${ts}`;
           let reply = await this.handleMessage(
             item.payload.content,
@@ -5809,6 +6100,17 @@ export class Agent {
           }
         }
 
+        // C8-B：轮内 delta 注入 —— 必须在下面这次 LLM 调用**之前**。
+        // 矛盾事实在这里落 `agent_decisions(decision_type='cancel')` 并中止本回合。
+        const turnDelta = this.injectTurnDelta(sessionId);
+        if (turnDelta?.decision === 'cancel') {
+          log.info('handleMessage cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: turnDelta.decisiveItemId,
+          });
+          return '[cancelled]';
+        }
+
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, toolSelectOpts);
         if (options?.allowedTools) {
           const allowed = options.allowedTools;
@@ -6579,6 +6881,19 @@ export class Agent {
           this.attentionController.restoreInterruptSignal(streamYield.item);
         }
 
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        const streamTurnDelta = this.injectTurnDelta(this.currentSessionId!);
+        if (streamTurnDelta?.decision === 'cancel') {
+          log.info('Stream cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: streamTurnDelta.decisiveItemId,
+          });
+          try { abortController.abort(); } catch { /* best effort */ }
+          if (streamChatActivityId) this.endActivity(streamChatActivityId);
+          this.transitionStatus({ to: 'idle' });
+          return '[cancelled]';
+        }
+
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, streamToolSelectOpts);
 
         const updatedSessionMessages = this.requestHistory(this.currentSessionId);
@@ -7294,6 +7609,24 @@ export class Agent {
           });
         }
 
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        // 矛盾事实（撤单 / 驳回 / 更正）当场中止本回合：`agent_decisions`
+        // 落 `decision_type='cancel'`，副作用已发生的部分由台账留痕。
+        const taskTurnDelta = this.injectTurnDelta(sessionId);
+        if (taskTurnDelta?.decision === 'cancel') {
+          cancelExecutionToken(cancelToken, 'user_cancel');
+          emit('status', 'cancelled', {
+            stopReason: 'user_cancel',
+            reason: `in-turn delta: ${taskTurnDelta.decisiveItemId ?? 'unknown'}`,
+          });
+          log.info('Task execution cancelled by in-turn delta', {
+            taskId,
+            agentId: this.id,
+            decisiveItemId: taskTurnDelta.decisiveItemId,
+          });
+          return;
+        }
+
         // Re-inject critical task completion reminder every 10 tool iterations
         // to prevent "lost in the middle" — the original task_submit_review
         // instruction drifts away from recent context as tool calls accumulate.
@@ -7807,6 +8140,17 @@ export class Agent {
           if (typeof risYield.item.runtime?.responsePromise?.resolve === 'function') {
             risYield.item.runtime.responsePromise.resolve('[merged]');
           }
+        }
+
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        const risTurnDelta = this.injectTurnDelta(sessionId);
+        if (risTurnDelta?.decision === 'cancel') {
+          log.info('respondInSession cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: risTurnDelta.decisiveItemId,
+          });
+          flushText();
+          return '[cancelled]';
         }
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, risToolSelectOpts);
@@ -8326,6 +8670,40 @@ export class Agent {
   /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
   triggerHeartbeat(): void {
     this.heartbeat?.trigger();
+  }
+
+  /**
+   * C8-C: declare what this agent is waiting for, and stop there.
+   *
+   * `rest(wakeOn)` is the *statement*; the wake itself is the real event arriving on the
+   * agent's bus. Nothing polls, and no timer is created per wait — expiry is swept by the
+   * `trigger-expiry` clock source.
+   */
+  restOn(input: { wakeOn: WakeCondition; note?: string; timeoutMs?: number }): Subscription {
+    const sub = this.triggers.subscribe({
+      agentId: this.id,
+      wakeOn: input.wakeOn,
+      note: input.note,
+      timeoutMs: input.timeoutMs,
+    });
+    log.info('Agent is resting on a condition', {
+      agentId: this.id,
+      subscriptionId: sub.id,
+      wakeOn: sub.wakeOn,
+      expiresAt: sub.expiresAt,
+      note: sub.note,
+    });
+    return sub;
+  }
+
+  /** Live subscriptions of this agent (read-only view for status surfaces / tests). */
+  getSubscriptions(): Subscription[] {
+    return this.triggers.list(this.id);
+  }
+
+  /** Drop every subscription — used on stop so a restarted agent starts from a clean slate. */
+  clearSubscriptions(): number {
+    return this.triggers.clearAgent(this.id);
   }
 
   getState(): AgentState {
@@ -9940,6 +10318,34 @@ export class Agent {
     }
   }
 
+  /**
+   * C8-C: run one clock-driven patrol outside the mailbox.
+   *
+   * Time-driven and signal-driven work used to share one queue; a tick then had to be
+   * enqueued, triaged and completed to become a patrol. Here the beat goes straight to
+   * the patrol, so:
+   *   · no `mailbox_items` row (no retention, no age-out, no 70% noise),
+   *   · failures are contained here and reported by `AgentClock`,
+   *   · at most one patrol in flight (the replacement for heartbeat folding).
+   */
+  private runHeartbeatPatrol(triggeredAt: string): void {
+    if (this.heartbeatInFlight) {
+      log.info('Heartbeat tick skipped — previous patrol still in flight', {
+        agentId: this.id,
+        triggeredAt,
+      });
+      return;
+    }
+    this.heartbeatInFlight = true;
+    void this.handleHeartbeat({ agentId: this.id, triggeredAt })
+      .catch(err => {
+        log.warn('Clock-driven heartbeat patrol failed', { agentId: this.id, error: String(err) });
+      })
+      .finally(() => {
+        this.heartbeatInFlight = false;
+      });
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
@@ -10301,10 +10707,11 @@ export class Agent {
   private lastHeartbeatFingerprint = '';
   private consecutiveIdleHeartbeats = 0;
 
-  private async consolidateMemory(): Promise<void> {
+  private async consolidateMemory(): Promise<{ ran: boolean; windowKey: string }> {
+    let windowKey = '';
+    let ran = false;
     try {
       const now = new Date();
-
       // Session compaction is handled by MemoryStore.checkAndCompact (safety-net
       // only at very high message counts). Per-call packing uses the model window.
       // consolidateMemory only runs the dream cycle.
@@ -10317,7 +10724,7 @@ export class Agent {
       // made the dream structurally dead for buffers of a few LARGE entries (≈31 real
       // entries already sit at 99% of the 30 000-char budget, so `>= 50` never fired).
       const health = this.memory.getMemoryHealth();
-      const dreamKey = dreamWindowKey(entries.length, now);
+      windowKey = dreamWindowKey(entries.length, now);
       // Dedup on the SAME window key, but consult BOTH the volatile in-memory key AND the
       // durable `lastConsolidatedAt` (memory-meta.json). The durable one is the restart fix:
       // without it a process restart re-armed the guard and the same agent could dream twice
@@ -10329,7 +10736,7 @@ export class Agent {
             lastConsolidatedAt: this.memory.getLastConsolidatedAt?.() ?? null,
             lastInMemoryWindowKey: this.lastDreamDate,
           })) {
-        this.lastDreamDate = dreamKey;
+        this.lastDreamDate = windowKey;
         await Agent.acquireDreamSlot();
         try {
           // The dream cycle rewrites knowledge.md directly (read → replace → write in
@@ -10354,11 +10761,16 @@ export class Agent {
         } finally {
           Agent.releaseDreamSlot();
         }
+        ran = true;
       }
 
-      log.debug('Memory consolidation completed', { agentId: this.id });
+      log.debug('Memory consolidation completed', { agentId: this.id, ran, windowKey });
+      return { ran, windowKey };
     } catch (error) {
       log.warn('Memory consolidation failed', { agentId: this.id, error: String(error) });
+      // A failed dream is reported as "did not run" — never as a silent success, and
+      // never as a second decision made elsewhere.
+      return { ran: false, windowKey };
     }
   }
 
@@ -10429,8 +10841,15 @@ export class Agent {
     ].join('\n');
 
     try {
-      const response = await this.sendMessage(prompt, undefined, undefined, {
-        sourceType: 'memory_consolidation',
+      // C8-C: the dream is a direct internal call, NOT a mailbox item.
+      //
+      // It used to route its own LLM turn through `sendMessage(..., { sourceType:
+      // 'memory_consolidation' })`, i.e. the dream was queued as the very item type that
+      // was supposed to *trigger* it — one decision with two entry points, and a queue
+      // round-trip for work that is already serialised by the dream semaphore and the
+      // knowledge resource lock. The trigger is the named clock source; the work runs
+      // here. (It also keeps clock mode from gating its own dream.)
+      const response = await this.handleMessage(prompt, undefined, undefined, {
         sessionId: `sys_${this.id}_${Date.now()}`,
         scenario: 'memory_consolidation',
         allowedTools: new Set<string>(),

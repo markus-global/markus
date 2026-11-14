@@ -9,6 +9,7 @@ import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
+import { RunningWorkUnits } from '../components/RunningWorkUnits.tsx';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MAILBOX_STATUS_FILTERS, statusFilterParam } from '../lib/mailboxStatusFilters.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -677,6 +678,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
       {/* ── 其余四组收进概览后依然「只挂载当前组」：它们各自都会发请求，若六组全部挂载、
           只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把「入口太多」换成了
           「页面卡」。 */}
+      {/* C8-E：「在跑」只读 work_units —— 不读 activity，也不读内存注册表。 */}
+      {section === 'mind' && <RunningWorkUnits agentId={agent.id} />}
       {section === 'mind' && (
         <SectionPanel>
           <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />

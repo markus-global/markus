@@ -6346,6 +6346,42 @@ export class SqliteWorkUnitRepo {
     return { row, created };
   }
 
+  /**
+   * C8 收口纠偏：`status='running'` 但**触发它的 mailbox 行已终态**的 WU，就地收口。
+   *
+   * 为什么需要：收口（running → idle）在 task 链路根本没有写者，chat 链路又会因
+   * round 漂移而收错行。结果是 `running` 里积满已结束的回合（真机实测 15 条），
+   * 任何「在跑」的读面都会把它当成真的。
+   *
+   * 判据只用已有事实：WU 的 ref 已经写在 mailbox 行上（C6/C7），而那一行是否终态
+   * 是可查的。不靠时间、不靠推断。
+   */
+  reconcileRunningAgainstTerminalMailbox(): number {
+    // 规则一：触发行已终态 → 这条活已经结束。
+    const settledByTerminal = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_terminal_mailbox'
+          WHERE status='running' AND ref IN (
+            SELECT work_unit_ref FROM mailbox_items
+             WHERE work_unit_ref IS NOT NULL
+               AND status IN ('completed','bounced','catch_all','merged'))`,
+      )
+      .run();
+    // 规则二（孤儿）：`session:` 回合的 WU 没有任何 mailbox 行引用它 ——
+    // 自 C8 起 ref 是**入队参数**，活着的回合必然被引用；没被引用 = 链接从未落上，
+    // 这一行不可能是在跑（真机实测 4 条，均为旧构建遗留）。
+    const settledOrphan = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_orphan_turn'
+          WHERE status='running' AND ref LIKE 'session:%'
+            AND ref NOT IN (SELECT work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL)`,
+      )
+      .run();
+    const a = (settledByTerminal as { changes?: number }).changes ?? 0;
+    const b = (settledOrphan as { changes?: number }).changes ?? 0;
+    return a + b;
+  }
+
   getByRef(ref: string): WorkUnitRecord | undefined {
     const row = this.db
       .prepare(
