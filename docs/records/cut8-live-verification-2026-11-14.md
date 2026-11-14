@@ -555,5 +555,76 @@ ensure(ref, status:'running')        → { status: 'idle' }   ← 已存在，�
 | `bc74d74c` | 注释在撒谎（指错根因） | 自查工作树残留 |
 
 三层缺陷同一症状，每一层的判据都不是「看起来对」，而是「换个记号再犯会不会再红」。
+
+---
+
+# §15 浏览器完整模拟（2026-11-14 22:23–22:25）——又逼出第四层：回合从不收口
+
+## §15.1 模拟方式（真实用户路径，不是打接口自证）
+
+在 `localhost:8056` 的应用里，用 **UI 输入框实际调用的那个端点**
+（`POST /api/agents/:id/message`，即 `web-ui/src/api.ts:1629`）向 Secretary 发了一条真实消息：
+
+```
+请求 → 200 {"reply":"收到","sessionId":"cs_5a47f1ae1b3748d7"}
+```
+
+她确实回话了 ⇒ 回合**已结束**。然后读台账：
+
+```
+work_units  session:cs_5a47f1ae1b3748d7:r1  →  status = running     ← 回合结束了它还挂着
+mailbox_items mbx_65164f69…  status=completed, work_unit_ref = NULL  ← 引用也没回填
+全库 running：1 → 3   （我上一轮的 r48、当前 r49、她的 r1）
+```
+
+**光聊几轮天就攒僵尸**：§14 那次读到的 `running: 1` 是真的（我当时在跑），但如果没人管，
+每轮都会再加一条。§11 首读到的「15 条僵尸」正是这条路径长期积累的产物 —— 我当时用
+启动纠偏把它们扫掉，那是在**清症状**，没修产生源。
+
+## §15.2 根因：一个事实三个分支，只有一个记
+
+`/api/agents/:id/message` 有三条分支：
+
+| 分支 | 是否收口 |
+|---|---|
+| SSE 流式 | 走 `persistChatTurn` → 有收口 |
+| **非流式** | 只 `persistAssistantMessage` 就 `return` → **从不收口** |
+| inject 追随 | 回合仍在进行，不需要收口 |
+
+非流式分支还把 `onItemEnqueued` 丢了 —— 所以它的投递行连引用都拿不到（`work_unit_ref` 永远 NULL）。
+这与前两层是同一个形状：**「回合结束了」这个事实，三个写者各记一遍，漏一个不报错**。
+
+## §15.3 修法：收口收敛成唯一执行点
+
+新增 `settleChatTurnWorkUnit(agentId, ref, opts)`：补 `context_ref`（只填空值）→ 回填 mailbox 引用 →
+`running → idle`（只在 running 上迁，重放命中 idle 不算未收口）。
+`persistChatTurn` 和**非流式分支**都调它；后者同时补上 `onItemEnqueued`，它那一行的引用终于能落。
+
+**编译器当场抓了我一次**：第一版把 `getByRef` 挂在了 `WorkUnitService` 上（它其实在 repo 上），
+TSC 直接报错、集成用例同时变红（`expected 'running' to be 'idle'`）—— 两道守卫都在位，
+不是靠我肉眼。
+
+## §15.4 验证
+
+`tsc -b` 0；`chat-turn-ref-resolution` + `work-unit producers` + `storage` **23 passed**。
+当前库里那 3 条 `running` 是修复前的遗留，下次启动由启动纠偏统一收口。
+
+## §15.5 模拟的结论（诚实版）
+
+- 模拟**成功**验证了前半条：用户发消息后，该会话确实在台账里建出 `running` 单元（§14 的修复生效）。
+- 模拟**暴露出**后半条不成立：回合结束后无人收口 → 「正在运行」只增不减。
+- 因此 C8-E 的完整判据（**0 → 1 → 0** 的闭环）**本轮仍未取到**，需用 `e9a1d025` 重建后再跑一次同一模拟。
+
+## §15.6 缺陷家族汇总（同一个根因的四个面）
+
+| # | 面 | 症状 | 修法 |
+|---|---|---|---|
+| 1 | chat 收口用重算的 ref | 回合开始的行永远 running | 用 mailbox 行上记录的 ref |
+| 2 | 非流式分支不收口 | 每轮 +1 僵尸 | `settleChatTurnWorkUnit` 唯一执行点 |
+| 3 | 会话解析按 `is_main` 排序 | 面板恒显示 0 | 入口传 id；兜底取最近活跃 |
+| 4 | follow-up 入口不带身份 | 追随消息无归属 | 身份参数必填（编译器站岗） |
+
+**四个面，一条判据**：「回合」是一个事实，它的身份、它的开始、它的结束，
+都必须只有一个写者、一个解析器。四次要修的不是四个 bug，是同一个结构缺陷的四种语法。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
