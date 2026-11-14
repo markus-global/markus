@@ -120,17 +120,32 @@ describe('C8-D 白名单（从注册表派生，缺一 fail-fast）', () => {
     expect(() => assertActionToolReachability(liveFace())).not.toThrow();
   });
 
-  it('the whitelist is exactly the six registry-verified action tools', () => {
+  it('the whitelist is exactly the seven registry-verified action tools', () => {
     expect([...ACTION_TOOL_IDS].sort()).toEqual(
-      ['check_mailbox', 'notify_user', 'task_create', 'task_submit_review', 'task_update', 'work_status'],
+      [
+        'check_mailbox',
+        'notify_user',
+        'request_user_input',
+        'task_create',
+        'task_submit_review',
+        'task_update',
+        'work_status',
+      ],
     );
   });
 
-  it('request_user_input stays out: it is offered but NOT registry-resolvable', () => {
-    // Schema-pushed by ToolSelector.pushUnique, yet absent from the registry —
-    // the exact trap that made the first draft of this whitelist a dead promise.
+  it('request_user_input IS a member: the HITL channel must survive compression', () => {
+    // The whole point of the card is "agent knows what it lacks". A compressed
+    // face that cannot ask a human for authorisation is the defect, not an edge
+    // case. It is schema-injected (pushUnique) + eviction-protected, exactly like
+    // `notify_user` — so excluding it while keeping notify_user would be one
+    // predicate answered two ways.
+    expect(ACTION_TOOL_IDS as readonly string[]).toContain('request_user_input');
     expect(injectedToolNames()).toContain('request_user_input');
-    expect(ACTION_TOOL_IDS as readonly string[]).not.toContain('request_user_input');
+    // It has NO registerTool handler — that is *why* the face (not the handler
+    // registry) is the thing the assertion checks. Locked here so a future
+    // "simplification" to `agent.getTools()` alone goes red instead of silently
+    // dropping the HITL tool from the whitelist again.
     expect(taskToolNames()).not.toContain('request_user_input');
     expect(mailboxToolNames()).not.toContain('request_user_input');
   });

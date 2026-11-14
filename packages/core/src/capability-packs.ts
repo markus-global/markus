@@ -169,13 +169,23 @@ export const TOOL_DEF_CORE_KEEP = new Set([
  * whole point: these tools stay LIVE, and anything that does leave the schema is
  * announced with a way back.
  *
- * SOURCE OF TRUTH — the ids below were resolved against the LIVE registry on
- * 2026-11-14 (measurement, not prose): factories `createAgentTaskTools` /
- * `createMailboxTools` / ToolSelector's `pushUnique` set. `request_user_input`
- * is deliberately ABSENT: it IS pushed into the schema but no registry entry
- * backs it (`discover_tools` answers "unknown"), so listing it would make the
- * whitelist assert a name that cannot be resolved — see
- * {@link assertActionToolReachability}, which refuses to degrade silently.
+ * SOURCE OF TRUTH — the ids below were resolved against the LIVE tool face on
+ * 2026-11-14 (measurement, not prose): the factories `createAgentTaskTools` /
+ * `createMailboxTools`, and ToolSelector's own `pushUnique` injections. The face
+ * is "names a tool call can actually hit", NOT "names with a registerTool
+ * handler": `notify_user` / `request_user_input` / `end_turn` have a dispatch
+ * branch and a pushed schema but no handler. Treating handler-lessness as
+ * unreachability splits one predicate into two — the first draft of this list
+ * kept `notify_user` and dropped `request_user_input` although the two are
+ * identical in both respects.
+ *
+ * The cardinal case is `request_user_input`: when the surface is compressed the
+ * agent must still be able to say "I am blocked, I need one line of
+ * authorisation". A face that cannot ask a human IS the failure mode this
+ * whitelist exists to prevent, so the HITL tool is a first-class member.
+ *
+ * {@link assertActionToolReachability} checks these against the assembled face
+ * (handlers ∪ injected schemas ∪ protected) and throws rather than filtering.
  *
  * Groups exist so a deployment can state, in ONE explicit word, which capability
  * it does not provide (e.g. an agent with no task service has no `task` group).
@@ -186,8 +196,13 @@ export const ACTION_TOOL_GROUPS = {
   task: ['task_create', 'task_update', 'task_submit_review'],
   /** Self-inspection + queue: always registered (unwired ports answer honestly). */
   ledger: ['work_status', 'check_mailbox'],
-  /** One-way human channel: schema-injected, protected. */
-  human: ['notify_user'],
+  /**
+   * Human channel. Both are schema-injected (pushUnique) and eviction-protected,
+   * with no registerTool handler. `request_user_input` is the BLOCKING one:
+   * without it a compressed face leaves the agent unable to ask for
+   * authorisation — the defect this whitelist exists to prevent.
+   */
+  human: ['notify_user', 'request_user_input'],
 } as const;
 
 export type ActionCapabilityGroup = keyof typeof ACTION_TOOL_GROUPS;
@@ -199,6 +214,40 @@ export const ACTION_TOOL_IDS: readonly ActionToolId[] = [
   ...ACTION_TOOL_GROUPS.task,
   ...ACTION_TOOL_GROUPS.ledger,
   ...ACTION_TOOL_GROUPS.human,
+];
+
+/**
+ * Tool calls that COUNT AS EVIDENCE OF HAVING ACTED on a requirement card.
+ *
+ * **A different predicate from {@link ACTION_TOOL_IDS}, sharing one source for the
+ * names they have in common.** The two answer different questions:
+ *
+ *   • `ACTION_TOOL_IDS` — "must this tool stay reachable under budget pressure?"
+ *     (a property of the tool FACE; enforced at assembly + eviction)
+ *   • this set         — "if the model called this, did the turn actually DO
+ *     something?" (a property of ONE call; used by the requirement_action
+ *     safeguard that re-prompts a turn which ended with no action)
+ *
+ * Merging them would be wrong in both directions: `task_update` is reachable but
+ * not evidence of acting on a requirement, while a requirement state-machine
+ * write is evidence but is scenario-gated, not part of the always-reachable face.
+ * Co-locating them keeps the overlap DERIVED rather than re-typed — this replaces
+ * the free-floating `REQ_ACTION_TOOLS` literal that used to live inside the tool
+ * loop in `agent.ts` (C8-D: one fact, one writer).
+ */
+export const REQUIREMENT_ACTION_EVIDENCE_TOOLS: readonly string[] = [
+  // Human channel: reaching a person IS acting — derived from the single source.
+  ...ACTION_TOOL_GROUPS.human,
+  // `task_create` (task group's first id): opening the card is acting. The rest
+  // of that group (update / submit) cannot be called in requirement_action.
+  ACTION_TOOL_GROUPS.task[0],
+  // Requirement state machine + review comment: evidence, but scenario-gated
+  // rather than always-reachable, so they are named here only.
+  'requirement_update_status',
+  'requirement_comment',
+  // Deprecated alias of request_user_input — still dispatched, so a call to it
+  // must count, otherwise the safeguard re-prompts a turn that did act.
+  'request_user_approval',
 ];
 
 /**
@@ -584,8 +633,10 @@ export function formatEvictedToolCatalog(
   const sample = names.slice(0, 2).map((n) => `"${n}"`).join(', ');
   const header = [
     '\n## Deferred Tools (schemas omitted for budget)',
-    'Core platform tools (shell/files/tasks/memory) and the action tools (create / update / submit / '
-    + 'work_status / check_mailbox / notify_user) stay LIVE above.',
+    // Derived, not re-typed: this list used to restate the action tools by hand
+    // and would silently go stale the day a member is added.
+    `Core platform tools (shell/files/tasks/memory) and the action tools (${ACTION_TOOL_IDS.join(' / ')}) `
+    + 'stay LIVE above.',
     `These ${names.length} tool(s) were moved OUT of this turn's schema to stay inside the tool-definition budget. `
     + 'They are not gone — each one is re-discoverable:',
     `  recover: discover_tools({ name: [${sample}${names.length > 2 ? ', …' : ''}] })`,
