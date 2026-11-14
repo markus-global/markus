@@ -6636,7 +6636,8 @@ export class SqliteWorkUnitRepo {
   }
 
   /** 子 WU（C7-B 才产生；本卡读面先就位，读空集是诚实答案）。 */
-  listChildren(parentId: string): WorkUnitRecord[] {    return this.db
+  listChildren(parentId: string): WorkUnitRecord[] {
+    return this.db
       .prepare(
         `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
                 task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
