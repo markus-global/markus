@@ -188,3 +188,34 @@ bash <agent-workspace>/cut8-verify.sh
 - **没有合并/推送任何实现分支**：集成只在本地临时树；三张 PR 的合并权在 Owner（残余 A）。
 - **没有重启生产实例**：重启 = 部署动作，需 Owner 决定时点（残余 A）。
 
+---
+
+## 9. 合并树上的重启后真机读数（2026-11-14 18:5x，`build/c8-integration` @ `eb270992`）
+
+Owner 编译重启于 `18:51:33`（UTC `10:51:33`）。以下是**重启后**的读数，逐条带判据。
+
+| # | 判据 | 读数 | 结论 |
+|---|---|---|---|
+| §0 | 跑的是刚编的构建 | `/api/health` = `0.12.3` / 100 agents；HEAD = `build/c8-integration eb270992`；进程 `18:51:33` 启动 | ✓ |
+| ① | 心跳不再产生 mailbox 行 | `source_type='heartbeat'` **since_boot = 0**、近 10 分钟 **= 0** | ✓ |
+| ① | 只有一个时钟 | 运行日志实证：`[heartbeat] Starting heartbeat scheduler {"mode":"clock","intervalMs":21600000}` | ✓ |
+| ③ | dream 单触发 | `Dream cycle starting` 全日志仅 **1** 条，时刻 `00:18:56Z`（重启前）；重启后 **0** 次 | ✓（无重复触发） |
+| ③ | 空注入形状纪律 | 本会话每轮 LLM 调用都带 `[LIVE UPDATE @seq=2] count: 0` + `none` | ✓ 真机生效 |
+| ④ | 行动类工具恒在 | `action-tool-reachability.test.ts` → **12 passed** | ✓ |
+| ⑤ | C7 基线不回归 | `dangling=0` / `paused_budget=1` / `with_parent=6` / `running=15` | ✓ |
+| ② | 同实体 a2a 不分裂 | 向同一 agent 连发 2 条 → 只落 **1 行**（mailbox 去重合并）；ref = `a2a:channel:dm:a2a:<from>:<to>`，**不含 `<deliveryId>`** | ⚠ **部分取证**：收敛形态已生效，但 `distinct_refs << rows` 未证（只有 1 行） |
+| C8-E | 端点只读台账 | `GET /api/agents/:id/work-units?status=running` → `200 {"source":"work_units","running":4,"units":[…,"internal":true]}` | ✓ |
+| C8-E | UI 与端点一致 | 未取（需在「运行与注意力」页面核对条数 = 4） | ⏳ 待取 |
+
+### 9.1 必须记录的自我更正（探针写错，不是实现错）
+
+第一次跑心跳判据时我用了 `queued_at >= datetime('now','-10 minutes')`，读到 **18 行**，看上去像"C8-C 没生效"。**那是我探针写错**：`queued_at` 存的是 ISO 字符串（`2026-11-14T09:58:40.547Z`），而 `datetime('now')` 产出空格分隔格式（`2026-11-14 10:41:00`），两者字符串比较在 `'T'` vs `' '` 处就错位了。改用 ISO 边界（`date -u -v-10M +%Y-%m-%dT%H:%M:%S`）后真实读数是 **0**。
+
+这条已写进清单的取证纪律：**时间列的格式必须与存储格式一致**，否则读数不是"错一点"，而是"反向"。
+
+### 9.2 还没取到的三条（不是遗漏，是要造流量）
+
+1. **② `distinct_refs << rows`**：需要 3 条落在**不同实体**（或目标处于 awake 状态、不被去重合并）的投递，才能形成多行对比。当前单目标停机 → 全部合并成 1 行。
+2. **③ 矛盾事实当轮 `cancel`**：需要在某个回合**进行中**向同一 `work_unit_ref` 投一条撤销/改需求，并核对 `agent_decisions` 的 cancel 行早于该回合那次 `llm.complete()`。
+3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
+

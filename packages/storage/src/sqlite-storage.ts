@@ -6357,7 +6357,8 @@ export class SqliteWorkUnitRepo {
    * 是可查的。不靠时间、不靠推断。
    */
   reconcileRunningAgainstTerminalMailbox(): number {
-    const res = this.db
+    // 规则一：触发行已终态 → 这条活已经结束。
+    const settledByTerminal = this.db
       .prepare(
         `UPDATE work_units SET status='idle', stop_reason='reconciled_terminal_mailbox'
           WHERE status='running' AND ref IN (
@@ -6366,7 +6367,19 @@ export class SqliteWorkUnitRepo {
                AND status IN ('completed','bounced','catch_all','merged'))`,
       )
       .run();
-    return ((res as { changes?: number }).changes ?? 0);
+    // 规则二（孤儿）：`session:` 回合的 WU 没有任何 mailbox 行引用它 ——
+    // 自 C8 起 ref 是**入队参数**，活着的回合必然被引用；没被引用 = 链接从未落上，
+    // 这一行不可能是在跑（真机实测 4 条，均为旧构建遗留）。
+    const settledOrphan = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_orphan_turn'
+          WHERE status='running' AND ref LIKE 'session:%'
+            AND ref NOT IN (SELECT work_unit_ref FROM mailbox_items WHERE work_unit_ref IS NOT NULL)`,
+      )
+      .run();
+    const a = (settledByTerminal as { changes?: number }).changes ?? 0;
+    const b = (settledOrphan as { changes?: number }).changes ?? 0;
+    return a + b;
   }
 
   getByRef(ref: string): WorkUnitRecord | undefined {
