@@ -677,8 +677,17 @@ export class RequirementService implements ApprovalTargetPort {
       }
     }
 
-    // Notify the creator agent of every requirement status transition
-    if (req.createdBy && this.agentManager) {
+    // Notify the creator agent of every requirement **others** made — but never
+    // notify an actor about its own write.
+    //
+    // 真实事故（2026-11-14）：agent 把自己需求的状态改错（in_progress → completed），
+    // 平台又把这件事当成一条 `requirement_update` 事件投回给同一个 agent → 它再
+    // 起来处理一个自己造成的事件。那一次它在一个回合里对同一条需求发了 27 条评论。
+    //
+    // 这条不变量平台本来就有：`state-machines.md` §2 第 10 条写明 task 创建
+    // “no self-notification”。同一个判据在 requirement 状态变更上没有执行点 →
+    // 同一事实两个执行点（R2）。现在补上：**actor 就是收件人时不发**。
+    if (req.createdBy && this.agentManager && userId !== req.createdBy) {
       try {
         const agent = this.agentManager.getAgent(req.createdBy);
         if (agent) {
