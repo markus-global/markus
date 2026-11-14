@@ -2695,21 +2695,12 @@ export class APIServer {
         const ref = linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
         const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
-        // C7-B：回合开始时建的那一行还不带会话身份（那一刻还没定跑进哪个会话），
-        // 这里补上 —— 只填空值。补不上就退化为旧路径，那仍然正确，只是少一层结构事实。
-        units.adoptContextRef(ref, memorySessionId ?? session.id);
-        units.linkMailboxItem(mailboxItemId, ref);
-        // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
-        // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
-        // 「这一轮什么时候结束的」只能从消息时间戳猜，那又是一次时序推断。
-        // 只在 `running` 上迁：重放同一轮时 ensure 会命中既有 `idle` 行，
-        // 那不是「回合未收口」，不该再迁一次（idle→idle 不在矩阵里）。
-        if (wu?.status === 'running') {
-          units.tryTransition(ref, 'idle', {
-            changedByType: 'system',
-            reason: 'chat_turn_settled',
-          });
-        }
+        void wu;
+        // 收口走唯一执行点（非流式入口同样调它，见 settleChatTurnWorkUnit）。
+        this.settleChatTurnWorkUnit(agentId, ref, {
+          memorySessionId: memorySessionId ?? session.id,
+          mailboxItemId,
+        });
       }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
@@ -2740,6 +2731,41 @@ export class APIServer {
    *
    * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
    */
+  /**
+   * C8 —— 回合收口的**唯一执行点**。
+   *
+   * 为什么必须有这一个点：2026-11-14 浏览器模拟发现，`/api/agents/:id/message`
+   * 的非流式分支只写 assistant 消息就结束了，**从未走到收口** —— 于是每个回合
+   * 都在 `work_units` 里留下一条永远 `running` 的行（实测一轮一积：1 → 3）。
+   * 「回合结束」这个事实原本有三个写者各自记一遍，漏一个不报错，只是台账说错话。
+   *
+   * 顺序：先补 context_ref（只填空值）→ 回填 mailbox 引用 → running → idle。
+   * 只在 `running` 上迁：重放同一轮会命中已 `idle` 的行，那不是「未收口」。
+   */
+  private settleChatTurnWorkUnit(
+    agentId: string,
+    ref: string | null,
+    opts: { memorySessionId?: string | null; mailboxItemId?: string | null } = {},
+  ): void {
+    if (!ref) return;
+    const units = this.workUnits;
+    if (!units) return;
+    try {
+      const contextRef = opts.memorySessionId ?? null;
+      if (contextRef) units.adoptContextRef(ref, contextRef);
+      if (opts.mailboxItemId) units.linkMailboxItem(opts.mailboxItemId, ref);
+      const row = this.storage?.workUnitRepo?.getByRef(ref);
+      if (row?.status === 'running') {
+        units.tryTransition(ref, 'idle', {
+          changedByType: 'system',
+          reason: 'chat_turn_settled',
+        });
+      }
+    } catch (err) {
+      log.warn('Failed to settle chat turn WorkUnit', { agentId, ref, error: String(err) });
+    }
+  }
+
   private async prepareChatTurnWorkUnit(
     agentId: string,
     senderId: string | undefined,
@@ -5456,10 +5482,12 @@ export class APIServer {
           const deferredRestoreNonStream = sessionRestoreData;
           // C7-B：非流式团队聊天同样「身份先于消息」。
           const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, persistedSessionId);
+          let enqueuedItemId: string | null = null;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
               workUnitRef: turnRef,
+              onItemEnqueued: (item) => { enqueuedItemId = item.id; },
               // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
               // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
               // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
@@ -5474,6 +5502,11 @@ export class APIServer {
             throw err;
           }
           this.json(res, 200, { reply, sessionId: persistedSessionId });
+          // 模拟验证发现的缺口：这个分支以前从不收口 → 每个回合留一条永久 running。
+          this.settleChatTurnWorkUnit(agentId!, turnRef, {
+            memorySessionId: this.memorySessionIdOf(agent),
+            mailboxItemId: enqueuedItemId,
+          });
           const { thinking, clean: cleanReply } = extractThinkBlocks(reply);
           // Single shared constructor — keeps this path's segments byte-identical in
           // shape to what the SSE path persists (same fields, incl. `createdAt`).
