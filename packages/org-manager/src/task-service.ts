@@ -288,7 +288,7 @@ export class TaskService implements ApprovalTargetPort {
   private taskLogRepo?: TaskLogRepo;
   /** The platform-wide single execution point for approval outcomes. */
   private approvalApplier?: ApprovalApplier;
-  private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number }): unknown };
+  private executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number; workUnitRef?: string | null }): unknown };
   private hitlService?: HITLService;
   /**
    * Cancel tokens for active task executions — keyed by taskId。
@@ -2262,7 +2262,7 @@ export class TaskService implements ApprovalTargetPort {
           let savedId: string | undefined;
           if (taskLogRepo) {
             try {
-              const row = await taskLogRepo.append(logEntry);
+              const row = await taskLogRepo.append({ ...logEntry, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
               savedId = row.id;
             } catch (err) {
               log.warn('Failed to persist task log', { taskId, error: String(err) });
@@ -2270,7 +2270,7 @@ export class TaskService implements ApprovalTargetPort {
           }
           if (this.executionStreamRepo) {
             try {
-              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
             } catch (err) {
               log.warn('Failed to persist execution stream log', { taskId, error: String(err) });
             }
@@ -2419,7 +2419,7 @@ export class TaskService implements ApprovalTargetPort {
               };
               taskLogRepo?.append(noticeEntry).catch(() => {});
               if (this.executionStreamRepo) {
-                try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound }); } catch { /* best effort */ }
+                try { this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: noticeSeq, type: 'error', content: retryMsg, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) }); } catch { /* best effort */ }
               }
               ws?.broadcast({
                 type: 'task:log',
@@ -6281,13 +6281,13 @@ export class TaskService implements ApprovalTargetPort {
           let savedId: string | undefined;
           if (taskLogRepo) {
             try {
-              const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound });
+              const saved = await taskLogRepo.append({ taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type as TaskLogType, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
               savedId = saved.id;
             } catch (err) { log.warn('Failed to persist task log', { taskId, error: String(err) }); }
           }
           if (this.executionStreamRepo) {
             try {
-              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound });
+              this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId: task.assignedAgentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound) });
             } catch (err) { log.warn('Failed to persist execution stream log', { taskId, error: String(err) }); }
           }
           if (ws) {
@@ -6493,7 +6493,7 @@ export class TaskService implements ApprovalTargetPort {
         );
         if (this.executionStreamRepo) {
           try {
-            this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round });
+            this.executionStreamRepo.append({ sourceType: 'task', sourceId: taskId, agentId, seq: currentSeq, type: entry.type, content: entry.content, metadata: entry.metadata, executionRound: round, workUnitRef: WORK_UNIT_REF.task(taskId, round) });
           } catch { /* best effort */ }
         }
 

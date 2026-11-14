@@ -853,6 +853,8 @@ export interface ActivityRecord {
   taskId?: string | null;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）。只用于判断「在跑」，不能反过来当状态。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -915,6 +917,8 @@ export interface MailboxHistoryActivity {
   label: string;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）；「在跑」只由 work_units 回答。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -947,6 +951,8 @@ export interface AgentWorkUnitRow {
   budget: number | null;
   used: number;
   contextRef?: string | null;
+  /** 服务端由 `taskIdOfWorkUnitRef(ref)` 解析（客户端不自己拆 ref）。 */
+  taskId?: string | null;
   /** 内部 session（requirement_* / channel_dm:* / session:*）—— 用户可见的“运行与注意力”必须能显示它。 */
   internal: boolean;
 }

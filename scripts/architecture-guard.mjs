@@ -380,6 +380,8 @@ const RULE_SCOPE = {
   'event-reachability': (relPath) => /^packages\/(core|org-manager|cli|a2a|comms)\/src\//.test(relPath),
   // 写门禁：只针对 shell 工具的接线点。
   'write-gate': (relPath) => relPath === 'packages/core/src/tools/shell.ts',
+  // C9-B：「在跑」只能由 work_units 回答 —— 全仓（含 UI / 服务端 / CLI）适用。
+  'no-activity-liveness': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -552,6 +554,56 @@ function loadAllowlist() {
   }
 }
 
+/**
+ * 规则 6（C9-B）：观测表是历史，不能回答「在跑」。
+ *
+ * 判据只有一个：`work_units(status='running' + claimed_by + lease_until)`。
+ * `agent_activities.ended_at IS NULL` 不叫在跑，叫「没有记到结束」——worker 被杀时
+ * 它会永远为空，于是僵尸行在 UI 上一直显示「在跑」（C8-E 被打回过的同一根因）。
+ *
+ * 因此本门禁同时拦两侧：
+ *   · 读路径把「未结束」当状态用（`!x.endedAt` / `x.endedAt === null`）；
+ *   · SQL 用 `ended_at IS NULL` 表达任何状态，以及那个已删除的「收口僵尸」扫库机制
+ *     （它存在的唯一作用就是给错误读法铺垫可信度）。
+ *
+ * 契约见 docs/architecture/observability-tables.md。
+ */
+const ACTIVITY_LIVENESS_PATTERNS = [
+  { id: 'negated-endedAt', re: /!\s*[A-Za-z_$][\w$]*(?:\.[\w$]+)*\.endedAt\b/ },
+  { id: 'null-endedAt', re: /\.endedAt\s*[!=]==?\s*null/ },
+  { id: 'orphan-activity-sweep', re: /\bcloseOrphansAgainstTerminalMailbox\s*\(/ },
+  { id: 'ended-at-null-sql', re: /ended_at\s+IS\s+NULL/i },
+];
+
+function checkActivityLiveness(_file, text) {
+  const out = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of ACTIVITY_LIVENESS_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'no-activity-liveness', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+      }
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：检测器一旦失效必须报警，否则一个永远不红的门禁比没有更危险。 */
+function selfTestActivityLiveness() {
+  const fixtures = [
+    { ok: 'const finished = Boolean(act.endedAt);', bad: 'const isLive = !act.endedAt;' },
+    { ok: 'const label = act.endedAt ?? "—";', bad: 'if (item.activity.endedAt === null) { live = true; }' },
+    { ok: 'const running = units.filter(u => u.status === "running");', bad: 'repo.closeOrphansAgainstTerminalMailbox()' },
+    { ok: 'SELECT 1 FROM agent_activities WHERE id = ?', bad: 'SELECT 1 FROM agent_activities WHERE ended_at IS NULL' },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkActivityLiveness('fixture', f.ok).length !== 0) failures.push({ rule: 'no-activity-liveness', detail: `误报：${f.ok}` });
+    if (checkActivityLiveness('fixture', f.bad).length === 0) failures.push({ rule: 'no-activity-liveness', detail: `漏报：${f.bad}` });
+  }
+  return failures;
+}
+
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
@@ -565,6 +617,7 @@ for (const file of collectSources()) {
     ...checkSessionIdentity(file, text),
     ...checkEventReachability(file, text),
     ...checkShellWriteGate(file, text),
+    ...checkActivityLiveness(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
@@ -592,7 +645,7 @@ if (violations.length) {
 
 // 契约门禁自检：每次运行都做。门禁自身的检测器一旦失效（正则不再命中真实违规形态），
 // 必须**拒绝静默放行** —— 一个永远不红的门禁比没有门禁更危险。
-const selfTestFailures = selfTestInvariants();
+const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness()];
 for (const f of selfTestFailures) {
   console.error(`[guard] ✗ 门禁自检失败：${f.rule} —— ${f.detail}`);
 }
@@ -615,6 +668,8 @@ if (fresh.length) {
   console.error(`\n[guard] ✗ 门禁失败：有 ${fresh.length} 处新违规（未在白名单中）。`);
   console.error('[guard]   no-console     → 改用 log.*（带上下文），或在白名单里写明豁免理由');
   console.error('[guard]   no-empty-catch → 至少 log.warn 说明为什么可以吞；空吞异常会让故障不可观测');
+  console.error('[guard]   no-activity-liveness → 「在跑」只认 work_units(status=running + claimed_by + lease_until)；');
+  console.error('[guard]                         activity 的 endedAt / ended_at IS NULL 只是历史属性，不是状态');
   console.error('[guard]   （确属安全豁免：把它加进 scripts/architecture-allowlist.json 并写理由）\n');
   process.exit(1);
 }

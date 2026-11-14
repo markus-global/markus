@@ -527,7 +527,7 @@ export class AgentManager {
   private static readonly MCP_IDLE_GRACE_MS = 30_000;
   private activityCallbacks?: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
@@ -3663,7 +3663,7 @@ export class AgentManager {
 
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.activityCallbacks = cbs;

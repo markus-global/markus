@@ -8,6 +8,7 @@ import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { buildActivityTimeline } from '../lib/activityTimeline.ts';
 import { matchReviewActivities, isWithinReviewWindow } from '../lib/reviewActivities.ts';
+import { taskIsLive, type WorkUnitLivenessRow } from '../lib/workUnitLiveness.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -1266,6 +1267,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
   const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
+  // C9-B：「在跑」只由 work_units 回答（不读 activity 的 endedAt）。
+  const [runningUnits, setRunningUnits] = useState<WorkUnitLivenessRow[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -1392,7 +1395,14 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
       .then(d => setRelatedActivities(d.activities))
       .catch(() => setRelatedActivities([]))
       .finally(() => setLoadingActivities(false));
+    // 同一回合的另一面：这一轮到底还在不在跑 —— 只问 work_units。
+    api.agents.workUnits(agentId, 'running')
+      .then(r => setRunningUnits(r.units))
+      .catch(() => setRunningUnits([]));
   }, [taskId, task.assignedAgentId]);
+
+  /** 这张卡自己那一轮是否在跑（别的任务/聊天在跑不算）。 */
+  const taskLive = taskIsLive(runningUnits, taskId);
 
   // Load a specific round's logs on demand
   const loadRound = useCallback((round: number) => {
@@ -1631,10 +1641,17 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
               <div className="text-xs text-fg-secondary mb-3 flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
                 {t('work:task.relatedSessions', { agent: agent?.name ?? t('work:task.agent'), count: relatedActivities.length })}
+                {taskLive && (
+                  <span className="ml-1 flex items-center gap-1 text-[10px] text-green-500 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                    {t('work:task.sessionLive')}
+                  </span>
+                )}
               </div>
               <div className="space-y-1.5">
                 {relatedActivities.map(act => {
-                  const isLive = !act.endedAt;
+                  // C9-B：这一行是**历史**。它是否“未结束”不是状态，绝不能拿来判在跑；
+                  // 在跑与否只看上面从 work_units 得来的 taskLive（页面级）。
                   const typeIcon = act.type === 'task' ? '🔧' : act.type === 'chat' ? '💬' : act.type === 'respond_in_session' ? '💬' : act.type === 'heartbeat' ? '💓' : '📋';
                   return (
                     <button
@@ -1650,16 +1667,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                           {act.endedAt ? ` — ${act.totalTools} tools, ${act.totalTokens.toLocaleString()} tokens` : ''}
                         </div>
                       </div>
-                      {isLive && (
-                        <span className="shrink-0 flex items-center gap-1 text-[10px] text-green-500 font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                          {t('work:task.sessionLive')}
-                        </span>
-                      )}
-                      {!isLive && (
-                        <span className={`shrink-0 text-[10px] ${act.success ? 'text-fg-tertiary' : 'text-red-400'}`}>
-                          {act.success ? '✓' : '✗'}
-                        </span>
+                      {act.success ? (
+                        <span className="shrink-0 text-[10px] text-fg-tertiary">✓</span>
+                      ) : (
+                        <span className="shrink-0 text-[10px] text-red-400">✗</span>
                       )}
                       <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">→</span>
                     </button>

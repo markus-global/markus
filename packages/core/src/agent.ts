@@ -906,7 +906,7 @@ export class Agent {
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
-  private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+  private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
   /** 【P3】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。 */
@@ -5209,7 +5209,7 @@ export class Agent {
 
   setActivityCallbacks(cbs: {
     onStart?: (activity: AgentActivity & { agentId: string }) => void;
-    onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.onActivityStartCb = cbs.onStart;
@@ -5440,7 +5440,7 @@ export class Agent {
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
-    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}) };
+    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}), workUnitRef: this.currentTurnWorkUnitRef };
     this.workspaceActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
@@ -5553,7 +5553,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata, workUnitRef: this.currentTurnWorkUnitRef }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
