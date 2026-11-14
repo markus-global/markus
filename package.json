@@ -28,6 +28,7 @@
     "security:guard": "node scripts/security-guard.mjs",
     "clean": "pnpm -r clean",
     "test:gui": "tsx test-gui-integration.ts",
+    "bench:agents": "node scripts/bench-agents.mjs",
     "example:gui": "tsx examples/gui-automation-workflow.ts",
     "example:release-notes": "tsx examples/release-notes-workflow.ts",
     "markus": "node packages/cli/dist/index.js",
