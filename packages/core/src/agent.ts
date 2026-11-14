@@ -63,6 +63,7 @@ import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
+import { buildTurnDeltaSegment, turnDeltaMessage, type TurnDeltaRow } from './turn-delta.js';
 import { startSpan } from './tracing.js';
 import { EventBus } from './events.js';
 import { resolveReviewTurnOutcome, REVIEW_TURN_MAX_RETRIES } from './review-turn-outcome.js';
@@ -308,6 +309,11 @@ export interface AgentOptions {
   restoredState?: { tokensUsedToday?: number };
   /** Safety cap on tool iterations per agent turn (from system config) */
   maxToolIterations?: number;
+  /**
+   * C8-B：轮内 delta 注入开关（默认开）。
+   * 关掉 = 完全回到 C8-A 的排队语义：不注入、不落 `agent_decisions`、不改任何既有段落。
+   */
+  turnDeltaInjection?: boolean;
   /** Skill registry for runtime skill discovery and activation */
   skillRegistry?: SkillRegistry;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
@@ -636,6 +642,80 @@ export class Agent {
    * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
   turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
+
+  /**
+   * C8-B —— 轮内 delta 注入（唯一入口）。
+   *
+   * 位置纪律：**只在「工具结果之后、下一次 LLM 调用之前」调用**。这是同时满足
+   * 「看得见新事实」与「不浪费已完成工作」的唯一位置；在回合开头调用会漏掉
+   * 回合中途到达的事实，在回合结束调用则是事后补记（台账有行也证明不了任何事）。
+   *
+   * 返回 `null` = 本回合不注入（开关关闭 / 本回合没有 WorkUnit 身份）。
+   * 没有实体就**不主张相关性** —— 不查「该 agent 最近一条」，那是从时序推断结构。
+   *
+   * `'cancel'` = delta 里有推翻前提的事实，且台账已落 `decision_type='cancel'`。
+   * 调用方必须**中止本回合**（`agent_decisions` 里已发生副作用）。
+   */
+  private injectTurnDelta(
+    sessionId: string,
+    snapshotSeq: number,
+  ): { decision: 'continue' | 'cancel'; text: string; decisiveItemId: string | null } | null {
+    if (!this.turnDeltaInjectionEnabled) return null;
+    const workUnitRef = this.currentTurnWorkUnitRef;
+    if (!workUnitRef) return null;
+
+    const rows = this.mailbox.deltaSince(workUnitRef, snapshotSeq);
+    const deltaRows: TurnDeltaRow[] = rows.map(item => ({
+      id: item.id,
+      sourceType: item.sourceType,
+      seq: this.mailbox.seqOf(item.id),
+      workUnitRef: item.workUnitRef ?? null,
+      payload: item.payload,
+      metadata: item.metadata,
+      envelope: item.envelope
+        ? {
+          intent: item.envelope.intent,
+          supersedes: item.envelope.supersedes ?? null,
+          invalidatesPremise: item.envelope.invalidatesPremise === true,
+        }
+        : undefined,
+    }));
+
+    const segment = buildTurnDeltaSegment({ snapshotSeq, rows: deltaRows });
+
+    // 尾追加：既有消息的字节一个都不动（缓存前缀不变）。
+    this.memory.appendMessage(sessionId, turnDeltaMessage(segment));
+
+    if (segment.decision === 'cancel' && segment.decisive) {
+      const item = rows.find(r => r.id === segment.decisive!.id);
+      const reasoning = `[turn-delta] ${segment.decisive.deltaClass}/`
+        + `${segment.decisive.sourceType} (${segment.decisive.id}) supersedes the premise this turn was executing`;
+      if (item) {
+        this.attentionController.recordTurnDeltaDecision(
+          item,
+          reasoning,
+          'turn_aborted_before_next_llm_call',
+        );
+      }
+      log.info('Turn delta overturned the premise — aborting the turn', {
+        agentId: this.id,
+        workUnitRef,
+        snapshotSeq,
+        decisiveItemId: segment.decisive.id,
+        sideEffectsBeforeDecision: 'recorded in agent_decisions.context',
+      });
+      return { decision: 'cancel', text: segment.text, decisiveItemId: segment.decisive.id };
+    }
+
+    log.debug('Turn delta injected', {
+      agentId: this.id,
+      workUnitRef,
+      snapshotSeq,
+      count: segment.entries.length,
+      omitted: segment.omitted,
+    });
+    return { decision: 'continue', text: segment.text, decisiveItemId: null };
+  }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -889,6 +969,8 @@ export class Agent {
    *  longer the launching scenario by then — it must be captured at registration. */
   private bgSessionScenario = new Map<string, AgentScenario>();
   private _maxToolIterations: number;
+  /** C8-B：轮内 delta 注入开关（关掉 = C8-A 排队语义，见 `AgentOptions.turnDeltaInjection`）。 */
+  private turnDeltaInjectionEnabled: boolean;
   private _bgCompletionUnsub?: () => void;
   private _heartbeatUnsub?: () => void;
   private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
@@ -1000,6 +1082,7 @@ export class Agent {
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
+    this.turnDeltaInjectionEnabled = options.turnDeltaInjection !== false;
     this.eventBus = new EventBus();
     this.mailbox = new AgentMailbox(this.id, this.eventBus);
     this.attentionController = new AttentionController(this.id, this.mailbox, this.eventBus);
@@ -5644,6 +5727,9 @@ export class Agent {
 
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
+      // C8-B：本回合的 delta 快照（回合内恒定；注入段里的 @seq 就是这个值，
+      // 不是「当前序号」——后者每次渲染都变，等于把计数器写进缓存键）。
+      const turnDeltaSnapshot = this.mailbox.currentSeq();
       const commentToolUsed = new Set<string>();
       const requirementActionToolUsed = new Set<string>();
 
@@ -5829,6 +5915,17 @@ export class Agent {
           if (typeof chatYield.item.runtime?.responsePromise?.resolve === 'function') {
             chatYield.item.runtime.responsePromise.resolve('[merged]');
           }
+        }
+
+        // C8-B：轮内 delta 注入 —— 必须在下面这次 LLM 调用**之前**。
+        // 矛盾事实在这里落 `agent_decisions(decision_type='cancel')` 并中止本回合。
+        const turnDelta = this.injectTurnDelta(sessionId, turnDeltaSnapshot);
+        if (turnDelta?.decision === 'cancel') {
+          log.info('handleMessage cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: turnDelta.decisiveItemId,
+          });
+          return '[cancelled]';
         }
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, toolSelectOpts);
@@ -6410,6 +6507,8 @@ export class Agent {
       }
 
       let streamToolIterations = 0;
+      // C8-B：本回合 delta 快照（回合内恒定）。
+      const streamTurnDeltaSnapshot = this.mailbox.currentSeq();
 
       while (
         shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
@@ -6599,6 +6698,19 @@ export class Agent {
           // processed immediately after this turn completes, rather than truncating the
           // human's answer mid-way.
           this.attentionController.restoreInterruptSignal(streamYield.item);
+        }
+
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        const streamTurnDelta = this.injectTurnDelta(this.currentSessionId!, streamTurnDeltaSnapshot);
+        if (streamTurnDelta?.decision === 'cancel') {
+          log.info('Stream cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: streamTurnDelta.decisiveItemId,
+          });
+          try { abortController.abort(); } catch { /* best effort */ }
+          if (streamChatActivityId) this.endActivity(streamChatActivityId);
+          this.transitionStatus({ to: 'idle' });
+          return '[cancelled]';
         }
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, streamToolSelectOpts);
@@ -7082,6 +7194,8 @@ export class Agent {
     let textBuffer = '';
     let thinkingBuffer = '';
     let taskToolIterations = 0;
+    // C8-B：本回合 delta 快照（同上：回合内恒定）。
+    const taskTurnDeltaSnapshot = this.mailbox.currentSeq();
 
     const flushThinking = () => {
       if (thinkingBuffer.trim()) {
@@ -7314,6 +7428,24 @@ export class Agent {
             taskId,
             mergedType: yieldResult.item.sourceType,
           });
+        }
+
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        // 矛盾事实（撤单 / 驳回 / 更正）当场中止本回合：`agent_decisions`
+        // 落 `decision_type='cancel'`，副作用已发生的部分由台账留痕。
+        const taskTurnDelta = this.injectTurnDelta(sessionId, taskTurnDeltaSnapshot);
+        if (taskTurnDelta?.decision === 'cancel') {
+          cancelExecutionToken(cancelToken, 'user_cancel');
+          emit('status', 'cancelled', {
+            stopReason: 'user_cancel',
+            reason: `in-turn delta: ${taskTurnDelta.decisiveItemId ?? 'unknown'}`,
+          });
+          log.info('Task execution cancelled by in-turn delta', {
+            taskId,
+            agentId: this.id,
+            decisiveItemId: taskTurnDelta.decisiveItemId,
+          });
+          return;
         }
 
         // Re-inject critical task completion reminder every 10 tool iterations
@@ -7688,6 +7820,8 @@ export class Agent {
     this.volatileState = volatileState;
 
     const risToolSelectOpts = { userMessage };
+    // C8-B：本回合 delta 快照（回合内恒定）。
+    const risTurnDeltaSnapshot = this.mailbox.currentSeq();
     let llmTools = this.buildToolDefinitions(risToolSelectOpts);
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
@@ -7829,6 +7963,17 @@ export class Agent {
           if (typeof risYield.item.runtime?.responsePromise?.resolve === 'function') {
             risYield.item.runtime.responsePromise.resolve('[merged]');
           }
+        }
+
+        // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
+        const risTurnDelta = this.injectTurnDelta(sessionId, risTurnDeltaSnapshot);
+        if (risTurnDelta?.decision === 'cancel') {
+          log.info('respondInSession cancelled by in-turn delta', {
+            agentId: this.id,
+            decisiveItemId: risTurnDelta.decisiveItemId,
+          });
+          flushText();
+          return '[cancelled]';
         }
 
         llmTools = this.refreshToolsAfterDiscover(llmTools, response.toolCalls, risToolSelectOpts);
