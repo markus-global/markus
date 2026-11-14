@@ -2045,6 +2045,16 @@ export class APIServer {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
     this.wireWorkUnits();
+    // C8-P2：僵尸活动收口 —— 触发它的投递行已终态的行，不该再挂着“进行中”。
+    // 「是否在跑」的唯一权威是 work_units；activity 只是历史，不是状态。
+    try {
+      const closed = this.storage?.activityRepo?.closeOrphansAgainstTerminalMailbox?.() ?? 0;
+      if (closed > 0) {
+        log.info('Closed orphan activities (trigger row already terminal)', { count: closed });
+      }
+    } catch (err) {
+      log.warn('Failed to close orphan activities', { error: String(err) });
+    }
     // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
     // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
     try {

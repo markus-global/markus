@@ -4714,6 +4714,32 @@ export interface ActivityLogRecord {
 export class SqliteActivityRepo {
   constructor(private db: DatabaseSync) {}
 
+  /**
+   * C8-P2：收口「僵尸活动」——`ended_at` 仍为空、但**触发它的 mailbox 行已终态**的行。
+   *
+   * 判据与 WorkUnit 纠偏同源：触发这件事的东西已经结束了，它就不可能“还在进行”。
+   * 2026-11-14 真机：这类行积了 3269 条，UI 一度拿它们派生“进行中”——那是在用
+   * 第二套事实回答一个已经由台账回答的问题。现在它们会被收口，"在跑"只认台账。
+   *
+   * @returns 收口条数（供启动日志，不静默）
+   */
+  closeOrphansAgainstTerminalMailbox(): number {
+    const res = this.db
+      .prepare(
+        `UPDATE agent_activities
+            SET ended_at = COALESCE(
+                  (SELECT m.completed_at FROM mailbox_items m WHERE m.id = agent_activities.mailbox_item_id),
+                  strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+          WHERE ended_at IS NULL
+            AND mailbox_item_id IS NOT NULL
+            AND mailbox_item_id IN (
+              SELECT id FROM mailbox_items
+               WHERE status IN ('completed','bounced','catch_all','merged'))`,
+      )
+      .run();
+    return ((res as { changes?: number }).changes ?? 0);
+  }
+
   insertActivity(data: {
     id: string;
     agentId: string;
