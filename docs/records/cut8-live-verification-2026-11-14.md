@@ -780,5 +780,52 @@ Owner 2026-11-14 23:10 要求：「除了这个，其他所有的，都应该考
 
 - `requirement_comment`：实体是需求，不是任务 → 队列处理。
 - 判据③ 的 cancel 行：等这次重建后的真机事件。
+
+---
+
+# §19 第三轮真机（2026-11-14 23:21 · HEAD `ce661ac6`）——第六层：**身份在持久化层被丢掉**
+
+## §19.1 本轮验证到的（对的部分）
+
+| 项 | 读数 |
+|---|---|
+| 构建 | asar 23:19 / 进程 23:19:47 / HEAD `ce661ac6` |
+| 启动纠偏 | `Reconciled stale running WorkUnits {"count":5}` —— 清掉上轮遗留 |
+| 在跑归位 | 只剩我这一轮 `session:cs_66bc3ebf…:r55`（正确会话） |
+| 生产者标志 | 取消投递行 `invalidatesPremise:true` ✅ |
+| 回合当轮被停 | 任务 `15:21:53` 开始、`15:22:14` 取消，执行方在回合内被停 |
+
+## §19.2 仍然不对的（判据③ 的仪器）
+
+```
+取消投递行  mbx_f7176ec…   work_unit_ref = NULL        ← 身份仍为空
+触发执行行  mbx_e8d977a…   work_unit_ref = task_…_r1   ← 对照
+agent_decisions 最新 cancel = 2026-09-04（无新增）
+```
+
+## §19.3 根因：第六层，在最底下
+
+我在 `maybeNotifyAssignee` / `requirement-service` / `enqueueFor` 里都给投递传了 `workUnitRef`，
+代码看起来完全正确 —— 但 `SqliteMailboxRepo.save()` 的 INSERT **故意不写 `work_unit_ref`**，
+那一列的唯一写者是 `SqliteWorkUnitRepo.linkMailboxItem()`，而这些新加身份的生产者**没有一处调它**。
+
+⇒ 传进去的身份只活在内存对象里，落库即丢。**所有"补身份"的修复在磁盘上等于没生效。**
+
+这是同一族缺陷的第六层，也是最底层：**把"谁拥有写入权"当成了"谁必须写"**。
+单一写者是对的，但写者必须在**事实已知的那一刻**被调用，否则就是"没人写"。
+
+## §19.4 修法（`d5868820`）
+
+既然 C8 之后 `work_unit_ref` 是**入队参数**（入队即已知），就让 INSERT 在带上时写入；
+活开始后才拿到身份的路径仍走 `linkMailboxItem()` 的 UPDATE。两条路各有明确的「何时已知」语义，
+不再是"一个静默失败维持着的单一写者"。
+
+`tsc -b` 0；work-unit storage + producers 20 用例绿。
+
+## §19.5 结论
+
+判据③ 的仪器仍未取到，但**阻塞点已经落到最底层并修掉了**：现在缺的只是一次包含 `d5868820` 的重建。
+重建后再跑同一探针（建卡 → 浏览器批准 → 回合中途取消），预期：
+① 取消投递行 `work_unit_ref = task_<id>_r1`；② `agent_decisions` 出现 `cancel` 行且早于该回合 `llm.complete()`。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
