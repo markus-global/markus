@@ -1819,10 +1819,16 @@ export class AgentManager {
       // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
-      // 第七刀 C7-A：自省端口（未接线 ⇒ 工具不注册）。
-      ...(this.workUnitStatusProvider
-        ? { workStatus: (opts: { limit?: number }) => this.workUnitStatusProvider!(id, opts) }
-        : {}),
+      // 第七刀 C7-A：自省端口。**总是注册**，取值在调用时惰性解析。
+      //
+      // 曾经的写法是「provider 没注入就不注册工具」，结果：装配一旦晚于建 agent，
+      // 工具就**不存在**，而 agent 无法区分「这个部署没接台账」和「我没有这个能力」——
+      // 2026-11-14 真机事故里它就是这么静默消失的。现在工具始终在，
+      // 未接线时诚实地回 `unavailable`（可行动），而不是变成一个不存在的名字。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
 
@@ -2753,9 +2759,11 @@ export class AgentManager {
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
-      ...(this.workUnitStatusProvider
-        ? { workStatus: (opts: { limit?: number }) => this.workUnitStatusProvider!(id, opts) }
-        : {}),
+      // 第七刀 C7-A：自省端口（同第一条建 agent 路径，总是注册、惰性解析）。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 

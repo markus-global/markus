@@ -39,17 +39,32 @@ afterEach(() => {
 });
 
 /**
- * 递归桩：`APIServer` 构造期会拿 orgService 做一串装配（模板注册表、群聊 handler 等），
+ * 递归桩 + 调用记录：`APIServer` 构造期会拿 orgService 做一串装配（模板注册表、群聊 handler 等），
  * 本测试只关心 storage → workUnits 的时序，所以对这些协作者给一个「任何属性都是自己、
- * 调用也返回自己」的桩，避免用 `{}` 半成品把失败原因变成 TypeError。
+ * 调用也返回自己」的桩，同时把 agentManager 上发生的 setter 调用记下来 —— C7 装配是否
+ * 真的发生在 `setStorage()` 里，靠这份记录判定。
  */
 const deepStub: unknown = new Proxy(function () {} as unknown as object, {
   get: () => deepStub,
   apply: () => deepStub,
 });
 
+function makeServer(): { api: APIServer; calls: string[] } {
+  const calls: string[] = [];
+  const agentManager = new Proxy({} as Record<string, unknown>, {
+    get(_t, prop: string) {
+      return (..._args: unknown[]) => {
+        calls.push(prop);
+        return prop === 'getTemplateRegistry' ? null : deepStub;
+      };
+    },
+  });
+  const orgService = { getAgentManager: () => agentManager } as never;
+  return { api: new APIServer(orgService, new TaskService()), calls };
+}
+
 function server(): APIServer {
-  return new APIServer(deepStub as never, new TaskService());
+  return makeServer().api;
 }
 
 function bridge() {
@@ -84,5 +99,19 @@ describe('WorkUnit 装配顺序：storage 晚于首次读取接入', () => {
     const api = server();
     expect(api.workUnits).toBeNull();
     expect(api.workUnits).toBeNull();
+  });
+
+  it('setStorage 是 C7 装配的唯一入口：接入即接线（不依赖某个启动文件）', () => {
+    const { api, calls } = makeServer();
+    // 接入前：agentManager 上不应发生任何 WU 装配（两个启动路径都不会丢东西）
+    expect(calls).not.toContain('setWorkUnitStatusProvider');
+    expect(calls).not.toContain('setWorkUnitPort');
+
+    api.setStorage(bridge());
+
+    // 接入后：服务和两个端口都在同一处接好 —— CLI 与桌面端走同一条路
+    expect(api.workUnits).not.toBeNull();
+    expect(calls).toContain('setWorkUnitStatusProvider');
+    expect(calls).toContain('setWorkUnitPort');
   });
 });

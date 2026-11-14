@@ -2038,9 +2038,53 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    // 存储被替换（或首次接入）时，WorkUnit 服务必须重新从新存储派生，
+    // 否则它仍指向旧 repo —— 同一份数据两个句柄，写到哪份取决于谁先建。
+    this._workUnits = undefined;
     if (storage?.pendingCallbackRepo) {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
+    this.wireWorkUnits();
+  }
+
+  /**
+   * 第七刀 C7 装配的**唯一**执行点。
+   *
+   * 为什云放在 `setStorage()` 里，而不是某个启动文件：**“有 storage”是 WorkUnit 存在的前提**，
+   * 而任何启动路径（CLI `commands/start.ts` / 桌面 `cli/backend.ts` 的 `startBackend()`）
+   * 都必须先 `setStorage`。装配写在任何一个启动文件里，就必然有第二个启动路径漏掉 ——
+   * 2026-11-14 真机事故就是这么发生的：装配在 `start.ts`，而桌面端走 `backend.ts`，
+   * 于是 taskService 端口没接、`work_status` 没注册、chat 链路静默不写。
+   *
+   * 三个写入面共用**一个** `WorkUnitService` 实例：`failures/created` 计数与事件只有一份，
+   * 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
+   */
+  private wireWorkUnits(): void {
+    const units = this.workUnits;
+    if (!units) return;
+    this.taskService.setWorkUnitService(units);
+    const manager = this.orgService.getAgentManager();
+    // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
+    manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
+    // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。
+    const storage = this.storage;
+    manager.setWorkUnitPort({
+      resolve: (ref) => {
+        const row = storage?.workUnitRepo?.getByRef(ref) as
+          | { id: string; ref: string; status: string; contextRef: string | null }
+          | undefined;
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      ensureChild: (seed) => {
+        const row = units.ensure({ ...seed, status: 'running' });
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      settle: (ref, opts) => units.settle(ref, opts),
+    });
   }
 
   /**

@@ -1416,40 +1416,9 @@ async function startServerCore(
     }
   }
 
-  // ── 第七刀 C7-A：WorkUnit 装配（一个实例，三个写入面共用）──────────────
-  // **必须放在 `setStorage()` 之后**：`workUnits` 的仓储来自 storage，早于它装配
-  // 只能拿到 null。这正是 2026-11-14 真机事故的直接成因（旧的 getter 还会把那个
-  // null 缓存成永久答案），修完后 getter 不再负缓存，顺序也回到正确的一侧。
-  // 一个实例而不是三个：`failures/created` 计数与 `onEvent` 只有一份，
-  // 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
-  if (apiServer.workUnits) {
-    taskService.setWorkUnitService(apiServer.workUnits);
-    agentManager.setWorkUnitStatusProvider((agentId, opts) =>
-      apiServer.workUnits!.workStatus(agentId, opts),
-    );
-    // ── 第七刀 C7-B：委派 WU 端口（父子结构 + 预算记账的唯一入口）──────
-    // 端口而不是 WorkUnitService 本身：core 不反向依赖 org-manager。
-    // 读面走 storage 的唯一 SQL 点（`SqliteWorkUnitRepo.getByRef`），写面走
-    // `WorkUnitService`（唯一业务写者）—— 不在这里另算一份预算。
-    const units = apiServer.workUnits;
-    agentManager.setWorkUnitPort({
-      resolve: (ref) => {
-        const row = storage?.workUnitRepo?.getByRef(ref) as
-          | { id: string; ref: string; status: string; contextRef: string | null }
-          | undefined;
-        return row
-          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
-          : null;
-      },
-      ensureChild: (seed) => {
-        const row = units.ensure({ ...seed, status: 'running' });
-        return row
-          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
-          : null;
-      },
-      settle: (ref, opts) => units.settle(ref, opts),
-    });
-  }
+  // 第七刀 C7 的装配已在 `APIServer.setStorage()` 里完成（单一执行点）。
+  // 这里**不再重复**：装配写在启动文件里就必然有第二个启动路径（桌面端走
+  // `cli/backend.ts#startBackend`）漏掉 —— 2026-11-14 真机事故的成因。
 
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, ownerUserId);
