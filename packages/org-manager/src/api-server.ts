@@ -2654,6 +2654,15 @@ export class APIServer {
      * 永远 fallback，等于这条收敛没生效。没有记忆会话（历史重放）时显式 null。
      */
     memorySessionId: string | null,
+    /**
+     * C8：回合**开始时**就定下的 WU ref（`prepareChatTurnWorkUnit` 的返回值）。
+     *
+     * 必填（`string | null`）：收口必须用同一个身份，不能再在这里解析一次。
+     * 2026-11-14 真机：多会话 agent 上，这里用 `getSessionsByAgent(...)[0]` 重算，
+     * 拿到的是主会话（旧），于是收口落在旧 ref 上，**真正在跑的那一行永远不收口**
+     * （实测 `session:cs_66bc3ebf…:r50/r51/r52` 同时挂着）。
+     */
+    turnWorkUnitRef: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2692,7 +2701,7 @@ export class APIServer {
         const linkedRef = mailboxItemId
           ? (this.storage?.mailboxRepo?.getById(mailboxItemId)?.workUnitRef ?? null)
           : null;
-        const ref = linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
+        const ref = turnWorkUnitRef ?? linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
         const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
         void wu;
@@ -4885,7 +4894,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent));
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -7493,7 +7502,7 @@ EXPLANATION_END`;
           workUnitRef: turnRef,
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent));
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
           },
         });
 
@@ -7523,7 +7532,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent));
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent), turnRef);
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });
