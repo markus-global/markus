@@ -25,6 +25,7 @@ import {
   type DeliberationResult,
   MailboxPriorityLevel,
   routeMailboxItem,
+  resolveMailboxDestination,
   HEARTBEAT_DAILY_LOG_CHARS,
   END_TURN_REPLY_SENTINEL,
   stripLegacyCompletionToken,
@@ -2530,8 +2531,22 @@ export class Agent {
               return reply;
             }
           }
-          const msgChannelKey = extra.channelKey as string | undefined;
-          const channelSessionId = msgChannelKey ? channelMemorySessionId(this.id, msgChannelKey) : undefined;
+          // C8-A：会话 key 的**唯一来源**是 `sessionHint`（生产方按实体派生）。
+          //
+          // 旧代码在这里按 `extra.channelKey` 又拼了一次会话 id —— 那是「同一件事
+          // 两个写者」的小号副本：resolveTurnSession 刚按 hint 切到实体会话，这里
+          // 又把 handleMessage 指回频道会话，后写者赢。频道一变（同一任务经 DM 与
+          // 群聊到达）会话就分裂。没有 hint 的旧行才回退到 channelKey。
+          const sessionHintForKey = extra.sessionHint as TurnSessionHint | undefined;
+          const channelSessionKey =
+            sessionHintForKey?.kind === 'system'
+              && sessionHintForKey.role === 'channel'
+              && sessionHintForKey.key
+              ? sessionHintForKey.key
+              : (extra.channelKey as string | undefined);
+          const channelSessionId = channelSessionKey
+            ? channelMemorySessionId(this.id, channelSessionKey)
+            : undefined;
           // In-session A2A delegation: if this message replies to a conversation the
           // agent is awaiting inline (registered via agent_send_message reply_in_session),
           // route the reply into the ORIGIN session so the delegating thread continues
@@ -2778,7 +2793,14 @@ export class Agent {
 
         case 'task_comment': {
           const taskId = item.metadata?.taskId ?? item.payload.taskId;
-          if (taskId && this.activeTasks.has(taskId)) {
+          // C8-A：去向由**实体交集**回答，不再由「这个 taskId 在不在 activeTasks 里」回答。
+          // 旧写法是一个谓词答两个问题（这件事正在跑吗 / 要不要注入），且只认载荷里的
+          // taskId —— 从 WU 得到实体的 item 会被误判成「不在跑」而去排一个多余的回合。
+          const destination = resolveMailboxDestination(
+            this.mailbox.entityKeysOf(item),
+            Array.from(this.activeTasks, t => `task:${t}`),
+          );
+          if (destination === 'inject' && taskId) {
             const round = this.getTaskExecutionRound(taskId);
             const sessionId = `task_${taskId}_r${round}`;
             this.injectUserMessage(sessionId, item.payload.content);
