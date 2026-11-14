@@ -483,5 +483,77 @@ ensure(ref, status:'running')        → { status: 'idle' }   ← 已存在，�
 ## §13.8 仍未取到的一项（不变）
 
 判据③ 的真机 `cancel` 行：需要一个**已批准**任务在其执行方回合中被取消。生产者已在 `9c10f0e4` 上线并在真实信封中可见；探针卡受建卡闸与 FSM 限制无法进入终态（`pending→cancelled` 落 `rejected`，`rejected→in_progress/cancelled` 被拒）。不动他人真实在跑卡。
+
+---
+
+# §14 C8 完成度总验（2026-11-14 21:05 · HEAD `bc74d74c` · 构建 21:04 / 进程 21:04:10）
+
+## §14.0 前置
+
+| 检查 | 读数 |
+|---|---|
+| `app.asar` mtime | **21:04**（晚于 HEAD 提交 21:03:36） |
+| 进程启动 | **21:04:10** |
+| 分支 | `build/c8-integration` @ `bc74d74c` |
+
+## §14.1 五条刀级判据
+
+| # | 判据 | 修前基线 | 本次读数（13:05Z） | 结论 |
+|---|---|---|---|---|
+| ① | 心跳入队（10min） | 16 | **0**（同期全部新增 3） | ✅ 通过 |
+| ② | `distinct_refs << rows` | 9 行 / 9 ref（1:1） | **48 行 / 40 ref**；a2a 连发 3 条实测 3 行 1 ref | ✅ 通过 |
+| ③ | 矛盾事实当轮 cancel | cancel 全库 4 条（均为 9 月前的旧机制） | 生产者已上线、真实信封可证（`invalidatesPremise:false` 命中过真实投递）；**真机 cancel 行仍缺一次「已批准任务在执行中被取消」** | ⚠ 取证缺口 |
+| ④ | 7 个行动工具恒在 | — | `action-tool-reachability` **12 passed** | ✅ 通过 |
+| ⑤ | C7 基线不回归 | dangling 0 / paused 1 / 父链 6 | dangling **0** / paused_budget **1** / 父链 **8** | ✅ 通过 |
+
+## §14.2 C8-E「在跑」唯一权威来源（本次是重点，此前一直是 0）
+
+| # | 判据 | 读数 | 结论 |
+|---|---|---|---|
+| E1 | 端点只读台账 | `GET /api/agents/<id>/work-units?status=running` → `{source:'work_units', running:1}` | ✅ |
+| E2 | 内部 session 可见 | 返回的单元 `ref = session:cs_66bc3ebf11ea4e3c:r48`，`internal: true` | ✅ |
+| E3 | **僵尸 activity 不算在跑** | `agent_activities.ended_at IS NULL` = **3269** 条，同期 running WU = **1**（且那一条就是我正在跑的回合） | ✅ |
+| E4 | UI 与端点一致 | UI「运行与注意力」逐字渲染：`正在运行 1` / `session:cs_66bc3ebf11ea4e3c:r48` / `内部会话` / `Agent 专注：💬 人类对话自 21:04:49 起`；同一面板 `邮箱·处理中 1` | ✅ **两句话终于自洽** |
+| E5 | 读失败要明说 | 无凭据 401；无存储返回空结构而非旧列表 | ✅ |
+
+**关键对照（同一个面板，修前 vs 修后）**
+
+```
+修前：正在运行 0 · 当前没有进行中的工作单元   ←→  邮箱·处理中 1（自相矛盾）
+修后：正在运行 1 · session:cs_66bc3ebf…:r48 内部会话   ←→  邮箱·处理中 1（一致）
+```
+
+## §14.3 僵尸 running：修完不复发
+
+| 时点 | running 行数 |
+|---|---|
+| 修前（首读） | **15**（全部是死回合） |
+| 第一次重启后（`5be7a59a`+`4c8f4360`） | 0（启动日志 `Reconciled stale running WorkUnits {"count":15}`） |
+| 第二次重启后 | 0 |
+| **本次（chat WU 归位后）** | **1 —— 真实在跑的那一个** |
+
+从「15 个幽灵」到「恰好 1 个真的」，这条曲线的两侧都被真机读数钉住了。
+
+## §14.4 门禁
+
+`tsc -b` = 0；本轮跑到的套件：`chat-turn-ref-resolution`(3) + `action-tool-reachability`(12) + `turn-delta` + `turn-delta-injection` + `work-unit producers` + `storage` → **33 passed**（另有前序 116/51/23 轮次全绿）。
+
+## §14.5 结论
+
+- **①②④⑤ + C8-E（E1–E5）：通过**，每条都有修前基线对照与真机读数。
+- **③：不通过（取证条件未满足，非代码缺陷）**。生产者已在生产代码里上线且被真实信封证明，消费端有 `cancelAt < nextLlmAt` 的集成断言；缺的是一次「已批准任务在其执行方回合中被取消」的真机事件。
+
+## §14.6 本轮修复链（每一层都由读数驱动）
+
+| commit | 修的是什么 | 怎么发现的 |
+|---|---|---|
+| `5be7a59a` | 回合结束不收口 → 僵尸 running | 首读 15 条死行 + 启动日志 |
+| `4c8f4360` | 孤儿 session 单元（无 mailbox 行引用） | 库副本探针 15→11→4 |
+| `9c10f0e4` | 矛盾事实无生产者（消费端写完、生产端零写者） | 全仓 grep `invalidatesPremise` 只有测试在设 |
+| `cdc868f0` | follow-up 入口不带回合身份 | 三条 chat 行 ref 全 NULL |
+| `4612ada3` | **会话解析猜错（主因）** | 库副本跑真实 `prepareChatTurnWorkUnit`，算出 `cs_609ff62a…` 而真在跑 `cs_66bc3ebf…` |
+| `bc74d74c` | 注释在撒谎（指错根因） | 自查工作树残留 |
+
+三层缺陷同一症状，每一层的判据都不是「看起来对」，而是「换个记号再犯会不会再红」。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
