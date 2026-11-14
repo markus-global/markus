@@ -441,7 +441,46 @@ AssertionError: expected null to be 'session:cs_probe:r7'
 
 C8-E 原先只证了「僵尸不算在跑」。本次实测补上了反向：**真实在跑的回合必须能被权威源看见**。修复前该方向不成立（0 vs 处理中 1），修复后需重建实例再读一次「运行与注意力 = 1」才算真机闭环。
 
-## §13.7 仍未取到的一项（不变）
+## §13.7 更正：§13.3 的根因判断不完整（第三层才是主因）
+
+§13.3 把原因归给 `injectFollowUp` 漏传身份。那个缺口是真的（已修，`cdc868f0`），**但它不是面板显示 0 的主因**——重启后复测：普通入口（非 inject）这一轮同样是 `work_unit_ref = NULL`。实测把真正的根因挖到了第三层：
+
+**三层缺陷，同一症状**
+
+| 层 | 缺陷 | 证据 | 状态 |
+|---|---|---|---|
+| 1 | `injectFollowUp` 不带回合身份 | 该路径从未有过这个参数 | 已修 `cdc868f0` |
+| 2 | 持久化时机：chat 只在**回合结束**才 `linkMailboxItem` | 回合进行中该行 `work_unit_ref = NULL` | 设计如此（单一写者），靠层 3 修好 |
+| 3 | **会话解析错误（主因）** | 见下 | 已修 `4612ada3` |
+
+**层 3 的取证（真实数据副本 + 真实 service 代码）**
+
+```
+getSessionsByAgent(agent, 1, sender) → ['cs_609ff62a63e04701']
+当前真正在跑的会话                    →  cs_66bc3ebf11ea4e3c
+messageCount 643 → round 322 → ref = session:cs_609ff62a63e04701:r322
+ensure(ref, status:'running')        → { status: 'idle' }   ← 已存在，不改状态
+```
+
+`getSessionsByAgent` 按 `is_main DESC, last_message_at DESC` 排序，**主会话永远排第一**，哪怕它是 3 小时前的（`is_main=1`，最后活跃 08:44）。而真正在写的会话是 `is_main=0`、最后活跃 12:34。于是每轮的 ref 都算到旧会话上，那一行早已 `idle`；`ensure()` 对已存在的行不做任何事 → 该回合在台账里**从未有过 running 行** → 权威源被问了，它如实回答 0。
+
+这正是「一个事实，两个解析器」：入口明明解析出了 `sessionId`，但没传给派生点，派生点只好用另一套规则再猜一次。
+
+**修法**
+
+1. 团队聊天的 SSE 入口把**已知的** `sessionId` 传进去（`prepareChatTurnWorkUnit(agentId, senderId, sessionId ?? null)`）——有 id 就不再派生。
+2. 无 id 时的兜底改为取**最近活跃**（`last_message_at` 降序），不是主会话。
+3. 选定的 ref 若撞上已收口的 `idle` 行，**显式拉回 `running`**（重试 / 同轮重入 / 早先提前收口都走这条）。
+
+**会咬人的测试**（`chat-turn-ref-resolution.test.ts`，3 条各自独立）
+
+- 主会话更旧 → 必须选中最近活跃的那个（不是 `is_main`）；
+- 入口给了 id → 必须用它，不看排序；
+- ref 撞上已收口的 idle 行 → 必须拉回 `running`（否则台账说没在跑）。
+
+**一处自我更正**：我一度把 `work_unit_ref` 直接写进 `SqliteMailboxRepo.save()` 的 INSERT，被自己的测试打回——那一列的单一写者是 `linkMailboxItem`，开第二个写者是把可见 bug 换成不可见 bug。已撤回。
+
+## §13.8 仍未取到的一项（不变）
 
 判据③ 的真机 `cancel` 行：需要一个**已批准**任务在其执行方回合中被取消。生产者已在 `9c10f0e4` 上线并在真实信封中可见；探针卡受建卡闸与 FSM 限制无法进入终态（`pending→cancelled` 落 `rejected`，`rejected→in_progress/cancelled` 被拒）。不动他人真实在跑卡。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
