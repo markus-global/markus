@@ -21,7 +21,11 @@ import type { Task, TaskStatus } from '../src/types.js';
 interface Captured {
   sourceType: string;
   payload: { taskId?: string };
-  options: { metadata?: { taskId?: string }; invalidatesPremise?: boolean } | undefined;
+  options: {
+    metadata?: { taskId?: string };
+    invalidatesPremise?: boolean;
+    workUnitRef?: string | null;
+  } | undefined;
 }
 
 function makeService(): { svc: TaskService; calls: Captured[] } {
@@ -82,6 +86,9 @@ describe('C8-B ②：任务被终止时，在跑的回合必须收到「前提�
       expect(calls[0]!.sourceType).toBe('task_status_update');
       expect(calls[0]!.options?.invalidatesPremise).toBe(true);
       expect(calls[0]!.options?.metadata?.taskId).toBe('tsk_premise');
+      // 身份：turn-delta 按 ref 匹配「正在执行的那一回合」。ref 为 NULL 时
+      // 矛盾分支永远不可达（2026-11-14 真机：取消投递 ref=NULL，只靠 cancel token 生效）。
+      expect(calls[0]!.options?.workUnitRef).toBe('task_tsk_premise_r1');
     },
   );
 

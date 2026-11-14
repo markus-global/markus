@@ -3760,6 +3760,12 @@ export class TaskService implements ApprovalTargetPort {
           taskId: task.id,
         }, {
           metadata: { taskId: task.id },
+          // 投递必须带**任务级身份**：`turn-delta` 按 ref 匹配「正在执行的那一回合」，
+          // 没有 ref 的事实永远匹配不到 —— 矛盾分支就永远不可达。
+          // 2026-11-14 真机实测：取消投递行 `work_unit_ref = NULL`，而触发执行那行是
+          // `task_<id>_r1`，于是「取消在当轮生效」只靠协作式 cancel token（stopReason
+          // = lifecycle）实现，delta 通道形同虚设。
+          workUnitRef: WORK_UNIT_REF.task(task.id, task.executionRound ?? 1),
           // The single place that turns "this task is over" into a fact the
           // running turn can act on. Without it the turn keeps spending tokens
           // on work whose premise just vanished.
