@@ -2726,16 +2726,23 @@ export class APIServer {
   private async prepareChatTurnWorkUnit(
     agentId: string,
     senderId: string | undefined,
+    /** 入口已经确定的本轮 DB 会话 id（团队聊天路径在落用户消息时就拿到了）。
+     *  传了就不再自己查一遍 —— 同一个事实两个解析器，迟旱会算出两个 round。 */
+    knownSessionId?: string | null,
   ): Promise<string | null> {
     const units = this.workUnits;
     if (!units || !this.storage) return null;
     try {
-      const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
-      let session = sessions[0];
-      if (!session) session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
-      const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
+      let sid = knownSessionId ?? null;
+      if (!sid) {
+        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
+        const existing = sessions[0] ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
+        sid = existing.id;
+      }
+      if (!sid) return null;
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(sid);
       const round = Math.floor(priorMessages / 2) + 1;
-      const ref = WORK_UNIT_REF.chat(session.id, round);
+      const ref = WORK_UNIT_REF.chat(sid, round);
       units.ensure({ ref, agentId, status: 'running', contextRef: null });
       return ref;
     } catch (err) {
@@ -5322,6 +5329,9 @@ export class APIServer {
             agent.setTurnModelOverride(null);
           }
 
+          // C7-B：团队聊天的 SSE 入口也要在**入队前**拿到本轮 WU 身份。
+          // 漏了这一处，就像 2026-11-14 那次：三个入口只改了两个。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId);
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -5347,6 +5357,8 @@ export class APIServer {
             isResume,
             sessionRestore: deferredRestore,
             activeStreams: this.activeStreams,
+            // C7-B：身份随 item 一起入队（不是入队后回填）。
+            workUnitRef: turnRef,
           });
 
           await sseHandler.handle(res);
@@ -5356,9 +5368,12 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           const deferredRestoreNonStream = sessionRestoreData;
+          // C7-B：非流式团队聊天同样「身份先于消息」。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, persistedSessionId);
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
+              workUnitRef: turnRef,
               // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
               // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
               // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
