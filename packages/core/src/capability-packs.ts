@@ -157,6 +157,107 @@ export const TOOL_DEF_CORE_KEEP = new Set([
   'kb_list',
 ]);
 
+/**
+ * Action tools — the tools an agent needs in order to ACT on a work item: create
+ * it, move it, close it, answer a human, read its own ledger / queue.
+ *
+ * Why they need their own whitelist (C8-D, 2026-11-14). Tool-definition eviction
+ * ranks by eviction tier and then by SCHEMA SIZE. Action tools are ordinary
+ * builtins (tier 2), so under budget pressure they are perfectly legal victims —
+ * an agent then reaches a turn in which it cannot submit, cannot update, cannot
+ * see its queue, and is told nothing about it. "Agent knows what it lacks" is the
+ * whole point: these tools stay LIVE, and anything that does leave the schema is
+ * announced with a way back.
+ *
+ * SOURCE OF TRUTH — the ids below were resolved against the LIVE registry on
+ * 2026-11-14 (measurement, not prose): factories `createAgentTaskTools` /
+ * `createMailboxTools` / ToolSelector's `pushUnique` set. `request_user_input`
+ * is deliberately ABSENT: it IS pushed into the schema but no registry entry
+ * backs it (`discover_tools` answers "unknown"), so listing it would make the
+ * whitelist assert a name that cannot be resolved — see
+ * {@link assertActionToolReachability}, which refuses to degrade silently.
+ *
+ * Groups exist so a deployment can state, in ONE explicit word, which capability
+ * it does not provide (e.g. an agent with no task service has no `task` group).
+ * That is a declaration, not a filter: the default is strict.
+ */
+export const ACTION_TOOL_GROUPS = {
+  /** Board actions — only present when a task service is wired. */
+  task: ['task_create', 'task_update', 'task_submit_review'],
+  /** Self-inspection + queue: always registered (unwired ports answer honestly). */
+  ledger: ['work_status', 'check_mailbox'],
+  /** One-way human channel: schema-injected, protected. */
+  human: ['notify_user'],
+} as const;
+
+export type ActionCapabilityGroup = keyof typeof ACTION_TOOL_GROUPS;
+export type ActionToolId =
+  | (typeof ACTION_TOOL_GROUPS)[ActionCapabilityGroup][number];
+
+/** Flat whitelist — derived from {@link ACTION_TOOL_GROUPS}, never re-typed. */
+export const ACTION_TOOL_IDS: readonly ActionToolId[] = [
+  ...ACTION_TOOL_GROUPS.task,
+  ...ACTION_TOOL_GROUPS.ledger,
+  ...ACTION_TOOL_GROUPS.human,
+];
+
+/**
+ * Single switch for the whole C8-D contract. `MARKUS_ACTION_TOOL_GUARD=0` (or
+ * `false`) restores the pre-C8-D behaviour: the action whitelist neither forces
+ * selection nor protects from eviction, and eviction may drop any tool.
+ */
+export function actionToolGuardEnabled(): boolean {
+  const v = process.env['MARKUS_ACTION_TOOL_GUARD'];
+  return v !== '0' && v !== 'false';
+}
+
+/**
+ * Every name the model can actually call: registered handlers PLUS the schemas
+ * ToolSelector injects itself (pushUnique) and the eviction-immune set. The
+ * registry alone under-reports the face — `notify_user` has a dispatch branch and
+ * a schema but no `registerTool` handler.
+ */
+export function toolFaceNames(registered: Iterable<string>): Set<string> {
+  const face = new Set<string>(registered);
+  for (const n of TOOL_DEF_PROTECTED) face.add(n);
+  for (const n of SCHEMA_INJECTED_TOOLS) face.add(n);
+  return face;
+}
+
+/**
+ * Fail-fast reachability assertion (C8-D). Throws — never filters — when an
+ * action id does not resolve on the live face: a whitelist entry that silently
+ * disappears turns "action tools are always reachable" into an unfalsifiable
+ * promise, which is exactly how a ghost name (`request_user_input`) nearly got
+ * shipped into it.
+ *
+ * @param notWired capability groups this deployment explicitly does not provide
+ *   (e.g. `['task']` when no task service is wired). Anything not declared is
+ *   expected to be reachable.
+ */
+export function assertActionToolReachability(
+  registry: Iterable<string>,
+  opts: { notWired?: readonly ActionCapabilityGroup[] } = {},
+): void {
+  const present = new Set(registry);
+  const declared = new Set<ActionCapabilityGroup>(opts.notWired ?? []);
+  const missing: string[] = [];
+  for (const [group, ids] of Object.entries(ACTION_TOOL_GROUPS) as Array<
+    [ActionCapabilityGroup, readonly string[]]
+  >) {
+    if (declared.has(group)) continue;
+    for (const id of ids) if (!present.has(id)) missing.push(`${id} (${group})`);
+  }
+  if (missing.length) {
+    throw new Error(
+      `Action tool face is incomplete: ${missing.join(', ')}. `
+      + 'These are always-reachable action tools (C8-D) — a tool the agent is expected to '
+      + 'call must exist on the live face. Fix the wiring, or declare the capability as '
+      + 'not provided via `notWired` so the degradation is explicit instead of silent.',
+    );
+  }
+}
+
 /** MCP / skill-namespaced tools — evict these before core Markus tools. */
 export function isSkillOrMcpToolName(name: string): boolean {
   return name.includes('__')
@@ -479,9 +580,16 @@ export function formatEvictedToolCatalog(
 ): string {
   const cap = maxChars ?? 1_500;
   if (!evicted.length) return '';
+  const names = evicted.map((e) => e.name);
+  const sample = names.slice(0, 2).map((n) => `"${n}"`).join(', ');
   const header = [
     '\n## Deferred Tools (schemas omitted for budget)',
-    'Core platform tools (shell/files/tasks/memory) stay LIVE above. These entries are optional extras — call `discover_tools({ name: ["tool-or-skill"] })` only when you need one.',
+    'Core platform tools (shell/files/tasks/memory) and the action tools (create / update / submit / '
+    + 'work_status / check_mailbox / notify_user) stay LIVE above.',
+    `These ${names.length} tool(s) were moved OUT of this turn's schema to stay inside the tool-definition budget. `
+    + 'They are not gone — each one is re-discoverable:',
+    `  recover: discover_tools({ name: [${sample}${names.length > 2 ? ', …' : ''}] })`,
+    'Activation is sticky: the schema is back from your next turn. Do not guess a tool you cannot see.',
   ].join('\n');
   const lines: string[] = [];
   let used = header.length;
@@ -494,8 +602,7 @@ export function formatEvictedToolCatalog(
   }
   if (!lines.length) {
     // At least list names comma-separated under the header budget
-    const names = evicted.map((e) => e.name).join(', ');
-    return `${header}\n${names}`.slice(0, cap);
+    return `${header}\n${names.join(', ')}`.slice(0, cap);
   }
   return [header, ...lines].join('\n');
 }
