@@ -65,7 +65,7 @@ Its description states the division of labour (`memory_search` = "what did we di
 `facts` is created in `packages/storage/src/sqlite-storage.ts` (`SCHEMA_SQL`), pure additive — no
 backfill, no historical comment/deliverable migration. Columns: `id`, `subject_kind`,
 `subject_id`, `predicate`, `value_json`, `work_unit_ref`, `asserted_by`, `source_refs_json`,
-`verification_json` (`{result, verified_by, evidence_refs?}` or NULL), `confidence`,
+`verification_json` (`{result, verified_by, evidence_refs, verified_at?, work_unit_ref?}` or NULL — `evidence_refs` is required since C9-E), `confidence`,
 `created_at`, `superseded_by`, `superseded_at`.
 
 `verification_json` lives on the asserting row (rather than a second "verification fact" row) so
@@ -102,7 +102,8 @@ Guarantees (each one machine-tested, no mocked repo):
 
 `FACTS_ENABLED=0` restores today's behaviour exactly:
 
-- the three tools are **not registered** (they do not appear in any tool schema);- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to before);
+- the four tools (`fact_assert` / `fact_supersede` / `fact_query` / `fact_verify`) are **not registered** (they do not appear in any tool schema);
+- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to before);
 - nothing reads or writes the `facts` table, so `DROP TABLE facts` is a complete rollback.
 
 Default is **enabled** (`FACTS_ENABLED` unset or any value other than `0`). The flag is read once,

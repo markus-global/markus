@@ -8521,7 +8521,8 @@ EXPLANATION_END`;
       return;
     }
 
-    if (path === '/api/audit/tokens' && req.method === 'GET') {      if (!this.auditService) {
+    if (path === '/api/audit/tokens' && req.method === 'GET') {
+      if (!this.auditService) {
         this.json(res, 200, { usage: [] });
         return;
       }

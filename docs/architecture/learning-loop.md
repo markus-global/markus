@@ -140,7 +140,7 @@ MUST: Periodic dream/consolidation SHOULD also:
 7. When ≥ 3 agents independently record the same insight theme, suggest a team skill
 
 **Where these seven land (C9-E, closes DR7)**: as a `memory.consolidation_suggestion` fact
-(`{suggestions: [{action, target_refs}]}`, one active snapshot per agent, superseded每 cycle) —
+(`{suggestions: [{action, target_refs}]}`, one active snapshot per agent, superseded each cycle) —
 **not** as prose in `knowledge.md`. The seven action names are a closed set in
 `@markus/shared` (`CONSOLIDATION_ACTIONS`): `archive | revise | merge | ttl | promote |
 negative_feedback | team_skill`. An eighth is a schema violation; a missing one is a failing test.
