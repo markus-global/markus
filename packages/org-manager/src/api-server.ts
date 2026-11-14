@@ -2045,6 +2045,15 @@ export class APIServer {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
     this.wireWorkUnits();
+    // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
+    // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
+    try {
+      const reconciled = this.storage?.workUnitRepo?.reconcileRunningAgainstTerminalMailbox?.();
+      if (reconciled) log.info('Reconciled stale running WorkUnits', { count: reconciled });
+    } catch (err) {
+      // 纠偏失败不阻断启动，但要说出来（静默失败比不纠偏更坏）。
+      log.warn('Failed to reconcile stale running WorkUnits', { error: String(err) });
+    }
   }
 
   /**
@@ -2675,7 +2684,15 @@ export class APIServer {
       // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
       const units = this.workUnits;
       if (units) {
-        const ref = WORK_UNIT_REF.chat(session.id, round);
+        // C8 收口纠偏：优先用**回合开始时写在那条 mailbox 行上的 ref**。
+        //
+        // 真机实测（2026-11-14）：收口时重算 round 会漂移 —— 用户消息先落库，
+        // 消息数变了，算出的 ref 与回合开始建的那一行不是同一个 → 回合开始的行
+        // 永远停在 `running`（一次会话里积了 4 条）。已记录的引用才是事实。
+        const linkedRef = mailboxItemId
+          ? (this.storage?.mailboxRepo?.getById(mailboxItemId)?.workUnitRef ?? null)
+          : null;
+        const ref = linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
         const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
         // C7-B：回合开始时建的那一行还不带会话身份（那一刻还没定跑进哪个会话），
@@ -4249,7 +4266,9 @@ export class APIServer {
         ref: string; status: string; parentId: string | null; claimedBy: string | null;
         leaseUntil: string | null; budget: number | null; used: number; contextRef: string | null;
       };
-      const units = repo.listByAgent(agentId, { statuses, limit }) as WorkUnitRow[];
+      const units = (repo.listByAgent(agentId, { statuses, limit }) as WorkUnitRow[]).filter(u =>
+        // 租约已过期的 running 不是「在跑」，是没被收口的僵尸行。
+        u.status !== 'running' || !u.leaseUntil || new Date(u.leaseUntil).getTime() > Date.now());
       this.json(res, 200, {
         source: 'work_units',
         running: units.filter(u => u.status === 'running').length,
