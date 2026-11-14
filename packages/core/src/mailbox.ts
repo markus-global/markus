@@ -176,6 +176,13 @@ export interface EnqueueOptions {
    * 只在 WU 已存在时传；缺省 `undefined` = 不挂身份（旧行为）。
    */
   workUnitRef?: string | null;
+  /**
+   * C8-B：更正链 —— 本条事实替换了哪些既有事实的 id。
+   * 结构字段（不解析正文）；非空即「与正在执行的前提矛盾」。
+   */
+  supersedes?: string[] | null;
+  /** C8-B：本条事实推翻了接收方正在执行的前提（撤单 / 驳回 / 回滚）。 */
+  invalidatesPremise?: boolean;
   /** 投递来源（谁发的 / 外部 messageId）；缺省 = 平台自身（`noreply@`）。 */
   origin?: DeliveryOrigin;
   /**
@@ -397,6 +404,17 @@ export function rehydrateStructuredFields(row: {
  */
 export class AgentMailbox {
   private queue: MailboxItem[] = [];
+  /**
+   * C8-B：插入序号（单调、进程内）。轮内 delta 的快照依据。
+   *
+   * 刻意**不用** `Date.now()` / `queued_at`：同秒并列让「谁在后」不可判，
+   * 而时间戳一旦进入渲染字节，同一逻辑输入就会产生两种序列 —— 缓存前缀
+   * 直接失效，且只有 `hitRate`（噪声）会变化，没有测试会发现。
+   * 序号只在**唯一插入点**分配（`insertSorted`），合并时**递增重分配**，
+   * 保证「合并进旧行的事实」不会被 delta 漏掉。
+   */
+  private itemSeq = new Map<string, number>();
+  private seqCounter = 0;
   private readonly agentId: string;
   private readonly eventBus: EventBus;
   private persistence?: MailboxPersistence;
@@ -1079,6 +1097,8 @@ export class AgentMailbox {
       subject: origin?.subject ?? payload.summary,
       externalThreadRef: origin?.externalThreadRef ?? null,
       fromVerified: origin?.fromVerified ?? false,
+      supersedes: options?.supersedes ?? null,
+      invalidatesPremise: options?.invalidatesPremise === true,
     });
 
     // ── C3 / I3：唯一解析器 —— 收件人解析不出来就退信，绝不静默吞掉 ──────────────
@@ -1566,6 +1586,31 @@ export class AgentMailbox {
    */
   getQueuedItems(): MailboxItem[] {
     return [...this.queue];
+  }
+
+  /** C8-B：当前插入序号 —— 回合开始时取一次快照，回合内不变。 */
+  currentSeq(): number {
+    return this.seqCounter;
+  }
+
+  /** C8-B：某条 item 的插入序号（不在表里 = 0，即「快照之前」）。 */
+  seqOf(itemId: string): number {
+    return this.itemSeq.get(itemId) ?? 0;
+  }
+
+  /**
+   * C8-B：**同一件活**上、序号晚于快照的待处理事实。
+   *
+   * 唯一来源是本内存队列 —— 它就是「尚未被处理的同实体事实」的索引。
+   * 不去查库：同一事实的第二个读者必然漂移，而队列正是入队唯一写入点。
+   * 无 `workUnitRef` 时返回空数组（没有实体就不主张相关性，**不猜**）。
+   */
+  deltaSince(workUnitRef: string | null, afterSeq: number): MailboxItem[] {
+    if (!workUnitRef) return [];
+    return this.queue
+      .filter(i => i.status === 'queued' && i.workUnitRef === workUnitRef
+        && (this.itemSeq.get(i.id) ?? 0) > afterSeq)
+      .sort((a, b) => (this.itemSeq.get(a.id) ?? 0) - (this.itemSeq.get(b.id) ?? 0));
   }
 
   /**
@@ -2295,6 +2340,9 @@ export class AgentMailbox {
       existing.payload.content += `\n\n---\n\n${payload.content}`;
     }
     bumpMergeCount(existing);
+    // C8-B：合并也是「来了新事实」—— 递增序号，否则 delta 会漏掉这条。
+    // 代价是合并后的整条内容会被再报一次；宁可重报，不可漏报撤销。
+    this.itemSeq.set(existing.id, ++this.seqCounter);
     // 同状态字段写（dedup 合并只是往既有 queued 行里追加内容）。
     this.updateFields(existing, this.persistableFields(existing));
     log.debug('Mailbox enqueue-time dedup: merged into existing item', {
@@ -2311,7 +2359,24 @@ export class AgentMailbox {
    * recent message is processed before older ones — a user's latest
    * instruction may supersede earlier ones.
    */
+  /**
+   * C8-B：序号表只服务「队列里还在的项」。队列长期运行会累积已出队的 id，
+   * 超过阈值时按「仍在队列中」重建一次（不影响单调性：保留的项序号不变）。
+   */
+  private pruneSeqIfNeeded(): void {
+    if (this.itemSeq.size <= 4096) return;
+    const live = new Set(this.queue.map(i => i.id));
+    for (const id of this.itemSeq.keys()) {
+      if (!live.has(id)) this.itemSeq.delete(id);
+    }
+  }
+
   private insertSorted(item: MailboxItem): void {
+    // C8-B：序号只在唯一插入点分配（`Date.now()` 已在上方被否掉，理由见 `itemSeq`）。
+    if (!this.itemSeq.has(item.id)) {
+      this.itemSeq.set(item.id, ++this.seqCounter);
+      this.pruneSeqIfNeeded();
+    }
     let insertIdx = this.queue.length;
     for (let i = 0; i < this.queue.length; i++) {
       if (this.queue[i].priority >= item.priority) {
