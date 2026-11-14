@@ -2082,7 +2082,13 @@ export class ContextEngine {
         lines.push('');
         lines.push('**Communication channel**: Your text output is **NOT visible** to any human or agent. You MUST use tools to take action and communicate. Simply writing text and ending your turn accomplishes nothing.');
         lines.push('');
-        lines.push('**Required actions** — you MUST do at least one of the following:');
+        lines.push('**Step 0 — define the completion criterion**: before acting, state in one line the **checkable state** that means this requirement is done (e.g. "status is completed" / "N tasks exist, each with assignee + reviewer" / "a human was notified and is deciding").');
+        lines.push('');
+        lines.push('**Stop condition (same weight as the actions below)**: the moment that criterion holds, **stop** — call no further tools and end the turn. "It is already done" is expressed exactly this way.');
+        lines.push('');
+        lines.push('**Action budget**: within one turn, on this requirement — at most **2 status writes** and **2 comments**. When the budget is spent the point has been made: go to the stop condition. **Never post self-referential follow-ups** ("correcting my previous comment", "one last note", "going silent now") — if something needs correcting, correct the object itself (requirement description / plan document), not the thread.');
+        lines.push('');
+        lines.push('**Candidate actions** (not "you must do at least one", but "the minimum set needed to reach the criterion"):');
         lines.push('1. **Update requirement status**: `requirement_update_status` to mark the requirement as completed, or keep it active if more work is needed.');
         lines.push('2. **Create follow-up tasks**: `task_create` with the `requirement_id` if additional work is needed to fulfill the requirement.');
         lines.push('3. **Post a comment**: `requirement_comment` to leave notes or reasoning visible in the requirement thread.');
@@ -2090,11 +2096,14 @@ export class ContextEngine {
         lines.push('');
         lines.push('**MANDATORY**: Before deciding, call `requirement_get` to understand the full current state of the requirement, including linked tasks, status, and comments.');
         lines.push('');
-        lines.push('**CRITICAL**: You MUST call at least one action tool before finishing. Do NOT just output text — it will be lost.');
+        lines.push('**How this turn ends**: text is not delivered, so anything that must be communicated has to land on an object (status / tasks / comment). But once the criterion holds, **call no further tools** — ending here is the correct terminal state of the turn.');
         break;
 
       case 'workflow_action':
         lines.push('You are processing a **workflow update that requires action** (e.g., a workflow run completed, failed, or a step failed).');
+        lines.push('');
+        lines.push('**Define the completion criterion and the stop condition first**: state the checkable "done" state up front; once it holds, **stop immediately** — do not keep calling tools to "do a bit more".');
+        lines.push('**Action budget**: within one turn, at most 2 status writes and 2 comments on the same object; correct the object itself instead of posting "correcting my previous comment" follow-ups.');
         lines.push('');
         lines.push('**Communication channel**: Your text output is **NOT visible** to any human or agent. You MUST use tools to take action.');
         lines.push('');
