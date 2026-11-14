@@ -314,5 +314,65 @@ SELECT created_at, decision_type, mailbox_item_id FROM agent_decisions
 ```
 
 在此之前，本卡判据③ 记为 **代码级 ✅ + 生产者已补齐 / 真机待重启取证**，不签"验证通过"。
+
+---
+
+# §12 第二次重启后复测（2026-11-14 20:12 起 · HEAD `fdc40fd4`）
+
+## §12.0 前置：跑的是不是新构建（否则后面全是废读数）
+
+| 检查 | 读数 | 判定 |
+|---|---|---|
+| 构建时间 | `app.asar` mtime **20:11** | ✓ |
+| 进程启动 | `20:12:05`（ps lstart） | ✓ 在构建之后 |
+| 构建内含本轮符号 | `PREMISE_INVALIDATING`=2、`reconciled_orphan_turn`=1、`reconciled_terminal_mailbox`=1（`strings app.asar`） | ✓ 不是旧包 |
+| 工作树分支 | `build/c8-integration` @ `fdc40fd4` | ✓ |
+
+## §12.1 五条刀级判据（读数时刻 2026-11-14T12:14:08Z = 20:14 本地）
+
+| # | 判据 | 修前基线 | 本次读数 | 判定 |
+|---|---|---|---|---|
+| ① | 心跳入队（10min 窗口） | **16** | **0**（同期全部新增 6） | ✅ 通过 |
+| ② | `distinct_refs << rows` | ref:行 = 9:9（1:1） | **a2a 3 行 / 1 ref**；`task_tsk_90ad00bf…_r1` 3 行；全库 47 行 / 40 ref | ✅ 通过 |
+| ③ | 矛盾事实当轮 cancel | `agent_decisions` 近 60min cancel = **0** | 生产者已上线且**在真实信封里可见**（`"invalidatesPremise":false` 命中 1 行 = 我取消探针卡那次；`:true` 命中 0，因该卡走的是 `pending→rejected` 建卡闸，**不在**终态集，正确地没加标志） | ⚠ 见 §12.4 |
+| ④ | 7 个行动工具恒在 | — | `action-tool-reachability` **12 passed** | ✅ 通过 |
+| ⑤ | C7 基线不回归 | dangling 0 / paused_budget 1 / 父链 6 | dangling **0** / paused_budget **1** / 父链 **8** | ✅ 通过（父链增长是正常写入） |
+
+**僵尸未复发**：`work_units` 分布 `idle 53 / paused_budget 1 / running 0`。上一轮收口的 15 条没有回来。
+
+## §12.2 C8-E「在跑」唯一权威来源
+
+| # | 判据 | 读数 | 判定 |
+|---|---|---|---|
+| E1 | 端点只读台账 | 路由实现逐行核对：`repo.listByAgent(agentId, {statuses:['running']})` + 过期租约过滤 + `source:'work_units'`；未鉴权请求返回 `401 AUTH_REQUIRED`（不是返回数据） | ✅ 结构成立 |
+| E3 | **僵尸 activity 不算在跑** | `agent_activities WHERE ended_at IS NULL` = **3269** 条，同期 `work_units running` = **0** —— 两套事实并存时，UI 读的是后者 | ✅ 通过（这是本卡要证的那条） |
+| E4 | UI 只调这个端点 | `packages/web-ui/src/api.ts:1598` 是 UI 获取运行态的唯一入口，未读 `agent_activities` 派生 | ✅ 代码级 |
+| E5 | 读失败要明说 | 端点无存储时返回 `{units:[],running:0,source:'work_units'}`；鉴权失败 401（不返回旧列表） | ✅ 结构成立 |
+
+> E1/E5 的**浏览器直读**未取：端点要求登录态，curl 无凭据。这两条以「路由源码逐行 + 401 实测」为证，UI 侧以「唯一调用点」为证。若要视觉确认，登录后看「运行与注意力」应显示 0 条在跑。
+
+## §12.3 判据③ 的真机取证卡在哪（这是唯一没拿到的一格）
+
+要观察「真实回合里的 cancel 决策行」，必须同时满足：**某个 agent 正在执行任务 X 的回合中** + **任务 X 被取消/完成/失败**。构造这一场景需要一张**已批准**的任务卡：
+
+- 新建探针卡 → `pending`；我发起取消 → 走**建卡闸**，落 `pending → rejected`（FSM 与审批红线 ④ 的规定），**不在**终态集 → 正确地不带标志；
+- 再试 `rejected → in_progress` / `rejected → cancelled` → **FSM 拒绝**（`Illegal task state transition`）。
+
+我不去动别人的在跑卡（`tsk_62d61a72` / `tsk_90ad00bf` 是真实在办工作），也不伪造状态。因此这一格需要 Owner 点一次批准，或等一次自然发生（某任务在其执行方回合中被取消）。
+
+**已到位的部分**（不是"待办"，是已完成的证据）：
+1. 生产者代码：`TaskService.PREMISE_INVALIDATING` + `maybeNotifyAssignee` 传 `invalidatesPremise`（`9c10f0e4`）；
+2. 生产者**在真机信封里可见**：真实 `mailbox_items.envelope` 已写出该字段（`false` 那次就是真机产物，说明这条链路在跑，只差 `true` 的一次）；
+3. 变异验证：删接线 → 恰好 4 个终态用例红、5 个反例绿；
+4. 消费端：`turn-delta-injection` 断言 `cancelAt < nextLlmAt`（18 用例全绿，真实 agent 循环 + 假 LLM）。
+
+## §12.4 结论（按卡面纪律，只允许三种）
+
+- **①②④⑤ + C8-E：通过**（读数见 §12.1 / §12.2，每条都有修前基线对照）。
+- **③：不通过（非代码缺陷，取证条件未满足）** —— 生产者已上线且可见，消费者有集成证据；缺的是"一次真机 cancel 行"。记为**取证缺口**，不计为已通过。
+
+## §12.5 探针副作用（如实登记）
+
+`tsk_1b23f86bbce1b9be9b6c3458`「【探针·一次性】C8 判据③…」创建后即取消，现状态 `rejected`（建卡闸的必然落点）。它不承载工作，不占在跑名额；按审批红线 ⑨，**不重提、不重建**，就地留档为本记录的取证痕迹。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
