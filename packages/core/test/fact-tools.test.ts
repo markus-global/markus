@@ -63,13 +63,29 @@ const VALID_ARGS = {
 };
 
 describe('tool surface', () => {
-  it('exposes exactly the three agreed tools', () => {
+  it('exposes exactly the four agreed tools (three writers/readers + the verifier)', () => {
     const { svc } = fakeService();
     expect(tools(svc, 'task:tsk_a1:r1').map(t => t.name)).toEqual([
       'fact_assert',
       'fact_supersede',
       'fact_query',
+      'fact_verify',
     ]);
+  });
+
+  it('fact_verify states producer != confirmer in its description', () => {
+    const { svc } = fakeService();
+    const desc = byName(tools(svc, null), 'fact_verify').description;
+    expect(desc).toMatch(/CANNOT verify a fact you asserted/);
+    expect(desc).toMatch(/write-once/);
+  });
+
+  it('fact_verify refuses an unbound turn with missing_provenance', async () => {
+    const { svc } = fakeService();
+    const raw = await byName(tools(svc, null), 'fact_verify').execute({
+      fact_id: 'fact_1', result: 'pass', evidence_refs: ['cmt_1'],
+    });
+    expect(JSON.parse(raw).code).toBe('missing_provenance');
   });
 
   it('states the division of labour in fact_query (memory_search vs facts)', () => {

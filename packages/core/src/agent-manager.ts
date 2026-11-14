@@ -3764,9 +3764,15 @@ export class AgentManager {
     for (const agent of this.agents.values()) this.applyFactService(agent);
   }
 
-  /** C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。 */
+  /**
+   * C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。
+   *
+   * `null`/未注入 ⇒ **不触碰** agent：与 `setFactService` 的「不调用等价」口径一致，
+   * 也让未接 facts 的部署里 agent 完全不知道这一层存在。运行期关闭仍然是
+   * `FACTS_ENABLED=0`（`isFactsEnabled()` 在 service 内部读，一处判定）。
+   */
   private applyFactService(agent: Agent): void {
-    agent.setFactService(this.factService ?? null);
+    if (this.factService) agent.setFactService(this.factService);
   }
 
   /**

@@ -126,10 +126,28 @@ describe('value schemas — acceptance', () => {
       capability: 'sqlite triggers',
       evidence_refs: [],
     }).ok).toBe(true);
+    // C9-E: the suggestion payload is now the snapshot that actually lands in the fact
+    // layer — a closed set of exactly seven actions, each pointing at something.
     expect(validateFactValue('memory.consolidation_suggestion', {
-      action: 'merge duplicate memory notes',
-      target_refs: ['knowledge.md#procedures'],
+      suggestions: [{ action: 'merge', target_refs: ['knowledge.md#procedures'] }],
     }).ok).toBe(true);
+  });
+
+  it('rejects an eighth consolidation action and an action-less suggestion', () => {
+    const eighth = validateFactValue('memory.consolidation_suggestion', {
+      suggestions: [{ action: 'delete_everything', target_refs: ['x'] }],
+    });
+    expect(eighth.ok).toBe(false);
+    if (!eighth.ok) expect(eighth.issue.path).toBe('/suggestions/0/action');
+
+    const empty = validateFactValue('memory.consolidation_suggestion', { suggestions: [] });
+    expect(empty.ok).toBe(false);
+
+    const noTargets = validateFactValue('memory.consolidation_suggestion', {
+      suggestions: [{ action: 'archive', target_refs: [] }],
+    });
+    expect(noTargets.ok).toBe(false);
+    if (!noTargets.ok) expect(noTargets.issue.path).toBe('/suggestions/0/target_refs');
   });
 });
 
