@@ -216,5 +216,39 @@ export function createFactTools(ctx: FactToolsContext): AgentToolHandler[] {
         return JSON.stringify({ status: 'ok', count: facts.length, facts });
       },
     },
+    {
+      name: 'fact_verify',
+      description:
+        'Record YOUR independent verdict on a fact somebody else asserted — result "pass" or "fail" plus at least one evidence_ref. Use this when you are the reviewer/verifier of a claim. You CANNOT verify a fact you asserted yourself (producer != confirmer): that returns self_verification_forbidden. A verdict is write-once; to change a verdict, supersede the claim with new evidence and verify the new row. Only a "pass" from a different agent lets the thread reach "done".',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          fact_id: { type: 'string', description: 'The fact you are judging (from fact_query).' },
+          result: { type: 'string', enum: ['pass', 'fail'], description: 'pass = the claim holds; fail = it does not (the thread stays in_verification).' },
+          evidence_refs: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'At least one pointer that makes the verdict checkable (comment / deliverable / decision id, or a path). Required for pass AND fail.',
+          },
+        },
+        required: ['fact_id', 'result', 'evidence_refs'],
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const factId = typeof args['fact_id'] === 'string' ? args['fact_id'].trim() : '';
+        if (factId.length === 0) {
+          return JSON.stringify({ status: 'error', error: 'fact_id is required — query it with fact_query first.' });
+        }
+        const prov = provenance();
+        if ('error' in prov) return prov.error;
+        const res = ctx.facts.verify({
+          factId,
+          result: args['result'] as 'pass' | 'fail',
+          verifiedBy: ctx.agentId,
+          evidenceRefs: asStringArray(args['evidence_refs']),
+          workUnitRef: prov.workUnitRef,
+        });
+        return JSON.stringify(res);
+      },
+    },
   ];
 }

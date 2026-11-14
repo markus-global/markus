@@ -693,5 +693,26 @@
     "loadFailed": "邀请数据加载失败，请稍后重试",
     "unsupported": "当前 Hub 版本不支持邀请数据，请先升级 Hub",
     "openHub": "在 Hub 中查看"
+  },
+  "factsAudit": {
+    "title": "事实审计轨迹",
+    "subtitle": "只读：每条结论的旧值 → 新值 → 谁在何时，以及它的证据与验证者。",
+    "subjectKind": "主体类型",
+    "subjectId": "主体 ID",
+    "predicate": "谓词",
+    "any": "全部",
+    "since": "起始时间",
+    "until": "结束时间",
+    "includeSuperseded": "包含已被取代的历史行",
+    "disabled": "事实层当前已关闭（FACTS_ENABLED=0），因此这里没有可展示的数据；这不是“没有事实”。",
+    "empty": "当前过滤条件下没有事实。",
+    "truncated": "结果已达上限，请缩窄过滤条件。",
+    "unverified": "未经独立验证",
+    "colPredicate": "谓词",
+    "colSubject": "主体",
+    "colAsserted": "断言者 / 时间 / 回合",
+    "colVerification": "验证",
+    "colChain": "取代链",
+    "colValue": "值"
   }
 }

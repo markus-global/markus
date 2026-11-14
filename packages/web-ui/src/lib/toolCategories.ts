@@ -34,8 +34,7 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
     // C8-C: `rest(wakeOn)` 是「声明我在等哪条邮箱事件」，与邮箱同组；`list_waits` / `cancel_wait` 是同一关系的读/取消面。
     'rest', 'list_waits', 'cancel_wait'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
-  // 第九刀 C9-A：`fact_assert` / `fact_supersede` / `fact_query` 是「结构化结论」的
-  // 写/读面，与 `decide`（结构化决策）同族 —— 归入 reasoning，不为展示新建分类
+  // 第九刀 C9-A：`fact_assert` / `fact_supersede` / `fact_query` 是「结构化结论」的  // 写/读面，与 `decide`（结构化决策）同族 —— 归入 reasoning，不为展示新建分类
   // （新建桶要在 zh-CN/en/es 三份 locale 各加字串，收益只是分组标题）。
   { id: 'reasoning', prefixes: ['decide', 'fact_'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },

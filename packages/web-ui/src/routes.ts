@@ -14,6 +14,8 @@ export const PAGE = {
   DELIVERABLES: 'deliverables',
   SETTINGS: 'settings',
   SEARCH: 'search',
+  /** C9-E · 只读事实审计轨迹（owner/admin 深链，不在导航里出现） */
+  AUDIT: 'audit',
 } as const;
 
 export type PageId = (typeof PAGE)[keyof typeof PAGE];
@@ -39,6 +41,8 @@ const HASH_ALIASES: Record<string, PageId> = {
   // 旧书签与桌端深链仍能用 —— 落到现在拥有这些事实的页面。必须在这里解析，
   // 否则 'notifications' 会走 ALL_PAGE_IDS 失败后兜底到 HOME 之外的分支。
   notifications: PAGE.HOME,
+  // C9-E：`#/audit/facts` 的首页段就是 `audit`（第二段 `facts` 是页面内的 tab）。
+  // 不在这里注册导航 —— 它是管理员的深链，不是一栏。
 };
 
 /**
@@ -56,6 +60,7 @@ const PAGE_HASH: Record<PageId, string> = {
   [PAGE.DELIVERABLES]: 'output',
   [PAGE.SETTINGS]: 'settings',
   [PAGE.SEARCH]: 'search',
+  [PAGE.AUDIT]: 'audit',
 };
 
 const HASH_TO_PAGE: Record<string, PageId> = Object.fromEntries(

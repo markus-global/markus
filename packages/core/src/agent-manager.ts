@@ -1614,6 +1614,7 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
     this.applyWorkUnitPort(agent);
+    this.applyFactService(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
@@ -2597,6 +2598,7 @@ export class AgentManager {
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
     this.applyWorkUnitPort(agent);
+    this.applyFactService(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
@@ -3756,6 +3758,15 @@ export class AgentManager {
    */
   setFactService(service: FactService | null): void {
     this.factService = service;
+    // C9-E：dream 的建议动作落事实需要 Agent 自己也拿得到同一个写者（dream 跑在
+    // Agent 内部，不绕 mailbox）。注入时对**已存在**的 agent 逐个补装，此后新建的
+    // agent 在建时就接上（`applyFactService`）。
+    for (const agent of this.agents.values()) this.applyFactService(agent);
+  }
+
+  /** C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。 */
+  private applyFactService(agent: Agent): void {
+    agent.setFactService(this.factService ?? null);
   }
 
   /**

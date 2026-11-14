@@ -13,6 +13,9 @@ const AgentBuilder = lazy(() => import('./pages/AgentBuilder.tsx').then(m => ({ 
 const WorkPage = lazy(() => import('./pages/Work.tsx').then(m => ({ default: m.WorkPage })));
 const DeliverablesPage = lazy(() => import('./pages/Deliverables.tsx').then(m => ({ default: m.DeliverablesPage })));
 const SearchPage = lazy(() => import('./pages/Search.tsx').then(m => ({ default: m.SearchPage })));
+// C9-E · 只读事实审计页（owner/admin 深链；不在导航栏里）
+const AuditFactsPage = lazy(() => import('./pages/AuditFacts.tsx').then(m => ({ default: m.default })));
+import { canViewFactsAudit } from './pages/AuditFacts.tsx';
 import { ErrorBoundary } from './components/ErrorBoundary.tsx';
 import { Sidebar } from './components/Sidebar.tsx';
 import { BottomNav } from './components/BottomNav.tsx';
@@ -912,6 +915,11 @@ export function App() {
         [PAGE.WORK]: <WorkPage authUser={currentUser} />,
         [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
         [PAGE.SEARCH]: <SearchPage />,
+        // C9-E · 只读事实审计：**只有 owner/admin 被挂载**。别的角色根本不创建这个元素，
+        // 所以页面不会发请求、不会渲染过滤器，也不会通过任何 UI 痕迹确认它存在。
+        ...(canViewFactsAudit(currentUser?.role)
+          ? { [PAGE.AUDIT]: <AuditFactsPage role={currentUser?.role} authUser={currentUser} /> }
+          : {}),
       };
     }
     return {
@@ -922,6 +930,9 @@ export function App() {
       [PAGE.BUILDER]: <AgentBuilder authUser={currentUser} />,
       [PAGE.WORK]: <WorkPage authUser={currentUser} />,
       [PAGE.DELIVERABLES]: <DeliverablesPage authUser={currentUser} />,
+      ...(canViewFactsAudit(currentUser?.role)
+        ? { [PAGE.AUDIT]: <AuditFactsPage role={currentUser?.role} authUser={currentUser} /> }
+        : {}),
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentUser?.id, currentUser?.role, theme.mode, isMobile]);

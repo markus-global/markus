@@ -166,6 +166,39 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  // 第九刀 C9-E：终态钩子只能有一个执行点。
+  //
+  // 「提交评审必须有完成证据」「agent 打回必须有驳回理由」这两条不变量住在 TaskService ——
+  // 它是 agent 工具与 REST 两条入口的**唯一**公共路径。若哪天把它们搬到工具层，
+  // REST 调用就会绕过它们（同一个不变量两个执行点 = R2），而且不会有人注意到。
+  {
+    id: 'terminal-hook-single-point',
+    title: '两个终态钩子只在 TaskService 判定，工具层不得另写一份',
+    checks: [
+      {
+        file: 'packages/org-manager/src/task-service.ts',
+        label: 'TaskService 同时持有两个钩子的判定（completion_evidence + rejection_reason）',
+        hint: '某个钩子被删/被移走 → 提交或打回又可以用口语走通，这正是 C9-E 要关掉的门',
+        detect: t =>
+          t.includes("predicate: 'task.completion_evidence'") &&
+          t.includes("predicate: 'task.rejection_reason'"),
+        fixtures: {
+          ok: "queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.completion_evidence' });\n  queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.rejection_reason' });",
+          bad: "queryActive({ subjectKind: 'task', subjectId: id, predicate: 'task.completion_evidence' });",
+        },
+      },
+      {
+        file: 'packages/core/src/tools/fact-tools.ts',
+        label: '工具层没有第二份钩子（不自己查 completion_evidence 做准入）',
+        hint: '工具层重新长出准入判定 → REST 与 agent 两条入口开始给出不同答案',
+        detect: t => t.includes('fact_verify') && !/predicate:\s*'task\.completion_evidence'/.test(t),
+        fixtures: {
+          ok: "name: 'fact_verify', predicate: 'task.completion_evidence',".replace("predicate: 'task.completion_evidence',", 'subject_kind: SUBJECT_KINDS,'),
+          bad: "name: 'fact_verify', predicate: 'task.completion_evidence',",
+        },
+      },
+    ],
+  },
   // 第九刀 C9-D：Inbox 的成员判定只能有一处实现。这条锁住两个方向 ——
   //   ① 派生层丢掉「无 action ⇒ 丢弃」这条铁律（Inbox 立刻退化成"看着热闹没人能动"）；
   //   ② 呈现层重新长出「谁该进队列」的判定（回到同一事实多个写者的老路）。

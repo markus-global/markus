@@ -2,6 +2,7 @@ import type { WorkUnitService } from './work-unit-service.js';
 import {
   createLogger,
   taskId,
+  isFactsEnabled,
   type Task,
   type SubTask,
   type SubTaskStatus,
@@ -58,6 +59,7 @@ import {
   type TaskProjectContext,
   type ReviewService,
   type ReviewReport,
+  type FactService,
 } from '@markus/core';
 import type { WSBroadcaster } from './ws-server.js';
 import { assertValidProjectReference } from './project-reference.js';
@@ -1047,6 +1049,81 @@ export class TaskService implements ApprovalTargetPort {
   private workUnitService?: WorkUnitService;
   setWorkUnitService(service: WorkUnitService | undefined): void {
     this.workUnitService = service;
+  }
+
+  /**
+   * 第九刀 C9-E：facts 端口 —— 两个终态钩子（提交评审 / 打回）在这里**唯一一次**判定。
+   *
+   * 为什么只在 TaskService 里：它是 agent 工具与 REST 两条入口的**唯一执行点**。
+   * 放在工具层会让 REST 调用绕过它（同一个不变量两个执行点 = R2），
+   * 而 `architecture-guard` 的 `terminal-hook-single-point` 就是钉这一条的。
+   *
+   * 未注入（或 `FACTS_ENABLED=0`）时两个钩子完全惰性，行为与 C9-E 之前一致。
+   */
+  private factService?: FactService | null;
+  setFactService(service: FactService | null | undefined): void {
+    this.factService = service ?? null;
+  }
+
+  /** facts 层是否真的在管（端口接了 + 开关开着）。 */
+  private factsActive(): boolean {
+    return !!this.factService && isFactsEnabled();
+  }
+
+  /**
+   * 终态钩子 1（C9-E）：提交评审前必须有 active 的 `task.completion_evidence` 事实。
+   *
+   * 拒绝文案必须是**可行动的**：告诉模型到底该调什么、填什么字段，而不是只说“缺事实”。
+   * 历史事故（自我宣布完成）的根因不是模型不诚实，而是“完成”从来没有被要求留下证据指针。
+   */
+  private assertCompletionEvidence(task: Task): void {
+    if (!this.factsActive()) return;
+    const facts = this.factService!.queryActive({
+      subjectKind: 'task',
+      subjectId: task.id,
+      predicate: 'task.completion_evidence',
+      activeOnly: true,
+      limit: 1,
+    });
+    if (facts.length > 0) return;
+    throw new Error(
+      `Cannot submit for review: task ${task.id} has no active "task.completion_evidence" fact. ` +
+      'Submission must point at evidence, not only prose. Assert it first:\n' +
+      `  fact_assert({ subject_kind: "task", subject_id: "${task.id}", ` +
+      'predicate: "task.completion_evidence", ' +
+      'value: { summary: "<what this work proved, 2-5 sentences>", ' +
+      'evidence_refs: ["<deliverable/comment/branch id or absolute path>", ...] }, ' +
+      'source_refs: ["<the same ids>"] })\n' +
+      'If a fact already exists but is out of date, use fact_supersede with a reason instead.',
+    );
+  }
+
+  /**
+   * 终态钩子 2（C9-E）：agent 打回时必须断言 `task.rejection_reason`。
+   *
+   * 仅对 **agent** 执行者生效：人类从 UI 打回没有回合身份，无法断言事实，
+   * 强求它只会阻止决定而不是记录决定（口径写在 facts-verification.md §2）。
+   */
+  private assertRejectionReason(task: Task, author: string | undefined): void {
+    if (!this.factsActive()) return;
+    if (!author || !author.startsWith('agt_')) return;
+    const facts = this.factService!.queryActive({
+      subjectKind: 'task',
+      subjectId: task.id,
+      predicate: 'task.rejection_reason',
+      activeOnly: true,
+      limit: 1,
+    });
+    if (facts.length > 0) return;
+    throw new Error(
+      `Cannot send task ${task.id} back: it has no active "task.rejection_reason" fact. ` +
+      'A rejection must say what is wrong in a form the next round can act on, not only in a note. ' +
+      'Assert it first:\n' +
+      `  fact_assert({ subject_kind: "task", subject_id: "${task.id}", ` +
+      'predicate: "task.rejection_reason", ' +
+      'value: { reason: "<the specific defect>", blocking_refs: ["<file:line / test name / claim>"] }, ' +
+      'source_refs: ["<the comment or evidence you judged>"] })',
+    );
   }
 
   private isHumanUser(userId: string): boolean {
@@ -5020,6 +5097,11 @@ export class TaskService implements ApprovalTargetPort {
       );
     }
 
+    // 第九刀 C9-E · 终态钩子 1：提交评审必须有**结构化的完成证据**（C9-A 的
+    // `task.completion_evidence` 事实）。判据不在工具层而在本方法：REST 与 agent 两条入口
+    // 都经过这里，否则同一个不变量就有两个执行点（R2）。
+    this.assertCompletionEvidence(task);
+
     // Run automated review checks if ReviewService is available
     let reviewReport: ReviewReport | undefined;
     if (this.reviewService) {
@@ -5686,6 +5768,9 @@ export class TaskService implements ApprovalTargetPort {
     if (task.status !== 'review') {
       throw new Error(`Task ${taskId} is in ${task.status} status, cannot request revision`);
     }
+
+    // 第九刀 C9-E · 终态钩子 2：agent 打回必须有结构化的 `task.rejection_reason`。
+    this.assertRejectionReason(task, author);
 
     // ── 身份：`author` 是**动作发起者的 id**，不是显示名 ──────────────────────
     // 历史 bug（2026-10-24）：这个参数被直接当名字写进 notes（`by ${author}`），

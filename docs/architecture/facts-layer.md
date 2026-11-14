@@ -2,6 +2,11 @@
 
 Status: **implemented** (C9-A). Board / Inbox derivation and the independent verifier are C9-C/D/E.
 
+> **C9-E** adds the verifier write path, the two terminal hooks, the dream suggestion landing
+> point (closes DR7) and the audit page. Those are specified in
+> [`facts-verification.md`](./facts-verification.md); this file stays the authority for the row
+> itself (invariants, schema, prompt block, `FACTS_ENABLED`).
+
 A **fact** is a structured statement that some work *proved* something, with the evidence pointer
 and the identity of the turn that asserted it. It replaces prose-as-record on the read path:
 `task_comments` / `deliverables` stay the narrative layer, `facts` is the machine layer.
@@ -97,8 +102,7 @@ Guarantees (each one machine-tested, no mocked repo):
 
 `FACTS_ENABLED=0` restores today's behaviour exactly:
 
-- the three tools are **not registered** (they do not appear in any tool schema);
-- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to before);
+- the three tools are **not registered** (they do not appear in any tool schema);- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to before);
 - nothing reads or writes the `facts` table, so `DROP TABLE facts` is a complete rollback.
 
 Default is **enabled** (`FACTS_ENABLED` unset or any value other than `0`). The flag is read once,

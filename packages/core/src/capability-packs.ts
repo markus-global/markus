@@ -99,6 +99,9 @@ export const TOOL_DEF_PROTECTED = new Set([
   'fact_assert',
   'fact_supersede',
   'fact_query',
+  // C9-E：验证同样是被运行时要求的动作（拿不到它就无法把一条流推进到 done），
+  // 且它写入的是「一个只写一列」的路径 —— 被预算淘汰会和上面完全相同地卡住评审人。
+  'fact_verify',
 ]);
 
 /**
