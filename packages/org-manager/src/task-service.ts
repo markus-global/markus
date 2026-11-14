@@ -53,6 +53,7 @@ import {
   shouldDistillTask,
   getDistillationAllowlist,
   buildDistillationPrompt,
+  pendingCallbackRegistry,
   type AgentManager,
   type TaskProjectContext,
   type ReviewService,
@@ -3743,6 +3744,17 @@ export class TaskService implements ApprovalTargetPort {
     task: Task, from: TaskStatus, to: TaskStatus,
     executionTriggered: boolean, updatedBy?: string,
   ): void {
+    // 前提已终结（取消 / 失败）⇒ 它派出的后台活在回来时不该再唤醒任何人。
+    // 第一性原理：回调是一个答案，前提没了，答案就没有读者。
+    // 丢弃登记即可；后台进程本身照旧跑完，只是不再唤醒回合。
+    if (to === 'cancelled' || to === 'failed') {
+      try {
+        const dropped = pendingCallbackRegistry.discardByCorrelation(task.id, `task_${to}`);
+        if (dropped > 0) {
+          log.info('Terminal task discarded its pending callbacks', { taskId: task.id, status: to, dropped });
+        }
+      } catch { /* registry not wired — 不影响任务状态推进 */ }
+    }
     // Skip when auto-start fires — runTask sends its own execution-mode item.
     if (executionTriggered) return;
     // Skip self-initiated review submission — assignee already knows.
@@ -5276,7 +5288,7 @@ export class TaskService implements ApprovalTargetPort {
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id, round: reviewRound },
+        { sourceType: 'review_request', taskId: task.id, round: reviewRound, workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound) },
       ).then(() => {
         // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
         // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。

@@ -728,5 +728,57 @@ POST /api/agents/agt_5f7658fa…/message  →  200 {"reply":"收到。","session
 
 `3d1ccc8c`（任务投递带执行身份 + 双断言测试）。`tsc -b` 0，18 用例绿。
 探针卡就地留档（`cancelled`），不承载业务。
+
+---
+
+# §18 第一性原理审计：**每一类事实**的处理方式
+
+Owner 2026-11-14 23:10 要求：「除了这个，其他所有的，都应该考虑处理方式的合理性」。
+所以先立判据，再逐类过，而不是继续按症状打补丁。
+
+## §18.1 三条判据（唯一口径）
+
+1. **身份**：这条事实是关于哪个实体的？——决定**谁能消费它**。
+   身份必须由**产生事实的那一刻**决定，不能由消费方再猜一次。
+   （今晚五层缺陷里有四层，本质都是「消费方又猜了一次」。）
+2. **落点**：前提仍在 → 回原处；前提没了 → **不唤醒**；**永远不新建无读者的上下文**。
+   「不唤醒」是合法且正确的动作，丢弃要留日志（可检索），不静默。
+3. **收口**：谁是「这件事结束了」的唯一权威？——只能有一个执行点。
+
+## §18.2 逐类审计（16 类 source_type 全覆盖）
+
+| 事实类 | 身份（实体） | 落点规则 | 前提检查 | 判定 |
+|---|---|---|---|---|
+| `human_chat` | `session:<cs>:r<n>` | 该会话 | — | ✅ 今晚修完（身份/收口/追随/多会话解析） |
+| `a2a_message` | `a2a:<task|channel>`（由 entityKey 生成） | 接收方会话 | — | ✅ 本就正确 |
+| `task_status_update` | `task_<id>_r<round>` | 执行方回合 | 终态 → `invalidatesPremise` | ✅ 今晚修（`3d1ccc8c`） |
+| `requirement_update` | 接收方**当前回合** ref | 发起/接收回合 | `changes_requested` → `invalidatesPremise` | ✅ 今晚修（`1617045a`） |
+| `mention` / `task_comment` | `task_<id>_r<round>` | 任务执行回合 | — | ✅ 今晚修（`8971dfa5`） |
+| `review_request` | `task_<id>_r<round>` | 评审方回合 | — | ✅ 本次修 |
+| **`callback_result`** | **发起轮**（`originSessionId` + `correlationId=taskId`） | 前提在 → 回发起会话；**前提没了 → 丢弃，不唤醒** | 任务终态 → `discardByCorrelation` | ✅ 本次修 |
+| `system_event`（mailbox 投递模式） | 平台内部 | 当前会话 | — | ✅ 队列处理即正确语义 |
+| `heartbeat` | — | — | — | ✅ 已停产（C8-A），不再入队 |
+| `session_reply` / `memory_consolidation` / `callback_result` 的 `mailbox` 变体 | 平台内部 | 队列 | — | ✅ 保持队列：实体不是任务，强加 task ref 就是撒谎 |
+| `requirement_comment` | **需求**（不是任务） | 队列 | — | ⏸ 保持队列。若要轮内注入，得新增「需求 → 当前在跑的任务」这层解析；那等于再加一个第二解析器，**我不同意加** |
+
+## §18.3 因此改了什么（本轮）
+
+1. **`review_request` 带任务身份**：评审请求是关于某个任务的，落点应是该任务的执行回合，
+   而不是「接收方当前在跑的任何回合」。
+2. **`callback_result` 加前提闸**：`PendingCallbackRegistry.discardByCorrelation()` ——
+   任务进入 `cancelled/failed` 时，把它名下所有待回调**丢弃登记**。
+   后台进程照旧跑完，只是**不再唤醒一个前提已消失的回合**（此前会无条件 resume 发起会话）。
+   丢弃会写一条 `Discarded pending callbacks (premise gone)` 日志：不静默。
+
+## §18.4 一条被这条判据否掉的想法
+
+我确实想过「给所有事实都套上接收方当前回合的 ref」——一行搞定。**这是错的**：
+`mention` 关于任务 A，而接收方可能正在做任务 B；套上 B 的 ref 等于把 A 的事实伪装成 B 的，
+和 R3「结构从载荷推断」是同一类错误。身份必须来自**事实本身**，不能来自**接收方刚好在干什么**。
+
+## §18.5 剩余（已判断，不是遗漏）
+
+- `requirement_comment`：实体是需求，不是任务 → 队列处理。
+- 判据③ 的 cancel 行：等这次重建后的真机事件。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 

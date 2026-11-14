@@ -140,6 +140,31 @@ export class PendingCallbackRegistry {
     return undefined;
   }
 
+  /**
+   * 丢弃某个关联实体（通常是任务）名下的全部待回调。
+   *
+   * 第一性原理：回调是**一个答案**，而答案只相对于「当初问它的前提」才有意义。
+   * 任务被取消 / 失败 = 那个前提没了；此时后台活干完再唤醒一个回合，只会让它
+   * 烧 token 去猜自己在干什么（实测：取消后回执仍会 resume 发起会话）。
+   * 丢弃登记 = 完成事件不再唤醒任何人；后台进程本身照旧跑完。
+   *
+   * @returns 被丢弃的条数（供调用方记日志，不静默）
+   */
+  discardByCorrelation(correlationId: string, reason: string): number {
+    if (!correlationId) return 0;
+    let dropped = 0;
+    for (const [id, cb] of [...this.callbacks.entries()]) {
+      if (cb.correlationId !== correlationId) continue;
+      this.callbacks.delete(id);
+      this.persistence?.remove(id);
+      dropped += 1;
+    }
+    if (dropped > 0) {
+      log.info('Discarded pending callbacks (premise gone)', { correlationId, reason, dropped });
+    }
+    return dropped;
+  }
+
   /** Scheduled wakeups whose `wakeAt` is due (<= now). */
   getDueWakeups(now = Date.now()): PendingCallback[] {
     return [...this.callbacks.values()].filter(
