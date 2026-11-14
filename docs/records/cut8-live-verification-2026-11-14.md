@@ -884,6 +884,11 @@ SELECT COUNT(*) FROM work_units
 -- 4) 僵尸活动
 SELECT COUNT(*) FROM agent_activities a JOIN mailbox_items m ON m.id = a.mailbox_item_id
  WHERE a.ended_at IS NULL AND m.status IN ('completed','bounced','catch_all','merged');
+-- 5) 撤销型事实必须能反查到执行回合（否则“谁撤销了哪一轮”不可追溯）
+SELECT COUNT(*) FROM mailbox_items
+ WHERE envelope LIKE '%"invalidatesPremise":true%'
+   AND work_unit_ref IS NULL
+   AND queued_at >= :deployed_at;
 ```
 四条都必须 **0** 才算通过。逐步把 `MARKUS_STRICT_IDENTITY=1` 常开，前提是先把现有未声明生产者清零。
 
