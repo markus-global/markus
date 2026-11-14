@@ -4226,6 +4226,48 @@ export class APIServer {
       return;
     }
 
+    // C8-E：「在跑」的**唯一权威来源** —— 只读 `work_units`（status + claimed_by +
+    // lease_until），不从 activity 表、也不从内存注册表派生。
+    //
+    // 真实事敀（2026-11-14）：Owner 看到 agent 「还在干活」，而「运行与注意力」页面
+    // 一个进行中的 session 都看不到 —— 因为那个页面在自己派生「进行中」，而且
+    // `agent_activities` 里积了一批 `ended_at` 永远为 NULL 的僵尸回合。
+    // 权威对象是 WU：僵尸回合没有 running 行，因此永远不会出现在这里；
+    // 内部 session（requirement_* / channel_dm:* / session:*）则一定会出现。
+    if (path.match(/^\/api\/agents\/[^/]+\/work-units$/) && req.method === 'GET') {
+      await this.getAuthUser(req);
+      const agentId = path.split('/')[3]!;
+      const repo = this.storage?.workUnitRepo;
+      if (!repo) {
+        this.json(res, 200, { units: [], running: 0, source: 'work_units' });
+        return;
+      }
+      const statusParam = url.searchParams.get('status');
+      const statuses = (statusParam ? [statusParam] : ['running']) as never[];
+      const limit = Math.min(Math.max(Number(url.searchParams.get('limit') ?? 50) || 50, 1), 200);
+      type WorkUnitRow = {
+        ref: string; status: string; parentId: string | null; claimedBy: string | null;
+        leaseUntil: string | null; budget: number | null; used: number; contextRef: string | null;
+      };
+      const units = repo.listByAgent(agentId, { statuses, limit }) as WorkUnitRow[];
+      this.json(res, 200, {
+        source: 'work_units',
+        running: units.filter(u => u.status === 'running').length,
+        units: units.map(u => ({
+          ref: u.ref,
+          status: u.status,
+          parentId: u.parentId,
+          claimedBy: u.claimedBy,
+          leaseUntil: u.leaseUntil,
+          budget: u.budget,
+          used: u.used,
+          contextRef: u.contextRef,
+          internal: /^(requirement_|channel_|session:)/.test(u.ref),
+        })),
+      });
+      return;
+    }
+
     // Active stream status (JSON) — used by Chat UI after refresh
     if (path.match(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/) && req.method === 'GET') {
       const authUser = await this.requireAuth(req, res);

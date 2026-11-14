@@ -937,6 +937,26 @@ export interface EnrichedMailboxItem {
   activity?: MailboxHistoryActivity | null;
 }
 
+/** C8-E：「在跑」的权威行（来自 work_units，不从 activity/内存注册表派生）。 */
+export interface AgentWorkUnitRow {
+  ref: string;
+  status: string;
+  parentId: string | null;
+  claimedBy: string | null;
+  leaseUntil: string | null;
+  budget: number | null;
+  used: number;
+  contextRef?: string | null;
+  /** 内部 session（requirement_* / channel_dm:* / session:*）—— 用户可见的“运行与注意力”必须能显示它。 */
+  internal: boolean;
+}
+
+export interface AgentWorkUnitsResponse {
+  source: 'work_units';
+  running: number;
+  units: AgentWorkUnitRow[];
+}
+
 export interface AgentMailboxResponse {
   queued: Array<{ id: string; sourceType: string; priority: number; status: string; summary: string; queuedAt: string }>;
   queueDepth: number;
@@ -1572,8 +1592,10 @@ export const api = {
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
       const qs = params.toString();
-      return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);
-    },
+      return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);    },
+    // C8-E：「在跑」只读 work_units（status + claimed_by + lease_until）。
+    workUnits: (id: string, status = 'running', limit = 50) =>
+      request<AgentWorkUnitsResponse>(`/agents/${id}/work-units?status=${encodeURIComponent(status)}&limit=${limit}`),
     getDecisions: (id: string, limit = 50) =>
       request<AgentDecisionsResponse>(`/agents/${id}/decisions?limit=${limit}`),
     messageStream: (
