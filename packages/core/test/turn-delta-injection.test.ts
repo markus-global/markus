@@ -79,6 +79,38 @@ function makeRouter(rec: TraceRecorder): LLMRouter {
   } as unknown as LLMRouter;
 }
 
+/**
+ * A router that keeps asking for tools for `toolRounds` rounds before ending.
+ *
+ * Needed to observe what a *second* yield point in the same turn sees: one fact
+ * must be reported once, not once per round (criterion 4 — the segment has to
+ * describe the delta, and repeating it would make context grow with no new
+ * information).
+ */
+function makeMultiRoundRouter(rec: TraceRecorder, toolRounds: number): LLMRouter {
+  let calls = 0;
+  const call = async (req: { messages: Array<{ role: string; content: string }> }) => {
+    calls += 1;
+    rec.trace.push(`llm#${calls}`);
+    rec.captured.push(req.messages.map(m => ({ role: m.role, content: String(m.content ?? '') })));
+    if (calls <= toolRounds) {
+      return {
+        content: 'Working on it.',
+        finishReason: 'tool_use',
+        toolCalls: [{ id: `tc_delta_${calls}`, name: 'delta_trigger', arguments: {} }],
+        usage: { inputTokens: 50, outputTokens: 20 },
+      };
+    }
+    return {
+      content: 'Done.',
+      finishReason: 'end_turn',
+      usage: { inputTokens: 50, outputTokens: 20 },
+    };
+  };
+  const base = makeRouter(rec) as unknown as Record<string, unknown>;
+  return { ...base, chat: call, chatStream: call } as unknown as LLMRouter;
+}
+
 function createAgent(input: {
   router: LLMRouter;
   rec: TraceRecorder;
@@ -249,6 +281,40 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
     const secondCall = messagesText(rec, 1);
     expect(secondCall).not.toContain('Other task cancelled');
     expect(rec.trace).not.toContain('decision:cancel');
+  });
+
+  it('reports one fact once — a second yield point in the same turn must not re-inject it', async () => {
+    const rec = newRecorder();
+    // The tool runs once per tool round; the fact must arrive exactly once, so the
+    // second round exercises "the queue still holds the fact, but it was reported".
+    let enqueued = false;
+    agent = createAgent({
+      // Three LLM calls: two tool rounds, then end_turn.
+      router: makeMultiRoundRouter(rec, 2),
+      rec,
+      onTool: a => {
+        if (enqueued) return;
+        enqueued = true;
+        a.enqueueToMailbox(
+          'requirement_update',
+          { summary: 'Scope changed — take action', content: 'Requirement was updated.', requirementId: 'req_delta' },
+          { workUnitRef: WU, intent: 'action_required' },
+        );
+      },
+    });
+    await agent.start();
+
+    await processViaMailbox(agent, WU);
+
+    const occurrences = (text: string) => text.split(TURN_DELTA_HEADER_PREFIX).length - 1;
+    const factLines = (text: string) => text.split('authoritative/requirement_update').length - 1;
+
+    // The fact is printed exactly once…
+    expect(factLines(messagesText(rec, 2))).toBe(1);
+    // …while the later yield point still emits the segment, as an empty delta
+    // (never omitted — criterion 4), so the model sees the watermark advance.
+    expect(occurrences(messagesText(rec, 2))).toBe(2);
+    expect(messagesText(rec, 2).split('count: 0').length - 1).toBe(1);
   });
 
   it('with the switch off, the turn behaves exactly like the queue semantics', async () => {

@@ -186,6 +186,11 @@ read at one point — not a second code path.
     to `llm#2` (the off path is real, not dead code).
 11. A fact about a *different* WorkUnit does not appear in the injected segment
     and does not record a decision.
+12. **One fact is reported once per turn.** A two-tool-round turn in which the
+    fact arrives in round 1: the fact label appears exactly once in the third
+    call's messages, while the second segment is still emitted as `count: 0`
+    (criterion 4) — i.e. the watermark advances, the template does not change
+    shape. Proven red by disabling the advance (`expected 2 to be 1`, §7.6).
 
 ## 6. Verification
 
@@ -198,7 +203,7 @@ read at one point — not a second code path.
 | `eslint` on the touched files | 0 errors (7 pre-existing warnings) |
 | `node scripts/architecture-guard.mjs` | 34 hits, all whitelisted; contracts 18/18 |
 | `node scripts/security-guard.mjs` | ok |
-| `vitest run` (whole repo, serial) | **8553 passed / 1 failed / 13 skipped** |
+| `vitest run` (whole repo, serial) | **8554 passed / 1 failed / 13 skipped** |
 | `vitest run --project web-ui` | 1476 passed / 3 skipped / 0 failed |
 
 The single failure is the known pre-existing CLI one
@@ -321,6 +326,24 @@ count: 1
    it is unreachable by construction — "belongs to something else" is answered by
    the entity filter before the module runs. Producing a `defer` here would be a
    second place answering "is this mine".
+6. **The watermark is turn state, not a per-call constant** (self-review, second
+   round). The first version took `mailbox.currentSeq()` once per tool loop and
+   passed it into `injectTurnDelta()` — a snapshot nothing ever advanced. A fact
+   that arrived mid-turn was therefore re-injected at *every* later yield point in
+   the same turn: two `[LIVE UPDATE]` segments carrying the same item, context
+   growing with zero new information. The red test is behavioural (a two-tool-round
+   turn with one fact; the fact label must appear exactly once) and it was proven
+   red by temporarily disabling the advance (`expected 2 to be 1`). The fix puts
+   the cursor next to the turn identity it belongs to (`turnDeltaCursor`, reset in
+   `onFocusChanged` where `currentTurnWorkUnitRef` is set, advanced only inside
+   `injectTurnDelta`), and the four call sites lose their private snapshots. This
+   is the same R2 the card is about: a cursor that four call sites each own is a
+   fact with four writers.
+7. **Counting the header is not counting the fact.** The first version of the new
+   test counted `[LIVE UPDATE @seq=` occurrences — but the *empty* segment carries
+   the same header (`count: 0` + `none`, criterion 4), so the assertion was red
+   against correct code. Counting the fact label instead makes the assertion mean
+   what it says, and the empty segment is then asserted separately (`count: 0`).
 
 
 ## 8. Boundaries

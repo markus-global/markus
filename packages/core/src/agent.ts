@@ -621,6 +621,19 @@ export class Agent {
   private workUnitPort?: DelegationWorkUnitPort;
   /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
   private currentTurnWorkUnitRef: string | null = null;
+  /**
+   * C8-B：本回合已报告到哪个插入序号（**回合状态**，与回合身份同生共死）。
+   *
+   * 为什么它必须是回合状态而不是每个调用点传进来的常量：调用点分布在四个工具循环里，
+   * 每个循环只会在**回合开始**取一次快照。快照不推进 ⇒ 同一条事实在后续每个 yield
+   * 点被重复注入（实测：两轮工具后同一段 `[LIVE UPDATE @seq=…]` 出现两次）。重复
+   * 注入不是「多说一遍」——它让上下文随回合长度线性膨胀，而新增信息为零。
+   *
+   * 唯一写者就是下面 `injectTurnDelta()`（注入成功即推进到本次扫到的最大序号），
+   * 唯一重置点是 `onFocusChanged()`（回合开始 = 拿到焦点）。不引入第二个「待处理事实」
+   * 存储：它只是**读游标**，事实本身仍然只在邮箱队列里。
+   */
+  private turnDeltaCursor = 0;
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
@@ -658,13 +671,21 @@ export class Agent {
    */
   private injectTurnDelta(
     sessionId: string,
-    snapshotSeq: number,
   ): { decision: 'continue' | 'cancel'; text: string; decisiveItemId: string | null } | null {
     if (!this.turnDeltaInjectionEnabled) return null;
     const workUnitRef = this.currentTurnWorkUnitRef;
     if (!workUnitRef) return null;
 
+    const snapshotSeq = this.turnDeltaCursor;
     const rows = this.mailbox.deltaSince(workUnitRef, snapshotSeq);
+    // 报过一次就推进 watermark：同一事实本回合只报一次（序号更高的事实仍会被下一轮看到）。
+    // 只推进、不回退；没有新事实时 watermark 不动 —— 空注入的字节形状因此完全稳定。
+    if (rows.length > 0) {
+      this.turnDeltaCursor = rows.reduce(
+        (max, item) => Math.max(max, this.mailbox.seqOf(item.id)),
+        snapshotSeq,
+      );
+    }
     const deltaRows: TurnDeltaRow[] = rows.map(item => ({
       id: item.id,
       sourceType: item.sourceType,
@@ -2003,6 +2024,8 @@ export class Agent {
         // C7-B：回合开始（获得焦点）= 设置本轮父 WU。子 WU 的 `parent_id` 只能来自
         // 这里 —— 不在别的时刻猜「最近那条」。
         this.currentTurnWorkUnitRef = item?.workUnitRef ?? null;
+        // C8-B：回合开始即 watermark —— 只在回合内到达的事实才算 delta。
+        this.turnDeltaCursor = this.mailbox.currentSeq();
         this.eventBus.emit('agent:focus-changed', {
           agentId: this.id,
           focus: item ? {
@@ -5727,9 +5750,6 @@ export class Agent {
 
       let toolIterations = 0;
       const effectiveMaxIter = options?.maxToolIterations ?? this._maxToolIterations;
-      // C8-B：本回合的 delta 快照（回合内恒定；注入段里的 @seq 就是这个值，
-      // 不是「当前序号」——后者每次渲染都变，等于把计数器写进缓存键）。
-      const turnDeltaSnapshot = this.mailbox.currentSeq();
       const commentToolUsed = new Set<string>();
       const requirementActionToolUsed = new Set<string>();
 
@@ -5919,7 +5939,7 @@ export class Agent {
 
         // C8-B：轮内 delta 注入 —— 必须在下面这次 LLM 调用**之前**。
         // 矛盾事实在这里落 `agent_decisions(decision_type='cancel')` 并中止本回合。
-        const turnDelta = this.injectTurnDelta(sessionId, turnDeltaSnapshot);
+        const turnDelta = this.injectTurnDelta(sessionId);
         if (turnDelta?.decision === 'cancel') {
           log.info('handleMessage cancelled by in-turn delta', {
             agentId: this.id,
@@ -6507,8 +6527,6 @@ export class Agent {
       }
 
       let streamToolIterations = 0;
-      // C8-B：本回合 delta 快照（回合内恒定）。
-      const streamTurnDeltaSnapshot = this.mailbox.currentSeq();
 
       while (
         shouldContinueToolLoop(response, { endTurnRequested: this.endTurnRequested })
@@ -6701,7 +6719,7 @@ export class Agent {
         }
 
         // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
-        const streamTurnDelta = this.injectTurnDelta(this.currentSessionId!, streamTurnDeltaSnapshot);
+        const streamTurnDelta = this.injectTurnDelta(this.currentSessionId!);
         if (streamTurnDelta?.decision === 'cancel') {
           log.info('Stream cancelled by in-turn delta', {
             agentId: this.id,
@@ -7194,8 +7212,6 @@ export class Agent {
     let textBuffer = '';
     let thinkingBuffer = '';
     let taskToolIterations = 0;
-    // C8-B：本回合 delta 快照（同上：回合内恒定）。
-    const taskTurnDeltaSnapshot = this.mailbox.currentSeq();
 
     const flushThinking = () => {
       if (thinkingBuffer.trim()) {
@@ -7433,7 +7449,7 @@ export class Agent {
         // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
         // 矛盾事实（撤单 / 驳回 / 更正）当场中止本回合：`agent_decisions`
         // 落 `decision_type='cancel'`，副作用已发生的部分由台账留痕。
-        const taskTurnDelta = this.injectTurnDelta(sessionId, taskTurnDeltaSnapshot);
+        const taskTurnDelta = this.injectTurnDelta(sessionId);
         if (taskTurnDelta?.decision === 'cancel') {
           cancelExecutionToken(cancelToken, 'user_cancel');
           emit('status', 'cancelled', {
@@ -7820,8 +7836,6 @@ export class Agent {
     this.volatileState = volatileState;
 
     const risToolSelectOpts = { userMessage };
-    // C8-B：本回合 delta 快照（回合内恒定）。
-    const risTurnDeltaSnapshot = this.mailbox.currentSeq();
     let llmTools = this.buildToolDefinitions(risToolSelectOpts);
     const useCompaction = this.llmRouter.isCompactionSupported(this.getEffectiveProvider());
     let textBuffer = '';
@@ -7966,7 +7980,7 @@ export class Agent {
         }
 
         // C8-B：轮内 delta 注入 —— 在下面这次 LLM 续跑**之前**。
-        const risTurnDelta = this.injectTurnDelta(sessionId, risTurnDeltaSnapshot);
+        const risTurnDelta = this.injectTurnDelta(sessionId);
         if (risTurnDelta?.decision === 'cancel') {
           log.info('respondInSession cancelled by in-turn delta', {
             agentId: this.id,
