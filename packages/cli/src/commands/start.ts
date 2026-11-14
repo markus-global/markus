@@ -1142,38 +1142,6 @@ async function startServerCore(
   apiServer.setTelemetryService(telemetryService);
   apiServer.setAuditService(auditService);
 
-  // ── 第七刀 C7-A：WorkUnit 装配（一个实例，三个写入面共用）──────────────
-  // 一个实例而不是三个：`failures/created` 计数与 `onEvent` 只有一份，
-  // 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
-  if (apiServer.workUnits) {
-    taskService.setWorkUnitService(apiServer.workUnits);
-    agentManager.setWorkUnitStatusProvider((agentId, opts) =>
-      apiServer.workUnits!.workStatus(agentId, opts),
-    );
-    // ── 第七刀 C7-B：委派 WU 端口（父子结构 + 预算记账的唯一入口）──────
-    // 端口而不是 WorkUnitService 本身：core 不反向依赖 org-manager。
-    // 读面走 storage 的唯一 SQL 点（`SqliteWorkUnitRepo.getByRef`），写面走
-    // `WorkUnitService`（唯一业务写者）—— 不在这里另算一份预算。
-    const units = apiServer.workUnits;
-    agentManager.setWorkUnitPort({
-      resolve: (ref) => {
-        const row = storage?.workUnitRepo?.getByRef(ref) as
-          | { id: string; ref: string; status: string; contextRef: string | null }
-          | undefined;
-        return row
-          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
-          : null;
-      },
-      ensureChild: (seed) => {
-        const row = units.ensure({ ...seed, status: 'running' });
-        return row
-          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
-          : null;
-      },
-      settle: (ref, opts) => units.settle(ref, opts),
-    });
-  }
-
   // session_rename tool → persist chat (cs_*) session titles to Sqlite and
   // broadcast so the Team chat History panel refreshes the title live.
   agentManager.setSessionTitleUpdater((sessionId, title) => {
@@ -1446,6 +1414,41 @@ async function startServerCore(
     if (!existingOwner) {
       orgService.addHumanUser(firstOrgId, 'Owner', 'owner', { id: ownerUserId });
     }
+  }
+
+  // ── 第七刀 C7-A：WorkUnit 装配（一个实例，三个写入面共用）──────────────
+  // **必须放在 `setStorage()` 之后**：`workUnits` 的仓储来自 storage，早于它装配
+  // 只能拿到 null。这正是 2026-11-14 真机事故的直接成因（旧的 getter 还会把那个
+  // null 缓存成永久答案），修完后 getter 不再负缓存，顺序也回到正确的一侧。
+  // 一个实例而不是三个：`failures/created` 计数与 `onEvent` 只有一份，
+  // 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
+  if (apiServer.workUnits) {
+    taskService.setWorkUnitService(apiServer.workUnits);
+    agentManager.setWorkUnitStatusProvider((agentId, opts) =>
+      apiServer.workUnits!.workStatus(agentId, opts),
+    );
+    // ── 第七刀 C7-B：委派 WU 端口（父子结构 + 预算记账的唯一入口）──────
+    // 端口而不是 WorkUnitService 本身：core 不反向依赖 org-manager。
+    // 读面走 storage 的唯一 SQL 点（`SqliteWorkUnitRepo.getByRef`），写面走
+    // `WorkUnitService`（唯一业务写者）—— 不在这里另算一份预算。
+    const units = apiServer.workUnits;
+    agentManager.setWorkUnitPort({
+      resolve: (ref) => {
+        const row = storage?.workUnitRepo?.getByRef(ref) as
+          | { id: string; ref: string; status: string; contextRef: string | null }
+          | undefined;
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      ensureChild: (seed) => {
+        const row = units.ensure({ ...seed, status: 'running' });
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      settle: (ref, opts) => units.settle(ref, opts),
+    });
   }
 
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)

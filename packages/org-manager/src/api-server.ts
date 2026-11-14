@@ -507,26 +507,33 @@ export class APIServer {
    */
   private _workUnits?: WorkUnitService | null;
   get workUnits(): WorkUnitService | null {
-    if (this._workUnits !== undefined) return this._workUnits;
+    // 只缓存「有」，**绝不缓存「没有」**。
+    //
+    // 真实事故（2026-11-14）：`start.ts` 在 `setStorage()` 之前读了一次本 getter，
+    // 旧写法把当时的「还没有 storage」这个**时刻性答案**缓存成了永久 null，于是
+    // storage 接入后所有生产者（chat / task / a2a）仍然全部跳过，
+    // `work_units` 一行不写、且没有任何报错。
+    //
+    // 纪律：「暂时没有」不是事实。惰性装配的依赖晚到是常态，缺席不得被冻结成属性。
+    if (this._workUnits) return this._workUnits;
     const repo = this.storage?.workUnitRepo;
-    this._workUnits = repo
-      ? new WorkUnitService({
-          repo,
-          onEvent: (event) => {
-            // 事件 → 结构化日志：`work_unit.ensure_failed` 之类必须可计数，
-            // 而不是让人去 grep 一句自然语言。
-            if (event.type.endsWith('_failed')) {
-              log.warn('WorkUnit write failed (observation degraded, business continues)', {
-                event: event.type,
-                ref: event.ref,
-                itemId: event.itemId,
-                agentId: event.agentId,
-                error: event.error,
-              });
-            }
-          },
-        })
-      : null;
+    if (!repo) return null;
+    this._workUnits = new WorkUnitService({
+      repo,
+      onEvent: (event) => {
+        // 事件 → 结构化日志：`work_unit.ensure_failed` 之类必须可计数，
+        // 而不是让人去 grep 一句自然语言。
+        if (event.type.endsWith('_failed')) {
+          log.warn('WorkUnit write failed (observation degraded, business continues)', {
+            event: event.type,
+            ref: event.ref,
+            itemId: event.itemId,
+            agentId: event.agentId,
+            error: event.error,
+          });
+        }
+      },
+    });
     return this._workUnits;
   }
 
