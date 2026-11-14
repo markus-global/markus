@@ -2712,13 +2712,23 @@ export class APIServer {
    * `adoptContextRef` 补。不要在这里读 `agent.getMemorySessionId()`：那一读可能抛，而
    * 它发生在本函数体外（参数求值处），会把一次正常对话变成 500 —— 已经踩过。
    */
-  private async openChatTurnWorkUnit(
+  /**
+   * C7-B：在**入队前**准备好本轮的 WorkUnit，并返回它的 ref。
+   *
+   * 旧写法是 `openChatTurnWorkUnit(agentId, senderId, item.id)`：入队后再异步查会话、
+   * 算 round、再回写 `mailbox_items.work_unit_ref`。但 agent 可能在这一行入队后立刻
+   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是
+   * `agent.currentTurnWorkUnitRef` 为 null，本回合内的 `spawn_subagents` 拿不到父 ref，
+   * 子 WU 只能落 `delegation:root:…`（父链断）。
+   *
+   * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
+   */
+  private async prepareChatTurnWorkUnit(
     agentId: string,
     senderId: string | undefined,
-    mailboxItemId: string | null,
-  ): Promise<void> {
+  ): Promise<string | null> {
     const units = this.workUnits;
-    if (!units || !this.storage) return;
+    if (!units || !this.storage) return null;
     try {
       const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
       let session = sessions[0];
@@ -2727,9 +2737,10 @@ export class APIServer {
       const round = Math.floor(priorMessages / 2) + 1;
       const ref = WORK_UNIT_REF.chat(session.id, round);
       units.ensure({ ref, agentId, status: 'running', contextRef: null });
-      units.linkMailboxItem(mailboxItemId, ref);
+      return ref;
     } catch (err) {
-      log.warn('Failed to open chat turn WorkUnit', { agentId, error: String(err) });
+      log.warn('Failed to prepare chat turn WorkUnit', { agentId, error: String(err) });
+      return null;
     }
   }
 
@@ -4677,6 +4688,10 @@ export class APIServer {
       // 猜测都是时序推断（R3），一旦有并发就会挂错行。
       let enqueuedItemId: string | null = null;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
+      // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好。
+      const turnRef = routedAgentId
+        ? await this.prepareChatTurnWorkUnit(routedAgentId, senderId)
+        : null;
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
@@ -4685,12 +4700,10 @@ export class APIServer {
           fileNames,
           imagePaths,
           toolEventCollector: toolEvents,
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
           onItemEnqueued: (item) => {
             enqueuedItemId = item.id;
-            // C7-B：入队 = 回合开始，立刻给这一轮发 WU 身份（mid-turn 可读 running）。
-            if (routedAgentId) {
-              void this.openChatTurnWorkUnit(routedAgentId, senderId, item.id);
-            }
           },
         });
       } catch (err) {
@@ -7328,6 +7341,8 @@ EXPLANATION_END`;
         : ({ kind: 'unknown', reason: 'POST /api/message 未提供 sessionId 或 channelId' } as const);
       if (stream) {
         const userText = body['text'] as string;
+        // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好（见 prepareChatTurnWorkUnit）。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
 
         const sseHandler = new SSEHandler({
           agentId: targetAgentId,
@@ -7340,10 +7355,8 @@ EXPLANATION_END`;
           senderInfo,
           sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
-          // C7-B：流式路径的 item id 由 SSEHandler 自己产生，回合开始同样要发身份。
-          onItemEnqueued: (item) => {
-            void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id);
-          },
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
           onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
             void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent));
@@ -7357,13 +7370,14 @@ EXPLANATION_END`;
         let reply: string;
         // 与 SSE 路径同源：item id 只能来自入队回调，不能猜。
         let enqueuedItemId: string | null = null;
+        // C7-B：同上 —— 身份先于消息。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
         try {
           reply = await agent.sendMessage(userText, senderId, senderInfo, {
             images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
+            workUnitRef: turnRef,
             onItemEnqueued: (item) => {
               enqueuedItemId = item.id;
-              // C7-B：同上 —— 回合开始就发 WU 身份（不靠收口时才创建）。
-              void this.openChatTurnWorkUnit(targetAgentId, senderId, item.id);
             },
           });
         } catch (err) {
