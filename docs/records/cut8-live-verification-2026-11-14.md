@@ -827,5 +827,73 @@ agent_decisions 最新 cancel = 2026-09-04（无新增）
 判据③ 的仪器仍未取到，但**阻塞点已经落到最底层并修掉了**：现在缺的只是一次包含 `d5868820` 的重建。
 重建后再跑同一探针（建卡 → 浏览器批准 → 回合中途取消），预期：
 ① 取消投递行 `work_unit_ref = task_<id>_r1`；② `agent_decisions` 出现 `cancel` 行且早于该回合 `llm.complete()`。
+
+---
+
+# §20 结构性防护落地（2026-11-14 23:38–23:41）
+
+目标不是再修第七个症状，而是让**同族第七个缺陷出现时是编译错误或 CI 红灯，而不是真机静默**。
+
+## §20.1 P0（已交付 · `8de91f13`）：缺失不再静默
+
+`EnqueueOptions` 增加**身份来源声明**：
+
+```ts
+refOrigin?: 'entity' | 'turn' | 'pending-link' | 'platform-internal'
+```
+
+- 非平台内部事实、既无 `workUnitRef` 又无声明 → `unclaimedIdentityCount++` + `log.error`；
+- `MARKUS_STRICT_IDENTITY=1` 时**直接抛错**（CI 该这么跑）；
+- `PLATFORM_INTERNAL_SOURCES` 写成数据（heartbeat / system_event / session_reply /
+  memory_consolidation / callback_result / workflow_update）—— 豁免要有清单，而不是每个生产者各写一句注释。
+
+**咬人测试**：`mailbox-identity-guard.test.ts`（5 条）：无声明 → 计数 1；`platform-internal` → 0；
+平台内部类型 → 0；`pending-link` → 0；带 ref → 0。删掉守卫即变红。
+
+## §20.2 P1（已满足 · 有证据）：身份不再被二次计算
+
+今晚 `persistChatTurn` 改成**接收** `turnWorkUnitRef` 而不是自己再解析会话（`1617045a`），
+`chat-turn-ref-resolution.test.ts` 三条断言（主会话更旧时取最近活跃 / 显式 id 优先 / idle→running）钉住这条不变量。
+⇒ 「回合的身份只声明一次」在 chat 链路已成立；task 链路的唯一构造点是 `linkExecutionEpoch`。
+
+## §20.3 P2（部分交付 · `eb168a6d`）：activity 不再声称自己在跑
+
+启动时收口「`ended_at` 为空但触发它的投递行已终态」的活动行，并写日志计数。
+「是否在跑」的唯一权威仍是 `work_units`（C8-E 端点与 UI 都已只读它）。
+
+**明确未做**：把 `agent_activities` 彻底改成 append-only（去掉 `ended_at` 语义）。
+那要同时改写入方与「最近活动」UI，并须真机验证——不适合混在一批末尾塞进去。
+上面的收口已经消灭了用户可见症状，但我**不把这次改动说成完成了那个重构**。
+
+## §20.4 CI 门禁（下一步接进流水线，SQL 已定型）
+
+```sql
+-- 1) 身份缺失（非平台内部）
+SELECT COUNT(*) FROM mailbox_items
+ WHERE work_unit_ref IS NULL
+   AND source_type NOT IN ('heartbeat','system_event','session_reply',
+                           'memory_consolidation','callback_result','workflow_update');
+-- 2) 悬空引用
+SELECT COUNT(*) FROM mailbox_items m LEFT JOIN work_units w ON w.ref = m.work_unit_ref
+ WHERE m.work_unit_ref IS NOT NULL AND w.id IS NULL;
+-- 3) running 必须有未过期租约
+SELECT COUNT(*) FROM work_units
+ WHERE status='running' AND (lease_until IS NULL OR lease_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+-- 4) 僵尸活动
+SELECT COUNT(*) FROM agent_activities a JOIN mailbox_items m ON m.id = a.mailbox_item_id
+ WHERE a.ended_at IS NULL AND m.status IN ('completed','bounced','catch_all','merged');
+```
+四条都必须 **0** 才算通过。逐步把 `MARKUS_STRICT_IDENTITY=1` 常开，前提是先把现有未声明生产者清零。
+
+## §20.5 迁移与回滚
+
+- `refOrigin` 允许缺省一个版本（仅报错+计数，不抛）；计数归零后再把严格模式设为默认。
+- 每个提交各自可单提交回滚：P0（守卫）、P2（收口）互不依赖。
+
+## §20.6 完成判据
+
+> 不是「没有 bug」，而是：下一个同族缺陷出现时，它是**编译错误或 CI 红灯**，而不是在生产里静默几小时。
+
+今晚六个缺陷里有五个是这样被发现的：先去读库，才发现代码里有一条路没写字。这套防护针对的正是「静默」本身。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
