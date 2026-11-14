@@ -3716,6 +3716,23 @@ export class TaskService implements ApprovalTargetPort {
     'in_progress->blocked',
   ]);
 
+  /**
+   * Transitions that **overturn the premise** of a running turn.
+   *
+   * `turn-delta` already knows how to react to a contradiction (drop the work
+   * and stop early instead of burning the rest of the turn), but until now no
+   * producer ever set `invalidatesPremise` — the classifier's contradiction
+   * branch was structurally unreachable in production. These are the four
+   * transitions where "keep going" is provably wrong: the task this turn is
+   * executing no longer exists, has already been finished, or has failed.
+   *
+   * Deliberately absent: `rejected` (the reviewer wants a redo — the premise
+   * still stands) and `review` (the assignee itself submitted it).
+   */
+  private static readonly PREMISE_INVALIDATING: ReadonlySet<TaskStatus> = new Set<TaskStatus>([
+    'cancelled', 'failed', 'completed', 'archived',
+  ]);
+
   private maybeNotifyAssignee(
     task: Task, from: TaskStatus, to: TaskStatus,
     executionTriggered: boolean, updatedBy?: string,
@@ -3743,6 +3760,10 @@ export class TaskService implements ApprovalTargetPort {
           taskId: task.id,
         }, {
           metadata: { taskId: task.id },
+          // The single place that turns "this task is over" into a fact the
+          // running turn can act on. Without it the turn keeps spending tokens
+          // on work whose premise just vanished.
+          ...(TaskService.PREMISE_INVALIDATING.has(to) ? { invalidatesPremise: true } : {}),
         });
       }
     } catch { /* agent not found — skip */ }
