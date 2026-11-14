@@ -111,11 +111,21 @@ is reintroduced:
 
 - a read path in `packages/web-ui/src` that derives liveness from a missing
   `endedAt` (`!x.endedAt`, `x.endedAt == null`, …);
-- SQL in `packages/*/src` that reads `agent_activities` / `agent_activity_logs`
-  state from `ended_at IS NULL` or re-introduces an orphan-closing sweep.
+- SQL in `packages/*/src` **or `scripts/`** that reads `agent_activities` /
+  `agent_activity_logs` state from `ended_at IS NULL`, or re-introduces an
+  orphan-closing sweep.
 
-The grep is over the whole repo, not just the UI: the same mistake is just as wrong
-in a service or a CLI command.
+The scan covers the whole repo, not just the UI: the same mistake is just as wrong in
+a service, a CLI command, or an operations script. `scripts/` is scanned by this rule
+only (it is not a product source root), so the invariant cannot survive there by being
+outside the scan roots.
+
+`scripts/identity-audit.mjs` used to carry a fifth gate for "trigger row terminal but
+`ended_at` still empty". It is **gone** with the sweep that kept it satisfied: a row
+without an end is "we did not record an end", not a violation, and with no time bound
+it could only stay permanently red on the ~3k historical rows. The underlying fact —
+"a turn closed but left work hanging" — is measured on the authoritative object by the
+lease-expired `running` gate.
 
 ---
 

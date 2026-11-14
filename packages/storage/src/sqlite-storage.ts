@@ -2336,6 +2336,8 @@ export class SqliteTaskLogRepo {
     content: string;
     metadata?: unknown;
     executionRound?: number;
+    /** C9-B：这一行属于哪一轮（调用方给的是它已持有的身份，不反推）。 */
+    workUnitRef?: string | null;
   }) {
     const id = generateId('tlog');
     const ts = now();

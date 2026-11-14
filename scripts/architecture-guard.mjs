@@ -415,6 +415,24 @@ function collectSources() {
 }
 
 /**
+ * C9-B：`scripts/` 下的运维脚本。
+ *
+ * 为什么单独收一遍：`SCAN_ROOTS` 只有 `packages`，于是「用 `ended_at` 判在跑」这条
+ * 不变量在 `scripts/` 里**从来没被扫过** —— 上一轮正是漏在这里（`identity-audit.mjs`
+ * 里有一条 `ended_at IS NULL` 判据，全仓 grep 时被当成通过）。只对这条规则补扫，
+ * 不把 `no-console` 之类的产品规则套到工具脚本上。
+ */
+function collectScriptSources() {
+  const dir = join(ROOT, 'scripts');
+  if (!existsSync(dir)) return [];
+  return readdirSync(dir, { withFileTypes: true })
+    .filter(e => e.isFile() && /\.(mjs|js|ts)$/.test(e.name))
+    // 门禁自身不算读路径：它的正则与自检夹具**必须**含违规字面量，扫自己只会自指。
+    .filter(e => e.name !== 'architecture-guard.mjs')
+    .map(e => join(dir, e.name));
+}
+
+/**
  * 规则 3：入口必须显式表态会话身份（第 0 步「会话身份契约」的静态门禁）。
  *
  * 背景：「同一会话后续请求看不到历史」反复出现的根因是——**入口没带会话身份**，
@@ -621,6 +639,16 @@ for (const file of collectSources()) {
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
+  }
+}
+
+// C9-B：`scripts/` 不属于产品扫描根，但这同一条不变量对运维脚本同样成立（上一轮漏点）。
+// 只补这一条规则，且**不做白名单豁免** —— 一个可以豁免的「唯一权威」等于没有。
+for (const file of collectScriptSources()) {
+  const text = readFileSync(file, 'utf-8');
+  const relPath = rel(file);
+  for (const v of checkActivityLiveness(file, text)) {
+    violations.push({ ...v, file: relPath, allowed: false });
   }
 }
 
