@@ -117,6 +117,14 @@ Within a single round, transient retries (network errors, timeouts) reuse the sa
 
 A new round always gets a fresh LLM session (`task_{taskId}_r{round}`).
 
+**Every round also gets its own WorkUnit entity**, ensured *before* the mailbox item references it
+(`WORK_UNIT_REF.task(taskId, round)` → `task_<id>_r<round>`). The reference column
+(`mailbox_items.work_unit_ref`) is plain `TEXT` with no foreign key, so a reference written without
+its entity fails silently: `resolve(ref)` returns null, the session lock key degrades, and a
+delegation started in that round lands `parent_id = NULL`. One execution epoch = one WorkUnit, and
+the only execution point for that rule is `TaskService.linkExecutionEpoch()` — both the main run
+path and the fresh-retry path go through it.
+
 ### Context by Round Type
 
 | Scenario | Previous execution context | LLM session |

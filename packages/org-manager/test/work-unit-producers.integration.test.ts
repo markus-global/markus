@@ -294,3 +294,108 @@ describe('C7-A 三条链路：mailbox_items.work_unit_ref 首次有值', () => {
     expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a').some((r) => r.ref.startsWith('task_'))).toBe(true);
   });
 });
+
+/**
+ * C7 尾巴（2026-11-14）—— task 链路「一个执行纪元 = 一个 WorkUnit」的实体必须真的存在。
+ *
+ * 缺陷：`createTask()` 只给 round 1 建实体，而 `linkMailboxItem()` 在两个执行入口
+ * **无条件**写 `task_<id>_r<round>`。`mailbox_items.work_unit_ref` 是纯 TEXT 列（无 FK），
+ * 所以 round ≥2 的引用指向不存在的实体也不会有任何报错 —— resolve(ref) 返 null →
+ * 锁键退化、该回合发起的委派 `parent_id` 落 NULL。不崩，但结构事实是假的。
+ *
+ * 判据只认事实：引用写进 mailbox 行**且** `getByRef()` 查得到实体。
+ */
+describe('C7 尾巴：task 链路每个执行纪元都必须有实体（round ≥2 不再悬空）', () => {
+  function seedMailboxItem(id: string, agentId: string): void {
+    new SqliteMailboxRepo(db).save({
+      id,
+      agentId,
+      sourceType: 'task_status_update',
+      priority: 2,
+      status: 'queued',
+      payload: { taskId: 'tsk_probe' },
+      metadata: {},
+      queuedAt: '2026-11-14T00:00:00.000Z',
+      workUnitRef: null,
+    } as never);
+  }
+
+  function refOfMailboxRow(id: string): string | null {
+    const row = db.prepare('SELECT work_unit_ref FROM mailbox_items WHERE id = ?').get(id) as
+      | { work_unit_ref: string | null }
+      | undefined;
+    return row?.work_unit_ref ?? null;
+  }
+
+  /** 直接驱动生产代码里那个「先实体、后引用」的唯一执行点。 */
+  function linkEpoch(svc: TaskService, itemId: string, taskId: string, round: number): void {
+    (svc as unknown as { linkExecutionEpoch: (i: string, t: string, r: number) => void })
+      .linkExecutionEpoch(itemId, taskId, round);
+  }
+
+  function makeTask(svc: TaskService) {
+    return svc.createTask({
+      orgId: 'org_1',
+      title: 'epoch probe',
+      description: 'probe',
+      priority: 'medium',
+      assignedAgentId: 'agt_a',
+      reviewerId: 'agt_b',
+      createdBy: 'agt_b',
+      creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+  }
+
+  it('round 1：引用与实体同时成立', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc);
+
+    seedMailboxItem('mbx_epoch_r1', 'agt_a');
+    linkEpoch(svc, 'mbx_epoch_r1', task.id, 1);
+
+    const ref = refOfMailboxRow('mbx_epoch_r1');
+    expect(ref).toBe(`task_${task.id}_r1`);
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref!)).not.toBeNull();
+  });
+
+  it('round ≥2（打回返工）：引用必须落到真实存在的实体上', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc); // createTask 建的是 round 1 的实体
+
+    seedMailboxItem('mbx_epoch_r2', 'agt_a');
+    linkEpoch(svc, 'mbx_epoch_r2', task.id, 2);
+
+    const ref = refOfMailboxRow('mbx_epoch_r2');
+    expect(ref).toBe(`task_${task.id}_r2`);
+    // 这条断言就是缺陷的判据：旧实现只写引用，实体查不到 → 红。
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref!)).not.toBeNull();
+    // 两个执行纪元 = 两个实体，不复用同一行。
+    expect(new SqliteWorkUnitRepo(db).listByAgent('agt_a')).toHaveLength(2);
+  });
+
+  it('零悬空：mailbox 侧所有 work_unit_ref 都能 JOIN 到实体', () => {
+    const units = service();
+    const svc = new TaskService();
+    svc.setWorkUnitService(units);
+    const task = makeTask(svc);
+
+    for (const [id, round] of [['mbx_zero_r1', 1], ['mbx_zero_r2', 2], ['mbx_zero_r3', 3]] as const) {
+      seedMailboxItem(id, 'agt_a');
+      linkEpoch(svc, id, task.id, round);
+    }
+
+    const dangling = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM mailbox_items m
+         LEFT JOIN work_units w ON w.ref = m.work_unit_ref
+         WHERE m.work_unit_ref IS NOT NULL AND w.id IS NULL`,
+      )
+      .get() as { n: number };
+    expect(dangling.n).toBe(0);
+  });
+});
