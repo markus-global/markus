@@ -868,22 +868,28 @@ refOrigin?: 'entity' | 'turn' | 'pending-link' | 'platform-internal'
 ## §20.4 CI 门禁（下一步接进流水线，SQL 已定型）
 
 ```sql
--- 1) 身份缺失（非平台内部）
+-- 1) 身份缺失（非平台内部）——必须带时间下界，否则老库永远红、闸门等于没有
 SELECT COUNT(*) FROM mailbox_items
  WHERE work_unit_ref IS NULL
+   AND queued_at >= :deployed_at          -- 只审“本次部署之后新增的事实”
    AND source_type NOT IN ('heartbeat','system_event','session_reply',
                            'memory_consolidation','callback_result','workflow_update');
 -- 2) 悬空引用
 SELECT COUNT(*) FROM mailbox_items m LEFT JOIN work_units w ON w.ref = m.work_unit_ref
  WHERE m.work_unit_ref IS NOT NULL AND w.id IS NULL;
--- 3) running 必须有未过期租约
+-- 3) 租约**已过期**的 running（不是“没有租约”：chat 回合本来就不走租约认领）
 SELECT COUNT(*) FROM work_units
- WHERE status='running' AND (lease_until IS NULL OR lease_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now'));
+ WHERE status='running' AND lease_until IS NOT NULL
+   AND lease_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now');
 -- 4) 僵尸活动
 SELECT COUNT(*) FROM agent_activities a JOIN mailbox_items m ON m.id = a.mailbox_item_id
  WHERE a.ended_at IS NULL AND m.status IN ('completed','bounced','catch_all','merged');
 ```
 四条都必须 **0** 才算通过。逐步把 `MARKUS_STRICT_IDENTITY=1` 常开，前提是先把现有未声明生产者清零。
+
+> 口径自纠（2026-11-14 23:44 真机）：我第一版把 1) 写成不带时间下界、把 3) 写成“lease_until IS NULL 也算”，
+> 结果在真库上读出 61869 与 1 —— **两条都是假阳性**（前者全是修复前的历史行，后者是我自己这一轮 chat）。
+> 永远亮着且不可行动的告警等于没有告警，所以口径必须收紧成上面这版。
 
 ## §20.5 迁移与回滚
 
@@ -895,5 +901,43 @@ SELECT COUNT(*) FROM agent_activities a JOIN mailbox_items m ON m.id = a.mailbox
 > 不是「没有 bug」，而是：下一个同族缺陷出现时，它是**编译错误或 CI 红灯**，而不是在生产里静默几小时。
 
 今晚六个缺陷里有五个是这样被发现的：先去读库，才发现代码里有一条路没写字。这套防护针对的正是「静默」本身。
+
+---
+
+# §21 第七层：CLI 适配器把字段丢了（2026-11-14 23:44 第三轮真机）
+
+## §21.1 读数（构建 `5fc83992`）
+
+```
+取消投递行  mbx_03f20796…   work_unit_ref = NULL    invalidatesPremise = true
+触发执行行  mbx_37f62f07…   task_tsk_cf5c8293…_r1
+agent_decisions   仍无新增 cancel 行
+merged_into = 空、 dedup_key = 空   （排除“被合并”这一解释）
+```
+
+## §21.2 沿链路逐层对账
+
+| 层 | 检查 | 结果 |
+|---|---|---|
+| 生产者 | `task-service:3786` / `enqueueFor:805` / `review_request:5291` 都传了 `workUnitRef` | ✓ |
+| 写者 | `SqliteMailboxRepo.save()` 已包含 `work_unit_ref` 列（dist 实测命中 11 处） | ✓ |
+| **搬运层** | `cli/start.ts:2326` 的 mailbox 持久化适配器 | ✗ **手写字段列举，列到 `dropReason` 就结束** |
+
+**两端都对，中间的搬运层把值丢了。** 这就是为什么三次重建、三次一模一样的失败：
+我每次都在改“生产者”或“写者”，而那层“看起来只是转发”的适配器从来没被当写过者。
+
+## §21.3 修法与判据（`f1e263b6`）
+
+适配器改成**展开 + 覆盖**（只显式覆盖信封序列化/结构投影那几个需要转型的字段），
+新字段自动流过，不再依赖任何人记得回这个文件改一行。
+
+**判据**：同一个输入端两端都对时，问题必在中间的映射/序列化层；判断一层是否“安全转发”的标准不是
+“它现在传对了没”，而是“**新增一个字段它会不会自动流过**”。手写列举 = 默认丢弃。
+
+## §21.4 状态
+
+`f1e263b6` 不在 `5fc83992` 的构建里。下一次重建后跑同一探针，预期：
+① 取消投递行 `work_unit_ref = task_<id>_r1`；② `agent_decisions` 出现 `cancel` 行且早于该回合 `llm.complete()`。
+若仍为 NULL，则下一层在 SQLite 列绑定 / 迁移，届时直接对 `PRAGMA table_info` 与实参个数，不再逐层猜。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
