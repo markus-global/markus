@@ -2460,8 +2460,9 @@ export class TaskService implements ApprovalTargetPort {
         retryNotice,
         // C7-B：task 链路的 mailbox item 由 `sendTaskExecution` 内部的 enqueue 产生，
         // 这是拿到它 id 的唯一时机（猜「最近一条」= 从时序推断结构）。
+        // C7 尾巴：走 linkExecutionEpoch —— 先 ensure 本 round 的实体，再写引用。
         (item) => {
-          this.workUnitService?.linkMailboxItem(item.id, WORK_UNIT_REF.task(taskId, executionRound));
+          this.linkExecutionEpoch(item.id, taskId, executionRound);
         },
       )
       .catch(err => {
@@ -2652,6 +2653,28 @@ export class TaskService implements ApprovalTargetPort {
         );
       }
     }
+  }
+
+  /**
+   * C7 尾巴（2026-11-14）：一个执行纪元 = 一个 WorkUnit，**实体先于引用**。
+   *
+   * 缺陷：`createTask()` 只给 round 1 建实体，而两个执行入口无条件写
+   * `task_<id>_r<round>` 引用。`mailbox_items.work_unit_ref` 是纯 TEXT 列（无 FK），
+   * 所以 round ≥2（打回返工 / fresh retry）的 mailbox 行指向不存在的实体也没人报错 ——
+   * `resolve(ref)` 返 null → 锁键退化、该回合发起的委派 `parent_id` 落 NULL。
+   *
+   * 规则只在这里实现一次：**先 ensure 实体，再写引用**。两个调用点共用它，
+   * 不各补一次（同一事实两个执行点 = 必然漂移）。
+   */
+  private linkExecutionEpoch(itemId: string, taskId: string, round: number): void {
+    const units = this.workUnitService;
+    if (!units) return;
+    const ref = WORK_UNIT_REF.task(taskId, round);
+    // 取不到 assignee 时传空串：`ensure()` 会把它记成结构化的 ensure_failed 事件，
+    // 而不是静默跳过 —— 静默跳过就是下一个“引用悬空”。
+    const agentId = this.tasks.get(taskId)?.assignedAgentId ?? '';
+    units.ensure({ ref, agentId, taskId, status: 'running', contextRef: ref });
+    units.linkMailboxItem(itemId, ref);
   }
 
   createTask(request: CreateTaskRequest): Task {
@@ -6286,8 +6309,9 @@ export class TaskService implements ApprovalTargetPort {
         task.requirementId,
         undefined,
         // C7-B：同主执行路径 —— item id 只能来自 sendTaskExecution 的入队回调。
+        // C7 尾巴：同一执行点（fresh retry 也是新纪元，必须自己那条实体）。
         (item) => {
-          this.workUnitService?.linkMailboxItem(item.id, WORK_UNIT_REF.task(taskId, executionRound));
+          this.linkExecutionEpoch(item.id, taskId, executionRound);
         },
       )
       .catch(err => {

@@ -25,7 +25,7 @@ Gates:
 
 - `npx tsc -b` → **0 errors**
 - `npx eslint packages/{core,org-manager,shared,cli,storage}/src --quiet` → **0 errors**
-- `node scripts/architecture-guard.mjs` → 34 hits all whitelisted, **contracts 17/17**
+- `node scripts/architecture-guard.mjs` → 34 hits all whitelisted, **contracts 18/18**
 - `node scripts/security-guard.mjs` → ok
 - `grep -rn 'DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity' packages/*/src` → **0 hits**
 
