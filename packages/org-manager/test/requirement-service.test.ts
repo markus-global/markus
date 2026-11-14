@@ -282,6 +282,33 @@ describe('RequirementService', () => {
       expect(enqueue).toHaveBeenCalled();
     });
 
+    it('不发自我通知：actor 就是创建者 agent 时不投递（2026-11-14 事故）', () => {
+      // 事故：agent 把自己需求的状态改了，平台又把这件事当成一条 requirement_update
+      // 事件投回给同一个 agent → 它再起来处理一个自己造成的事件。
+      // 平台本来就有这条不变量（state-machines.md §2 第 10 条：task 创建 no
+      // self-notification），只是 requirement 状态变更没有执行点。
+      const enqueue = vi.fn();
+      service.setAgentManager({
+        hasAgent: vi.fn(() => true),
+        getAgent: vi.fn(() => ({ enqueueToMailbox: enqueue })),
+      } as never);
+
+      const req = service.createRequirement(baseRequest({ source: 'agent', createdBy: 'agent-1' }));
+
+      // ① 别人（人类）改的 → 必须通知创建者
+      service.updateRequirementStatus(req.id, 'blocked', 'user-1', 'human', 'hold');
+      expect(enqueue).toHaveBeenCalledTimes(1);
+
+      enqueue.mockClear();
+      // ② 创建者自己改的 → 不得自我唤醒
+      service.updateRequirementStatus(req.id, 'in_progress', 'agent-1', 'agent');
+      expect(enqueue).not.toHaveBeenCalled();
+
+      // ③ 再换别人改 → 恢复通知（抑制只针对 actor 自己）
+      service.updateRequirementStatus(req.id, 'blocked', 'agent-2', 'agent', 'hold');
+      expect(enqueue).toHaveBeenCalledTimes(1);
+    });
+
     it('notifies agent when all tasks complete', () => {
       const enqueue = vi.fn();
       service.setAgentManager({

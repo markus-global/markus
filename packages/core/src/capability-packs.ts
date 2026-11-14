@@ -248,6 +248,11 @@ export const REQUIREMENT_ACTION_EVIDENCE_TOOLS: readonly string[] = [
   // Deprecated alias of request_user_input — still dispatched, so a call to it
   // must count, otherwise the safeguard re-prompts a turn that did act.
   'request_user_approval',
+  // Ending the turn is a recorded disposition, not a lack of action. Omitting
+  // it made "nothing needs to change" impossible to express: the model called
+  // end_turn, the counter stayed 0, and the safeguard pushed the turn back into
+  // another round (2026-11-14: 33 and 166 rounds, all finishReason=tool_use).
+  'end_turn',
 ];
 
 /**
@@ -520,6 +525,15 @@ export const COMMENT_RESPONSE_ALLOWED_TOOLS: readonly string[] = [
   'deliverable_search', 'deliverable_create',
   'memory_search', 'memory_save',
   'notify_user', 'agent_send_message',
+  // The prompt tells the agent to ask the human with `request_user_input` when
+  // it disagrees about a frozen fact. The allow-list is authoritative, so
+  // omitting it made that instruction impossible to follow (the agent would
+  // fall back to prose — which is not visible in a comment thread).
+  'request_user_input',
+  // The prompt tells the model to call `end_turn` when no reply is warranted.
+  // The allow-list is authoritative (agent.ts filters the tool schema by it),
+  // so leaving it out made that instruction impossible to follow.
+  'end_turn',
 ];
 
 export const REQUIREMENT_ACTION_ALLOWED_TOOLS: readonly string[] = [
@@ -531,6 +545,8 @@ export const REQUIREMENT_ACTION_ALLOWED_TOOLS: readonly string[] = [
   'file_read', 'grep_search',
   'memory_search', 'memory_save', 'notebook_upsert',
   'notify_user', 'agent_send_message',
+  // Same as comment_response: "nothing needs to change" must be expressible.
+  'end_turn',
 ];
 
 export const WORKFLOW_ACTION_ALLOWED_TOOLS: readonly string[] = [
@@ -542,6 +558,8 @@ export const WORKFLOW_ACTION_ALLOWED_TOOLS: readonly string[] = [
   'file_read', 'grep_search',
   'memory_search', 'memory_save',
   'notify_user', 'agent_send_message',
+  // Same principle: a workflow that needs no action still has to be closed out.
+  'end_turn',
 ];
 
 /** Scenario → authoritative allowed-tool set (authoritative union in agent.ts). */

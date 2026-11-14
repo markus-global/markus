@@ -6289,7 +6289,7 @@ export class Agent {
         });
         this.memory.appendMessage(sessionId, {
           role: 'user',
-          content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action.',
+          content: '[SYSTEM] You are about to end your turn WITHOUT taking any action. In requirement_action mode your text output is NOT visible to anyone. You MUST call at least one action tool: requirement_update_status, requirement_comment, task_create, or notify_user. Call requirement_get first if you need context, then take action. If you have determined that nothing needs to change, call `end_turn` instead — that ends the turn and records the decision.',
         });
 
         const reminderMessages = this.requestHistory(sessionId);
