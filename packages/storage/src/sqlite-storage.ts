@@ -751,6 +751,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);
 CREATE INDEX IF NOT EXISTS idx_work_units_agent_status ON work_units(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_work_units_parent ON work_units(parent_id);
 
+-- 第九刀 C9-A：facts —— 结构化事实（「这件活证明了什么」）。
+--
+-- 一个事实由「主体 + 谓词 + 值」构成，并且必须带三件身份（work_unit_ref /
+-- asserted_by / source_refs_json）：空值在这里是**错误**，不是默认值。
+--
+-- 不可改写：只允许 supersede（写 superseded_by / superseded_at），任何触碰
+-- value_json / predicate / 主体 / 身份列的 UPDATE 由触发器 facts_no_rewrite 拒绝
+-- —— 不依赖代码纪律。（触发器不在本模板内：SCHEMA_SQL 按分号切分执行，
+-- BEGIN...END 里的分号会被切坏，故单独一段 FACTS_TRIGGERS_SQL。）
+--
+-- 一个 subject + predicate 同时只有一条 active（partial unique index 兜底）。
+-- verification_json 存在断言行上：验证也是一种事实，但「谁验证的」不能成为
+-- 同一个结论的第二个写者。
+--
+-- 注意：本段位于 SCHEMA_SQL 模板字面量内，注释里禁止出现反引号。
+CREATE TABLE IF NOT EXISTS facts (
+  id               TEXT PRIMARY KEY,
+  subject_kind     TEXT NOT NULL,
+  subject_id       TEXT NOT NULL,
+  predicate        TEXT NOT NULL,
+  value_json       TEXT NOT NULL,
+  work_unit_ref    TEXT NOT NULL,
+  asserted_by      TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL,
+  verification_json TEXT,
+  confidence       REAL NOT NULL DEFAULT 1.0,
+  created_at       TEXT NOT NULL,
+  superseded_by    TEXT REFERENCES facts(id),
+  superseded_at    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_facts_active
+  ON facts(subject_kind, subject_id, predicate) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_subject
+  ON facts(subject_kind, subject_id) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_predicate
+  ON facts(predicate) WHERE superseded_by IS NULL;
+
 CREATE TABLE IF NOT EXISTS user_read_cursors (
   user_id TEXT NOT NULL,
   conversation_key TEXT NOT NULL,
@@ -872,6 +909,42 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
 `;
 
+/**
+ * C9-A: `facts` 的两条 DB 层守卫 —— **不可改写** 与 **身份必填**。
+ *
+ * 为什么不放进 SCHEMA_SQL：那段模板按 `;` 切分逐条 exec，`BEGIN … END` 里的分号
+ * 会被切坏（切出来的碎片第一条就语法错）。触发器必须作为**完整语句**执行。
+ *
+ * 为什么是触发器而不是代码纪律：纪律要求"每个人都记得"，触发器只要求
+ * "库存在"。一个不变量只能有一个执行点，而"没人会绕过它"的那个点是这里。
+ *
+ * facts_no_rewrite 的 WHEN 子句只覆盖**结论性**列：supersede 本身要写
+ * superseded_by / superseded_at，那不是改写，是「新事实取代旧事实」的标记。
+ */
+const FACTS_TRIGGERS_SQL = `
+CREATE TRIGGER IF NOT EXISTS facts_no_rewrite
+BEFORE UPDATE ON facts
+WHEN OLD.value_json        <> NEW.value_json
+  OR OLD.predicate         <> NEW.predicate
+  OR OLD.subject_kind      <> NEW.subject_kind
+  OR OLD.subject_id        <> NEW.subject_id
+  OR OLD.asserted_by       <> NEW.asserted_by
+  OR OLD.work_unit_ref     <> NEW.work_unit_ref
+  OR OLD.source_refs_json  <> NEW.source_refs_json
+BEGIN
+  SELECT RAISE(ABORT, 'facts are immutable; supersede instead');
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_require_provenance
+BEFORE INSERT ON facts
+WHEN NEW.work_unit_ref IS NULL OR TRIM(NEW.work_unit_ref) = ''
+  OR NEW.asserted_by IS NULL OR TRIM(NEW.asserted_by) = ''
+  OR NEW.source_refs_json IS NULL OR TRIM(NEW.source_refs_json) = ''
+BEGIN
+  SELECT RAISE(ABORT, 'facts require provenance: work_unit_ref, asserted_by, source_refs_json');
+END;
+`;
+
 // ─── Open / close ────────────────────────────────────────────────────────────
 
 let _db: DatabaseSync | null = null;
@@ -898,6 +971,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
       .filter(Boolean)) {
       _db.exec(stmt);
     }
+
+    // C9-A: facts 的两条守卫（不可改写 / 身份必填）。整段执行 —— 触发器体内有分号，
+    // 不能过上面的逐条切分。放在同一事务内，与建表同生同灭。
+    _db.exec(FACTS_TRIGGERS_SQL);
 
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [

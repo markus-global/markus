@@ -2083,6 +2083,9 @@ export class APIServer {
     if (!units) return;
     this.taskService.setWorkUnitService(units);
     const manager = this.orgService.getAgentManager();
+    // C9-A：facts 层的唯一写者接进 core（未接则三工具不注册、[FACTS:…] 不渲染）。
+    // 与 workUnits 同样惰性读 storage："暂时没有" 不是事实，晚到的依赖不能冻成 null。
+    manager.setFactService(this.storage?.factService ?? null);
     // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
     manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
     // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。

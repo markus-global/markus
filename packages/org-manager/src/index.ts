@@ -1,4 +1,5 @@
 export { OrganizationService } from './org-service.js';
+export { SqliteFactService, FACT_PREDICATE_LIST, type FactDb, type FactServiceOptions } from './fact-service.js';
 export { TaskService } from './task-service.js';
 export {
   WorkUnitService,

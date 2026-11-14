@@ -34,7 +34,10 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
     // C8-C: `rest(wakeOn)` 是「声明我在等哪条邮箱事件」，与邮箱同组；`list_waits` / `cancel_wait` 是同一关系的读/取消面。
     'rest', 'list_waits', 'cancel_wait'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
-  { id: 'reasoning', prefixes: ['decide'] },
+  // 第九刀 C9-A：`fact_assert` / `fact_supersede` / `fact_query` 是「结构化结论」的
+  // 写/读面，与 `decide`（结构化决策）同族 —— 归入 reasoning，不为展示新建分类
+  // （新建桶要在 zh-CN/en/es 三份 locale 各加字串，收益只是分组标题）。
+  { id: 'reasoning', prefixes: ['decide', 'fact_'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents', 'invoke_coding_tool', 'coding_tool_apply'] },
   // 第七刀 C7-A：`work_status` 是**运行时自省**（读本 agent 的 WorkUnit 台账），
