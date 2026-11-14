@@ -217,5 +217,102 @@ Owner 编译重启于 `18:51:33`（UTC `10:51:33`）。以下是**重启后**的
 
 1. **② `distinct_refs << rows`**：需要 3 条落在**不同实体**（或目标处于 awake 状态、不被去重合并）的投递，才能形成多行对比。当前单目标停机 → 全部合并成 1 行。
 2. **③ 矛盾事实当轮 `cancel`**：需要在某个回合**进行中**向同一 `work_unit_ref` 投一条撤销/改需求，并核对 `agent_decisions` 的 cancel 行早于该回合那次 `llm.complete()`。
+
+---
+
+# §11 重启后复测（2026-11-14 20:05–20:15，Owner 重启实例后）
+
+## §11.1 「在跑」僵尸：15 → 0，零误伤
+
+修复前（同一库）：`running=15`，且这些行对应的回合早已结束。启动日志见证：
+
+```
+[2026-11-14T12:05:05.978Z] [INFO] [api-server] Reconciled stale running WorkUnits {"count":15}
+```
+
+收口后分布：`idle 52 / paused_budget 1 / running 0`。
+
+**两个漏洞，两种证据**（先在库副本上算，再等真机执行）：
+
+| 漏洞 | 副本探针 | 真机 |
+|---|---|---|
+| 触发行已终态（task 纪元从不收口） | 规则一收 11 条 | 计入上述 15 |
+| 孤儿 session 单元（没有任何 mailbox 行引用它） | 只读核对命中恰好 4 条 | 计入上述 15 |
+
+判据不是"跑一次没人报错"，而是：**收口后的条数 = 修前读数**（15 = 11 + 4），且终态行**一条没动**（idle 48→52 全部来自 running 迁移）。
+
+## §11.2 判据② `distinct_refs << rows`：真机全证（原为"部分取证"）
+
+**a2a 侧**——向 Secretary 连发 3 条 DM 后的真实落库：
+
+| item | status | work_unit_ref |
+|---|---|---|
+| `mbx_84a93083…` | completed | `a2a:channel:dm:a2a:agt_5f7658…:agt_b56cd6…` |
+| `mbx_efccfdd8…` | processing | 同上 |
+| `mbx_5a327f36…` | queued | 同上 |
+
+⇒ **3 行 / 1 ref**。ref 是实体身份（不含 deliveryId），投递次数不改变结构事实。
+
+**task 侧**（既有数据里的自然样本）：`task_tsk_90ad00bf00ce575d5c86324d_r1` 挂 **3 行**，`task_tsk_62d61a7239e41b1e858995fa_r1` 挂 **3 行**，`task_tsk_aa0c33fa83881533f085ad00_r1` 挂 2 行。
+
+**全库**：`rows_with_ref=47 / distinct_refs=40`。
+
+判定：**通过**（此前只有"同实体不分裂成两个 ref"这一半，缺"多行收敛到少 ref"这另一半，现已补齐）。
+
+## §11.3 判据③ 矛盾事实当轮 cancel：**发现真缺陷 —— 消费端写完，生产端零写者**
+
+原计划是"投一条矛盾事实看 cancel 行"。实测发现**投不出来**，而且原因不是流量不对：
+
+```
+grep -rn "invalidatesPremise" --include=*.ts packages/
+  → 生产代码：turn-delta.ts(读)、mailbox.ts(enqueue 透传)、agent.ts(读)、shared/mail.ts(工厂)
+  → 置 true 的地方：**只有 4 个测试文件**
+grep -rn "supersedes: \[" …
+  → 生产代码零命中
+```
+
+`classifyTurnDelta` 的 `contradiction` 分支只认 `invalidatesPremise === true` 或 `supersedes` 非空，而**生产里没有任何一处会置位**。也就是说这一刀宣称的"矛盾事实当轮生效"，在线上**结构上不可达**——测试绿的是分类器，不是系统。这正是"夹具会撒谎"的典型：单测自己造 flag，自己断言 flag 生效。
+
+**修法**（生产者取唯一的自然执行点）：`TaskService.maybeNotifyAssignee` 是唯一一个"知道这活已经结束"的地方。任务进入 `cancelled / failed / completed / archived` 时，投给执行方的 `task_status_update` 现在带 `invalidatesPremise: true`。**排除** `rejected`（打回=重做，前提仍成立）与 `review`（assignee 自己提交的）。
+
+**测试会咬人**（实测变异）：把接线那行删掉后重跑 ——
+
+```
+× cancelled → 投递带 invalidatesPremise
+× failed    → 投递带 invalidatesPremise
+× completed → 投递带 invalidatesPremise
+× archived  → 投递带 invalidatesPremise
+✓ rejected / blocked / 恢复 / 自己提交评审 / executionTriggered 静默
+```
+
+4 红 5 绿，红在正确的地方、绿在该绿的地方。恢复接线后 9/9 绿。
+
+门禁：`tsc -b` = 0；6 个套件 **51 passed**（work-unit producers/wiring/storage、turn-delta、turn-delta-injection、premise-invalidation）。
+
+## §11.4 本轮提交
+
+| commit | 内容 |
+|---|---|
+| `5be7a59a` | chat 收口用 mailbox 行上的 ref；新增 `reconcileRunningAgainstTerminalMailbox`（规则一）；端点剔除过期租约 |
+| `4c8f4360` | 纠偏规则二（孤儿 session 单元）+ 本记录 §10 |
+| `9c10f0e4` | 判据③ 的生产者（终态任务 → `invalidatesPremise`）+ 咬人测试 |
+
+## §11.5 仍未取到真机读数的一项（明确、不粉饰）
+
+判据③的**生产者**是 `9c10f0e4` 才加上的，而当前正在运行的实例是**它之前**编译的。因此：
+
+- 消费端（`cancel` → 提前收束回合）此前已有集成证据（`cancelAt < nextLlmAt`）；
+- 生产者本轮已补齐并有变异验证；
+- **但"真实回合里出现一条 cancel 决策行"仍需用 `9c10f0e4` 重新编译并重启一次实例**才能观察。
+
+重启后的取数命令（无需人工干预）：
+
+```sql
+-- 触发一次任务终止后，核对 cancel 行早于该回合那次 llm.complete()
+SELECT created_at, decision_type, mailbox_item_id FROM agent_decisions
+ WHERE decision_type='cancel' ORDER BY created_at DESC LIMIT 3;
+```
+
+在此之前，本卡判据③ 记为 **代码级 ✅ + 生产者已补齐 / 真机待重启取证**，不签"验证通过"。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 
