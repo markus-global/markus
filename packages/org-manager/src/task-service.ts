@@ -796,6 +796,12 @@ export class TaskService implements ApprovalTargetPort {
           }, {
             ...(isHuman ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHuman ? 'user' : 'agent', taskId },
+            // 身份精到**该任务**（不是“当前回合”）：实体是 task，所以用
+            // `task_<id>_r<round>`。若接收方正在执行别的任务，这条 ref 自然
+            // 匹配不到任何 running 回合 → 老老实实排队，不会被错误注入。
+            // 修正前：全库 `mention` 5558 条 / `task_comment` 1733 条 ref 全为 NULL，
+            // 于是「有人在评论我正在做的任务」永远不可能在轮内生效。
+            workUnitRef: WORK_UNIT_REF.task(taskId, this.tasks.get(taskId)?.executionRound ?? 1),
           });
           notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
