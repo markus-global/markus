@@ -85,6 +85,7 @@ import {
   formatEvictedToolCatalog,
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
+  REQUIREMENT_ACTION_EVIDENCE_TOOLS,
   WORKFLOW_ACTION_ALLOWED_TOOLS,
   SCHEMA_INJECTED_TOOLS,
   type CapabilityPack,
@@ -5740,8 +5741,7 @@ export class Agent {
             if (tc.name === 'task_comment' || tc.name === 'requirement_comment') {
               commentToolUsed.add(tc.name);
             }
-            const REQ_ACTION_TOOLS = ['requirement_update_status', 'requirement_comment', 'task_create', 'notify_user', 'request_user_input', 'request_user_approval'];
-            if (REQ_ACTION_TOOLS.includes(tc.name)) {
+            if (REQUIREMENT_ACTION_EVIDENCE_TOOLS.includes(tc.name)) {
               requirementActionToolUsed.add(tc.name);
             }
           }

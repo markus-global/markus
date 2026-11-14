@@ -2,6 +2,8 @@ import { createLogger, type LLMTool } from '@markus/shared';
 import type { SkillManifest } from './skills/types.js';
 import {
   type CapabilityPack,
+  ACTION_TOOL_IDS,
+  actionToolGuardEnabled,
   allowsWorkContextBoundTools,
   CONVERSE_FORBIDDEN_DEFAULT,
   evictToolsToBudget,
@@ -221,12 +223,20 @@ export class ToolSelector {
      * shrink or end the turn — see `context-gate.ts`.
      */
     contextPct?: number;
+    /**
+     * C8-D single switch — explicit override of `MARKUS_ACTION_TOOL_GUARD`.
+     * `false` restores the legacy face: action tools are neither forced into the
+     * selection nor protected from budget eviction.
+     */
+    actionToolGuard?: boolean;
   }): LLMTool[] {
     const pack: CapabilityPack = opts.pack
       ?? (opts.isTaskExecution ? 'execute' : opts.isReview ? 'govern' : 'converse');
     const scenario = opts.scenario
       ?? (opts.isTaskExecution ? 'task_execution' : opts.isReview ? 'review' : undefined);
     const allowWorkCtx = allowsWorkContextBoundTools(pack, scenario);
+    // C8-D: one switch for "action tools are always reachable". Off ⇒ legacy face.
+    const actionGuard = opts.actionToolGuard ?? actionToolGuardEnabled();
     const selected = new Set<string>();
 
     if (pack === 'reflex') {
@@ -241,6 +251,16 @@ export class ToolSelector {
       // to skill/MCP schemas, not to these. Never leave them deferred behind Feishu.
       for (const name of TOOL_DEF_CORE_KEEP) {
         if (opts.allTools.has(name)) selected.add(name);
+      }
+      // C8-D: action tools are not "situational extras". An agent that cannot
+      // create / update / submit work, read its own ledger or queue, or answer a
+      // human cannot do the job at all, so they are forced into the face
+      // regardless of keywords. Reflex is excluded on purpose: a patrol tick is
+      // not a work unit, and WORK_ENTITY lifecycle tools stay session-gated.
+      if (actionGuard) {
+        for (const name of ACTION_TOOL_IDS) {
+          if (opts.allTools.has(name)) selected.add(name);
+        }
       }
     }
 
@@ -685,6 +705,18 @@ export class ToolSelector {
     // 可能在同一轮就被预算驱逐 → agent.ts 静默删除激活态 → 工具彻底不可见 → 模型反复
     // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
+    if (actionGuard) {
+      // C8-D, two clauses of the same contract:
+      //   (a) action tools are eviction-immune — losing them silently IS the defect;
+      //   (b) eviction may only ever take a tool `discover_tools` can bring back.
+      //       A tool with no registered handler and no schema-injection entry is
+      //       unreachable for the rest of the turn once evicted (that is how
+      //       end_turn / open_right_panel died), so it is never a legal victim.
+      for (const name of ACTION_TOOL_IDS) protectedNames.add(name);
+      for (const t of result) {
+        if (!opts.allTools.has(t.name) && !SCHEMA_INJECTED_TOOLS.has(t.name)) protectedNames.add(t.name);
+      }
+    }
     for (const name of activated) {
       // registered handler OR schema-injected (pushUnique) tool — both must be
       // eviction-immune once explicitly activated via discover_tools, otherwise
