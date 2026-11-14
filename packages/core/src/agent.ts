@@ -356,6 +356,14 @@ interface HandleMessageOptions {
    * 之类的猜测去关联 —— 那是从载荷/时序推断结构（R3），本项目明确禁止。
    */
   onItemEnqueued?: (item: { id: string; sourceType: string }) => void;
+  /**
+   * C7-B：本轮 WU 的 ref，由**入口在入队前**决定并随 item 一起落地。
+   *
+   * 为什么必须在入队前决定：agent 可能在这一行入队后立刻开始处理它，
+   * 如果 ref 是“入队后再异步补写”（旧写法），`item.workUnitRef` 读到的是 null，
+   * 这一回合里发生的委派就拿不到父 ref → 子 WU 落 `delegation:root:…`（父链断）。
+   */
+  workUnitRef?: string | null;
 }
 
 /** Context-usage percentage (0-100) at/above which a turn-level memory flush preflight fires. */
@@ -1575,6 +1583,8 @@ export class Agent {
         // C2：投递来源 → mailbox 用它构造信封（from/messageId）。
         origin: options?.origin,
         priority: options?.priority,
+        // C7-B：身份随消息一起落地（不是写入后回填），见 options.workUnitRef 的说明。
+        workUnitRef: options?.workUnitRef ?? null,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -1632,7 +1642,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null; onItemEnqueued?: (item: { id: string; sourceType: string }) => void },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null; onItemEnqueued?: (item: { id: string; sourceType: string }) => void; workUnitRef?: string | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: summarizeForMailbox(userMessage),
@@ -1686,6 +1696,8 @@ export class Agent {
               ?? options?.sessionId
               ?? (this.getDbSessionId() || undefined)),
         },
+        // C7-B：同上 —— 流式路径也必须在入队前带上本轮 WU 身份。
+        workUnitRef: options?.workUnitRef ?? null,
         runtime: { responsePromise: { resolve, reject } },
       });
       options?.onItemEnqueued?.({ id: enqueued.id, sourceType: 'human_chat' });

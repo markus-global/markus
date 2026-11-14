@@ -58,6 +58,13 @@ export interface SSEMessageHandlerOptions {
    * running" 就在流式路径上永远不成立。
    */
   onItemEnqueued?: (item: { id: string }) => void;
+  /**
+   * C7-B：本轮 WU 身份，由入口在**入队前**决定，随 item 一起落地。
+   *
+   * 不要在入队后异步回填：流式回合可能在回填前就开始处理，
+   * 那一刻 `item.workUnitRef` 为空 → 本回合的委派拿不到父 ref（父链落 root）。
+   */
+  workUnitRef?: string | null;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
@@ -249,6 +256,8 @@ export class SSEHandler {
           // item resolve the memory session BOUND to this conversation instead of
           // trusting its own (possibly stale) workspace pointer.
           ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+          // C7-B：本轮 WU 身份随消息一起入队（不是在收口/入队后回填）。
+          ...(this.options.workUnitRef ? { workUnitRef: this.options.workUnitRef } : {}),
           // 第七刀 C7-A：item id 只能来自入队回调。SSEHandler 自己发起入队，
           // 所以必须自己挂这个回调 —— 上层入口拿不到这一层的入队时机。
           onItemEnqueued: (item) => {
