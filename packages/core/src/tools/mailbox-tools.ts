@@ -25,6 +25,14 @@ export interface MailboxToolContext {
   routeOfMessage?: (messageId: string) => unknown[];
   /** 第六刀 C3：catch-all 概览（只读）。未接线 ⇒ 工具不注册。 */
   catchAll?: () => unknown;
+  /**
+   * 第七刀 C7-A：`work_status()` 的只读端口。未接线 ⇒ 工具不注册。
+   *
+   * 答案必须来自 `work_units` 对象查询，**不得**从 payload / 会话文本推断 ——
+   * 这正是需求 §10.1 缺口 A 的关闭点：今天「我有几个 worker 在跑」是每轮开头
+   * 注入的一段文本，是快照、会漂移；这里给出的是可复查的对象。
+   */
+  workStatus?: (opts: { limit?: number }) => unknown;
 }
 
 export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] {
@@ -300,6 +308,33 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
       },
       async execute(): Promise<string> {
         return JSON.stringify({ status: 'ok', ...(ctx.catchAll!() as Record<string, unknown>) });
+      },
+    } as AgentToolHandler] : []),
+  // ─── 第七刀 C7-A：自省（只读）────────────────────────────────────────
+    //
+    // 这个工具关闭的是需求 §10.1 缺口 A：今天「我有几个 worker、分别在处理什么」
+    // 是每轮开头注入的一段**文本**（从会话注册表现算），没有可查询实体。
+    // 现在答案来自 `work_units` 对象：父子关系、认领者、租约、预算都是列，不是推断。
+    ...(ctx.workStatus ? [{
+      name: 'work_status',
+      description:
+        'Read the WorkUnit ledger for this agent: one row per unit of work (a chat turn, a task ' +
+        'execution epoch, or one A2A delivery), answered from the work_units object — NOT from ' +
+        'mailbox payload text — so the rows cannot drift from execution. ' +
+        'Each row carries ref / status / parentId / claimedBy / leaseUntil / budget / used. Read-only. ' +
+        'IMPORTANT — what this does NOT tell you: in cut 7 the chat WorkUnit is created when the turn ' +
+        'settles, so `status` is `idle` for finished work and **no `running` row appears for an ' +
+        'in-flight turn**. Treat an empty result as "no unit on record", never as "nothing is running"; ' +
+        'live-turn observability is C7-B scope.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          limit: { type: 'number', description: 'Max units to return (default 50).' },
+        },
+      },
+      async execute(args: Record<string, unknown>): Promise<string> {
+        const limit = typeof args['limit'] === 'number' ? (args['limit'] as number) : undefined;
+        return JSON.stringify({ status: 'ok', ...(ctx.workStatus!({ limit }) as Record<string, unknown>) });
       },
     } as AgentToolHandler] : []),
   ];

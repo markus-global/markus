@@ -114,7 +114,7 @@ describe('executeTask and task lifecycle', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.sendTaskExecution('task_exec_1', 'Implement a small feature', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    });
+    }, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -582,7 +582,7 @@ describe('mailbox scenarios not covered elsewhere', () => {
     const agent = createAgent(router);
     await agent.start();
 
-    const taskPromise = agent.sendTaskExecution('task_cmt_active', 'Long running task', () => {});
+    const taskPromise = agent.sendTaskExecution('task_cmt_active', 'Long running task', () => {}, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
     await new Promise(r => setTimeout(r, 30));
 
     await processViaMailbox(agent, 'task_comment', {

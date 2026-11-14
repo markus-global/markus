@@ -13,7 +13,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { AgentDelivery, newChainId, type DeliveryDeps, type DeliveryRequest } from '../src/agent-delivery.js';
+import { AgentDelivery, newChainId, NULL_WORK_UNITS, type DeliveryDeps, type DeliveryRequest } from '../src/agent-delivery.js';
 
 type Enqueued = { agentId: string; sourceType: string; payload: Record<string, unknown>; options?: Record<string, unknown> };
 
@@ -37,6 +37,8 @@ function makeDeps(overrides: Partial<DeliveryDeps> = {}) {
     getAgent: (id: string) => (id === 'missing' ? undefined : ensure(id)),
     persistReply,
     broadcastReply,
+    // 端口必填：这些用例不关心 WU，显式声明「没有 WU 服务」而不是漏传。
+    workUnits: NULL_WORK_UNITS,
     ...overrides,
   };
   return { deps, enqueued, persistReply, broadcastReply, agents };

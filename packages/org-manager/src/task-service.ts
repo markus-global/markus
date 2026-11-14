@@ -1,3 +1,4 @@
+import type { WorkUnitService } from './work-unit-service.js';
 import {
   createLogger,
   taskId,
@@ -18,6 +19,7 @@ import {
   type TaskQueryResult,
   type TaskSortField,
   isValidTaskTransition,
+  WORK_UNIT_REF,
   TERMINAL_STATUSES,
   PROMPT_TASK_NOTES_MAX,
   PROMPT_TASK_NOTE_CHARS,
@@ -1027,6 +1029,17 @@ export class TaskService implements ApprovalTargetPort {
 
   setStatusTransitionRepo(repo: typeof this.statusTransitionRepo): void {
     this.statusTransitionRepo = repo;
+  }
+
+  /**
+   * 第七刀 C7-A：接上 WorkUnit 作者。未接线 ⇒ 任务照常，只是不建 WU。
+   *
+   * 为什么只 import **type**：TaskService 不应在编译期依赖 `WorkUnitService`
+   * 的实现（它由 `start.ts` 装配），只依赖形状。
+   */
+  private workUnitService?: WorkUnitService;
+  setWorkUnitService(service: WorkUnitService | undefined): void {
+    this.workUnitService = service;
   }
 
   private isHumanUser(userId: string): boolean {
@@ -2445,6 +2458,12 @@ export class TaskService implements ApprovalTargetPort {
         task.title,
         task.requirementId,
         retryNotice,
+        // C7-B：task 链路的 mailbox item 由 `sendTaskExecution` 内部的 enqueue 产生，
+        // 这是拿到它 id 的唯一时机（猜「最近一条」= 从时序推断结构）。
+        // C7 尾巴：走 linkExecutionEpoch —— 先 ensure 本 round 的实体，再写引用。
+        (item) => {
+          this.linkExecutionEpoch(item.id, taskId, executionRound);
+        },
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -2636,6 +2655,28 @@ export class TaskService implements ApprovalTargetPort {
     }
   }
 
+  /**
+   * C7 尾巴（2026-11-14）：一个执行纪元 = 一个 WorkUnit，**实体先于引用**。
+   *
+   * 缺陷：`createTask()` 只给 round 1 建实体，而两个执行入口无条件写
+   * `task_<id>_r<round>` 引用。`mailbox_items.work_unit_ref` 是纯 TEXT 列（无 FK），
+   * 所以 round ≥2（打回返工 / fresh retry）的 mailbox 行指向不存在的实体也没人报错 ——
+   * `resolve(ref)` 返 null → 锁键退化、该回合发起的委派 `parent_id` 落 NULL。
+   *
+   * 规则只在这里实现一次：**先 ensure 实体，再写引用**。两个调用点共用它，
+   * 不各补一次（同一事实两个执行点 = 必然漂移）。
+   */
+  private linkExecutionEpoch(itemId: string, taskId: string, round: number): void {
+    const units = this.workUnitService;
+    if (!units) return;
+    const ref = WORK_UNIT_REF.task(taskId, round);
+    // 取不到 assignee 时传空串：`ensure()` 会把它记成结构化的 ensure_failed 事件，
+    // 而不是静默跳过 —— 静默跳过就是下一个“引用悬空”。
+    const agentId = this.tasks.get(taskId)?.assignedAgentId ?? '';
+    units.ensure({ ref, agentId, taskId, status: 'running', contextRef: ref });
+    units.linkMailboxItem(itemId, ref);
+  }
+
   createTask(request: CreateTaskRequest): Task {
     // ── Validate assignedAgentId / reviewerId exist ──
     if (!request.assignedAgentId) {
@@ -2781,6 +2822,23 @@ export class TaskService implements ApprovalTargetPort {
     };
 
     this.tasks.set(task.id, task);
+
+    // ── 第七刀 C7-A：一个执行纪元 = 一个 WorkUnit ──────────────────────────
+    // `ref` 复用既有身份 `task_<id>_r<round>`（执行会话 id、在飞登记表用的是
+    // 同一个字符串）：不新造第二套命名，否则同一个纪元会有两张身份证。
+    //
+    // 状态只表达「现在在不在跑」：`pending` 还没开始执行 → `idle`。
+    // **本卡不做 task.status → WU.status 的镜像**：WU 有自己的状态机，镜像会制造
+    // 第二个执行点（R2）。真正驱动它的是执行本身，那是 C7-B 的事。
+    if (this.workUnitService) {
+      this.workUnitService.ensure({
+        ref: WORK_UNIT_REF.task(task.id, task.executionRound),
+        agentId: task.assignedAgentId,
+        taskId: task.id,
+        status: task.status === 'in_progress' ? 'running' : 'idle',
+        contextRef: WORK_UNIT_REF.task(task.id, task.executionRound),
+      });
+    }
 
     if (this.taskRepo) {
       this.taskRepo
@@ -6249,6 +6307,12 @@ export class TaskService implements ApprovalTargetPort {
         executionRound,
         task.title,
         task.requirementId,
+        undefined,
+        // C7-B：同主执行路径 —— item id 只能来自 sendTaskExecution 的入队回调。
+        // C7 尾巴：同一执行点（fresh retry 也是新纪元，必须自己那条实体）。
+        (item) => {
+          this.linkExecutionEpoch(item.id, taskId, executionRound);
+        },
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });

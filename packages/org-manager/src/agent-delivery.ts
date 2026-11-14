@@ -16,7 +16,7 @@
  * 不存在"投递了但没唤醒"这种半状态：deliver 只有成功（已入队）或抛错两种结果。
  */
 
-import { createLogger, agentAddressRef } from '@markus/shared';
+import { createLogger, agentAddressRef, WORK_UNIT_REF } from '@markus/shared';
 
 const log = createLogger('agent-delivery');
 
@@ -123,7 +123,52 @@ export interface DeliveryDeps {
     text: string;
     messageId?: string;
   }) => void;
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（§16：一次 A2A 投递 = 一个 WU）。
+   *
+   * 必填而非可选：`workUnits?:` 会让「没有 WU 服务」和「忘了装配」在类型上无法区分，
+   * 整条链路静默跳过且没人发现。真的没有 WU 的装配路径显式传 `NULL_WORK_UNITS`。
+   *
+   * `transition` 是**装配处**包好 `WorkUnitService.tryTransition()` 的版本（业务路径
+   * 用的那个：非矩阵失败记事件、不打断投递；矩阵错误照样抛）—— 端口只声明「迁移」
+   * 这件事，不声明「怎么处理失败」，那是 service 的职责。
+   */
+  workUnits: {
+    ensure(seed: {
+      ref: string;
+      agentId: string;
+      contextRef?: string | null;
+      taskId?: string | null;
+      /**
+       * C7-B：发送方本轮父 WU 的 ref。一次 A2A 投递就是「某个回合里发出的一次
+       * 委派」，父只能是那个回合的 WU；ref → id 的解析归 `WorkUnitService.ensure()`。
+       */
+      parentRef?: string | null;
+    }): { status: string } | null;
+    /**
+     * C7-B：读「发送方**本轮**跑在哪条 WU 上」。
+     *
+     * 名字里的 turn 是约束：只读该 agent 内存中由 `onFocusChanged` 设置的回合 ref，
+     * 禁止用库查询实现。必填而非可选：`NULL_WORK_UNITS` 让它显式返回 null。
+     */
+    turnWorkUnitRef(agentId: string): string | null;
+    linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean;
+    transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
+  };
 }
+
+/**
+ * 具名空实现：这条装配路径确实没有 WU 服务（CLI 无 storage、单测直接构造）。
+ *
+ * 用显式对象而不是 `undefined`，是让「这里没有 WU」成为装配处一个**看得见**的决定，
+ * 而不是一个悄悄成立的可选性。
+ */
+export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
+  ensure: () => null,
+  turnWorkUnitRef: () => null,
+  linkMailboxItem: () => false,
+  transition: () => undefined,
+};
 
 let deliverySeq = 0;
 
@@ -170,7 +215,7 @@ export class AgentDelivery {
         // 那才是缓存最怕的。
         const addressedCount = req.addressedTargetIds?.length ?? 0;
         const othersAddressed = Math.max(0, addressedCount - 1);
-        agent.enqueueToMailbox('a2a_message', {
+        const item = agent.enqueueToMailbox('a2a_message', {
           summary: req.mentions?.length
             ? `@mention from ${req.fromAgentName}`
             : `A2A message from ${req.fromAgentName}`,
@@ -217,6 +262,27 @@ export class AgentDelivery {
             ? { responsePromise: { resolve: (value: string) => resolveReply?.(value), reject: () => {} } }
             : undefined,
         });
+        // ── 第七刀 C7-A：一次 A2A 投递 = 一个 WorkUnit（state-machines §16）──
+        // WU 由**发送方**拥有：`deliver()` 是发送方的动作，所以 `agent_id` 记发送方
+        // （干活的那个），不是接收方。一次投递给 N 个接收方 → N 个 item 共享同一个
+        // ref，这是定义不是缺陷（它们确实是同一条活产出的 N 份投递）；接收方视角的
+        // 工作单元（认领/租约/预算）是 C7-B 的语义，本卡没有它的生产者。
+        // `context_ref` 取 `channelKey`：A2A 消息的会话身份就是这条频道
+        // （mailbox 侧 sessionHint 也用同一个值）。
+        // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
+        const units = this.deps.workUnits;
+        const ref = WORK_UNIT_REF.a2a(req.channelKey, deliveryId);
+        // C7-B：跨团队委派也要有父子链 —— 父 = 发送方本轮 WU（从 agent 的回合状态
+        // 读，不从载荷推断）。没有回合（后台发送 / 定时）时显式 null，ref 不改写。
+        const parentRef = units.turnWorkUnitRef(req.fromAgentId);
+        const wu = units.ensure({ ref, agentId: req.fromAgentId, contextRef: req.channelKey, parentRef });
+        units.linkMailboxItem((item as { id?: string } | undefined)?.id, ref);
+        // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`
+        // （`entity_type='work_unit'`）：不留痕的话「它什么时候停的」只能靠猜。
+        // 只在 `running` 上迁：重投同一跳会命中既有 `idle` 行（idle→idle 不在矩阵里）。
+        if (wu?.status === 'running') {
+          units.transition(ref, 'idle', { reason: 'a2a_delivery_enqueued' });
+        }
         deliveredTo.push(targetId);
       } catch (err) {
         // 投递失败必须可见：不吞。调用方据此决定是否重试。

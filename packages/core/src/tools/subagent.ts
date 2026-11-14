@@ -8,9 +8,10 @@ import {
   SUBAGENT_LOG_ENTRY_CHARS,
   SUBAGENT_ERROR_PREVIEW_CHARS,
   SUBAGENT_MAX_PARALLEL,
-  SUBAGENT_MAX_AGGREGATE_ITERATIONS,
+  SUBAGENT_DEFAULT_ITERATION_BUDGET,
   SUBAGENT_MAX_LLM_RETRIES,
   SUBAGENT_RETRY_BASE_MS,
+  WORK_UNIT_REF,
 } from '@markus/shared';
 import type { AgentToolHandler } from '../agent.js';
 import type { LLMRouter } from '../llm/router.js';
@@ -21,7 +22,39 @@ import { isToolErrorResult } from './result.js';
 
 const log = createLogger('subagent');
 
-const DEFAULT_MAX_SUBAGENT_ITERATIONS = Infinity;
+/**
+ * C7-B — 委派产生的子 WU 句柄（父 WU 已知时立刻产生，禁止绕过唯一写者）。
+ *
+ * core 不认识 org-manager 的 `WorkUnitService`（依赖方向），只认这一个最小端口；
+ * 端口未注入 ⇒ 子代理照常跑，只是「这条活没有身份」（可知的降级，不是隐藏的崩溃）。
+ */
+export interface DelegationWorkUnitHandle {
+  id: string;
+  ref: string;
+  status: string;
+  contextRef: string | null;
+}
+
+export interface DelegationWorkUnitPort {
+  /** 按 ref 读回 WU（用于「这一轮跑在哪个会话」与父 WU 解析）。 */
+  resolve(ref: string): DelegationWorkUnitHandle | null;
+  /** 幂等建子 WU；`parentId` 来自当前回合的父 WU，没有就显式 null。 */
+  ensureChild(seed: {
+    ref: string;
+    agentId: string;
+    parentId: string | null;
+    budget: number | null;
+    contextRef: string | null;
+  }): DelegationWorkUnitHandle | null;
+  /**
+   * 子 WU 收口：记 `used`（iteration 次数）+ 迁移状态。
+   * 到线 → `paused_budget`（留痕在 `status_transitions`），正常结束 → `idle`。
+   */
+  settle(
+    ref: string,
+    opts: { used: number; status: 'idle' | 'paused_budget'; reason: string },
+  ): void;
+}
 
 /**
  * Progress callback for subagent execution.
@@ -45,6 +78,22 @@ export interface SubagentContext {
   dataDir?: string;
   /** Retrieve the progress callback from the current execution context (e.g. via ALS) */
   getProgressCallback?: () => SubagentProgressCallback | undefined;
+  /**
+   * C7-B：委派即产生子 WU 的端口（由装配处注入；未注入 = 子代理没有 WU 身份）。
+   * 与 `getProgressCallback` 同样的注入方向：core 不反向依赖 org-manager。
+   */
+  workUnits?: DelegationWorkUnitPort;
+  /**
+   * C7-B：本回合父 WU 的 ref（回合进行中才有；首轮/未接线为 null）。
+   *
+   * **必填而非可选**：`?` 会让「忘了接线」与「确实没有父 WU」在类型上无法区分，
+   * 而两者后果不同（前者是装配缺陷，后者是 root 回合）。装配处没有父 WU 时
+   * 显式写 `() => null`。
+   *
+   * 只读内存中由 `onFocusChanged` 设置的当前回合 ref —— **不得**用库查询实现
+   * （库里没有「当前」这个概念，只有历史，按 agentId 反查得到的是错的那一条）。
+   */
+  turnWorkUnitRef: () => string | null;
 }
 
 /**
@@ -255,10 +304,16 @@ export async function runSubagentLoop(
   task: string,
   opts?: SubagentLoopOptions,
 ): Promise<SubagentLoopResult> {
-  const hardCap = ctx.maxToolIterations ?? DEFAULT_MAX_SUBAGENT_ITERATIONS;
+  const hardCap = ctx.maxToolIterations ?? SUBAGENT_DEFAULT_ITERATION_BUDGET;
   const maxIterations = Math.min(opts?.maxIterations ?? hardCap, hardCap);
-  /** This child's own iteration budget — never shared with siblings. */
-  const iterationBudget = opts?.iterationBudget;
+  /**
+   * C7-B：这个孩子自己的迭代预算 —— **永远有限**，绝不与 sibling 共享。
+   *
+   * 6b 的 `Infinity` 默认是这一整类「零产物全灭」的根因：没有 per-child 绳子，
+   * 唯一能停下来的就是共享断路器，于是断路器事实上变成了日程。现在缺省就是
+   * `SUBAGENT_DEFAULT_ITERATION_BUDGET`，到线返回结构化 `budget_exhausted`。
+   */
+  const iterationBudget = opts?.iterationBudget ?? SUBAGENT_DEFAULT_ITERATION_BUDGET;
   /** Shared fan-out circuit breaker (legacy `sharedBudget` treated as the same thing). */
   const aggregateBudget = opts?.aggregateBudget ?? opts?.sharedBudget;
   const onProgress = opts?.onProgress;
@@ -549,6 +604,85 @@ export async function runSubagentLoop(
 }
 
 /**
+ * C7-B — 这个孩子自己的迭代预算（**永远有限**）。
+ *
+ * 缺省 = `SUBAGENT_DEFAULT_ITERATION_BUDGET`，不由共享池反向推出 —— 共享池已不再
+ * 是日程（见 `limits.ts` 的 `SUBAGENT_MAX_AGGREGATE_ITERATIONS` 说明）。
+ */
+function resolveChildBudget(requested: unknown): number {
+  return typeof requested === 'number' && Number.isFinite(requested) && requested > 0
+    ? Math.floor(requested)
+    : SUBAGENT_DEFAULT_ITERATION_BUDGET;
+}
+
+/**
+ * C7-B — 委派前的身份登记：一次委派 = 一个子 WU，父 WU 已知时立刻落 `parent_id`。
+ *
+ * 纪律：
+ *   · 端口未注入 ⇒ 返回 null（没有台账），子代理照常跑；
+ *   · 父 ref 只能来自 `turnWorkUnitRef()`（这一轮的真实身份）；没有就用
+ *     `root:<agentId>` 显式表态 —— **不猜**「最近那条」（那是从时序推断结构）；
+ *   · ref 只能由 `WORK_UNIT_REF.delegation` 生成（禁止第二套命名）。
+ */
+function beginDelegation(
+  ctx: SubagentContext,
+  childKey: string,
+  budget: number,
+): DelegationWorkUnitHandle | null {
+  const port = ctx.workUnits;
+  if (!port) return null;
+  try {
+    const parentRef = ctx.turnWorkUnitRef();
+    const parent = parentRef ? port.resolve(parentRef) : null;
+    return port.ensureChild({
+      ref: WORK_UNIT_REF.delegation(parent?.ref ?? `root:${ctx.agentId}`, childKey),
+      agentId: ctx.agentId,
+      parentId: parent?.id ?? null,
+      budget,
+      contextRef: parent?.contextRef ?? null,
+    });
+  } catch (err) {
+    log.warn('Delegation WorkUnit ensure failed (subagent still runs)', {
+      childKey, error: String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * C7-B — 子 WU 收口：`used` = 实际 iteration 次数（唯一口径），到线进 `paused_budget`。
+ *
+ * `paused_budget` 与 `idle` 的差别就是「它是被预算停下的，还是干完了」——这个区别
+ * 必须落在结构上（状态 + `status_transitions` 行），不能只写在输出文本里。
+ * 观测设施不得成为业务故障点：异常在这里吞掉并留 warn。
+ */
+function settleDelegation(
+  ctx: SubagentContext,
+  handle: DelegationWorkUnitHandle | null,
+  loop: SubagentLoopResult,
+): void {
+  const port = ctx.workUnits;
+  if (!handle || !port) return;
+  const stoppedByBudget = loop.budgetHit === 'own' || loop.budgetHit === 'aggregate';
+  const reason = stoppedByBudget
+    ? 'subagent_budget_exhausted'
+    : loop.status === 'max_iterations'
+      ? 'subagent_max_iterations'
+      : 'subagent_completed';
+  try {
+    port.settle(handle.ref, {
+      used: loop.iterations,
+      status: stoppedByBudget ? 'paused_budget' : 'idle',
+      reason,
+    });
+  } catch (err) {
+    log.warn('Delegation WorkUnit settle failed (observation degraded)', {
+      ref: handle.ref, error: String(err),
+    });
+  }
+}
+
+/**
  * Creates the spawn_subagent tool (single subagent).
  */
 export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
@@ -596,25 +730,33 @@ export function createSubagentTool(ctx: SubagentContext): AgentToolHandler {
       if (!task) {
         return JSON.stringify({ status: 'error', error: 'task is required' });
       }
+      // C7-B：先登记子 WU（父 WU 已知时立刻落 parent_id），再跑；跑完把 used 记账收口。
+      const budget = resolveChildBudget(args['iteration_budget']);
+      const childKey = `sub_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      const child = beginDelegation(ctx, childKey, budget);
       try {
         const loop = await runSubagentLoop(ctx, task, {
           systemPrompt: args['system_prompt'] as string | undefined,
           allowedTools: args['allowed_tools'] as string[] | undefined,
           maxIterations: args['max_iterations'] as number | undefined,
-          iterationBudget: args['iteration_budget'] as number | undefined,
+          iterationBudget: budget,
           onProgress: ctx.getProgressCallback?.(),
         });
+        settleDelegation(ctx, child, loop);
         // H6 + F1–F3: surface the child's real terminal status and an auditable schema
         // (status / which budget / what files / how much of the work was writes) verbatim.
-        // `result` is never empty.
+        // `result` is never empty. C7-B adds the WorkUnit ref so the parent can query
+        // the ledger (`work_status()` / `children(parentId)`) instead of guessing.
         return JSON.stringify({
           status: loop.status,
           result: loop.output,
           iterations: loop.iterations,
+          budget,
           aggregateCeilingReached: loop.aggregateCeilingReached,
           budgetHit: loop.budgetHit,
           filesTouched: loop.filesTouched,
           toolCalls: loop.toolCalls,
+          ...(child ? { workUnitRef: child.ref } : {}),
         });
       } catch (err) {
         log.error('Subagent execution failed', { error: String(err) });
@@ -644,11 +786,10 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
       'Use this when you have multiple independent subtasks that can be worked on simultaneously: ' +
       'analyzing different files, researching different topics, implementing separate modules, etc. ' +
       'Each subagent gets its own clean message history and inherits your tools. ' +
-      'BUDGETS: each child may set its own `iteration_budget`, and that budget is private to the child — ' +
-      'one child can never drain a sibling. Separately, the whole fan-out shares an aggregate ceiling of ' +
-      `${SUBAGENT_MAX_AGGREGATE_ITERATIONS} iterations; it is a CIRCUIT BREAKER, not a schedule, so a large ` +
-      'fan-out can trip it even when every child sets its own budget. A child stopped early reports why via ' +
-      "`budgetHit` ('own' | 'aggregate' | 'max_iterations') and `filesTouched`. " +
+      'BUDGETS: every child gets its own FINITE iteration budget (`iteration_budget`, else a default) — ' +
+      'a budget is private to the child, so one child can never drain a sibling, and an exhausted child ' +
+      'stops only itself. The stop is always explicit: ' +
+      "`budgetHit` ('own' | 'aggregate' | 'max_iterations') plus `filesTouched`. " +
       'IMPORTANT: Only use for truly independent tasks — subagents cannot communicate with each other.',
     inputSchema: {
       type: 'object',
@@ -728,11 +869,12 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       const startTime = Date.now();
 
-      // H6: the aggregate pool is ONLY an overall circuit breaker — it is NOT the
-      // per-child budget. Each child keeps its own INDEPENDENT `iterationBudget`, so no
-      // child can silently drain (and thereby starve) a sibling.
-      const aggregateBudget = { remaining: SUBAGENT_MAX_AGGREGATE_ITERATIONS };
-
+      // C7-B：**每个孩子自己的预算**，不再预分配一个共享池。
+      //
+      // 6b 的写法是 `{ remaining: 100 }` 全体分食：一个孩子跑得多，sibling 就没绳子，
+      // 于是「共享断路器」事实上变成了日程。现在每个孩子拿到有限的、彼此独立的
+      // 预算（`iteration_budget` ?? 缺省），并各自登记一个子 WU；到线只停它自己，
+      // 且交回结构化结果 (`budgetHit` / `filesTouched`) —— 不再 writes=0 全灭。
       const results = await Promise.allSettled(
         tasks.map(async (t) => {
           const perTaskProgress: SubagentProgressCallback | undefined = onProgress
@@ -743,25 +885,41 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
               })
             : undefined;
 
-          const loop = await runSubagentLoop(ctx, t.task, {
-            systemPrompt: sharedSystemPrompt,
-            allowedTools: t.allowed_tools,
-            maxIterations: t.max_iterations,
-            iterationBudget: t.iteration_budget,
-            onProgress: perTaskProgress,
-            aggregateBudget,
-          });
-          return { id: t.id, loop };
+          const budget = resolveChildBudget(t.iteration_budget);
+          const child = beginDelegation(ctx, t.id, budget);
+          try {
+            const loop = await runSubagentLoop(ctx, t.task, {
+              systemPrompt: sharedSystemPrompt,
+              allowedTools: t.allowed_tools,
+              maxIterations: t.max_iterations,
+              iterationBudget: budget,
+              onProgress: perTaskProgress,
+            });
+            settleDelegation(ctx, child, loop);
+            return { id: t.id, loop, budget, workUnitRef: child?.ref ?? null };
+          } catch (err) {
+            // 子代理失败也要收口子 WU：否则它会永远停在 `running`，台账开始漂。”
+            settleDelegation(ctx, child, {
+              status: 'budget_exhausted',
+              output: `[failed: ${String(err)}]`,
+              iterations: 0,
+              aggregateCeilingReached: false,
+              budgetHit: null,
+              filesTouched: [],
+              toolCalls: { total: 0, writes: 0 },
+            });
+            throw err;
+          }
         })
       );
-
-      const budgetExceeded = aggregateBudget.remaining <= 0;
 
       const output: Array<{
         id: string;
         status: SubagentStopStatus | 'error';
         result: string;
         iterations?: number;
+        budget?: number;
+        workUnitRef?: string | null;
         aggregateCeilingReached?: boolean;
         budgetHit?: 'own' | 'aggregate' | 'max_iterations' | null;
         filesTouched?: string[];
@@ -769,7 +927,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         error?: string;
       }> = results.map((r, i) => {
         if (r.status === 'fulfilled') {
-          const { id, loop } = r.value;
+          const { id, loop, budget, workUnitRef } = r.value;
           // H6: `result` is NEVER empty — a child that produced nothing still surfaces
           // an explicit, actionable message instead of an empty success.
           const result = loop.output.trim().length > 0
@@ -780,6 +938,8 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
             status: loop.status,
             result,
             iterations: loop.iterations,
+            budget,
+            workUnitRef,
             aggregateCeilingReached: loop.aggregateCeilingReached,
             budgetHit: loop.budgetHit,
             filesTouched: loop.filesTouched,
@@ -797,6 +957,7 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
 
       const completed = output.filter(o => o.status === 'completed').length;
       const stoppedEarly = output.filter(o => o.status === 'budget_exhausted' || o.status === 'max_iterations').length;
+      const pausedBudget = output.filter(o => o.status === 'budget_exhausted').length;
       const failed = output.filter(o => o.status === 'error').length;
       const durationMs = Date.now() - startTime;
 
@@ -804,29 +965,26 @@ export function createParallelSubagentTool(ctx: SubagentContext): AgentToolHandl
         parentAgent: ctx.agentId,
         completed,
         stoppedEarly,
+        pausedBudget,
         failed,
-        budgetExceeded,
         totalDurationMs: durationMs,
       });
 
       onProgress?.({
         type: stoppedEarly > 0 || failed > 0 ? 'error' : 'completed',
         content: `${completed}/${tasks.length} subagents completed${stoppedEarly > 0 ? `, ${stoppedEarly} stopped early` : ''} (${durationMs}ms)`,
-        metadata: { completed, stoppedEarly, failed, budgetExceeded, durationMs },
+        metadata: { completed, stoppedEarly, pausedBudget, failed, durationMs },
       });
 
       // H6: make a partial fan-out legible at a glance.
       const summaryParts = [`${completed}/${tasks.length} subagents completed`];
       if (stoppedEarly > 0) summaryParts.push(`${stoppedEarly} stopped early (incomplete)`);
       if (failed > 0) summaryParts.push(`${failed} failed`);
-      if (budgetExceeded) summaryParts.push('aggregate iteration budget exhausted');
 
       return JSON.stringify({
         status: 'completed',
         summary: summaryParts.join('; '),
         durationMs,
-        budgetExceeded,
-        aggregateIterationBudget: SUBAGENT_MAX_AGGREGATE_ITERATIONS,
         results: output,
       });
     },

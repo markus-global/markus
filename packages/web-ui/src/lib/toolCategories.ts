@@ -35,7 +35,10 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'reasoning', prefixes: ['decide'] },
   { id: 'teamManager', prefixes: ['team_list', 'team_status', 'team_update', 'team_start', 'team_stop', 'agent_update', 'agent_start', 'agent_stop', 'list_teams'] },
   { id: 'subagents', prefixes: ['spawn_subagent', 'spawn_subagents', 'invoke_coding_tool', 'coding_tool_apply'] },
-  { id: 'system', prefixes: ['discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },
+  // 第七刀 C7-A：`work_status` 是**运行时自省**（读本 agent 的 WorkUnit 台账），
+  // 与 `discover_tools` 同族，归入 system；不新开分类 —— 新建一个桶要给
+  // zh-CN/en/es 三份 locale 各加一个字串，而它只是展示分组，不值得那个改动量。
+  { id: 'system', prefixes: ['work_status', 'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },
   { id: 'llm', prefixes: ['llm_', 'agent_model_'] },
 ];
 

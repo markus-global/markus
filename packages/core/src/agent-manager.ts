@@ -25,6 +25,7 @@ import {
   MailboxPriorityLevel,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import type { DelegationWorkUnitPort } from './tools/subagent.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
 
 /**
@@ -1604,6 +1605,7 @@ export class AgentManager {
     };
 
     const agent = new Agent(agentOpts);
+    this.applyWorkUnitPort(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
@@ -1817,6 +1819,16 @@ export class AgentManager {
       // mailbox 返回空集（工具仍可用，但会诚实地回 not_found / 空概览）。
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
+      // 第七刀 C7-A：自省端口。**总是注册**，取值在调用时惰性解析。
+      //
+      // 曾经的写法是「provider 没注入就不注册工具」，结果：装配一旦晚于建 agent，
+      // 工具就**不存在**，而 agent 无法区分「这个部署没接台账」和「我没有这个能力」——
+      // 2026-11-14 真机事故里它就是这么静默消失的。现在工具始终在，
+      // 未接线时诚实地回 `unavailable`（可行动），而不是变成一个不存在的名字。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
 
@@ -2528,6 +2540,7 @@ export class AgentManager {
       maxToolIterations: this._maxToolIterations,
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
+    this.applyWorkUnitPort(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
@@ -2746,6 +2759,11 @@ export class AgentManager {
       getWorkingMemorySnapshot: () => agent.getWorkingMemorySnapshot(),
       routeOfMessage: (messageId) => agent.getMailbox().routeOfMessage(messageId),
       catchAll: () => agent.getMailbox().catchAll(),
+      // 第七刀 C7-A：自省端口（同第一条建 agent 路径，总是注册、惰性解析）。
+      workStatus: (opts: { limit?: number }) =>
+        this.workUnitStatusProvider
+          ? this.workUnitStatusProvider(id, opts)
+          : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
@@ -3467,6 +3485,20 @@ export class AgentManager {
     return agent;
   }
 
+  /**
+   * C7-B：某个 agent **本轮**父 WU 的 ref（读内存中由 `onFocusChanged` 设置的回合 ref）。
+   *
+   * 名字里的 turn 就是约束：**只许读内存**，禁止用库查询实现（按 agentId 反查
+   * 「当前 WU」在结构上不成立 —— 库里只有历史，查到的会是错的那一条）。
+   * architecture-guard 守这条：本方法实现体内出现 `listByAgent` / `SELECT` / `repo.` 判红。
+   *
+   * agent 不在内存 / 尚未进入回合 = null（具名表态，不吞异常）。
+   */
+  turnWorkUnitRef(agentId: string): string | null {
+    const agent = this.agents.get(agentId);
+    return agent ? agent.turnWorkUnitRef() : null;
+  }
+
   hasAgent(agentId: string): boolean {
     return this.agents.has(agentId);
   }
@@ -3625,6 +3657,37 @@ export class AgentManager {
   }
 
   /** 单一注册点：两个建 Agent 的路径都调这里，避免两套工具集漂移。 */
+  /**
+   * 第七刀 C7-A：`work_status()` 自省端口的接入口（org-manager 装配时注入）。
+   *
+   * 为什么用 setter 而不是构造函数参数：core 不认识 org-manager 的
+   * `WorkUnitService`（依赖方向），只能拿到一个「给定 agent 返回其 WU 视图」的函数。
+   * 未注入 ⇒ 工具不注册（空能力不注册，而不是注册一个永远报错的空壳）。
+   */
+  private workUnitStatusProvider?: (agentId: string, opts: { limit?: number }) => unknown;
+  setWorkUnitStatusProvider(
+    fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
+  ): void {
+    this.workUnitStatusProvider = fn;
+  }
+
+  /**
+   * C7-B：委派 WU 端口的接入口（org-manager 装配时注入）。
+   *
+   * 与 `workUnitStatusProvider` 同方向：core 只认最小端口，不认识 WorkUnitService。
+   * 注入时对**已经存在**的 agent 逐个补装；此后新建的 agent 在建时就接上
+   * （`applyWorkUnitPort`）—— 两条建 Agent 的路径都要走，否则必有一半没身份。
+   */
+  private workUnitPort?: DelegationWorkUnitPort;
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
+    this.workUnitPort = port;
+    for (const agent of this.agents.values()) agent.setWorkUnitPort(port);
+  }
+
+  private applyWorkUnitPort(agent: Agent): void {
+    if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
+  }
+
   private registerAddressTools(agent: Agent, agentId: string): void {
     const port = this.addressBindingPort;
     if (!port) return;

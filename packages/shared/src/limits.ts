@@ -705,13 +705,36 @@ export const SUBAGENT_ERROR_PREVIEW_CHARS = 500;
 export const SUBAGENT_MAX_PARALLEL = 10;
 
 /**
- * Aggregate tool-iteration budget shared across all children of one `spawn_subagents`
- * fan-out (B4). Per-child caps and `SUBAGENT_MAX_PARALLEL` bound a single child / the
- * concurrency; this bounds the TOTAL work so a wide fan-out cannot silently multiply
- * CU/token spend. When the shared budget is exhausted, remaining children stop early and
- * the aggregate result reports `budgetExceeded`.
+ * C7-B — **circuit breaker, not a schedule**.
+ *
+ * History (kept as a lesson, not narrative): the prompt text already called this a
+ * circuit breaker, but the code pre-allocated it as a shared iteration POOL for every
+ * fan-out (`{ remaining: 100 }`), so a wide fan-out silently used it as its schedule
+ * and siblings starved each other. C7-B removed that pre-allocation: scheduling is
+ * now `work_units.budget` (one ledger, one writer). This constant survives only as an
+ * **abnormal fallback ceiling** — the worst case a full-width fan-out may reach when
+ * per-child budgets are misconfigured.
+ *
+ * Derivation of the per-child default keeps the two facts consistent: a full-width
+ * fan-out (`SUBAGENT_MAX_PARALLEL` children) at the default budget lands exactly on
+ * this breaker, so the breaker cannot be exceeded by a correctly configured fan-out.
  */
 export const SUBAGENT_MAX_AGGREGATE_ITERATIONS = 100;
+
+/**
+ * C7-B — the **finite** per-child iteration budget when neither the caller
+ * (`iteration_budget`) nor a WorkUnit ledger supplies one.
+ *
+ * Why finite: the 6b patch made the per-child default unbounded (`Infinity`). An
+ * unbounded child budget meant a wide fan-out had no per-child rope at all, so the
+ * only stop was the shared pool — de facto "the circuit breaker is the schedule".
+ * A finite default is what makes sibling independence real: each child owns exactly
+ * this many iterations and can never spend a sibling's.
+ */
+export const SUBAGENT_DEFAULT_ITERATION_BUDGET = Math.max(
+  1,
+  Math.floor(SUBAGENT_MAX_AGGREGATE_ITERATIONS / SUBAGENT_MAX_PARALLEL),
+);
 
 /** Max LLM call retries for transient errors within a subagent. */
 export const SUBAGENT_MAX_LLM_RETRIES = 2;

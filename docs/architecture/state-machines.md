@@ -117,6 +117,14 @@ Within a single round, transient retries (network errors, timeouts) reuse the sa
 
 A new round always gets a fresh LLM session (`task_{taskId}_r{round}`).
 
+**Every round also gets its own WorkUnit entity**, ensured *before* the mailbox item references it
+(`WORK_UNIT_REF.task(taskId, round)` → `task_<id>_r<round>`). The reference column
+(`mailbox_items.work_unit_ref`) is plain `TEXT` with no foreign key, so a reference written without
+its entity fails silently: `resolve(ref)` returns null, the session lock key degrades, and a
+delegation started in that round lands `parent_id = NULL`. One execution epoch = one WorkUnit, and
+the only execution point for that rule is `TaskService.linkExecutionEpoch()` — both the main run
+path and the fresh-retry path go through it.
+
 ### Context by Round Type
 
 | Scenario | Previous execution context | LLM session |
@@ -663,3 +671,270 @@ agent stop
 | Agent stop | Cancel debounce timer; synchronous final `persistNotebookSync()` |
 
 See [memory-system.md](./memory-system.md) and [cognitive-architecture.md](./cognitive-architecture.md) for storage format and deterministic context assembly.
+
+---
+
+## 16. WorkUnit Lifecycle
+
+A `WorkUnit` is the identity object for **one piece of work** — one chat turn, one task execution epoch, or one A2A delivery. Before cut 7 the same work was described by five mechanisms and had no queryable identity: "what is this agent doing" could only be inferred from a context block assembled per turn, so the answer could drift from what was actually running.
+
+Everything below is taken from the code, not from the design plan:
+
+| Fact | Source of truth |
+|---|---|
+| State set and transition matrix | `packages/shared/src/work-unit.ts` (`WU_TRANSITIONS`) |
+| Schema and the only SQL writes | `packages/storage/src/sqlite-storage.ts` (`SqliteWorkUnitRepo`) |
+| Business writer and event contract | `packages/org-manager/src/work-unit-service.ts` (`WorkUnitService`) |
+
+### State Set (closed)
+
+| State | Meaning |
+|---|---|
+| `running` | executing right now |
+| `idle` | turn settled; the work is still alive and waiting for its next input |
+| `paused_budget` | paused because the budget line was reached (no producer in C7-A) |
+| `terminated` | cancelled or closed as failed |
+| `archived` | terminal; takes part in no scheduling afterwards |
+
+Every state is answerable from structure. None of them is inferred from a payload or from prose.
+
+### State Diagram
+
+```
+        (new turn)
+             │
+             ▼
+   ┌──► running ──────────► idle
+   │      │  │                │
+   │      │  └──► paused_budget ──┐
+   │      │                       │ (budget topped up)
+   │      └──────────────┐        │
+   │                     ▼        ▼
+   │                 terminated ◄─┘
+   │                     │
+   │                     ▼
+   └───── refused ──── archived   (terminal — no outgoing edge)
+```
+
+### Transitions
+
+Copied verbatim from `WU_TRANSITIONS` — this table is a read of that constant, never a second definition of it.
+
+| from | allowed to | trigger |
+|---|---|---|
+| `running` | `idle` / `paused_budget` / `terminated` | turn settled / budget line reached / cancelled |
+| `idle` | `running` / `terminated` | new turn / cancelled |
+| `paused_budget` | `running` / `terminated` | budget topped up / cancelled |
+| `terminated` | `archived` | archived |
+| `archived` | — | terminal |
+
+`archived` has no outgoing edge on purpose: archiving is the only way to say "this is over". Resuming the work means a **new** WorkUnit (new `ref`, or a new round) — never resurrecting the old one. Allowing `archived → running` would make archiving a revocable decoration and historical readings would start to drift. The enforcement is a guard fixture, not a convention: `work-unit-single-writer` fails if `archived` stops being `[]`.
+
+### Single Writer
+
+Three layers, one responsibility each, and no layer reaches into another's:
+
+| Layer | File | Owns |
+|---|---|---|
+| Concept | `packages/shared/src/work-unit.ts` | State set, matrix, `ref` format — pure functions, no I/O |
+| Storage | `SqliteWorkUnitRepo` | The **only** SQL that writes `work_units` and `status_transitions` rows for `entity_type='work_unit'` |
+| Business | `WorkUnitService` | The **only** caller of those write methods; decides whether a failed write may interrupt the business path |
+
+Both entry points are idempotent or conditional by construction:
+
+- `ensure(ref)` uses `INSERT ... ON CONFLICT(ref) DO NOTHING` and then reads back by `ref`. Check-then-insert is not equivalent: under concurrency both workers observe "absent" and the execution epoch ends up with two identities, or the unique index aborts a real delivery. Exactly one row per `ref` is decided by `uq_work_units_ref`, not by caller discipline.
+- `transition(ref, to)` is an optimistic conditional update (`WHERE id = ? AND status = ?`). An unconditional update would overwrite a terminal state back to `running` when two writers race, and the state machine would become decoration.
+
+`scripts/architecture-guard.mjs` enforces the boundary as rule group `work-unit-single-writer`, with six checks — each carrying its own compliant/violating fixture, so the detector cannot silently stop detecting:
+
+| # | Check |
+|---|---|
+| 1 | `work_units` table and `uq_work_units_ref` unique index exist (identity decided by the index) |
+| 2 | `ensure()` is the atomic `ON CONFLICT(ref) DO NOTHING` insert, not check-then-insert |
+| 3 | `transition()` is the conditional update `WHERE id = ? AND status = ?` |
+| 4 | `WU_TRANSITIONS` is defined in one place and `archived` is terminal |
+| 5 | `task-service.ts` contains no `INSERT INTO work_units` / `UPDATE work_units` |
+| 6 | `api-server.ts` contains no `work_units` SQL and no `entityType: 'work_unit'` |
+
+Checks 5 and 6 exist because the realistic regression is not "someone rewrites the repo" — it is "someone adds one convenient UPDATE in the service that already has the data". That is a second writer, and it bypasses both the matrix and the unique index.
+
+### Producers and `ref` formats
+
+Three producers, one generator (`WORK_UNIT_REF` in `packages/shared/src/work-unit.ts`). A second generator would mean the same execution epoch can grow two WorkUnits, and nobody could later say which one it was.
+
+| Producer | Call site | `ref` |
+|---|---|---|
+| Chat turn | `persistChatTurn()` in `org-manager/src/api-server.ts` | `session:<dbSessionId>:r<round>` |
+| Task execution epoch | `TaskService.createTask()` in `org-manager/src/task-service.ts` | `task_<taskId>_r<round>` |
+| A2A delivery | `AgentDelivery.deliver()` in `org-manager/src/agent-delivery.ts` | `a2a:<channelKey>:<deliveryId>` |
+
+`task_<taskId>_r<round>` is **reused, not invented**: that string is already the execution-epoch identity (the in-flight registry key and the execution session id). Giving the same epoch a second naming scheme would hand it two identity cards, so this cut only routes the existing format through a single generator.
+
+The A2A producer binds the row to the **recipient** (`agentId: targetId`, `contextRef: channelKey`), because the WorkUnit answers "which work is this delivery part of" for the side that owns the delivered mailbox row. `deliveryId` is the same value as the envelope `messageId`, so a retried hop cannot produce a second WorkUnit.
+
+### Fact-Source Boundary
+
+A message's WorkUnit identity is written in exactly one place: the `mailbox_items.work_unit_ref` column. `DeliveryEnvelope.workUnitRef` stays `null` in cut 7.
+
+The reason is structural: two writers of the same fact always drift, and of the two the column is the one that can be indexed and joined while the envelope is a JSON projection. If a projection is ever needed (cross-org delivery carrying WU identity inside the envelope), derive it from the column — do not write both.
+
+The write order is fixed and must not be reversed: `ensure()` first, `linkMailboxItem()` second. Writing the reference before the entity exists is precisely the dangling reference that cut 6 avoided by adding the column and writing zero rows.
+
+### Current State in C7-A (what is deliberately not in force)
+
+| Thing | State in C7-A |
+|---|---|
+| `work_units.budget` / `used` | Columns only. No producer writes `budget`; `used` stays `0`. No budget semantics exist. |
+| `paused_budget` | Expressible in the matrix, **no producer**. Nothing reaches it in this cut. |
+| `parent_id` | Column exists, written `NULL` only. Parent/child delegation is C7-B. |
+| Subagent budget | `DEFAULT_MAX_SUBAGENT_ITERATIONS` is still `Infinity` (`packages/core/src/tools/subagent.ts`); the aggregate breaker is still `SUBAGENT_MAX_AGGREGATE_ITERATIONS` (`packages/shared/src/limits.ts`). Two budget notions still exist. |
+
+Budget unification, `paused_budget` production, `sessionLockKey` derivation from `context_ref`, and parent/child rows all belong to **C7-B**. This section must not describe a single budget semantic until that code exists — a document that runs ahead of the code teaches the next reader that the work is already done.
+
+### Failure Semantics
+
+Observation must never become a business fault, and it must never fail silently either — cut 6's lesson was a column that stayed empty with nothing to notice it. All business-path writers swallow write errors and emit a structured event. The four event names are the contract; tests assert on names and counters, never on log text:
+
+| Event | Meaning |
+|---|---|
+| `work_unit.created` | A row was actually inserted (an idempotent hit is **not** this) |
+| `work_unit.ensure_failed` | The row could not be created; business proceeds without identity, and the miss is counted |
+| `work_unit.transition_failed` | Status update failed for a non-matrix reason (storage, or a concurrent write won) |
+| `work_unit.link_failed` | The WorkUnit exists but the mailbox row could not be pointed at it |
+
+One deliberate exception: an illegal transition is a program error, not a recoverable branch. `transition()` throws with `code='invalid_work_unit_transition'` and leaves the state unchanged. Returning `false` instead would let callers believe "the transition failed but the world is fine", which makes the matrix decorative.
+
+### Reading It Back
+
+`work_status()` answers "which WorkUnits does this agent have" from `work_units` alone, returning `ref / status / parentId / claimedBy / leaseUntil / budget / used`.
+
+It reads no payload and no session text. A structural question must be answered by structure: the pre-cut-7 answer was recomputed from an injected text block every turn, which is a snapshot that can drift from what is really executing.
+
+See [mailbox-system.md](./mailbox-system.md) for the delivery envelope and mailbox columns this identity is attached to.
+
+### C7-B — budget has exactly one meaning now
+
+C7-A deliberately left `budget` / `used` as empty columns. C7-B gives them semantics, and
+the point of writing it here is that **there must never be a second budget notion**.
+
+| Fact | Single source | What is forbidden |
+|---|---|---|
+| Unit of `budget` / `used` | **iteration count** (same unit as today's loop caps) | A second unit (e.g. tokens) computed anywhere; token quota is a future column, not a reinterpretation |
+| Who writes `used` | `WorkUnitService.recordUsage()` → `SqliteWorkUnitRepo.addUsage()` (`used = used + ?`) | Any delegation path computing or writing its own tally |
+| Who decides "budget reached" | `WorkUnitService.settle()` → the matrix | A path letting a child stop without a state + transition row |
+
+Token accounting is not in this cut. When it arrives it gets its own columns; reusing
+`budget` for tokens would silently rewrite the meaning of every existing row.
+
+#### `paused_budget` — entry and exit
+
+| Direction | Condition | Transition |
+|---|---|---|
+| Enter | the child's own iteration budget is exhausted (`used >= budget`, reported as `budgetHit: 'own'`) | `running → paused_budget` |
+| Leave | budget is topped up | `paused_budget → running` |
+| Leave | the work is cancelled | `paused_budget → terminated` |
+
+`idle` and `paused_budget` are **not** the same fact: `idle` means "this unit finished its
+turn", `paused_budget` means "this unit was stopped by money, not by completion". That
+distinction lives in the state (and in the `status_transitions` row), never only in the
+result text — otherwise "why did it stop" has to be re-derived from prose.
+
+#### The circuit breaker is a breaker again
+
+`SUBAGENT_MAX_AGGREGATE_ITERATIONS` (100) is **not** a schedule. The history is worth
+recording because the prompt text was already right and the code was not: the fan-out used
+to pre-allocate it as a shared pool (`{ remaining: 100 }`), so a wide fan-out consumed it as
+its budget and siblings starved each other — the "zero-product fan-out" failure. The prompt
+said `circuit breaker` the whole time.
+
+What is true now:
+
+- each child gets a **finite, independent** per-child budget (`iteration_budget`, else
+  `SUBAGENT_DEFAULT_ITERATION_BUDGET`); no child can spend a sibling's rope;
+- scheduling lives in `work_units.budget` / `used` — one ledger, one writer;
+- the aggregate constant survives only as an **abnormal fallback ceiling**, and the per-child
+  default is derived from it (`breaker / max parallel`), so a correctly configured full-width
+  fan-out lands exactly on the ceiling instead of silently exceeding it;
+- an exhausted child returns a structured result (`status`, `budgetHit`, `iterations`,
+  `filesTouched`, `toolCalls`, and — from C7-B — its `workUnitRef`), never an empty success.
+
+#### Delegation produces the parent/child chain
+
+All **three** delegation paths create the child before running it, and all three land
+`parent_id`. They differ only in where the parent comes from, and in each case it is a
+structural fact, never an inference:
+
+| Path | Child is created by | `parent_id` source | `ref` |
+|---|---|---|---|
+| `spawn_subagent` | `DelegationWorkUnitPort.ensureChild()` | the current turn's WorkUnit (`onFocusChanged`) | `WORK_UNIT_REF.delegation(parentRef, childKey)` |
+| `spawn_subagents` (fan-out) | same port, once per child | same; `childKey` = caller's `task.id` | same generator |
+| cross-team (A2A `deliver()`) | `DeliveryDeps.workUnits.ensure()` | the **sender** agent's current turn WorkUnit (`currentWorkUnitRef`) | `WORK_UNIT_REF.a2a(channelKey, deliveryId)` |
+
+There is no "guess the most recent row". When a turn has no WorkUnit identity the child is
+created with `parent_id = NULL` and its `ref` says so explicitly
+(`delegation:root:<agentId>#<childKey>`); a delivery sent outside any turn (scheduled,
+background) does the same.
+
+The two inputs a caller may hand over are `parentId` (a handle it already holds) and
+`parentRef` (it only knows *which* WorkUnit) — and `WorkUnitService.ensure()` owns the
+`ref → id` resolution, with `parentId` winning when both are present. That keeps one
+resolver: if every call site looked the parent up itself, the same fact would grow several
+translations and they would drift.
+
+Re-running the same fan-out collapses onto the same rows instead of multiplying identity —
+the ref is idempotent by construction (`uq_work_units_ref` is the arbiter).
+
+#### Where each chain's mailbox item comes from
+
+`mailbox_items.work_unit_ref` is only honest when the item identity comes from the enqueue
+that actually created it. Each chain has exactly one such moment:
+
+| Chain | Item enqueued by | Linked at |
+|---|---|---|
+| chat | the turn's entry enqueue | `openChatTurnWorkUnit()` (turn **start**) |
+| task | the enqueue **inside** `Agent.sendTaskExecution()` | `TaskService` run / retry call sites, via that call's `onItemEnqueued` |
+| a2a | `AgentDelivery.deliver()` | `deliver()` itself, right after the enqueue |
+
+The task chain is worth stating because the obvious guess is wrong: the item is **not**
+produced by TaskService's notification enqueues (`task_comment`, `requirement_comment`,
+`task_status_update`). Those address *other* agents or can be sent many times per execution
+round, so they cannot identify "the item that triggered this round" — one epoch, many items.
+The trigger item is the one `sendTaskExecution()` enqueues, and its id exists only as that
+call's return value, which is why the callback is a required parameter rather than an
+optional one: an optional callback would let a caller silently leave the column NULL again.
+
+#### `sessionLockKey` derives from `context_ref`
+
+The concurrency lock key answers "which memory session will this turn write to". C7-B takes
+it from the WorkUnit ledger (`mailbox_items.work_unit_ref → work_units.context_ref`) instead
+of re-deriving it from the payload, and a pure function
+(`sessionLockKeyOfContextRef`) owns the rule: **only a memory session identity (`sess_*`)
+can be a session lock key**. Anything else (`cs_*` database session ids, `task_…`,
+`delegation:…`) returns `undefined` and the caller falls back to the legacy
+`peekTurnSessionId` path.
+
+Two properties follow, and both are load-bearing:
+
+- **Equivalence**: for the same memory session, ledger and legacy paths produce the same key
+  (`session:<sess_*>`). Semantic drift is the only real risk of this change, so a test pins
+  the two paths to each other rather than testing the new one alone.
+- **Fallback is mandatory**: an empty `work_unit_ref` (old rows, non-WorkUnit paths, a chat
+  item enqueued before its WorkUnit exists) must fall back, never return `undefined`, because
+  a missing lock key silently disables mutual exclusion — the worst possible regression
+  (2026-10-22 shape).
+
+One benefit is structural: deriving from the ledger does not read the in-memory workspace
+pointer, so it is safe outside the worker's ALS context — the trap the legacy path had to
+document. The legacy path is kept as the fallback and stays the one that must be evaluated
+inside ALS.
+
+#### Current state after C7-B (honest boundaries)
+
+| Thing | State |
+|---|---|
+| `budget` / `used` | Produced by delegation; unit = iterations; single writer as above |
+| `paused_budget` | Reachable (child budget exhaustion) |
+| `parent_id` | Written for all three delegation paths (subagent, fan-out, cross-team A2A) when the turn has a WorkUnit |
+| `sessionLockKey` | Derived from `context_ref` for chat turns (memory session id, adopted at turn close), `task`/`a2a`/`delegation` context refs fall back |
+| chat WorkUnit creation point | **Turn start** (`openChatTurnWorkUnit`), so `work_status()` can read `running` mid-turn; the close path only settles it to `idle` |
+| task mailbox link | Written from `sendTaskExecution()`'s enqueue callback |

@@ -54,6 +54,7 @@ import {
   cancelExecutionToken,
   type ExecutionStopReason,
   type ExecutionCancelToken,
+  sessionLockKeyOfContextRef,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -97,7 +98,7 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { resolveOutputReserve } from './context-budgets.js';
-import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback } from './tools/subagent.js';
+import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback, type DelegationWorkUnitPort } from './tools/subagent.js';
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
@@ -346,6 +347,23 @@ interface HandleMessageOptions {
    * on each other. An answering agent can still ask the HUMAN (request_user_input).
    */
   peerQueryDepth?: number;
+  /**
+   * 第七刀 C7-A：本次入队产生的 mailbox item 身份，入队后**立刻**回调给入口。
+   *
+   * 为什么入口需要它：WorkUnit 的 `ref` 只有在会话身份解析出来之后才能确定
+   * （chat 的 ref 依赖 DB 会话 id），而「这条 item 属于哪个 WU」必须在 WU 建好
+   * 之后写回 `mailbox_items.work_unit_ref`。没有这个回调，入口只能靠「最近一条」
+   * 之类的猜测去关联 —— 那是从载荷/时序推断结构（R3），本项目明确禁止。
+   */
+  onItemEnqueued?: (item: { id: string; sourceType: string }) => void;
+  /**
+   * C7-B：本轮 WU 的 ref，由**入口在入队前**决定并随 item 一起落地。
+   *
+   * 为什么必须在入队前决定：agent 可能在这一行入队后立刻开始处理它，
+   * 如果 ref 是“入队后再异步补写”（旧写法），`item.workUnitRef` 读到的是 null，
+   * 这一回合里发生的委派就拿不到父 ref → 子 WU 落 `delegation:root:…`（父链断）。
+   */
+  workUnitRef?: string | null;
 }
 
 /** Context-usage percentage (0-100) at/above which a turn-level memory flush preflight fires. */
@@ -587,6 +605,36 @@ export class Agent {
   /** Locale/timezone used for autonomous runs (no interactive sender), typically the org owner's preferences. */
   private runtimeViewerContext?: { locale?: string; timezone?: string };
   private semanticSearch?: SemanticMemorySearch;
+  /**
+   * C7-B：委派 WU 端口（装配处注入，core 不反向依赖 org-manager）。
+   *
+   * 未注入 ⇒ 子代理照常跑，只是没有 WU 身份；会话锁键退回旧路径
+   * （`peekTurnSessionId`）—— 可知的降级，不是隐藏的崩溃。
+   */
+  private workUnitPort?: DelegationWorkUnitPort;
+  /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
+  private currentTurnWorkUnitRef: string | null = null;
+
+  /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
+    this.workUnitPort = port;
+  }
+
+  /**
+   * C7-B：当前记忆会话 id（`sess_*`）。
+   *
+   * chat WU 的 `context_ref` 必须是它 —— 只有记忆会话身份能当会话锁键；
+   * 库会话 id（`cs_*`）是另一个命名空间，拿它当锁键会让同一份会话看起来两把键。
+   */
+  getMemorySessionId(): string | undefined { return this.currentSessionId; }
+
+  /**
+   * C7-B：本回合父 WU 的 ref（`onFocusChanged` 从 item 上取；无 item = null）。
+   *
+   * 名字里的 turn 是约束：它只回答「这一回合跑在哪条 WU 上」，不是「按 agentId
+   * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
+   */
+  turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
   private get currentSessionId(): string | undefined { return this.workspace().currentSessionId; }
   private set currentSessionId(v: string | undefined) { this.workspace().currentSessionId = v; }
   private get currentInteractingUserId(): string | undefined { return this.workspace().currentInteractingUserId; }
@@ -1012,6 +1060,13 @@ export class Agent {
       getProgressCallback: () =>
         taskAsyncContext.getStore()?.subagentProgress
         ?? chatSubagentContext.getStore()?.subagentProgress,
+      // C7-B：委派即产生子 WU（端口惰性读取：装配发生在构造之后）。
+      workUnits: {
+        resolve: (ref) => this.workUnitPort?.resolve(ref) ?? null,
+        ensureChild: (seed) => this.workUnitPort?.ensureChild(seed) ?? null,
+        settle: (ref, opts) => { this.workUnitPort?.settle(ref, opts); },
+      },
+      turnWorkUnitRef: () => this.currentTurnWorkUnitRef,
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -1521,13 +1576,15 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue(sourceType, payload, {
+      const enqueued = this.mailbox.enqueue(sourceType, payload, {
         // P1：轮次是**结构字段**（不再塞进 payload.extra）：幂等键 / 单播路由都用它。
         // 缺省 undefined → mailbox 不施加约束。
         round: options?.round,
         // C2：投递来源 → mailbox 用它构造信封（from/messageId）。
         origin: options?.origin,
         priority: options?.priority,
+        // C7-B：身份随消息一起落地（不是写入后回填），见 options.workUnitRef 的说明。
+        workUnitRef: options?.workUnitRef ?? null,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -1540,6 +1597,7 @@ export class Agent {
         },
         runtime: { responsePromise: { resolve, reject } },
       });
+      options?.onItemEnqueued?.({ id: enqueued.id, sourceType });
     });
   }
 
@@ -1584,7 +1642,7 @@ export class Agent {
     images?: string[],
     fileNames?: string[],
     imagePaths?: string[],
-    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null },
+    options?: { isResume?: boolean; sessionId?: string; dbSessionId?: string; sessionHint?: TurnSessionHint; origin?: DeliveryOrigin; sessionRestore?: { dbSessionId: string; messages: Array<{ role: string; content: string }>; isRetry?: boolean; preferredMemorySessionId?: string | null } | null; onItemEnqueued?: (item: { id: string; sourceType: string }) => void; workUnitRef?: string | null },
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: summarizeForMailbox(userMessage),
@@ -1614,7 +1672,7 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue('human_chat', payload, {
+      const enqueued = this.mailbox.enqueue('human_chat', payload, {
         priority: 0,
         // C2：投递来源 → 信封从这里长出来（人类入口同样有身份）。
         origin: options?.origin,
@@ -1638,8 +1696,11 @@ export class Agent {
               ?? options?.sessionId
               ?? (this.getDbSessionId() || undefined)),
         },
+        // C7-B：同上 —— 流式路径也必须在入队前带上本轮 WU 身份。
+        workUnitRef: options?.workUnitRef ?? null,
         runtime: { responsePromise: { resolve, reject } },
       });
+      options?.onItemEnqueued?.({ id: enqueued.id, sourceType: 'human_chat' });
     });
   }
 
@@ -1656,16 +1717,31 @@ export class Agent {
     taskId: string,
     taskDescription: string,
     onLog: (entry: { seq: number; type: string; content: string; metadata?: unknown; persist: boolean }) => void,
-    cancelToken?: { cancelled: boolean },
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
-    taskTitle?: string,
-    requirementId?: string,
+    /**
+     * 尾部参数全部必填 `T | undefined`（不是 `?`）：C7-B 的 `onItemEnqueued` 必须
+     * 必填，TS 不允许必填跟在可选后面；顺带逼每个调用点对「没传的东西」表态。
+     */
+    cancelToken: { cancelled: boolean } | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    executionRound: number | undefined,
+    taskTitle: string | undefined,
+    requirementId: string | undefined,
     /**
      * 「本轮为什么重启」的权威说明（TaskService 生成，core 原样送达模型）。
      * 必须是**唯一写者**：core 内不得再有第二处编造重启原因。
+     *
+     * 必填 `string | undefined`（不是 `?`）：C7-B 的 `onItemEnqueued` 必须必填，
+     * 而 TS 不允许必填参数跟在可选参数之后；顺带让「没有重启说明」成为表态。
      */
-    resumeNotice?: string,
+    resumeNotice: string | undefined,
+    /**
+     * C7-B：本轮 enqueue 产生的 mailbox item 身份。
+     *
+     * 必填而不是可选：item id 只存在于 `mailbox.enqueue` 的返回值里，「漏传」
+     * 等于让 task 链路的 `work_unit_ref` 永远留空（C6 的墓碑态）。TaskService 用
+     * 它把这一纪元的 WU 挂到那条 item 上（先实体后引用）。
+     */
+    onItemEnqueued: (item: { id: string }) => void,
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
@@ -1682,7 +1758,7 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      this.mailbox.enqueue('task_status_update', payload, {
+      const item = this.mailbox.enqueue('task_status_update', payload, {
         priority: 1,
         // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
         intent: 'trigger_execution',
@@ -1691,6 +1767,8 @@ export class Agent {
         },
         runtime: { responsePromise: { resolve, reject } },
       });
+      // C7-B：入队后立刻回填，调用方据此写 `mailbox_items.work_unit_ref`。
+      onItemEnqueued({ id: item.id });
     });
   }
 
@@ -1838,6 +1916,9 @@ export class Agent {
         });
       },
       onFocusChanged: (item: MailboxItem | undefined) => {
+        // C7-B：回合开始（获得焦点）= 设置本轮父 WU。子 WU 的 `parent_id` 只能来自
+        // 这里 —— 不在别的时刻猜「最近那条」。
+        this.currentTurnWorkUnitRef = item?.workUnitRef ?? null;
         this.eventBus.emit('agent:focus-changed', {
           agentId: this.id,
           focus: item ? {
@@ -3042,6 +3123,23 @@ export class Agent {
    * 本方法是**只读窥视**——不切换 `currentSessionId`、不建会话、不写绑定。
    */
   sessionLockKey(item: MailboxItem): string | undefined {
+    // C7-B：锁键的**单一来源**收敛到 WU 台账的 `context_ref`（结构事实），
+    // 而不是从 payload 再推一次。派生是纯函数（`sessionLockKeyOfContextRef`）：
+    // 只有记忆会话身份（`sess_*`）才算会话锁键。
+    //
+    // **收益**：从 WU 台账派生天然不依赖 ALS（AsyncLocalStorage）—— 旧路径必须在
+    // 本 worker 的会话上下文里求值，否则读到 `rootWorkspace` 的指针（2026-10-22
+    // 事故）。新路径不读内存指针，所以在 ALS 之外求值也安全。
+    //
+    // **fallback 是必须的**：`work_unit_ref` 为空（旧行 / 非 WU 链路 / 首轮入队时
+    // WU 尚未产生）或 context_ref 不是 `sess_*` 时，必须回到旧路径 ——
+    // 空值直接返回 undefined 会让互斥静默失效，那是最坏的退步。
+    const ref = item.workUnitRef ?? null;
+    if (ref) {
+      const handle = this.workUnitPort?.resolve(ref) ?? null;
+      const fromLedger = sessionLockKeyOfContextRef(handle?.contextRef ?? null);
+      if (fromLedger) return fromLedger;
+    }
     const sessionId = this.peekTurnSessionId(item);
     return sessionId ? `session:${sessionId}` : undefined;
   }

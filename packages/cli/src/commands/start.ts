@@ -1416,6 +1416,10 @@ async function startServerCore(
     }
   }
 
+  // 第七刀 C7 的装配已在 `APIServer.setStorage()` 里完成（单一执行点）。
+  // 这里**不再重复**：装配写在启动文件里就必然有第二个启动路径（桌面端走
+  // `cli/backend.ts#startBackend`）漏掉 —— 2026-11-14 真机事故的成因。
+
   // Seed default team + Secretary agent (runs for both DB and in-memory mode)
   await orgService.seedDefaultTeam(firstOrgId, ownerUserId);
 

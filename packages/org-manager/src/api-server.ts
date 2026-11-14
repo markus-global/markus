@@ -116,7 +116,8 @@ import { handleTasksRoutes } from './routes/tasks.js';
 import { handleGatewayRoutes } from './routes/gateway.js';
 import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
-import { AgentDelivery, newChainId } from './agent-delivery.js';
+import { AgentDelivery, newChainId, NULL_WORK_UNITS } from './agent-delivery.js';
+import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -469,11 +470,77 @@ export class APIServer {
           if (participants.length > 0) this.ws.sendToUsers(participants, event);
           else this.ws.broadcast(event);
         },
+        // 第七刀 C7-A：A2A 投递也产生 WU 身份（§16：一次投递 = 一个 WU，owner=发送方）。
+        // `transition` 在这里包成 service 的业务路径版（`tryTransition`）：记账失败
+        // 不得打断投递（观测设施不是故障点），矩阵错误照抛。
+        // 必填而非可选：没有 WU 服务的装配路径显式传 `NULL_WORK_UNITS`，让可选性
+        // 从调用点消失、变成这里一个看得见的决定。写成 `?` 的话，「没装配」和
+        // 「这条路本来就没有 WU」在类型上无法区分，整条链路静默跳过且没人发现。
+        workUnits: this.workUnits
+          ? {
+              ensure: (seed) => this.workUnits!.ensure(seed),
+              // C7-B：跨团队委派的父链 —— 读发送方 agent 本轮的 WU ref。
+              // 不抛：agent 不在内存（已停 / 冷启动）就不是「有回合」，显式 null。
+              turnWorkUnitRef: (agentId) => {
+                const manager = this.orgService.getAgentManager();
+                // C7-B：只把「agent 不在内存」这一种可识别情况当成 null；其余意外
+                // 照常抛 —— `try/catch { return null }` 会把「父链断了」micron成
+                // 「本来就没有父」，静默且不可察觉。
+                return manager.hasAgent(agentId) ? manager.turnWorkUnitRef(agentId) : null;
+              },
+              linkMailboxItem: (itemId, ref) => this.workUnits!.linkMailboxItem(itemId, ref),
+              transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
+            }
+          : NULL_WORK_UNITS,
       });
     }
     return this._delivery;
   }
   private _delivery?: AgentDelivery;
+
+  /**
+   * 第七刀 C7-A：WorkUnit 的唯一业务入口（惰性构造）。
+   *
+   * 未接线（无 storage / 无 workUnitRepo）时返回 `null` —— 所有生产者在
+   * `?.` 之后静默跳过，业务照常。这是「观测设施不得成为业务故障点」的落地：
+   * 没有 WU 是可知的降级，不是隐藏的崩溃。
+   */
+  private _workUnits?: WorkUnitService | null;
+  get workUnits(): WorkUnitService | null {
+    // 只缓存「有」，**绝不缓存「没有」**。
+    //
+    // 真实事故（2026-11-14）：`start.ts` 在 `setStorage()` 之前读了一次本 getter，
+    // 旧写法把当时的「还没有 storage」这个**时刻性答案**缓存成了永久 null，于是
+    // storage 接入后所有生产者（chat / task / a2a）仍然全部跳过，
+    // `work_units` 一行不写、且没有任何报错。
+    //
+    // 纪律：「暂时没有」不是事实。惰性装配的依赖晚到是常态，缺席不得被冻结成属性。
+    if (this._workUnits) return this._workUnits;
+    const repo = this.storage?.workUnitRepo;
+    if (!repo) return null;
+    this._workUnits = new WorkUnitService({
+      repo,
+      onEvent: (event) => {
+        // 事件 → 结构化日志：`work_unit.ensure_failed` 之类必须可计数，
+        // 而不是让人去 grep 一句自然语言。
+        if (event.type.endsWith('_failed')) {
+          log.warn('WorkUnit write failed (observation degraded, business continues)', {
+            event: event.type,
+            ref: event.ref,
+            itemId: event.itemId,
+            agentId: event.agentId,
+            error: event.error,
+          });
+        }
+      },
+    });
+    return this._workUnits;
+  }
+
+  /** 第七刀 C7-A：装配时注入唯一实例（未注入则按 storage 惰性自建）。 */
+  setWorkUnitService(service: WorkUnitService | null): void {
+    this._workUnits = service;
+  }
 
   static readonly ROUTING_CACHE_TTL_MS = 5 * 60 * 1000;
   /** Per-provider live key/model validation budget when a routing-candidates
@@ -1971,9 +2038,53 @@ export class APIServer {
 
   setStorage(storage: StorageBridge): void {
     this.storage = storage;
+    // 存储被替换（或首次接入）时，WorkUnit 服务必须重新从新存储派生，
+    // 否则它仍指向旧 repo —— 同一份数据两个句柄，写到哪份取决于谁先建。
+    this._workUnits = undefined;
     if (storage?.pendingCallbackRepo) {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
+    this.wireWorkUnits();
+  }
+
+  /**
+   * 第七刀 C7 装配的**唯一**执行点。
+   *
+   * 为什云放在 `setStorage()` 里，而不是某个启动文件：**“有 storage”是 WorkUnit 存在的前提**，
+   * 而任何启动路径（CLI `commands/start.ts` / 桌面 `cli/backend.ts` 的 `startBackend()`）
+   * 都必须先 `setStorage`。装配写在任何一个启动文件里，就必然有第二个启动路径漏掉 ——
+   * 2026-11-14 真机事故就是这么发生的：装配在 `start.ts`，而桌面端走 `backend.ts`，
+   * 于是 taskService 端口没接、`work_status` 没注册、chat 链路静默不写。
+   *
+   * 三个写入面共用**一个** `WorkUnitService` 实例：`failures/created` 计数与事件只有一份，
+   * 否则看板会把同一批失败数三遍。写入仍只有 storage 层一个 SQL 点。
+   */
+  private wireWorkUnits(): void {
+    const units = this.workUnits;
+    if (!units) return;
+    this.taskService.setWorkUnitService(units);
+    const manager = this.orgService.getAgentManager();
+    // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
+    manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
+    // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。
+    const storage = this.storage;
+    manager.setWorkUnitPort({
+      resolve: (ref) => {
+        const row = storage?.workUnitRepo?.getByRef(ref) as
+          | { id: string; ref: string; status: string; contextRef: string | null }
+          | undefined;
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      ensureChild: (seed) => {
+        const row = units.ensure({ ...seed, status: 'running' });
+        return row
+          ? { id: row.id, ref: row.ref, status: row.status, contextRef: row.contextRef }
+          : null;
+      },
+      settle: (ref, opts) => units.settle(ref, opts),
+    });
   }
 
   /**
@@ -2490,14 +2601,50 @@ export class APIServer {
     return user;
   }
 
+  /**
+   * C7-B —— 读记忆会话 id（`sess_*`）。**失败只能降级，不能让一次对话 500。**
+   *
+   * 这是增强信息：没有它，回合 WU 的 `context_ref` 走 fallback，锁键仍然正确。
+   * 但它是 HTTP 屏障上的一次**同步**读（参数求值处）——直接写 `agent.getMemorySessionId()`
+   * 会在 agent 对象不完整时抛 TypeError，把一个能正常工作的对话变成 500（实测：三条
+   * `/api/message` 用例就是这么红的）。所以这里只做**能力判定**（方法不存在 = 没有该
+   * 能力），不吞掉方法内部的异常。
+   */
+  private memorySessionIdOf(agent: unknown): string | null {
+    const fn = (agent as { getMemorySessionId?: () => string | undefined }).getMemorySessionId;
+    return typeof fn === 'function' ? (fn.call(agent) ?? null) : null;
+  }
+
   /** Persist a chat turn (user + assistant) to DB if storage is available */
   private async persistChatTurn(
     agentId: string,
     userMessage: string,
     reply: string,
-    senderId?: string,
-    tokensUsed = 0,
-    metadata?: unknown
+    /**
+     * 必填 `string | undefined`（不是 `?`）：`mailboxItemId` 必须必填，而 TS 不允许
+     * 必填参数跟在可选参数后面。把可选性换成显式 `undefined`，调用点就得表态。
+     */
+    senderId: string | undefined,
+    tokensUsed: number,
+    metadata: unknown,
+    /**
+     * 第七刀 C7-A：触发这一轮的 mailbox item 身份（由入口的 `onItemEnqueued`
+     * 回调带回来）。没有它就无法把 `mailbox_items.work_unit_ref` 指向本轮 WU ——
+     * 而「猜最近一条」是从时序推断结构，明确禁止。
+     *
+     * 必填 `string | null`：`null` = 本轮没有 item 身份（历史重放 / 直接调用），
+     * 由调用点显式表态。写成 `?:` 会让「漏传」与「确实没有」在类型上无法区分。
+     */
+    mailboxItemId: string | null,
+    /**
+     * C7-B：本轮的**记忆会话 id**（`sess_*`，即 `Agent.currentSessionId`）。
+     *
+     * 为什么要显式传而不是在这里现算：`work_units.context_ref` 是会话锁键的
+     * 单一来源（`sessionLockKeyOfContextRef`），而**只有 `sess_*` 能当会话锁键**。
+     * 库会话 id（`cs_*`）是另一个命名空间；把它存进 `context_ref` 会让新路径
+     * 永远 fallback，等于这条收敛没生效。没有记忆会话（历史重放）时显式 null。
+     */
+    memorySessionId: string | null,
   ): Promise<void> {
     if (!this.storage) return;
     try {
@@ -2506,6 +2653,10 @@ export class APIServer {
       if (!session) {
         session = await this.storage.chatSessionRepo.createSession(agentId, senderId);
       }
+      // 轮次必须在**追加之前**取：一轮 = 一问一答两条消息，追加后计数会把
+      // 本轮的 assistant 也算进去，导致同一轮重复递增（ref 漂移）。
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(session.id);
+      const round = Math.floor(priorMessages / 2) + 1;
       const title = !session.title ? deriveSessionTitle(undefined, userMessage) : undefined;
       await this.storage.chatSessionRepo.appendMessage(session.id, agentId, 'user', userMessage, 0);
       await this.storage.chatSessionRepo.appendMessage(
@@ -2517,8 +2668,86 @@ export class APIServer {
         metadata
       );
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
+
+      // ── 第七刀 C7-A：一轮对话 = 一个 WorkUnit ─────────────────────────────
+      // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
+      // 反过来就是 C6 刻意避免的「先建引用后建实体」，一行指向不存在 WU 的
+      // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
+      const units = this.workUnits;
+      if (units) {
+        const ref = WORK_UNIT_REF.chat(session.id, round);
+        // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
+        const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
+        // C7-B：回合开始时建的那一行还不带会话身份（那一刻还没定跑进哪个会话），
+        // 这里补上 —— 只填空值。补不上就退化为旧路径，那仍然正确，只是少一层结构事实。
+        units.adoptContextRef(ref, memorySessionId ?? session.id);
+        units.linkMailboxItem(mailboxItemId, ref);
+        // 回合已收口（回复已落库）= 这条活不再在跑 → `running → idle`。
+        // 留痕在 `status_transitions`（`entity_type='work_unit'`）：不留痕的话
+        // 「这一轮什么时候结束的」只能从消息时间戳猜，那又是一次时序推断。
+        // 只在 `running` 上迁：重放同一轮时 ensure 会命中既有 `idle` 行，
+        // 那不是「回合未收口」，不该再迁一次（idle→idle 不在矩阵里）。
+        if (wu?.status === 'running') {
+          units.tryTransition(ref, 'idle', {
+            changedByType: 'system',
+            reason: 'chat_turn_settled',
+          });
+        }
+      }
     } catch (err) {
       log.warn('Failed to persist chat turn', { error: String(err) });
+    }
+  }
+
+  /**
+   * C7-B —— 回合**开始**就给这一轮 chat 发身份。
+   *
+   * 为什么必须前移到开始：`work_status()` 要能回答「这个 agent 现在在干什么」。
+   * 若 WU 只在回复落库后创建，任何 mid-turn 查询都读不到 `running` —— 那正是
+   * 需求 §10.1 缺口 A 的关闭点，不能靠「其实创建了」自证。
+   *
+   * ref 与 `persistChatTurn()` 同源（session + round）：round 在两个函数里都用
+   * 「追加消息之前」的消息数推导，所以收口时命中同一行，`running → idle` 只写一次。
+   * `context_ref` 此刻**就是不知道**（还没决定跑进哪个会话）→ 显式 null，收口时由
+   * `adoptContextRef` 补。不要在这里读 `agent.getMemorySessionId()`：那一读可能抛，而
+   * 它发生在本函数体外（参数求值处），会把一次正常对话变成 500 —— 已经踩过。
+   */
+  /**
+   * C7-B：在**入队前**准备好本轮的 WorkUnit，并返回它的 ref。
+   *
+   * 旧写法是 `openChatTurnWorkUnit(agentId, senderId, item.id)`：入队后再异步查会话、
+   * 算 round、再回写 `mailbox_items.work_unit_ref`。但 agent 可能在这一行入队后立刻
+   * 开始处理它 —— 那一刻 `item.workUnitRef` 还是 null，于是
+   * `agent.currentTurnWorkUnitRef` 为 null，本回合内的 `spawn_subagents` 拿不到父 ref，
+   * 子 WU 只能落 `delegation:root:…`（父链断）。
+   *
+   * 现在改回正确的因果方向：**身份先于消息存在**，ref 作为入队参数一起落地。
+   */
+  private async prepareChatTurnWorkUnit(
+    agentId: string,
+    senderId: string | undefined,
+    /** 入口已经确定的本轮 DB 会话 id（团队聊天路径在落用户消息时就拿到了）。
+     *  传了就不再自己查一遍 —— 同一个事实两个解析器，迟旱会算出两个 round。 */
+    knownSessionId?: string | null,
+  ): Promise<string | null> {
+    const units = this.workUnits;
+    if (!units || !this.storage) return null;
+    try {
+      let sid = knownSessionId ?? null;
+      if (!sid) {
+        const sessions = await this.storage.chatSessionRepo.getSessionsByAgent(agentId, 1, senderId);
+        const existing = sessions[0] ?? await this.storage.chatSessionRepo.createSession(agentId, senderId);
+        sid = existing.id;
+      }
+      if (!sid) return null;
+      const priorMessages = this.storage.chatSessionRepo.getMessageCount(sid);
+      const round = Math.floor(priorMessages / 2) + 1;
+      const ref = WORK_UNIT_REF.chat(sid, round);
+      units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      return ref;
+    } catch (err) {
+      log.warn('Failed to prepare chat turn WorkUnit', { agentId, error: String(err) });
+      return null;
     }
   }
 
@@ -4461,7 +4690,15 @@ export class APIServer {
       const channelContext = await buildChannelContext();
 
       let reply: string;
+      // 入口不知道自己这条消息在 mailbox 里的 id —— 它由 mailbox 在入队时生成。
+      // 只有 `onItemEnqueued` 回调带回来的那个 id 才是真的；任何「最近一条」的
+      // 猜测都是时序推断（R3），一旦有并发就会挂错行。
+      let enqueuedItemId: string | null = null;
       const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
+      // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好。
+      const turnRef = routedAgentId
+        ? await this.prepareChatTurnWorkUnit(routedAgentId, senderId)
+        : null;
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
@@ -4470,6 +4707,11 @@ export class APIServer {
           fileNames,
           imagePaths,
           toolEventCollector: toolEvents,
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
+          onItemEnqueued: (item) => {
+            enqueuedItemId = item.id;
+          },
         });
       } catch (err) {
         const raw = String(err);
@@ -4539,7 +4781,7 @@ export class APIServer {
           mentions: [],
           metadata: Object.keys(metadata).length > 0 ? metadata as any : undefined,
         });
-        void this.persistChatTurn(routedAgentId, text, reply, senderId);
+        void this.persistChatTurn(routedAgentId, text, reply, senderId, 0, undefined, enqueuedItemId, this.memorySessionIdOf(agent));
       }
 
       // No WS broadcast here — the HTTP response delivers the agentMessage directly
@@ -5087,6 +5329,9 @@ export class APIServer {
             agent.setTurnModelOverride(null);
           }
 
+          // C7-B：团队聊天的 SSE 入口也要在**入队前**拿到本轮 WU 身份。
+          // 漏了这一处，就像 2026-11-14 那次：三个入口只改了两个。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId);
           const sseHandler = new SSEHandler({
             agentId: agentId!,
             agent,
@@ -5112,6 +5357,8 @@ export class APIServer {
             isResume,
             sessionRestore: deferredRestore,
             activeStreams: this.activeStreams,
+            // C7-B：身份随 item 一起入队（不是入队后回填）。
+            workUnitRef: turnRef,
           });
 
           await sseHandler.handle(res);
@@ -5121,9 +5368,12 @@ export class APIServer {
           const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
           let reply: string;
           const deferredRestoreNonStream = sessionRestoreData;
+          // C7-B：非流式团队聊天同样「身份先于消息」。
+          const turnRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, persistedSessionId);
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
+              workUnitRef: turnRef,
               // 把本轮 DB 会话 id 显式交给处理该消息的分身：它用它写 DB→memory 绑定。
               // 以前这里什么都不传，于是新对话的首条消息根本落不下绑定 —— 第二条
               // 只能从瘦 DB 重建（明明是同一个会话，却换了个内存会话）。
@@ -7106,6 +7356,8 @@ EXPLANATION_END`;
         : ({ kind: 'unknown', reason: 'POST /api/message 未提供 sessionId 或 channelId' } as const);
       if (stream) {
         const userText = body['text'] as string;
+        // C7-B：身份先于消息 —— 入队前就把本轮 WU 准备好（见 prepareChatTurnWorkUnit）。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
 
         const sseHandler = new SSEHandler({
           agentId: targetAgentId,
@@ -7118,9 +7370,11 @@ EXPLANATION_END`;
           senderInfo,
           sessionHint,
           executionStreamRepo: this.storage?.executionStreamRepo,
-          onComplete: async (reply, segments, tokensUsed) => {
+          // C7-B：本轮 WU 身份随 item 一起落地（不再是入队后回填）。
+          workUnitRef: turnRef,
+          onComplete: async (reply, segments, tokensUsed, enqueuedItemId) => {
             const meta = segments.length > 0 ? { segments } : undefined;
-            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta);
+            void this.persistChatTurn(targetAgentId, userText, reply, senderId, tokensUsed, meta, enqueuedItemId, this.memorySessionIdOf(agent));
           },
         });
 
@@ -7129,8 +7383,18 @@ EXPLANATION_END`;
         const userText = body['text'] as string;
         const toolEvents: Array<{ tool: string; status: 'done' | 'error'; arguments?: unknown; result?: string; durationMs?: number }> = [];
         let reply: string;
+        // 与 SSE 路径同源：item id 只能来自入队回调，不能猜。
+        let enqueuedItemId: string | null = null;
+        // C7-B：同上 —— 身份先于消息。
+        const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
         try {
-          reply = await agent.sendMessage(userText, senderId, senderInfo, { images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint });
+          reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
+            workUnitRef: turnRef,
+            onItemEnqueued: (item) => {
+              enqueuedItemId = item.id;
+            },
+          });
         } catch (err) {
           throw err;
         }
@@ -7140,7 +7404,7 @@ EXPLANATION_END`;
         // segment shape the SSE path persists).
         const segments = buildNonStreamingSegments({ thinking, toolEvents, cleanReply });
         const meta = segments ? { segments } : undefined;
-        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta);
+        void this.persistChatTurn(targetAgentId, userText, reply, senderId, agent.getState().tokensUsedToday, meta, enqueuedItemId, this.memorySessionIdOf(agent));
       }
       const _st2 = agent.getState();
       this.ws.broadcastAgentUpdate(targetAgentId, _st2.status, { lastError: _st2.lastError, lastErrorAt: _st2.lastErrorAt, currentActivity: _st2.currentActivity });

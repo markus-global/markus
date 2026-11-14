@@ -486,6 +486,13 @@ export interface MailboxItem {
    */
   round?: number;
   /**
+   * 第七刀 C7-A：这条 item 属于哪个 WorkUnit（`work_units.ref`）。
+   *
+   * 由生产者在**实体已存在之后**写入，不是入队时猜出来的。旧行为 `null`，
+   * 意义是「这条投递在 WU 之前发生」——诚实留空，不补造身份。
+   */
+  workUnitRef?: string | null;
+  /**
    * 退信原因（`status='bounced'` 时必填，六类闭集）；其它状态恒 `undefined`。
    * `undefined` + `bounced` = 不可建模的退信，写入侧由 `isActiveBounceReason` 拒绝。
    */

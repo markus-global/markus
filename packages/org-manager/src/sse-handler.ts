@@ -42,7 +42,29 @@ export interface SSEMessageHandlerOptions {
   persistAssistantMessage?: (sessionId: string | null, agentId: string, reply: string, tokensUsed: number, meta?: unknown) => Promise<void>;
   onTextDelta?: (text: string) => void;
   onToolEvent?: (event: AgentStreamEvent) => void;
-  onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number) => Promise<void>;
+  /**
+   * 第七刀 C7-A：第 4 参 = 触发本轮的那个 mailbox item 身份（`onItemEnqueued` 带回）。
+   *
+   * **必填 `string | null`**：`null` = 本轮没有 item 身份（历史重放 / 恢复 / 直接调用）。
+   * 写成可选参数等于「漏传也能编译过」，实现者只能退回「猜最近一条」之类的时序推断
+   * （R3）；必填会把每个调用点变成编译错，逼每条路径表态。
+   */
+  onComplete?: (reply: string, segments: Array<{type: string; content?: string; tool?: string; status?: string}>, tokensUsed: number, enqueuedItemId: string | null) => Promise<void>;
+  /**
+   * C7-B：入队时机的转发钩子。
+   *
+   * item id 只在这里产生（`sendMessageStream` 的 `onItemEnqueued`），上层入口拿不到
+   * 这个时机；不转发的话，流式回合只能在收口时才有 WU 身份 —— "回合进行中读到
+   * running" 就在流式路径上永远不成立。
+   */
+  onItemEnqueued?: (item: { id: string }) => void;
+  /**
+   * C7-B：本轮 WU 身份，由入口在**入队前**决定，随 item 一起落地。
+   *
+   * 不要在入队后异步回填：流式回合可能在回填前就开始处理，
+   * 那一刻 `item.workUnitRef` 为空 → 本回合的委派拿不到父 ref（父链落 root）。
+   */
+  workUnitRef?: string | null;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
   executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
   messageId?: string;
@@ -68,6 +90,11 @@ export class SSEHandler {
   private totalTokens = 0;
   private processedTokens = 0;
   private isProcessing = false;
+  /**
+   * 本轮 mailbox item 身份：只由 `agent.sendMessageStream()` 的 `onItemEnqueued`
+   * 回调写入（入队后立刻回填）。拿不到就保持 `null`，由 `onComplete` 显式传 `null`。
+   */
+  private enqueuedItemId: string | null = null;
   private isComplete = false;
   private sseDisconnected = false;
   private cancelToken: { cancelled: boolean; userStopped?: boolean } = { cancelled: false };
@@ -229,6 +256,14 @@ export class SSEHandler {
           // item resolve the memory session BOUND to this conversation instead of
           // trusting its own (possibly stale) workspace pointer.
           ...(this.sessionId ? { sessionId: this.sessionId } : {}),
+          // C7-B：本轮 WU 身份随消息一起入队（不是在收口/入队后回填）。
+          ...(this.options.workUnitRef ? { workUnitRef: this.options.workUnitRef } : {}),
+          // 第七刀 C7-A：item id 只能来自入队回调。SSEHandler 自己发起入队，
+          // 所以必须自己挂这个回调 —— 上层入口拿不到这一层的入队时机。
+          onItemEnqueued: (item) => {
+            this.enqueuedItemId = item.id;
+            this.options.onItemEnqueued?.({ id: item.id });
+          },
         },
       );
 
@@ -388,7 +423,7 @@ export class SSEHandler {
       }
 
       if (this.options.onComplete) {
-        await this.options.onComplete(reply, this.msgSegments, this.options.agent.getState().tokensUsedToday);
+        await this.options.onComplete(reply, this.msgSegments, this.options.agent.getState().tokensUsedToday, this.enqueuedItemId);
       }
 
       this.persistSegmentsToExecutionStream();
