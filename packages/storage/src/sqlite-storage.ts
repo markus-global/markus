@@ -5180,11 +5180,15 @@ export class SqliteMailboxRepo {
   }): boolean {
     const res = this.db
       .prepare(
-        // `work_unit_ref` **故意不在这个 INSERT 里**：入队那一刻还不知道这条 item
-        // 属于哪个 WU（WU 在活开始/结束时才有身份），这一列的唯一写者是
-        // `linkMailboxItem()` 的 UPDATE。之前它列在列名里却没传实参（16 列 / 16
-        // 占位符 / 15 实参），node:sqlite 少参**不抛、静默绑 NULL** —— 看起来正常，
-        // 实际上是靠一个静默失败在维持「单写者」。删掉列名让形状与意图一致。
+        // `work_unit_ref` **故意不在这个 INSERT 里**：这一列的单一写者是
+        // `SqliteWorkUnitRepo.linkMailboxItem()`（它拥有该列的写入权）。
+        //
+        // 2026-11-14 真机「正在运行 0」的根因**不在这一层**，也不在「何时写这一列」，
+        // 而在**ref 被解析到了错误的会话**（is_main 排序优先 → 落到早已收口的旧会话，
+        // 见 `APIServer#prepareChatTurnWorkUnit` 的修正 `4612ada3`）。
+        // 之前它列在列名里却没传实参（16 列 / 16 占位符 / 15 实参），node:sqlite
+        // 少参**不抛、静默绑 NULL** —— 看起来正常，实际上是靠一个静默失败在维持
+        // 单写者。删掉列名使形状与意图一致，保留单一写者不变。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
                                     envelope, message_id, signal_class, intent, drop_reason, bounce_target)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
