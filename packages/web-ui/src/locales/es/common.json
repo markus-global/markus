@@ -105,6 +105,31 @@
     "cancelled": "Cancelado",
     "archived": "Archivado"
   },
+  "threadStage": {
+    "waitingHuman": "Te necesita",
+    "running": "En ejecución",
+    "needsEvidence": "Falta evidencia",
+    "inVerification": "Pendiente de revisión",
+    "done": "Cerrado",
+    "blockedDeps": "Espera dependencias",
+    "ended": "Terminado sin éxito",
+    "evidence": {
+      "title": "Por qué está terminado ({{count}})",
+      "empty": "Todavía no hay ningún hecho de evidencia",
+      "noSummary": "(sin resumen)",
+      "unverified": "Sin verificación independiente",
+      "assertedBy": "afirmado por {{who}}",
+      "verification": {
+        "pass": "Verificado",
+        "fail": "Verificación fallida"
+      },
+      "refKind": {
+        "deliverable": "Entregable",
+        "comment": "Comentario",
+        "inPlace": "Referencia"
+      }
+    }
+  },
   "processStatus": {
     "idle": "Inactivo",
     "working": "Trabajando",
