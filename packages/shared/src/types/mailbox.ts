@@ -120,7 +120,13 @@ export interface MailboxTypePolicy {
   affinity: readonly MailboxEntityScope[];
   /** 幂等：按 `(type, taskId, round)` 至多一条（见 {@link routeMailboxItem}）。 */
   dedupePerRound: boolean;
-  /** 陈旧可丢：triage 时按年龄直接丢（list 由 limits 的 TRIAGE_STALE_DROP_TYPES 派生）。 */
+  /**
+   * 陈旧可丢：triage 时按年龄直接丢。
+   *
+   * **本字段是唯一事实源**：`limits.ts` 的 `TRIAGE_STALE_DROP_TYPES` 由它派生。
+   * 别在 limits 里再手写一份名单 —— 同一事实两个写者，今天一致、明天分叉。
+   * 运行时唯一的读者是 `routeMailboxItem(item).triageStaleDrop`。
+   */
   triageStaleDrop: boolean;
   /**
    * 后台工作：抢占判定里「当前在处理的是后台/系统工作」的判据。
@@ -181,7 +187,10 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', signalClass: 'system',           policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  signalClass: 'system',           policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
-  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  // C8-A：dream **不再**按年龄丢弃。它属于后台休眠路径，不是 attention 分拣的噪音；
+  // 过期即丢 = 这一轮整理无痕消失（正是「静默丢消息」）。affinity 仍是 ['system']，
+  // 那是 C8-C 的战场，本卡不动。
+  memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', signalClass: 'governance_event', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  signalClass: 'callback',         policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
 };

@@ -51,7 +51,12 @@ const GOLDEN: Record<MailboxItemType, {
   requirement_update:   { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], strictState: false, triageStaleDrop: false },
   daily_report:         { priority: 2, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
   heartbeat:            { priority: 3, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
-  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: true },
+  // C8-A: the one row that deliberately diverges from the legacy readers.
+  // `memory_consolidation` is the dream run — background work on the sleep path,
+  // not attention noise. Age expiry used to discard it silently, losing the run
+  // with no trace. Affinity stays `['system']` (that is C8-C); only the disposal
+  // fact changes, and `TRIAGE_STALE_DROP_TYPES` is now derived from this flag.
+  memory_consolidation: { priority: 4, invokesLLM: true,  affinity: ['system'], strictState: false, triageStaleDrop: false },
   workflow_update:      { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], strictState: false, triageStaleDrop: false },
   callback_result:      { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], strictState: false, triageStaleDrop: true },
 };

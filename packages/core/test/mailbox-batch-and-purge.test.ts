@@ -19,6 +19,8 @@ import { AgentMailbox } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 import {
   TRIAGE_STALE_INFO_TTL_MS,
+  TRIAGE_STALE_DROP_TYPES,
+  MAILBOX_TYPE_REGISTRY,
   type MailboxItem,
   type MailboxPriority,
 } from '@markus/shared';
@@ -106,6 +108,34 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
     });
   });
 
+  // ── C8-A：dream 不是可丢的信息噪音 ──
+  //
+  // `memory_consolidation` 是梦循环（dream）的载体：它属于后台休眠路径，不是
+  // attention 分拣的噪音。旧实现把它列进 stale-drop，于是 4 小时后未处理的一轮
+  // 整理被按年龄静默丢掉 —— 工作消失了且没有痕迹。affinity（`['system']`）仍属
+  // C8-C，本卡只动「能不能按年龄丢」这一个事实。
+  it('dream(memory_consolidation) 过期后必须存活', () => {
+    withFakeClock(() => {
+      const mailbox = makeMailbox();
+      mailbox.enqueue('memory_consolidation', { summary: 'dream', content: 'dream cycle' } as never);
+      vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
+      expect(mailbox.purgeStaleItems()).toBe(0);
+      expect(mailbox.getQueuedItems()).toHaveLength(1);
+    });
+  });
+
+  it('陈旧可丢名单是注册表的投影，且 dream 不在其中', () => {
+    // 同一事实只能一个写者：名单若再手写一份，今天一致、明天就分叉。
+    const derived = Object.entries(MAILBOX_TYPE_REGISTRY)
+      .filter(([, descriptor]) => descriptor.policy.triageStaleDrop)
+      .map(([type]) => type);
+    expect([...TRIAGE_STALE_DROP_TYPES].sort()).toEqual(derived.sort());
+
+    expect(TRIAGE_STALE_DROP_TYPES).not.toContain('memory_consolidation');
+    // 对照组：信息噪音仍在名单里 —— 否则「dream 不在」可能只是名单整体空了。
+    expect(TRIAGE_STALE_DROP_TYPES).toContain('heartbeat');
+  });
+
   it('陈旧但携带 actionRequired ⇒ 不得回收', () => {
     withFakeClock(() => {
       const mailbox = makeMailbox();
@@ -134,7 +164,7 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
     });
   });
 
-  it('混合：只回收纯信息项，欠动件保留', () => {
+  it('混合：只回收纯信息项，欠动件与 dream 保留', () => {
     withFakeClock(() => {
       const mailbox = makeMailbox();
       // 用不同 sourceType，避免心跳「折叠」干扰本用例的意图
@@ -143,10 +173,12 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
       mailbox.enqueue('memory_consolidation', { summary: 'rep', content: 'rep' } as never);
       vi.advanceTimersByTime(TRIAGE_STALE_INFO_TTL_MS + 60_000);
 
-      expect(mailbox.purgeStaleItems()).toBe(2);
+      // C8-A：dream 不再按年龄丢（旧期望是 2，把 dream 也当成可丢的噪音）。
+      expect(mailbox.purgeStaleItems()).toBe(1);
       const left = mailbox.getQueuedItems();
-      expect(left).toHaveLength(1);
-      expect(left[0]!.envelope?.intent).toBe('action_required');
+      expect(left).toHaveLength(2);
+      expect(left.some(i => i.envelope?.intent === 'action_required')).toBe(true);
+      expect(left.some(i => i.sourceType === 'memory_consolidation')).toBe(true);
     });
   });
 });

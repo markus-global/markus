@@ -147,6 +147,69 @@ is the existing `catch_all` surface where entity-less signals already land.
 Delta-injection *content* (what injected text looks like, cache behaviour when
 empty) is **C8-B** and deliberately not in this card.
 
+### 3.7 All fifteen types: affinity → destination
+
+The card's objective is "re-sort the **15** mailbox item types onto three axes",
+so listing one consumer would read as "the other fourteen were missed". They were
+not missed — fourteen of them are already carried by an existing path, and this
+section says which one, per type. Column *who decides* has exactly three
+possible answers and no fourth:
+
+- **`resolveMailboxDestination`** — the entity-intersection predicate
+  (§3.6). Today it has **one** consumer, `task_comment` (`agent.ts:2798`); the
+  other types have no in-turn injection to decide.
+- **default queue** — the item is dequeued and its own `case` in the dispatch
+  switch (`agent.ts:2481`–`2990`) handles it. Whether that costs an LLM turn is
+  a *type-level* fact (`invokesLLM`), not a destination decision.
+- **overview** — the `catch_all` surface (`bounceSignal(..., 'catch_all', ...)`
+  at `mailbox.ts:626`, read-only `catchAll()` at `:654`). It is an **exit path**
+  for items nobody handled, not a per-type destination; a type never "goes to
+  overview" by design, it lands there by failing to be handled.
+
+| # | type | affinity (lock dimensions) | `invokesLLM` | destination — who decides |
+|---|---|---|---|---|
+| 1 | `human_chat` | task, requirement, conversation, system | yes | default queue → own case (`agent.ts:2481`) |
+| 2 | `a2a_message` | task, requirement, **workunit**, system | yes | default queue → shares the `human_chat` case |
+| 3 | `mention` | task, requirement, user, conversation, system | yes | default queue → own case (`:2718`) |
+| 4 | `session_reply` | task, requirement, conversation, system | yes | default queue → own case (`:2951`) |
+| 5 | `task_comment` | task, requirement, system | no | **`resolveMailboxDestination`** → `inject` when the entity is the running task, else `queue` (one `comment_response` turn) |
+| 6 | `review_request` | task, requirement, system | yes | default queue; `strictState` ⇒ may not be merged/deferred/dropped (`:2823`) |
+| 7 | `requirement_comment` | task, requirement, system | no | default queue → records, no turn (`:2754`) |
+| 8 | `requirement_update` | requirement, system | no | default queue; only `intent='action_required'` is authoritative (`:2731`) |
+| 9 | `workflow_update` | task, requirement, system | yes | default queue; informational branch closes without a turn (`:2770`) |
+| 10 | `task_status_update` | task, system | no | default queue; `intent='trigger_execution'` is the execution instruction (`:2614`) |
+| 11 | `callback_result` | conversation, system | yes | default queue → own case (`:2972`); never age-purged (`isNeverPurgeable`) |
+| 12 | `heartbeat` | system | yes | default queue → own case (`:2901`) |
+| 13 | `daily_report` | system | yes | default queue → grouped with `system_event` (`:2918`) |
+| 14 | `memory_consolidation` | system | yes | default queue → own case (`:2938`); **not** age-droppable any more (§3.8) |
+| 15 | `system_event` | system | yes | default queue → own case (`:2918`) |
+
+The three axes therefore hold for all fifteen: every type resolves entity keys
+through one function (`resolveEntityKeys`, driven by the registry), every type's
+destination is answered either by the one predicate or by the default queue, and
+nothing reaches "overview" except by the existing catch-all exit. The gap this
+card actually had was *not* in the other fourteen — it was that `a2a_message`
+was the one type whose identity came from the transport (§2).
+
+### 3.8 The disposal table: dream is not age-droppable
+
+The card owns the whole `type → disposal` dispatch table, and one entry was
+wrong: `memory_consolidation` (dream) was listed as "stale information, drop by
+age". A dream run is background work on the sleep path, not attention noise; age
+expiry silently discards the run and leaves no trace.
+
+The table also had **two writers**: a hand-maintained literal array in
+`limits.ts` beside the registry's per-type `triageStaleDrop` flag. Only the flag
+was ever read (`routeMailboxItem(item).triageStaleDrop` at `mailbox.ts:682` and
+`:2145`); the literal had no readers at all and still looked like the source of
+truth. That is the same R1 as the rest of the card, one layer down, so it is
+fixed the same way — **delete the second writer**: `TRIAGE_STALE_DROP_TYPES` is
+now a projection of `MAILBOX_TYPE_REGISTRY`, and `memory_consolidation`'s flag is
+`false`.
+
+Scope note: this is the *disposal* fact only. `memory_consolidation`'s **affinity**
+(`['system']`, the global single key) is C8-C's battlefield and is untouched here.
+
 ## 4. Test plan — each test observed red before implementation
 
 `packages/shared/test/work-unit-ref.test.ts` (new, 17 assertions)
@@ -184,6 +247,17 @@ empty) is **C8-B** and deliberately not in this card.
 out of the queue with `dequeue()` / `putBack()`, 19 relies on the enqueue path),
 so neither can be satisfied by a layer other than the one it names.
 
+`packages/core/test/mailbox-batch-and-purge.test.ts` (extended, +2 and one
+updated expectation)
+21. An expired `memory_consolidation` item **survives** `purgeStaleItems()` —
+    behavioural, not a source-text assertion.
+22. `TRIAGE_STALE_DROP_TYPES` equals the registry projection **and** does not
+    contain `memory_consolidation`, with `heartbeat` still present as the control
+    (otherwise "dream is absent" could just mean the list went empty).
+23. The mixed-purge test now expects dream **and** the `action_required` item to
+    survive while only the plain informational item is reclaimed (its old
+expectation counted dream as droppable).
+
 ## 5. Verification
 
 | gate | result |
@@ -192,7 +266,7 @@ so neither can be satisfied by a layer other than the one it names.
 | `npm run lint` | 0 errors (1001 pre-existing warnings) |
 | `node scripts/architecture-guard.mjs` | 34 hits, all whitelisted; contracts 18/18 |
 | `node scripts/security-guard.mjs` | ok |
-| `npx vitest run` (whole repo, serial) | 8533 passed / 1 failed / 13 skipped |
+| `npx vitest run` (whole repo, serial) | 8536 passed / 1 failed / 13 skipped (8550) |
 | `npm run test:web-ui` | 1476 passed / 3 skipped, 0 failed |
 | the 1 failure | `cli: auto-runs quickInit when config is missing` — **also fails at base `0425bd48`** (60 s timeout; reproduced in a clean baseline worktree, see §6) |
 
@@ -234,6 +308,19 @@ and run there:
 The third row is the control: it proves the fallback path was preserved rather
 than replaced, so the two red rows above are attributable to the entity rule.
 
+The dream/disposal assertions were proven the same way — same file copied into
+the built baseline worktree, where the registry still says "drop dream by age":
+
+| assertion | base | head |
+|---|---|---|
+| an expired `memory_consolidation` survives `purgeStaleItems()` | ✗ `expected 1 to be +0` (it was purged) | ✓ |
+| the stale-drop list does not contain `memory_consolidation` | ✗ `expected [ 'task_status_update', …(4) ] to not include 'memory_consolidation'` | ✓ |
+| mixed purge: dream **and** the `action_required` item survive | ✗ `expected 2 to be 1` | ✓ |
+
+The control stays green on both sides: `heartbeat` (real informational noise) is
+still reclaimed by age, so "dream survives" cannot be a side effect of the purge
+having stopped working altogether.
+
 One trap worth recording: a fresh baseline worktree fails **every** test in a file
 within single-digit ms until the workspace dependencies are built
 (`Failed to resolve entry for package "@markus/shared"`). That is an install
@@ -264,12 +351,27 @@ versus module resolution, and per-test duration of ms versus seconds.
    execution session. Same R1, re-introduced by a name. No production caller
    passed a task ref, so behaviour is unchanged; the trap is what is gone. A name
    is a constraint for the next reader, so it now says what the function answers.
+6. **dream was taken out of the age-based purge** (review requirement, §3.8):
+   `memory_consolidation.triageStaleDrop` → `false`, and
+   `TRIAGE_STALE_DROP_TYPES` stopped being a hand-maintained literal. Worth
+   recording *why* this was a defect rather than a preference: the literal had no
+   runtime readers at all (the only reader is
+   `routeMailboxItem(item).triageStaleDrop`), so it pretended to be the source of
+   truth while the registry actually decided — and the entry it carried said
+   "drop a dream run after four hours". Deleting the second writer is what makes
+   the correction stick; editing both copies would have left the drift trap in
+   place.
 
 ## 8. Boundaries
 
 - No `cs_*` / `sess_*` session contract change; no LLM provider change.
 - No back-fill or migration of historical rows; locks are in-memory only.
 - `mailbox_items.work_unit_ref` keeps exactly one writer (`linkMailboxItem`).
-- `work_units` schema untouched. Heartbeat / dream / memory-consolidation
-  affinity (`['system']`) untouched — that is C8-C.
+- `work_units` schema untouched.
+- `heartbeat` / `daily_report` / `memory_consolidation` **affinity**
+  (`['system']`, the global single key) untouched — that is C8-C's battlefield.
+- **dream's disposal is this card, and it is done** (§3.8): `memory_consolidation`
+  is out of the age-based purge and the stale-drop list is now derived, not
+  hand-written. The `type → disposal` dispatch table belongs to C8-A; the
+  affinity table does not.
 - The batch-assembly entry point is untouched — that is C8-D.
