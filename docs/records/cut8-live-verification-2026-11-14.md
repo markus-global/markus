@@ -374,5 +374,75 @@ SELECT created_at, decision_type, mailbox_item_id FROM agent_decisions
 ## §12.5 探针副作用（如实登记）
 
 `tsk_1b23f86bbce1b9be9b6c3458`「【探针·一次性】C8 判据③…」创建后即取消，现状态 `rejected`（建卡闸的必然落点）。它不承载工作，不占在跑名额；按审批红线 ⑨，**不重提、不重建**，就地留档为本记录的取证痕迹。
+
+---
+
+# §13 浏览器实测发现的**反向缺陷**：真实在跑的回合显示为 0（已定位并修复）
+
+## §13.1 现象（浏览器实读，非推断）
+
+「运行与注意力」同一块面板上两句话互相矛盾：
+
+- 「正在运行 **0** · 当前没有进行中的工作单元」
+- 「邮箱 · 处理中 **1**」，Agent 专注「💬 人类对话 自 20:20:28 起」——就是当时正在跑的那个回合
+
+截图：`~/.markus/generated/screenshots/screenshot-1794658903801-la487c.png`
+
+## §13.2 取证链（每一步都可复现）
+
+| 步 | 读数 | 说明 |
+|---|---|---|
+| 1 | `mailbox_items` 本回合行 `work_unit_ref` = **NULL** | 投递行没有身份 |
+| 2 | `work_units WHERE ref LIKE 'session:cs_66bc3ebf%'` = **0 行** | 本会话从未建过回合单元 |
+| 3 | 近 3 条 `human_chat` 行 `work_unit_ref` **全 NULL** | 不是偶发，是这条路径结构性缺字段 |
+| 4 | `mailbox.ts:1146` 确实写 `workUnitRef: options?.workUnitRef ?? null` | 存储层不背锅 → **上游没传** |
+| 5 | 日志无 `Failed to prepare chat turn WorkUnit`、无 `ensure_failed` | 不是抛错被吞，是根本没调用 |
+
+## §13.3 根因
+
+`Agent.injectFollowUp()` —— 用户在 agent **正在输出时**打字走的这条路径 —— 是全仓唯一漏传回合身份的 chat 入口：
+
+```ts
+// 修前
+this.mailbox.enqueue('human_chat', payload, { priority: 0, metadata: {...} });  // 无 workUnitRef
+```
+
+同类事实共有 **4 个写入口**（`sendMessage` / `sendMessageStream` / `injectFollowUp` / 任务执行），前两个早已传身份，第四个（本路径）从来没有。这正是「同一不变量多个执行点」的典型：漏一个点不报错，只让台账少一行。
+
+后果不是"少个字段"：该回合在 `work_units` 里根本不存在 → C8-E 的权威源查不到它 → 「在跑」漏报真实工作。与 §11 修的僵尸（有行不收口）方向相反，根因同类：**写者缺席**。
+
+## §13.4 修法（按根因，不是补丁）
+
+1. **`injectFollowUp` 的 `workUnitRef` 改为必填**（`string | null`，不是 `?`）：
+   ```ts
+   injectFollowUp(userMessage, senderId, senderInfo, images, options: { workUnitRef: string | null })
+   ```
+   写成必填 = 让**编译器**替这个不变量站岗。以后再多一个 chat 入口，漏传会**编译失败**，而不是静默丢身份。
+   （连带把前三个位置参数从 `?` 改成 `T | undefined` —— TS 不允许必填跟在可选后面，这与 `persistChatTurn` 既有写法同源。）
+2. **api-server 的 inject 分支**在入队前取身份，与其它三个入口同一个派生点：
+   ```ts
+   const followUpRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
+   agent.injectFollowUp(agentText, senderId, senderInfo, images, { workUnitRef: followUpRef });
+   ```
+   round 与回合开始时同源（消息在回合**结束**后才落库），所以算出的是**同一个 ref**，不是新开一个纪元。
+
+## §13.5 验证（先看它红，再看它绿）
+
+**变异验证**：删掉 `workUnitRef: options.workUnitRef` 这一行转发 → 新断言立即红：
+
+```
+× injectFollowUp 把回合身份落进投递行（删掉转发行就会红）
+AssertionError: expected null to be 'session:cs_probe:r7'
+```
+
+恢复后：`tsc -b` 0；`agent-extended` + `agent-coverage` + work-unit producers + storage **116 passed**。
+
+## §13.6 这一格对 C8-E 判定的影响
+
+C8-E 原先只证了「僵尸不算在跑」。本次实测补上了反向：**真实在跑的回合必须能被权威源看见**。修复前该方向不成立（0 vs 处理中 1），修复后需重建实例再读一次「运行与注意力 = 1」才算真机闭环。
+
+## §13.7 仍未取到的一项（不变）
+
+判据③ 的真机 `cancel` 行：需要一个**已批准**任务在其执行方回合中被取消。生产者已在 `9c10f0e4` 上线并在真实信封中可见；探针卡受建卡闸与 FSM 限制无法进入终态（`pending→cancelled` 落 `rejected`，`rejected→in_progress/cancelled` 被拒）。不动他人真实在跑卡。
 3. **C8-E 的 UI 视觉比对**：端点已返回 4 条 running（含 `internal: true`），需要在页面上确认显示条数一致、且僵尸 activity 不出现。
 

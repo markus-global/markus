@@ -1057,7 +1057,7 @@ describe('performDeliberation and cognitive pipeline', () => {
 
   it('injectFollowUp enqueues with image metadata', () => {
     const agent = createAgent(makeMockRouter());
-    agent.injectFollowUp('See attached screenshot', 'user_1', { name: 'User', role: 'human' }, ['data:image/png;base64,abc']);
+    agent.injectFollowUp('See attached screenshot', 'user_1', { name: 'User', role: 'human' }, ['data:image/png;base64,abc'], { workUnitRef: null });
     const depth = agent.getMailbox().depth;
     expect(depth).toBe(1);
   });

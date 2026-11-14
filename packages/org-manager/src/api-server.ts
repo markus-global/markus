@@ -5350,7 +5350,13 @@ export class APIServer {
           if (this.storage && sessionId) {
             await this.persistUserMessage(agentId!, userText, senderId, images, sessionId, replyTo, chipsMeta, titleSource);
           }
-          agent.injectFollowUp(agentText, senderId, senderInfo, images);
+          // C8：追随消息（用户在 agent 正在输出时打字）同样是这一回合的工作 ——
+          // 以前这里不传回合身份，于是这一行 `work_unit_ref = NULL`、台账里也
+          // 从未建过该回合的 WorkUnit，最终表现为同一面板上「处理中 1」与
+          // 「正在运行 0」同时存在。round 与回合开始时同源（消息在回合结束后
+          // 才落库），所以这里算出的是**同一个 ref**，不是新开一个。
+          const followUpRef = await this.prepareChatTurnWorkUnit(agentId!, senderId, sessionId ?? null);
+          agent.injectFollowUp(agentText, senderId, senderInfo, images, { workUnitRef: followUpRef });
           this.json(res, 200, { injected: true });
           return;
         }

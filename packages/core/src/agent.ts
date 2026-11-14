@@ -1866,9 +1866,21 @@ export class Agent {
    */
   injectFollowUp(
     userMessage: string,
-    senderId?: string,
-    senderInfo?: { name: string; role: string; locale?: string; timezone?: string },
-    images?: string[],
+    senderId: string | undefined,
+    senderInfo: { name: string; role: string; locale?: string; timezone?: string } | undefined,
+    images: string[] | undefined,
+    /**
+     * 本轮 WU 身份 —— **必填**（`string | null`），不是 `?`。
+     *
+     * 2026-11-14 真机：`human_chat` 行全带 `work_unit_ref = NULL`，因为这条
+     * 路径是唯一漏传身份的 chat 入口 —— 用户在 agent 正在输出时打字，走的就是它。
+     * 后果不是"少一个字段"：该回合在台账里根本不存在，于是
+     * 「运行与注意力」显示「正在运行 0」而同一面板上「处理中 1」。
+     *
+     * 写成必填 = 让编译器替这个不变量站岗：以后再多一个 chat 入口，
+     * 漏传会编译失败，而不是静默丢身份。
+     */
+    options: { workUnitRef: string | null },
   ): void {
     const payload: MailboxPayload = {
       summary: summarizeForMailbox(userMessage),
@@ -1877,6 +1889,8 @@ export class Agent {
     };
     this.mailbox.enqueue('human_chat', payload, {
       priority: 0,
+      // 与 sendMessage / sendMessageStream 同源：身份随消息一起落地。
+      workUnitRef: options.workUnitRef,
       metadata: {
         senderId,
         senderName: senderInfo?.name,
