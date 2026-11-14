@@ -11057,7 +11057,16 @@ export class Agent {
         });
       }
 
-      // 代码可验证的那一半：promote 只看「同主题 >=3 条观察」。
+      // **今天平台派生的只有 promote 一条**：只看「同主题 >=3 条观察」。
+      // 其余 6 条（archive / revise / merge / ttl / negative_feedback / team_skill）**没有**派生源，
+      // 只有模型自己在 `suggestions` 里声明时才落结构 —— 别在这里加「顺手猜一条」的规则：
+      //   · archive/revise/merge 需要每技能的 usage/success/name/tags/age，而 `learning-loop.ts`
+      //     里只有 `recordSkillActivation` 接了生产调用（agent.ts 技能激活路径），
+      //     `recordSkillTaskSuccess`/`recordSkillTaskRejection` 无生产调用者 ⇒ success_count 恒 0，
+      //     派生 revise 会对每个用过的技能误报（平台替 Agent 编建议 = R4）。
+      //   · ttl 是**永远的**空分支：过期条目在这之前已被 `pruneNotebookEntries` 按 tier TTL 删掉。
+      //   · team_skill 需要跨 agent 的观察视图，core `Agent` 没有这个源。
+      // 对应的确定事实写在 `docs/architecture/facts-verification.md §3`（那张表就是契约）。
       const clusters = (plan.promote ?? [])
         .filter(p => Array.isArray(p.sourceIds) && p.sourceIds.length > 0)
         .map(p => ({ theme: p.section, observationIds: p.sourceIds }));

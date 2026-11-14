@@ -121,12 +121,50 @@ store. Two guards keep that from drifting back:
 - a test runs the suggestion stage against a real memory store and asserts the `knowledge.md`
   bytes are unchanged (a reintroduced prose write turns it red).
 
-The 7 actions themselves are derived by a **pure** function
+The 7 actions are **computed** by a **pure** function
 (`packages/core/src/facts/consolidation-suggestions.ts`): it takes structural inputs (skill
 usage/success, notebook ages vs tier TTL, observation clusters, negative-feedback counts, peer
 themes) and returns suggestions. No clock, no IO — the caller passes `now`. That is what makes
 "all seven have a landing point" a unit test rather than a hope, and it keeps the platform from
 inventing advice: a rule with no signal emits nothing.
+
+### What the platform derives today, and what the model must declare
+
+The pure function's input **type** is wider than what the dream actually supplies. Today the
+production caller (`Agent.recordDreamSuggestions`) passes **exactly one** signal:
+
+| action | derived by the platform at dream time? | signal / where it comes from |
+|---|---|---|
+| `promote` | **yes** | `plan.promote` — the clusters the dream's own consolidation step formed (3+ observations, one theme) |
+| `archive` · `revise` · `merge` · `negative_feedback` | **no** | only the model's `suggestions` declaration |
+| `ttl` | **no** | only the model's `suggestions` declaration |
+| `team_skill` | **no** | only the model's `suggestions` declaration |
+
+So in production, six of the seven land **only when the model declares them** in its `suggestions`
+array; the closed-set parser drops anything that is not one of the seven, and drops an item with no
+`target_refs`. Nothing is derived for them and nothing is written as prose instead.
+
+What the dream prompt shows the model (built in `Agent.dream`): the current memory entries, a
+preview of curated `knowledge.md` sections, and the seven action definitions with their thresholds.
+What it does **not** show: per-skill usage/success counters, notebook tier TTLs, other agents'
+observations. So the model's declarations are bounded by what it can see.
+
+Why the other six are not derived — the signals have no producer today:
+
+- **`archive` / `revise` / `merge`** need per-skill `usage_count` / `success_count` / `name` /
+  `tags` / age. `recordSkillActivation` is wired (`Agent`, skill activation path), but the
+  counters that make a *rate* are not: `recordSkillTaskSuccess` and `recordSkillTaskRejection`
+  have no production caller (`packages/core/src/learning-loop.ts`), so `success_count` stays 0 —
+  a derived `revise` would read a permanent 0/N and fire on every used skill. That is the platform
+  manufacturing advice (R4), worse than emitting nothing.
+- **`ttl`** would be a permanently empty branch: entries past their tier TTL are already removed by
+  `pruneNotebookEntries` (per-tier TTL pass) before the dream reads the notebook, so there is never
+  an expired entry left to report.
+- **`team_skill`** needs a cross-agent view of observations; the core `Agent` has no such source.
+
+The row that says "no" is a contract: any change that starts deriving one of those six must update
+this table in the same commit. And the `negative_feedback` signal likewise needs a real feedback
+producer before it can be derived rather than declared.
 
 ## 4. Read-only audit page `/#/audit/facts`
 
