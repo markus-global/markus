@@ -6636,8 +6636,7 @@ export class SqliteWorkUnitRepo {
   }
 
   /** 子 WU（C7-B 才产生；本卡读面先就位，读空集是诚实答案）。 */
-  listChildren(parentId: string): WorkUnitRecord[] {
-    return this.db
+  listChildren(parentId: string): WorkUnitRecord[] {    return this.db
       .prepare(
         `SELECT id, parent_id AS parentId, ref, agent_id AS agentId, address_ref AS addressRef,
                 task_id AS taskId, model, status, budget, used, claimed_by AS claimedBy,
@@ -6646,6 +6645,21 @@ export class SqliteWorkUnitRepo {
            FROM work_units WHERE parent_id = ? ORDER BY rowid ASC`,
       )
       .all(parentId) as unknown as WorkUnitRecord[];
+  }
+
+  /**
+   * 第九刀 C9-C：某个 task 主体当前**在跑**的 WorkUnit 条数。
+   *
+   * 只做一件事：`status = 'running'` 且 `task_id = ?` 的计数。读面用它是为了给
+   * `deriveStage()` 一个正向信号（>0 才提升到 `running`）；为 0 不代表「没在跑」，
+   * 只代表「这一列查不到在跑的回合」——所以派生规则里它只升不降。
+   */
+  countRunningByTask(taskId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM work_units WHERE task_id = ? AND status = 'running'")
+      .get(taskId) as { n?: number | bigint } | undefined;
+    const n = row?.n ?? 0;
+    return typeof n === 'bigint' ? Number(n) : n;
   }
 
   /**

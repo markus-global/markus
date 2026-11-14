@@ -106,6 +106,31 @@
     "cancelled": "Cancelled",
     "archived": "Archived"
   },
+  "threadStage": {
+    "waitingHuman": "Needs you",
+    "running": "Working now",
+    "needsEvidence": "Needs evidence",
+    "inVerification": "Awaiting check",
+    "done": "Closed out",
+    "blockedDeps": "Waiting on deps",
+    "ended": "Given up",
+    "evidence": {
+      "title": "Why it's done ({{count}})",
+      "empty": "No evidence fact yet",
+      "noSummary": "(no summary)",
+      "unverified": "Not independently verified",
+      "assertedBy": "asserted by {{who}}",
+      "verification": {
+        "pass": "Verified",
+        "fail": "Verification failed"
+      },
+      "refKind": {
+        "deliverable": "Deliverable",
+        "comment": "Comment",
+        "inPlace": "Reference"
+      }
+    }
+  },
   "processStatus": {
     "idle": "Idle",
     "working": "Working",

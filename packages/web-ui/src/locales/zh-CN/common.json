@@ -106,6 +106,31 @@
     "cancelled": "已取消",
     "archived": "已归档"
   },
+  "threadStage": {
+    "waitingHuman": "需要你",
+    "running": "执行中",
+    "needsEvidence": "缺证据",
+    "inVerification": "待核验",
+    "done": "已收口",
+    "blockedDeps": "等依赖",
+    "ended": "已终止",
+    "evidence": {
+      "title": "凭什么说做完了（{{count}}）",
+      "empty": "还没有证据事实",
+      "noSummary": "（无摘要）",
+      "unverified": "尚未独立验证",
+      "assertedBy": "由 {{who}} 断言",
+      "verification": {
+        "pass": "已验证",
+        "fail": "验证未通过"
+      },
+      "refKind": {
+        "deliverable": "交付物",
+        "comment": "评论",
+        "inPlace": "原始记录"
+      }
+    }
+  },
   "processStatus": {
     "idle": "空闲",
     "working": "工作中",
