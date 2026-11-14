@@ -2326,6 +2326,11 @@ async function startServerCore(
           save: (item, dedupKey) => {
             try {
               const inserted = mbRepo.save({
+                // C8 第七层根因：这里是**手写字段列举**，列到 `dropReason` 就结束 ——
+                // 以后每加一个字段（本轮就是 `workUnitRef`）都会被静默丢掉，而两端
+                // “看起来都对”。改成展开 + 覆盖：新字段自动流过，只显式覆盖需要
+                // 转型的那几个（信封序列化、结构投影）。
+                ...item,
                 id: item.id, agentId: item.agentId, sourceType: item.sourceType,
                 priority: item.priority, status: item.status,
                 payload: item.payload as unknown as Record<string, unknown>,
@@ -2338,6 +2343,14 @@ async function startServerCore(
                 signalClass: item.envelope?.signalClass ?? null,
                 intent: item.envelope?.intent ?? null,
                 dropReason: item.dropReason ?? null,
+                // C8 第七层：**适配器也得带身份**。
+                //
+                // 这一层是 core → storage 的手写字段映射，之前只写到 `dropReason` 就结束，
+                // `workUnitRef` 在这里被丢掉。后果：task-service / requirement-service /
+                // enqueueFor 全都“传对了”，save() 也“会写了”，但真机落库仍是 NULL ——
+                // 取消投递行带着 `invalidatesPremise:true` 却没有身份，delta 永远匹配不到。
+                // 2026-11-14 三次重建都没发现，就是因为只看两端、没人看中间的搬运层。
+                workUnitRef: item.workUnitRef ?? null,
               });
               if (!inserted) {
                 // P0 幂等键：重复投递（同 agent + 同 dedup_key）被 DB 拒绝，不产生第二行。
