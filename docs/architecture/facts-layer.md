@@ -26,7 +26,15 @@ enforcement point — an invariant without an execution point is not an invarian
 | 4 | A subject+predicate has **at most one active row** | Partial unique index `ux_facts_active` + `must_supersede` rejection (never auto-supersede: replacing a conclusion is a separate decision) |
 | 5 | **No self-verification**: the assertor cannot be the verifier of its own fact | `self_verification_forbidden` rejection in `FactService.assert` + gate G3 |
 | 6 | Facts are only asserted at a **terminal hook**, never per turn | Prompt contract (§5) + product decision, not a runtime gate |
-| 7 | Every turn that can assert a fact carries a **turn WorkUnit identity**, and an execution turn's identity is `WORK_UNIT_REF.task(taskId, round)` with the round *actually being executed* (a rework round is `_r2`) | `Agent.turnWorkUnitRef()` reads `taskAsyncContext.workUnitRef` first (per-execution scope) and only then the mailbox-focus field; `executeTaskConcurrent` / `executeChatTask` / the review turn each set it from that one constructor — no default, no `?? 1`, no tool-layer fallback |
+| 7 | Every turn that can assert a fact carries a **turn WorkUnit identity**, and an execution turn's identity is `WORK_UNIT_REF.task(taskId, round)` with the same `round` the session is actually running | `Agent.turnWorkUnitRef()` reads `taskAsyncContext.workUnitRef` first (per-execution scope) and only then the mailbox-focus field; `executeTaskConcurrent` / `executeChatTask` / the review turn each set it from that one constructor |
+
+**What "no identity default" means here — precisely.** There is **no identity-specific default and
+no tool-layer fallback**. The identity *shares* the round expression with the session id
+(`task_<id>_r<round>`), so when the dispatcher carries no round both land on `r1` **together** and
+cannot diverge; an identity that invented its own default could land on `_r1` while the session ran
+`r2`, which is the failure this invariant exists to prevent. Values still come from exactly one
+constructor, and a turn that never sets it (no entry write) yields no identity at all → `fact_*`
+rejects with `missing_provenance`.
 
 **Derived rule — a terminal hook may only demand what is reachable in the same turn.**
 Both C9-E hooks require a fact before the transition, so the tool that writes the fact must be

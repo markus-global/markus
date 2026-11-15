@@ -744,7 +744,9 @@ export class Agent {
     sessionId: string,
   ): { decision: 'continue' | 'cancel'; text: string; decisiveItemId: string | null } | null {
     if (!this.turnDeltaInjectionEnabled) return null;
-    const workUnitRef = this.currentTurnWorkUnitRef;
+    // 身份走 getter（ALS 优先）：直读实例字段会让并发执行回合拿到邮箱焦点那条 ref，
+    // 于是轮内 delta 注入挂到别人的 WU 上 —— 与 2026-11-15 死锁同一根因换记号。
+    const workUnitRef = this.turnWorkUnitRef();
     if (!workUnitRef) return null;
 
     const snapshotSeq = this.turnDeltaCursor;
@@ -5516,7 +5518,7 @@ export class Agent {
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
-    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}), workUnitRef: this.currentTurnWorkUnitRef };
+    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}), workUnitRef: this.turnWorkUnitRef() };
     this.workspaceActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
@@ -5629,7 +5631,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata, workUnitRef: this.currentTurnWorkUnitRef }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata, workUnitRef: this.turnWorkUnitRef() }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
