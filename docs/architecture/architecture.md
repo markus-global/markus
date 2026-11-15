@@ -36,13 +36,13 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
 | [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience; LLM provider timeout/retry governance lives in [prompt-engineering.md §1.3](./prompt-engineering.md) |
 | [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
-| [frontend/team-chat.md](./frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [team-chat.md](./team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [../api/api.md](../api/api.md) | REST / WebSocket API reference |
 | [../guides/guide.md](../guides/guide.md) | Setup, deployment, and usage guide |
 | [../guides/coding-tools.md](../guides/coding-tools.md) | External coding CLI integration (Claude Code / Codex / Cursor Agent) |
 | [../guides/remote-access.md](../guides/remote-access.md) | Remote access configuration |
 | [../guides/release-and-distribution.md](../guides/release-and-distribution.md) | Release process and distribution |
-| [../design/deliverable-sharing.md](../design/deliverable-sharing.md) | Sharing deliverables to Markus Hub |
+| [../records/deliverable-sharing-2026-08-12.md](../records/deliverable-sharing-2026-08-12.md) | Sharing deliverables to Markus Hub — design + as-built (implemented both ends) |
 | [agent-liveness-redesign.md](../../packages/org-manager/docs/agent-liveness-redesign.md) | Liveness / self-healing audit record (heartbeat-storm root cause + completion state of refactors 1–4); the current design lives in §3.10 below |
 
 ### 0.2 Relationship Graph

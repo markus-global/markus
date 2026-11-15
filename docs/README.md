@@ -14,7 +14,6 @@ Docs are grouped by **kind**, not by package. A file's folder tells you how much
 | [`architecture/`](./architecture/) | How the system is designed and built — canonical description of each subsystem | Living |
 | [`api/`](./api/) | REST + WebSocket reference | Living |
 | [`guides/`](./guides/) | Setup, development, operations, packaging, community | Living |
-| [`design/`](./design/) | Work that is **not settled yet** — proposals, contracts being drafted. A doc leaves this folder in the same PR that implements it | Until implemented |
 | [`records/`](./records/) | Dated engineering records — audits, post-mortems, hardening logs | **Historical, frozen** |
 | `images/` | Assets referenced by the top-level README | — |
 
@@ -25,6 +24,9 @@ Docs are grouped by **kind**, not by package. A file's folder tells you how much
 - Source comments point at the specific doc **and section** that justifies the code, so a reader can
   always get from the code to its rationale.
 - When a doc contradicts the code, the code wins — and the doc gets a PR.
+- A proposal that is **not settled yet** goes in `docs/design/` (create it when needed). A design doc
+  leaves that folder in the same PR that implements it — `docs/design/` holding only shipped work is
+  how a folder stops meaning anything.
 
 ---
 
@@ -53,7 +55,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
 | [facts.md](./architecture/facts.md) | C9 fact layer — contract (predicates, single writer, rejection matrix, schema, prompt surface) + independent verification (terminal hooks, dream suggestions, read-only audit page) |
 | [derived-views.md](./architecture/derived-views.md) | C9 derived views — thread stage, inbox derivation, and the four observation tables; all derived, never a second decider |
-| [frontend/team-chat.md](./architecture/frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
+| [team-chat.md](./architecture/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [messaging-gateway.md](./architecture/messaging-gateway.md) | Comms layer: platform manifests, bot instances, inbound routing, outbound & notifications, capability model |
 
 ## api/
@@ -73,12 +75,6 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [remote-access.md](./guides/remote-access.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok |
 | [release-and-distribution.md](./guides/release-and-distribution.md) | Build, packaging, publishing pipeline |
 | [community.md](./guides/community.md) | Community channels, rules, and launch plan |
-
-## design/
-
-| Document | Status |
-|---|---|
-| [deliverable-sharing.md](./design/deliverable-sharing.md) | Sharing deliverables to Markus Hub (desktop + cloud) |
 
 ## records/
 
@@ -104,4 +100,24 @@ want to know *why*, not *what*.
 | [approval-tri-state-handoff.md](./records/approval-tri-state-handoff.md) | Approval tri-state: handoff and verification, per-gate re-initiation |
 | [notify-user-context-truth-2026-10-28.md](./records/notify-user-context-truth-2026-10-28.md) | Twelve `notify_user` calls in 90s — receipt lost between tool_call and tool_result |
 | [2026-11-12-session-expiry-and-mention-thinking.md](./records/2026-11-12-session-expiry-and-mention-thinking.md) | Session expiry and mention-thinking: two root causes, one fix branch |
+| [deliverable-sharing-2026-08-12.md](./records/deliverable-sharing-2026-08-12.md) | Deliverable sharing to Markus Hub — design, and as-built for both ends |
 | [2026-10-29-a2a-cache-hit-rate.md](./records/2026-10-29-a2a-cache-hit-rate.md) | A2A cache hit rate — first-principles analysis over 741 real calls |
+| [cut9-inbox-dual-run-diff-2026-11-15.md](./records/cut9-inbox-dual-run-diff-2026-11-15.md) | Inbox dual run — legacy `buildAttentionQueue` vs `deriveInbox` |
+| [team-chat-stream-transport-vs-turn-2026-10-08.md](./records/team-chat-stream-transport-vs-turn-2026-10-08.md) | Team Chat streaming: "transport ended" mistaken for "turn ended" |
+| [animation-budget-focus-vs-visibility-2026-10-08.md](./records/animation-budget-focus-vs-visibility-2026-10-08.md) | Streaming bubble border vanished: focus mistaken for visibility |
+| [page-switch-jank-2026-10-23.md](./records/page-switch-jank-2026-10-23.md) | Desktop page-switch jank: root cause, measurement, fix |
+| [agent-platform-friction-2026-10.md](./records/agent-platform-friction-2026-10.md) | Agent platform friction — field notes from a working agent |
+| [cut7-workunit-execution-plan-2026-11-13.md](./records/cut7-workunit-execution-plan-2026-11-13.md) | Cut 7 execution plan: WorkUnit + FSM-3 + budget merge |
+| [cut7-c7a-workunit-implementation-2026-11-13.md](./records/cut7-c7a-workunit-implementation-2026-11-13.md) | Cut 7 / C7-A — WorkUnit lands: chat, task and a2a get an identity |
+| [cut7-c7a-red-green-evidence-2026-11-13.md](./records/cut7-c7a-red-green-evidence-2026-11-13.md) | C7-A red-then-green evidence (review-time reproduction) |
+| [cut7-c7b-verification-2026-11-14.md](./records/cut7-c7b-verification-2026-11-14.md) | Cut 7 / C7-B — delegation has a parent, budget has one unit |
+| [cut7-live-verification-2026-11-14.md](./records/cut7-live-verification-2026-11-14.md) | C7 live acceptance: full readings after four repair rounds |
+| [cut7-wiring-negative-cache-2026-11-14.md](./records/cut7-wiring-negative-cache-2026-11-14.md) | C7 live incident: wiring order + negative cache silently disabled the whole WorkUnit |
+| [cut8-a-entity-keys-design-2026-11-14.md](./records/cut8-a-entity-keys-design-2026-11-14.md) | Cut 8 / C8-A — entity identity converges on the WorkUnit |
+| [cut8-b-turn-delta-injection-2026-11-14.md](./records/cut8-b-turn-delta-injection-2026-11-14.md) | Cut 8 / C8-B — in-turn delta injection: a contradicting fact wins |
+| [cut8-c-single-clock-design-2026-11-14.md](./records/cut8-c-single-clock-design-2026-11-14.md) | Cut 8-C — single clock: heartbeat as a liveness tick, one driver |
+| [cut8-c-single-clock-2026-11-14.md](./records/cut8-c-single-clock-2026-11-14.md) | Cut 8-C — readings and evidence |
+| [cut8-d-2026-11-14.md](./records/cut8-d-2026-11-14.md) | C8-D — action-tool reachability: always present, and eviction-safe |
+| [cut8-live-verification-2026-11-14.md](./records/cut8-live-verification-2026-11-14.md) | Cut 8 live verification: four cards cross-checked on one tree |
+| [cut9-identity-declaration-2026-11-15.md](./records/cut9-identity-declaration-2026-11-15.md) | C9 follow-up — identity declaration for `task_status_update` |
+| [cut9-adjacent-identity-paths-2026-11-15.md](./records/cut9-adjacent-identity-paths-2026-11-15.md) | C9 adjacent paths — shutdown re-queue identity + gateway records |
