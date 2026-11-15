@@ -2353,6 +2353,14 @@ export class APIServer {
             }, {
               intent: 'deliver',
               metadata: { taskId: task.id },
+              // C9 follow-up: this row is a **receipt** for "a gateway created task X"
+              // (intent=deliver, invokesLLM=false). No work unit exists at creation time, and
+              // no code path ever links this row: the first WU (`task_<id>_r1`) is created when
+              // execution starts and is attached to the execution item, not here. Declaring
+              // `pending-link` would promise a link nobody makes — so the honest declaration is
+              // "platform-internal record". The task's entity linkage is structural:
+              // envelope messageId `gateway-task:<id>` + metadata.taskId.
+              refOrigin: 'platform-internal',
               origin: {
                 from: agentAddressRef(req.createdBy ?? 'gateway'),
                 // 任务创建事件的身份 = 该任务本身（同一任务重投不产生第二条记录）。

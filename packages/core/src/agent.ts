@@ -2077,6 +2077,13 @@ export class Agent {
         priority: 1,
         // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
         intent: 'trigger_execution',
+        // C9 附带缺陷：本条事实**入队那一刻还没有身份** —— item id 只存在于 `enqueue` 的
+        // 返回值里，调用方随后用 `onItemEnqueued` 把 `mailbox_items.work_unit_ref` 写成
+        // `task_<taskId>_r<round>`（2026-11-15 真机 13/13 条命中行事后都落到该形状）。
+        // 因此显式表态 `pending-link`：身份是**迟到**，不是「没有」。缺这条声明时，
+        // C8-P0 守卫在 `MARKUS_STRICT_IDENTITY=1` 下直接抛错 —— 这就是今天 13 次
+        // ERROR 的来源，也是「闸门要求的能力在该回合不可达」的形态（声明通道零示例）。
+        refOrigin: 'pending-link',
         metadata: {
           taskId,
         },
