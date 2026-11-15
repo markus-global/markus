@@ -17,28 +17,89 @@ export interface MemoryEntry {
 }
 
 /**
- * Memory budget health — TWO budgets, reported separately and honestly.
+ * Memory budget health — reported per MEASURED OBJECT, never per convenient constant.
  *
- * `knowledge.md` carries two kinds of content with different injection
- * semantics and therefore **separate** budgets (see
- * `MEMORY_MD_CURATED_MAX_CHARS` / `MEMORY_OBSERVATIONS_MAX_CHARS`):
+ * THREE numbers, three different questions (DR5):
  *
- *   - curated sections → INJECTED every turn; `curatedChars` / `percent` is the
- *     real "memory pressure" and the number the agent sees.
- *   - `## _observations` → NOT injected, searched on demand; `observationChars`
- *     / `observationPercent` is its own signal.
+ *   1. **Injected payload** — `injectedChars / injectionCapChars`
+ *      (`injectionUsedPercent`). This is what one turn actually puts into
+ *      `## Your Knowledge`, measured by the injector itself
+ *      (`prepareKnowledgeForPrompt().inlinedChars`) and written back through
+ *      `IMemoryStore.recordInjectedKnowledge`. **This is the number the in-prompt
+ *      banner and the `memory_stats` hint report.**
+ *   2. **Curated region on disk** — `curatedChars / curatedCap` (`curatedPercent`,
+ *      cap = `MEMORY_MD_CURATED_MAX_CHARS`). Region SIZE, report-only: it says how
+ *      much knowledge has accumulated, not how much a turn carries. Before DR5 this
+ *      was the banner's number, which is how a 16 673-char region got announced as
+ *      "111% injected" while the turn injected 6 691 chars.
+ *   3. **Observation buffer** — `observationChars / observationCap`
+ *      (`observationPercent`). NOT injected at all (searched on demand); it has its
+ *      own budget (`MEMORY_OBSERVATIONS_MAX_CHARS`) and its own signal.
  *
- * Historically these were collapsed into one `totalChars`/`cap` pair measured
- * over the WHOLE FILE, so a large (and perfectly healthy) observation buffer
- * made `percent` read >100% while the injected footprint was tiny — a permanent
- * false alarm that trained agents to ignore the banner.
+ * An earlier version collapsed all of knowledge.md into one `totalChars`/`cap` pair
+ * measured over the WHOLE FILE, so a large (and perfectly healthy) observation buffer
+ * made `percent` read >100% while the injected footprint was tiny — a permanent false
+ * alarm that trained agents to ignore the banner.
  */
+/**
+ * DR3 — ONE dream run, TYPED: *which* run (`at`) and *which window* it covered
+ * (`windowKey`).
+ *
+ * Why two fields instead of the old bare `lastConsolidatedAt`: two different events
+ * (the dream cycle and a manual `memory_organize`) wrote the same untyped instant, and
+ * the dream guard then read it as the boolean "did the dream run today". A manual
+ * organize at 09:00 therefore cancelled the day's dream. The typed record can only be
+ * written by the dream.
+ *
+ * `windowKey` is the string the WRITER computed (`dreamWindowKey`), stored as a fact.
+ * It is never re-derived from `at` at read time: re-deriving would need `entryCount` at
+ * READ time, which is a second source for one window (and it is how the bloated-buffer
+ * key and the calendar-day key could disagree).
+ */
+export interface DreamRecord {
+  /** When the dream finished successfully (ISO). */
+  at: string;
+  /** The window this run covered — the exact string the writer computed (`2026-11-15`, `2026-11-15_58`). */
+  windowKey: string;
+}
+
+/**
+ * DR3 — ONE manual `memory_organize` run. Deliberately carries NO `windowKey`: a manual
+ * organize must never satisfy the dream's window guard (see `shouldRunDreamCycle`).
+ */
+export interface OrganizedRecord {
+  at: string;
+}
+
 export interface MemoryHealth {
-  /** Curated (injected) footprint in chars — everything BEFORE `## _observations`. */
-  curatedChars: number;
-  curatedCap: number;
-  /** `curatedChars / curatedCap` as a percent — THE memory-health number. */
+  // ── 1. The injected payload (the measured object; see DR5) ──────────────
+  /** Characters of knowledge bodies the injector actually placed in the prompt this turn. */
+  injectedChars: number;
+  /** The injection ceiling ITSELF (min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap × 4)), not 15 000. */
+  injectionCapChars: number;
+  /** `injectedChars / injectionCapChars` as a percent — THE memory-health number. */
+  injectionUsedPercent: number;
+  /** Sections that did not fit in the payload and were named in the index line instead. */
+  omittedSectionCount: number;
+  /**
+   * true = a real turn packing recorded the numbers above.
+   * false = no turn has packed knowledge yet, so they are a PROJECTION of the same
+   * quantity at `DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS` (worst case: region ≥ cap).
+   * The projection never mixes in the region-only cap.
+   */
+  injectionMeasured: boolean;
+  /** Alias of `injectionUsedPercent`, kept for existing call sites. Read the explicit name in new code. */
   percent: number;
+
+  // ── 2. The curated region on disk (report-only; NOT the injection budget) ──
+  /** Curated region size in chars — everything BEFORE `## _observations`. */
+  curatedChars: number;
+  /** Region soft budget (`MEMORY_MD_CURATED_MAX_CHARS`) — a disk-size reference, not an injection cap. */
+  curatedCap: number;
+  /** `curatedChars / curatedCap` — region size pressure, report-only. */
+  curatedPercent: number;
+
+  // ── 3. The observation buffer (not injected) ────────────────────────────
   /** `## _observations` buffer size in chars (NOT injected). */
   observationChars: number;
   observationCap: number;
@@ -46,6 +107,13 @@ export interface MemoryHealth {
   observations: number;
   curatedSections: number;
   archiveChars: number;
+  /**
+   * DR3 — REPORT-ONLY freshness instant = `max(dream.at, organized.at)`.
+   *
+   * "When did someone last tidy memory" and "did the dream already run in this window"
+   * are two questions; this field answers the first (staleness banner, status API) and is
+   * never a dedup input. The dedup input is `getDreamRecord().windowKey`.
+   */
   lastConsolidatedAt: string | null;
 }
 
@@ -120,11 +188,41 @@ export interface IMemoryStore {
   /** Basename of the on-disk semantic store (normally "knowledge.md"). */
   getStoreFileName(): string;
   /** Memory budget health (audit P-12) — powers the in-prompt health signal.
-   *  Reports the TWO budgets separately and honestly; see `MemoryHealth`. */
+   *  Reports the injected payload, the curated region and the observation buffer
+   *  as three separate objects; see `MemoryHealth`. */
   getMemoryHealth(): MemoryHealth;
-  /** 审计 P-11：整理时间可观测（可选，便于 mock）。 */
+  /**
+   * DR5 — the injector reports what it ACTUALLY put into the prompt this turn, so
+   * `getMemoryHealth()` measures an injection payload instead of the on-disk region.
+   * Called by `ContextEngine.buildSystemPrompt` right before it reads the health.
+   * Optional so mocks stay simple.
+   */
+  recordInjectedKnowledge?(inlinedChars: number, omittedSectionCount: number, capChars?: number): void;
+  /**
+   * DR3 — the last DREAM, typed (`dream` half of `memory-meta.json`). `null` = never.
+   * This is the ONLY thing the dream window guard may consult.
+   */
+  getDreamRecord?(): DreamRecord | null;
+  /**
+   * DR3 — the last manual `memory_organize`, typed (`organized` half). Reported for
+   * freshness/staleness only; it never satisfies the dream's window guard.
+   */
+  getOrganizedRecord?(): OrganizedRecord | null;
+  /**
+   * DR3 — record ONE dream run, with the window key the CALLER computed.
+   * Returns `false` when the record could not be persisted durably: the caller must then
+   * report `ran:false` (a dream that "ran but was not remembered" is the restart-duplicate
+   * bug from 2026-10-15 coming back silently).
+   */
+  recordDream?(windowKey: string, at?: Date): boolean;
+  /** DR3 — record ONE manual organize run. Returns `false` when it could not be persisted. */
+  recordOrganize?(at?: Date): boolean;
+  /**
+   * 审计 P-11：上次整理时间（dream 或 memory_organize 中较晚的那次）—— 供 memory_stats /
+   * 状态 API / 「上次整理 N 天前」横幅取数。DR3 起它是对外**报告**字段，不再参与任何判定：
+   * 判定读 `getDreamRecord()`。
+   */
   getLastConsolidatedAt?(): string | null;
-  markConsolidated?(at?: Date): void;
   addLongTermMemory(key: string, content: string): { ok: boolean; reason?: string };
   getLongTermMemory(): string;
   getLongTermMemoryExcluding(sections: string[]): string;

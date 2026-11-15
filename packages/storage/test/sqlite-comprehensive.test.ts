@@ -9,7 +9,6 @@ import {
   SqliteOrgRepo,
   SqliteAgentRepo,
   SqliteTaskRepo,
-  SqliteMessageRepo,
   SqliteRequirementRepo,
   SqliteProjectRepo,
   SqliteAuditRepo,
@@ -20,10 +19,6 @@ import {
   SqliteChannelMessageRepo,
   SqliteUserRepo,
   SqliteTeamRepo,
-  SqliteMarketplaceTemplateRepo,
-  SqliteMarketplaceSkillRepo,
-  SqliteMarketplaceRatingRepo,
-  SqliteAgentKnowledgeRepo,
   SqliteExternalAgentRepo,
   SqliteDeliverableRepo,
   SqliteActivityRepo,
@@ -233,32 +228,6 @@ describe('SqliteTaskRepo extended', () => {
     expect(repo.listByAgent('agent-1').length).toBeGreaterThanOrEqual(1);
 
     await repo.update('nonexistent', { title: 'noop' });
-  });
-});
-
-describe('SqliteMessageRepo extended', () => {
-  it('supports pagination limits and empty thread', () => {
-    const db = openSqlite(dbPath);
-    seedBase(db);
-    const repo = new SqliteMessageRepo(db);
-
-    for (let i = 0; i < 5; i++) {
-      repo.create({
-        id: `msg-${i}`,
-        platform: 'slack',
-        direction: 'inbound',
-        channelId: 'ch-pag',
-        senderId: 'user-1',
-        agentId: 'agent-1',
-        content: { type: 'text', text: `Message ${i}` },
-        threadId: 'thread-pag',
-      });
-    }
-
-    expect(repo.findByChannel('ch-pag', 2)).toHaveLength(2);
-    expect(repo.findByAgent('agent-1', 1)).toHaveLength(1);
-    expect(repo.findByThread('empty-thread')).toEqual([]);
-    expect(repo.findByChannel('missing')).toEqual([]);
   });
 });
 
@@ -711,120 +680,6 @@ describe('SqliteTeamRepo', () => {
     repo.update('missing', { name: 'noop' });
     repo.delete('team-2');
     expect(repo.findById('team-2')).toBeUndefined();
-  });
-});
-
-describe('Marketplace repos', () => {
-  it('templates, skills, and ratings lifecycle', () => {
-    const db = openSqlite(dbPath);
-    seedBase(db);
-    const templateRepo = new SqliteMarketplaceTemplateRepo(db);
-    const skillRepo = new SqliteMarketplaceSkillRepo(db);
-    const ratingRepo = new SqliteMarketplaceRatingRepo(db);
-
-    const template = templateRepo.create({
-      id: 'tpl-1',
-      name: 'Dev Template',
-      description: 'A developer template',
-      authorName: 'Alice',
-      roleId: 'role-dev',
-      category: 'development',
-      skills: ['git'],
-      tags: ['dev'],
-      status: 'published',
-      starterTasks: [{ title: 'Setup' }],
-      config: { theme: 'dark' },
-    });
-    expect(template.status).toBe('published');
-    expect(template.publishedAt).toBeInstanceOf(Date);
-
-    templateRepo.update('tpl-1', { name: 'Updated Template', version: '2.0.0', icon: 'icon.png' });
-    templateRepo.updateStatus('tpl-1', 'draft');
-    templateRepo.incrementDownloads('tpl-1');
-    templateRepo.updateRating('tpl-1', 45, 2);
-    expect(templateRepo.findById('tpl-1')?.downloadCount).toBe(1);
-    expect(templateRepo.list({ source: 'community', category: 'development' })).toHaveLength(1);
-    expect(templateRepo.search('Dev', { category: 'development' })).toHaveLength(1);
-    expect(templateRepo.countBySource()).toEqual({ community: 1 });
-
-    const skill = skillRepo.create({
-      id: 'skill-1',
-      name: 'Git Skill',
-      description: 'Git operations',
-      authorName: 'Alice',
-      category: 'vcs',
-      tools: [{ name: 'git' }],
-      readme: '# Git',
-      requiredPermissions: ['read'],
-      requiredEnv: ['GIT_TOKEN'],
-      status: 'published',
-    });
-    expect(skill.status).toBe('published');
-    skillRepo.updateStatus('skill-1', 'archived');
-    skillRepo.incrementDownloads('skill-1');
-    skillRepo.updateRating('skill-1', 50, 1);
-    expect(skillRepo.list({ category: 'vcs' })).toHaveLength(1);
-    expect(skillRepo.search('Git')).toHaveLength(1);
-
-    const rating = ratingRepo.create({
-      id: 'rate-1',
-      targetType: 'template',
-      targetId: 'tpl-1',
-      userId: 'user-1',
-      rating: 5,
-      review: 'Great template',
-    });
-    expect(rating?.rating).toBe(5);
-    ratingRepo.update('rate-1', { rating: 4, review: 'Good' });
-    expect(ratingRepo.findByTarget('template', 'tpl-1')).toHaveLength(1);
-    expect(ratingRepo.findByUser('user-1', 'template')).toHaveLength(1);
-    expect(ratingRepo.findByUser('user-1')).toHaveLength(1);
-    expect(ratingRepo.findUserRating('user-1', 'template', 'tpl-1')?.rating).toBe(4);
-    expect(ratingRepo.getAggregation('template', 'tpl-1')).toEqual({ avg: 4, count: 1 });
-
-    ratingRepo.update('missing', { rating: 1 });
-    ratingRepo.delete('rate-1');
-    expect(ratingRepo.findByTarget('template', 'tpl-1')).toHaveLength(0);
-
-    templateRepo.delete('tpl-1');
-    skillRepo.delete('skill-1');
-  });
-});
-
-describe('SqliteAgentKnowledgeRepo', () => {
-  it('CRUD, search, tags, and access tracking', () => {
-    const db = openSqlite(dbPath);
-    seedBase(db);
-    const repo = new SqliteAgentKnowledgeRepo(db);
-
-    const entry = repo.create({
-      id: 'know-1',
-      agentId: 'agent-1',
-      orgId: 'org-1',
-      category: 'patterns',
-      title: 'Error handling',
-      content: 'Always catch errors at boundaries',
-      tags: ['errors', 'best-practice'],
-      metadata: { source: 'docs' },
-      importance: 80,
-    });
-    expect(entry.importance).toBe(80);
-
-    expect(repo.findByAgent('agent-1', { category: 'patterns' })).toHaveLength(1);
-    expect(repo.search('agent-1', 'boundaries')).toHaveLength(1);
-
-    repo.update('know-1', { title: 'Updated', content: 'New content', tags: ['errors'], importance: 90 });
-    repo.recordAccess('know-1');
-    expect(repo.findById('know-1')?.accessCount).toBe(1);
-    expect(repo.searchByTags('agent-1', ['errors'])).toHaveLength(1);
-    expect(repo.searchByTags('agent-1', [])).toEqual([]);
-    expect(repo.countByAgent('agent-1')).toBe(1);
-
-    repo.delete('know-1');
-    expect(repo.findById('know-1')).toBeUndefined();
-    repo.create({ id: 'know-2', agentId: 'agent-1', orgId: 'org-1', category: 'x', title: 't', content: 'c' });
-    repo.deleteByAgent('agent-1');
-    expect(repo.countByAgent('agent-1')).toBe(0);
   });
 });
 

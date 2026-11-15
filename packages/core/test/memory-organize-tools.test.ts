@@ -9,7 +9,8 @@ import { describe, it, expect, vi } from 'vitest';
 import { createMemoryTools } from '../src/tools/memory.js';
 import type { IMemoryStore, MemoryEntry } from '../src/memory/types.js';
 import type { SemanticMemorySearch } from '../src/memory/semantic-search.js';
-import { MEMORY_MD_CURATED_MAX_CHARS } from '@markus/shared';
+import { MEMORY_MD_CURATED_MAX_CHARS, DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS } from '@markus/shared';
+import { prepareKnowledgeForPrompt } from '../src/context-engine.js';
 
 function makeObs(id: string, content: string, type: MemoryEntry['type'] = 'fact'): MemoryEntry {
   return { id, timestamp: '2026-09-27T00:00:00.000Z', type, content };
@@ -51,14 +52,28 @@ function createStatefulMemory(entries: MemoryEntry[], initialLtm = ''): IMemoryS
     removeEntriesByTag: vi.fn(() => 0),
     replaceEntries: vi.fn(),
     getStoreFileName: vi.fn(() => 'knowledge.md'),
-    // 预算 SSOT：真实 MemoryStore 现在分**两个**预算 —— 注入段（curated）与观察缓冲（不注入）。
+    // 预算 SSOT：真实 MemoryStore 分三个度量（DR5）—— ① 本轮注入载荷 / 注入上限
+    // （唯一健康数）、② 磁盘策展区 / 软预算（仅报告）、③ 观察缓冲（不注入）。
+    // 夹具必须镜像真实 store 的投影方式（跑注入器自身的选取），
+    // 否则「工具说 A、横幅说 B」这类自相矛盾就只会在真实 store 里复现。
     getMemoryHealth: vi.fn(() => {
       const curatedChars = state.ltm.length;
       const curatedCap = MEMORY_MD_CURATED_MAX_CHARS;
+      const cap = DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS;
+      const projected = prepareKnowledgeForPrompt(state.ltm, cap);
+      const injectionUsedPercent = cap > 0
+        ? Math.round((projected.inlinedChars / cap) * 100)
+        : 0;
       return {
+        injectedChars: projected.inlinedChars,
+        injectionCapChars: cap,
+        injectionUsedPercent,
+        omittedSectionCount: projected.omittedCount,
+        injectionMeasured: false,
+        percent: injectionUsedPercent,
         curatedChars,
         curatedCap,
-        percent: Math.round((curatedChars / curatedCap) * 100),
+        curatedPercent: Math.round((curatedChars / curatedCap) * 100),
         observationChars: 0,
         observationCap: 30_000,
         observationPercent: 0,
@@ -121,9 +136,16 @@ describe('memory_stats（P1-1 记忆健康度）', () => {
     const tool = tools.find(t => t.name === 'memory_stats')!;
     const res = JSON.parse(await tool.execute({}));
     const h = mem.getMemoryHealth();
-    expect(res.budget.curatedChars).toBe(h.curatedChars);
-    expect(res.budget.limit).toBe(h.curatedCap);
-    expect(res.budget.usedPercent).toBe(h.percent);
+    // ① 注入载荷：唯一健康数，分母是**注入上限**（不是 15000）
+    expect(res.budget.injectedChars).toBe(h.injectedChars);
+    expect(res.budget.limit).toBe(h.injectionCapChars);
+    expect(res.budget.usedPercent).toBe(h.injectionUsedPercent);
+    expect(res.budget.measured).toBe(h.injectionMeasured);
+    // ② 磁盘区域：另一个数、另一个分母（DR5 前它被当成注入值报了 111%）
+    expect(res.curatedRegion.chars).toBe(h.curatedChars);
+    expect(res.curatedRegion.softLimit).toBe(h.curatedCap);
+    expect(res.curatedRegion.usedPercent).toBe(h.curatedPercent);
+    expect(h.injectionCapChars).not.toBe(h.curatedCap);
     // 观察缓冲是**另一个**预算，必须单独暴露（否则"观察多"会被误读成"注入知识超预算"）
     expect(res.observationBuffer.chars).toBe(h.observationChars);
     expect(res.observationBuffer.limit).toBe(h.observationCap);

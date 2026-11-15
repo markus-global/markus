@@ -451,11 +451,13 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
     {
       name: 'memory_stats',
       description:
-        'Inspect your memory health: the CURATED (injected) knowledge budget vs its cap, plus the ' +
-        'separate `## _observations` buffer usage, observation count and curated section count. ' +
-        'Note the two budgets are independent — the observation buffer is NOT injected into the prompt. ' +
-        'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. ' +
-        'Returns JSON with budget usage percent. No args.',
+        'Inspect your memory health. Two INDEPENDENT numbers: (1) `budget` = the injected payload — '
+        + 'the knowledge actually placed in THIS turn\'s prompt vs its injection ceiling — this is the '
+        + 'one the in-prompt banner reports; (2) `curatedRegion` = how much curated knowledge exists on '
+        + 'disk vs its soft budget (report-only: a region is routinely far bigger than one prompt). '
+        + 'Plus the separate `## _observations` buffer, which is NOT injected. '
+        + 'Use periodically (or when memory feels bloated) to decide whether to run memory_organize. '
+        + 'Returns JSON. No args.',
       inputSchema: { type: 'object', properties: {} },
       async execute(): Promise<string> {
         const store = storeName(ctx.memory);
@@ -472,11 +474,23 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         return JSON.stringify({
           status: 'ok',
           store,
-          // The injected budget — the one that actually costs prompt space.
+          // DR5 — two questions, two numbers, never one number asked twice.
+          // `budget` is the ONE memory-health metric: this turn's injected payload vs
+          // the injection ceiling. The curated region is a disk size and is reported
+          // as one — dividing it by a disk constant is what used to announce a
+          // 16 673-char region as "111% injected" on a turn carrying 6 691.
           budget: {
-            curatedChars: health.curatedChars,
-            limit: health.curatedCap,
-            usedPercent: health.percent,
+            injectedChars: health.injectedChars,
+            limit: health.injectionCapChars,
+            usedPercent: health.injectionUsedPercent,
+            measured: health.injectionMeasured,
+            omittedSections: health.omittedSectionCount,
+          },
+          // Region size on disk — report-only, NOT an injection budget.
+          curatedRegion: {
+            chars: health.curatedChars,
+            softLimit: health.curatedCap,
+            usedPercent: health.curatedPercent,
           },
           // A separate, non-injected budget (searched on demand).
           observationBuffer: {
@@ -488,8 +502,8 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
           curatedSections: { count: sectionNames.length, names: sectionNames.slice(0, 20) },
           archivedChars: health.archiveChars,
           lastConsolidatedAt: health.lastConsolidatedAt,
-          hint: health.percent >= MEMORY_HEALTH_WARN_PERCENT
-            ? 'Injected knowledge is near its budget — run memory_organize to merge sections, or memory_update mode="forget" on superseded knowledge.'
+          hint: health.injectionUsedPercent >= MEMORY_HEALTH_WARN_PERCENT
+            ? 'This turn injects close to the knowledge injection ceiling — sections beyond it never reach the prompt (they are named in the index line). Run memory_organize to merge sections, or memory_update mode="forget" on superseded knowledge.'
             : undefined,
           observationHint: health.observationPercent >= MEMORY_HEALTH_WARN_PERCENT
             ? 'The observation buffer is near its own limit (it is NOT injected into the prompt). It is trimmed losslessly, oldest-first, when it overflows — memory_organize merges recurring patterns into curated sections before that happens.'
@@ -593,7 +607,11 @@ export function createMemoryTools(ctx: AgentMemoryContext): AgentToolHandler[] {
         }
 
         const archived = ctx.memory.removeEntries(selected.map((e) => e.id));
-        ctx.memory.markConsolidated?.();
+        // DR3 — a manual organize records the ORGANIZE event, never the dream's window.
+        // The single `markConsolidated()` slot it used to write was both events at once,
+        // which is how a 09:00 tidy cancelled the day's dream (the guard asked "did the
+        // dream run?" and this field answered "did anyone tidy?").
+        ctx.memory.recordOrganize?.();
         if (ctx.semanticSearch?.isEnabled()) {
           for (const e of selected) {
             ctx.semanticSearch.deleteMemory(e.id).catch((err) => {

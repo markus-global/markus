@@ -21,6 +21,8 @@ import {
   TRIAGE_STALE_INFO_TTL_MS,
   TRIAGE_STALE_DROP_TYPES,
   MAILBOX_TYPE_REGISTRY,
+  producibleIn,
+  triageStaleDropTypes,
   type MailboxItem,
   type MailboxPriority,
 } from '@markus/shared';
@@ -126,14 +128,31 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
 
   it('陈旧可丢名单是注册表的投影，且 dream 不在其中', () => {
     // 同一事实只能一个写者：名单若再手写一份，今天一致、明天就分叉。
-    const derived = Object.entries(MAILBOX_TYPE_REGISTRY)
-      .filter(([, descriptor]) => descriptor.policy.triageStaleDrop)
-      .map(([type]) => type);
-    expect([...TRIAGE_STALE_DROP_TYPES].sort()).toEqual(derived.sort());
+    const derived = triageStaleDropTypes('clock');
+    expect([...TRIAGE_STALE_DROP_TYPES].sort()).toEqual([...derived].sort());
 
     expect(TRIAGE_STALE_DROP_TYPES).not.toContain('memory_consolidation');
     // 对照组：信息噪音仍在名单里 —— 否则「dream 不在」可能只是名单整体空了。
-    expect(TRIAGE_STALE_DROP_TYPES).toContain('heartbeat');
+    expect(TRIAGE_STALE_DROP_TYPES).toContain('task_status_update');
+  });
+
+  it('化石策略位不存在：不可产生的类型不得进入可丢集合（H7）', () => {
+    // 两列一张表：`triageStaleDrop` 说「可丢」，`producedBy` 说「谁能产生」。
+    // heartbeat 只可能由 legacy 通道产生，而默认是 clock —— 所以 clock 视图里它
+    // 既不可产生、也不得出现在可丢集合中。旧版本它带着 triageStaleDrop:true 且
+    // 名单里没有任何模式维度，那个位读起来像有人守，实际永远没有行可丢。
+    expect(producibleIn('clock', 'heartbeat')).toBe(false);
+    expect(triageStaleDropTypes('clock')).not.toContain('heartbeat');
+    expect(producibleIn('legacy', 'heartbeat')).toBe(true);
+    expect(triageStaleDropTypes('legacy')).toContain('heartbeat');
+
+    // 真不变量（可判定、且能因实现被改坏而变红）：
+    // 任何模式下，「可丢」都必须是「可产生」的子集 —— 否则就是化石。
+    for (const mode of ['clock', 'legacy'] as const) {
+      const droppable = triageStaleDropTypes(mode);
+      const unproducible = droppable.filter((t) => !producibleIn(mode, t as never));
+      expect(unproducible, `模式 ${mode} 下有不可产生却可丢的类型`).toEqual([]);
+    }
   });
 
   it('陈旧但携带 actionRequired ⇒ 不得回收', () => {

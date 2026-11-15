@@ -37,7 +37,6 @@ export interface StorageBridge {
   taskLogRepo: any;
   agentRepo: any;
   teamRepo: any;
-  messageRepo: any;
   chatSessionRepo: any;
   channelMessageRepo: any;
   userRepo: any;
@@ -248,7 +247,6 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       taskLogRepo: new storage.SqliteTaskLogRepo(db) as any,
       agentRepo: new storage.SqliteAgentRepo(db) as any,
       teamRepo: new storage.SqliteTeamRepo(db) as any,
-      messageRepo: new storage.SqliteMessageRepo(db) as any,
       chatSessionRepo: new storage.SqliteChatSessionRepo(db) as any,
       channelMessageRepo: new storage.SqliteChannelMessageRepo(db) as any,
       userRepo: new storage.SqliteUserRepo(db) as any,

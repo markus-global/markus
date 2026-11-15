@@ -16,7 +16,7 @@
 // The stale-drop set is a **projection of the registry** (see
 // `TRIAGE_STALE_DROP_TYPES` below). The registry is the only writer of
 // "is this type droppable by age"; this module must not keep a second copy.
-import { MAILBOX_TYPE_REGISTRY } from './types/mailbox.js';
+import { MAILBOX_TYPE_REGISTRY, producibleIn, type ChannelMode, type MailboxItemType } from './types/mailbox.js';
 
 // ─── Tool Response Limits ────────────────────────────────────────────────────
 // These control what `task_get` / `task_list` return to the calling agent.
@@ -219,20 +219,32 @@ export const SYSTEM_LONGTERM_MEMORY_CHARS = 5000;
  *  Prevents any single section from growing unbounded. */
 export const MEMORY_MD_SECTION_MAX_CHARS = 3000;
 
-/** Hard cap on the **CURATED** part of knowledge.md (chars) — the sections that
- *  are actually injected into every turn's `## Your Knowledge` block.
+/** SOFT budget on the **CURATED REGION ON DISK** (chars) — NOT an injection ceiling.
  *
- *  ⚠️ This is NOT "the size of knowledge.md". knowledge.md holds two kinds of
- *  content with different injection semantics, and they have **separate**
- *  budgets (see MEMORY_OBSERVATIONS_MAX_CHARS):
+ *  ⚠️ This is NOT "the size of knowledge.md", and it is NOT "how much knowledge one
+ *  turn injects". knowledge.md holds two kinds of content with different injection
+ *  semantics and **separate** budgets (see MEMORY_OBSERVATIONS_MAX_CHARS):
  *
- *    • curated sections (`## <key>`) → INJECTED every turn. This is the budget
- *      below; it is what "memory pressure" actually means for the prompt.
+ *    • curated sections (`## <key>`) → eligible for injection every turn.
  *    • `## _observations`           → NOT injected, searched on demand.
  *
- *  Treating them as one number is what produced the "permanent false alarm"
- *  bug: a healthy, large observation buffer made the injected-footprint
- *  percentage read >100% while the agent's prompt carried only ~2k chars.
+ *  What this constant bounds is the first region's size *on disk*: how much curated
+ *  knowledge the agent may accumulate before it should consolidate. It is a
+ *  **report-only** soft budget — nothing acts on it, nothing is trimmed or archived
+ *  when it is crossed; only the hard ceiling (`MEMORY_MD_CURATED_HARD_MAX_CHARS`)
+ *  refuses a write.
+ *
+ *  @deprecated Do NOT use this as an "injection budget". It measures the disk region,
+ *  and the region is routinely much larger than what a single turn can carry — a
+ *  16 673-char region against this 15 000 constant reports "111%" while the turn
+ *  actually injected 6 691 chars. The injection ceiling is
+ *  `knowledgeInjectionCapChars(knowledgeTokCap)` (i.e. min(SYSTEM_KNOWLEDGE_CHARS,
+ *  knowledgeTokCap × 4) = 6000 / 4800 / 0), which is what
+ *  `prepareKnowledgeForPrompt` truncates to and what the in-prompt health banner
+ *  reports (`MemoryHealth.injectedChars` / `injectionCapChars`).
+ *  Legitimate remaining use: reporting region SIZE (report-only) — see
+ *  `MemoryHealth.curatedPercent`.
+ *
  *  15 000 chars ≈ 5 sections × 3 000. */
 export const MEMORY_MD_CURATED_MAX_CHARS = 15_000;
 
@@ -256,11 +268,15 @@ export const MEMORY_MD_CURATED_MAX_CHARS = 15_000;
  */
 export const MEMORY_MD_CURATED_HARD_MAX_CHARS = 3 * MEMORY_MD_CURATED_MAX_CHARS;
 
-/** Usage percent of the **curated (injected)** budget at which the in-prompt
- *  health banner fires (and at which the `memory_status` hint suggests
- *  consolidation). Kept as ONE constant so the banner and the tool hint can
- *  never drift apart — see docs/architecture/architecture.md ("Your Knowledge") +
- *  docs/architecture/cognitive-architecture.md §3. */
+/** Usage percent of the **injected-payload** budget at which the in-prompt health
+ *  banner fires (and at which the `memory_stats` hint suggests consolidation).
+ *
+ *  The measured object is `MemoryHealth.injectionUsedPercent`
+ *  = injectedChars / injectionCapChars for THIS turn — not the curated region
+ *  against `MEMORY_MD_CURATED_MAX_CHARS` (that pair is reported separately as
+ *  `curatedPercent`, report-only). Kept as ONE constant so the banner and the tool
+ *  hint can never drift apart — see docs/architecture/architecture.md ("Your
+ *  Knowledge") + docs/architecture/cognitive-architecture.md §3. */
 export const MEMORY_HEALTH_WARN_PERCENT = 70;
 
 /** Usage percent of the **observation-buffer** budget at which the periodic memory
@@ -575,9 +591,35 @@ export const TRIAGE_STALE_INFO_TTL_MS = 4 * 60 * 60 * 1000;
  * must not discard it — losing that item loses the work with no trace. It is the
  * one type whose absence changes behaviour, which is why this card owns it.
  */
-export const TRIAGE_STALE_DROP_TYPES: readonly string[] = Object.entries(MAILBOX_TYPE_REGISTRY)
-  .filter(([, descriptor]) => descriptor.policy.triageStaleDrop)
-  .map(([type]) => type);
+/**
+ * Types that may be dropped by age (triage) **in `mode`**.
+ *
+ * Two columns of one table, not two facts:
+ *   - `policy.triageStaleDrop` says a type IS droppable;
+ *   - `producedBy` says which channels can create it at all.
+ * A type the active channel cannot produce is never droppable there — before this
+ * split, `heartbeat` declared itself droppable while `clock` (the default) can
+ * never create one, so the bit read as a live policy to every future reader while
+ * no such row could ever exist. A fossil policy is worse than no policy: it tells
+ * the next person somebody is guarding it.
+ *
+ * The runtime's actual reader is `routeMailboxItem(item).triageStaleDrop`; this
+ * function exists so the *declaration* cannot disagree with producibility.
+ */
+export function triageStaleDropTypes(mode: ChannelMode): readonly string[] {
+  return Object.entries(MAILBOX_TYPE_REGISTRY)
+    .filter(([t, d]) => d.policy.triageStaleDrop && producibleIn(mode, t as MailboxItemType))
+    .map(([t]) => t);
+}
+
+/**
+ * The clock-mode view of {@link triageStaleDropTypes}.
+ *
+ * @deprecated Prefer `triageStaleDropTypes(mode)` and pass the mode you actually
+ * mean. This constant is the DEFAULT channel's set, kept so existing readers keep
+ * their meaning in clock mode instead of silently widening.
+ */
+export const TRIAGE_STALE_DROP_TYPES: readonly string[] = triageStaleDropTypes('clock');
 
 /** Max tool-use iterations allowed during triage deliberation.
  *  6 rounds is sufficient for memory recall + task/requirement lookups
@@ -1005,6 +1047,25 @@ export const KNOWLEDGE_PROMPT_MAX_TOKENS = 1_500;
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE = 1_200;
 /** knowledge.md injection for reflex (0 = omit full dump). */
 export const KNOWLEDGE_PROMPT_MAX_TOKENS_REFLEX = 0;
+
+/**
+ * The knowledge injection ceiling for ONE turn, in chars: `min(SYSTEM_KNOWLEDGE_CHARS, tokensCap × 4)`.
+ *
+ * ONE formula for both ends of the contract — the injector truncates to it
+ * (`ContextEngine.buildSystemPrompt` → `prepareKnowledgeForPrompt`) and the memory
+ * store uses the DEFAULT below to project an unmeasured payload. Keeping the formula
+ * in one place is the point: the drift this replaced was a banner that divided the
+ * on-disk curated region by `MEMORY_MD_CURATED_MAX_CHARS` (15 000) and reported
+ * "111% injected" while the turn had actually injected 6 691 chars.
+ */
+export function knowledgeInjectionCapChars(tokensCap: number): number {
+  return Math.min(SYSTEM_KNOWLEDGE_CHARS, tokensCap * 4);
+}
+
+/** Default (execute/govern scenario) injection cap — 6000 chars. Used only to
+ *  PROJECT a payload for reports taken outside a turn packing (status endpoints,
+ *  `memory_stats`); a real turn always reports its own measurement. */
+export const DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS = knowledgeInjectionCapChars(KNOWLEDGE_PROMPT_MAX_TOKENS);
 /**
  * NOTE (2026-09-16): `STATE_PROMPT_MAX_LINES_REFLEX` / `STATE_TTL_DAYS` were removed
  * together with the state.md store. Situational state is a **Working-layer** concern and

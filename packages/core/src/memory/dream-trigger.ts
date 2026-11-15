@@ -15,16 +15,34 @@
  * banner provably share one measure (`MEMORY_DREAM_TRIGGER_PERCENT ===
  * MEMORY_HEALTH_WARN_PERCENT`) and cannot drift apart again.
  *
- * 2026-10-15 (restart-duplicate fix): the "already ran this window" guard used to be an
- * in-memory, per-Agent-instance field (`lastDreamDate`). A process restart re-armed it
- * (observed: two `memory_consolidation` runs 2.5 min apart across a restart), because the
- * guard never consulted the DURABLE `memory-meta.json#lastConsolidatedAt` that already
- * existed. That is the classic R1 shape again — one fact (did we consolidate?) with two
- * sources, and the guard read the volatile one. The dedup now also consults the durable
- * timestamp; the window key derivation lives here so "now" and "the recorded instant"
- * are compared with a single implementation.
+ * ─── DR3 (2026-11-15) — 「哪一次事件、哪个窗口」instead of a bare instant ───────────
+ *
+ * Two fixes ago (2026-10-15, restart-duplicate) the guard was taught to consult the
+ * durable `memory-meta.json#lastConsolidatedAt` in addition to the volatile
+ * `Agent.lastDreamDate`. That closed the restart hole and opened three new ones, because
+ * ONE untyped instant was made to answer a question about ONE event type:
+ *
+ *   1. `memory_organize` wrote the same field ⇒ a 09:00 manual tidy cancelled the day's
+ *      dream (the guard asked "did the dream run?"; the field answered "did anyone tidy?").
+ *   2. The durable key was RE-DERIVED here (`dreamWindowKey(entryCount, new Date(ts))`),
+ *      so the recorded window and the compared window were two derivations of one fact,
+ *      and the bloated-buffer branch depended on the CURRENT entry count, not the one the
+ *      run actually used.
+ *   3. `Agent` armed its volatile shadow BEFORE running the dream, so a dream that threw
+ *      was "already done" for the rest of that process and re-ran only after a restart.
+ *
+ * The fix is typed events plus a stored key:
+ *   · the guard reads `dream` ONLY (`DreamRecord = { at, windowKey }`), never an organize;
+ *   · `dream.windowKey` is compared as a STRING — the value the writer computed at run
+ *     time. This module never parses a timestamp to rebuild a window key;
+ *   · the record is written by the caller AFTER the dream returns successfully
+ *     (`IMemoryStore.recordDream`), so "not recorded" genuinely means "did not complete";
+ *   · `dreamInFlightKey` is a CONCURRENCY fact (a run currently executing in this
+ *     process), not a history fact — it replaces the old volatile "already ran" shadow
+ *     and is cleared in a `finally`, so a throw can never leave the window armed.
  */
 import { MEMORY_DREAM_TRIGGER_PERCENT, MEMORY_DREAM_MIN_ENTRIES } from '@markus/shared';
+import type { DreamRecord } from './types.js';
 
 /**
  * Above this many entries the buffer is considered "bloated": the dream is allowed up to
@@ -37,15 +55,23 @@ export const MEMORY_DREAM_MAX_ENTRIES = 500;
 export const DREAM_BLOAT_WINDOW_MS = 6 * 3600_000;
 
 /**
+ * The calendar-day window key — the non-bloated branch of {@link dreamWindowKey}, and the
+ * only key that can be recovered for a LEGACY untyped record (which never stored one).
+ */
+export function dayWindowKey(at: Date): string {
+  return at.toISOString().slice(0, 10);
+}
+
+/**
  * The identity of the dream window an instant belongs to.
  *  - normal buffer → the calendar day (`2026-10-15`)
- *  - bloated buffer → day + 6h bucket (`2026-10-15_8`) so up to 4 dreams/day
+ *  - bloated buffer → day + 6h bucket (`2026-10-15_58`) so up to 4 dreams/day
  *
- * Pure: the SAME function keys "now" and a recorded `lastConsolidatedAt`, so the durable
- * check cannot drift from the trigger.
+ * Called ONCE per run, by the writer. The produced string is what gets persisted and what
+ * the guard compares (DR3 invariant 3: 键即事实 — no second derivation from a timestamp).
  */
 export function dreamWindowKey(entryCount: number, at: Date): string {
-  const day = at.toISOString().slice(0, 10);
+  const day = dayWindowKey(at);
   return entryCount > MEMORY_DREAM_MAX_ENTRIES
     ? `${day}_${Math.floor(at.getTime() / DREAM_BLOAT_WINDOW_MS)}`
     : day;
@@ -65,12 +91,18 @@ export interface DreamTriggerInput {
    */
   now?: Date;
   /**
-   * Durable "last consolidation happened" timestamp (`memory-meta.json#lastConsolidatedAt`,
-   * ISO) or null. Survives restarts — this is what stops a restarted agent re-dreaming.
+   * The last COMPLETED dream, typed (`memory-meta.json#dream`). This — and only this —
+   * satisfies the window guard: a manual `memory_organize` writes `organized`, which is
+   * not an input here at all (DR3 invariant 1).
    */
-  lastConsolidatedAt?: string | null;
-  /** Volatile in-memory key of the last dream THIS process ran ('' if none). */
-  lastInMemoryWindowKey?: string;
+  dream?: DreamRecord | null;
+  /**
+   * Window key of a dream RUNNING RIGHT NOW in this process ('' when idle). An in-flight
+   * fact, not a record: it stops a slow dream and the next tick from both running, and it
+   * is cleared when the run settles, so a failed run is retryable in the same process
+   * (DR3 invariant 2).
+   */
+  dreamInFlightKey?: string;
 }
 
 /**
@@ -78,9 +110,10 @@ export interface DreamTriggerInput {
  * so many entries that search cost matters (secondary). Never when neither holds, so we
  * do not spend an LLM call on a healthy buffer.
  *
- * When `now` is supplied, additionally skip if a consolidation for this window already
- * happened — either recorded durably (`lastConsolidatedAt`) or run by this process
- * (`lastInMemoryWindowKey`). That is the restart-duplicate guard.
+ * When `now` is supplied, additionally skip if a dream for this window already completed
+ * (`dream.windowKey`, compared as a string) or is currently running
+ * (`dreamInFlightKey`). That is the restart-duplicate guard, now expressed with the
+ * event type it is actually about.
  */
 export function shouldRunDreamCycle(input: DreamTriggerInput): boolean {
   const pressured =
@@ -90,11 +123,11 @@ export function shouldRunDreamCycle(input: DreamTriggerInput): boolean {
 
   if (input.now) {
     const windowKey = dreamWindowKey(input.entryCount, input.now);
-    if (input.lastInMemoryWindowKey === windowKey) return false;
-    const durable = input.lastConsolidatedAt ? Date.parse(input.lastConsolidatedAt) : NaN;
-    if (!Number.isNaN(durable) && dreamWindowKey(input.entryCount, new Date(durable)) === windowKey) {
-      return false;
-    }
+    // Key-is-the-fact: a plain string comparison against what the writer stored. A record
+    // whose key is empty/absent (unreadable legacy shape) simply never matches, so it can
+    // only cause one extra dream — never a cancelled one.
+    if (input.dream?.windowKey === windowKey) return false;
+    if (input.dreamInFlightKey && input.dreamInFlightKey === windowKey) return false;
   }
   return true;
 }

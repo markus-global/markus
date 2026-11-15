@@ -44,15 +44,83 @@ import {
   NOTEBOOK_TTL_MS_SYSTEM,
   SESSION_STORAGE_COMPACT_TRIGGER,
   CONTEXT_SLOT_MAX_CHARS,
+  DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS,
 } from '@markus/shared';
-import type { IMemoryStore, MemoryEntry, ConversationSession, CompactResult, MemoryHealth } from './types.js';
+import type { IMemoryStore, MemoryEntry, ConversationSession, CompactResult, MemoryHealth, DreamRecord, OrganizedRecord } from './types.js';
+// DR3 — the legacy-record migration must key the old instant with the SAME function the
+// dream writer uses, so the migrated record and a live record speak one window vocabulary.
+import { dayWindowKey } from './dream-trigger.js';
 import { ensureKnowledgeFile, knowledgePath, retiredStatePath } from './taxonomy.js';
 import { indexArchiveBodies, healStubLines, accumulateResidue } from './residue-repair.js';
 import { writeFileAtomic } from '../atomic-write.js';
 import { buildSlotSegment, buildSummarySegment, sanitizeSlotKey, type SlotEntry } from '../context-slot.js';
 import { DEFAULT_COMPACT_KEEP_LAST } from '../context-budget.js';
+// DR5 — the injection measurement must be the injector's own, so the store imports the
+// injector rather than re-deriving "what would be injected" from a region size. The
+// reverse edge is `import type { IMemoryStore }` only, so there is no runtime cycle;
+// and the single call site is inside `injectionMeasurement` (lazy), never at module init.
+import { prepareKnowledgeForPrompt } from '../context-engine.js';
 
 export type { MemoryEntry, ConversationSession, IMemoryStore } from './types.js';
+
+// ─── DR3 — 「哪一次事件、哪个窗口」───────────────────────────────────────────────
+//
+// `memory-meta.json` used to hold ONE untyped instant (`lastConsolidatedAt`) that BOTH
+// the dream cycle and the manual `memory_organize` tool wrote, and the dream guard read
+// it as the boolean "has today's dream run?". One predicate answered two questions, the
+// writer was not the event the reader asked about, and a 09:00 manual tidy therefore
+// cancelled the day's dream. The file now holds two TYPED events, each with its own
+// writer:
+//
+//   { "schemaVersion": 2,
+//     "dream":     { "at": "2026-11-15T03:33:50Z", "windowKey": "2026-11-15" },
+//     "organized": { "at": "2026-11-15T09:00:00Z" } }
+//
+// `windowKey` is the STRING the dream writer computed at run time — the guard compares
+// it verbatim and never rebuilds a window from `at` (that second derivation is what made
+// the durable key disagree with the volatile one).
+
+/** The ONE file name for the typed-event meta record. */
+const MEMORY_META_FILE_NAME = 'memory-meta.json';
+
+/** Shape version written by DR3. `absence`/`1` = legacy bare `lastConsolidatedAt`. */
+const MEMORY_META_SCHEMA_VERSION = 2;
+
+/** On-disk shape of `memory-meta.json` (DR3). Exported so tests can pin the format. */
+export interface MemoryMetaFile {
+  /** 2 = typed events; absent/1 = legacy `lastConsolidatedAt`. */
+  schemaVersion?: number;
+  /** The last COMPLETED dream. Written only by `recordDream()`. */
+  dream?: DreamRecord;
+  /** The last manual `memory_organize`. Written only by `recordOrganize()`. */
+  organized?: OrganizedRecord;
+  /** LEGACY (pre-DR3) — one untyped instant written by both events. Migrated on read. */
+  lastConsolidatedAt?: string;
+}
+
+/**
+ * DR3 migration: a legacy bare `lastConsolidatedAt` becomes a `dream` record.
+ *
+ * Typing it as `dream` is the CONSERVATIVE choice — it keeps the existing de-duplication
+ * (an agent that dreamt at 03:33 today must not dream again at 04:00 right after the
+ * upgrade), at the cost of at most one skipped dream for an agent whose only recent tidy
+ * was a manual organize. The window key is the calendar day of that instant: the entry
+ * count at that time is unknowable, and inventing a bloated-buffer key from TODAY's count
+ * would be exactly the second derivation DR3 removes.
+ *
+ * Returns `null` when there is nothing to migrate.
+ */
+function migrateLegacyMemoryMeta(meta: MemoryMetaFile): MemoryMetaFile | null {
+  if (meta.dream || !meta.lastConsolidatedAt) return null;
+  const at = new Date(meta.lastConsolidatedAt);
+  if (Number.isNaN(at.getTime())) return null; // unparsable instant cannot be typed
+  const migrated: MemoryMetaFile = {
+    schemaVersion: MEMORY_META_SCHEMA_VERSION,
+    dream: { at: at.toISOString(), windowKey: dayWindowKey(at) },
+  };
+  if (meta.organized) migrated.organized = meta.organized;
+  return migrated;
+}
 
 /** Outcome of the one-time H13 residue repair. Rules live in `residue-repair.ts`. */
 export interface ResidueRepairReport {
@@ -553,7 +621,67 @@ export class MemoryStore implements IMemoryStore {
   }
 
   /**
-   * 记忆预算健康度（审计 P-12）：驱动提示词内的健康信号，让 Agent 知道何时该整理。
+   * DR5 — the last injection payload a turn actually built, reported by the injector.
+   *
+   * Why the store does not compute this itself from the file: "how much knowledge this
+   * turn injected" is decided by `prepareKnowledgeForPrompt` (cap + relevance ranking +
+   * whole-section selection), so only IT can answer. Reading the curated region and
+   * dividing by a constant (the previous behaviour) answered a different question and
+   * announced a 16 673-char region as "111% injected" on a turn that injected 6 691.
+   */
+  private lastInjection: { inlinedChars: number; omittedCount: number; capChars: number } | null = null;
+
+  /**
+   * DR3 — the legacy `memory-meta.json` upgrade is attempted at most ONCE per store
+   * instance, so a read-only data dir warns once instead of on every health read while
+   * still serving the typed view.
+   */
+  private metaUpgradeAttempted = false;
+
+  /**
+   * DR5 — record the payload the injector just built. Called by `ContextEngine`
+   * immediately before it reads `getMemoryHealth()`, so the in-prompt banner reports
+   * THIS turn's payload.
+   *
+   * `capChars` is the ceiling the injector truncated to (`knowledgeInjectionCapChars`).
+   * It defaults to the execute-scenario cap only so a caller can omit it; the injector
+   * always passes the real per-turn value, because the denominator must be the same
+   * turn's ceiling (6000 execute / 4800 converse / 0 reflex — never 15 000).
+   */
+  recordInjectedKnowledge(inlinedChars: number, omittedSectionCount: number, capChars?: number): void {
+    this.lastInjection = {
+      inlinedChars: Math.max(0, Math.round(inlinedChars)),
+      omittedCount: Math.max(0, Math.round(omittedSectionCount)),
+      capChars: Math.max(0, Math.round(capChars ?? DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS)),
+    };
+  }
+
+  /**
+   * The injected-payload measurement: the turn's own numbers when a turn recorded them,
+   * otherwise a PROJECTION of the same quantity (chars of knowledge that would be
+   * inlined under the default cap) so out-of-turn reports — `memory_stats`, the agent
+   * status API — are not silently blank. The projection runs the injector's own
+   * selection, never a region ratio.
+   */
+  private injectionMeasurement(curated: string): {
+    inlinedChars: number; capChars: number; omittedCount: number; measured: boolean;
+  } {
+    if (this.lastInjection) return { ...this.lastInjection, measured: true };
+    const capChars = DEFAULT_KNOWLEDGE_INJECTION_CAP_CHARS;
+    if (!curated.trim()) return { inlinedChars: 0, capChars, omittedCount: 0, measured: false };
+    const projected = prepareKnowledgeForPrompt(curated, capChars);
+    return { inlinedChars: projected.inlinedChars, capChars, omittedCount: projected.omittedCount, measured: false };
+  }
+
+  /**
+   * 记忆预算健康度（审计 P-12；DR5 修正度量对象）：驱动提示词内的健康信号，让 Agent 知道何时该整理。
+   *
+   * DR5 — the banner used to divide the CURATED REGION ON DISK by
+   * `MEMORY_MD_CURATED_MAX_CHARS` (15 000) and call the result "注入段 X%", which is a
+   * different question from "what did this turn inject". `injectedChars` /
+   * `injectionCapChars` are now measured by the injector; the region is still reported,
+   * but as a report-only size (`curatedChars` / `curatedPercent`) and never as a
+   * percent-of-injection.
    */
   getMemoryHealth(): MemoryHealth {
     let content = '';
@@ -569,7 +697,6 @@ export class MemoryStore implements IMemoryStore {
       } catch { /* archive optional */ }
     }
 
-    // Two budgets, measured separately and honestly. See MEMORY_MD_CURATED_MAX_CHARS.
     // H12: observations are reported via the SAME canonical measure the writer and
     // the trimmer enforce (`observationPayloadChars`, H25: payload — NOT container size), not the raw on-disk slice —
     // otherwise a file with content after `## _observations` makes the banner
@@ -579,12 +706,28 @@ export class MemoryStore implements IMemoryStore {
     // H24 — observations live in a JSON record file; report the canonical serialized size so the
     // banner, the trigger and the trimmer all speak about ONE quantity.
     const observationChars = this.observationPayloadChars();
+
+    // DR5 — ONE predicate, ONE question: the injected payload vs the injection ceiling.
+    const inj = this.injectionMeasurement(curated);
+    const injectionUsedPercent = inj.capChars > 0
+      ? Math.round((inj.inlinedChars / inj.capChars) * 100)
+      : 0;
+
     return {
+      // 1. injected payload — the measured object
+      injectedChars: inj.inlinedChars,
+      injectionCapChars: inj.capChars,
+      injectionUsedPercent,
+      omittedSectionCount: inj.omittedCount,
+      injectionMeasured: inj.measured,
+      percent: injectionUsedPercent,
+      // 2. curated region on disk — report-only, NOT an injection budget
       curatedChars,
       curatedCap: MEMORY_MD_CURATED_MAX_CHARS,
-      percent: MEMORY_MD_CURATED_MAX_CHARS > 0
+      curatedPercent: MEMORY_MD_CURATED_MAX_CHARS > 0
         ? Math.round((curatedChars / MEMORY_MD_CURATED_MAX_CHARS) * 100)
         : 0,
+      // 3. observation buffer — separate budget, not injected
       observationChars,
       observationCap: MEMORY_OBSERVATIONS_MAX_CHARS,
       observationPercent: MEMORY_OBSERVATIONS_MAX_CHARS > 0
@@ -597,30 +740,167 @@ export class MemoryStore implements IMemoryStore {
     };
   }
 
-  /** 审计 P-11：上次整理（dream / memory_organize）时间 —— 供 memory_stats 与前端可观测。 */
+  /**
+   * DR3 — the last DREAM, typed. `null` = never dreamt.
+   *
+   * This is the ONLY record the dream window guard may consult: it carries the window key
+   * the writer computed at run time, so the guard is a string comparison instead of a
+   * re-derivation of a window from an instant (and it cannot be satisfied by a manual
+   * `memory_organize`, which writes the separate `organized` field).
+   */
+  getDreamRecord(): DreamRecord | null {
+    return this.readMemoryMeta().dream ?? null;
+  }
+
+  /** DR3 — the last manual `memory_organize`. Freshness signal; never a dream dedup input. */
+  getOrganizedRecord(): OrganizedRecord | null {
+    return this.readMemoryMeta().organized ?? null;
+  }
+
+  /**
+   * DR3 — record ONE dream run, with the window key the caller computed.
+   *
+   * Returns `false` when the record is NOT durably on disk. The caller must then report
+   * `ran:false`: "the dream ran but was not remembered" is precisely the 2026-10-15
+   * restart-duplicate bug, and it used to be swallowed as a `log.warn` here.
+   *
+   * Writes ONLY the `dream` field — the `organized` event is another writer's fact.
+   */
+  recordDream(windowKey: string, at: Date = new Date()): boolean {
+    if (!windowKey) {
+      // An unkeyed dream would silently never dedup (and would look armed in the file).
+      log.warn('recordDream refused: no window key', { dataDir: this.dataDir });
+      return false;
+    }
+    return this.writeMemoryMeta(
+      (meta) => ({ ...meta, dream: { at: at.toISOString(), windowKey } }),
+      'dream',
+    );
+  }
+
+  /** DR3 — record ONE manual organize run. Writes ONLY the `organized` field. */
+  recordOrganize(at: Date = new Date()): boolean {
+    return this.writeMemoryMeta(
+      (meta) => ({ ...meta, organized: { at: at.toISOString() } }),
+      'organize',
+    );
+  }
+
+  /**
+   * 审计 P-11 / DR3 — "when did memory last get tidied", REPORT-ONLY =
+   * `max(dream.at, organized.at)`.
+   *
+   * Kept as one field because `memory_stats`, the agent status API
+   * (`api-server` `lastConsolidatedAt`) and the in-prompt 「上次整理 N 天前」 banner consume
+   * it, and all three ask the staleness question, not the dedup question. Dedup reads
+   * `getDreamRecord().windowKey` — never this.
+   */
   getLastConsolidatedAt(): string | null {
+    const meta = this.readMemoryMeta();
+    const candidates = [meta.dream?.at, meta.organized?.at].filter(
+      (v): v is string => typeof v === 'string' && v.length > 0,
+    );
+    if (candidates.length === 0) return null;
+    let best = candidates[0]!;
+    for (const c of candidates.slice(1)) {
+      const bestMs = Date.parse(best);
+      const cMs = Date.parse(c);
+      // An unparsable value ranks below any parsable one, but is still reported when it is
+      // the only thing on disk — never silently blank.
+      if (Number.isNaN(bestMs) || (!Number.isNaN(cMs) && cMs > bestMs)) best = c;
+    }
+    return best;
+  }
+
+  /** DR3 — path of the typed-event meta file (one file, two typed events). */
+  private memoryMetaPath(): string {
+    return join(this.dataDir, MEMORY_META_FILE_NAME);
+  }
+
+  /**
+   * Pure parse + normalize — no migration side effect, no writes.
+   *
+   * Tolerant by construction (the module's "读旧、只写新" policy): an unreadable or corrupt
+   * file yields "no events", which can only cause ONE extra dream, never a cancelled one.
+   */
+  private parseMemoryMeta(): MemoryMetaFile {
+    let raw: unknown;
     try {
-      const f = join(this.dataDir, 'memory-meta.json');
-      if (!existsSync(f)) return null;
-      const meta = JSON.parse(readFileSync(f, 'utf-8')) as { lastConsolidatedAt?: string };
-      return meta.lastConsolidatedAt ?? null;
+      const f = this.memoryMetaPath();
+      if (!existsSync(f)) return {};
+      raw = JSON.parse(readFileSync(f, 'utf-8'));
     } catch {
-      return null;
+      return {};
+    }
+    if (!raw || typeof raw !== 'object') return {};
+    const v = raw as Record<string, unknown>;
+    const meta: MemoryMetaFile = {};
+    if (typeof v['schemaVersion'] === 'number') meta.schemaVersion = v['schemaVersion'];
+    const org = v['organized'];
+    if (org && typeof org === 'object' && typeof (org as { at?: unknown }).at === 'string') {
+      meta.organized = { at: (org as { at: string }).at };
+    }
+    const dream = v['dream'];
+    if (dream && typeof dream === 'object' && typeof (dream as { at?: unknown }).at === 'string') {
+      const key = (dream as { windowKey?: unknown }).windowKey;
+      // A record without a window key cannot dedup anything; keep it for reporting with
+      // an empty key rather than dropping the run from history.
+      meta.dream = { at: (dream as { at: string }).at, windowKey: typeof key === 'string' ? key : '' };
+    }
+    if (typeof v['lastConsolidatedAt'] === 'string') meta.lastConsolidatedAt = v['lastConsolidatedAt'];
+    return meta;
+  }
+
+  /**
+   * Read + upgrade. A legacy file (bare `lastConsolidatedAt`) is READ as a `dream` record
+   * and rewritten in the typed shape once per store instance, so the migration marker is
+   * durable rather than re-derived on every tick.
+   */
+  private readMemoryMeta(): MemoryMetaFile {
+    const parsed = this.parseMemoryMeta();
+    const migrated = migrateLegacyMemoryMeta(parsed);
+    if (!migrated) return parsed;
+    this.upgradeLegacyMetaOnce(migrated);
+    return migrated;
+  }
+
+  /**
+   * One attempt per instance (the "一次性迁移 marker"): if the write fails (read-only data
+   * dir) reads still work off the migrated view, and we do not warn on every health read.
+   */
+  private upgradeLegacyMetaOnce(meta: MemoryMetaFile): void {
+    if (this.metaUpgradeAttempted) return;
+    this.metaUpgradeAttempted = true;
+    try {
+      writeFileAtomic(this.memoryMetaPath(), JSON.stringify(meta, null, 2));
+      log.info('memory-meta.json migrated: legacy lastConsolidatedAt → typed dream record (DR3)', {
+        dataDir: this.dataDir,
+        dreamWindowKey: meta.dream?.windowKey,
+      });
+    } catch (err) {
+      log.warn('Failed to write memory-meta.json migration marker — reads use the typed view', {
+        dataDir: this.dataDir,
+        error: String(err),
+      });
     }
   }
 
-  /** 记录一次整理发生（用于陈旧度信号）。 */
-  markConsolidated(at: Date = new Date()): void {
+  /**
+   * The ONE write path for `memory-meta.json` (replaces `markConsolidated()`, whose single
+   * untyped field forced the dream guard and the organize tool to share a slot).
+   * Returns `false` on any failure — the caller decides how to report it.
+   */
+  private writeMemoryMeta(patch: (meta: MemoryMetaFile) => MemoryMetaFile, kind: 'dream' | 'organize'): boolean {
     try {
-      const f = join(this.dataDir, 'memory-meta.json');
-      let meta: Record<string, unknown> = {};
-      if (existsSync(f)) {
-        try { meta = JSON.parse(readFileSync(f, 'utf-8')) as Record<string, unknown>; } catch { meta = {}; }
-      }
-      meta['lastConsolidatedAt'] = at.toISOString();
-      writeFileAtomic(f, JSON.stringify(meta, null, 2));
+      const parsed = this.parseMemoryMeta();
+      const current = migrateLegacyMemoryMeta(parsed) ?? parsed;
+      const next: MemoryMetaFile = { ...patch(current), schemaVersion: MEMORY_META_SCHEMA_VERSION };
+      delete next.lastConsolidatedAt;
+      writeFileAtomic(this.memoryMetaPath(), JSON.stringify(next, null, 2));
+      return true;
     } catch (err) {
-      log.warn('Failed to persist memory meta', { error: String(err) });
+      log.warn(`Failed to persist memory meta (${kind})`, { dataDir: this.dataDir, error: String(err) });
+      return false;
     }
   }
 
@@ -1173,8 +1453,10 @@ export class MemoryStore implements IMemoryStore {
       // H19 — the curated region is injected into EVERY prompt, so it has a HARD ceiling.
       // Exceeding it is REFUSED (fail-closed; nothing is written) with an actionable reason,
       // exactly like the per-section limit above. Between the SOFT budget
-      // (`MEMORY_MD_CURATED_MAX_CHARS`) and that ceiling we only REPORT (log + in-prompt
-      // banner). The old code silently archived the largest sections here — value-blind,
+      // (`MEMORY_MD_CURATED_MAX_CHARS`, a report-only REGION size — see there) and that
+      // ceiling we only log. The in-prompt banner does NOT report this region: it reports
+      // the injected payload (`MemoryHealth.injectionUsedPercent`, DR5). The old code
+      // silently archived the largest sections here — value-blind,
       // invisible to the agent, inconsistent with the per-section policy, and the root of
       // H13; it never legitimately fired (0 of 94 agents ever exceeded the soft budget).
       // Measured on the CURATED slice only — the observation buffer has its own budget and
@@ -1192,9 +1474,10 @@ export class MemoryStore implements IMemoryStore {
 
       this.writeKnowledgeMd(updated);
       if (curatedChars > MEMORY_MD_CURATED_MAX_CHARS) {
-        log.warn('knowledge.md curated over SOFT budget — reported, not rewritten', {
+        log.warn('knowledge.md curated region over its SOFT budget — report-only, not rewritten', {
           key, curatedChars, softCap: MEMORY_MD_CURATED_MAX_CHARS,
           hardCap: MEMORY_MD_CURATED_HARD_MAX_CHARS, store: this.getStoreFileName(),
+          note: 'region size, not the injection payload (see MemoryHealth.injectedChars)',
         });
       }
       log.debug('Long-term memory updated', { key, sectionChars: truncatedContent.length, curatedChars, store: this.getStoreFileName() });

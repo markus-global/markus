@@ -59,7 +59,7 @@ function makeMockRouter(): LLMRouter {
 
 type AgentInternals = {
   clock: { tick(at?: number): void; getStatus(): { sources: Array<{ name: string }> } };
-  memory: { getMemoryHealth(): { observationPercent: number }; getObservations(): unknown[]; getLastConsolidatedAt?: () => string | null; markConsolidated?: () => void };
+  memory: { getMemoryHealth(): { observationPercent: number }; getObservations(): unknown[]; getLastConsolidatedAt?: () => string | null };
   scheduleConsolidationTimer(): void;
   dreamConsolidateMemory(entries: unknown): Promise<void>;
   processMailboxItemCore(item: unknown): Promise<string | void>;
@@ -94,7 +94,11 @@ function pressurise(internals: AgentInternals) {
     { id: 'obs-1', content: 'x', timestamp: new Date().toISOString(), type: 'note' },
   ] as never);
   internals.memory.getLastConsolidatedAt = () => null;
-  internals.memory.markConsolidated = () => {};
+  // The `markConsolidated = () => {}` stub that used to live here silenced the very
+  // write DR3 is about: with the write mocked out, "armed before success" and
+  // "armed after success" were indistinguishable in this suite. The real
+  // `recordDream` now runs against the agent's own temp dataDir, so the durable
+  // path is exercised instead of being erased.
   return vi.spyOn(internals, 'dreamConsolidateMemory').mockResolvedValue(undefined);
 }
 

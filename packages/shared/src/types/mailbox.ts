@@ -22,6 +22,33 @@ export type MailboxItemType =
 
 export type MailboxPriority = 0 | 1 | 2 | 3 | 4;
 
+/**
+ * How a heartbeat tick reaches the agent — i.e. whether the active channel
+ * produces a mailbox row at all.
+ *
+ *   `clock`  (default): a tick is a liveness beat, not a message. The patrol runs
+ *                       directly, no row is produced.
+ *   `legacy` (rollback): the pre-C8-C channel — the tick becomes a queue row that
+ *                        the attention loop turns into a patrol.
+ *
+ * Needed as a type (not a free string) because `producedBy` below is keyed on it:
+ * a type the active mode cannot produce must not carry a live "droppable by age"
+ * policy bit, and the registry is where those two facts live together.
+ */
+export type ChannelMode = 'clock' | 'legacy';
+
+/**
+ * Can `mode` produce `t` at all? An omitted `producedBy` means every mode (the
+ * normal case); a listed one restricts production to those channels.
+ *
+ * This is the second column that makes "can exist here" and "may be dropped by
+ * age" views of ONE fact instead of two that can drift apart.
+ */
+export function producibleIn(mode: ChannelMode, t: MailboxItemType): boolean {
+  const descriptor = MAILBOX_TYPE_REGISTRY[t];
+  return descriptor.producedBy === undefined || descriptor.producedBy.includes(mode);
+}
+
 export const MailboxPriorityLevel = {
   critical: 0 as MailboxPriority,
   high: 1 as MailboxPriority,
@@ -154,6 +181,14 @@ export interface MailboxTypePolicy {
 export interface MailboxTypeDescriptor extends MailboxTypePresentation {
   /** 信号类别（信封 `signalClass` 的唯一来源；六类闭集，见 `@markus/shared` 的 mail 模块）。 */
   signalClass: SignalClass;
+  /**
+   * 哪些通道模式能**产生**这个类型。省略 = 所有模式（常态）。
+   *
+   * 存在的理由是消除化石：`triageStaleDrop` 原本是一个裸 boolean，于是 `heartbeat`
+   * 声明了「可丢」而 `clock` 通道根本产不出它 —— 一个永远不会被读到、却让后来者以为
+   * 有人在守的策略位。现在「能存在」与「可丢」是同一张表的两列，两者**不可能再分歧**。
+   */
+  producedBy?: readonly ChannelMode[];
   policy: MailboxTypePolicy;
 }
 
@@ -186,7 +221,7 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   requirement_comment:  { label: 'Requirement Comment',  category: 'task',         icon: '💬', signalClass: 'record',          policy: { priority: 2, invokesLLM: false, affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
   requirement_update:   { label: 'Requirement Update',   category: 'notification', icon: '📝', signalClass: 'governance_event', policy: { priority: 1, invokesLLM: false, affinity: ['requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   daily_report:         { label: 'Daily Report',         category: 'system',       icon: '📊', signalClass: 'system',           policy: { priority: 2, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
-  heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  signalClass: 'system',           policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  heartbeat:            { label: 'Heartbeat',            category: 'system',       icon: '♡',  signalClass: 'system',           producedBy: ['legacy'], policy: { priority: 3, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   // C8-A：dream **不再**按年龄丢弃。它属于后台休眠路径，不是 attention 分拣的噪音；
   // 过期即丢 = 这一轮整理无痕消失（正是「静默丢消息」）。affinity 仍是 ['system']，
   // 那是 C8-C 的战场，本卡不动。

@@ -191,23 +191,6 @@ export interface User {
   lastLoginAt: Date | null;
 }
 
-export interface KnowledgeRow {
-  id: string;
-  agentId: string;
-  orgId: string;
-  category: string;
-  title: string;
-  content: string;
-  tags: string[];
-  source: string;
-  metadata: Record<string, unknown>;
-  importance: number;
-  accessCount: number;
-  lastAccessedAt: Date | null;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
 export interface ExternalAgentRow {
   id: string;
   externalAgentId: string;
@@ -223,76 +206,6 @@ export interface ExternalAgentRow {
   lastSyncStatus: string | null;
   lastHeartbeat: Date | null;
   registeredAt: Date;
-  updatedAt: Date;
-}
-
-export interface GatewayMessageRow {
-  id: string;
-  targetAgentId: string;
-  fromAgentId: string;
-  fromAgentName: string | null;
-  content: string;
-  delivered: boolean;
-  createdAt: Date;
-}
-
-export interface MarketplaceTemplateRow {
-  id: string;
-  name: string;
-  description: string;
-  source: 'official' | 'community' | 'custom';
-  status: 'draft' | 'pending_review' | 'published' | 'rejected' | 'archived';
-  version: string;
-  authorId: string | null;
-  authorName: string;
-  roleId: string;
-  agentRole: string;
-  skills: string[];
-  llmProvider: string | null;
-  tags: string[];
-  category: string;
-  icon: string | null;
-  heartbeatIntervalMs: number | null;
-  starterTasks: Array<{ title: string; description: string; priority: string }>;
-  config: Record<string, unknown>;
-  downloadCount: number;
-  avgRating: number;
-  ratingCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface MarketplaceSkillRow {
-  id: string;
-  name: string;
-  description: string;
-  source: 'official' | 'community' | 'custom';
-  status: 'draft' | 'pending_review' | 'published' | 'rejected' | 'archived';
-  version: string;
-  authorId: string | null;
-  authorName: string;
-  category: string;
-  tags: string[];
-  tools: Array<{ name: string; description: string }>;
-  readme: string | null;
-  requiredPermissions: string[];
-  requiredEnv: string[];
-  config: Record<string, unknown>;
-  downloadCount: number;
-  avgRating: number;
-  ratingCount: number;
-  createdAt: Date;
-  updatedAt: Date;
-}
-
-export interface MarketplaceRatingRow {
-  id: string;
-  targetType: 'template' | 'skill';
-  targetId: string;
-  userId: string;
-  rating: number;
-  review: string | null;
-  createdAt: Date;
   updatedAt: Date;
 }
 

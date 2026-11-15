@@ -11,6 +11,7 @@ import {
   SYSTEM_MY_TASKS_MAX,
   SYSTEM_TEAM_TASKS_MAX,
   SYSTEM_KNOWLEDGE_CHARS,
+  knowledgeInjectionCapChars,
   MEMORY_HEALTH_WARN_PERCENT,
   MEMORY_HEALTH_CRITICAL_PERCENT,
   SYSTEM_USER_PROFILE_CHARS,
@@ -54,6 +55,7 @@ import { normalizeHistoryContent } from './llm/message-content.js';
 import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
+import { deriveAssignment, renderAssignmentPrompt, type AssignmentCallbackRow } from './derive-assignment.js';
 import { renderFactsContext, type FactsPromptContext } from './facts/facts-block.js';
 import {
   compactionGuidance,
@@ -110,8 +112,8 @@ export function prepareKnowledgeForPrompt(
   raw: string,
   maxChars: number,
   query?: string,
-): { text: string; truncated: boolean } {
-  if (!raw.trim()) return { text: '', truncated: false };
+): { text: string; truncated: boolean; inlinedChars: number; omittedCount: number } {
+  if (!raw.trim()) return { text: '', truncated: false, inlinedChars: 0, omittedCount: 0 };
 
   // Split on markdown ATX headings while keeping delimiters
   const parts = raw.split(/(?=^#{1,6}\s)/m).filter(p => p.length > 0);
@@ -169,6 +171,11 @@ export function prepareKnowledgeForPrompt(
     inlined.add(first.idx);
   }
 
+  // DR5 — the payload is what this prompt actually carries. Measured BEFORE the
+  // index line is appended: that line is scaffolding (it names what is NOT there),
+  // so counting it as knowledge inflated the very number it was meant to report.
+  const inlinedChars = text.length;
+
   const omitted = sections.filter(s => !inlined.has(s.idx));
   const truncated = omitted.length > 0;
   if (truncated) {
@@ -178,7 +185,7 @@ export function prepareKnowledgeForPrompt(
       + `none are discarded, fetch on demand with \`memory_search\` or by reading \`knowledge.md\`: ${index}]_`;
   }
 
-  return { text: text.trimEnd(), truncated };
+  return { text: text.trimEnd(), truncated, inlinedChars, omittedCount: omitted.length };
 }
 
 export interface ContextConfig {
@@ -471,7 +478,15 @@ export class ContextEngine {
       priority: string;
       assignedAgentId?: string;
       assignedAgentName?: string;
+      /** Cards where this agent is the reviewer — the axis the board never showed. */
+      reviewerAgentId?: string;
     }>;
+    /**
+     * Registered wakeups (`rest` / `background_exec` / `schedule_wakeup`) owned by
+     * the caller. Derived into the prompt so an agent knows it is still waiting
+     * instead of polling or forgetting. Never persisted here.
+     */
+    pendingCallbacks?: AssignmentCallbackRow[];
     knowledgeContext?: string;
     deliverableContext?: string;
     environment?: EnvironmentProfile;
@@ -1068,7 +1083,18 @@ export class ContextEngine {
     if (knowledgeTokCap > 0) {
       const longTermMem = opts.memory.getLongTermMemory();
       if (longTermMem) {
-        const knowledgeCapChars = Math.min(SYSTEM_KNOWLEDGE_CHARS, knowledgeTokCap * 4);
+        const knowledgeCapChars = knowledgeInjectionCapChars(knowledgeTokCap);
+        // DR5 — prepare BEFORE reporting. The banner must describe the payload THIS
+        // turn is about to carry, so the injector records its own numbers first and
+        // the store reports a measurement instead of dividing the on-disk region by
+        // a disk constant. That division is how a 16 673-char region came to be
+        // announced as "111% injected" on a turn carrying 6 691.
+        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
+        opts.memory.recordInjectedKnowledge?.(
+          prepared.inlinedChars,
+          prepared.omittedCount,
+          knowledgeCapChars,
+        );
         volatile.push('\n## Your Knowledge');
         // 审计 P-12：记忆健康信号 —— 让 Agent「知道」何时该主动整理（否则永不自知）。
         try {
@@ -1076,22 +1102,27 @@ export class ContextEngine {
           const staleDays = h.lastConsolidatedAt
             ? Math.max(0, Math.floor((Date.now() - Date.parse(h.lastConsolidatedAt)) / 86_400_000))
             : null;
-          if (h.percent >= MEMORY_HEALTH_WARN_PERCENT || (staleDays !== null && staleDays >= 14)) {
+          // DR5 — the measured object is THIS turn's injected payload. The curated
+          // region is a disk size and is reported as one; it is never turned into a
+          // percent-of-injection (that equation is the false alarm this replaces).
+          const injPercent = h.injectionUsedPercent;
+          if (injPercent >= MEMORY_HEALTH_WARN_PERCENT || (staleDays !== null && staleDays >= 14)) {
             const staleness = staleDays !== null && staleDays >= 14
               ? ` · 上次整理 ${staleDays} 天前`
               : '';
-            const overBy = Math.max(0, h.curatedChars - h.curatedCap);
+            const measured = h.injectionMeasured ? '' : '，本轮未实测、为投影值';
+            const region = ` · 磁盘策展区 ${h.curatedChars}/${h.curatedCap}（${h.curatedPercent}%，仅报告）`;
+            const omitted = h.omittedSectionCount > 0 ? ` · ${h.omittedSectionCount} 段未内联` : '';
             volatile.push(
-              `> ${h.percent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${h.percent}%**（注入段 ${h.curatedChars}/${h.curatedCap} 字符 · ${h.curatedSections} 个知识段${staleness}）。`
-              + (overBy > 0
-                ? `**已超预算 ${overBy} 字符**——最大段落的正文正被无损归档（移出每轮注入，仍可 \`memory_search\` 检索）。`
-                  + `**现在就自己瘦身，别等下个周期**：\`memory_organize\` 合并同类段落（${h.curatedSections} 段）、`
+              `> ${injPercent >= MEMORY_HEALTH_CRITICAL_PERCENT ? '🔴' : '⚠️'} **记忆健康 ${injPercent}%**（本轮注入 ${h.injectedChars}/${h.injectionCapChars} 字符${measured} · ${h.curatedSections} 个知识段${omitted}${region}${staleness}）。`
+              + (injPercent >= MEMORY_HEALTH_WARN_PERCENT
+                ? '**现在就自己瘦身，别等下个周期**：`memory_organize` 合并同类段落、'
                   + '`memory_update`（mode:"delete"）删掉已被新结论取代的条目；只留可复用的结论，过程和流水移出去。'
                   + '注入段是你的判断带宽，不是存档。'
                   + (isDream
                     ? ' **本轮就是记忆维护会话——瘦身是这一轮的主任务，不是顺带。做完再 end_turn。**'
                     : '')
-                : '接近预算：合并或删除过时段落（`memory_organize` / `memory_update` mode:"delete"）。'),
+                : '接近注入上限：超过上限的段落不会进入 prompt，索引行会列出它们，仍可 `memory_search` 取回。'),
             );
           }
           // Signal 2 — the OBSERVATION buffer. A SEPARATE budget of its own and it is
@@ -1105,12 +1136,11 @@ export class ContextEngine {
             );
           }
         } catch { /* health signal is best-effort */ }
-        // Relevance-ranked, whole-section selection (see prepareKnowledgeForPrompt).
+        // Relevance-ranked, whole-section selection: `prepared` was built ABOVE,
+        // before the health banner, because the banner reports that payload's size.
         // `opts.currentQuery` is the in-flight user text, so which sections get
         // inlined depends on what is actually being asked rather than on document
-        // order. Sections that do not fit are named in an index line, never dropped
-        // — the helper's own index line replaces the old separate "truncated" note.
-        const prepared = prepareKnowledgeForPrompt(longTermMem, knowledgeCapChars, opts.currentQuery);
+        // order. Sections that do not fit are named in an index line, never dropped.
         volatile.push(prepared.text);
       }
     } else if (isReflex) {
@@ -1173,6 +1203,18 @@ export class ContextEngine {
     // proactively. Agents use `deliverable_search` (always-on tool) to query
     // them on demand, saving ~400 tokens per call with minimal risk.
 
+    // A2 — "what am I on the hook for" has exactly one derivation. The task
+    // board below projects the `assigned` bucket from it (one predicate, one
+    // render template); the section after the board carries the two axes the
+    // board structurally cannot express (reviewer-verdict, pending callback).
+    const assignment = isDream
+      ? undefined
+      : deriveAssignment({
+          agentId: opts.agentId,
+          tasks: opts.assignedTasks,
+          callbacks: opts.pendingCallbacks,
+        });
+
     if (!isDream) {
       if (opts.assignedTasks && opts.assignedTasks.length > 0) {
         const priorityOrder = ['critical', 'high', 'medium', 'low'];
@@ -1180,10 +1222,8 @@ export class ContextEngine {
           (priorityOrder.indexOf(a.priority ?? 'medium')) - (priorityOrder.indexOf(b.priority ?? 'medium'));
 
         const CLOSED_STATUSES = new Set(['completed', 'cancelled', 'failed', 'archived', 'rejected']);
-        const myTasks = opts.assignedTasks.filter(t => t.assignedAgentId === opts.agentId);
         const otherTasks = opts.assignedTasks.filter(t => t.assignedAgentId !== opts.agentId);
 
-        const myActive = myTasks.filter(t => !CLOSED_STATUSES.has(t.status)).sort(byPriority);
 
         const MY_TASK_LIMIT = SYSTEM_MY_TASKS_MAX;
         const TEAM_TASK_LIMIT = SYSTEM_TEAM_TASKS_MAX;
@@ -1211,7 +1251,9 @@ export class ContextEngine {
           if (aAct !== bAct) return aAct - bAct;
           return byPriority(a, b);
         });
-        const hasBoard = myActive.length > 0 || otherActive.length > 0;
+        // One derivation, not two: whether there is a board to draw is answered
+        // by the same `assignment` the rows come from.
+        const hasBoard = (assignment?.assigned.length ?? 0) > 0 || otherActive.length > 0;
 
         if (!hasBoard) {
           // Empty board: the stub is only worth its tokens for execute/govern,
@@ -1223,15 +1265,16 @@ export class ContextEngine {
         } else {
           dynamic.push('\n## Task Board');
           dynamic.push('### My Tasks (assigned to you):');
-          if (myActive.length > 0) {
-            const shown = myActive.slice(0, MY_TASK_LIMIT);
-            for (const t of shown) {
-              dynamic.push(
-                `- [${t.status.toUpperCase()}] **${t.title}** (ID: \`${t.id}\`, priority: ${t.priority})`
-              );
+          const myOwed = assignment?.assigned ?? [];
+          if (myOwed.length > 0) {
+            const shown = myOwed.slice(0, MY_TASK_LIMIT);
+            for (const line of shown) {
+              // Same text the derive function produces — the board does not own a
+              // second format for "my tasks".
+              dynamic.push(`- ${line.text}`);
             }
-            if (myActive.length > MY_TASK_LIMIT) {
-              dynamic.push(`_(${myActive.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
+            if (myOwed.length > MY_TASK_LIMIT) {
+              dynamic.push(`_(${myOwed.length - MY_TASK_LIMIT} more active tasks not shown — use \`task_list\` for full list)_`);
             }
           } else {
             dynamic.push('No active tasks assigned to you.');
@@ -1263,6 +1306,15 @@ export class ContextEngine {
         // Empty board only for execute/govern — converse saves the stub tokens
         dynamic.push('\n## Task Board');
         dynamic.push('No tasks on the board.');
+      }
+
+      // A2 — the two axes the board cannot express. `assigned` is deliberately
+      // excluded: the board above already shows it, and listing the same task
+      // twice spends tokens to say one thing.
+      if (assignment) {
+        for (const line of renderAssignmentPrompt(assignment, { include: { assigned: false } })) {
+          dynamic.push(line);
+        }
       }
     }
 

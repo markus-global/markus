@@ -10,9 +10,7 @@ export type {
   ChatSession, ChatMessage,
   DeliverableRow, TeamRow, User,
   GroupChat, GroupChatMember,
-  KnowledgeRow,
-  ExternalAgentRow, GatewayMessageRow,
-  MarketplaceTemplateRow, MarketplaceSkillRow, MarketplaceRatingRow,
+  ExternalAgentRow,
 } from './types.js';
 
 // SQLite storage (sole backend)
@@ -28,15 +26,10 @@ export {
   SqliteTaskLogRepo,
   SqliteRequirementRepo,
   SqliteProjectRepo,
-  SqliteMessageRepo,
   SqliteChatSessionRepo,
   SqliteChannelMessageRepo,
   SqliteUserRepo,
   SqliteTeamRepo,
-  SqliteMarketplaceTemplateRepo,
-  SqliteMarketplaceSkillRepo,
-  SqliteMarketplaceRatingRepo,
-  SqliteAgentKnowledgeRepo,
   SqliteTaskCommentRepo,
   SqliteRequirementCommentRepo,
   SqliteExternalAgentRepo,
