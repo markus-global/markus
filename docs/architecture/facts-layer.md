@@ -27,14 +27,19 @@ enforcement point — an invariant without an execution point is not an invarian
 | 5 | **No self-verification**: the assertor cannot be the verifier of its own fact | `self_verification_forbidden` rejection in `FactService.assert` + gate G3 |
 | 6 | Facts are only asserted at a **terminal hook**, never per turn | Prompt contract (§5) + product decision, not a runtime gate |
 | 7 | Every turn that can assert a fact carries a **turn WorkUnit identity**, and an execution turn's identity is `WORK_UNIT_REF.task(taskId, round)` with the same `round` the session is actually running | `Agent.turnWorkUnitRef()` reads `taskAsyncContext.workUnitRef` first (per-execution scope) and only then the mailbox-focus field; `executeTaskConcurrent` / `executeChatTask` / the review turn each set it from that one constructor |
+| 8 | **`round` has exactly one owner: the dispatcher.** Consumers set no default; when a consumer cannot see the authoritative round it must not speak for it (no identity, fail closed) | `work_units.work_unit_ref` / `facts.work_unit_ref` / the task session id are all built by `WORK_UNIT_REF.task(taskId, round)` — one constructor; the only `?? 1` is in `TaskService` at the point that creates the `task_execution` mailbox item; guard `identity-string-single-builder` forbids a second builder or a reverse parse (string → entity) anywhere else |
 
 **What "no identity default" means here — precisely.** There is **no identity-specific default and
-no tool-layer fallback**. The identity *shares* the round expression with the session id
-(`task_<id>_r<round>`), so when the dispatcher carries no round both land on `r1` **together** and
-cannot diverge; an identity that invented its own default could land on `_r1` while the session ran
-`r2`, which is the failure this invariant exists to prevent. Values still come from exactly one
-constructor, and a turn that never sets it (no entry write) yields no identity at all → `fact_*`
-rejects with `missing_provenance`.
+no tool-layer fallback**, and there is **no round default in any consumer**: the round has exactly
+one owner, the dispatcher (`TaskService`, at the point where it creates the `task_execution`
+mailbox item — "definitional default: never executed ⇒ round 1"). Everything downstream derives
+the identity, the session id and the fact provenance from that one value through one constructor
+(`WORK_UNIT_REF.task(taskId, round)`). A consumer that cannot see the authoritative round does
+**not** substitute `1`: it refuses to start the epoch, logs a structured warning, and claims no
+identity at all (`fact_*` then rejects with `missing_provenance`). Guessing would be worse than
+failing: the 2026-11-15 incident is exactly a consumer that computed round `1` for a session that
+was running round 2, and injected a human comment into the *previous* epoch's session where the
+running execution could never see it — silently, with no error.
 
 **Derived rule — a terminal hook may only demand what is reachable in the same turn.**
 Both C9-E hooks require a fact before the transition, so the tool that writes the fact must be

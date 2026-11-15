@@ -241,7 +241,9 @@ describe('真实执行入口把身份写进回合作用域', () => {
     await agent.stop();
   });
 
-  it('不带 round：身份与会话 id 共用同一个默认（一起落 r1，不分叉）', async () => {
+  it('不带 round 的派发：入口 fail closed（无身份、不建会话）', async () => {
+    // 缺省行为已收口：core 不再 `?? 1` 猜轮次，而是不启动纪元并留结构化 warn。
+    // 完整断言（含事件 + 无会话 + 对照组）在 task-identity-single-owner.test.ts。
     const agent = await startedAgent();
     const seenRefs: Array<string | null> = [];
     agent.registerTool({
@@ -254,11 +256,13 @@ describe('真实执行入口把身份写进回合作用域', () => {
       },
     });
 
-    await agent.executeTask(PROBE_TASK, 'probe identity without round', () => {});
+    // 类型上 round 必填，所以这里显式传 `undefined` 模拟旧构建 / 未校验的载荷
+    await expect(
+      agent.executeTask(PROBE_TASK, 'probe identity without round', () => {}, undefined, undefined, undefined as unknown as number),
+    ).rejects.toThrow(/executionRound/);
 
-    // 会话 id 用的也是 r1（不在本测试断言，见 executeTaskConcurrent 的同源解析）；
-    // 关键：身份不会凭空变成别的 round。
-    expect(seenRefs).toEqual(['task_task_entry_probe_r1']);
+    expect(seenRefs).toHaveLength(0);
+    expect(agent.getMemory().getSession?.(`task_${PROBE_TASK}_r1`)).toBeUndefined();
     await agent.stop();
   });
 });

@@ -56,8 +56,8 @@ import {
   type ExecutionStopReason,
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
+  WORK_UNIT_REF,
 } from '@markus/shared';
-import { WORK_UNIT_REF } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 // 第九刀 C9-E：dream 的七条建议动作落 facts（关闭 DR7）—— 纯派生 + 唯一写者端口。
@@ -2991,9 +2991,47 @@ export class Agent {
               return;
             }
 
+            // round 只有一个所有者：**派发侧**（TaskService 构造 task_execution item 时
+            // 写入 `task.executionRound ?? 1`，那里有「定义性缺省（从未执行过 = 第 1 轮）」的
+            // 唯一授权）。core 侧不设默认：拿不到权威轮次就不启动这个执行纪元 ——
+            // 猜 1 会把新纪元注入旧会话（C9-E 事故形态：r2 的评论落进 r1 会话），
+            // 而「不知道是第几轮」这件事本身是可以用一条结构化 warn 说清楚的。
+            const rawRound = extra.executionRound;
+            const executionRound =
+              typeof rawRound === 'number' && Number.isInteger(rawRound) && rawRound >= 1
+                ? rawRound
+                : undefined;
+            if (executionRound === undefined) {
+              log.warn('Task execution item carries no authoritative execution round — refusing to start an epoch without identity', {
+                event: 'task.execution_skipped_no_round',
+                agentId: this.id,
+                taskId,
+                itemId: item.id,
+                receivedRoundType: typeof rawRound,
+                receivedRound: typeof rawRound === 'number' ? rawRound : null,
+                missing: 'payload.extra.executionRound (a positive integer written by the dispatcher)',
+              });
+              try {
+                this.eventBus.emit('agent:task-execution-skipped-no-round', {
+                  agentId: this.id,
+                  taskId,
+                  itemId: item.id,
+                });
+              } catch (err) {
+                log.debug('emit task-execution-skipped-no-round failed', { error: String(err) });
+              }
+              // fail closed：本条不执行、不主张身份。派发侧补齐 round 后会重新派发
+              // （TaskService 的丢失执行自愈路径就是这么做的）。
+              try { this.mailbox.drop(item.id); } catch { /* 已留痕，drop 失败不改变「不执行」的结论 */ }
+              resolveResponse('');
+              return;
+            }
             const executionRegistration = {
-              sessionId: `task_${taskId}_r${(extra.executionRound as number | undefined) ?? 1}`,
-              round: (extra.executionRound as number | undefined) ?? 1,
+              // 身份字符串只有一个建造者：`WORK_UNIT_REF.task()`。
+              // 任务执行会话 id **就是**执行身份，不再单独拼一次（两处各拼一次 = 同一个
+              // 字符串两个写者，改格式时必有一处漏改 —— 这正是本轮要收掉的债）。
+              sessionId: WORK_UNIT_REF.task(taskId, executionRound),
+              round: executionRound,
               startedAt: Date.now(),
             };
             this.taskExecutionsInFlight.set(taskId, executionRegistration);
@@ -3004,7 +3042,7 @@ export class Agent {
                 onLog,
                 extra.cancelToken as { cancelled: boolean } | undefined,
                 extra.taskProjectContext as TaskProjectContext | undefined,
-                extra.executionRound as number | undefined,
+                executionRound,
                 item.payload.requirementId,
                 typeof extra.resumeNotice === 'string' ? extra.resumeNotice : undefined,
               );
@@ -3116,10 +3154,25 @@ export class Agent {
             Array.from(this.activeTasks, t => `task:${t}`),
           );
           if (destination === 'inject' && taskId) {
-            const round = this.getTaskExecutionRound(taskId);
-            const sessionId = `task_${taskId}_r${round}`;
-            this.injectUserMessage(sessionId, item.payload.content);
-          } else {
+            // 会话 id 不重算（旧实现用 `getTaskExecutionRound(taskId) → 1` 硬编码，r2 执行中
+            // 把人类评论注入到 r1 会话 —— 当前执行永远看不到，且消息静默消失）。
+            // 权威值只有一个：在飞登记里的 `sessionId`；拿不到就不注入。
+            const inFlight = this.getInFlightTaskExecution(taskId);
+            if (inFlight) {
+              this.injectUserMessage(inFlight.sessionId, item.payload.content, taskId);
+              resolveResponse('');
+              return;
+            }
+            log.warn('Task comment not injected — no live execution registration for this task', {
+              event: 'task.comment_injection_skipped_no_registration',
+              agentId: this.id,
+              taskId,
+              itemId: item.id,
+              missing: 'taskExecutionsInFlight registration (sessionId + round)',
+            });
+            // 不注入 ≠ 丢掉留言：落到下面的 else 分支排队一个回复回合，人看不到「石沉大海」。
+          }
+          {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
               item.payload.content,
@@ -3400,13 +3453,6 @@ export class Agent {
       default:
         return 'processed';
     }
-  }
-
-  /**
-   * Get the current execution round for a task (used for session ID construction).
-   */
-  private getTaskExecutionRound(_taskId: string): number {
-    return 1;
   }
 
   /**
@@ -3872,14 +3918,16 @@ export class Agent {
    * (after all tool results are appended) to avoid breaking message ordering.
    * If no task loop is running for this session, the message is appended directly.
    */
-  injectUserMessage(sessionId: string, content: string): void {
+  injectUserMessage(sessionId: string, content: string, taskId: string): void {
     let session = this.memory.getSession?.(sessionId);
     if (!session) {
       session = this.memory.getOrCreateSession(this.id, sessionId);
     }
 
-    const taskId = sessionId.startsWith('task_') ? sessionId.replace(/^task_/, '').replace(/_r\d+$/, '') : undefined;
-    if (taskId && this.activeTasks.has(taskId)) {
+    // `taskId` 必填而不是从 `sessionId` 反解：反解是从身份字符串反推实体，是建造者的
+    // 镜像 —— 格式一动就静默解析错，分支走错也没有人知道（C9-E 事故的同类形态）。
+    // 调用方手上总归有实体 id（它有 item / 有 task 对象），结构上让它必须表态。
+    if (this.activeTasks.has(taskId)) {
       let queue = this.pendingInjections.get(sessionId);
       if (!queue) {
         queue = [];
@@ -3928,7 +3976,9 @@ export class Agent {
     }
 
     // 聊天任务也是「执行回合」：必须带 WU 身份，否则终态闸门（提交评审先写事实）
-    // 在这条入口上同样会死锁。round 与会话 id 同源（_executeTaskInternal 默认 1）。
+    // 在这条入口上同样会死锁。
+    // chat 任务不是 DB 任务、没有派发轮次 —— round 恒为 1 是**该入口的定义域**（
+    // 不存在「第 2 轮 chat 任务」），不是从缺失值兜底出来的。
     const chatRound = 1;
     const result = await this.taskExecutor.executeChatTask(
       taskId,
@@ -7177,9 +7227,15 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: ExecutionCancelToken,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    cancelToken: ExecutionCancelToken | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    /**
+     * 本轮执行纪元（从 1 开始）。**必填 `number`，不设默认**：
+     * 唯一的缺省点在派发侧（TaskService 构造 task_execution item 时写
+     * `task.executionRound ?? 1`）。core 看不到权威轮次时不得代替它表态 ——
+     * 猜 1 会把新纪元注入旧会话（C9-E 事故形态）。
+     */
+    executionRound: number,
     requirementId?: string,
     /**
      * 本轮的「为什么重启」权威说明（由 org-manager 的 TaskService 生成：
@@ -7208,10 +7264,10 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean },
+    cancelToken: { cancelled: boolean } | undefined,
     priority: TaskPriority = TaskPriority.MEDIUM,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    taskProjectContext: TaskProjectContext | undefined,
+    executionRound: number,
     requirementId?: string,
     resumeNotice?: string,
   ): Promise<void> {
@@ -7219,19 +7275,32 @@ export class Agent {
       throw new Error('Task executor not initialized');
     }
 
-    // 使用TaskExecutor执行任务
+    // 运行时闸（类型已要求 number，但载荷是未校验的 JSON，夹具会撒谎）：
+    // 拿不到轮次就 fail closed —— 不建会话、不主张身份、不跑任务。
+    // 唯一合法缺省点在派发侧（TaskService），core 不得用 1 冒充。
+    if (typeof executionRound !== 'number' || !Number.isInteger(executionRound) || executionRound < 1) {
+      log.warn('Refusing to start a task execution epoch without an authoritative round', {
+        event: 'task.execution_refused_no_round',
+        agentId: this.id,
+        taskId,
+        receivedRound: typeof executionRound === 'number' ? executionRound : null,
+        receivedType: typeof executionRound,
+      });
+      throw new Error(
+        `Task execution requires a positive integer executionRound (got ${String(executionRound)}). ` +
+        'The dispatcher owns that default; core must not guess a round.',
+      );
+    }
     // Wrap in AsyncLocalStorage context so concurrent task executions each
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
       () => {
-        // 单一事实源：本轮 round 只在这里解析一次，会话 id（_executeTaskInternal 内）
-        // 与 WU 身份共用它——两处各算一次就会漂移。
-        // 身份不存在时不能缺省：缺身份 → fact_* 工具直接拒绝 → 终态闸门死锁。
-        const round = executionRound ?? 1;
+        // 单一事实源：本轮 round 在入口处**已经**确定（派发侧写的，或本入口的类型要求），
+        // 这里不再解析第二次 —— 两处各算一次就会漂移。
         return taskAsyncContext.run(
-          { taskId, requirementId, workUnitRef: WORK_UNIT_REF.task(taskId, round), submission: { submitted: false } },
-          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, round, resumeNotice),
+          { taskId, requirementId, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound), submission: { submitted: false } },
+          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound, resumeNotice),
         );
       },
       {
@@ -7268,9 +7337,10 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: ExecutionCancelToken,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    cancelToken: ExecutionCancelToken | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    /** 必填：见 `executeTask` 的同名参数说明（唯一缺省点在派发侧）。 */
+    executionRound: number,
     resumeNotice?: string,
   ): Promise<void> {
     this.currentTaskId = taskId;
@@ -7358,8 +7428,10 @@ export class Agent {
     // round reuse the existing message history (tool calls, file contents, etc.)
     // so the agent doesn't have to re-read files or redo work.
     // New rounds (scheduled reruns, review rejections) get a fresh session.
-    const round = executionRound ?? 1;
-    const sessionId = `task_${taskId}_r${round}`;
+    //
+    // 会话 id 就是执行身份，只有一个建造者（`WORK_UNIT_REF.task`）：以前这里再拼一次
+    // 同一个模板字符串，改格式时就有两处要同步 —— 同一个字符串两个写者。
+    const sessionId = WORK_UNIT_REF.task(taskId, executionRound);
     const session = this.memory.getOrCreateSession(this.id, sessionId);
     const isRetryWithHistory = session.messages.length > 0;
 

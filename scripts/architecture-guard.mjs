@@ -539,6 +539,8 @@ const RULE_SCOPE = {
   'facts-single-writer': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
   // C9-B：「在跑」只能由 work_units 回答 —— 全仓（含 UI / 服务端 / CLI）适用。
   'no-activity-liveness': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C9 收尾：身份字符串只有一个建造者 —— 全仓服务端 src 适用（排除 builders 在检测器内）。
+  'identity-string-single-builder': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -809,6 +811,78 @@ function selfTestActivityLiveness() {
   return failures;
 }
 
+/**
+ * 规则 7（C9 收尾）：**身份字符串只有一个建造者**。
+ *
+ * 为什么需要它：`task_<id>_r<n>` 既是 WU 身份、又是任务执行会话 id。旧形态下它有
+ * 14 个建造点和 1 个反解析点，且都能编译通过 —— 改一次格式必有一处漏改，而漏改的
+ * 后果是静默的：C9-E 事故里 `getTaskExecutionRound` 硬编码返回 1，r2 的人类评论被
+ * 注入到 r1 会话（当前执行永远看不到，消息也不报错）。删除那个桩解决不了“下一个人
+ * 再拼一个”的问题，所以把它变成门禁：
+ *
+ *   · 建造 —— 模板字面量 `` `task_${…}_r${…}` `` 与 `'task_' +` 拼接；
+ *   · 反解析 —— `/^task_/` 、`/_r\d+$/` 这类“从字符串反推实体”。
+ *
+ * 唯一合法处：`packages/shared/src/work-unit.ts` 的 `WORK_UNIT_REF.task()`（建造）
+ * 与该模块内的两个 ref 解析器（`entityKeysOfWorkUnitRef` / `taskIdOfWorkUnitRef`）——
+ * 它们解析的是 **WorkUnit ref**（结构事实），不是会话 id（推测身份）。
+ *
+ * **必须字面量级**：注释里写历史形态（文档/教训）不得误报，否则门禁会逼人删掉
+ * 解释性注释 —— 那是把知识当成违规。
+ */
+const IDENTITY_STRING_OWNER = 'packages/shared/src/work-unit.ts';
+const IDENTITY_STRING_PATTERNS = [
+  { id: 'builder-template', re: /`task_\$\{[^}`]*\}_r\$\{/ },
+  { id: 'builder-concat', re: /(['"])task_\1\s*\+/ },
+  { id: 'parse-prefix', re: /\/\^task_/ },
+  { id: 'parse-suffix', re: /_r\\d\+\$?\/?/ },
+];
+
+/** 去注释但保留行号（块注释里的换行不被吃掉，报错行号才可信）。 */
+function stripCommentsKeepLines(text) {
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, m => m.replace(/[^\n]/g, ' '))
+    .replace(/(^|[^:])\/\/[^\n]*/g, (m, lead) => lead + ' '.repeat(m.length - lead.length));
+}
+
+function checkIdentitySingleBuilder(file, text) {
+  const relPath = relative(ROOT, file).split(process.platform === 'win32' ? '\\' : '/').join('/');
+  if (relPath === IDENTITY_STRING_OWNER) return [];
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of IDENTITY_STRING_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'identity-string-single-builder', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+        break;
+      }
+    }
+  }
+  return out;
+}
+
+/** 门禁自检 3 条：“注释不误报 / 真代码模板必报 / 真代码反解析必报”。 */
+function selfTestIdentitySingleBuilder() {
+  const fixtures = [
+    // ok：注释里的历史形态不得误报（说明性文字是知识，不是违规）
+    { ok: '// 旧形态：`task_${taskId}_r${round}` 已收敛到 WORK_UNIT_REF.task()\nconst x = 1;' },
+    // bad ①：真代码建造模板
+    { bad: 'const sessionId = `task_${taskId}_r${round}`;' },
+    // bad ②：真代码反解析（从身份字符串反推实体）
+    { bad: "const taskId = sessionId.replace(/^task_/, '').replace(/_r\\d+$/, '');" },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (f.ok !== undefined && checkIdentitySingleBuilder('fixture.ts', f.ok).length !== 0) {
+      failures.push({ rule: 'identity-string-single-builder', detail: `误报合规样本：${f.ok}` });
+    }
+    if (f.bad !== undefined && checkIdentitySingleBuilder('fixture.ts', f.bad).length === 0) {
+      failures.push({ rule: 'identity-string-single-builder', detail: `漏过违规样本：${f.bad}` });
+    }
+  }
+  return failures;
+}
+
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
@@ -824,6 +898,7 @@ for (const file of collectSources()) {
     ...checkShellWriteGate(file, text),
     ...checkFactsSingleWriter(file, text),
     ...checkActivityLiveness(file, text),
+    ...checkIdentitySingleBuilder(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
@@ -861,7 +936,7 @@ if (violations.length) {
 
 // 契约门禁自检：每次运行都做。门禁自身的检测器一旦失效（正则不再命中真实违规形态），
 // 必须**拒绝静默放行** —— 一个永远不红的门禁比没有门禁更危险。
-const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness()];
+const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder()];
 for (const f of selfTestFailures) {
   console.error(`[guard] ✗ 门禁自检失败：${f.rule} —— ${f.detail}`);
 }
@@ -886,6 +961,8 @@ if (fresh.length) {
   console.error('[guard]   no-empty-catch → 至少 log.warn 说明为什么可以吞；空吞异常会让故障不可观测');
   console.error('[guard]   no-activity-liveness → 「在跑」只认 work_units(status=running + claimed_by + lease_until)；');
   console.error('[guard]                         activity 的 endedAt / ended_at IS NULL 只是历史属性，不是状态');
+  console.error('[guard]   identity-string-single-builder → 身份字符串只许 `WORK_UNIT_REF.task()` 造；');
+  console.error('[guard]                         消费方读结构、不反解字符串（需要实体 id 就显式传入）');
   console.error('[guard]   （确属安全豁免：把它加进 scripts/architecture-allowlist.json 并写理由）\n');
   process.exit(1);
 }

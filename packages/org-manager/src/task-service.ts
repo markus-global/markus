@@ -175,14 +175,14 @@ const DEFERRABLE_DISPATCH_INTENTS: ReadonlySet<TaskDispatchIntent> = new Set<Tas
 ]);
 
 /**
- * 单个执行纪元的在飞登记记录。**键 = 执行身份** `task_${taskId}_r${round}`（不是 taskId）。
+ * 单个执行纪元的在飞登记记录。**键 = 执行身份** `task_<taskId>_r<round>`（不是 taskId）。
  *
  * `settled` 是单飞闸的**唯一权威判据**（CAS）：执行实际收口时由 settle 信号首次置位，
  * 同身份后续信号一律 no-op。`{cancelled:boolean}` 结构上无法表达「已实际停止」，
  * 故 token 不再参与闸判定。
  */
 interface TaskExecutionRecord {
-  /** 执行身份 `task_${taskId}_r${round}`（在飞登记表的键） */
+  /** 执行身份 `task_<taskId>_r<round>`（在飞登记表的键，由 `WORK_UNIT_REF.task()` 构造） */
   identity: string;
   taskId: string;
   round: number;
@@ -304,7 +304,7 @@ export class TaskService implements ApprovalTargetPort {
   private taskCancelTokens = new Map<string, { cancelled: boolean }>();
   /**
    * T2 · 修订轮：**在飞执行登记表（settle 语义 SSOT）**，键 = **执行身份**
-   * `task_${taskId}_r${round}`（不是 taskId —— 差距 3；每笔 pending 的上下文按身份寻址）。
+   * `task_<taskId>_r<round>`（不是 taskId —— 差距 3；每笔 pending 的上下文按身份寻址）。
    *
    * - 记录生命周期：派发时登记 → 执行**实际收口**时由 settle CAS 置 `settled` 并移除；
    * - 闸判定：`getLiveExecution()` 只看「存在且未 settled」的记录（不看 token、不看 TTL）；
@@ -1708,14 +1708,14 @@ export class TaskService implements ApprovalTargetPort {
   // ─── T2：task 级单飞（派发侧实体独占 · 修订轮 settle 语义）─────────────────
 
   /**
-   * T2：登记一个执行纪元（键 = 执行身份 `task_${taskId}_r${round}`）。
+   * T2：登记一个执行纪元（键 = 执行身份 `task_<taskId>_r<round>`）。
    * settle 由 `settleTaskExecution` 收口；闸判定由 `getLiveExecution` 读取。
    */
   private registerTaskExecution(
     taskId: string, round: number, initiatedBy: TaskDispatchIntent, cancelToken: { cancelled: boolean },
   ): TaskExecutionRecord {
     const record: TaskExecutionRecord = {
-      identity: `task_${taskId}_r${round}`,
+      identity: WORK_UNIT_REF.task(taskId, round),
       taskId,
       round,
       startedAt: Date.now(),
@@ -1993,7 +1993,7 @@ export class TaskService implements ApprovalTargetPort {
 
     const cancelToken = { cancelled: false };
     this.taskCancelTokens.set(taskId, cancelToken);
-    // T2：登记在飞执行纪元（**键 = 执行身份** `task_${taskId}_r${round}`）。
+    // T2：登记在飞执行纪元（**键 = 执行身份** `task_<taskId>_r<round>`）。
     // 此后同一 task 的重复派发由 getLiveExecution 判定（拒绝 / 延后重放）。
     const executionRecord = this.registerTaskExecution(
       taskId, task.executionRound ?? 1, intent, cancelToken,
@@ -2222,6 +2222,9 @@ export class TaskService implements ApprovalTargetPort {
     const agentId = task.assignedAgentId;
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
+    // 定义性缺省（从未执行过 = 第 1 轮）：`task.executionRound` 是库里的 SSOT，
+    // **只有派发侧**（本处，即构造 task_execution mailbox item 的地方）可以补这个缺省。
+    // core 侧与其它消费者不设默认：看不到权威轮次时不得代替它表态。
     const executionRound = task.executionRound ?? 1;
     const isRetry = _retryAttempt > 0;
 
@@ -2278,7 +2281,8 @@ export class TaskService implements ApprovalTargetPort {
         c.authorType === 'human' || c.authorType === 'owner'
       );
       if (humanComments.length > 0) {
-        const sessionId = `task_${taskId}_r${executionRound}`;
+        // 会话 id 就是执行身份，只有一个建造者。
+        const sessionId = WORK_UNIT_REF.task(taskId, executionRound);
         const recentFeedback = humanComments.slice(-PROMPT_HUMAN_COMMENTS_MAX);
         const feedbackLines = recentFeedback.map(c => {
           const ts = c.createdAt instanceof Date
@@ -2292,7 +2296,7 @@ export class TaskService implements ApprovalTargetPort {
           ...feedbackLines,
           '',
           'Read the feedback above carefully. Adjust your approach and work based on this feedback.',
-        ].join('\n'));
+        ].join('\n'), taskId);
       }
     }
 
@@ -3507,7 +3511,7 @@ export class TaskService implements ApprovalTargetPort {
     // 重新打开（terminal → in_progress）= **新的一轮**，不是在上一轮里接着跑。
     //
     // 轮次不是显示号：它决定执行日志的分组（`getLogs(taskId, round)`）与执行会话 id
-    // （`task_${taskId}_r${round}`）。不 bump 的后果：重开后的新执行会写回旧轮次，
+    // （`task_<taskId>_r<round>`）。不 bump 的后果：重开后的新执行会写回旧轮次，
     // 与上一轮混在一起，也给不出一个干净的上下文。
     //
     // 这里的判据是「从 terminal 回到 in_progress」：
@@ -6199,6 +6203,7 @@ export class TaskService implements ApprovalTargetPort {
     }
 
     const agent = this.agentManager.getAgent(task.assignedAgentId);
+    // 定义性缺省（从未执行过 = 第 1 轮）：同 `runTask` —— 派发侧是唯一合法缺省点。
     const executionRound = task.executionRound ?? 1;
 
     const cancelToken = { cancelled: false };
@@ -6491,7 +6496,7 @@ export class TaskService implements ApprovalTargetPort {
     try {
       const agent = this.agentManager.getAgent(task.assignedAgentId);
       const round = task.executionRound ?? 1;
-      const sessionId = `task_${taskId}_r${round}`;
+      const sessionId = WORK_UNIT_REF.task(taskId, round);
       const injectedMessage = [
         `**${authorName} (human) commented on this task while you are working:**`,
         '',
@@ -6499,7 +6504,7 @@ export class TaskService implements ApprovalTargetPort {
         '',
         'A person is speaking to you directly — take it into account in what you are doing. If it changes the task, follow it; if it is only an observation, note it and continue.',
       ].join('\n');
-      agent.injectUserMessage(sessionId, injectedMessage);
+      agent.injectUserMessage(sessionId, injectedMessage, taskId);
       log.info('Injected human comment into agent session', { taskId, sessionId, authorName });
     } catch (err) {
       log.warn('Failed to inject comment into agent session', { taskId, error: String(err) });
@@ -6533,7 +6538,7 @@ export class TaskService implements ApprovalTargetPort {
 
     const agentId = task.assignedAgentId;
     const round = task.executionRound ?? 1;
-    const taskSessionId = `task_${taskId}_r${round}`;
+    const taskSessionId = WORK_UNIT_REF.task(taskId, round);
     const taskLogRepo = this.taskLogRepo;
     const ws = this.ws;
 
