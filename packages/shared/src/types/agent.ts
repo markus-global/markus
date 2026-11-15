@@ -56,7 +56,7 @@ export interface AgentActivity {
   /**
    * C9-B: which WorkUnit (execution epoch) this activity belongs to. Nullable — a
    * row without an identity is legal (old chain / no WorkUnit), and "still running"
-   * is never derived from this activity (see docs/architecture/observability-tables.md).
+   * is never derived from this activity (see docs/architecture/derived-views.md).
    */
   workUnitRef?: string | null;
   /** For heartbeat type, the heartbeat task name */

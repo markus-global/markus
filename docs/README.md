@@ -41,8 +41,12 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [agent-runtime.md](./architecture/agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
 | [cognitive-architecture.md](./architecture/cognitive-architecture.md) | Cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./architecture/memory-system.md) | Memory layers, storage compaction, memory flush |
-| [prompt-engineering.md](./architecture/prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, caching |
-| [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); addresses, delivery envelopes and bounce/catch-all (§28) |
+| [prompt-engineering.md](./architecture/prompt-engineering.md) | System prompt architecture, LLM call taxonomy, prompt caching, output token resolution |
+| [context-assembly.md](./architecture/context-assembly.md) | Message assembly & context compression — token budget, compaction pipeline, ContextOS fixed/variable split |
+| [tool-loop-harness.md](./architecture/tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context matrix, scenario × tool face) |
+| [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); triage, restart recovery, addresses, delivery envelopes and bounce/catch-all (§28) |
+| [a2a-communication.md](./architecture/a2a-communication.md) | Agent-to-agent communication — DM/group channels, one-message-one-delivery-fact invariant, reply sink, entry-point inventory |
+| [notification-delivery.md](./architecture/notification-delivery.md) | Notification delivery to humans — user/IM notification contract, agent→user messages, dedup and context truth |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [state-ownership.md](./architecture/state-ownership.md) | State-ownership contract: who owns what, who may read it, in which execution context |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
@@ -50,11 +54,8 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [streaming-and-reattach.md](./architecture/streaming-and-reattach.md) | SSE streaming, soft-disconnect, reattach, client resilience |
 | [llm-provider-timeouts.md](./architecture/llm-provider-timeouts.md) | Per-provider timeout/retry governance matrix, known risk inventory |
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
-| [facts-layer.md](./architecture/facts-layer.md) | Fact layer contract — predicates, single writer, rejection matrix, schema, prompt surface |
-| [facts-verification.md](./architecture/facts-verification.md) | Independent verifier, terminal hooks, dream suggestion actions, read-only facts audit page |
-| [thread-stage.md](./architecture/thread-stage.md) | Thread stage derivation — precedence rules over facts, FSM and approvals |
-| [inbox-derivation.md](./architecture/inbox-derivation.md) | Inbox derivation — needs from facts, FSM and approvals; one derivation, no parallel queue |
-| [observability-tables.md](./architecture/observability-tables.md) | Observability tables and their nullable work-unit provenance |
+| [facts.md](./architecture/facts.md) | C9 fact layer — contract (predicates, single writer, rejection matrix, schema, prompt surface) + independent verification (terminal hooks, dream suggestions, read-only audit page) |
+| [derived-views.md](./architecture/derived-views.md) | C9 derived views — thread stage, inbox derivation, and the four observation tables; all derived, never a second decider |
 | [frontend/team-chat.md](./architecture/frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [messaging-gateway.md](./architecture/messaging-gateway.md) | Comms layer: platform manifests, bot instances, inbound routing, outbound & notifications, capability model |
 

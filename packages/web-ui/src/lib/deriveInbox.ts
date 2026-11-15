@@ -13,7 +13,7 @@
  * and would start drifting from them on the first write. Membership, dedupe,
  * precedence and the destination of every row are decided here and nowhere else.
  *
- * ── Contract (see docs/architecture/inbox-derivation.md) ─────────────────
+ * ── Contract (see docs/architecture/derived-views.md §7–§13) ──────────────
  * 1. Identity is `subjectKind:subjectId:needKind`. Three sources pointing at the
  *    same subject and need produce ONE row carrying all three in `sources[]`.
  * 2. Rows are then folded per subject (`foldBySubject`): a list is scanned by

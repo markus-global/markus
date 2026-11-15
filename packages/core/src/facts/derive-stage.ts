@@ -207,7 +207,7 @@ function hasUnmetDependencies(fsm: FsmSnapshot): boolean {
  * `waiting_human` deliberately stays **ahead of** the terminal rule: a pending approval
  * on a closed row is still someone being asked to do something, and hiding that behind
  * "done" would strand a real decision. The trade-off is written down in
- * `docs/architecture/thread-stage.md` §3 and pinned by a test.
+ * `docs/architecture/derived-views.md` §3 and pinned by a test.
  */
 export function deriveStage(input: DeriveStageInput): ThreadStage {
   const { fsm, facts, approvals } = input;

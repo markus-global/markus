@@ -23,11 +23,15 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
 | [cognitive-architecture.md](./cognitive-architecture.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./memory-system.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
-| [prompt-engineering.md](./prompt-engineering.md) | Prompt & context assembly, LLM call taxonomy, context packing, prompt caching |
+| [prompt-engineering.md](./prompt-engineering.md) | System prompt architecture, LLM call taxonomy, prompt caching, output token resolution |
+| [context-assembly.md](./context-assembly.md) | Message assembly & context compression — token budget, compaction pipeline, ContextOS fixed/variable split |
+| [tool-loop-harness.md](./tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context, scenario × tool face) |
 | [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
+| [a2a-communication.md](./a2a-communication.md) | Agent-to-agent communication over the mailbox — channels, delivery facts, reply sink, entry points |
+| [notification-delivery.md](./notification-delivery.md) | Notification delivery to humans — user/IM notifications and agent→user messages |
 | [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
-| [observability-tables.md](./observability-tables.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`), their nullable `work_unit_ref`, and the single source of "running" (`work_units`) |
+| [derived-views.md](./derived-views.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`) with their nullable `work_unit_ref`, the single source of "running" (`work_units`), plus thread-stage and inbox derivation |
 | [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
 | [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
@@ -849,7 +853,7 @@ Agents understand the workflow and governance rules through three layers:
 > Persisted observation rows (activity / activity logs / execution stream / task logs)
 > are **history, not state**. "Is this agent working right now" is answered only from
 > `work_units` (`status='running'` + `claimed_by` + `lease_until`). See
-> [observability-tables.md](./observability-tables.md).
+> [derived-views.md](./derived-views.md).
 
 `AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../../packages/core/src/agent-metrics.ts))
 aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat

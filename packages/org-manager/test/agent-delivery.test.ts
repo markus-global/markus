@@ -5,7 +5,7 @@
  * 11 次被墙钟冷却静默丢弃；工具仍返回 dispatched。根因是"投递"与"唤醒"被拆成
  * 两个可分离动作，且唤醒上的闸会丢弃而不告知。
  *
- * 本测试锁住新模型的不变量（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）：
+ * 本测试锁住新模型的不变量（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）：
  *   ① 投递**不可丢失**：N 次 deliver = N 次入队（是否合并是 mailbox 的事，不是这里丢）；
  *   ② 不存在半状态：要么入队，要么目标不存在（记录跳过），要么抛错——三者皆可见；
  *   ③ 因果链透传：chainId / depth 原样带进 payload，回复时沿用；

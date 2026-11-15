@@ -11211,7 +11211,7 @@ export class Agent {
       //     派生 revise 会对每个用过的技能误报（平台替 Agent 编建议 = R4）。
       //   · ttl 是**永远的**空分支：过期条目在这之前已被 `pruneNotebookEntries` 按 tier TTL 删掉。
       //   · team_skill 需要跨 agent 的观察视图，core `Agent` 没有这个源。
-      // 对应的确定事实写在 `docs/architecture/facts-verification.md §3`（那张表就是契约）。
+      // 对应的确定事实写在 `docs/architecture/facts.md §10`（那张表就是契约）。
       const clusters = (plan.promote ?? [])
         .filter(p => Array.isArray(p.sourceIds) && p.sourceIds.length > 0)
         .map(p => ({ theme: p.section, observationIds: p.sourceIds }));

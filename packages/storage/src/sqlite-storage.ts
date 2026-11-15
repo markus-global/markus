@@ -1092,7 +1092,7 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
     { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
     { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
-    // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/observability-tables.md）──
+    // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/derived-views.md）──
     // 只加列、不回填：~9M 历史行保持 NULL（= 早于身份链）。回填等于制造第二份历史真相。
     // 索引在下面「依赖迁移列的索引」段创建 —— 老库上列还不存在时建索引会直接报错。
     { table: 'agent_activities', column: 'work_unit_ref', sql: 'ALTER TABLE agent_activities ADD COLUMN work_unit_ref TEXT' },
@@ -4830,7 +4830,7 @@ export class SqliteActivityRepo {
    * 「触发它的 mailbox 行已终态」的未收口 activity 补写 `ended_at`，好让
    * 「`ended_at` 为空 = 还在跑」这个错误读法看起来成立。那个读法已全仓删掉
    * （「在跑」只认 `work_units`），于是“帮事件扮成状态”的后台写也一并删掉：
-   * **没有结束就是没有结束**。契约见 docs/architecture/observability-tables.md。
+   * **没有结束就是没有结束**。契约见 docs/architecture/derived-views.md。
    */
   insertActivity(data: {
     id: string;

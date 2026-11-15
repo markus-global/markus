@@ -145,7 +145,7 @@ MUST: Periodic dream/consolidation SHOULD also:
 `@markus/shared` (`CONSOLIDATION_ACTIONS`): `archive | revise | merge | ttl | promote |
 negative_feedback | team_skill`. An eighth is a schema violation; a missing one is a failing test.
 Derivation is pure (`packages/core/src/facts/consolidation-suggestions.ts`) and the write goes
-through the single facts writer. See `facts-verification.md §3`.
+through the single facts writer. See `facts.md §10`.
 
 MUST NOT: write these seven as prose into `knowledge.md`, a notebook, or any other store. A
 suggestion that is prose cannot be counted, queried, or superseded — that was DR7 itself.

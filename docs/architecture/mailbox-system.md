@@ -1,6 +1,29 @@
 # Mailbox & Attention System
 
-> Last updated: 2026-07
+> Last updated: 2026-11-15 — the A2A chapter (§11) and the user-notification chapters
+> (§12/§13) were extracted to [a2a-communication.md](./a2a-communication.md) and
+> [notification-delivery.md](./notification-delivery.md). Only pointers remain here.
+
+---
+
+## 本文件范围 — Scope of this file
+
+**This document owns the mailbox queue and the attention controller, and nothing else.** It is
+the single source of truth for *how a signal enters, waits, is merged, is claimed, is retried
+and is finally delivered to an agent*: the item-type registry (§3), the attention controller
+(§4), the enqueue API (§5), persistence (§6), state-machine integration (§7), enqueue-time
+deduplication (§14), restart/retry (§17/§18), triage and deliberation (§21), and the
+address/envelope/bounce layer (§28). Priorities and the delivery invariants stated here are
+binding for every producer.
+
+- **Agent-to-agent (A2A)** — DM/group channels, the one-message-one-delivery-fact invariant,
+  the reply sink, tools & transport, `PendingCallbackRegistry`, heartbeat integration: see
+  [a2a-communication.md](./a2a-communication.md) (was §11; §11 below is a pointer).
+- **User notification / IM delivery** — in-app notification store, `notify_user` vs
+  `request_user_input`, destination resolution and approval cards: see
+  [notification-delivery.md](./notification-delivery.md) (was §12/§13; §12/§13 below are pointers).
+- The mailbox is the **transport** for both: it guarantees enqueue, priority and serialised
+  attention; it does not define *what* a notification means or *who* should receive it.
 
 ---
 
@@ -291,7 +314,7 @@ Registration flow: when an agent starts an async operation the completion is reg
 
 On completion/firing the registry entry is resolved and delivered via the shared `Agent.deliverCallback()` helper according to its `deliveryMode`.
 
-See §11.3 for the full `PendingCallbackRegistry` specification.
+See [a2a-communication.md](./a2a-communication.md) §11.3 for the full `PendingCallbackRegistry` specification.
 
 ---
 
@@ -778,9 +801,9 @@ All paths that invoke the LLM are routed through the mailbox:
 - **Task execution** (runTask / runTaskFresh) → `sendTaskExecution`
 - **Post-task comment reply** → `sendSessionReply`
 - **Daily report** (API trigger) → `generateDailyReport` → `sendMessage(sourceType: 'daily_report')`
-- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')` — includes active goals review and timed-out callback checks (§11.4)
+- **Heartbeat** (periodic timer) → `heartbeat:trigger` event → `mailbox.enqueue('heartbeat')` — includes active goals review and timed-out callback checks ([a2a-communication.md](./a2a-communication.md) §11.4)
 - **Memory consolidation** (dream cycle) → `dreamConsolidateMemory` → `sendMessage(sourceType: 'memory_consolidation')`
-- **Cross-agent messages** (A2A / delegation) → DM channel → `enqueueToMailbox('a2a_message')` (§11)
+- **Cross-agent messages** (A2A / delegation) → DM channel → `enqueueToMailbox('a2a_message')` ([a2a-communication.md](./a2a-communication.md) §11)
 - **Async operation completions** (`background_exec`, etc.) → `PendingCallbackRegistry` → `enqueueToMailbox('callback_result')`
 - **Notifications** (task status, requirement, comments) → `enqueueToMailbox`
 
@@ -788,452 +811,40 @@ No LLM call is made outside this architecture.
 
 ---
 
-## 11. Agent-to-Agent Communication (A2A via Mailbox)
+## 11. Agent-to-Agent Communication (A2A) — moved
 
-Inter-agent messaging is fully consolidated into the Mailbox system. The legacy `A2ABus` class has been retired — it added a redundant routing layer when the mailbox already provides serialised attention handling.
+A2A messages reach another agent as `a2a_message` **mailbox items** and nothing else;
+`channel_messages` is only a projection (UI history + the context slice the recipient reads),
+never a delivery channel, and "persisted but not awake" is a forbidden state. The mailbox is the
+single delivery mechanism, `AgentDelivery.deliver()` is its only inter-agent caller, and a reply
+never triggers the peer — there is no automatic reply chain.
 
-### 11.1 A2A DM Channels
-
-A2A messages now route through **deterministic DM channels** that reuse the group-chat infrastructure for persistence, WebSocket delivery, and mailbox enqueue:
-
-```
-Channel key: dm:a2a:{sorted_id_1}:{sorted_id_2}
-             (agent IDs sorted lexicographically — one channel per pair)
-```
-
-```
-Agent A                              Agent B
-────────                             ────────
-tool: agent_send_message ──►  AgentManager.sendMessage()
-                                     │
-                                     ▼
-                               ensureDmChannel(dm:a2a:...)
-                                     │
-                                     ▼
-                               sendGroupMessage(channelKey, ...)
-                               ├─ persist to channel_messages
-                               ├─ WebSocket broadcast
-                               └─ enqueueToMailbox('a2a_message', { extra: { channelKey } })
-                                     │
-                                     ▼
-                               AttentionController picks it up
-                               (stable session: channel_{channelKey}_{agentId})
-```
-
-Benefits over ephemeral session IDs:
-
-- **Persistent history** — both agents recall past exchanges via `recall_context` with `scope: "channel"` and `channel_key`. Personal user↔agent DM **chat sessions** (`chat_sessions` table) use `recall_context` with `scope: "chat_session"` and `session_id` (pagination via `before` / `limit`) — see [learning-loop.md](./learning-loop.md) §9.3.
-- **Stable sessions** — all messages in a pair share one session ID derived from the channel key
-- **Enqueue-time dedup** — messages from the same `channelKey` coalesce (§14)
-- **Group chat parity** — DM channels use the same `groupChatRepo`, member resolution, and API paths as custom group chats
-
-When `groupChatHandlers` are not wired (e.g., unit tests), A2A falls back to direct `sendMessage()` with `sourceType: 'a2a_message'` and the same `channelKey` in `extra`.
-
-### 11.1.1 Delivery invariant — one message, one delivery fact
-
-> **Normative.** This section is the contract; the code must not have a second way
-> to reach another agent. It replaces the previous, unwritten arrangement in which
-> some paths persisted + woke the peer directly and others enqueued (see §14.5).
-
-1. **Exactly one delivery mechanism.** Every inter-agent message — DM
-   (`dm:a2a:*`), group/team channel, `@mention`, review/comment notification — MUST
-   reach the recipient as a mailbox item:
-   `enqueueToMailbox('a2a_message', { extra: { channelKey } })`.
-   `channel_messages` is a **projection** (UI history + the context slice the
-   recipient reads when it processes the item). It is **not** a delivery channel:
-   persisting a row has never delivered anything and must never be reported as if
-   it had.
-
-2. **No half-state.** Either a pending mailbox item exists for the recipient
-   (possibly merged with siblings, §14) or the message was never sent. The state
-   `delivered-but-not-awake` is forbidden — it is invisible to the sender and to
-   the UI, and it was the direct cause of the 2026-10-25 repeat-notification
-   incident.
-
-3. **Reply generation is not delivery.** `processGroupChatReply` exists to produce
-   a reply for an item the peer is **already** processing. It MUST NOT be used to
-   hand a new message to a peer; that is the mailbox's job.
-
-4. **Storm control is causal, never temporal.**
-   - *Chain*: `chainId` propagates trace-style. When an item is processed its
-     `extra.chainId` becomes the turn's current chain (per-worker
-     `SessionWorkspace.chainId`, so concurrent workers never share one); anything
-     the turn sends inherits it, and `sendGroupMessage` hands the parent to
-     `deliver()` with `depth + 1`. A fresh id is minted only when a delivery truly
-     starts a conversation. The context is cleared in the processing `finally` so
-     it cannot leak into the next turn.
-
-     > **Failure mode worth remembering**: this shipped once and did nothing,
-     > because the send logic existed **twice** in `AgentManager` — two
-     > near-identical `sendMessage` closures in different tool-context factories —
-     > and only one forwarded the chain. The A2A tools received the other one, so
-     > every delivery still minted a fresh id while the code read correctly. Both
-     > copies are now deleted in favour of one private `deliverA2AMessage()`.
-     > Reading either copy alone could not have revealed it: only the pair did.
-   - *Coalescing*: messages on the same `channelKey` merge into **one** mailbox
-     item at enqueue time (§14), with the full text preserved in the channel.
-   - Wall-clock throttles MUST NOT drop a wake. `a2aCooldowns` (per-channel 30 s)
-     and `wakeBudget` (global per-agent quota) were removed for exactly this
-     reason — both could answer "sent" for a message the peer never received.
-
-5. **The sender is told the truth.** `agent_send_message` returns
-   `{ deliveryState: 'queued' | 'coalesced', deliveryId, peerPendingItems,
-   coalescedCount }`. `coalesced` means "your message is part of the item the peer
-   will process next" — it is a delivery outcome, not a silent drop.
-
-6. **One place decides.** `AgentDelivery.deliver()` is the only caller of the
-   mailbox enqueue for inter-agent traffic. Any new feature that wants to reach
-   another agent calls it; it must not re-implement "persist + wake".
-
-### 11.1.2 Reply sink — one writer for "an agent said something in a channel"
-
-A2A has two facts, and each needs exactly one writer:
-
-| Fact | Writer | Never |
-|---|---|---|
-| "A message is addressed to agent X" | `AgentDelivery.deliver()` → `mailbox.enqueue('a2a_message')` | never a direct `getAgent(...).handleMessage(...)` |
-| "Agent Y produced a reply in channel C" | `AgentDelivery.postReply()` — persists to `channel_messages`, broadcasts, and **does not** auto-trigger anyone | never a second persist/broadcast path |
-
-`processGroupChatReply` used to be **both** — it woke the peer *and* wrote the
-reply — which is why an A2A message had two possible lifecycles depending on which
-branch produced it. Under this contract it has no role: the mailbox item wakes the
-agent (with its own lease/retry/merge semantics), and the reply returns through
-`responsePromise` to the single sink.
-
-**No automatic reply chain.** A reply never triggers the peer. If the other side
-has something to add it must call `agent_send_message` — a deliberate act. This
-removes the class of incident in which two agents re-replied for 43 turns /
-35 minutes after a single proactive message.
-
-### 11.1.3 Replies are a decision, never a chain
-
-The platform does not decide that an agent should answer. It delivers the message
-and the agent decides:
-
-* **Perception is automatic, response is optional.** A delivered message wakes the
-  agent (mailbox semantics); whether it says anything back is its own call. Ending
-  a turn without replying (`end_turn`) is a legitimate, expected outcome — for
-  human messages too.
-* **No automatic reply chain.** A reply never triggers the peer. If the
-  conversation should continue, the replying agent calls `agent_send_message`
-  itself — a deliberate act with its own cost. There is therefore no "reflection"
-  to bound: without a chain, `DM_MAX_DEPTH`, per-round `respondedAgents`,
-  `shouldChainDmReply`'s regex, the 30 s `a2aCooldowns` and `wakeBudget` have **no
-  subject matter left**. They existed only to bound a chain the platform itself
-  was creating.
-* **`chainId` is correlation, not a guard.** It is inherited from the inbound item
-  (§11.1.1 point 4), so a request and the answer it provokes share one id; it is
-  never used to throttle or to drop.
-* **Nothing is lost when someone stays silent.** The message is in the channel and
-  in the recipient's mailbox history; silence is observable, not a delivery failure.
-
-Rationale (learned the hard way, 2026-10): every storm guard we ever added was a
-consequence of the platform auto-replying on the agent's behalf. Removing the
-auto-reply removes the storm; keeping it forced us to invent judges (wall clock,
-quota, regex) that had to guess "does this reply need an answer?" — and when they
-guessed wrong they discarded the wake while still reporting success.
-
-### 11.1.4 Entry-point inventory (nothing may bypass the delivery service)
-
-| Entry | Path | Notes |
-|---|---|---|
-| `agent_send_message` (DM) | `AgentDelivery.deliver` | one item per `channelKey`, mergeable |
-| group chat, no @mention | `AgentDelivery.deliver` (`throttled` when a chain is hot) | awareness, not a reply request |
-| group chat, @mention | `AgentDelivery.deliver` with `mentions` + `chainId` | the chain decision happens **after** delivery |
-| `agent_delegate_task` | delegation manager → `deliver` | protocol on top of the same transport |
-| review / comment / requirement notifications | `task-service` mailbox items | their own item types, not A2A; they must not invent a second wake path |
-
-**Addressedness** (who is this message for): a message aimed at a specific agent —
-a DM, or a group message where the agent was `@mentioned` — is delivered with a
-one-line `[MENTIONED] This message is addressed to you …` prefix so the recipient
-knows it is the target. Open/broadcast messages carry no marker. Single writer:
-`DeliveryRequest.addressedTargetIds` (a list of the target ids that are actually
-addressed) in `AgentDelivery.deliver()`; callers must not construct the marker
-themselves.
-
-The prefix also carries the **count**: `… Others also addressed: N.` Knowing that
-nobody else was addressed ("this is yours to handle") is a different action from
-knowing two others were ("whoever picks it up first"). The count is emitted
-always, including `0`, for two reasons:
-
-- **One template, one stable prefix.** The marker line is a prompt prefix shared by
-every a2a message. Two shapes (with/without the clause) would fork that prefix and
-degrade prompt-cache hits; a fixed template with only the trailing number varying
-keeps the common prefix intact. Put variable content at the **end** of a stable
-template, never by making the template conditional.
-- **It is the decision-relevant part, and only that.** Names are deliberately not
-included: the list would grow the line without bound and would expose unrelated
-agents' identities to a third party. A count answers "must I act" without leaking.
-
-It is an id list, deliberately, not a boolean. One group message can address two
-of ten members: with a boolean a caller can only mark the whole batch (bystanders
-think they were singled out) or none of it (the mentioned agent never learns it
-was the target). With a list the ambiguous state is not expressible — which is
-the point.
-
-**Origin** (who sent it): `DeliveryRequest.origin` — `[FROM HUMAN] <name> … humans can
-see this channel` versus `[FROM AGENT] … no human is waiting on this`. Produced
-only in `deliver()`, like the addressedness marker. It is load-bearing: a human
-group message delivered as a bare `a2a_message` would be read under the a2a prompt
-section ("humans do NOT see this conversation"), so the agent misjudges the context
-and answers the wrong audience.
-
-**Machine-checkable**: `enqueueToMailbox('a2a_message'` may appear only inside
-`agent-delivery.ts`; a direct `handleMessage`/`processGroupChatReply` used to hand a
-message to another agent is a regression.
-
-### 11.2 Tools & Transport
-
-- **`agent_send_message`**: Always asynchronous — returns immediately with `conversation_id` and `channel_key`. Messages are tagged `[conversation:...]` for multi-turn correlation.
-- **`agent_delegate_task`**: Uses `DelegationManager` for protocol orchestration; transport goes through the DM channel path above.
-- **`agent_broadcast_status`**: Lightweight path — writes to target agent's daily log without an LLM call. Does not use DM channels.
-- **`agent_send_group_message`**: Team/custom group channels (`group:<teamId>`, `group:custom:<id>`). @mentions control which peer agents receive `a2a_message` mailbox items.
-
-The `@markus/a2a` package retains `DelegationManager` and protocol types. `A2ABus` is exported with a `@deprecated` annotation for backward compatibility only.
-
-### 11.3 PendingCallbackRegistry
-
-`PendingCallbackRegistry` (`packages/core/src/pending-callback.ts`) tracks async operations that must report results back through the mailbox rather than injecting directly into an active session.
-
-```typescript
-type CallbackType = 'background_exec' | 'wakeup' | 'a2a_reply';
-type CallbackDelivery = 'in_session' | 'mailbox';
-
-interface PendingCallback {
-  id: string;                    // Unique callback ID (e.g., background session ID, a2a_<conversation_id>)
-  agentId: string;               // Originating agent
-  originSessionId: string;       // Session to resume on completion (in_session mode)
-  type: CallbackType;            // Operation type
-  deliveryMode?: CallbackDelivery; // in_session (default) → callback_result; mailbox → system_event
-  command?: string;              // Optional context (shell command, etc.)
-  note?: string;                 // Free-text label (wakeup reason, delegation goal)
-  correlationId?: string;        // Correlates an external event (conversation_id)
-  wakeAt?: number;               // Scheduled wakeups: epoch ms when due
-  recurringMs?: number;          // Recurring wakeups: re-arm interval
-  registeredAt: number;          // Epoch ms
-  timeoutMs: number;             // 10 min for background_exec; 30 min for a2a_reply; effectively ∞ for wakeup
-}
-```
-
-**Lifecycle:**
-
-1. **Register** — An async operation is registered as a `PendingCallback` and persisted via `SqlitePendingCallbackRepo`:
-   - `background_exec` → `registerBackgroundSession()` (called from `Agent.executeTool` on the tool result).
-   - `agent_send_message` with `reply_in_session` (alias `await_in_session`) → an `a2a_reply` callback keyed by `conversation_id`.
-   - `schedule_wakeup` → a `wakeup` callback with `wakeAt` (+ optional `recurringMs`).
-2. **Complete / fire** — On completion (`background_exec`, `a2a_reply`) or when a wakeup is due, the entry is resolved and delivered via the shared `Agent.deliverCallback()` helper: `in_session` → `callback_result` (bound to `originSessionId`); `mailbox` → `system_event`. Recurring wakeups re-arm.
-3. **Timeout** — Heartbeat calls `getTimedOut()` to find expired callbacks, then `expireTimedOut(id)` removes each from the registry. Timed-out operations are surfaced in the heartbeat prompt (§11.4) for agent investigation — they do not silently disappear. (Wakeups use an effectively infinite timeout and are never flagged.)
-
-**Wakeup scheduler:** each agent runs a coarse (~1-minute) sweep (`Agent.sweepDueWakeups`) that fires any `wakeup` callbacks whose `wakeAt` has passed. This lets an agent register precise time-based follow-ups (`schedule_wakeup`) and stay idle in between, rather than relying on the periodic heartbeat.
-
-**Heartbeat as coarse safety-net:** the periodic heartbeat is a fallback patrol (`DEFAULT_HEARTBEAT_INTERVAL_MS`, 6h), not the primary timing mechanism — `schedule_wakeup` is. The interval is configurable live by the user (Heartbeat tab / `PATCH /api/agents/:id/config`) and by the agent itself via the `set_heartbeat_interval` tool (clamped 5min–24h). Both paths go through `Agent.setHeartbeatInterval()`, which restarts the scheduler immediately; agent-initiated changes persist via the `agent:heartbeat-interval-changed` event → `agentRepo.updateConfig`.
-
-The registry is a process singleton (`pendingCallbackRegistry`), restored from SQLite on startup so callbacks survive server restarts.
-
-### 11.4 Heartbeat Integration
-
-Periodic heartbeat items (`priority: 3 — low`) drive proactive agent patrol. Beyond the standard checklist, heartbeat now integrates:
-
-**Active goals review** — When `goalFetcher` is wired (from org-manager requirement service), the heartbeat prompt includes an **Active Goals** section listing each goal's title, status, iteration count (`currentIteration` / `maxIterations`), and completion criteria. The agent is instructed to:
-
-1. Check linked tasks for progress
-2. Create follow-up tasks if needed
-3. Mark requirements complete when criteria are met
-4. Escalate or adjust approach if stuck
-
-**Callback timeout handling** — Before building the heartbeat prompt, `handleHeartbeat()` calls `pendingCallbackRegistry.getTimedOut()`. For each expired callback:
-
-1. `expireTimedOut(id)` removes it from the registry (and persistence)
-2. Details are injected into the heartbeat prompt under **Timed-Out Async Operations** (background exec or an awaited A2A delegation whose reply never arrived)
-3. The agent investigates and takes corrective action during the heartbeat LLM session
-
-This ensures orphaned async operations are surfaced even when the completion handler never fires (process crash, hung command, etc.).
-
-Background process completions that *do* finish normally are still routed as separate `callback_result` mailbox items (priority 1) — the heartbeat section only handles the timeout case.
-
-### 11.5 Async-Only A2A (Deadlock Prevention)
-
-The `wait_for_reply=true` parameter is **deprecated and ignored**. All A2A messaging is non-blocking. This eliminates deadlocks that occurred when two agents simultaneously awaited each other's reply.
-
-**Correlation pattern**: Each message carries a `conversation_id` (auto-generated UUID). Agents record pending questions in working memory and recognize replies by the `[conversation:...]` tag prepended to the message content. Multi-turn exchanges use the same `conversation_id` for context continuity.
+The full contract lives in [a2a-communication.md](./a2a-communication.md) §11 — DM channels
+`dm:a2a:{sorted_ids}` (§11.1), the delivery invariant (§11.1.1), the reply sink (§11.1.2), the
+entry-point inventory (§11.1.4), tools & transport (§11.2), `PendingCallbackRegistry` (§11.3),
+heartbeat integration (§11.4) and async-only correlation (§11.5).
 
 ---
 
-## 12. User Notifications (Human Mailbox)
+## 12. User Notifications (human mailbox) — moved
 
-Just as agents have a mailbox for incoming stimuli, users have a **persistent notification system** for events that require their attention. This is the user-facing counterpart to the agent mailbox.
-
-### 12.1 Storage
-
-```sql
-CREATE TABLE user_notifications (
-  id TEXT PRIMARY KEY,
-  user_id TEXT NOT NULL,
-  type TEXT NOT NULL,             -- UserNotificationType
-  title TEXT NOT NULL,
-  body TEXT DEFAULT '',
-  priority TEXT DEFAULT 'normal', -- 'low' | 'normal' | 'high' | 'urgent'
-  read INTEGER DEFAULT 0,
-  action_type TEXT,               -- 'navigate' | 'open_chat' | null
-  action_target TEXT,             -- JSON: { path } or { agentId, sessionId }
-  metadata TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-```
-
-### 12.2 Notification Type Registry
-
-Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `USER_NOTIFICATION_TYPE_REGISTRY` in `@markus/shared`:
-
-| Type | Label | Icon | Default Priority | Action | Category |
-|------|-------|------|-----------------|--------|----------|
-| `approval_request` | Approval Request | 🔐 | high | navigate | approval |
-| `task_created` | Task Created | 📋 | normal | navigate | task |
-| `task_completed` | Task Completed | ✅ | normal | navigate | task |
-| `task_review` | Task Review | 👁️ | normal | navigate | task |
-| `task_failed` | Task Failed | ❌ | high | navigate | task |
-| `requirement_created` | Requirement Proposed | 📝 | high | navigate | task |
-| `requirement_decision` | Requirement Decision | ⚖️ | normal | navigate | task |
-| `agent_report` | Agent Report | 📊 | normal | none | agent |
-| `system` | System | ⚙️ | normal | none | system |
-
-### 12.3 Action Types
-
-Notifications can be **actionable** — clicking them navigates the user to the relevant context:
-
-| `action_type` | `action_target` format | Behaviour |
-|---------------|----------------------|-----------|
-| `navigate` | `{ "path": "/work?task=T123" }` | Navigate to the specified route |
-| `open_chat` | `{ "agentId": "...", "sessionId": "..." }` | Open chat with agent, resume session |
-| `none` | — | Notification only, no navigation |
-
-### 12.4 REST API
-
-| Method | Path | Description |
-|--------|------|-------------|
-| GET | `/api/notifications?type=...&limit=...&offset=...` | List notifications with filtering, returns `totalCount` and `unreadCount` |
-| POST | `/api/notifications/:id/read` | Mark single notification as read |
-| POST | `/api/notifications/mark-all-read` | Mark all notifications as read |
-
-### 12.5 Real-Time Delivery
-
-When a notification is created (via `HITLService.notify()`), a WebSocket `notification` event is broadcast. The frontend `App.tsx` listens for this and dispatches a `markus:notifications-changed` custom DOM event, which triggers the `NotificationBell` component to refresh.
+The delivery contract for user notifications is defined in
+[notification-delivery.md](./notification-delivery.md) §12 (storage, type registry, action
+types, REST API, real-time delivery). **The mailbox only owns enqueueing and priority**: it
+carries the resulting items — type, default priority, merge with siblings — but it does not
+define what a notification means or how it reaches a person.
 
 ---
 
-## 13. Agent-to-User Communication
+## 13. Agent-to-User Communication — moved
 
-Agents have two distinct modes for communicating with users. **They are not
-interchangeable** — the choice is decided by one question: *do I need an answer
-before I can continue?*
-
-| I need… | Tool | Semantics |
-|---|---|---|
-| to inform (status, report, alert, finding) | `notify_user` | **one-way**; do NOT expect a reply; must not wait for it |
-| an answer / authorization / a decision | `request_user_input` | **blocks** until the human responds; returns the answer |
-
-A question asked through `notify_user` does not block, brings no answer back, and
-leaves the agent permanently blocked — which in practice produces repeated
-notifications of the same ask (2026-10-25: 12 identical sends in 3 minutes). A
-notification sent through `request_user_input` would hold a turn open for an
-answer nobody needs to give. Each tool's own description states this boundary;
-it is enforced by the tools' contracts, not by caller discipline.
-
-### 13.1 `notify_user` — Proactive Chat Message + Notification
-
-Proactive messages that appear in the agent's chat **and** the user's notification bell. The user can reply in chat, and the agent has full context of what it sent.
-
-```typescript
-// Tool schema
-{
-  name: 'notify_user',
-  parameters: {
-    title: string,     // Short headline (1 line)
-    body: string,      // Full message content (visible in chat)
-    priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
-    related_task_id?: string,  // deep-link to task if applicable
-    target_user_id?: string    // target specific user (defaults to currentInteractingUserId)
-  }
-}
-```
-
-**When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
-
-**Flow**: `agent.executeTool('notify_user')` → builds formatted message with embedded context → `memory.appendMessage()` (in-memory session) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (with `notifyUser` metadata) + `ws.broadcastProactiveMessage()` (with metadata) + `hitlService.notify()`
-
-**Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
-
-#### Message Metadata & Context Embedding
-
-Every `notify_user` message is persisted with **two layers of context**:
-
-1. **DB metadata** (`metadata` column): `{ notifyUser: true, priority, taskId?, requirementId? }` — used by the frontend to display context links and badges.
-
-2. **Embedded context comment** (appended to message content): `<!-- notify_context: task_id=xxx, requirement_id=yyy -->` — survives through `restoreSessionFromHistory()` (which only reads `role` + `content`), ensuring the agent retains context about what it notified the user about when the user replies.
-
-The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
-
-> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [prompt-engineering.md §2.2 "Referencing Markus Resources"](./prompt-engineering.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
-
-#### Real-time Visibility
-
-All `notify_user` messages are buffered in the frontend for every agent conversation immediately upon WebSocket receipt — regardless of whether the user is currently viewing that agent's chat. This ensures messages are visible as soon as the user navigates to the agent, without requiring a page reload.
-
-### 13.2 `request_user_input` — Blocking Decision Request
-
-Requests input or a decision from the user. The tool **blocks** until the user
-responds — no timeout. Supports multiple questions, default Approve/Reject
-options, custom options, and optional freeform text input.
-`request_user_approval` is a deprecated alias with identical behaviour, kept only
-so older prompts keep working.
-
-**Use it whenever you cannot continue without an answer** — an authorization, a
-scope call, an ambiguous choice, a fact only the human has ("I am blocked, I need
-one line of approval"). Asking through `notify_user` instead leaves the turn
-unblocked, brings no answer back, and produces repeated notifications of the same
-ask; the blocking tool is the only correct choice for a question that needs an
-answer.
-
-```typescript
-// Tool schema
-{
-  name: 'request_user_input',
-  parameters: {
-    title: string,           // Short headline
-    description: string,     // Detailed context
-    options?: Array<{        // Custom options (defaults to Approve/Reject)
-      id: string,
-      label: string,
-      description?: string
-    }>,
-    allow_freeform?: boolean, // Allow user to type custom text
-    related_task_id?: string,
-    priority?: 'normal' | 'high' | 'urgent'
-  }
-}
-// Returns: { status: 'ok', approved: boolean, selected_option: string, comment: string }
-```
-
-**When to use**: Approval requests, design decisions, choosing between approaches, anything requiring user input or decision.
-
-**Flow**: `agent.executeTool('request_user_input')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
-
-The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`) while waiting for approval, preventing the mailbox item from being requeued prematurely.
-
-### 13.3 Prompt Guidance
-
-The system prompt includes scenario-specific guidance on which tool to use:
-
-| Situation | Tool |
-|-----------|------|
-| Status report, progress update, FYI alert | `notify_user` — one-way; the user may reply, but do not wait |
-| Task completed notification | `notify_user` with `related_task_id` |
-| **Blocked: needs an authorization / decision to continue** | **`request_user_input`** (blocks, returns the answer) |
-| Need user to approve/reject something | `request_user_input` (default options) |
-| Need user to choose between approaches | `request_user_input` with custom `options` |
-| Need user freeform input | `request_user_input` with `allow_freeform: true` |
-| Want to discuss interactively | Mention user via task/requirement comment |
-| Need to review past execution details | `recall_activity` (list activities or get logs) |
+The `notify_user` (one-way, non-blocking) versus `request_user_input` (blocking, returns the
+answer) contract, the `notify_context` metadata rules and the prompt guidance are defined in
+[notification-delivery.md](./notification-delivery.md) §13. Mailbox-side, all that stays here is
+the enqueue and priority of the produced items, plus one timing fact: while an item waits for
+approval the attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24 h) instead of the normal
+45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`), so the item is not requeued prematurely
+(§4).
 
 ---
 
@@ -1290,7 +901,7 @@ stayed persisted:
 
 | Guard | Where | Judgement | Outcome on match |
 |---|---|---|---|
-| ~~`DM_MAX_DEPTH`~~ | ~~reply chain~~ | **deleted** | bounded a chain that no longer exists (§11.1.3) |
+| ~~`DM_MAX_DEPTH`~~ | ~~reply chain~~ | **deleted** | bounded a chain that no longer exists ([a2a-communication.md](./a2a-communication.md) §11.1.3) |
 | `a2aCooldowns` | api-server, per (channel, peer) | 30 s wall clock | **drop the wake, keep the row** |
 | `wakeBudget` | api-server, per agent | global quota | **drop the wake, keep the row** |
 | mailbox coalescing | enqueue (§14) | same `channelKey` | merge into one item |
@@ -1306,7 +917,7 @@ question twelve times" (must be coalesced) from "twelve different messages" (all
 must arrive), so it thinned real information while doing nothing about the
 duplicate asks themselves.
 
-Hence the rule in §11.1.1: **coalescing is the only thinning mechanism for a
+Hence the rule in [a2a-communication.md](./a2a-communication.md) §11.1.1: **coalescing is the only thinning mechanism for a
 channel**, and the chain guard may only prevent a chain from growing — it must
 never discard an addressed message. Regression detector: a `suppressed by
 cooldown` log line or a `wakeBudget.tryConsume` call existing anywhere in the tree
@@ -1868,7 +1479,7 @@ Agent calls notify_user(title, body, target_user_id?)
 
 ### 25.3 Agent-to-Agent (A2A)
 
-A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — see §11.1.
+A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — see [a2a-communication.md](./a2a-communication.md) §11.1.
 
 | Tool | Capability |
 |------|-----------|
@@ -1900,7 +1511,7 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 
 ## 26. Future Work
 
-- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See §11.3.
+- **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See [a2a-communication.md](./a2a-communication.md) §11.3.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
 - **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.
