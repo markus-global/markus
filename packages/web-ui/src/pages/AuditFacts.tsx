@@ -11,7 +11,8 @@
  *    not access control).
  *  · **read-only.** No assert / supersede / verify affordance; those live behind agent tools so
  *    the audit page can never become a second writer.
- *  · **"disabled" is not "empty".** `FACTS_ENABLED=0` renders an explicit notice; an empty table
+ *  · **"disabled" is not "empty".** A deployment where the facts port is not wired renders an
+ *    explicit notice; an empty table
  *    would read as "no facts exist", which is a different (and false) statement.
  *
  * Read by a person under pressure — so every label answers a question a human would actually ask:

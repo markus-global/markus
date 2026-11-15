@@ -22,7 +22,6 @@ import {
   FACT_PREDICATES,
   findFactPredicate,
   generateId,
-  isFactsEnabled,
   nearestFactPredicates,
   validateFactValue,
   type FactSubjectKind,
@@ -51,8 +50,6 @@ export interface FactDb {
 export interface FactServiceOptions {
   /** Clock injection: deterministic `created_at` in tests, one source in production. */
   now?: () => string;
-  /** Flag reader injection. Defaults to `FACTS_ENABLED` (read once, not per call site). */
-  enabled?: () => boolean;
 }
 
 interface FactRow {
@@ -96,14 +93,12 @@ function parseJson<T>(raw: string | null, fallback: T): T {
 
 export class SqliteFactService implements FactService {
   private readonly now: () => string;
-  private readonly enabled: () => boolean;
 
   constructor(
     private readonly db: FactDb,
     opts: FactServiceOptions = {},
   ) {
     this.now = opts.now ?? (() => new Date().toISOString());
-    this.enabled = opts.enabled ?? (() => isFactsEnabled());
   }
 
   // ─── write ────────────────────────────────────────────────────────────────
@@ -209,14 +204,6 @@ export class SqliteFactService implements FactService {
    * (the new row starts unverified) and judge that.
    */
   verify(input: FactVerifyInput): FactWriteResult {
-    if (!this.enabled()) {
-      return {
-        status: 'rejected',
-        code: 'disabled',
-        message: 'FACTS_ENABLED=0 — the facts layer is off in this deployment.',
-      };
-    }
-
     const fact = this.getById(input.factId);
     if (!fact) {
       return {
@@ -312,7 +299,6 @@ export class SqliteFactService implements FactService {
   // ─── read ─────────────────────────────────────────────────────────────────
 
   queryActive(query: FactQuery): FactRecord[] {
-    if (!this.enabled()) return [];
     const where: string[] = [];
     const params: unknown[] = [];
     if (query.factId !== undefined) {
@@ -357,13 +343,6 @@ export class SqliteFactService implements FactService {
 
   /** All meaning-level checks, in the order that gives the most actionable error. */
   private validate(input: FactAssertInput): FactWriteResult | undefined {
-    if (!this.enabled()) {
-      return {
-        status: 'rejected',
-        code: 'disabled',
-        message: 'FACTS_ENABLED=0 — the facts layer is off in this deployment.',
-      };
-    }
     if (!SUBJECT_KINDS.includes(input.subjectKind)) {
       return {
         status: 'rejected',

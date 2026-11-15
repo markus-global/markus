@@ -11,7 +11,6 @@ import {
   findFactPredicate,
   nearestFactPredicates,
   validateFactValue,
-  isFactsEnabled,
 } from '../src/facts/predicates.js';
 
 describe('predicate closed set', () => {
@@ -165,15 +164,3 @@ describe('nearestFactPredicates', () => {
   });
 });
 
-describe('FACTS_ENABLED', () => {
-  it('defaults to enabled', () => {
-    expect(isFactsEnabled({})).toBe(true);
-    expect(isFactsEnabled({ FACTS_ENABLED: '1' })).toBe(true);
-  });
-
-  it('is enabled only when the value is not exactly "0"', () => {
-    expect(isFactsEnabled({ FACTS_ENABLED: '0' })).toBe(false);
-    // Documented contract: any other value keeps the layer on — no silent typos.
-    expect(isFactsEnabled({ FACTS_ENABLED: 'false' })).toBe(true);
-  });
-});

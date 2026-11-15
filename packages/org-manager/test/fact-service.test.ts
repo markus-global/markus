@@ -7,7 +7,6 @@
  *
  * 另外锁两件容易退化的语义：
  *   · supersede 一次调用完成「断言新 + 标记旧」，旧行 value 不被改写（历史可解释）；
- *   · `FACTS_ENABLED=0` 时写被拒、读为空 —— 关闭通道必须真的关。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -270,19 +269,4 @@ describe('queryActive — exact matching only', () => {
   });
 });
 
-describe('FACTS_ENABLED=0 — the rollback channel really closes', () => {
-  it('rejects writes with `disabled`', () => {
-    const off = new SqliteFactService(db, { now: () => NOW, enabled: () => false });
-    const res = off.assert(input());
-    expect(res.status).toBe('rejected');
-    if (res.status !== 'rejected') return;
-    expect(res.code).toBe('disabled');
-    expect(db.prepare('SELECT COUNT(*) c FROM facts').get()).toEqual({ c: 0 });
-  });
 
-  it('returns no facts', () => {
-    svc.assert(input());
-    const off = new SqliteFactService(db, { enabled: () => false });
-    expect(off.queryActive({ subjectKind: 'task', subjectId: 'tsk_a1' })).toEqual([]);
-  });
-});

@@ -4,7 +4,7 @@
  * What must be true (each assertion fails if the behaviour is removed):
  *  1. Only `owner` / `admin` get the page, and for anyone else **no request is issued** (hiding a
  *     page is not access control, but an unauthorized client must not learn anything either).
- *  2. `FACTS_ENABLED=0` (server `disabled: true`) renders an explicit notice — an empty table
+ *  2. an unwired facts layer (server `disabled: true`) renders an explicit notice — an empty table
  *     would read as "no facts exist", which is a different and false statement.
  *  3. The supersede chain is readable (old → new → who/when).
  *  4. Empty filters are omitted from the query string (an empty `subjectId=` means "id is empty").

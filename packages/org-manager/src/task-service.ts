@@ -2,7 +2,6 @@ import type { WorkUnitService } from './work-unit-service.js';
 import {
   createLogger,
   taskId,
-  isFactsEnabled,
   type Task,
   type SubTask,
   type SubTaskStatus,
@@ -1058,16 +1057,16 @@ export class TaskService implements ApprovalTargetPort {
    * 放在工具层会让 REST 调用绕过它（同一个不变量两个执行点 = R2），
    * 而 `architecture-guard` 的 `terminal-hook-single-point` 就是钉这一条的。
    *
-   * 未注入（或 `FACTS_ENABLED=0`）时两个钩子完全惰性，行为与 C9-E 之前一致。
+   * 未注入 facts 端口时两个钩子完全惰性。
    */
   private factService?: FactService | null;
   setFactService(service: FactService | null | undefined): void {
     this.factService = service ?? null;
   }
 
-  /** facts 层是否真的在管（端口接了 + 开关开着）。 */
+  /** facts 层是否真的在管（端口接了）。 */
   private factsActive(): boolean {
-    return !!this.factService && isFactsEnabled();
+    return !!this.factService;
   }
 
   /**

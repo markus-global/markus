@@ -11,7 +11,7 @@
  *     stage back to `in_verification` through C9-C's `deriveStage` (AC-2: same derivation, no copy).
  *  4. **Terminal hook 1**: `task_submit_review` refuses without an active
  *     `task.completion_evidence`, and the SAME call succeeds once the fact exists (AC-3, both
- *     directions). `FACTS_ENABLED=0` restores the old behaviour (AC-6).
+ *     directions).
  *  5. **Terminal hook 2**: an agent sending work back must assert `task.rejection_reason`.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
@@ -36,13 +36,11 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'markus-c9e-'));
   db = openSqlite(join(tempDir, 'test.db')) as unknown as FactDb;
   svc = new SqliteFactService(db, { now: () => NOW });
-  delete process.env['FACTS_ENABLED'];
 });
 
 afterEach(() => {
   closeSqlite();
   rmSync(tempDir, { recursive: true, force: true });
-  delete process.env['FACTS_ENABLED'];
 });
 
 function assertEvidence(over: Partial<FactAssertInput> = {}) {
@@ -266,14 +264,6 @@ describe('terminal hook 1 — task_submit_review needs task.completion_evidence 
       value: { summary: 'done', evidence_refs: ['dlv_9'] },
       workUnitRef: `task:${id}:r1`, assertedBy: AGENT, sourceRefs: ['dlv_9'],
     });
-    const task = await ts.submitForReview(id, [{ type: 'file', reference: '/tmp/x.md', summary: 'out' }]);
-    expect(task.status).toBe('review');
-  });
-
-  it('FACTS_ENABLED=0 restores the old behaviour (rollback, AC-6)', async () => {
-    process.env['FACTS_ENABLED'] = '0';
-    const ts = makeTaskService();
-    const { id } = taskInProgress(ts);
     const task = await ts.submitForReview(id, [{ type: 'file', reference: '/tmp/x.md', summary: 'out' }]);
     expect(task.status).toBe('review');
   });

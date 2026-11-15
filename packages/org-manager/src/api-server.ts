@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, isFactsEnabled, type FactSubjectKind, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -8467,8 +8467,8 @@ EXPLANATION_END`;
         return;
       }
       const factService = this.storage?.factService;
-      if (!isFactsEnabled() || !factService) {
-        // 「关着」与「没有数据」必须是两个不同的回答：空表会被读成“一条事实也没有”。
+      if (!factService) {
+        // 「没有接线」与「没有数据」必须是两个不同的回答：空表会被读成“一条事实也没有”。
         this.json(res, 200, { facts: [], truncated: false, disabled: true });
         return;
       }

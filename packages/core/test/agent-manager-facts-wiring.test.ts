@@ -67,7 +67,6 @@ function fakeFactService() {
 }
 
 beforeEach(() => {
-  delete process.env['FACTS_ENABLED'];
   dataDir = mkdtempSync(join(tmpdir(), 'markus-facts-wiring-'));
   rolesDir = mkdtempSync(join(tmpdir(), 'markus-facts-wiring-roles-'));
   roleLoader = new RoleLoader([rolesDir]);
@@ -110,17 +109,6 @@ describe('facts 能力装配（C9-A/C9-E）', () => {
 
     for (const name of FACT_TOOLS) {
       expect(agent.getTools().has(name), `${name} 必须在建 agent 时就注册`).toBe(true);
-    }
-  });
-
-  it('FACTS_ENABLED=0 是唯一回滚通道：写者还在，但工具一个都不注册', async () => {
-    process.env['FACTS_ENABLED'] = '0';
-    const manager = createManager();
-    const agent = await manager.createAgent({ name: 'Worker', roleName: 'developer', orgId: 'org_x', tools: [] });
-    manager.setFactService(fakeFactService() as never);
-
-    for (const name of FACT_TOOLS) {
-      expect(agent.getTools().has(name), `${name} 必须随 FACTS_ENABLED=0 消失`).toBe(false);
     }
   });
 });

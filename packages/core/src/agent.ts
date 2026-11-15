@@ -680,8 +680,7 @@ export class Agent {
    * 第九刀 C9-E：dream 的建议动作要落成 `memory.consolidation_suggestion` 事实，
    * 而 dream 跑在 Agent 内部（不再绕 mailbox），所以 Agent 需要同一个唯一写者端口。
    *
-   * 传 `null` 与不调用等价：dream 照跑，但不写建议事实（也不会改回写口语）——
-   * 那正是 `FACTS_ENABLED=0` 的回滚通道。
+   * 传 `null` 与不调用等价：dream 照跑，但不写建议事实（也不会改回写口语）。
    */
   private factService?: FactService | null;
   setFactService(service: FactService | null): void {
@@ -11045,7 +11044,7 @@ export class Agent {
       // 不静默改写成邻近动作）+ 代码从 promete 分组派生的 `promote`（>=3 条观察同一主题）。
       // 两者都是「建议」，所以它们**不写 knowledge.md** —— 只落一条
       // `memory.consolidation_suggestion` 事实（每 agent 一个当前快照，下次 dream supersede）。
-      // 没有 FactService（`FACTS_ENABLED=0` 或未接线）时跳过写事实，但也**不**退回写口语。
+      // 没有 FactService（未接线）时跳过写事实，但也**不**退回写口语。
       this.recordDreamSuggestions(plan, rawPlan.suggestions, windowKey);
     } catch (error) {
       log.warn('Dream cycle failed', { agentId: this.id, error: String(error) });

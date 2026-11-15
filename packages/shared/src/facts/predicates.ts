@@ -294,12 +294,3 @@ export function nearestFactPredicates(predicate: string, limit = 3): string[] {
     .map(s => s.name);
 }
 
-/**
- * `FACTS_ENABLED` — the one and only reader of the rollback flag.
- *
- * Default ON. `FACTS_ENABLED=0` (exactly "0") turns the layer off: no tools, no
- * prompt block, no reads/writes, so `DROP TABLE facts` is a complete rollback.
- */
-export function isFactsEnabled(env: NodeJS.ProcessEnv = process.env): boolean {
-  return env['FACTS_ENABLED'] !== '0';
-}

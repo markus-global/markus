@@ -434,8 +434,8 @@ export class ContextEngine {
    *
    * Injected rather than derived here: the subject (which task this turn is
    * about) is knowledge the agent owns, and the port keeps `ContextEngine` free
-   * of any database dependency. `null` ⇒ no block at all (no subject, or
-   * `FACTS_ENABLED=0`).
+   * of any database dependency. `null` ⇒ no block at all (no subject for this
+   * turn, or the port is not wired).
    */
   private factsProvider?: () => FactsPromptContext | null;
 

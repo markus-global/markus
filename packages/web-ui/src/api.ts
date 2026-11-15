@@ -1522,7 +1522,7 @@ export function dispatchThinkingDelta(
  * C9-E · facts 审计轨迹（只读，owner/admin）。
  *
  * 查询串由 `lib/factsAudit.ts#buildFactsQuery` 构造：空过滤器被省略（空串不是“等于空 id”）。
- * 服务端在 `FACTS_ENABLED=0` / 未接线时回 `disabled: true`，页面必须把它与「没有数据」分开呈现。
+ * 服务端在 facts 层未接线时回 `disabled: true`，页面必须把它与「没有数据」分开呈现。
  */
 export const factsAudit = {
   list: (query = '') => request<FactsResponse>(`/facts${query}`),

@@ -23,7 +23,6 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
-  isFactsEnabled,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
@@ -3742,8 +3741,8 @@ export class AgentManager {
    * 第九刀 C9-A：接入 facts 的唯一写者（org-manager 装配时注入）。
    *
    * 传 `null` 与不调用等价：三工具不注册、`[FACTS:…]` 不渲染。
-   * 那正是 `FACTS_ENABLED=0` 的回滚通道 —— 关闭不是靠工具里多一个 if，
-   * 而是这个依赖根本不接。
+   * （`FACTS_ENABLED=0` 开关已于 2026-11-15 删除：事实层是核心能力，不再提供
+   * “关掉整层”的运行形态；不接线的部署仍是合法的惰性状态。）
    */
   setFactService(service: FactService | null): void {
     this.factService = service;
@@ -3757,8 +3756,11 @@ export class AgentManager {
    * C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。
    *
    * `null`/未注入 ⇒ **不触碰** agent：与 `setFactService` 的「不调用等价」口径一致，
-   * 也让未接 facts 的部署里 agent 完全不知道这一层存在。运行期关闭仍然是
-   * `FACTS_ENABLED=0`（`isFactsEnabled()` 在 service 内部读，一处判定）。
+   * 也让未接 facts 的部署里 agent 完全不知道这一层存在。
+   *
+   * 注：`FACTS_ENABLED=0` 开关已于 2026-11-15 删除（Owner 决定）。事实层是核心能力，
+   * “关掉事实层”不该是长期可选的运行形态——开关存本身就是技术债：多 4 处分支、
+   * 多一条为回退而存在的测试，并给了一个“出问题就关掉”的错误出口。
    */
   private applyFactService(agent: Agent): void {
     if (!this.factService) return;
@@ -3782,7 +3784,7 @@ export class AgentManager {
    */
   private applyFactsCapability(agent: Agent): void {
     const facts = this.factService;
-    if (!facts || !isFactsEnabled()) return;
+    if (!facts) return;
     for (const tool of createFactTools({
       agentId: agent.id,
       facts,
