@@ -1897,13 +1897,30 @@ export class AgentMailbox {
    * 经 `enqueue(..., { reuseItemId: item.id })` 声明「我正持有这一条」，使判定走
    * 「复用原行回队」而不是「同键 → 幂等抑制」（后者会让该行永远停在 `processing`）。
    *
+   * 身份（C9 相邻路径）：**复用既有行 = 继承该行的 `work_unit_ref`，不在本调用点重新表态**。
+   *
+   * 机制证据（真机探针，docs/records/cut9-adjacent-identity-paths-2026-11-15.md）：
+   * `requeueItem()` 的 UPDATE 只改 `status / queued_at / started_at / completed_at /
+   * claimed_by / lease_until / drop_reason / bounce_target`，**不碰 `work_unit_ref`**
+   * ⇒ 回队后行仍带着它原本的身份（`task_<id>_r1`），这里若再算一个 ref 就是第二个写者。
+   *
+   * 因此本方法只做两件事：
+   * 1. 把调用方手里**已经持有**的 ref 交回去（`item.workUnitRef`），否则回队后的内存项会
+   *    丢掉原投递带的身份（`enqueue` 用 `options.workUnitRef ?? null` 重建 item）；
+   * 2. 没有 ref 时显式表态：`pending-link` —— 身份不由本调用点决定，行才是权威
+   *    （task / a2a 的身份都是入队后由 `linkMailboxItem` 迟到的）。
+   *
    * @returns 回队后的 item（`status === 'queued'`）；若既有行已收口则返回被抑制的 item。
    */
   reEnqueueOnShutdown(item: MailboxItem): MailboxItem {
     return this.enqueue(item.sourceType, item.payload, {
       priority: item.priority,
       metadata: item.metadata,
+      // 轮次是结构字段（幂等键 / 单播路由的输入），回队不得丢。
+      round: item.round,
       reuseItemId: item.id,
+      workUnitRef: item.workUnitRef ?? null,
+      refOrigin: item.workUnitRef ? 'entity' : 'pending-link',
     });
   }
 
