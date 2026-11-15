@@ -166,6 +166,40 @@ const INVARIANT_RULES = [
       },
     ],
   },
+  // 第九刀 C9-D：Inbox 的成员判定只能有一处实现。这条锁住两个方向 ——
+  //   ① 派生层丢掉「无 action ⇒ 丢弃」这条铁律（Inbox 立刻退化成"看着热闹没人能动"）；
+  //   ② 呈现层重新长出「谁该进队列」的判定（回到同一事实多个写者的老路）。
+  {
+    id: 'inbox-single-derivation',
+    title: 'Inbox 的成员/去重只在 deriveInbox 决定，无 action 的行必须被丢弃',
+    checks: [
+      {
+        file: 'packages/web-ui/src/lib/deriveInbox.ts',
+        label: '派生层仍构造 `subjectKind:subjectId:needKind` 的键，且仍记录 no_action 丢弃',
+        hint: '去重键或丢弃规则被删 → 同一件事出现多次，或不可行动的红灯回到列表里',
+        detect: t =>
+          /\$\{subjectKind\}:\$\{subjectId\}:\$\{needKind\}/.test(t) &&
+          /reason:\s*'no_action'/.test(t),
+        fixtures: {
+          ok: 'export function dedupeKey(a, b, c) { return `${subjectKind}:${subjectId}:${needKind}`; }\n  dropped.push({ source: \'approval\', ref: id, reason: \'no_action\' });',
+          bad: 'export function dedupeKey(a, b, c) { return `${subjectKind}:${subjectId}:${needKind}`; }',
+        },
+      },
+      {
+        file: 'packages/web-ui/src/lib/attentionQueue.ts',
+        label: '呈现层只委托 deriveInbox，不再按状态过滤 / 自己维护实体→行映射',
+        hint: '呈现层重新判定成员 → 同一「需要人做什么」的事实有了第二个写者，客户端一多就各自漂移',
+        detect: t =>
+          t.includes('deriveInbox(') &&
+          !/\bstatus\s*[!=]==?\s*'/.test(stripComments(t)) &&
+          !/byEntity|entityKeysOf|dedupeKey\s*\(/.test(stripComments(t)),
+        fixtures: {
+          ok: "const { items } = deriveInbox(snapshot, ports, { lastSeenAt });\nreturn items.map(toRow);",
+          bad: "for (const a of approvals) { if (a.status !== 'pending') continue; rows.push(a); }\nconst { items } = deriveInbox(snapshot, ports);",
+        },
+      },
+    ],
+  },
   {
     id: 'mailbox-claim-uniqueness',
     title: 'item 认领唯一性（原子条件更新 + 幂等唯一键 + core 委托认领）',
