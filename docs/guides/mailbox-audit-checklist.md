@@ -1,5 +1,10 @@
 # Mailbox System — Documentation × Code Audit Checklist
 
+> **Moved** here from `docs/architecture/` on 2026-11-15: this is a how-to audit checklist, not a
+> description of the system. The behaviour it audits is described in
+> [`mailbox-system.md`](../architecture/mailbox-system.md) (§1–§28). Figure references below date
+> from the 2026-10-25 audit and may have shifted.
+
 **Scope**: `docs/architecture/mailbox-system.md` (1815 lines, §1–§27)
 **Started**: 2026-10-25
 **Method**: for every falsifiable claim — verify against code, judge, then fix whichever side is wrong, re-verify, and tick it. One row = one atomic checkable fact.

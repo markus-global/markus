@@ -38,21 +38,19 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 |---|---|
 | [architecture.md](./architecture/architecture.md) | System overview, package structure, channels, deployment, observability |
 | [architecture-fragility.md](./architecture/architecture-fragility.md) | Why this system produces fragile bugs, and the structural rules that prevent it |
-| [agent-runtime.md](./architecture/agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [agent-runtime.md](./architecture/agent-runtime.md) | Agent lifecycle, execution model, workspace isolation; state-ownership contract (Appendix A) |
 | [cognitive-architecture.md](./architecture/cognitive-architecture.md) | Cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./architecture/memory-system.md) | Memory layers, storage compaction, memory flush |
-| [prompt-engineering.md](./architecture/prompt-engineering.md) | System prompt architecture, LLM call taxonomy, prompt caching, output token resolution |
+| [prompt-engineering.md](./architecture/prompt-engineering.md) | System prompt architecture, LLM call taxonomy incl. provider timeout governance (§1.3), prompt caching, output token resolution |
 | [context-assembly.md](./architecture/context-assembly.md) | Message assembly & context compression — token budget, compaction pipeline, ContextOS fixed/variable split |
 | [tool-loop-harness.md](./architecture/tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context matrix, scenario × tool face) |
 | [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); triage, restart recovery, addresses, delivery envelopes and bounce/catch-all (§28) |
 | [a2a-communication.md](./architecture/a2a-communication.md) | Agent-to-agent communication — DM/group channels, one-message-one-delivery-fact invariant, reply sink, entry-point inventory |
 | [notification-delivery.md](./architecture/notification-delivery.md) | Notification delivery to humans — user/IM notification contract, agent→user messages, dedup and context truth |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
-| [state-ownership.md](./architecture/state-ownership.md) | State-ownership contract: who owns what, who may read it, in which execution context |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./architecture/tool-system.md) | Tool selection, tool result envelope, execution loop, subagent budgets |
 | [streaming-and-reattach.md](./architecture/streaming-and-reattach.md) | SSE streaming, soft-disconnect, reattach, client resilience |
-| [llm-provider-timeouts.md](./architecture/llm-provider-timeouts.md) | Per-provider timeout/retry governance matrix, known risk inventory |
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
 | [facts.md](./architecture/facts.md) | C9 fact layer — contract (predicates, single writer, rejection matrix, schema, prompt surface) + independent verification (terminal hooks, dream suggestions, read-only audit page) |
 | [derived-views.md](./architecture/derived-views.md) | C9 derived views — thread stage, inbox derivation, and the four observation tables; all derived, never a second decider |

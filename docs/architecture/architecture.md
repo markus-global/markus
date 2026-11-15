@@ -20,7 +20,7 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 |----------|-------------------------------|
 | [architecture.md](./architecture.md) *(this file)* | System overview, package structure, core concepts, channels, deployment, observability |
 | [architecture-fragility.md](./architecture-fragility.md) | Why this system keeps producing fragile bugs, and the structural rules that prevent it |
-| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation |
+| [agent-runtime.md](./agent-runtime.md) | Agent lifecycle, execution model, workspace isolation; state-ownership contract (Appendix A) |
 | [cognitive-architecture.md](./cognitive-architecture.md) | Unified cognitive cycle, deterministic context assembly, heartbeat integration |
 | [memory-system.md](./memory-system.md) | Memory layers (ROLE / knowledge / session / notebook / activity), storage compaction, memory flush |
 | [prompt-engineering.md](./prompt-engineering.md) | System prompt architecture, LLM call taxonomy, prompt caching, output token resolution |
@@ -30,12 +30,10 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [a2a-communication.md](./a2a-communication.md) | Agent-to-agent communication over the mailbox — channels, delivery facts, reply sink, entry points |
 | [notification-delivery.md](./notification-delivery.md) | Notification delivery to humans — user/IM notifications and agent→user messages |
 | [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
-| [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
 | [derived-views.md](./derived-views.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`) with their nullable `work_unit_ref`, the single source of "running" (`work_units`), plus thread-stage and inbox derivation |
 | [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
-| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
-| [llm-provider-timeouts.md](./llm-provider-timeouts.md) | Per-provider LLM timeout/retry governance matrix, known risk inventory, target design |
+| [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience; LLM provider timeout/retry governance lives in [prompt-engineering.md §1.3](./prompt-engineering.md) |
 | [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
 | [frontend/team-chat.md](./frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [../api/api.md](../api/api.md) | REST / WebSocket API reference |

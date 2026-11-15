@@ -2,7 +2,7 @@
 
 > 状态：**已被仓库版取代（SUPERSEDED）** · 仓库唯一事实源：`docs/records/cut7-workunit-execution-plan-2026-11-13.md`（随 C7-A 的 PR 进 `feat/refactor-plan`）· CTO 草稿镜像 v1 · 2026-11-13
 > **本文件只读**：它不在任何仓库分支里，PR 评审人看不到它。**任何人不得把结论只写在这里**；跨 agent workspace 写入是禁区。
-> 唯一概念事实源：[`markus-master-refactor-plan-2026-11-11.md`](./markus-master-refactor-plan-2026-11-11.md) §2.1 / §4.6 / §5.2 / §5.3
+> 唯一概念事实源：`markus-master-refactor-plan-2026-11-11.md` §2.1 / §4.6 / §5.2 / §5.3（**该文件不在本仓库**，是 CTO 侧镜像稿，2026-11-15 核实；此处保留名称仅为可追溯，不提供链接）
 > 硬边界：动共享基础设施（新表 + 委派链路 + 预算语义）→ **改前通知团队**；merge main / 发版 / 删数据 / 改他人绑定一律 Owner 明确批准。
 
 ---

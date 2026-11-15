@@ -9884,7 +9884,7 @@ export class Agent {
         // delivery receipt, so every turn re-derived "I have not actually sent
         // this yet" and sent it again. The tool-semantics prompt fix could not
         // help, because the evidence was deleted before the model saw it.
-        // See docs/architecture/notify-user-context-truth.md.
+        // See docs/records/notify-user-context-truth-2026-10-28.md.
         //
         // The payload's legitimate home is the HUMAN's transcript: start.ts
         // persists it to `chat_messages` and broadcasts it to the chat UI. The
