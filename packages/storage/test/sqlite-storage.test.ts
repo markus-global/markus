@@ -13,11 +13,6 @@ import {
   SqliteTeamRepo,
   SqliteChatSessionRepo,
   SqliteChannelMessageRepo,
-  SqliteMessageRepo,
-  SqliteMarketplaceTemplateRepo,
-  SqliteMarketplaceSkillRepo,
-  SqliteMarketplaceRatingRepo,
-  SqliteAgentKnowledgeRepo,
   purgeLeakedToolMarkup,
 } from '../src/sqlite-storage.js';
 
@@ -180,67 +175,6 @@ describe('SQLite Storage Backend', () => {
     });
   });
 
-  describe('MarketplaceTemplateRepo', () => {
-    it('should create, list, and search templates', () => {
-      const repo = new SqliteMarketplaceTemplateRepo(db);
-      repo.create({
-        id: 'tpl-1',
-        name: 'My Template',
-        description: 'A test template',
-        authorName: 'Alice',
-        roleId: 'dev',
-        category: 'development',
-        tags: ['coding', 'ai'],
-        source: 'community',
-        status: 'published',
-      });
-
-      const list = repo.list({ status: 'published' });
-      expect(list.length).toBe(1);
-      expect(list[0]!.tags).toEqual(['coding', 'ai']);
-
-      const results = repo.search('template');
-      expect(results.length).toBe(1);
-
-      repo.incrementDownloads('tpl-1');
-      const updated = repo.findById('tpl-1');
-      expect(updated!.downloadCount).toBe(1);
-    });
-  });
-
-  describe('AgentKnowledgeRepo', () => {
-    it('should CRUD knowledge entries and search by tags', async () => {
-      const orgRepo = new SqliteOrgRepo(db);
-      await orgRepo.createOrg({ id: 'org-1', name: 'Org', ownerId: 'u1' });
-      const agentRepo = new SqliteAgentRepo(db);
-      agentRepo.create({ id: 'a1', name: 'Agent', orgId: 'org-1', roleId: 'r1', roleName: 'Dev' });
-
-      const repo = new SqliteAgentKnowledgeRepo(db);
-      repo.create({
-        id: 'k1',
-        agentId: 'a1',
-        orgId: 'org-1',
-        category: 'code',
-        title: 'TypeScript patterns',
-        content: 'Use generics for type safety',
-        tags: ['typescript', 'patterns'],
-        importance: 80,
-      });
-
-      const found = repo.search('a1', 'TypeScript');
-      expect(found.length).toBe(1);
-
-      const byTags = repo.searchByTags('a1', ['typescript']);
-      expect(byTags.length).toBe(1);
-
-      expect(repo.countByAgent('a1')).toBe(1);
-
-      repo.recordAccess('k1');
-      const k = repo.findById('k1');
-      expect(k!.accessCount).toBe(1);
-    });
-  });
-
   describe('TaskLogRepo', () => {
     it('should append and retrieve task logs', async () => {
       const orgRepo = new SqliteOrgRepo(db);
@@ -289,28 +223,6 @@ describe('SQLite Storage Backend', () => {
     });
   });
 
-  describe('MarketplaceRatingRepo', () => {
-    it('should handle ratings and aggregation', () => {
-      const repo = new SqliteMarketplaceRatingRepo(db);
-      repo.create({
-        id: 'r1',
-        targetType: 'template',
-        targetId: 'tpl-1',
-        userId: 'u1',
-        rating: 5,
-        review: 'Great!',
-      });
-      repo.create({ id: 'r2', targetType: 'template', targetId: 'tpl-1', userId: 'u2', rating: 3 });
-
-      const agg = repo.getAggregation('template', 'tpl-1');
-      expect(agg.count).toBe(2);
-      expect(agg.avg).toBe(4); // Math.round((5+3)/2) = 4
-
-      const userRating = repo.findUserRating('u1', 'template', 'tpl-1');
-      expect(userRating).toBeDefined();
-      expect(userRating!.rating).toBe(5);
-    });
-  });
 });
 
 describe('purgeLeakedToolMarkup 存量清洗', () => {

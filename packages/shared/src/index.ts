@@ -1,4 +1,5 @@
 export * from './secretary.js';
+export * from './declarations.js';
 export * from './locale.js';
 export * from './approval-labels.js';
 export * from './notification-labels.js';

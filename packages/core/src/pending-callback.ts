@@ -92,6 +92,11 @@ export interface CallbackPersistence {
   save(cb: PersistedCallback): void;
   remove(id: string): void;
   loadAll(): PersistedCallback[];
+  /**
+   * P3 -- claim-before-deliver. Optional so an in-memory or test adapter keeps
+   * working unchanged: absent means "one process, nothing to arbitrate".
+   */
+  claim?(id: string, owner: string, leaseMs: number): boolean;
 }
 
 export class PendingCallbackRegistry {
@@ -163,6 +168,20 @@ export class PendingCallbackRegistry {
       log.info('Discarded pending callbacks (premise gone)', { correlationId, reason, dropped });
     }
     return dropped;
+  }
+
+  /**
+   * P3 -- claim a due callback before delivering it.
+   *
+   * Returns false when another process won the claim, and the caller must then NOT
+   * deliver. Without persistence (single process) there is nothing to arbitrate, so
+   * the claim succeeds and the entry is dropped from memory -- the semantics
+   * `resolve()` already had.
+   */
+  claimDue(id: string, owner: string, leaseMs: number): boolean {
+    const claimed = this.persistence?.claim ? this.persistence.claim(id, owner, leaseMs) : true;
+    if (claimed) this.resolve(id);
+    return claimed;
   }
 
   /** Scheduled wakeups whose `wakeAt` is due (<= now). */

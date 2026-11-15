@@ -8,7 +8,6 @@ import {
   SqliteOrgRepo,
   SqliteAgentRepo,
   SqliteTaskRepo,
-  SqliteMessageRepo,
 } from '../src/sqlite-storage.js';
 
 let tempDir: string;
@@ -54,7 +53,6 @@ describe('openSqlite / closeSqlite', () => {
     expect(names).toContain('organizations');
     expect(names).toContain('agents');
     expect(names).toContain('tasks');
-    expect(names).toContain('messages');
   });
 
   it('applies column migrations idempotently on reopen', () => {
@@ -379,71 +377,5 @@ describe('SqliteTaskRepo', () => {
 
     await repo.delete('task-upsert');
     expect(repo.findById('task-upsert')).toBeUndefined();
-  });
-});
-
-describe('SqliteMessageRepo', () => {
-  it('creates and queries messages by channel, agent, and thread', () => {
-    const db = openSqlite(dbPath);
-    seedOrgAndAgent(db);
-    const repo = new SqliteMessageRepo(db);
-
-    repo.create({
-      id: 'msg-1',
-      platform: 'slack',
-      direction: 'inbound',
-      channelId: 'ch-1',
-      senderId: 'user-1',
-      senderName: 'Alice',
-      agentId: 'agent-1',
-      content: { type: 'text', text: 'Hello' },
-      threadId: 'thread-1',
-    });
-    repo.create({
-      id: 'msg-2',
-      platform: 'slack',
-      direction: 'outbound',
-      channelId: 'ch-1',
-      senderId: 'agent-1',
-      senderName: 'Worker',
-      agentId: 'agent-1',
-      content: { type: 'text', text: 'Reply' },
-      replyToId: 'msg-1',
-      threadId: 'thread-1',
-    });
-    repo.create({
-      id: 'msg-3',
-      platform: 'webui',
-      direction: 'inbound',
-      channelId: 'ch-2',
-      senderId: 'user-2',
-      content: { type: 'text', text: 'Other channel' },
-    });
-
-    expect(repo.findByChannel('ch-1')).toHaveLength(2);
-    expect(repo.findByChannel('ch-1', 1)).toHaveLength(1);
-    expect(repo.findByAgent('agent-1')).toHaveLength(2);
-    expect(repo.findByThread('thread-1')).toHaveLength(2);
-
-    const thread = repo.findByThread('thread-1') as Array<{ id: string }>;
-    expect(thread[0].id).toBe('msg-1');
-    expect(thread[1].id).toBe('msg-2');
-  });
-
-  it('stores message content as JSON', () => {
-    const db = openSqlite(dbPath);
-    seedOrgAndAgent(db);
-    const repo = new SqliteMessageRepo(db);
-    const content = { type: 'multimodal', parts: [{ type: 'image', url: 'x' }] };
-    repo.create({
-      id: 'msg-json',
-      platform: 'webui',
-      direction: 'inbound',
-      channelId: 'ch-json',
-      senderId: 'user-1',
-      content,
-    });
-    const rows = repo.findByChannel('ch-json') as Array<{ content: string }>;
-    expect(JSON.parse(rows[0].content)).toEqual(content);
   });
 });

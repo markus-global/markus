@@ -144,6 +144,10 @@ CREATE TABLE IF NOT EXISTS agents (
   channels TEXT DEFAULT '[]',
   agent_role TEXT NOT NULL DEFAULT 'worker',
   heartbeat_interval_ms INTEGER NOT NULL DEFAULT 1800000,
+  -- A5: 自主档位 'observe' | 'act'。DEFAULT 'act' 就是关键：加这列之前每个 agent
+  -- 到心跳点都会自发巡逻，那正是 'act' —— 所以历史行读出来等价于旧行为，
+  -- 不需要任何数据迁移，只需保证旧数据能被读出来。
+  autonomy TEXT NOT NULL DEFAULT 'act',
   container_id TEXT,
   tokens_used_today INTEGER NOT NULL DEFAULT 0,
   active_task_ids TEXT DEFAULT '[]',
@@ -189,29 +193,6 @@ CREATE TABLE IF NOT EXISTS tasks (
   -- 这个列只在真实状态转移时推进。NULL 仅出现在本列引入前的旧行（迁移时由 updated_at 回填）。
   status_changed_at TEXT,
   due_at TEXT
-);
-
-CREATE TABLE IF NOT EXISTS messages (
-  id TEXT PRIMARY KEY,
-  platform TEXT NOT NULL,
-  direction TEXT NOT NULL,
-  channel_id TEXT NOT NULL,
-  sender_id TEXT NOT NULL,
-  sender_name TEXT,
-  agent_id TEXT REFERENCES agents(id),
-  content TEXT NOT NULL,
-  reply_to_id TEXT,
-  thread_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
-CREATE TABLE IF NOT EXISTS memories (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id),
-  type TEXT NOT NULL,
-  content TEXT NOT NULL,
-  metadata TEXT DEFAULT '{}',
-  created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -336,25 +317,6 @@ CREATE TABLE IF NOT EXISTS projects (
 );
 CREATE INDEX IF NOT EXISTS idx_projects_org ON projects(org_id);
 
-CREATE TABLE IF NOT EXISTS agent_knowledge (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL REFERENCES agents(id) ON DELETE CASCADE,
-  org_id TEXT NOT NULL,
-  category TEXT NOT NULL,
-  title TEXT NOT NULL,
-  content TEXT NOT NULL,
-  tags TEXT NOT NULL DEFAULT '[]',
-  source TEXT NOT NULL DEFAULT 'agent',
-  metadata TEXT DEFAULT '{}',
-  importance INTEGER NOT NULL DEFAULT 50,
-  access_count INTEGER NOT NULL DEFAULT 0,
-  last_accessed_at TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_agent_knowledge_agent ON agent_knowledge(agent_id, category);
-CREATE INDEX IF NOT EXISTS idx_agent_knowledge_org ON agent_knowledge(org_id);
-
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY,
   type TEXT NOT NULL DEFAULT 'file',
@@ -389,83 +351,6 @@ CREATE INDEX IF NOT EXISTS idx_deliverables_agent ON deliverables(agent_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_task ON deliverables(task_id);
 CREATE INDEX IF NOT EXISTS idx_deliverables_status ON deliverables(status);
 
-CREATE TABLE IF NOT EXISTS marketplace_templates (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'community',
-  status TEXT NOT NULL DEFAULT 'draft',
-  version TEXT NOT NULL DEFAULT '1.0.0',
-  author_id TEXT,
-  author_name TEXT NOT NULL,
-  role_id TEXT NOT NULL,
-  agent_role TEXT NOT NULL DEFAULT 'worker',
-  skills TEXT NOT NULL DEFAULT '[]',
-  llm_provider TEXT,
-  tags TEXT NOT NULL DEFAULT '[]',
-  category TEXT NOT NULL,
-  icon TEXT,
-  heartbeat_interval_ms INTEGER,
-  starter_tasks TEXT DEFAULT '[]',
-  config TEXT DEFAULT '{}',
-  download_count INTEGER NOT NULL DEFAULT 0,
-  avg_rating INTEGER NOT NULL DEFAULT 0,
-  rating_count INTEGER NOT NULL DEFAULT 0,
-  visibility TEXT NOT NULL DEFAULT 'public',
-  forked_from TEXT,
-  fork_count INTEGER DEFAULT 0,
-  version_history TEXT DEFAULT '[]',
-  org_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  published_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_templates_source ON marketplace_templates(source, status);
-CREATE INDEX IF NOT EXISTS idx_mkt_templates_category ON marketplace_templates(category);
-
-CREATE TABLE IF NOT EXISTS marketplace_skills (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  description TEXT NOT NULL,
-  source TEXT NOT NULL DEFAULT 'community',
-  status TEXT NOT NULL DEFAULT 'draft',
-  version TEXT NOT NULL DEFAULT '1.0.0',
-  author_id TEXT,
-  author_name TEXT NOT NULL,
-  category TEXT NOT NULL,
-  tags TEXT NOT NULL DEFAULT '[]',
-  tools TEXT NOT NULL DEFAULT '[]',
-  readme TEXT,
-  required_permissions TEXT DEFAULT '[]',
-  required_env TEXT DEFAULT '[]',
-  config TEXT DEFAULT '{}',
-  download_count INTEGER NOT NULL DEFAULT 0,
-  avg_rating INTEGER NOT NULL DEFAULT 0,
-  rating_count INTEGER NOT NULL DEFAULT 0,
-  visibility TEXT NOT NULL DEFAULT 'public',
-  forked_from TEXT,
-  fork_count INTEGER DEFAULT 0,
-  version_history TEXT DEFAULT '[]',
-  org_id TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-  published_at TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_skills_source ON marketplace_skills(source, status);
-CREATE INDEX IF NOT EXISTS idx_mkt_skills_category ON marketplace_skills(category);
-
-CREATE TABLE IF NOT EXISTS marketplace_ratings (
-  id TEXT PRIMARY KEY,
-  target_type TEXT NOT NULL,
-  target_id TEXT NOT NULL,
-  user_id TEXT NOT NULL,
-  rating INTEGER NOT NULL,
-  review TEXT,
-  created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_mkt_ratings_target ON marketplace_ratings(target_type, target_id);
-
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
   org_id TEXT NOT NULL REFERENCES organizations(id),
@@ -480,17 +365,6 @@ CREATE TABLE IF NOT EXISTS users (
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   last_login_at TEXT
 );
-
-CREATE TABLE IF NOT EXISTS memory_embeddings (
-  id TEXT PRIMARY KEY,
-  agent_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  type TEXT NOT NULL,
-  embedding BLOB,
-  created_at TEXT DEFAULT (datetime('now')),
-  updated_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_memory_embeddings_agent ON memory_embeddings(agent_id);
 
 CREATE TABLE IF NOT EXISTS external_agent_registrations (
   external_agent_id TEXT NOT NULL,
@@ -508,17 +382,6 @@ CREATE TABLE IF NOT EXISTS external_agent_registrations (
   updated_at TEXT DEFAULT (datetime('now')),
   PRIMARY KEY (external_agent_id, org_id)
 );
-
-CREATE TABLE IF NOT EXISTS gateway_message_queue (
-  id TEXT PRIMARY KEY,
-  target_agent_id TEXT NOT NULL,
-  from_agent_id TEXT NOT NULL,
-  from_agent_name TEXT,
-  content TEXT NOT NULL,
-  delivered INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT DEFAULT (datetime('now'))
-);
-CREATE INDEX IF NOT EXISTS idx_gw_msg_target ON gateway_message_queue(target_agent_id, delivered);
 
 CREATE TABLE IF NOT EXISTS agent_activities (
   id TEXT PRIMARY KEY,
@@ -629,6 +492,10 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   context TEXT NOT NULL DEFAULT '{}',
   reasoning TEXT NOT NULL DEFAULT '',
   outcome TEXT,
+  -- 这条决定发生在哪个工作单元里。与 mailbox_items.work_unit_ref 同一轴：
+  -- 有了它才能反查「谁在哪个回合撤销了什么」。
+  -- 可空且不回填：加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」。
+  work_unit_ref TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
@@ -912,7 +779,9 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   wake_at INTEGER,
   recurring_ms INTEGER,
   registered_at INTEGER NOT NULL,
-  timeout_ms INTEGER NOT NULL DEFAULT 600000
+  timeout_ms INTEGER NOT NULL DEFAULT 600000,
+  claimed_by TEXT,
+  lease_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
 `;
@@ -1035,6 +904,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'claimed_by', sql: "ALTER TABLE mailbox_items ADD COLUMN claimed_by TEXT" },
     { table: 'mailbox_items', column: 'lease_until', sql: "ALTER TABLE mailbox_items ADD COLUMN lease_until TEXT" },
     { table: 'mailbox_items', column: 'dedup_key', sql: "ALTER TABLE mailbox_items ADD COLUMN dedup_key TEXT" },
+    // P3 precondition: a persisted callback is loaded into EVERY process memory at
+    // startup, so without a claim two processes deliver the same wakeup twice. The
+    // sibling table mailbox_items already carries exactly this pair; this brings the
+    // callback queue to the same standard. Nullable, so existing rows stay readable
+    // and become claimable -- no data rewrite.
+    { table: 'pending_callbacks', column: 'claimed_by', sql: "ALTER TABLE pending_callbacks ADD COLUMN claimed_by TEXT" },
+    { table: 'pending_callbacks', column: 'lease_until', sql: "ALTER TABLE pending_callbacks ADD COLUMN lease_until INTEGER" },
     { table: 'users', column: 'avatar_url', sql: "ALTER TABLE users ADD COLUMN avatar_url TEXT" },
     { table: 'users', column: 'invite_token', sql: "ALTER TABLE users ADD COLUMN invite_token TEXT" },
     { table: 'users', column: 'invite_expires_at', sql: "ALTER TABLE users ADD COLUMN invite_expires_at TEXT" },
@@ -1051,6 +927,12 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'users', column: 'hub_token', sql: 'ALTER TABLE users ADD COLUMN hub_token TEXT' },
     { table: 'agents', column: 'deleted_at', sql: 'ALTER TABLE agents ADD COLUMN deleted_at TEXT' },
     { table: 'agents', column: 'disabled', sql: 'ALTER TABLE agents ADD COLUMN disabled INTEGER NOT NULL DEFAULT 0' },
+    // A5: 自主档位。ADD COLUMN 带 DEFAULT，SQLite 会让历史行读出来就是 'act'，
+    // 与加列之前的行为一致，因此不需要回填、也不需要迁移数据。
+    { table: 'agents', column: 'autonomy', sql: "ALTER TABLE agents ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'act'" },
+    // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
+    // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
+    { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'deliverables', column: 'hub_share_id', sql: 'ALTER TABLE deliverables ADD COLUMN hub_share_id TEXT' },
     { table: 'deliverables', column: 'share_status', sql: 'ALTER TABLE deliverables ADD COLUMN share_status TEXT' },
@@ -1573,12 +1455,14 @@ export class SqliteAgentRepo {
     llmConfig?: unknown;
     computeConfig?: unknown;
     heartbeatIntervalMs?: number;
+    /** A5: 自主档位。缺省由 DB DEFAULT 'act' 决定。 */
+    autonomy?: 'observe' | 'act';
   }) {
     const ts = now();
     this.db
       .prepare(
-        `INSERT INTO agents (id, name, org_id, team_id, role_id, role_name, agent_role, skills, llm_config, compute_config, heartbeat_interval_ms, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        `INSERT INTO agents (id, name, org_id, team_id, role_id, role_name, agent_role, skills, llm_config, compute_config, heartbeat_interval_ms, autonomy, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
       )
       .run(
         data.id,
@@ -1592,6 +1476,7 @@ export class SqliteAgentRepo {
         toJson(data.llmConfig ?? {}),
         toJson(data.computeConfig ?? {}),
         data.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+        data.autonomy ?? 'act',
         ts,
         ts
       );
@@ -1653,7 +1538,7 @@ export class SqliteAgentRepo {
     this.db.prepare('UPDATE agents SET avatar_url = ?, updated_at = ? WHERE id = ?').run(avatarUrl, now(), id);
   }
 
-  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number; profile?: unknown }) {
+  updateConfig(id: string, data: { name?: string; agentRole?: string; skills?: unknown; llmConfig?: unknown; computeConfig?: unknown; heartbeatIntervalMs?: number; autonomy?: 'observe' | 'act'; profile?: unknown }) {
     const sets: string[] = ['updated_at = ?'];
     const vals: SqlParams = [now()];
     if (data.name !== undefined) { sets.push('name = ?'); vals.push(data.name); }
@@ -1662,6 +1547,7 @@ export class SqliteAgentRepo {
     if (data.llmConfig !== undefined) { sets.push('llm_config = ?'); vals.push(toJson(data.llmConfig)); }
     if (data.computeConfig !== undefined) { sets.push('compute_config = ?'); vals.push(toJson(data.computeConfig)); }
     if (data.heartbeatIntervalMs !== undefined) { sets.push('heartbeat_interval_ms = ?'); vals.push(data.heartbeatIntervalMs); }
+    if (data.autonomy !== undefined) { sets.push('autonomy = ?'); vals.push(data.autonomy); }
     if (data.profile !== undefined) { sets.push('profile = ?'); vals.push(toJson(data.profile)); }
     vals.push(id);
     this.db.prepare(`UPDATE agents SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
@@ -1676,6 +1562,8 @@ export class SqliteAgentRepo {
       roleId: r['role_id'],
       roleName: r['role_name'],
       agentRole: r['agent_role'],
+      // A5: 历史行经 ADD COLUMN DEFAULT 'act' 读出 'act'，与加列前行为一致。
+      autonomy: (r['autonomy'] as string | null) ?? 'act',
       status: r['status'],
       skills: arrayFromJson(r['skills'] as string),
       llmConfig: fromJson(r['llm_config'] as string),
@@ -2651,60 +2539,6 @@ export class SqliteRequirementCommentRepo {
 
   deleteByRequirement(requirementId: string) {
     this.db.prepare('DELETE FROM requirement_comments WHERE requirement_id = ?').run(requirementId);
-  }
-}
-
-export class SqliteMessageRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    platform: string;
-    direction: string;
-    channelId: string;
-    senderId: string;
-    senderName?: string;
-    agentId?: string;
-    content: unknown;
-    replyToId?: string;
-    threadId?: string;
-  }) {
-    this.db
-      .prepare(
-        'INSERT INTO messages (id, platform, direction, channel_id, sender_id, sender_name, agent_id, content, reply_to_id, thread_id, created_at) VALUES (?,?,?,?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        data.id,
-        data.platform,
-        data.direction,
-        data.channelId,
-        data.senderId,
-        data.senderName ?? null,
-        data.agentId ?? null,
-        toJson(data.content),
-        data.replyToId ?? null,
-        data.threadId ?? null,
-        now()
-      );
-    return this.db.prepare('SELECT * FROM messages WHERE id = ?').get(data.id);
-  }
-
-  findByChannel(channelId: string, limit = 50) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE channel_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(channelId, limit);
-  }
-
-  findByAgent(agentId: string, limit = 50) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE agent_id = ? ORDER BY created_at DESC LIMIT ?')
-      .all(agentId, limit);
-  }
-
-  findByThread(threadId: string) {
-    return this.db
-      .prepare('SELECT * FROM messages WHERE thread_id = ? ORDER BY created_at ASC')
-      .all(threadId);
   }
 }
 
@@ -3866,665 +3700,6 @@ export class SqliteTeamRepo {
       managerType: r['manager_type'],
       avatarUrl: r['avatar_url'] as string | null,
       createdAt: toDate(r['created_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceTemplateRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    name: string;
-    description: string;
-    source?: string;
-    status?: string;
-    version?: string;
-    authorId?: string;
-    authorName: string;
-    roleId: string;
-    agentRole?: string;
-    skills?: string[];
-    llmProvider?: string;
-    tags?: string[];
-    category: string;
-    icon?: string;
-    heartbeatIntervalMs?: number;
-    starterTasks?: unknown[];
-    config?: Record<string, unknown>;
-  }) {
-    const ts = now();
-    const status = data.status ?? 'draft';
-    this.db
-      .prepare(
-        `INSERT INTO marketplace_templates (id, name, description, source, status, version, author_id, author_name, role_id, agent_role, skills, llm_provider, tags, category, icon, heartbeat_interval_ms, starter_tasks, config, published_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.name,
-        data.description,
-        data.source ?? 'community',
-        status,
-        data.version ?? '1.0.0',
-        data.authorId ?? null,
-        data.authorName,
-        data.roleId,
-        data.agentRole ?? 'worker',
-        arrayToJson(data.skills),
-        data.llmProvider ?? null,
-        arrayToJson(data.tags),
-        data.category,
-        data.icon ?? null,
-        data.heartbeatIntervalMs ?? null,
-        toJson(data.starterTasks ?? []),
-        toJson(data.config ?? {}),
-        status === 'published' ? ts : null,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM marketplace_templates WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  list(opts?: {
-    source?: string;
-    status?: string;
-    category?: string;
-    limit?: number;
-    offset?: number;
-  }) {
-    let q = 'SELECT * FROM marketplace_templates WHERE 1=1';
-    const vals: SqlParams = [];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.status) {
-      q += ' AND status = ?';
-      vals.push(opts.status);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC, avg_rating DESC LIMIT ? OFFSET ?';
-    vals.push(opts?.limit ?? 50, opts?.offset ?? 0);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
-    let q = 'SELECT * FROM marketplace_templates WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: SqlParams = [`%${query}%`, `%${query}%`];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC LIMIT ?';
-    vals.push(opts?.limit ?? 20);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  updateStatus(id: string, status: string) {
-    const pubAt = status === 'published' ? now() : null;
-    this.db
-      .prepare(
-        'UPDATE marketplace_templates SET status = ?, published_at = COALESCE(?, published_at), updated_at = ? WHERE id = ?'
-      )
-      .run(status, pubAt, now(), id);
-  }
-
-  incrementDownloads(id: string) {
-    this.db
-      .prepare('UPDATE marketplace_templates SET download_count = download_count + 1 WHERE id = ?')
-      .run(id);
-  }
-
-  updateRating(id: string, avgRating: number, ratingCount: number) {
-    this.db
-      .prepare(
-        'UPDATE marketplace_templates SET avg_rating = ?, rating_count = ?, updated_at = ? WHERE id = ?'
-      )
-      .run(avgRating, ratingCount, now(), id);
-  }
-
-  update(
-    id: string,
-    data: Partial<{
-      name: string;
-      description: string;
-      version: string;
-      skills: string[];
-      tags: string[];
-      category: string;
-      icon: string;
-      config: Record<string, unknown>;
-    }>
-  ) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.name !== undefined) {
-      sets.push('name = ?');
-      vals.push(data.name);
-    }
-    if (data.description !== undefined) {
-      sets.push('description = ?');
-      vals.push(data.description);
-    }
-    if (data.version !== undefined) {
-      sets.push('version = ?');
-      vals.push(data.version);
-    }
-    if (data.skills !== undefined) {
-      sets.push('skills = ?');
-      vals.push(arrayToJson(data.skills));
-    }
-    if (data.tags !== undefined) {
-      sets.push('tags = ?');
-      vals.push(arrayToJson(data.tags));
-    }
-    if (data.category !== undefined) {
-      sets.push('category = ?');
-      vals.push(data.category);
-    }
-    if (data.icon !== undefined) {
-      sets.push('icon = ?');
-      vals.push(data.icon);
-    }
-    if (data.config !== undefined) {
-      sets.push('config = ?');
-      vals.push(toJson(data.config));
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db
-      .prepare(`UPDATE marketplace_templates SET ${sets.join(', ')} WHERE id = ?`)
-      .run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_templates WHERE id = ?').run(id);
-  }
-
-  countBySource() {
-    const rows = this.db
-      .prepare('SELECT source, COUNT(*) as cnt FROM marketplace_templates GROUP BY source')
-      .all() as Array<{ source: string; cnt: number }>;
-    const result: Record<string, number> = {};
-    for (const r of rows) result[r.source] = r.cnt;
-    return result;
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      name: r['name'],
-      description: r['description'],
-      source: r['source'],
-      status: r['status'],
-      version: r['version'],
-      authorId: r['author_id'],
-      authorName: r['author_name'],
-      roleId: r['role_id'],
-      agentRole: r['agent_role'],
-      skills: arrayFromJson(r['skills'] as string),
-      llmProvider: r['llm_provider'],
-      tags: arrayFromJson(r['tags'] as string),
-      category: r['category'],
-      icon: r['icon'],
-      heartbeatIntervalMs: r['heartbeat_interval_ms'],
-      starterTasks: fromJson(r['starter_tasks'] as string),
-      config: fromJson(r['config'] as string),
-      downloadCount: r['download_count'],
-      avgRating: r['avg_rating'],
-      ratingCount: r['rating_count'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-      publishedAt: toDate(r['published_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceSkillRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    name: string;
-    description: string;
-    source?: string;
-    status?: string;
-    version?: string;
-    authorId?: string;
-    authorName: string;
-    category: string;
-    tags?: string[];
-    tools?: unknown[];
-    readme?: string;
-    requiredPermissions?: string[];
-    requiredEnv?: string[];
-    config?: Record<string, unknown>;
-  }) {
-    const ts = now();
-    const status = data.status ?? 'draft';
-    this.db
-      .prepare(
-        `INSERT INTO marketplace_skills (id, name, description, source, status, version, author_id, author_name, category, tags, tools, readme, required_permissions, required_env, config, published_at, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.name,
-        data.description,
-        data.source ?? 'community',
-        status,
-        data.version ?? '1.0.0',
-        data.authorId ?? null,
-        data.authorName,
-        data.category,
-        arrayToJson(data.tags),
-        toJson(data.tools ?? []),
-        data.readme ?? null,
-        toJson(data.requiredPermissions ?? []),
-        toJson(data.requiredEnv ?? []),
-        toJson(data.config ?? {}),
-        status === 'published' ? ts : null,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM marketplace_skills WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  list(opts?: {
-    source?: string;
-    status?: string;
-    category?: string;
-    limit?: number;
-    offset?: number;
-  }) {
-    let q = 'SELECT * FROM marketplace_skills WHERE 1=1';
-    const vals: SqlParams = [];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.status) {
-      q += ' AND status = ?';
-      vals.push(opts.status);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC, avg_rating DESC LIMIT ? OFFSET ?';
-    vals.push(opts?.limit ?? 50, opts?.offset ?? 0);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(query: string, opts?: { source?: string; category?: string; limit?: number }) {
-    let q = 'SELECT * FROM marketplace_skills WHERE (name LIKE ? OR description LIKE ?)';
-    const vals: SqlParams = [`%${query}%`, `%${query}%`];
-    if (opts?.source) {
-      q += ' AND source = ?';
-      vals.push(opts.source);
-    }
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY download_count DESC LIMIT ?';
-    vals.push(opts?.limit ?? 20);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  updateStatus(id: string, status: string) {
-    const pubAt = status === 'published' ? now() : null;
-    this.db
-      .prepare(
-        'UPDATE marketplace_skills SET status = ?, published_at = COALESCE(?, published_at), updated_at = ? WHERE id = ?'
-      )
-      .run(status, pubAt, now(), id);
-  }
-
-  incrementDownloads(id: string) {
-    this.db
-      .prepare('UPDATE marketplace_skills SET download_count = download_count + 1 WHERE id = ?')
-      .run(id);
-  }
-
-  updateRating(id: string, avgRating: number, ratingCount: number) {
-    this.db
-      .prepare(
-        'UPDATE marketplace_skills SET avg_rating = ?, rating_count = ?, updated_at = ? WHERE id = ?'
-      )
-      .run(avgRating, ratingCount, now(), id);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_skills WHERE id = ?').run(id);
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      name: r['name'],
-      description: r['description'],
-      source: r['source'],
-      status: r['status'],
-      version: r['version'],
-      authorId: r['author_id'],
-      authorName: r['author_name'],
-      category: r['category'],
-      tags: arrayFromJson(r['tags'] as string),
-      tools: fromJson(r['tools'] as string),
-      readme: r['readme'],
-      requiredPermissions: arrayFromJson(r['required_permissions'] as string),
-      requiredEnv: arrayFromJson(r['required_env'] as string),
-      config: fromJson(r['config'] as string),
-      downloadCount: r['download_count'],
-      avgRating: r['avg_rating'],
-      ratingCount: r['rating_count'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-      publishedAt: toDate(r['published_at'] as string),
-    };
-  }
-}
-
-export class SqliteMarketplaceRatingRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    targetType: string;
-    targetId: string;
-    userId: string;
-    rating: number;
-    review?: string;
-  }) {
-    const ts = now();
-    this.db
-      .prepare(
-        'INSERT INTO marketplace_ratings (id, target_type, target_id, user_id, rating, review, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)'
-      )
-      .run(
-        data.id,
-        data.targetType,
-        data.targetId,
-        data.userId,
-        data.rating,
-        data.review ?? null,
-        ts,
-        ts
-      );
-    return this.findByTarget(data.targetType as 'template' | 'skill', data.targetId)[0];
-  }
-
-  findByTarget(targetType: string, targetId: string, opts?: { limit?: number; offset?: number }) {
-    return (
-      this.db
-        .prepare(
-          'SELECT * FROM marketplace_ratings WHERE target_type = ? AND target_id = ? ORDER BY created_at DESC LIMIT ? OFFSET ?'
-        )
-        .all(targetType, targetId, opts?.limit ?? 50, opts?.offset ?? 0) as Record<
-        string,
-        unknown
-      >[]
-    ).map(r => this._map(r));
-  }
-
-  findByUser(userId: string, targetType?: string) {
-    if (targetType) {
-      return (
-        this.db
-          .prepare('SELECT * FROM marketplace_ratings WHERE user_id = ? AND target_type = ?')
-          .all(userId, targetType) as Record<string, unknown>[]
-      ).map(r => this._map(r));
-    }
-    return (
-      this.db.prepare('SELECT * FROM marketplace_ratings WHERE user_id = ?').all(userId) as Record<
-        string,
-        unknown
-      >[]
-    ).map(r => this._map(r));
-  }
-
-  findUserRating(userId: string, targetType: string, targetId: string) {
-    const r = this.db
-      .prepare(
-        'SELECT * FROM marketplace_ratings WHERE user_id = ? AND target_type = ? AND target_id = ?'
-      )
-      .get(userId, targetType, targetId) as Record<string, unknown> | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  update(id: string, data: { rating?: number; review?: string }) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.rating !== undefined) {
-      sets.push('rating = ?');
-      vals.push(data.rating);
-    }
-    if (data.review !== undefined) {
-      sets.push('review = ?');
-      vals.push(data.review);
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db.prepare(`UPDATE marketplace_ratings SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM marketplace_ratings WHERE id = ?').run(id);
-  }
-
-  getAggregation(targetType: string, targetId: string) {
-    const r = this.db
-      .prepare(
-        'SELECT AVG(rating) as avg, COUNT(*) as count FROM marketplace_ratings WHERE target_type = ? AND target_id = ?'
-      )
-      .get(targetType, targetId) as { avg: number | null; count: number };
-    return { avg: Math.round(r.avg ?? 0), count: r.count };
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      targetType: r['target_type'],
-      targetId: r['target_id'],
-      userId: r['user_id'],
-      rating: r['rating'],
-      review: r['review'],
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
-    };
-  }
-}
-
-export class SqliteAgentKnowledgeRepo {
-  constructor(private db: DatabaseSync) {}
-
-  create(data: {
-    id: string;
-    agentId: string;
-    orgId: string;
-    category: string;
-    title: string;
-    content: string;
-    tags?: string[];
-    source?: string;
-    metadata?: Record<string, unknown>;
-    importance?: number;
-  }) {
-    const ts = now();
-    this.db
-      .prepare(
-        `INSERT INTO agent_knowledge (id, agent_id, org_id, category, title, content, tags, source, metadata, importance, created_at, updated_at)
-       VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`
-      )
-      .run(
-        data.id,
-        data.agentId,
-        data.orgId,
-        data.category,
-        data.title,
-        data.content,
-        arrayToJson(data.tags),
-        data.source ?? 'agent',
-        toJson(data.metadata ?? {}),
-        data.importance ?? 50,
-        ts,
-        ts
-      );
-    return this.findById(data.id)!;
-  }
-
-  findById(id: string) {
-    const r = this.db.prepare('SELECT * FROM agent_knowledge WHERE id = ?').get(id) as
-      | Record<string, unknown>
-      | undefined;
-    return r ? this._map(r) : undefined;
-  }
-
-  findByAgent(agentId: string, opts?: { category?: string; limit?: number }) {
-    let q = 'SELECT * FROM agent_knowledge WHERE agent_id = ?';
-    const vals: SqlParams = [agentId];
-    if (opts?.category) {
-      q += ' AND category = ?';
-      vals.push(opts.category);
-    }
-    q += ' ORDER BY updated_at DESC LIMIT ?';
-    vals.push(opts?.limit ?? 50);
-    return (this.db.prepare(q).all(...vals) as Record<string, unknown>[]).map(r => this._map(r));
-  }
-
-  search(agentId: string, query: string, limit = 10) {
-    return (
-      this.db
-        .prepare(
-          'SELECT * FROM agent_knowledge WHERE agent_id = ? AND (title LIKE ? OR content LIKE ?) ORDER BY importance DESC, updated_at DESC LIMIT ?'
-        )
-        .all(agentId, `%${query}%`, `%${query}%`, limit) as Record<string, unknown>[]
-    ).map(r => this._map(r));
-  }
-
-  searchByTags(agentId: string, tags: string[], limit = 10) {
-    if (tags.length === 0) return [];
-    const conditions = tags.map(() => `tags LIKE ?`).join(' OR ');
-    const vals = [agentId, ...tags.map(t => `%"${t}"%`), limit];
-    return (
-      this.db
-        .prepare(
-          `SELECT * FROM agent_knowledge WHERE agent_id = ? AND (${conditions}) ORDER BY importance DESC LIMIT ?`
-        )
-        .all(...vals) as Record<string, unknown>[]
-    ).map(r => this._map(r));
-  }
-
-  recordAccess(id: string) {
-    this.db
-      .prepare(
-        'UPDATE agent_knowledge SET access_count = access_count + 1, last_accessed_at = ? WHERE id = ?'
-      )
-      .run(now(), id);
-  }
-
-  update(
-    id: string,
-    data: Partial<{
-      title: string;
-      content: string;
-      category: string;
-      tags: string[];
-      importance: number;
-      metadata: Record<string, unknown>;
-    }>
-  ) {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (data.title !== undefined) {
-      sets.push('title = ?');
-      vals.push(data.title);
-    }
-    if (data.content !== undefined) {
-      sets.push('content = ?');
-      vals.push(data.content);
-    }
-    if (data.category !== undefined) {
-      sets.push('category = ?');
-      vals.push(data.category);
-    }
-    if (data.tags !== undefined) {
-      sets.push('tags = ?');
-      vals.push(arrayToJson(data.tags));
-    }
-    if (data.importance !== undefined) {
-      sets.push('importance = ?');
-      vals.push(data.importance);
-    }
-    if (data.metadata !== undefined) {
-      sets.push('metadata = ?');
-      vals.push(toJson(data.metadata));
-    }
-    if (sets.length === 0) return;
-    sets.push('updated_at = ?');
-    vals.push(now());
-    vals.push(id);
-    this.db.prepare(`UPDATE agent_knowledge SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
-  }
-
-  delete(id: string) {
-    this.db.prepare('DELETE FROM agent_knowledge WHERE id = ?').run(id);
-  }
-
-  deleteByAgent(agentId: string) {
-    this.db.prepare('DELETE FROM agent_knowledge WHERE agent_id = ?').run(agentId);
-  }
-
-  countByAgent(agentId: string): number {
-    const r = this.db
-      .prepare('SELECT COUNT(*) as cnt FROM agent_knowledge WHERE agent_id = ?')
-      .get(agentId) as { cnt: number };
-    return r.cnt;
-  }
-
-  private _map(r: Record<string, unknown>) {
-    return {
-      id: r['id'],
-      agentId: r['agent_id'],
-      orgId: r['org_id'],
-      category: r['category'],
-      title: r['title'],
-      content: r['content'],
-      tags: arrayFromJson(r['tags'] as string),
-      source: r['source'],
-      metadata: fromJson<Record<string, unknown>>(r['metadata'] as string),
-      importance: r['importance'],
-      accessCount: r['access_count'],
-      lastAccessedAt: toDate(r['last_accessed_at'] as string),
-      createdAt: toDate(r['created_at'] as string),
-      updatedAt: toDate(r['updated_at'] as string),
     };
   }
 }
@@ -5835,6 +5010,8 @@ export interface DecisionRow {
   context: Record<string, unknown>;
   reasoning: string;
   outcome: string | null;
+  /** ①-2：这条决定属于哪个工作单元。NULL = 加列之前的旧纪元。 */
+  workUnitRef: string | null;
   createdAt: string;
 }
 
@@ -5849,16 +5026,17 @@ export class SqliteDecisionRepo {
     context: Record<string, unknown>;
     reasoning: string;
     outcome?: string;
+    workUnitRef?: string | null;
     createdAt: string;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, work_unit_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         decision.id, decision.agentId, decision.decisionType,
         decision.mailboxItemId, toJson(decision.context), decision.reasoning,
-        decision.outcome ?? null, decision.createdAt,
+        decision.outcome ?? null, decision.workUnitRef ?? null, decision.createdAt,
       );
   }
 
@@ -5898,6 +5076,7 @@ export class SqliteDecisionRepo {
       context: fromJson<Record<string, unknown>>(r['context'] as string) ?? {},
       reasoning: r['reasoning'] as string,
       outcome: r['outcome'] as string | null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
     };
   }
@@ -7682,6 +6861,29 @@ export class SqlitePendingCallbackRepo {
 
   remove(id: string): void {
     this.db.prepare('DELETE FROM pending_callbacks WHERE id = ?').run(id);
+  }
+
+  /**
+   * P3 precondition -- claim one due callback for THIS process before delivering it.
+   *
+   * The registry loads every persisted callback into process memory at startup, so
+   * without a claim two processes both see the same due wakeup and both deliver it.
+   * The sibling table mailbox_items already carries claimed_by/lease_until for
+   * exactly this reason; this brings the callback queue to the same standard.
+   *
+   * The WHERE clause IS the mechanism: it succeeds only when nobody holds a live
+   * lease. An expired lease is claimable again, so a crashed holder's work resumes
+   * instead of being stranded forever.
+   *
+   * Both columns are nullable, so rows written before this change read as
+   * unclaimed and become claimable -- old data stays readable, no rewrite.
+   */
+  claim(id: string, owner: string, leaseMs: number, now = Date.now()): boolean {
+    const res = this.db.prepare(
+      'UPDATE pending_callbacks SET claimed_by = ?, lease_until = ? '
+      + 'WHERE id = ? AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until <= ?)',
+    ).run(owner, now + leaseMs, id, now);
+    return (res.changes ?? 0) > 0;
   }
 
   loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {

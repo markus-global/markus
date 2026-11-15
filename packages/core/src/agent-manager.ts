@@ -355,6 +355,8 @@ export interface CreateAgentRequest {
   agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
+  /** A5: 自主档位。缺省 'act'（= 加这个字段之前的行为）。 */
+  autonomy?: 'observe' | 'act';
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
@@ -1580,6 +1582,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: request.autonomy ?? 'act',
       concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2472,6 +2475,8 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
+    /** A5: 自主档位。历史行为 'act'；缺列时按 'act' 处理（见下）。 */
+    autonomy?: string;
     profile?: unknown;
     tokensUsedToday?: number;
     activeTaskIds?: unknown;
@@ -2545,6 +2550,8 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      // A5: 历史行经 ADD COLUMN DEFAULT 'act' 读出 'act'，与加列前行为一致。
+      autonomy: row.autonomy === 'observe' ? 'observe' : 'act',
       concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),

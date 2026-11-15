@@ -57,6 +57,7 @@ import {
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
   WORK_UNIT_REF,
+  maySelfInitiate,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -72,6 +73,7 @@ import { recordConsolidationSuggestions } from './facts/consolidation-recorder.j
 import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
+import { mailboxScenario } from './mailbox-scenario.js';
 import { decideTurnReply, shouldComposeAnswer, type TurnReply } from './turn-completion.js';
 import { buildTurnDeltaSegment, turnDeltaMessage, type TurnDeltaRow } from './turn-delta.js';
 import { startSpan } from './tracing.js';
@@ -884,6 +886,8 @@ export class Agent {
     priority: string;
     assignedAgentId?: string;
     assignedAgentName?: string;
+    /** Present so `deriveAssignment` can answer "is a verdict waiting on me?". */
+    reviewerAgentId?: string;
   }>;
   private goalFetcher?: () => Array<{ id: string; title: string; status: string; taskIds: string[]; goalConfig?: GoalConfig }>;
   private consecutiveFailures = 0;
@@ -1082,6 +1086,15 @@ export class Agent {
    */
   private heartbeatInFlight = false;
   private static readonly WAKEUP_SWEEP_INTERVAL_MS = 60_000;
+  /**
+   * P3 — how long a process holds a claimed wakeup before another process may take it.
+   *
+   * Long enough that a slow delivery is not stolen mid-flight, short enough that a
+   * crashed process does not strand the wakeup for a human-scale wait. This is the
+   * lease, not a timeout: on expiry the row becomes claimable again, so work resumes
+   * rather than being lost.
+   */
+  private static readonly WAKEUP_CLAIM_LEASE_MS = 2 * 60_000;
   /** C8-C: how often expired subscriptions are reaped. Same coarse cadence as the wakeup
    *  sweep — a wait's expiry is not latency-critical, and this rides the one clock. */
   private static readonly TRIGGER_EXPIRY_SWEEP_INTERVAL_MS = 60_000;
@@ -1289,8 +1302,17 @@ export class Agent {
     // with no timer. Registered at CONSTRUCTION (not in `start()`) so `rest(wakeOn)` can
     // never be inert just because the attention loop has not started yet.
     this._triggerUnsub = this.eventBus.on('mailbox:new-item', ctx => {
-      const { item } = ctx as { agentId?: string; item?: { id?: string; sourceType?: string } };
+      const { item } = ctx as {
+        agentId?: string;
+        item?: { id?: string; sourceType?: string; payload?: { extra?: Record<string, unknown> } };
+      };
       if (!item?.id || !item.sourceType) return;
+      // H4 -- do not let a trigger-generated wake item re-enter the matcher. The wake
+      // below is itself a mailbox item, so without this guard a repeating
+      // `mailbox-any` subscription would match its own wake in an unbounded loop.
+      // `once: true` is the default and would self-delete, but depending on a default
+      // for loop-freedom is exactly the kind of implicit invariant that breaks later.
+      if (item.payload?.extra?.['triggerWake'] === true) return;
       const triggerEvent: TriggerEvent = {
         type: 'mailbox:new-item',
         agentId: this.id,
@@ -1312,6 +1334,11 @@ export class Agent {
           itemId: item.id,
           note: sub.note ?? null,
         });
+        // H4 -- `rest(wakeOn)` used to end here: the event was logged and emitted into
+        // a bus that no production code listened to, so a declared wait was satisfied
+        // on paper and the agent simply carried on. Deliver an actual turn instead, so
+        // "I am resting on X" means "when X arrives I get a turn that says so".
+        this.wakeForTriggerMatch(sub, item);
       }
     });
 
@@ -1374,6 +1401,19 @@ export class Agent {
           agentId: this.id,
           triggeredAt,
         });
+        return;
+      }
+      // A5: 自主档位的**唯一消费点**。
+      //
+      // 'observe' = 只响应外部推来的信号（邮箱里的任务/消息），从不自发起工。
+      // 放在 mode 分支之前，所以 legacy / clock 两条通道都被同一条判据收口 ——
+      // 若各写一份，就是同一个问题两个执行点。
+      //
+      // 必须走 recordHeartbeatSkip 而不是裸 return：它负责写 last_heartbeat 与
+      // 指标。只掐掉巡逻却不报存活，会让 observe 的 agent 在 UI 上永远像掉线 ——
+      // 状态是对的，可观测面全失明，等于把一个「只读」档做成一个「死掉」档。
+      if (!maySelfInitiate(this.config.autonomy)) {
+        this.recordHeartbeatSkip('Heartbeat', 'autonomy=observe — self-initiated patrol disabled');
         return;
       }
       if (mode === 'legacy') {
@@ -1680,9 +1720,11 @@ export class Agent {
 
   /**
    * C8-C: one dream decision per due clock tick, reported as exactly one `dream:trigger`
-   * event. `ran:false` means "due but deduped in this window" — a deliberate skip, not a
-   * miss — so the event count stays 1:1 with the schedule and the decision keeps exactly
-   * one implementation (`shouldRunDreamCycle`, called only from `consolidateMemory`).
+   * event. `ran:false` means "due but deduped in this window", "the run failed", or "the
+   * run completed but its window key could not be recorded" (DR3: `persisted` distinguishes
+   * the last one) — a deliberate skip or a reported failure, never a miss — so the event
+   * count stays 1:1 with the schedule and the decision keeps exactly one implementation
+   * (`shouldRunDreamCycle`, called only from `consolidateMemory`).
    */
   private async runDreamTick(): Promise<void> {
     try {
@@ -1691,6 +1733,7 @@ export class Agent {
         agentId: this.id,
         windowKey: result.windowKey,
         ran: result.ran,
+        persisted: result.persisted,
         at: new Date().toISOString(),
       });
     } catch (e) {
@@ -2896,7 +2939,7 @@ export class Agent {
                 sessionId: awaitOriginSessionId
                   ?? channelSessionId
                   ?? (a2aConversationId ? `a2a_${this.id}_${a2aConversationId}` : `a2a_${this.id}_${ts}`),
-                scenario: 'a2a' as const,
+                scenario: mailboxScenario(item.sourceType) ?? 'a2a',
               }
             : channelSessionId
               ? { sessionId: channelSessionId }
@@ -3082,7 +3125,7 @@ export class Agent {
             item.payload.content,
             item.metadata?.senderId,
             senderInfo,
-            buildHandleOpts({ sessionId: mentionSessionId, scenario: 'a2a' }),
+            buildHandleOpts({ sessionId: mentionSessionId, scenario: mailboxScenario(item.sourceType) }),
           );
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, mentionSessionId), item);
           resolveResponse(reply);
@@ -3098,7 +3141,7 @@ export class Agent {
               senderInfo,
               buildHandleOpts({
               sessionId: `requirement_${reqId}_${ts}`,
-              scenario: 'requirement_action',
+              scenario: mailboxScenario(item.sourceType),
               allowedTools: new Set(REQUIREMENT_ACTION_ALLOWED_TOOLS),
             }),
             );
@@ -3120,7 +3163,7 @@ export class Agent {
             senderInfo,
             buildHandleOpts({
               sessionId: `comment_${reqId}_${ts}`,
-              scenario: 'comment_response',
+              scenario: mailboxScenario(item.sourceType),
               allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
             }),
           );
@@ -3137,7 +3180,7 @@ export class Agent {
               senderInfo,
               buildHandleOpts({
                 sessionId: `workflow_${wfEvent}_${ts}`,
-                scenario: 'workflow_action',
+                scenario: mailboxScenario(item.sourceType),
                 allowedTools: new Set(WORKFLOW_ACTION_ALLOWED_TOOLS),
               }),
             );
@@ -3187,7 +3230,7 @@ export class Agent {
               senderInfo,
               buildHandleOpts({
                 sessionId: `comment_${commentTaskId}_${ts}`,
-                scenario: 'comment_response',
+                scenario: mailboxScenario(item.sourceType),
                 allowedTools: new Set(COMMENT_RESPONSE_ALLOWED_TOOLS),
               }),
             );
@@ -3217,7 +3260,7 @@ export class Agent {
             item.metadata?.senderName
               ? { name: item.metadata.senderName, role: item.metadata.senderRole ?? 'worker' }
               : undefined,
-            buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
+            buildHandleOpts({ sessionId: reviewSessionId, scenario: mailboxScenario(item.sourceType) }),
           );
           reply = reviewTaskId
             // 评审回合的 WU 身份来自派发方写入的 mailbox item（task-service 已带
@@ -3339,7 +3382,7 @@ export class Agent {
             item.payload.content,
             undefined,
             undefined,
-            buildHandleOpts({ sessionId: memSessionId, scenario: 'memory_consolidation' }),
+            buildHandleOpts({ sessionId: memSessionId, scenario: mailboxScenario(item.sourceType) }),
           );
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, memSessionId), item);
           resolveResponse(reply);
@@ -5941,6 +5984,7 @@ export class Agent {
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: isLightweight ? undefined : this.tasksFetcher?.(),
+      pendingCallbacks: isLightweight ? undefined : pendingCallbackRegistry.getByAgentId(this.id),
       deliverableContext: isLightweight ? undefined : this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario,
@@ -6705,6 +6749,7 @@ export class Agent {
       senderIdentity: senderId && senderInfo ? { id: senderId, ...senderInfo } : undefined,
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
+      pendingCallbacks: pendingCallbackRegistry.getByAgentId(this.id),
       deliverableContext: this.getDeliverableContext(effectiveMessage),
       environment: this.environmentProfile,
       scenario: 'chat',
@@ -7524,6 +7569,7 @@ export class Agent {
       liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
+      pendingCallbacks: pendingCallbackRegistry.getByAgentId(this.id),
       deliverableContext: this.getDeliverableContext(taskPrompt),
       environment: this.environmentProfile,
       scenario: 'task_execution',
@@ -8154,6 +8200,7 @@ export class Agent {
       liveColleagueStatuses: this.colleagueStatusProvider?.(),
       viewerContext: this.runtimeViewerContext,
       assignedTasks: this.tasksFetcher?.(),
+      pendingCallbacks: pendingCallbackRegistry.getByAgentId(this.id),
       deliverableContext: this.getDeliverableContext(userMessage),
       environment: this.environmentProfile,
       scenario: 'chat',
@@ -8706,7 +8753,13 @@ export class Agent {
     const now = Date.now();
     for (const cb of pendingCallbackRegistry.getByAgentId(this.id)) {
       if (cb.type !== 'wakeup' || cb.wakeAt === undefined || cb.wakeAt > now) continue;
-      pendingCallbackRegistry.resolve(cb.id);
+      // P3 -- claim BEFORE delivering. Every process loads all persisted callbacks
+      // into its own memory at startup, so without a claim two processes would both
+      // see this wakeup as due and both deliver it. The owner id carries the pid so
+      // it names the PROCESS, not just the agent (the same agent can be hosted by
+      // more than one process). A lost claim means another process owns it: skip,
+      // do not deliver, do not re-arm.
+      if (!pendingCallbackRegistry.claimDue(cb.id, `${this.id}#${process.pid}`, Agent.WAKEUP_CLAIM_LEASE_MS)) continue;
       this.deliverCallback({
         callbackId: cb.id,
         type: 'wakeup',
@@ -8848,6 +8901,35 @@ export class Agent {
   /** 触发一次心跳（api-server 脏态兜底用）：在 agent 私有 bus 上发 heartbeat:trigger。 */
   triggerHeartbeat(): void {
     this.heartbeat?.trigger();
+  }
+
+  /**
+   * H4 -- deliver the turn a declared wait was waiting for.
+   *
+   * Before this, a matched subscription was logged and emitted as `trigger:matched`
+   * onto a bus that no production code listened to: the wait was satisfied on paper
+   * while the agent simply carried on. Waking through the mailbox keeps the agent on
+   * its one normal path (attention loop) and gives the turn the reason it is awake,
+   * so it does not have to infer it from whatever item happened to arrive.
+   *
+   * The enqueued item carries `extra.triggerWake`, which the matcher skips, so a
+   * repeating `mailbox-any` subscription cannot match its own wake. The loop is
+   * broken structurally rather than by relying on `once` defaulting to true.
+   */
+  private wakeForTriggerMatch(
+    sub: Subscription,
+    item: { id?: string; sourceType?: string },
+  ): void {
+    const condition = sub.wakeOn.kind === 'mailbox-type'
+      ? `a \`${sub.wakeOn.sourceType}\` item`
+      : 'any new item';
+    this.mailbox.enqueue('system_event', {
+      summary: `Woke for the condition you rested on (${condition})`,
+      content: `[TRIGGER MATCHED] You had rested on ${condition}. An item of type \`${item.sourceType}\` arrived (id ${item.id}).`
+        + (sub.note ? ` Your note: ${sub.note}` : '')
+        + '\nThis is the turn you were waiting for.',
+      extra: { triggerWake: true, subscriptionId: sub.id, matchedItemId: item.id },
+    } as never);
   }
 
   /**
@@ -10877,23 +10959,36 @@ export class Agent {
   }
 
   /**
-   * Periodic memory consolidation:
-   * 1. Compact main session if it has grown large
-   * 2. Memory dream: prune, deduplicate, merge (once per day)
+   * DR3 — CONCURRENCY fact, not a history fact: the window key of the dream currently
+   * executing in THIS process ('' when idle).
+   *
+   * It replaces `lastDreamDate`, the volatile shadow of the durable record that was armed
+   * BEFORE the run (so a throwing dream was "already done" for the rest of the process)
+   * and answered "which window ran" from a second source. The durable `dream` record is
+   * now the only history answer and it is written after success; this field only prevents
+   * a slow run and the next tick from overlapping (the clock does not await its sources).
    */
-  private lastDreamDate = '';
+  private dreamInFlightKey = '';
   private lastHeartbeatFingerprint = '';
   private consecutiveIdleHeartbeats = 0;
 
-  private async consolidateMemory(): Promise<{ ran: boolean; windowKey: string }> {
+  /**
+   * Periodic memory consolidation: memory dream — prune, deduplicate, merge (once per
+   * window). Session compaction is handled by MemoryStore.checkAndCompact (safety-net only
+   * at very high message counts); per-call packing uses the model window.
+   *
+   * `ran` = "this tick produced a completed dream"; `persisted` = "and its window key is
+   * durably on disk". `ran:false` with `persisted:false` is a deliberate skip or a
+   * failure — never a silent success. A completed dream whose record could NOT be
+   * persisted is reported as `ran:false` (DR3 invariant 4): "ran but was not remembered"
+   * is the 2026-10-15 restart-duplicate bug, and reporting it as `ran:true` would hide it.
+   */
+  private async consolidateMemory(): Promise<{ ran: boolean; windowKey: string; persisted: boolean }> {
     let windowKey = '';
     let ran = false;
+    let persisted = false;
     try {
       const now = new Date();
-      // Session compaction is handled by MemoryStore.checkAndCompact (safety-net
-      // only at very high message counts). Per-call packing uses the model window.
-      // consolidateMemory only runs the dream cycle.
-
       // Memory dream: prune, deduplicate, merge.
       // Runs once per day normally, but up to 4x/day when memory is heavily bloated.
       const entries = this.memory.getObservations();
@@ -10902,53 +10997,71 @@ export class Agent {
       // made the dream structurally dead for buffers of a few LARGE entries (≈31 real
       // entries already sit at 99% of the 30 000-char budget, so `>= 50` never fired).
       const health = this.memory.getMemoryHealth();
+      // DR3 invariant 3 (键即事实) — the window key is computed HERE, once, and the value
+      // produced is what gets persisted and compared. Nothing downstream rebuilds it from
+      // a timestamp, so a bloated-buffer key cannot be re-derived with a different
+      // entry count than the run actually used.
       windowKey = dreamWindowKey(entries.length, now);
-      // Dedup on the SAME window key, but consult BOTH the volatile in-memory key AND the
-      // durable `lastConsolidatedAt` (memory-meta.json). The durable one is the restart fix:
-      // without it a process restart re-armed the guard and the same agent could dream twice
-      // the same day (observed 2026-10-15: two runs 2.5 min apart across a restart).
+      // The guard reads the TYPED dream record only (`{ at, windowKey }`): a manual
+      // `memory_organize` writes `organized`, which is not an input here, so it can no
+      // longer cancel the day's dream. `dreamInFlightKey` is the same-process overlap
+      // guard, cleared in `finally` — never a record of "ran".
       if (shouldRunDreamCycle({
             observationPercent: health.observationPercent,
             entryCount: entries.length,
             now,
-            lastConsolidatedAt: this.memory.getLastConsolidatedAt?.() ?? null,
-            lastInMemoryWindowKey: this.lastDreamDate,
+            dream: this.memory.getDreamRecord?.() ?? null,
+            dreamInFlightKey: this.dreamInFlightKey,
           })) {
-        this.lastDreamDate = windowKey;
-        await Agent.acquireDreamSlot();
+        this.dreamInFlightKey = windowKey;
         try {
-          // The dream cycle rewrites knowledge.md directly (read → replace → write in
-          // the store's write path). Tool-path writes take the same
-          // lock key (`agent-memory:knowledge`) via `WRITE_TOOL_DOMAINS.resource`, and a
-          // heartbeat-triggered dream runs outside any tool call — so without this lock a
-          // dream and a concurrent `memory_update` could interleave and lose one write.
-          await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
-            await this.dreamConsolidateMemory(entries, windowKey);
-            // §24 — `pruneMemoryMd()` was REMOVED: it deleted/deduped curated sections and
-            // stripped `## daily-report-*` by heuristic string surgery over the agent's own
-            // prose (heading equality, body-subset tests). That is R4 — the platform deciding
-            // what the agent's knowledge means. The dream is the AGENT's own consolidation,
-            // and it already lands through the store's APIs (single writer).
-            // 审计 P-11：上报整理时刻，使「陈旧」信号真实可用。
-            // （此前只有手动 memory_organize 会写 lastConsolidatedAt，自动 dream 周期不写 →
-            // 信号实际是死的。dream 定时器与 organize 原语共用同一时刻语义。）
-            this.memory.markConsolidated?.();
-            // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
-            // lives in the notebook's per-tier expiry, which runs on every write.
-          });
+          await Agent.acquireDreamSlot();
+          try {
+            // The dream cycle rewrites knowledge.md directly (read → replace → write in
+            // the store's write path). Tool-path writes take the same
+            // lock key (`agent-memory:knowledge`) via `WRITE_TOOL_DOMAINS.resource`, and a
+            // heartbeat-triggered dream runs outside any tool call — so without this lock a
+            // dream and a concurrent `memory_update` could interleave and lose one write.
+            await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
+              await this.dreamConsolidateMemory(entries, windowKey);
+              // §24 — `pruneMemoryMd()` was REMOVED: it deleted/deduped curated sections and
+              // stripped `## daily-report-*` by heuristic string surgery over the agent's own
+              // prose (heading equality, body-subset tests). That is R4 — the platform deciding
+              // what the agent's knowledge means. The dream is the AGENT's own consolidation,
+              // and it already lands through the store's APIs (single writer).
+              // state.md TTL pruning removed with the store itself (2026-09-16): TTL now
+              // lives in the notebook's per-tier expiry, which runs on every write.
+            });
+          } finally {
+            Agent.releaseDreamSlot();
+          }
+          // DR3 invariant 2 (成功后武装) — the window is recorded only AFTER the dream
+          // returned. A throw above skips this line entirely, so the window stays un-armed
+          // and the NEXT tick in this same process retries (it used to be armed before the
+          // run, so only a restart retried — the 2026-10-15 asymmetry, mirrored).
+          persisted = this.memory.recordDream?.(windowKey) ?? false;
+          if (persisted) {
+            ran = true;
+          } else {
+            // DR3 invariant 4 (写入必须可见) — report it, do not swallow it as a warn in the
+            // store: an unrecorded dream is indistinguishable from no dream after a restart.
+            log.warn('Dream completed but its window key was NOT durably recorded — reporting ran:false so the next tick retries', {
+              agentId: this.id, windowKey,
+            });
+          }
         } finally {
-          Agent.releaseDreamSlot();
+          this.dreamInFlightKey = '';
         }
-        ran = true;
       }
 
-      log.debug('Memory consolidation completed', { agentId: this.id, ran, windowKey });
-      return { ran, windowKey };
+      log.debug('Memory consolidation completed', { agentId: this.id, ran, persisted, windowKey });
+      return { ran, windowKey, persisted };
     } catch (error) {
-      log.warn('Memory consolidation failed', { agentId: this.id, error: String(error) });
-      // A failed dream is reported as "did not run" — never as a silent success, and
-      // never as a second decision made elsewhere.
-      return { ran: false, windowKey };
+      log.warn('Memory consolidation failed', { agentId: this.id, windowKey, error: String(error) });
+      // A failed dream is reported as "did not run" — never as a silent success, and never
+      // as a second decision made elsewhere. Nothing was recorded, so the window is free
+      // for the next tick (same process) to retry.
+      return { ran: false, windowKey, persisted: false };
     }
   }
 
