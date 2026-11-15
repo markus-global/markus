@@ -1,5 +1,9 @@
 # Cut 8-C — Single clock: heartbeat as a liveness tick, one dream trigger, minimal Trigger/Subscription
 
+> **Historical record.** The durable contract from this cut now lives in
+> [`agent-runtime.md §6`](../architecture/agent-runtime.md) — one clock, a tick is not a message,
+> one dream trigger. This file keeps the observed-before/after evidence and the cut narrative.
+
 Status: implementation note (Living for this cut). Branch `task/c8-c-single-clock`, target `feat/refactor-plan`.
 
 ## 1. Observed behaviour (before this cut)

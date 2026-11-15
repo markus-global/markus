@@ -339,3 +339,17 @@ Live (operator):
 4. Complex task complete → distillation (Habits encode; skill install via §8.3 HITL)
 5. Deliverable update returns `version` bump
 6. `acceptTask(..., notes)` stores `approved_with_notes`
+
+## §6 Clock and heartbeat
+
+Two timers used to exist (`HeartbeatScheduler` owned a `setInterval`, `AgentClock` owned
+another), and a heartbeat tick was modelled as a **message**: a queue row that carried
+retention, triage and drop semantics a tick never needed — `heartbeat` rows dominated the
+completed population (~70% of `mailbox_items`).
+
+| Invariant | How it is enforced |
+|---|---|
+| **One clock** | `AgentClock` is the only owner of `setInterval`. `HeartbeatScheduler` keeps its policy (interval, active hours, deep-sleep growth, status reporting) and loses its timer: it registers as a clock source named `heartbeat`. Deep-sleep re-registers that source instead of restarting a private timer, so a cadence change still takes effect immediately and still leaves one timer in the process. |
+| **A tick is not a message** | In `clock` mode the `heartbeat:trigger` listener runs the patrol directly. No `mailbox_items` row is produced, so the patrol has no retention, triage or age-based drop semantics. Re-entrancy is guarded by a single in-flight flag, which replaces the previous "heartbeat folding" inside `Mailbox.enqueue` — one guard, not two mechanisms. |
+| **One dream trigger** | The dream runs from the clock source `memory-consolidation`. The `memory_consolidation` mailbox type is not a second entry link, and must not be subject to age-based dropping: otherwise the only cleaning task can be silently discarded when the queue is busy. |
+| **One decision function** | `shouldRunDreamCycle` remains the only place that answers "should the dream run now". |

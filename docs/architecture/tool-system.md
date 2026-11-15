@@ -71,6 +71,22 @@ MUST: Activated skill bodies inject as `## Activated Skills` (not under the conv
 
 Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
 
+### 1.0.2 Spec: action tools are always present, and eviction is reversible
+
+Tool definitions are capped by a token budget (§1.0.1). Eviction ranks by tier and then by
+schema size, so without an explicit rule an agent under pressure loses the tools that let it
+**act** — create / update / submit work, read its own ledger, look at its queue, answer a
+human — and is never told.
+
+| Rule | Statement |
+|---|---|
+| Whitelist is derived | `ACTION_TOOL_GROUPS` in `packages/core/src/capability-packs.ts` groups action tools by need (`task`, `ledger`, `human`); `ACTION_TOOL_IDS` is derived from those groups, never hand-listed. |
+| Fail closed on a ghost id | A name in the whitelist that is absent from the tool registry is a startup/test error, not silently filtered. The live sample: `request_user_input` was copied out of prose into an intended whitelist and did not exist in the registry. |
+| Action tools are not situational extras | They are selected unconditionally for the active pack, never treated as optional keyword additions. |
+| Eviction may only take what can come back | A tool the runtime tells the model to call is protected (§1.0.1 tier 0). Eviction is restricted to tools that can be re-discovered. |
+| The eviction hint is actionable | When a tool leaves the schema the model is told what left and how to get it back, instead of silently losing a capability. |
+| Single switch | One derived set answers "is this tool required", and selection, the assertion and the evictor all read it. |
+
 ### 1.1 Selection inputs
 
 `selectTools()` unions the following sources into the working set **for the active pack**:
