@@ -21,6 +21,16 @@ holding without a new rule.
 
 ## 1. Verification is a fact *about* a fact
 
+**Reachability invariant (2026-11-15 incident).** Both terminal hooks (§2) are only satisfiable
+if the turn that calls them can *write* the fact they require. `FactService.assert` / `verify`
+reject any turn without a WorkUnit identity (`missing_provenance`), so identity has to be
+established by the turn itself: an execution turn's identity is `WORK_UNIT_REF.task(taskId, round)`
+with the round actually being executed, held in the per-execution async scope
+(`taskAsyncContext`) and read through the single reader `Agent.turnWorkUnitRef()`.
+There is **no** "assert it from a chat turn instead" route: a chat round asserting on behalf of an
+execution round is a second writer for the same fact and is not a legal path — when the two
+disagree the answer is to fix the identity chain, never to route the write elsewhere.
+
 `verification_json` lives on the asserting row (`facts-layer.md §4`). C9-E gives it the only
 write path it may ever have:
 
