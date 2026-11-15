@@ -5615,7 +5615,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     const allTasks = Object.values(board).flat();
     const updated = allTasks.find(t => t.id === sel.id);
     if (updated && updated.updatedAt !== sel.updatedAt) {
-      setSelectedTask(updated);
+      // 看板项是 lean 的：它不带 evidence（证据只有详情接口 api.tasks.get 才返回）。
+      // 直接 setSelectedTask(updated) 会把详情拿到的事实清空 —— 真机现象就是
+      // 卡片刚刷新一下，「完成依据」从 2 条跳成 0 条（Owner 报的「点了没内容」之一）。
+      // 所以这里只拿看板拥有的字段，evidence 保留上一次详情的结果；
+      // 数据真变了时，markus:data-changed 处理器会重拉详情覆盖它（同一事实一个写者）。
+      setSelectedTask(prev => (prev && prev.id === updated.id ? { ...updated, evidence: prev.evidence } : updated));
     }
   }, [board]);
 
