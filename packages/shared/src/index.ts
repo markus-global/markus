@@ -46,3 +46,4 @@ export * from './sanitize.js';
 export * from './mas.js';
 export * from './address.js';
 export * from './work-unit.js';
+export * from './facts/predicates.js';

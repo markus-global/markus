@@ -1,6 +1,7 @@
 const BASE = '/api';
 
 import { createStreamWatchdog } from './lib/streamResilience.ts';
+import type { FactsResponse } from './lib/factsAudit.js';
 import { normalizeRequirement, normalizeDeliverable, normalizeTask } from './lib/entityShapes.ts';
 import type {
   PlatformListResponse,
@@ -626,8 +627,7 @@ export interface ValidateKeyResponse {
   models: CatalogModel[];
 }
 
-async function request<T>(path: string, opts?: RequestInit): Promise<T> {
-  const method = opts?.method?.toUpperCase() ?? 'GET';
+async function request<T>(path: string, opts?: RequestInit): Promise<T> {  const method = opts?.method?.toUpperCase() ?? 'GET';
   const isGet = method === 'GET' && !opts?.body;
   if (isGet) {
     const cached = _dedupCache.get(path);
@@ -853,6 +853,8 @@ export interface ActivityRecord {
   taskId?: string | null;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）。只用于判断「在跑」，不能反过来当状态。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -915,6 +917,8 @@ export interface MailboxHistoryActivity {
   label: string;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：所属 WorkUnit（可空）；「在跑」只由 work_units 回答。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -947,6 +951,8 @@ export interface AgentWorkUnitRow {
   budget: number | null;
   used: number;
   contextRef?: string | null;
+  /** 服务端由 `taskIdOfWorkUnitRef(ref)` 解析（客户端不自己拆 ref）。 */
+  taskId?: string | null;
   /** 内部 session（requirement_* / channel_dm:* / session:*）—— 用户可见的“运行与注意力”必须能显示它。 */
   internal: boolean;
 }
@@ -1106,6 +1112,26 @@ export interface TaskInfo {
     nextRunAt?: string;
     paused?: boolean;
   };
+  /**
+   * C9-C：这条流此刻在等谁（服务端 `deriveStage()` 的闭集输出）。
+   *
+   * 前端**只读不算**：值不认识就按「不显示」处理（`asThreadStage()`），绝不自己
+   * 再从 approvals / blockedBy / 消息拼一次 —— 那正是同一个问题出现多个答案的来源。
+   */
+  threadStage?: string;
+  /** 「凭什么说做完了」的证据指针（当前事实的投影，不含原始 JSON）。 */
+  evidence?: ThreadEvidenceInfo[];
+}
+
+/** 与 `org-manager/src/thread-stage.ts` 的 `ThreadEvidenceView` 逐字对应。 */
+export interface ThreadEvidenceInfo {
+  factId: string;
+  predicate: string;
+  value: unknown;
+  assertedBy: string;
+  sourceRefs: string[];
+  verification: { result: 'pass' | 'fail'; verifiedBy: string } | null;
+  createdAt: string;
 }
 
 export interface DeliverableItem {
@@ -1492,6 +1518,16 @@ export function dispatchThinkingDelta(
   handlers.onChunk?.(`<think>${thinking}</think>`);
 }
 
+/**
+ * C9-E · facts 审计轨迹（只读，owner/admin）。
+ *
+ * 查询串由 `lib/factsAudit.ts#buildFactsQuery` 构造：空过滤器被省略（空串不是“等于空 id”）。
+ * 服务端在 facts 层未接线时回 `disabled: true`，页面必须把它与「没有数据」分开呈现。
+ */
+export const factsAudit = {
+  list: (query = '') => request<FactsResponse>(`/facts${query}`),
+};
+
 export const api = {
   agents: {
     /** `lean` skips the per-agent runtime derivation — use for pickers/searchers. */
@@ -1835,8 +1871,10 @@ export const api = {
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`)
         .then(r => ({ ...r, tasks: (r.tasks ?? []).map(normalizeTask) }));
     },
-    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`)
-      .then(r => ({ ...r, task: normalizeTask(r.task) })),
+    get: (id: string) => request<{ task: TaskInfo; threadStage?: string; evidence?: ThreadEvidenceInfo[] }>(`/tasks/${id}`)
+      // C9-C: 阶段与证据是**同一个响应的一部分**（服务端派生一次），挂到任务视图上再交给
+      // 页面，避免每个读取点各自再拼一次「现在需要人做什么」。
+      .then(r => ({ ...r, task: { ...normalizeTask(r.task), threadStage: r.threadStage, evidence: r.evidence ?? [] } })),
     create: (title: string, description: string, assignedAgentId: string, reviewerId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string; maxRuns?: number; timezone?: string }, reviewerType?: 'agent' | 'human') =>
       request<{ task: TaskInfo }>('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig, reviewerType }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) =>

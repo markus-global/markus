@@ -128,7 +128,7 @@ describe('attention delegate callbacks', () => {
     agent.getMemory().appendMessage(session.id, { role: 'user', content: 'Recent user question about deploy' });
     agent.getMemory().appendMessage(session.id, { role: 'assistant', content: 'Deploy steps explained here.' });
 
-    const execPromise = agent.executeTask('task_triage_ctx', 'Background work', () => {});
+    const execPromise = agent.executeTask('task_triage_ctx', 'Background work', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const delegate = (agent as unknown as PrivateAgent).createAttentionDelegate();
@@ -583,7 +583,7 @@ describe('stream and task execution edge paths', () => {
       execute: async () => JSON.stringify({ status: 'ok' }),
     });
 
-    await agent.executeTask('task_final_reminder', 'Build the feature', () => {});
+    await agent.executeTask('task_final_reminder', 'Build the feature', () => {}, undefined, undefined, 1);
     expect(streamCalls).toBeGreaterThanOrEqual(2);
   });
 

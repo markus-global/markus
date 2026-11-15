@@ -1,9 +1,37 @@
 import type { TaskStatus, TaskPriority, TaskSortField, SortOrder } from '@markus/shared';
+import type { FactRecord } from '@markus/core';
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { APIServer } from '../api-server.js';
 import { TaskServiceError } from '../task-service.js';
+import { deriveTaskThreadStage, toEvidenceView, type Approval } from '../thread-stage.js';
+
+/**
+ * C9-C: pending human needs **for one task**.
+ *
+ * Read from the approval rows (the persisted writer) rather than from the HITL
+ * in-memory mirror, because the mirror is a working set with its own cap and a
+ * stage must not depend on how much history happens to be loaded. `details.taskId`
+ * is the structural link; an approval that does not name a task cannot keep a task
+ * in `waiting_human`.
+ */
+function pendingHumanNeedsForTask(server: APIServer, taskId: string): Approval[] {
+  const repo = server.storage?.approvalRepo;
+  if (!repo?.list) return [];
+  const rows = repo.list({ status: 'pending', limit: 500 }) as Array<{
+    details?: Record<string, unknown>;
+    questions?: unknown[];
+  }>;
+  return rows
+    .filter(row => row.details?.['taskId'] === taskId)
+    .map(row => ({
+      kind: (Array.isArray(row.questions) && row.questions.length > 0 ? 'question' : 'approval') as
+        | 'question'
+        | 'approval',
+      status: 'pending' as const,
+    }));
+}
 
 /** Default cap applied to each terminal board bucket (completed/failed/rejected/cancelled/archived). */
 const DEFAULT_BOARD_TERMINAL_LIMIT = 100;
@@ -243,7 +271,34 @@ export async function handleTasksRoutes(
         server.json(res, 404, { error: `Task not found: ${taskId}` });
         return true;
       }
-      server.json(res, 200, { task });
+      // C9-C: the stage is derived **once**, here, from structural rows only. The UI
+      // renders the value it receives and never re-derives it — that second writer is
+      // what used to make the same task read differently on two screens.
+      const facts = server.storage?.factService
+        ? (server.storage.factService.queryActive({
+            subjectKind: 'task',
+            subjectId: task.id,
+            activeOnly: true,
+          }) as FactRecord[])
+        : [];
+      const pendingHumanNeeds = pendingHumanNeedsForTask(server, task.id);
+      const runningWorkUnits =
+        (server.storage?.workUnitRepo?.countRunningByTask?.(task.id) as number | undefined) ?? 0;
+      const threadStage = deriveTaskThreadStage(
+        {
+          id: task.id,
+          status: task.status,
+          blockedReason: task.blockedReason ?? null,
+          blockedBy: task.blockedBy ?? [],
+        },
+        {
+          getDependencyStatus: (id: string) => server.taskService.getTask(id)?.status,
+          pendingHumanNeeds,
+          runningWorkUnits,
+          facts,
+        },
+      );
+      server.json(res, 200, { task, threadStage, evidence: toEvidenceView(facts) });
       return true;
     }
 

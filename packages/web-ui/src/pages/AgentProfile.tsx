@@ -10,6 +10,7 @@ import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsT
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { RunningWorkUnits } from '../components/RunningWorkUnits.tsx';
+import { isActivityLive, liveRefSet } from '../lib/workUnitLiveness.ts';
 import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MAILBOX_STATUS_FILTERS, statusFilterParam } from '../lib/mailboxStatusFilters.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
@@ -395,6 +396,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
       .finally(() => { if (!cancelled) setLoadingActivities(false); });
     return () => { cancelled = true; };
   }, [section, agent.id]);
+
+  // 同一页面的「在跑」集合：只读 work_units（与 RunningWorkUnits 同一个权威）。
 
   // 停止是「一次性」动作：后端把「人类按的停止」记成粘性意图，agent 侧的唤醒
   // 都不会拉起它，只有人类再次启动（单个或整个团队）或回答它自己的审批才会恢复。
@@ -2419,6 +2422,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const QUEUE_COLLAPSE_THRESHOLD = 3;
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
+  // C9-B：「在跑」只由 work_units 回答 —— 与 RunningWorkUnits 同一个权威，
+  // 不再从 activity 的 endedAt 推断（僵尸行曾因此在 UI 上永远显示「在跑」）。
+  const [runningUnitRefs, setRunningUnitRefs] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    let cancelled = false;
+    const loadRunning = () => {
+      api.agents.workUnits(agentId, 'running')
+        .then(r => { if (!cancelled) setRunningUnitRefs(liveRefSet(r.units)); })
+        .catch(() => { /* 读不到就不主张在跑 */ });
+    };
+    void loadRunning();
+    const timer = window.setInterval(loadRunning, 15000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [agentId]);
+
   const load = useCallback(async (reset = true) => {
     if (reset) setLoading(true);
     try {
@@ -2929,9 +2947,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                           </span>
                         </h5>
                         {item.activity.type === 'task' && item.payload?.taskId ? (
-                          <TaskLog taskId={item.payload.taskId as string} isLive={!item.activity.endedAt} />
+                          <TaskLog taskId={item.payload.taskId as string} isLive={isActivityLive(item.activity, runningUnitRefs)} />
                         ) : (
-                          <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={!item.activity.endedAt} />
+                          <ActivityLog agentId={agentId} activityId={item.activity.id} isLive={isActivityLive(item.activity, runningUnitRefs)} />
                         )}
                       </div>
                     ) : rowDisplayStatus === 'processing' ? (

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -2045,16 +2045,10 @@ export class APIServer {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
     this.wireWorkUnits();
-    // C8-P2：僵尸活动收口 —— 触发它的投递行已终态的行，不该再挂着“进行中”。
-    // 「是否在跑」的唯一权威是 work_units；activity 只是历史，不是状态。
-    try {
-      const closed = this.storage?.activityRepo?.closeOrphansAgainstTerminalMailbox?.() ?? 0;
-      if (closed > 0) {
-        log.info('Closed orphan activities (trigger row already terminal)', { count: closed });
-      }
-    } catch (err) {
-      log.warn('Failed to close orphan activities', { error: String(err) });
-    }
+    // C9-B：这里曾经有一个「僵尸活动收口」步骤（给未收口 activity 补写 ended_at）。
+    // 它存在的唯一理由是让「ended_at 为空 = 还在跑」这个读法成立；该读法已全仓删掉，
+    // 「在跑」只认 work_units，所以这个后台写也一并删掉。
+    // 契约见 docs/architecture/observability-tables.md。
     // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
     // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
     try {
@@ -2083,6 +2077,11 @@ export class APIServer {
     if (!units) return;
     this.taskService.setWorkUnitService(units);
     const manager = this.orgService.getAgentManager();
+    // C9-A：facts 层的唯一写者接进 core（未接则三工具不注册、[FACTS:…] 不渲染）。
+    // 与 workUnits 同样惰性读 storage："暂时没有" 不是事实，晚到的依赖不能冻成 null。
+    manager.setFactService(this.storage?.factService ?? null);
+    // C9-E：同一份写者交给 TaskService —— 两个终态钩子（提交评审 / 打回）在它是**唯一**执行点。
+    this.taskService.setFactService(this.storage?.factService ?? null);
     // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
     manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
     // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。
@@ -4343,6 +4342,9 @@ export class APIServer {
           budget: u.budget,
           used: u.used,
           contextRef: u.contextRef,
+          // C9-B：拆解 ref 为结构字段的那一步只在这里（用 shared 的唯一解析器）。
+          // 客户端只做集合成员判断，不再各自解析 ref —— 否则就是第二个解析器。
+          taskId: taskIdOfWorkUnitRef(u.ref) ?? null,
           internal: /^(requirement_|channel_|session:)/.test(u.ref),
         })),
       });
@@ -6296,6 +6298,7 @@ export class APIServer {
               label: act.label,
               startedAt: act.startedAt,
               endedAt: act.endedAt,
+              workUnitRef: act.workUnitRef ?? null,
               totalTokens: act.totalTokens,
               totalTools: act.totalTools,
               success: act.success,
@@ -8445,6 +8448,98 @@ EXPLANATION_END`;
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const summary = this.auditService.summary(orgId);
       this.json(res, 200, { summary });
+      return;
+    }
+
+    // ── Facts audit (C9-E) ─────────────────────────────────────────────────
+    //
+    // 只读、只给 owner/admin。产品口径：**人不感知事实本身**，但证据链与审计痕迹
+    // 必须可见 —— 所以这是一个“深链页面 + 后端硬门”的组合：前端不挂载页面，
+    // 后端仍然 403（深链接、直接 curl 都过不去；不靠 UI 隐藏作为访问控制）。
+    //
+    // 无写入口：只有 GET。断言/取代/验证三个动作只存在于 agent 工具层，
+    // 审计页不可能成为第二个写者。
+    if (path === '/api/facts' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Access denied: the facts audit trail is owner/admin only' });
+        return;
+      }
+      const factService = this.storage?.factService;
+      if (!factService) {
+        // 「没有接线」与「没有数据」必须是两个不同的回答：空表会被读成“一条事实也没有”。
+        this.json(res, 200, { facts: [], truncated: false, disabled: true });
+        return;
+      }
+      const limitParam = url.searchParams.get('limit');
+      const limit = limitParam ? Math.max(1, Math.min(Number(limitParam) || 200, 1000)) : 200;
+      const rows = factService.queryActive({
+        subjectKind: (url.searchParams.get('subjectKind') as FactSubjectKind | null) ?? undefined,
+        subjectId: url.searchParams.get('subjectId') ?? undefined,
+        predicate: url.searchParams.get('predicate') ?? undefined,
+        predicatePrefix: url.searchParams.get('predicatePrefix') ?? undefined,
+        activeOnly: url.searchParams.get('includeSuperseded') === '1' ? false : true,
+        createdAfter: url.searchParams.get('since') ?? undefined,
+        createdBefore: url.searchParams.get('until') ?? undefined,
+        limit,
+      });
+      const auditRows = rows as Array<{
+        id: string; subjectKind: string; subjectId: string; predicate: string; value: unknown;
+        workUnitRef: string; assertedBy: string; sourceRefs: string[];
+        verification?: { result: 'pass' | 'fail'; verified_by: string; evidence_refs?: string[]; verified_at?: string; work_unit_ref?: string };
+        confidence: number; createdAt: string; supersededBy?: string; supersededAt?: string;
+      }>;
+      // 页面是给人看的：能解析出名字就带名字，id 退到次级位置（title 提示保留 id）。
+      // 同一请求内缓存解析结果 —— 一张表里 200 行不该打出 400 次 findById。
+      const labelCache = new Map<string, string | null>();
+      const labelOf = (kind: string, id: string | null | undefined): string | null => {
+        if (!id) return null;
+        const key = `${kind}:${id}`;
+        if (labelCache.has(key)) return labelCache.get(key)!;
+        let label: string | null = null;
+        try {
+          const s = this.storage;
+          if (kind === 'task') label = (s?.taskRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'agent') label = (s?.agentRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+          else if (kind === 'requirement') label = (s?.requirementRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'deliverable') label = (s?.deliverableRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'project') label = (s?.projectRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+        } catch {
+          label = null; // 主体已被删除 / repo 不可用：没有名字不是错误，页面回落到 id。
+        }
+        labelCache.set(key, label);
+        return label;
+      };
+      this.json(res, 200, {
+        facts: auditRows.map(r => ({
+          id: r.id,
+          subjectKind: r.subjectKind,
+          subjectId: r.subjectId,
+          subjectLabel: labelOf(r.subjectKind, r.subjectId),
+          predicate: r.predicate,
+          value: r.value,
+          workUnitRef: r.workUnitRef,
+          assertedBy: r.assertedBy,
+          assertedByName: labelOf('agent', r.assertedBy),
+          sourceRefs: r.sourceRefs,
+          verification: r.verification
+            ? {
+                result: r.verification.result,
+                verifiedBy: r.verification.verified_by,
+                verifiedByName: labelOf('agent', r.verification.verified_by),
+                evidenceRefs: r.verification.evidence_refs ?? [],
+                verifiedAt: r.verification.verified_at,
+                workUnitRef: r.verification.work_unit_ref,
+              }
+            : null,
+          confidence: r.confidence,
+          createdAt: r.createdAt,
+          supersededBy: r.supersededBy ?? null,
+          supersededAt: r.supersededAt ?? null,
+        })),
+        truncated: rows.length >= limit,
+      });
       return;
     }
 
@@ -14861,6 +14956,8 @@ EXPLANATION_END`;
       exact('/api/audit', 'GET'),
       exact('/api/audit/summary', 'GET'),
       exact('/api/audit/tokens', 'GET'),
+      // C9-E: facts audit trail (owner/admin, read-only).
+      exact('/api/facts', 'GET'),
 
       // ── Plan ─────────────────────────────────────────────────────────────
       exact('/api/plan', 'GET', 'POST'),

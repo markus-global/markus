@@ -2,6 +2,7 @@ import { createLogger, markusDbPath } from '@markus/shared';
 import { statSync, statfsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { SqliteFactService } from './fact-service.js';
 
 const log = createLogger('storage-bridge');
 
@@ -57,6 +58,8 @@ export interface StorageBridge {
   statusTransitionRepo?: any;
   /** 第七刀 C7-A：WorkUnit 的存储写者（唯一一处 SQL）。 */
   workUnitRepo?: any;
+  /** 第九刀 C9-A：facts 的唯一写者（facts 的写语句只在 fact-service.ts）。 */
+  factService?: any;
   readCursorRepo?: any;
   workflowRunRepo?: any;
   workflowScheduleRepo?: any;
@@ -266,6 +269,9 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       statusTransitionRepo: new storage.SqliteStatusTransitionRepo(db),
       // 第七刀 C7-A：WorkUnit 的唯一存储写者。
       workUnitRepo: new storage.SqliteWorkUnitRepo(db),
+      // 第九刀 C9-A：facts 的唯一写者。直接拿 db 句柄（SQL 全在 fact-service.ts），
+      // 不经 repo 中转 —— 中转等于给「第二个写者」留一个可以空转的层。
+      factService: new SqliteFactService(db as unknown as ConstructorParameters<typeof SqliteFactService>[0]),
       readCursorRepo: new storage.SqliteReadCursorRepo(db),
       workflowRunRepo: new storage.SqliteWorkflowRunRepo(db),
       workflowScheduleRepo: new storage.SqliteWorkflowScheduleRepo(db),

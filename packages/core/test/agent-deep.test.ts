@@ -488,7 +488,7 @@ describe('executeTask paths', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.executeTask('task_exec_1', 'Implement feature X', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    });
+    }, undefined, undefined, 1);
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -511,7 +511,7 @@ describe('executeTask paths', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.executeTask('task_cancel_1', 'Long task', (entry) => {
       logs.push({ type: entry.type, content: entry.content });
-    }, cancelToken);
+    }, cancelToken, undefined, 1);
 
     expect(logs.some(l => l.type === 'status' && l.content === 'cancelled')).toBe(true);
     expect(agent.getActiveTasks()).toHaveLength(0);

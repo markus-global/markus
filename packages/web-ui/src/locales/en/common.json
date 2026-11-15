@@ -106,6 +106,50 @@
     "cancelled": "Cancelled",
     "archived": "Archived"
   },
+  "threadStage": {
+    "waitingHuman": "Needs you",
+    "running": "Working now",
+    "needsEvidence": "Needs evidence",
+    "inVerification": "Awaiting check",
+    "done": "Closed out",
+    "blockedDeps": "Waiting on deps",
+    "ended": "Given up",
+    "evidence": {
+      "title": "Completion evidence ({{count}})",
+      "subtitle": "What backs this card's claim: each conclusion, who asserted it, and whether anyone checked it independently.",
+      "empty": "No evidence fact yet",
+      "emptyHint": "Submitting for review requires one 'completion evidence' fact, or the gate will refuse.",
+      "unverified": "Not independently verified",
+      "assertedBy": "asserted by {{who}}",
+      "verifiedBy": "checked by {{who}}",
+      "predicateOnly": "Recorded as a structured value — no text summary.",
+      "expand": "Show full text",
+      "collapse": "Collapse",
+      "predicate": {
+        "task_completion_evidence": "Completion evidence",
+        "task_rejection_reason": "Rejection reason",
+        "requirement_acceptance_met": "Acceptance met",
+        "work_defect_class": "Defect class",
+        "agent_capability_claim": "Capability claim",
+        "memory_consolidation_suggestion": "Memory consolidation suggestion"
+      },
+      "verification": {
+        "pass": "Verified",
+        "fail": "Verification failed"
+      },
+      "refKind": {
+        "deliverable": "Deliverable",
+        "comment": "Comment",
+        "inPlace": "Reference",
+        "commit": "Commit",
+        "probe": "Live probe",
+        "task": "Task",
+        "record": "Fact",
+        "transcript": "Transcript",
+        "other": "Other"
+      }
+    }
+  },
   "processStatus": {
     "idle": "Idle",
     "working": "Working",
@@ -668,5 +712,84 @@
     "loadFailed": "Couldn't load invite data. Please try again later.",
     "unsupported": "This Hub version doesn't expose invite data. Please upgrade Hub.",
     "openHub": "Open in Hub"
+  },
+  "factsAudit": {
+    "title": "Facts audit trail",
+    "subtitle": "Read-only: for each conclusion, old value → new value → who and when, plus its evidence and verifier.",
+    "subjectKind": "Subject kind",
+    "subjectId": "Subject id",
+    "predicate": "Predicate",
+    "any": "Any",
+    "since": "Since",
+    "until": "Until",
+    "includeSuperseded": "Include superseded history",
+    "disabled": "The facts layer is disabled (FACTS_ENABLED=0), so there is nothing to show here — this is not the same as \"no facts\".",
+    "empty": "No facts match these filters.",
+    "truncated": "Result limit reached — narrow the filters.",
+    "unverified": "Not independently verified",
+    "colPredicate": "Predicate",
+    "colSubject": "Subject",
+    "colAsserted": "Asserted by / when / turn",
+    "colVerification": "Verification",
+    "colChain": "Supersede chain",
+    "colValue": "Value",
+    "statTotal": "records",
+    "statVerified": "independently verified",
+    "statSuperseded": "superseded",
+    "fSubject": "About",
+    "fKind": "Type",
+    "fConclusion": "Conclusion",
+    "fTime": "Time",
+    "subjectSearchPlaceholder": "Search by name: task / requirement / agent / deliverable",
+    "subjectNoMatch": "No matching subject. Leave it empty to see everything.",
+    "clearSubject": "Clear selected subject",
+    "openSubject": "Open details ({{id}})",
+    "kindAll": "All",
+    "conclusionAll": "All conclusions",
+    "range": "Time range",
+    "rangeAll": "All time",
+    "range24h": "Last 24 hours",
+    "range7d": "Last 7 days",
+    "range30d": "Last 30 days",
+    "rangeCustom": "Custom…",
+    "emptyHint": "Try a wider time range, or clear the subject / predicate filters.",
+    "by": "asserted by {{name}}",
+    "confidence": "Confidence",
+    "confidenceShort": "conf {{pct}}%",
+    "verificationTitle": "Result · verifier · time",
+    "chain": {
+      "replacedBy": "Overturned by a newer conclusion at {{time}}",
+      "replacedByUnknown": "Overturned by another conclusion (not in this result set)",
+      "replaces": "Replaces the earlier conclusion from {{time}}"
+    },
+    "evidence": "Evidence",
+    "kind": {
+      "task": "Task",
+      "requirement": "Requirement",
+      "agent": "Agent",
+      "deliverable": "Deliverable",
+      "work_unit": "Work unit"
+    },
+    "predicateName": {
+      "task_completion_evidence": "Completion evidence",
+      "task_rejection_reason": "Rejection reason",
+      "requirement_acceptance_met": "Acceptance met",
+      "work_defect_class": "Defect class",
+      "agent_capability_claim": "Capability claim",
+      "memory_consolidation_suggestion": "Memory consolidation suggestion"
+    },
+    "reset": "Reset",
+    "superseded": "Superseded",
+    "wu": {
+      "session": "Session",
+      "sessionRound": "Session · round {{round}}",
+      "a2a": "Message"
+    },
+    "src": {
+      "commit": "Commit {{hash}}",
+      "probe": "Live probe",
+      "task": "Task",
+      "deliverable": "Deliverable"
+    }
   }
 }

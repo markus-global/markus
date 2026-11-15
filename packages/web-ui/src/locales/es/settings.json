@@ -19,6 +19,7 @@
     "search": "Búsqueda web",
     "codingTools": "Herramientas de codificación",
     "storage": "Almacenamiento de datos",
+    "facts": "Auditoría de hechos",
     "users": "Gestión de usuarios",
     "remote": "Acceso remoto",
     "network": "Red y acceso",
@@ -31,7 +32,8 @@
       "aiConfig": "Configuración AI",
       "tools": "Herramientas y capacidades",
       "connections": "Conexión",
-      "account": "Cuenta"
+      "account": "Cuenta",
+      "data": "Datos y auditoría"
     }
   },
   "appearance": {

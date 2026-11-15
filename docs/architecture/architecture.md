@@ -27,6 +27,7 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
 | [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [state-ownership.md](./state-ownership.md) | State-ownership contract: who owns which state, who may read it, in which execution context |
+| [observability-tables.md](./observability-tables.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`), their nullable `work_unit_ref`, and the single source of "running" (`work_units`) |
 | [concurrent-processing.md](./concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
 | [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience |
@@ -844,6 +845,11 @@ Agents understand the workflow and governance rules through three layers:
 ---
 
 ## 11. Observability
+
+> Persisted observation rows (activity / activity logs / execution stream / task logs)
+> are **history, not state**. "Is this agent working right now" is answered only from
+> `work_units` (`status='running'` + `claimed_by` + `lease_until`). See
+> [observability-tables.md](./observability-tables.md).
 
 `AgentMetricsCollector` ([`packages/core/src/agent-metrics.ts`](../../packages/core/src/agent-metrics.ts))
 aggregates per-agent counters (tokens, cost, CU, requests, tool calls, errors, heartbeat

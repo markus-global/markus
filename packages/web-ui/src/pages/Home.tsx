@@ -508,7 +508,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
    * 审批请求 + 未读通知：**旧实现完全没有这两类**（只算 board + requirements），
    * 于是「agent 等你批准 / 等你回答 / 有人 @ 你」在概览里不存在 —— 用户以为没事。
    */
-  const [pendingApprovals, setPendingApprovals] = useState<ApprovalInfo[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalInfo[]>([]);
   const [unreadNotices, setUnreadNotices] = useState<NotificationInfo[]>([]);
   /** 上次看过概览的时刻：只用于把「新到的」标出来，本页停留期间不再改写。 */
   const [attentionLastSeen] = useState<string | null>(() => readAttentionLastSeen());
@@ -518,7 +518,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     let alive = true;
     const load = () => {
       api.approvals.list()
-        .then(r => { if (alive) setPendingApprovals((r.approvals ?? []).filter(a => a.status === 'pending')); })
+        // 不做 `status === 'pending'` 过滤：「哪些审批算待办」是 `deriveInbox()` 的判定，
+        // 在这里再滤一遍就是同一事实的第二个写者（两处一改就漂）。
+        .then(r => { if (alive) setApprovals(r.approvals ?? []); })
         // 读失败不清空：显示上一次已知的，比谎报「没有」诚实。
         .catch(() => undefined);
       if (authUser?.id) {
@@ -540,13 +542,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   const attentionQueue = useMemo(() => buildAttentionQueue({
     tasks: allTasksFlat,
     requirements: allRequirements,
-    approvals: pendingApprovals,
+    approvals,
     notifications: unreadNotices,
     taskById: id => allTasksMap.get(id),
     lastSeenAt: attentionLastSeen,
     // 标题的本地化也只走一处：
     notifyTitle: n => notifTitle(n, t),
-  }), [allTasksFlat, allRequirements, pendingApprovals, unreadNotices, allTasksMap, attentionLastSeen, t]);
+  }), [allTasksFlat, allRequirements, approvals, unreadNotices, allTasksMap, attentionLastSeen, t]);
 
   const actionables = useMemo(() => actionableCount(attentionQueue), [attentionQueue]);
   const newCount = useMemo(() => attentionQueue.filter(i => i.isNew).length, [attentionQueue]);

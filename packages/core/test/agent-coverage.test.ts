@@ -114,7 +114,7 @@ describe('executeTask and task lifecycle', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.sendTaskExecution('task_exec_1', 'Implement a small feature', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    }, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
+    }, undefined, undefined, 1, undefined, undefined, undefined, () => {});
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -131,7 +131,7 @@ describe('executeTask and task lifecycle', () => {
 
     await agent.executeTask('task_direct', 'Run unit tests', (entry) => {
       logs.push(entry.type);
-    });
+    }, undefined, undefined, 1);
 
     expect(logs).toContain('status');
     expect(agent.getActiveTasks()).toEqual([]);
@@ -160,7 +160,7 @@ describe('executeTask and task lifecycle', () => {
     const agent = createAgent(router);
     const cancelToken = { cancelled: true };
 
-    await agent.executeTask('task_cancel', 'Cancelled task', () => {}, cancelToken);
+    await agent.executeTask('task_cancel', 'Cancelled task', () => {}, cancelToken, undefined, 1);
 
     expect(router.chatStream).not.toHaveBeenCalled();
   });
@@ -450,7 +450,7 @@ describe('callbacks, hooks, and helpers', () => {
     });
     const agent = createAgent(router);
 
-    const execPromise = agent.executeTask('task_busy', 'Busy work', () => {});
+    const execPromise = agent.executeTask('task_busy', 'Busy work', () => {}, undefined, undefined, 1);
     await new Promise(r => setTimeout(r, 20));
     const summary = agent.getAgentStatusSummary();
     expect(summary.isBusy || summary.activeTaskCount >= 0).toBe(true);
@@ -692,7 +692,7 @@ describe('task execution with prior history', () => {
       if (entry.type === 'tool_start' || entry.type === 'tool_end') {
         toolEvents.push(entry.type);
       }
-    });
+    }, undefined, undefined, 1);
 
     expect(streamCalls).toBeGreaterThanOrEqual(2);
     expect(toolEvents).toContain('tool_start');
@@ -708,7 +708,7 @@ describe('task execution with prior history', () => {
 
     await expect(agent.executeTask('task_err', 'Fail this task', (entry) => {
       if (entry.type === 'error') errors.push(entry.content);
-    })).rejects.toThrow('LLM stream failed');
+    }, undefined, undefined, 1)).rejects.toThrow('LLM stream failed');
 
     expect(errors.some(e => e.includes('LLM stream failed'))).toBe(true);
   });
@@ -986,7 +986,7 @@ describe('performDeliberation and cognitive pipeline', () => {
       },
     });
     const agent = createAgent(router);
-    const execPromise = agent.executeTask('task_status_live', 'Long running work', () => {});
+    const execPromise = agent.executeTask('task_status_live', 'Long running work', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const summary = agent.getAgentStatusSummary();
@@ -1047,6 +1047,8 @@ describe('performDeliberation and cognitive pipeline', () => {
         taskId: 'task_mbx_exec',
         extra: {
           onLog: (entry: { type: string; content: string }) => { logs.push(entry.type); },
+          // 派发侧是 round 的唯一缺省点：不带 round 的派发现在会被 fail closed
+          executionRound: 1,
         },
       }, { metadata: { taskId: 'task_mbx_exec' }, intent: 'trigger_execution', runtime: { responsePromise: { resolve: () => resolve(), reject } } });
     });
