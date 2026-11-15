@@ -63,10 +63,6 @@ interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolea
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
 export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
-  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
-  // C9-E：事实审计有正式入口，不再是"只有知道 URL 的人能看"。
-  // 位置紧跟「数据与存储」——两者回答同一个问题：平台到底记住了什么。
-  { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
@@ -75,10 +71,13 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
 ];
 
 export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
   { labelKey: 'nav.group.general', tabs: ['appearance'] },
+  // 「AI」组包含模型与执行策略：两者回答同一个问题——Agent 用什么脑子、按什么规矩动手。
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
