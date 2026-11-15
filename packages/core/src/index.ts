@@ -381,8 +381,25 @@ export {
   type FactService,
   type FactSupersedeInput,
   type FactVerification,
+  type FactVerifyInput,
   type FactWriteResult,
 } from './facts/fact-service.js';
+// 第九刀 C9-E：dream 的七条建议动作（关闭 DR7）—— 纯派生 + 闭集解析，零 IO。
+export {
+  deriveConsolidationSuggestions,
+  parseConsolidationSuggestions,
+  mergeSuggestions,
+  toConsolidationFactValue,
+  describeDropped,
+  CONSOLIDATION_THRESHOLDS,
+  type ConsolidationSuggestion,
+  type ConsolidationSignals,
+  type SkillSignal,
+  type NotebookSignal,
+  type ObservationCluster,
+  type NegativeFeedbackSignal,
+  type PeerThemeSignal,
+} from './facts/consolidation-suggestions.js';
 // 第九刀 C9-C：`deriveStage()` —— 「这条流此刻在等谁」的唯一派生点（纯函数，零 IO）。
 export {
   deriveStage,

@@ -34,6 +34,7 @@ import type {
   FactService,
   FactSupersedeInput,
   FactVerification,
+  FactVerifyInput,
   FactWriteResult,
 } from '@markus/core';
 
@@ -193,6 +194,121 @@ export class SqliteFactService implements FactService {
     }
   }
 
+  // ─── verify (C9-E) ───────────────────────────────────────────────────────
+
+  /**
+   * Record an independent verdict on an existing fact.
+   *
+   * Writes **one column**: `verification_json`. Everything the verdict judges —
+   * value, predicate, subject, identity — is left alone, so a verifier can never
+   * become a second writer of the conclusion (the `facts_no_rewrite` trigger would
+   * abort such an update anyway).
+   *
+   * Write-once is deliberate: flipping a verdict in place would make one column two
+   * writers over time. A changed verdict is a changed claim -> supersede the claim
+   * (the new row starts unverified) and judge that.
+   */
+  verify(input: FactVerifyInput): FactWriteResult {
+    if (!this.enabled()) {
+      return {
+        status: 'rejected',
+        code: 'disabled',
+        message: 'FACTS_ENABLED=0 — the facts layer is off in this deployment.',
+      };
+    }
+
+    const fact = this.getById(input.factId);
+    if (!fact) {
+      return {
+        status: 'rejected',
+        code: 'not_found',
+        message: `No fact with id ${input.factId}. Use fact_query to find the active fact for this subject and predicate.`,
+      };
+    }
+    if (fact.supersededBy) {
+      return {
+        status: 'rejected',
+        code: 'must_supersede',
+        message:
+          `Fact ${fact.id} was superseded by ${fact.supersededBy}. A superseded claim keeps the verdict ` +
+          'it had; verify the current row instead (fact_query with activeOnly).',
+        existingFactId: fact.supersededBy,
+      };
+    }
+
+    if (trimmed(input.verifiedBy).length === 0 || trimmed(input.workUnitRef).length === 0) {
+      return {
+        status: 'rejected',
+        code: 'missing_provenance',
+        message:
+          'A verdict needs identity: verified_by and the verifier turn work_unit_ref ' +
+          '(this turn is not bound to a WorkUnit). Empty is an error, not a default.',
+      };
+    }
+
+    // The load-bearing check: producer != confirmer.
+    if (trimmed(input.verifiedBy) === fact.assertedBy) {
+      return {
+        status: 'rejected',
+        code: 'self_verification_forbidden',
+        message:
+          `Agent ${fact.assertedBy} asserted this fact, so it cannot verify it. ` +
+          'Verification must come from a different agent (producer != confirmer): the task reviewer, ' +
+          'or an agent designated by the owning team manager for cross-team work.',
+      };
+    }
+
+    if (input.result !== 'pass' && input.result !== 'fail') {
+      return {
+        status: 'rejected',
+        code: 'schema_violation',
+        path: '/result',
+        message: 'verification.result must be "pass" or "fail".',
+      };
+    }
+
+    const evidenceRefs = (Array.isArray(input.evidenceRefs) ? input.evidenceRefs : [])
+      .filter(r => trimmed(r).length > 0);
+    if (evidenceRefs.length === 0) {
+      return {
+        status: 'rejected',
+        code: 'schema_violation',
+        path: '/evidence_refs',
+        message:
+          `A ${input.result} verdict needs at least one evidence_ref (comment / deliverable / decision id, or a path). ` +
+          'A verdict with no pointer is the same unfalsifiable claim as prose.',
+      };
+    }
+
+    if (fact.verification) {
+      return {
+        status: 'rejected',
+        code: 'already_verified',
+        message:
+          `Fact ${fact.id} already carries a verdict (${fact.verification.result} by ${fact.verification.verified_by}). ` +
+          'A changed verdict is a changed claim: supersede the claim with new evidence (fact_supersede), ' +
+          'then verify the new row.',
+        existingFactId: fact.id,
+      };
+    }
+
+    const verification: FactVerification = {
+      result: input.result,
+      verified_by: trimmed(input.verifiedBy),
+      evidence_refs: evidenceRefs,
+      verified_at: this.now(),
+      work_unit_ref: trimmed(input.workUnitRef),
+    };
+
+    this.db
+      .prepare('UPDATE facts SET verification_json = ? WHERE id = ?')
+      .run(JSON.stringify(verification), fact.id);
+
+    const updated = this.getById(fact.id);
+    if (!updated) throw new Error(`fact ${fact.id} vanished right after verify`);
+    return { status: 'asserted', fact: updated };
+  }
+
   // ─── read ─────────────────────────────────────────────────────────────────
 
   queryActive(query: FactQuery): FactRecord[] {
@@ -220,6 +336,14 @@ export class SqliteFactService implements FactService {
       params.push(`${query.predicatePrefix}%`);
     }
     if (query.activeOnly !== false) where.push('superseded_by IS NULL');
+    if (query.createdAfter !== undefined) {
+      where.push('created_at >= ?');
+      params.push(query.createdAfter);
+    }
+    if (query.createdBefore !== undefined) {
+      where.push('created_at <= ?');
+      params.push(query.createdBefore);
+    }
     const limit = Math.max(1, Math.min(query.limit ?? 200, 1000));
     const sql =
       `SELECT * FROM facts` +

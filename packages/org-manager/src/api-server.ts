@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
+import { createLogger, generateId, isFactsEnabled, type FactSubjectKind, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -2080,6 +2080,8 @@ export class APIServer {
     // C9-A：facts 层的唯一写者接进 core（未接则三工具不注册、[FACTS:…] 不渲染）。
     // 与 workUnits 同样惰性读 storage："暂时没有" 不是事实，晚到的依赖不能冻成 null。
     manager.setFactService(this.storage?.factService ?? null);
+    // C9-E：同一份写者交给 TaskService —— 两个终态钩子（提交评审 / 打回）在它是**唯一**执行点。
+    this.taskService.setFactService(this.storage?.factService ?? null);
     // `work_status()` 自省端口：答案来自 work_units 对象查询，不从 payload 推断。
     manager.setWorkUnitStatusProvider((agentId, opts) => units.workStatus(agentId, opts));
     // C7-B 委派端口：端口而不是 service 本身 —— core 不反向依赖 org-manager。
@@ -8446,6 +8448,74 @@ EXPLANATION_END`;
       const orgId = url.searchParams.get('orgId') ?? 'default';
       const summary = this.auditService.summary(orgId);
       this.json(res, 200, { summary });
+      return;
+    }
+
+    // ── Facts audit (C9-E) ─────────────────────────────────────────────────
+    //
+    // 只读、只给 owner/admin。产品口径：**人不感知事实本身**，但证据链与审计痕迹
+    // 必须可见 —— 所以这是一个“深链页面 + 后端硬门”的组合：前端不挂载页面，
+    // 后端仍然 403（深链接、直接 curl 都过不去；不靠 UI 隐藏作为访问控制）。
+    //
+    // 无写入口：只有 GET。断言/取代/验证三个动作只存在于 agent 工具层，
+    // 审计页不可能成为第二个写者。
+    if (path === '/api/facts' && req.method === 'GET') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'Access denied: the facts audit trail is owner/admin only' });
+        return;
+      }
+      const factService = this.storage?.factService;
+      if (!isFactsEnabled() || !factService) {
+        // 「关着」与「没有数据」必须是两个不同的回答：空表会被读成“一条事实也没有”。
+        this.json(res, 200, { facts: [], truncated: false, disabled: true });
+        return;
+      }
+      const limitParam = url.searchParams.get('limit');
+      const limit = limitParam ? Math.max(1, Math.min(Number(limitParam) || 200, 1000)) : 200;
+      const rows = factService.queryActive({
+        subjectKind: (url.searchParams.get('subjectKind') as FactSubjectKind | null) ?? undefined,
+        subjectId: url.searchParams.get('subjectId') ?? undefined,
+        predicate: url.searchParams.get('predicate') ?? undefined,
+        predicatePrefix: url.searchParams.get('predicatePrefix') ?? undefined,
+        activeOnly: url.searchParams.get('includeSuperseded') === '1' ? false : true,
+        createdAfter: url.searchParams.get('since') ?? undefined,
+        createdBefore: url.searchParams.get('until') ?? undefined,
+        limit,
+      });
+      const auditRows = rows as Array<{
+        id: string; subjectKind: string; subjectId: string; predicate: string; value: unknown;
+        workUnitRef: string; assertedBy: string; sourceRefs: string[];
+        verification?: { result: 'pass' | 'fail'; verified_by: string; evidence_refs?: string[]; verified_at?: string; work_unit_ref?: string };
+        confidence: number; createdAt: string; supersededBy?: string; supersededAt?: string;
+      }>;
+      this.json(res, 200, {
+        facts: auditRows.map(r => ({
+          id: r.id,
+          subjectKind: r.subjectKind,
+          subjectId: r.subjectId,
+          predicate: r.predicate,
+          value: r.value,
+          workUnitRef: r.workUnitRef,
+          assertedBy: r.assertedBy,
+          sourceRefs: r.sourceRefs,
+          verification: r.verification
+            ? {
+                result: r.verification.result,
+                verifiedBy: r.verification.verified_by,
+                evidenceRefs: r.verification.evidence_refs ?? [],
+                verifiedAt: r.verification.verified_at,
+                workUnitRef: r.verification.work_unit_ref,
+              }
+            : null,
+          confidence: r.confidence,
+          createdAt: r.createdAt,
+          supersededBy: r.supersededBy ?? null,
+          supersededAt: r.supersededAt ?? null,
+        })),
+        truncated: rows.length >= limit,
+      });
       return;
     }
 
@@ -14862,6 +14932,8 @@ EXPLANATION_END`;
       exact('/api/audit', 'GET'),
       exact('/api/audit/summary', 'GET'),
       exact('/api/audit/tokens', 'GET'),
+      // C9-E: facts audit trail (owner/admin, read-only).
+      exact('/api/facts', 'GET'),
 
       // ── Plan ─────────────────────────────────────────────────────────────
       exact('/api/plan', 'GET', 'POST'),

@@ -693,5 +693,26 @@
     "loadFailed": "Couldn't load invite data. Please try again later.",
     "unsupported": "This Hub version doesn't expose invite data. Please upgrade Hub.",
     "openHub": "Open in Hub"
+  },
+  "factsAudit": {
+    "title": "Facts audit trail",
+    "subtitle": "Read-only: for each conclusion, old value → new value → who and when, plus its evidence and verifier.",
+    "subjectKind": "Subject kind",
+    "subjectId": "Subject id",
+    "predicate": "Predicate",
+    "any": "Any",
+    "since": "Since",
+    "until": "Until",
+    "includeSuperseded": "Include superseded history",
+    "disabled": "The facts layer is disabled (FACTS_ENABLED=0), so there is nothing to show here — this is not the same as \"no facts\".",
+    "empty": "No facts match these filters.",
+    "truncated": "Result limit reached — narrow the filters.",
+    "unverified": "Not independently verified",
+    "colPredicate": "Predicate",
+    "colSubject": "Subject",
+    "colAsserted": "Asserted by / when / turn",
+    "colVerification": "Verification",
+    "colChain": "Supersede chain",
+    "colValue": "Value"
   }
 }

@@ -138,11 +138,28 @@ const GATES = [
   },
   {
     id: 11,
-    name: '新纪元观测行无身份（agent_decisions 缺 work_unit_ref）',
-    sql: `SELECT COUNT(*) AS c FROM agent_decisions
+    name: '新纪元观测行无身份（agent_decisions 缺 work_unit_ref）',    sql: `SELECT COUNT(*) AS c FROM agent_decisions
            WHERE created_at >= '${SINCE}' AND work_unit_ref IS NULL`,
     // 依赖 C9-B 加的列：列未迁移时跳过（而不是永远红）。
     requiresColumn: { table: 'agent_decisions', column: 'work_unit_ref' },
+  },
+  // ── C9-E：验证事实的两条（验证也是一种事实，但它必须可核）────────────────────
+  {
+    id: 12,
+    name: '验证结论无证据（pass/fail 都没有 evidence_refs）',
+    sql: `SELECT COUNT(*) AS c FROM facts
+           WHERE json_valid(verification_json)
+             AND json_extract(verification_json, '$.result') IN ('pass','fail')
+             AND (json_extract(verification_json, '$.evidence_refs') IS NULL
+                  OR json_array_length(json_extract(verification_json, '$.evidence_refs')) = 0)`,
+  },
+  {
+    id: 13,
+    name: '验证结论无作者（verified_by 缺失/空串）',
+    sql: `SELECT COUNT(*) AS c FROM facts
+           WHERE json_valid(verification_json)
+             AND (json_extract(verification_json, '$.verified_by') IS NULL
+                  OR TRIM(json_extract(verification_json, '$.verified_by')) = '')`,
   },
 ];
 
@@ -181,8 +198,10 @@ INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_uni
   ('fact_g7','task','t1','work.defect_class','{}','task:t1:r1','a1','[]',NULL,'${SINCE}'),
   ('fact_g8','task','t2','task.completion_evidence','{}','task:t2:r1','a1','["d1"]','{"result":"pass","verified_by":"a1"}','${SINCE}'),
   ('fact_g9a','task','t3','task.completion_evidence','{}','task:t3:r1','a1','["d1"]',NULL,'${SINCE}'),
-  ('fact_g9b','task','t3','task.completion_evidence','{}','task:t3:r2','a1','["d2"]',NULL,'${SINCE}'),
-  ('fact_g10','task','t4','custom.made_up','{}','task:t4:r1','a1','["d1"]',NULL,'${SINCE}');
+  ('fact_g9b','task','t3','task.completion_evidence','{}','task:t3:r2','a1','["d2"]',NULL,'${SINCE}'),  ('fact_g10','task','t4','custom.made_up','{}','task:t4:r1','a1','["d1"]',NULL,'${SINCE}'),
+  -- C9-E：G12（无证据的验证）/ G13（无作者的验证）
+  ('fact_g12','task','t5','task.completion_evidence','{}','task:t5:r1','a1','["d1"]','{"result":"pass","verified_by":"a2","evidence_refs":[]}','${SINCE}'),
+  ('fact_g13','task','t6','task.completion_evidence','{}','task:t6:r1','a1','["d1"]','{"result":"pass","verified_by":"","evidence_refs":["c1"]}','${SINCE}');
 INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${SINCE}');`;
 
 const FIX_VIOLATIONS = `
@@ -197,6 +216,9 @@ UPDATE facts SET source_refs_json='["audit"]' WHERE id='fact_g7';
 UPDATE facts SET verification_json=NULL WHERE id='fact_g8';
 UPDATE facts SET superseded_by='fact_g9b', superseded_at='${SINCE}' WHERE id='fact_g9a';
 UPDATE facts SET predicate='work.defect_class' WHERE id='fact_g10';
+-- C9-E：修好验证两条 —— 只改它自己违规的那个子字段。
+UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g12';
+UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g13';
 UPDATE agent_decisions SET work_unit_ref='task:audit:r1' WHERE id='dec_g11';
 `;
 

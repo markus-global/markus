@@ -139,6 +139,17 @@ MUST: Periodic dream/consolidation SHOULD also:
 6. When negative feedback ≥ 3 on a skill, open/suggest a revision task
 7. When ≥ 3 agents independently record the same insight theme, suggest a team skill
 
+**Where these seven land (C9-E, closes DR7)**: as a `memory.consolidation_suggestion` fact
+(`{suggestions: [{action, target_refs}]}`, one active snapshot per agent, superseded each cycle) —
+**not** as prose in `knowledge.md`. The seven action names are a closed set in
+`@markus/shared` (`CONSOLIDATION_ACTIONS`): `archive | revise | merge | ttl | promote |
+negative_feedback | team_skill`. An eighth is a schema violation; a missing one is a failing test.
+Derivation is pure (`packages/core/src/facts/consolidation-suggestions.ts`) and the write goes
+through the single facts writer. See `facts-verification.md §3`.
+
+MUST NOT: write these seven as prose into `knowledge.md`, a notebook, or any other store. A
+suggestion that is prose cannot be counted, queried, or superseded — that was DR7 itself.
+
 Test IDs: `C-dream-archive-suggest`, `C-dream-state-ttl`, `C-dream-promote-insight`,
 `B-dream-no-habits`.
 

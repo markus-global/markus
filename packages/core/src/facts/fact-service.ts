@@ -20,9 +20,17 @@ import type { FactSubjectKind } from '@markus/shared';
 /** Verification is a fact about a fact; the assertor may not be its own verifier. */
 export interface FactVerification {
   result: 'pass' | 'fail';
-  /** Agent id of the verifier. `asserted_by` of the same row must differ. */
+  /** Agent (or human user) id of the verifier. `asserted_by` of the same row must differ. */
   verified_by: string;
+  /**
+   * Pointers that make the verdict checkable. Required for `pass` AND `fail` by
+   * C9-E: a verdict without a pointer is the same unfalsifiable claim as prose.
+   */
   evidence_refs?: string[];
+  /** When the verdict was recorded (ISO, from the writer's single clock). */
+  verified_at?: string;
+  /** The verifier's turn identity — so the audit page can answer "in which turn". */
+  work_unit_ref?: string;
 }
 
 export interface FactRecord {
@@ -67,6 +75,26 @@ export interface FactSupersedeInput extends FactAssertInput {
   reason: string;
 }
 
+/**
+ * A verdict on somebody else's fact (C9-E).
+ *
+ * Deliberately NOT `FactAssertInput`: a verification writes exactly one column
+ * (`verification_json`) and must never be able to carry a value, a predicate or a
+ * subject. Two different shapes make "a verdict cannot rewrite the claim" a type
+ * fact instead of a review note.
+ */
+export interface FactVerifyInput {
+  /** The fact being judged. Must exist and still be active. */
+  factId: string;
+  result: 'pass' | 'fail';
+  /** Who judges it. Equal to the fact's `asserted_by` ⇒ rejected. */
+  verifiedBy: string;
+  /** At least one pointer. Empty ⇒ rejected (`schema_violation` at `/evidence_refs`). */
+  evidenceRefs: string[];
+  /** The verifier's turn identity (C8 chain). Empty ⇒ `missing_provenance`. */
+  workUnitRef: string;
+}
+
 export type FactRejectionCode =
   | 'unknown_predicate'
   | 'schema_violation'
@@ -75,7 +103,9 @@ export type FactRejectionCode =
   | 'must_supersede'
   | 'not_found'
   | 'disabled'
-  | 'invalid_subject';
+  | 'invalid_subject'
+  /** A verdict already exists on this fact; a changed verdict is a changed claim. */
+  | 'already_verified';
 
 export interface FactRejected {
   status: 'rejected';
@@ -108,6 +138,10 @@ export interface FactQuery {
   factId?: string;
   /** Default true: only current rows. `false` returns superseded history too. */
   activeOnly?: boolean;
+  /** Inclusive lower bound on `created_at` (ISO). Used by the audit page's time filter. */
+  createdAfter?: string;
+  /** Inclusive upper bound on `created_at` (ISO). */
+  createdBefore?: string;
   limit?: number;
 }
 
@@ -115,6 +149,13 @@ export interface FactService {
   assert(input: FactAssertInput): FactWriteResult;
   /** One call = "assert the new + mark the old". Never two steps. */
   supersede(input: FactSupersedeInput): FactWriteResult;
+  /**
+   * Record an independent verdict on an existing fact (C9-E).
+   *
+   * Writes only `verification_json`: the claim it judges is untouched, so a verdict
+   * can never become a second writer of the conclusion.
+   */
+  verify(input: FactVerifyInput): FactWriteResult;
   /** Exact matching only. No fuzzy / semantic search on the fact layer. */
   queryActive(query: FactQuery): FactRecord[];
 }

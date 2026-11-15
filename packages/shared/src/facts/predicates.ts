@@ -122,7 +122,6 @@ const validateAcceptanceMet = objectWith(
 );
 
 const DEFECT_CLASSES = ['R1', 'R2', 'R3', 'R4'] as const;
-
 const validateDefectClass = objectWith(
   ['class', 'instances'],
   ['class', 'instances'],
@@ -140,11 +139,61 @@ const validateCapabilityClaim = objectWith(
   obj => nonEmptyString(obj['capability'], '/capability') ?? stringArray(obj['evidence_refs'], '/evidence_refs', 0),
 );
 
-const validateConsolidationSuggestion = objectWith(
-  ['action', 'target_refs'],
-  ['action', 'target_refs'],
-  obj => nonEmptyString(obj['action'], '/action') ?? stringArray(obj['target_refs'], '/target_refs', 0),
-);
+/**
+ * The **seven** dream-cycle suggestion actions (C9-E, closes DR7).
+ *
+ * Closed on purpose and in code: `learning-loop.md §5` lists exactly these seven,
+ * and DR7's failure mode was advice that nobody could count. An eighth action is a
+ * schema violation; a missing one is a failing test (`consolidation-suggestions.test.ts`).
+ * Order is the documentation order from `learning-loop.md §5`, not a priority order.
+ */
+export const CONSOLIDATION_ACTIONS = [
+  'archive',
+  'revise',
+  'merge',
+  'ttl',
+  'promote',
+  'negative_feedback',
+  'team_skill',
+] as const;
+
+export type ConsolidationAction = (typeof CONSOLIDATION_ACTIONS)[number];
+
+export function isConsolidationAction(value: unknown): value is ConsolidationAction {
+  return typeof value === 'string' && (CONSOLIDATION_ACTIONS as readonly string[]).includes(value);
+}
+
+/** Per-dream-cycle cap. One active snapshot per agent, so this bounds the value, not rows. */
+export const MAX_SUGGESTIONS_PER_CYCLE = 20;
+
+const validateConsolidationSuggestion = (value: unknown): FactValueValidation => {
+  const shape = requireObject(value, ['suggestions']);
+  if (!shape.ok) return shape;
+  const list = (value as Record<string, unknown>)['suggestions'];
+  if (!Array.isArray(list)) return fail('/suggestions', 'must be an array of suggestions');
+  if (list.length === 0) return fail('/suggestions', 'needs at least one suggestion');
+  if (list.length > MAX_SUGGESTIONS_PER_CYCLE) {
+    return fail('/suggestions', `at most ${MAX_SUGGESTIONS_PER_CYCLE} suggestions per cycle`);
+  }
+  for (let i = 0; i < list.length; i += 1) {
+    const item = list[i];
+    if (!isPlainObject(item)) return fail(`/suggestions/${i}`, 'must be an object');
+    const extra = Object.keys(item).filter(k => !['action', 'target_refs'].includes(k));
+    if (extra.length > 0) {
+      return fail(`/suggestions/${i}/${extra[0]}`, `unknown field "${extra[0]}"`);
+    }
+    const action = item['action'];
+    if (typeof action !== 'string' || !isConsolidationAction(action)) {
+      return fail(
+        `/suggestions/${i}/action`,
+        `must be one of the seven consolidation actions: ${CONSOLIDATION_ACTIONS.join(' | ')}`,
+      );
+    }
+    const refs = stringArray(item['target_refs'], `/suggestions/${i}/target_refs`, 1);
+    if (refs) return { ok: false, issue: refs };
+  }
+  return ok();
+};
 
 // ─── the closed set ──────────────────────────────────────────────────────────
 
@@ -200,7 +249,6 @@ export const FACT_PREDICATES: readonly FactPredicateSpec[] = [
     validate: validateConsolidationSuggestion,
   },
 ];
-
 /** The names, in dictionary order — the one list gates and prompts read. */
 export const FACT_PREDICATE_NAMES: readonly string[] = FACT_PREDICATES
   .map(p => p.predicate)

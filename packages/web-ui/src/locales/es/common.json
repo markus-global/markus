@@ -692,5 +692,26 @@
     "loadFailed": "No se pudieron cargar las invitaciones. Inténtalo más tarde.",
     "unsupported": "Esta versión de Hub no expone datos de invitación. Actualiza Hub.",
     "openHub": "Abrir en Hub"
+  },
+  "factsAudit": {
+    "title": "Rastro de auditoría de hechos",
+    "subtitle": "Solo lectura: para cada conclusión, valor anterior → valor nuevo → quién y cuándo, con su evidencia y verificador.",
+    "subjectKind": "Tipo de sujeto",
+    "subjectId": "Id del sujeto",
+    "predicate": "Predicado",
+    "any": "Todos",
+    "since": "Desde",
+    "until": "Hasta",
+    "includeSuperseded": "Incluir historial reemplazado",
+    "disabled": "La capa de hechos está desactivada (FACTS_ENABLED=0), así que no hay nada que mostrar aquí; no es lo mismo que \"no hay hechos\".",
+    "empty": "Ningún hecho coincide con estos filtros.",
+    "truncated": "Se alcanzó el límite de resultados: acota los filtros.",
+    "unverified": "Sin verificación independiente",
+    "colPredicate": "Predicado",
+    "colSubject": "Sujeto",
+    "colAsserted": "Afirmado por / cuándo / turno",
+    "colVerification": "Verificación",
+    "colChain": "Cadena de reemplazo",
+    "colValue": "Valor"
   }
 }

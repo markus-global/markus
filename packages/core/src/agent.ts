@@ -59,6 +59,15 @@ import {
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
+// 第九刀 C9-E：dream 的七条建议动作落 facts（关闭 DR7）—— 纯派生 + 唯一写者端口。
+import type { FactService } from './facts/fact-service.js';
+import {
+  parseConsolidationSuggestions,
+  deriveConsolidationSuggestions,
+  mergeSuggestions,
+  describeDropped,
+} from './facts/consolidation-suggestions.js';
+import { recordConsolidationSuggestions } from './facts/consolidation-recorder.js';
 import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
@@ -74,8 +83,7 @@ import { HeartbeatScheduler, heartbeatStateFingerprint, type HeartbeatTimerMode 
 import { TriggerRegistry, type Subscription, type TriggerEvent, type WakeCondition } from './trigger.js';
 import { createTriggerTools } from './tools/trigger.js';
 import { AgentClock } from './clock.js';
-import type { LLMRouter } from './llm/router.js';
-import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
+import type { LLMRouter } from './llm/router.js';import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
 import { stabilizeToolOrder } from './tool-order.js';
 import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
@@ -665,8 +673,19 @@ export class Agent {
   private turnDeltaCursor = 0;
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
-  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
-    this.workUnitPort = port;
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
+  }
+
+  /**
+   * 第九刀 C9-E：dream 的建议动作要落成 `memory.consolidation_suggestion` 事实，
+   * 而 dream 跑在 Agent 内部（不再绕 mailbox），所以 Agent 需要同一个唯一写者端口。
+   *
+   * 传 `null` 与不调用等价：dream 照跑，但不写建议事实（也不会改回写口语）——
+   * 那正是 `FACTS_ENABLED=0` 的回滚通道。
+   */
+  private factService?: FactService | null;
+  setFactService(service: FactService | null): void {
+    this.factService = service;
   }
 
   /**
@@ -10759,7 +10778,7 @@ export class Agent {
           // heartbeat-triggered dream runs outside any tool call — so without this lock a
           // dream and a concurrent `memory_update` could interleave and lose one write.
           await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
-            await this.dreamConsolidateMemory(entries);
+            await this.dreamConsolidateMemory(entries, windowKey);
             // §24 — `pruneMemoryMd()` was REMOVED: it deleted/deduped curated sections and
             // stripped `## daily-report-*` by heuristic string surgery over the agent's own
             // prose (heading equality, body-subset tests). That is R4 — the platform deciding
@@ -10792,7 +10811,7 @@ export class Agent {
    * "Dream" cycle: send memory entries to the LLM to identify duplicates,
    * outdated items, and merge opportunities. Apply changes programmatically.
    */
-  private async dreamConsolidateMemory(entries: MemoryEntry[]): Promise<void> {
+  private async dreamConsolidateMemory(entries: MemoryEntry[], windowKey = ''): Promise<void> {
     const MAX_ENTRIES_FOR_LLM = 500;
     const truncated = entries.length > MAX_ENTRIES_FOR_LLM;
     const batch = truncated ? entries.slice(-MAX_ENTRIES_FOR_LLM) : entries;
@@ -10839,6 +10858,9 @@ export class Agent {
       '  ],',
       '  "promote": [',
       '    { "sourceIds": ["id5", "id6", "id7"], "section": "procedures", "content": "synthesized insight" }',
+      '  ],',
+      '  "suggestions": [',
+      '    { "action": "archive", "target_refs": ["skill_or_observation_id"] }',
       '  ]',
       '}',
       '',
@@ -10848,6 +10870,20 @@ export class Agent {
       '- Promote only when 3+ entries point to the same pattern.',
       '- The `section` field uses the agent\'s own knowledge.md section names (agent-organized, not fixed).',
       '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
+      '',
+      '**Phase 3 — Suggestion actions (structured, NOT prose):**',
+      'Add a `suggestions` array with the advisory actions below. Each item is',
+      '`{ "action": "<one of the seven>", "target_refs": ["<ids>"] }`. Emit an item ONLY when the',
+      'entries above actually support it, and never invent a target id. These become',
+      '`memory.consolidation_suggestion` facts — do NOT write them into knowledge.md, a notebook, or prose.',
+      '  1. archive — a skill with no usage and age > 30 days',
+      '  2. revise — a skill whose success/usage rate < 0.5 (usage >= 3)',
+      '  3. merge — duplicate skill names or colliding tags',
+      '  4. ttl — notebook entries past their tier TTL',
+      '  5. promote — 3+ observations sharing one theme',
+      '  6. negative_feedback — >= 3 negative feedback on a skill (needs a revision task)',
+      '  7. team_skill — >= 3 agents independently recorded the same theme',
+      'Return "suggestions": [] when none apply. An eighth action is not allowed.',
       '',
       '## Current Memory Entries',
       '',
@@ -10879,6 +10915,7 @@ export class Agent {
         remove?: string[];
         merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
         promote?: Array<{ sourceIds: string[]; section: string; content: string }>;
+        suggestions?: unknown;
       };
 
       // Guardrails: cap operations and validate IDs
@@ -10983,8 +11020,91 @@ export class Agent {
       } else {
         log.debug('Dream cycle: no changes needed', { agentId: this.id });
       }
+
+      // 第九刀 C9-E（关闭 DR7）：七条建议动作落结构。
+      //
+      // 两源合并：模型自己声明的 `suggestions`（闭集校验，非法动作/空目标**丢弃并留下日志**，
+      // 不静默改写成邻近动作）+ 代码从 promete 分组派生的 `promote`（>=3 条观察同一主题）。
+      // 两者都是「建议」，所以它们**不写 knowledge.md** —— 只落一条
+      // `memory.consolidation_suggestion` 事实（每 agent 一个当前快照，下次 dream supersede）。
+      // 没有 FactService（`FACTS_ENABLED=0` 或未接线）时跳过写事实，但也**不**退回写口语。
+      this.recordDreamSuggestions(plan, rawPlan.suggestions, windowKey);
     } catch (error) {
       log.warn('Dream cycle failed', { agentId: this.id, error: String(error) });
+    }
+  }
+
+  /**
+   * dream 的建议动作 → `memory.consolidation_suggestion` 事实（C9-E）。
+   *
+   * 为什么要单独一个方法而不是塞在两行之间：它必须是**纯策略 + 一个唯一写者**的组合，
+   * 而策略本身已经在 `consolidation-suggestions.ts` 里（纯函数、逐条可测）；这里只做
+   * “从本轮 plan 收集结构信号 → 写一条事实”。任何写 knowledge.md 的代码都不得出现在这里。
+   */
+  private recordDreamSuggestions(
+    plan: { promote?: Array<{ sourceIds: string[]; section: string; content: string }> },
+    declared: unknown,
+    windowKey: string,
+  ): void {
+    const facts = this.factService;
+    try {
+      const parsed = parseConsolidationSuggestions(declared);
+      if (parsed.dropped.length > 0) {
+        log.info('Dream cycle: suggestion items dropped', {
+          agentId: this.id,
+          dropped: parsed.dropped.length,
+          detail: describeDropped(parsed.dropped),
+        });
+      }
+
+      // **今天平台派生的只有 promote 一条**：只看「同主题 >=3 条观察」。
+      // 其余 6 条（archive / revise / merge / ttl / negative_feedback / team_skill）**没有**派生源，
+      // 只有模型自己在 `suggestions` 里声明时才落结构 —— 别在这里加「顺手猜一条」的规则：
+      //   · archive/revise/merge 需要每技能的 usage/success/name/tags/age，而 `learning-loop.ts`
+      //     里只有 `recordSkillActivation` 接了生产调用（agent.ts 技能激活路径），
+      //     `recordSkillTaskSuccess`/`recordSkillTaskRejection` 无生产调用者 ⇒ success_count 恒 0，
+      //     派生 revise 会对每个用过的技能误报（平台替 Agent 编建议 = R4）。
+      //   · ttl 是**永远的**空分支：过期条目在这之前已被 `pruneNotebookEntries` 按 tier TTL 删掉。
+      //   · team_skill 需要跨 agent 的观察视图，core `Agent` 没有这个源。
+      // 对应的确定事实写在 `docs/architecture/facts-verification.md §3`（那张表就是契约）。
+      const clusters = (plan.promote ?? [])
+        .filter(p => Array.isArray(p.sourceIds) && p.sourceIds.length > 0)
+        .map(p => ({ theme: p.section, observationIds: p.sourceIds }));
+      const derived = deriveConsolidationSuggestions({ observationClusters: clusters });
+
+      const merged = mergeSuggestions(derived, parsed.suggestions);
+      if (merged.length === 0) return;
+
+      if (!facts) {
+        log.info('Dream cycle: suggestions not recorded (facts layer not wired)', {
+          agentId: this.id, count: merged.length,
+        });
+        return;
+      }
+
+      const res = recordConsolidationSuggestions({
+        facts,
+        agentId: this.id,
+        suggestions: merged,
+        // dream 跑在时钟源上，没有回合 WU（C8-C：它不再是 mailbox item）。
+        // 身份用**本窗口的 dream 运行标识**：稳定、可反查、重复周期会 supersede 而不是叠加。
+        workUnitRef: `dream:${this.id}:${windowKey || 'adhoc'}`,
+        sourceRefs: merged.flatMap(s => s.target_refs),
+      });
+
+      if (res.status === 'rejected') {
+        log.warn('Dream cycle: suggestion fact rejected', {
+          agentId: this.id, code: res.code, message: res.message,
+        });
+      } else {
+        log.info('Dream cycle: suggestions recorded as fact', {
+          agentId: this.id, status: res.status, count: res.count, factId: res.factId,
+          actions: merged.map(s => s.action),
+        });
+      }
+    } catch (error) {
+      // 建议落结构失败不得使整个 dream 失败：记忆整理本身已经完成。但必须留痕。
+      log.warn('Dream cycle: recording suggestions failed', { agentId: this.id, error: String(error) });
     }
   }
 }
