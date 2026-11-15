@@ -28,6 +28,7 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [tool-loop-harness.md](./tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context, scenario × tool face) |
 | [mailbox-system.md](./mailbox-system.md) | Agent mailbox (priority queue) + attention controller (serial focus, interrupts, yield, cancel) |
 | [a2a-communication.md](./a2a-communication.md) | Agent-to-agent communication over the mailbox — channels, delivery facts, reply sink, entry points |
+| [remote-access.md](./remote-access.md) | Remote access — frozen contract v1.0.0 (user-supplied tunnel, Hub as entry/registry/auth gate) |
 | [notification-delivery.md](./notification-delivery.md) | Notification delivery to humans — user/IM notifications and agent→user messages |
 | [state-machines.md](./state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [derived-views.md](./derived-views.md) | The four observation tables (`agent_activities`, `agent_activity_logs`, `execution_stream_logs`, `task_logs`) with their nullable `work_unit_ref`, the single source of "running" (`work_units`), plus thread-stage and inbox derivation |

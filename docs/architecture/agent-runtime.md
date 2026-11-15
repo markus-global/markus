@@ -439,3 +439,31 @@ The only session bridge that may be shared across threads is `dbSessionMap` (`cs
 3. What happens when it can't be read? Does it silently degrade? (it must be observable)
 4. Add an **invariant test** (not an assertion over an implementation snapshot), and do mutation validation (revert the fix → the case must go red).
 5. Does it affect the `worker=1` serial-equivalence contract? (equivalence must hold)
+
+---
+
+## Appendix B. Stop semantics — start and stop, nothing else
+
+Owner rule (2026-11-08): **after an agent is stopped it must not start again on its own.** Only a
+human can start it again, or the agent's own pending approval/question being answered. There are
+**two verbs at two scopes** and no third:
+
+| Scope | Actions | Meaning |
+|-------|---------|---------|
+| One agent | `start` / `stop` | Stop is sticky: only a human start revives it. |
+| Whole team | `start` / `stop` | Start = start every member; stop = stop every member. |
+
+There is **no pause / freeze / resume**, and no global "pause all": those were removed end to end
+(HTTP routes, client methods, sidebar entry, WebSocket events, `isGlobalStopped()`/`globalPaused`,
+i18n keys) because a third pair of verbs describing a temporary system-wide freeze is not something
+a user can see or reason about.
+
+MUST: **one writer** for "stopped by the human" — `agents.disabled` (persisted, written only when a
+human presses stop). Runtime `status === 'offline'` must never be read as that intent: it also covers
+crashed and never-started. MUST: one gate enforces the rule, not twelve call sites. A human action
+may overturn the human's own earlier decision ("start team" starts members that had been stopped
+individually); only **agent-initiated** paths are blocked by a stop.
+
+The incident that produced this rule — twelve start paths, eleven of them keyed off "is it offline",
+three of them reachable by an agent — is recorded in
+[`records/agent-stop-intent-audit-2026-11-08.md`](../records/agent-stop-intent-audit-2026-11-08.md).

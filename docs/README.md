@@ -9,14 +9,12 @@ a mechanism is described in full only in its home document and cross-referenced 
 
 ## Layout
 
-Docs are grouped by **kind**, not by package. A file's folder tells you how much to trust it:
-
-| Folder | What lives here | Lifetime |
+Docs are grouped by **kind**, not by package. A file's folder tells you how much to trust it:| Folder | What lives here | Lifetime |
 |---|---|---|
 | [`architecture/`](./architecture/) | How the system is designed and built — canonical description of each subsystem | Living |
 | [`api/`](./api/) | REST + WebSocket reference | Living |
 | [`guides/`](./guides/) | Setup, development, operations, packaging, community | Living |
-| [`design/`](./design/) | Design documents and proposals (built or pending) | Living until implemented |
+| [`design/`](./design/) | Work that is **not settled yet** — proposals, contracts being drafted. A doc leaves this folder in the same PR that implements it | Until implemented |
 | [`records/`](./records/) | Dated engineering records — audits, post-mortems, hardening logs | **Historical, frozen** |
 | `images/` | Assets referenced by the top-level README | — |
 
@@ -46,6 +44,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [tool-loop-harness.md](./architecture/tool-loop-harness.md) | Tool loop harness + scenario-specific prompt assembly (scenario × context matrix, scenario × tool face) |
 | [mailbox-system.md](./architecture/mailbox-system.md) | Mailbox priority queue + attention controller (focus, interrupts, yield, cancel); triage, restart recovery, addresses, delivery envelopes and bounce/catch-all (§28) |
 | [a2a-communication.md](./architecture/a2a-communication.md) | Agent-to-agent communication — DM/group channels, one-message-one-delivery-fact invariant, reply sink, entry-point inventory |
+| [remote-access.md](./architecture/remote-access.md) | Remote access refactor — frozen contract v1.0.0 (user-supplied tunnel, Hub as entry/registry/auth gate) |
 | [notification-delivery.md](./architecture/notification-delivery.md) | Notification delivery to humans — user/IM notification contract, agent→user messages, dedup and context truth |
 | [state-machines.md](./architecture/state-machines.md) | FSMs for tasks, requirements, callbacks, mailbox items, notebook |
 | [concurrent-processing.md](./architecture/concurrent-processing.md) | How one agent handles multiple sessions / mailbox items in parallel |
@@ -98,3 +97,11 @@ want to know *why*, not *what*.
 | [settings-model-routing-first-visit-fix.md](./records/settings-model-routing-first-visit-fix.md) | Settings page: model routing options empty on first visit |
 | [cut6-mailbox-address-envelope-design-2026-11-12.md](./records/cut6-mailbox-address-envelope-design-2026-11-12.md) | Cut 6 execution: address format, delivery envelope, bounce/catch-all (durable contract now in architecture/mailbox-system.md §28) |
 | [cut6-c4-verification-2026-11-12.md](./records/cut6-c4-verification-2026-11-12.md) | Cut 6 C4 verification: full regression, real-instance probes, rebuild |
+| [agent-stop-intent-audit-2026-11-08.md](./records/agent-stop-intent-audit-2026-11-08.md) | "Stop means stop": twelve start paths, two writers for one intent (rule now in architecture/agent-runtime.md Appendix B) |
+| [remote-access-handoff.md](./records/remote-access-handoff.md) | Remote-access refactor delivery notes and manual verification (contract now in architecture/remote-access.md) |
+| [remote-access-fast-path-plan-2026-10-17.md](./records/remote-access-fast-path-plan-2026-10-17.md) | Why remote access was slow, and the fast-path plan that became the frozen contract |
+| [overview-attention-redesign.md](./records/overview-attention-redesign.md) | Overview "needs your attention" redesign — code facts, slices, landing status |
+| [approval-tri-state-handoff.md](./records/approval-tri-state-handoff.md) | Approval tri-state: handoff and verification, per-gate re-initiation |
+| [notify-user-context-truth-2026-10-28.md](./records/notify-user-context-truth-2026-10-28.md) | Twelve `notify_user` calls in 90s — receipt lost between tool_call and tool_result |
+| [2026-11-12-session-expiry-and-mention-thinking.md](./records/2026-11-12-session-expiry-and-mention-thinking.md) | Session expiry and mention-thinking: two root causes, one fix branch |
+| [2026-10-29-a2a-cache-hit-rate.md](./records/2026-10-29-a2a-cache-hit-rate.md) | A2A cache hit rate — first-principles analysis over 741 real calls |

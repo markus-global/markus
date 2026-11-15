@@ -1,5 +1,9 @@
 # Markus 远程访问重构 · 冻结契约（T1）
 
+> **Moved** here from `docs/design/` on 2026-11-15. `design/` is for work that is not settled yet;
+> this contract is frozen v1.0.0 and is the implementation SSOT, so it belongs with the architecture.
+> User-facing how-to: [`guides/remote-access.md`](../guides/remote-access.md).
+
 > 作者：CTO · 2026-10-14 · 状态：**冻结（frozen v1.0.0）**
 > 地位：本文件 + `packages/remote/src/contract.ts` 是本重构**唯一实现依据（单一事实源 / SSOT）**。
 > 上游依据：`remote-access-design.md`（v2，已并入 Owner 决策 D1–D4）、`remote-access-execution-plan.md`。
