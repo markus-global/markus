@@ -713,6 +713,9 @@
     "colAsserted": "断言者 / 时间 / 回合",
     "colVerification": "验证",
     "colChain": "取代链",
-    "colValue": "值"
+    "colValue": "值",
+    "countLabel": "条记录",
+    "reset": "重置",
+    "superseded": "已被取代"
   }
 }

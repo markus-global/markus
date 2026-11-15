@@ -712,6 +712,9 @@
     "colAsserted": "Afirmado por / cuándo / turno",
     "colVerification": "Verificación",
     "colChain": "Cadena de reemplazo",
-    "colValue": "Valor"
+    "colValue": "Valor",
+    "countLabel": "registros",
+    "reset": "Restablecer",
+    "superseded": "Reemplazado"
   }
 }

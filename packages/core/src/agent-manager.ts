@@ -448,6 +448,18 @@ export function wireAgentEventForwarding(
   }
 }
 
+/**
+ * C9-A：从一段文本里取第一个 `tsk_…` 主体 id。
+ *
+ * 纯正则、无推断：`tsk_` 前缀是平台自己的结构记号，用户点了名才命中；命中就注入那个 task
+ * 的事实，没点名就什么都不做（聊天回合默认不注入任何 facts）。
+ */
+function firstTaskIdIn(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(/\btsk_[a-z0-9]{6,}/i);
+  return m ? m[0] : undefined;
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -3782,7 +3794,11 @@ export class AgentManager {
     // `[FACTS:<subject>]` —— 只注入**当前 subject**（本回合正在做的那个 task）。
     // 没有 task 的回合（chat / 心跳）不注入任何 facts：没有终态就不该有事实。
     agent.getContextEngine().setFactsProvider(() => {
-      const taskId = agent.getCurrentTaskId();
+      // 任务会话：认这一回合正在做的 task。
+      // 聊天回合没有 `currentTaskId` —— 但人可以点名一个 task（`tsk_…` 是稳定结构记号，
+      // 不是从自然语言里推断出来的），那就注入**那个 task** 的事实。否则"聊天里问某张卡
+      // 现在什么状态"只能靠模型自己想起来去 fact_query，注入层等于不存在。
+      const taskId = agent.getCurrentTaskId() ?? firstTaskIdIn(agent.getLastUserMessageText());
       if (!taskId) return null;
       const active = facts.queryActive({ subjectKind: 'task', subjectId: taskId, activeOnly: true, limit: 20 });
       const ctx: FactsPromptContext = {

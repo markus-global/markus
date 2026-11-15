@@ -713,6 +713,9 @@
     "colAsserted": "Asserted by / when / turn",
     "colVerification": "Verification",
     "colChain": "Supersede chain",
-    "colValue": "Value"
+    "colValue": "Value",
+    "countLabel": "records",
+    "reset": "Reset",
+    "superseded": "Superseded"
   }
 }

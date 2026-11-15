@@ -3970,6 +3970,24 @@ export class Agent {
     return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
   }
 
+  /**
+   * C9-A：本会话最近一条 user 消息的纯文本。
+   *
+   * 只给「用户点名了哪个主体」这类**结构化**用途（如识别 `tsk_…`），不参与任何语义推断。
+   * 聊天回合没有 `currentTaskId`，若不看这条消息，facts 注入在聊天里就永远为空 ——
+   * 而人恰恰会在聊天里问"那张卡现在什么状态"。
+   */
+  getLastUserMessageText(): string | undefined {
+    const sid = this.currentSessionId;
+    if (!sid) return undefined;
+    const messages = this.memory.getSession(sid)?.messages ?? [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role === 'user' && typeof m.content === 'string') return m.content;
+    }
+    return undefined;
+  }
+
   private getCurrentRequirementId(): string | undefined {
     return taskAsyncContext.getStore()?.requirementId;
   }

@@ -19,6 +19,9 @@ import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// C8-D 之后这个集合搬到了 capability-packs（单一写者）。断言改成**导入真身**而不是
+// 正则爬源码：源码文本断言一重命名就失效（2026-11-15 实测：常量搬家后此测试静默变红）。
+import { REQUIREMENT_ACTION_EVIDENCE_TOOLS } from '../src/capability-packs.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const src = (file: string) => readFileSync(resolve(here, '../src', file), 'utf8');
@@ -28,9 +31,8 @@ describe('an action turn has a lawful way to end', () => {
   const engine = src('context-engine.ts');
 
   it('end_turn is a legal action (not only a mutation tool)', () => {
-    const reqActionTools = agent.match(/REQ_ACTION_TOOLS = \[([^\]]+)\]/)?.[1] ?? '';
-    expect(reqActionTools).toContain("'end_turn'");
-    expect(reqActionTools).toContain("'requirement_comment'");
+    expect(REQUIREMENT_ACTION_EVIDENCE_TOOLS).toContain('end_turn');
+    expect(REQUIREMENT_ACTION_EVIDENCE_TOOLS).toContain('requirement_comment');
   });
 
   it('the reminder names end_turn as an exit without inventing a count limit', () => {

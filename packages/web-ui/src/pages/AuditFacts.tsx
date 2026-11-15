@@ -14,6 +14,11 @@
  *    tools so the audit page can never become a second writer.
  *  · **"disabled" is not "empty".** `FACTS_ENABLED=0` renders an explicit notice; an empty table
  *    would read as "no facts exist", which is a different (and false) statement.
+ *
+ * Layout intent (2026-11-15, Owner: "很丑"): the audit trail is *read by a person under pressure*,
+ * so the hierarchy must answer three questions top-down — 谁的结论（谓词 + 主体）→ 凭什么（证据 /
+ * 验证）→ 具体值是什么（折叠，默认不展开）。Filters are one compact row; the value blob never
+ * competes with the headline. Everything below is presentation only: no query semantics live here.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -36,6 +41,19 @@ export interface AuditFactsProps {
 
 export function canViewFactsAudit(role: string | undefined | null): boolean {
   return role === 'owner' || role === 'admin';
+}
+
+const FIELD =
+  'mt-1 w-full rounded-md border border-line bg-surface-primary px-2.5 py-1.5 text-sm text-fg-primary ' +
+  'outline-none transition-colors focus:border-fg-tertiary/50';
+const LABEL = 'block text-[11px] font-medium uppercase tracking-wide text-fg-tertiary';
+
+/** `2026-11-15T04:40:22.066Z` → `11-15 12:40` (local), with the full stamp kept in `title`. */
+function shortTime(iso: string): string {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
 }
 
 export default function AuditFacts({ role, authUser }: AuditFactsProps) {
@@ -76,6 +94,15 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
 
   const byId = useMemo(() => indexFacts(rows), [rows]);
 
+  const reset = () => {
+    setSubjectKind('');
+    setSubjectId('');
+    setPredicate('');
+    setSince('');
+    setUntil('');
+    setIncludeSuperseded(false);
+  };
+
   if (!allowed) {
     // Deliberately not an error page: an unauthorized deep link must not confirm that this page
     // (or a fact) exists. It simply is not this user's page.
@@ -83,152 +110,172 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
   }
 
   return (
-    <div className="p-6 space-y-4" data-testid="audit-facts">
-      <header className="space-y-1">
-        <h1 className="text-lg font-semibold text-fg-primary">{t('factsAudit.title')}</h1>
-        <p className="text-sm text-fg-tertiary">{t('factsAudit.subtitle')}</p>
-      </header>
+    <div className="h-full overflow-y-auto" data-testid="audit-facts">
+      <div className="mx-auto max-w-5xl px-6 py-6 space-y-5">
+        <header className="flex items-start justify-between gap-4 border-b border-line pb-4">
+          <div className="space-y-1">
+            <h1 className="text-xl font-semibold tracking-tight text-fg-primary">{t('factsAudit.title')}</h1>
+            <p className="max-w-2xl text-sm leading-relaxed text-fg-tertiary">{t('factsAudit.subtitle')}</p>
+          </div>
+          <div className="shrink-0 text-right">
+            <div className="text-2xl font-semibold tabular-nums text-fg-primary">{rows.length}</div>
+            <div className="text-[11px] uppercase tracking-wide text-fg-tertiary">{t('factsAudit.countLabel')}</div>
+          </div>
+        </header>
 
-      <section className="grid grid-cols-1 gap-3 md:grid-cols-3" data-testid="audit-facts-filters">
-        <label className="text-xs text-fg-tertiary">
-          {t('factsAudit.subjectKind')}
-          <select
-            className="mt-1 w-full rounded border border-line bg-surface-primary px-2 py-1 text-sm text-fg-primary"
-            value={subjectKind}
-            onChange={e => setSubjectKind(e.target.value)}
-          >
-            <option value="">{t('factsAudit.any')}</option>
-            {FACT_SUBJECT_KINDS.map(k => (
-              <option key={k} value={k}>{k}</option>
-            ))}
-          </select>
-        </label>
-        <label className="text-xs text-fg-tertiary">
-          {t('factsAudit.subjectId')}
-          <input
-            className="mt-1 w-full rounded border border-line bg-surface-primary px-2 py-1 text-sm text-fg-primary"
-            value={subjectId}
-            onChange={e => setSubjectId(e.target.value)}
-            placeholder="tsk_… / agt_…"
-          />
-        </label>
-        <label className="text-xs text-fg-tertiary">
-          {t('factsAudit.predicate')}
-          <input
-            className="mt-1 w-full rounded border border-line bg-surface-primary px-2 py-1 text-sm text-fg-primary"
-            value={predicate}
-            onChange={e => setPredicate(e.target.value)}
-            placeholder="task.completion_evidence"
-          />
-        </label>
-        <label className="text-xs text-fg-tertiary">
-          {t('factsAudit.since')}
-          <input
-            type="datetime-local"
-            className="mt-1 w-full rounded border border-line bg-surface-primary px-2 py-1 text-sm text-fg-primary"
-            value={since}
-            onChange={e => setSince(e.target.value)}
-          />
-        </label>
-        <label className="text-xs text-fg-tertiary">
-          {t('factsAudit.until')}
-          <input
-            type="datetime-local"
-            className="mt-1 w-full rounded border border-line bg-surface-primary px-2 py-1 text-sm text-fg-primary"
-            value={until}
-            onChange={e => setUntil(e.target.value)}
-          />
-        </label>
-        <label className="flex items-center gap-2 text-xs text-fg-tertiary md:col-span-3">
-          <input
-            type="checkbox"
-            checked={includeSuperseded}
-            onChange={e => setIncludeSuperseded(e.target.checked)}
-          />
-          {t('factsAudit.includeSuperseded')}
-        </label>
-      </section>
+        <section className="rounded-xl border border-line bg-surface-secondary/40 p-3" data-testid="audit-facts-filters">
+          <div className="grid grid-cols-2 gap-3 md:grid-cols-6">
+            <label className={LABEL}>
+              {t('factsAudit.subjectKind')}
+              <select className={FIELD} value={subjectKind} onChange={e => setSubjectKind(e.target.value)}>
+                <option value="">{t('factsAudit.any')}</option>
+                {FACT_SUBJECT_KINDS.map(k => (
+                  <option key={k} value={k}>{k}</option>
+                ))}
+              </select>
+            </label>
+            <label className={`${LABEL} col-span-2`}>
+              {t('factsAudit.subjectId')}
+              <input
+                className={`${FIELD} font-mono text-xs`}
+                value={subjectId}
+                onChange={e => setSubjectId(e.target.value)}
+                placeholder="tsk_… / agt_…"
+              />
+            </label>
+            <label className={`${LABEL} col-span-2`}>
+              {t('factsAudit.predicate')}
+              <input
+                className={`${FIELD} font-mono text-xs`}
+                value={predicate}
+                onChange={e => setPredicate(e.target.value)}
+                placeholder="task.completion_evidence"
+              />
+            </label>
+            <div className="flex items-end">
+              <button
+                type="button"
+                onClick={reset}
+                className="w-full rounded-md border border-line px-2.5 py-1.5 text-sm text-fg-secondary transition-colors hover:bg-surface-secondary hover:text-fg-primary"
+              >
+                {t('factsAudit.reset')}
+              </button>
+            </div>
+            <label className={LABEL}>
+              {t('factsAudit.since')}
+              <input type="datetime-local" className={FIELD} value={since} onChange={e => setSince(e.target.value)} />
+            </label>
+            <label className={LABEL}>
+              {t('factsAudit.until')}
+              <input type="datetime-local" className={FIELD} value={until} onChange={e => setUntil(e.target.value)} />
+            </label>
+            <label className="col-span-2 flex items-center gap-2 self-end text-xs text-fg-secondary md:col-span-4">
+              <input
+                type="checkbox"
+                className="accent-current"
+                checked={includeSuperseded}
+                onChange={e => setIncludeSuperseded(e.target.checked)}
+              />
+              {t('factsAudit.includeSuperseded')}
+            </label>
+          </div>
+        </section>
 
-      {disabled && (
-        <div className="rounded border border-amber-500/40 bg-amber-500/10 p-3 text-sm" data-testid="audit-facts-disabled">
-          {t('factsAudit.disabled')}
-        </div>
-      )}
-      {error && (
-        <div className="rounded border border-red-500/40 bg-red-500/10 p-3 text-sm" data-testid="audit-facts-error">
-          {error}
-        </div>
-      )}
-      {loading && <div className="text-sm text-fg-tertiary">{t('loading')}</div>}
-      {truncated && !loading && (
-        <div className="text-xs text-fg-tertiary" data-testid="audit-facts-truncated">
-          {t('factsAudit.truncated')}
-        </div>
-      )}
+        {disabled && (
+          <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-4 py-3 text-sm text-fg-primary" data-testid="audit-facts-disabled">
+            {t('factsAudit.disabled')}
+          </div>
+        )}
+        {error && (
+          <div className="rounded-lg border border-red-500/40 bg-red-500/10 px-4 py-3 text-sm text-fg-primary" data-testid="audit-facts-error">
+            {error}
+          </div>
+        )}
+        {loading && <div className="text-sm text-fg-tertiary">{t('loading')}</div>}
+        {truncated && !loading && (
+          <div className="text-xs text-fg-tertiary" data-testid="audit-facts-truncated">{t('factsAudit.truncated')}</div>
+        )}
 
-      {!disabled && !loading && rows.length === 0 && !error && (
-        <div className="text-sm text-fg-tertiary" data-testid="audit-facts-empty">
-          {t('factsAudit.empty')}
-        </div>
-      )}
+        {!disabled && !loading && rows.length === 0 && !error && (
+          <div className="rounded-xl border border-dashed border-line px-4 py-10 text-center text-sm text-fg-tertiary" data-testid="audit-facts-empty">
+            {t('factsAudit.empty')}
+          </div>
+        )}
 
-      {rows.length > 0 && (
-        <table className="w-full text-left text-sm" data-testid="audit-facts-table">
-          <thead className="text-xs uppercase text-fg-tertiary">
-            <tr>
-              <th className="py-1">{t('factsAudit.colPredicate')}</th>
-              <th className="py-1">{t('factsAudit.colSubject')}</th>
-              <th className="py-1">{t('factsAudit.colAsserted')}</th>
-              <th className="py-1">{t('factsAudit.colVerification')}</th>
-              <th className="py-1">{t('factsAudit.colChain')}</th>
-              <th className="py-1">{t('factsAudit.colValue')}</th>
-            </tr>
-          </thead>
-          <tbody>
+        {rows.length > 0 && (
+          <div className="space-y-2.5" data-testid="audit-facts-table">
             {rows.map(row => {
               const chain = describeSupersedeChain(row, byId);
+              const superseded = Boolean(row.supersededBy);
+              const verified = isIndependentlyVerified(row);
               return (
-                <tr key={row.id} className="border-t border-line align-top" data-testid="audit-facts-row" id={`fact-${row.id}`}>
-                  <td className="py-2 pr-2 font-mono text-xs">{row.predicate}</td>
-                  <td className="py-2 pr-2 font-mono text-xs">{row.subjectKind}:{row.subjectId}</td>
-                  <td className="py-2 pr-2 text-xs">
-                    <div>{row.assertedBy}</div>
-                    <div className="text-fg-tertiary">{row.createdAt}</div>
-                    <div className="font-mono text-[10px] text-fg-tertiary">{row.workUnitRef}</div>
-                    {row.sourceRefs?.length > 0 && (
-                      <div className="mt-1 flex flex-wrap gap-1">
-                        {row.sourceRefs.map(ref => (
-                          <span key={ref} className="rounded bg-surface-secondary px-1 text-[10px]">{ref}</span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="py-2 pr-2 text-xs">
+                <article
+                  key={row.id}
+                  id={`fact-${row.id}`}
+                  className="rounded-xl border border-line bg-surface-primary p-3.5 transition-colors hover:bg-surface-secondary/30"
+                  data-testid="audit-facts-row"
+                >
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="rounded-md bg-surface-secondary px-2 py-0.5 font-mono text-xs font-medium text-fg-primary">
+                      {row.predicate}
+                    </span>
                     {row.verification ? (
-                      <span className={isIndependentlyVerified(row) ? 'text-emerald-500' : 'text-amber-500'}>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          verified
+                            ? 'bg-emerald-500/15 text-emerald-600 dark:text-emerald-400'
+                            : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
+                        }`}
+                      >
                         {row.verification.result} · {row.verification.verifiedBy}
-                        {row.verification.verifiedAt ? ` · ${row.verification.verifiedAt}` : ''}
+                        {row.verification.verifiedAt ? ` · ${shortTime(row.verification.verifiedAt)}` : ''}
                       </span>
                     ) : (
-                      <span className="text-fg-tertiary">{t('factsAudit.unverified')}</span>
+                      <span className="rounded-full bg-surface-secondary px-2 py-0.5 text-[11px] text-fg-tertiary">
+                        {t('factsAudit.unverified')}
+                      </span>
                     )}
-                  </td>
-                  <td className="py-2 pr-2 text-xs">
-                    {chain.outgoing && <div data-testid="audit-facts-chain-out">{chain.outgoing}</div>}
-                    {chain.incoming && <div className="text-fg-tertiary" data-testid="audit-facts-chain-in">{chain.incoming}</div>}
-                    {!chain.outgoing && !chain.incoming && <span className="text-fg-tertiary">—</span>}
-                  </td>
-                  <td className="py-2 text-xs">
-                    <pre className="max-w-md overflow-x-auto whitespace-pre-wrap font-mono text-[10px]">
+                    {superseded && (
+                      <span className="rounded-full bg-surface-secondary px-2 py-0.5 text-[11px] text-fg-tertiary">
+                        {t('factsAudit.superseded')}
+                      </span>
+                    )}
+                    <span className="ml-auto font-mono text-[11px] text-fg-tertiary">{row.subjectKind}:{row.subjectId}</span>
+                  </div>
+
+                  <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-tertiary">
+                    <span title={row.createdAt}>{shortTime(row.createdAt)}</span>
+                    <span className="font-mono">{row.assertedBy}</span>
+                    {row.workUnitRef && <span className="font-mono opacity-70">{row.workUnitRef}</span>}
+                    <span className="tabular-nums">{Math.round((row.confidence ?? 0) * 100)}%</span>
+                    {chain.outgoing && <span data-testid="audit-facts-chain-out">{chain.outgoing}</span>}
+                    {chain.incoming && <span data-testid="audit-facts-chain-in">{chain.incoming}</span>}
+                  </div>
+
+                  {row.sourceRefs?.length > 0 && (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {row.sourceRefs.map(ref => (
+                        <span key={ref} className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-fg-secondary">
+                          {ref}
+                        </span>
+                      ))}
+                    </div>
+                  )}
+
+                  <details className="group mt-2">
+                    <summary className="cursor-pointer select-none text-[11px] text-fg-tertiary hover:text-fg-secondary">
+                      {t('factsAudit.colValue')}
+                    </summary>
+                    <pre className="mt-1.5 max-h-64 overflow-auto rounded-lg bg-surface-secondary/60 p-2.5 font-mono text-[11px] leading-relaxed text-fg-secondary">
 {JSON.stringify(row.value, null, 2)}
                     </pre>
-                  </td>
-                </tr>
+                  </details>
+                </article>
               );
             })}
-          </tbody>
-        </table>
-      )}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
