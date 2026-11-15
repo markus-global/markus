@@ -115,11 +115,24 @@
     "blockedDeps": "Waiting on deps",
     "ended": "Given up",
     "evidence": {
-      "title": "Why it's done ({{count}})",
+      "title": "Completion evidence ({{count}})",
+      "subtitle": "What backs this card's claim: each conclusion, who asserted it, and whether anyone checked it independently.",
       "empty": "No evidence fact yet",
-      "noSummary": "(no summary)",
+      "emptyHint": "Submitting for review requires one 'completion evidence' fact, or the gate will refuse.",
       "unverified": "Not independently verified",
       "assertedBy": "asserted by {{who}}",
+      "verifiedBy": "checked by {{who}}",
+      "predicateOnly": "Recorded as a structured value — no text summary.",
+      "expand": "Show full text",
+      "collapse": "Collapse",
+      "predicate": {
+        "task_completion_evidence": "Completion evidence",
+        "task_rejection_reason": "Rejection reason",
+        "requirement_acceptance_met": "Acceptance met",
+        "work_defect_class": "Defect class",
+        "agent_capability_claim": "Capability claim",
+        "memory_consolidation_suggestion": "Memory consolidation suggestion"
+      },
       "verification": {
         "pass": "Verified",
         "fail": "Verification failed"
@@ -127,7 +140,13 @@
       "refKind": {
         "deliverable": "Deliverable",
         "comment": "Comment",
-        "inPlace": "Reference"
+        "inPlace": "Reference",
+        "commit": "Commit",
+        "probe": "Live probe",
+        "task": "Task",
+        "record": "Fact",
+        "transcript": "Transcript",
+        "other": "Other"
       }
     }
   },

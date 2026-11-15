@@ -114,11 +114,24 @@
     "blockedDeps": "Espera dependencias",
     "ended": "Terminado sin éxito",
     "evidence": {
-      "title": "Por qué está terminado ({{count}})",
+      "title": "Evidencia de finalización ({{count}})",
+      "subtitle": "En qué se basa esta tarjeta: cada conclusión, quién la afirmó y si alguien la verificó de forma independiente.",
       "empty": "Todavía no hay ningún hecho de evidencia",
-      "noSummary": "(sin resumen)",
+      "emptyHint": "Para enviar a revisión hace falta un hecho de 'evidencia de finalización'; si no, la compuerta lo rechaza.",
       "unverified": "Sin verificación independiente",
       "assertedBy": "afirmado por {{who}}",
+      "verifiedBy": "verificado por {{who}}",
+      "predicateOnly": "Registrado como valor estructurado — sin resumen de texto.",
+      "expand": "Ver todo",
+      "collapse": "Contraer",
+      "predicate": {
+        "task_completion_evidence": "Evidencia de finalización",
+        "task_rejection_reason": "Motivo del rechazo",
+        "requirement_acceptance_met": "Aceptación cumplida",
+        "work_defect_class": "Clase de defecto",
+        "agent_capability_claim": "Declaración de capacidad",
+        "memory_consolidation_suggestion": "Sugerencia de consolidación de memoria"
+      },
       "verification": {
         "pass": "Verificado",
         "fail": "Verificación fallida"
@@ -126,7 +139,13 @@
       "refKind": {
         "deliverable": "Entregable",
         "comment": "Comentario",
-        "inPlace": "Referencia"
+        "inPlace": "Referencia",
+        "commit": "Commit",
+        "probe": "Prueba real",
+        "task": "Tarea",
+        "record": "Hecho",
+        "transcript": "Transcripción",
+        "other": "Otro"
       }
     }
   },

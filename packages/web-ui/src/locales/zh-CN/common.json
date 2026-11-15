@@ -115,11 +115,24 @@
     "blockedDeps": "等依赖",
     "ended": "已终止",
     "evidence": {
-      "title": "凭什么说做完了（{{count}}）",
+      "title": "完成依据（{{count}} 条）",
+      "subtitle": "这张卡凭什么说自己做完了：每条结论、谁断言的、有没有人独立核验。",
       "empty": "还没有证据事实",
-      "noSummary": "（无摘要）",
+      "emptyHint": "提交评审前必须有一条「交付证据」，否则会被闸门拦住。",
       "unverified": "尚未独立验证",
       "assertedBy": "由 {{who}} 断言",
+      "verifiedBy": "由 {{who}} 核验",
+      "predicateOnly": "以结构化值记录，没有文字摘要。",
+      "expand": "展开全文",
+      "collapse": "收起",
+      "predicate": {
+        "task_completion_evidence": "交付证据",
+        "task_rejection_reason": "驳回原因",
+        "requirement_acceptance_met": "验收已达成",
+        "work_defect_class": "缺陷归类",
+        "agent_capability_claim": "能力声明",
+        "memory_consolidation_suggestion": "记忆整理建议"
+      },
       "verification": {
         "pass": "已验证",
         "fail": "验证未通过"
@@ -127,7 +140,13 @@
       "refKind": {
         "deliverable": "交付物",
         "comment": "评论",
-        "inPlace": "原始记录"
+        "inPlace": "原始记录",
+        "commit": "提交",
+        "probe": "实测记录",
+        "task": "任务",
+        "record": "事实",
+        "transcript": "会话记录",
+        "other": "其他"
       }
     }
   },

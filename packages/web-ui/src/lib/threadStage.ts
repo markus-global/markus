@@ -118,6 +118,45 @@ export function sourceRefKind(ref: string): SourceRefKind {
 }
 
 /**
+ * 证据指针的人话：`commit:33cf01ef` → { kind:'commit', short:'33cf01ef' }。
+ *
+ * 为什么需要：旧渲染只给类型标签，一条证据挂 5 个指针就成了 5 个一模一样的
+ * 「原始记录」—— 用户既分不清也无法选择。类型 + 值片段才能在不动指针的前提下
+ * 把人在意的东西（哪个提交、哪条实测、哪张卡）放到面上。
+ *
+ * 未知格式走 `other` 并保留完整 ref：不倒空、不编造，宁可让人看到原文。
+ */
+export type RefPointerKind = 'commit' | 'probe' | 'task' | 'deliverable' | 'comment' | 'record' | 'transcript' | 'other';
+
+export interface RefPointer {
+  kind: RefPointerKind;
+  /** 要拼在类型后面的值片段；空串表示该类型后不需要值。 */
+  short: string;
+}
+
+export function sourceRefPointer(ref: string): RefPointer {
+  const idx = ref.indexOf(':');
+  const scheme = idx > 0 ? ref.slice(0, idx) : '';
+  const rest = idx > 0 ? ref.slice(idx + 1) : ref;
+  switch (scheme) {
+    case 'commit': return { kind: 'commit', short: rest.slice(0, 8) };
+    case 'probe': return { kind: 'probe', short: '' };
+    case 'task': return { kind: 'task', short: '' };
+    case 'deliverable': return { kind: 'deliverable', short: '' };
+    case 'comment': return { kind: 'comment', short: '' };
+    case 'fact': return { kind: 'record', short: rest.replace(/^fact_/, '').slice(0, 8) };
+    case 'transcript': return { kind: 'transcript', short: '' };
+    default:
+      // `dlv_xxx` / `cmt_xxx` 是裸 id（无 scheme 前缀），沿用 sourceRefKind 的判别。
+      if (ref.startsWith('dlv_')) return { kind: 'deliverable', short: '' };
+      if (ref.startsWith('cmt_') || ref.startsWith('comment_')) return { kind: 'comment', short: '' };
+      // 未知格式：类型标「其他」+ 截短存储（完整 ref 在 title 里）——
+      // 真机上曾把整串 `fact:fact_c91b4622a6782a5e3a205cf5` 摊在按钮上，比不给还差。
+      return { kind: 'other', short: ref.length > 18 ? `${ref.slice(0, 18)}…` : ref };
+  }
+}
+
+/**
  * 「凭什么说做完了」——从事实值里取人话摘要。
  *
  * 只读 `summary`（`task.completion_evidence` 的约定字段）；没有 `summary` 就明确说

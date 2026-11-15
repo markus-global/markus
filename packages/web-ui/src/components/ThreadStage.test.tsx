@@ -84,25 +84,25 @@ describe('ThreadStageBadge', () => {
   });
 });
 
-describe('EvidenceFold — "凭什么说做完了"', () => {
+describe('EvidenceFold — 「完成依据」', () => {
   it('is collapsed by default and expands on click', () => {
     render(<EvidenceFold evidence={[evidence()]} />);
     expect(screen.queryByText('事实层与阶段派生已落地')).toBeNull();
-    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    fireEvent.click(screen.getByText(/完成依据/));
     expect(screen.getByText('事实层与阶段派生已落地')).toBeTruthy();
     expect(screen.getByText('已验证')).toBeTruthy();
   });
 
   it('shows a stable empty form instead of hiding the section', () => {
     render(<EvidenceFold evidence={[]} />);
-    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    fireEvent.click(screen.getByText(/完成依据/));
     expect(screen.getByText('还没有证据事实')).toBeTruthy();
   });
 
   it('opens the original record behind each pointer', () => {
     const onOpenSource = vi.fn();
     render(<EvidenceFold evidence={[evidence()]} onOpenSource={onOpenSource} />);
-    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    fireEvent.click(screen.getByText(/完成依据/));
     fireEvent.click(screen.getByText('交付物'));
     expect(onOpenSource).toHaveBeenCalledWith('dlv_9');
     fireEvent.click(screen.getByText('评论'));
@@ -119,18 +119,41 @@ describe('EvidenceFold — "凭什么说做完了"', () => {
         onOpenSource={() => {}}
       />,
     );
-    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    fireEvent.click(screen.getByText(/完成依据/));
     const text = container.textContent ?? '';
     expect(text).not.toContain('threadStage.');
     expect(text).not.toContain('common:');
     expect(text).toContain('交付物');
     expect(text).toContain('评论');
-    expect(text).toContain('原始记录');
+    // 未知格式的指针不倒空、不编造：类型标「其他」+ 保留原文。
+    expect(text).toContain('其他');
+    expect(text).toContain('fact_7');
   });
 
   it('never dumps raw JSON at the reader', () => {
     render(<EvidenceFold evidence={[evidence({ value: { evidence_refs: ['dlv_9'] } })]} />);
-    fireEvent.click(screen.getByText(/凭什么说做完了/));
+    fireEvent.click(screen.getByText(/完成依据/));
     expect(screen.queryByText(/"evidence_refs"/)).toBeNull();
+  });
+
+  it('clamps a long summary and offers 展开全文', () => {
+    // 真机回归：一条 500+ 字的验收结论曾被原样倾倒，人根本读不下去。
+    const longSummary = '验收结论'.repeat(60);
+    render(<EvidenceFold evidence={[evidence({ value: { summary: longSummary } })]} />);
+    fireEvent.click(screen.getByText(/完成依据/));
+    expect(screen.getByText('展开全文')).toBeTruthy();
+    fireEvent.click(screen.getByText('展开全文'));
+    expect(screen.getByText('收起')).toBeTruthy();
+  });
+
+  it('resolves agent ids to names through nameOf (falls back to the id, never to “某人”)', () => {
+    const nameOf = (id: string) => (id === 'agt_author' ? 'Markus 全栈工程师' : undefined);
+    const { unmount } = render(<EvidenceFold evidence={[evidence({ assertedBy: 'agt_author' })]} nameOf={nameOf} />);
+    fireEvent.click(screen.getByText(/完成依据/));
+    expect(screen.getByText(/Markus 全栈工程师/)).toBeTruthy();
+    unmount();
+    render(<EvidenceFold evidence={[evidence({ assertedBy: 'agt_unknown' })]} nameOf={nameOf} />);
+    fireEvent.click(screen.getByText(/完成依据/));
+    expect(screen.getByText(/agt_unknown/)).toBeTruthy();
   });
 });

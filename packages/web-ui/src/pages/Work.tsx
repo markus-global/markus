@@ -2420,6 +2420,7 @@ function TaskDetailPanel({
       <div className="px-6 shrink-0">
         <EvidenceFold
           evidence={task.evidence ?? []}
+          nameOf={(id) => agents.find(a => a.id === id)?.name}
           onOpenSource={(ref) => {
             if (ref.startsWith('dlv_')) {
               navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
