@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity } from '@markus/shared';
+import { createLogger, generateId, userId as genUserId, resolveJwtSecret, agentAddressRef, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -2045,16 +2045,10 @@ export class APIServer {
       pendingCallbackRegistry.setPersistence(storage.pendingCallbackRepo);
     }
     this.wireWorkUnits();
-    // C8-P2：僵尸活动收口 —— 触发它的投递行已终态的行，不该再挂着“进行中”。
-    // 「是否在跑」的唯一权威是 work_units；activity 只是历史，不是状态。
-    try {
-      const closed = this.storage?.activityRepo?.closeOrphansAgainstTerminalMailbox?.() ?? 0;
-      if (closed > 0) {
-        log.info('Closed orphan activities (trigger row already terminal)', { count: closed });
-      }
-    } catch (err) {
-      log.warn('Failed to close orphan activities', { error: String(err) });
-    }
+    // C9-B：这里曾经有一个「僵尸活动收口」步骤（给未收口 activity 补写 ended_at）。
+    // 它存在的唯一理由是让「ended_at 为空 = 还在跑」这个读法成立；该读法已全仓删掉，
+    // 「在跑」只认 work_units，所以这个后台写也一并删掉。
+    // 契约见 docs/architecture/observability-tables.md。
     // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
     // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
     try {
@@ -4346,6 +4340,9 @@ export class APIServer {
           budget: u.budget,
           used: u.used,
           contextRef: u.contextRef,
+          // C9-B：拆解 ref 为结构字段的那一步只在这里（用 shared 的唯一解析器）。
+          // 客户端只做集合成员判断，不再各自解析 ref —— 否则就是第二个解析器。
+          taskId: taskIdOfWorkUnitRef(u.ref) ?? null,
           internal: /^(requirement_|channel_|session:)/.test(u.ref),
         })),
       });
@@ -6299,6 +6296,7 @@ export class APIServer {
               label: act.label,
               startedAt: act.startedAt,
               endedAt: act.endedAt,
+              workUnitRef: act.workUnitRef ?? null,
               totalTokens: act.totalTokens,
               totalTools: act.totalTools,
               success: act.success,

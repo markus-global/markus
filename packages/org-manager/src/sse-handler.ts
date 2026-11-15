@@ -66,7 +66,7 @@ export interface SSEMessageHandlerOptions {
    */
   workUnitRef?: string | null;
   onError?: (error: unknown, segments: Array<{type: string; content?: string; tool?: string; status?: string}>) => Promise<void>;
-  executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown }): unknown };
+  executionStreamRepo?: { append(data: { sourceType: string; sourceId: string; agentId: string; seq: number; type: string; content: string; metadata?: unknown; executionRound?: number; workUnitRef?: string | null }): unknown };
   messageId?: string;
   isResume?: boolean;
   /** Deferred session restore data — applied when the mailbox item is processed, not at HTTP request time */
@@ -573,16 +573,18 @@ export class SSEHandler {
 
     let seq = 0;
     const agentId = this.options.agentId;
+    // C9-B：身份是构造时拿到的回合 WorkUnit ref（不在读路径反推）。
+    const workUnitRef = this.options.workUnitRef ?? null;
     try {
       for (const seg of this.msgSegments) {
         if (seg.type === 'tool') {
           const toolSeg = seg as { tool: string; arguments?: unknown; result?: string; error?: string; durationMs?: number; status: string };
-          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_start', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments } });
-          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_end', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments, result: toolSeg.result, error: toolSeg.error, durationMs: toolSeg.durationMs, success: toolSeg.status !== 'error' } });
+          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_start', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments }, workUnitRef });
+          repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'tool_end', content: toolSeg.tool, metadata: { arguments: toolSeg.arguments, result: toolSeg.result, error: toolSeg.error, durationMs: toolSeg.durationMs, success: toolSeg.status !== 'error' }, workUnitRef });
         } else {
           const textSeg = seg as { content: string };
           if (textSeg.content) {
-            repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'text', content: textSeg.content });
+            repo.append({ sourceType: 'chat', sourceId: messageId, agentId, seq: seq++, type: 'text', content: textSeg.content, workUnitRef });
           }
         }
       }

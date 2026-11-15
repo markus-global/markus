@@ -1,13 +1,13 @@
 #!/usr/bin/env node
 /**
- * 身份不变量审计（十一条门禁：C8 五条 + C9 六条）。
+ * 身份不变量审计（C8 剩余四条 + C9 各刀新增判据；原判据 4 已删，理由见 GATES 内注释）。
  *
  * 两种模式：
  *   1) `--self-test`  —— CI 用。建一个临时库、**主动塞进每种违规**，断言每条判据都能抓到；
  *                        再修好它们，断言全部归零。这证明的是「判据本身有效」，
  *                        而不是「生产库很干净」——后者不属于 CI 的判断范围。
  *   2) 无参数          —— 运维用。对真实库（默认 ~/.markus/data.db，可用 MARKUS_AUDIT_DB 覆盖）
- *                        跑同样十一条查询，任一条 >0 就以非零码退出。
+ *                        跑同样几条查询，任一条 >0 就以非零码退出。
  *
  * 设计口径（2026-11-14 真机教训）：
  *   - 判据 1/5/11 必须带时间下界：老库里有大量修复前的历史行，不带下界的门禁永远红，
@@ -82,14 +82,16 @@ const GATES = [
            WHERE status = 'running' AND lease_until IS NOT NULL
              AND lease_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
   },
-  {
-    id: 4,
-    name: '僵尸活动（触发行已终态但 ended_at 仍为空）',
-    sql: `SELECT COUNT(*) AS c FROM agent_activities a
-            JOIN mailbox_items m ON m.id = a.mailbox_item_id
-           WHERE a.ended_at IS NULL
-             AND m.status IN ('completed','bounced','catch_all','merged')`,
-  },
+  // ── 原判据 4（「触发行已终态但 ended_at 仍为空」）在 C9-B 删除 ──────────────
+  // 它测的是一条**由扫库机制维持**的不变量：`agent_activities.ended_at` 必须补齐。
+  // C9-B 删掉了那个机制（`closeOrphansAgainstTerminalMailbox`）：「在跑」只认
+  // `work_units`，一行 activity 没有结束时间就是「没记到结束」，不是状态、也不是违规。
+  // 留着这条判据有两个后果，都不可接受：
+  //   1. 真机上有 3269 行历史僵尸行、且没有时间下界 → 门禁**永远红**（本文件自己的
+  //      口径：「永远亮着又不可行动的告警比没有更糟」）；
+  //   2. 要让它变绿，只能重新引入「替事件编造结束时间」的写者 —— 正是本轮删掉的东西。
+  // 同一个事实（「回合已收口，却留下悬挂的工作单元」）在**权威对象**上已有判据 3
+  // （租约过期的 running），所以这里不需要第二个度量。
   {
     id: 5,
     name: '撤销型事实无身份（无法反查「谁撤销了哪一轮」）',
@@ -152,9 +154,6 @@ CREATE TABLE mailbox_items (
 CREATE TABLE work_units (
   id TEXT PRIMARY KEY, ref TEXT UNIQUE, status TEXT, lease_until TEXT
 );
-CREATE TABLE agent_activities (
-  id TEXT PRIMARY KEY, mailbox_item_id TEXT, ended_at TEXT
-);
 -- C9-A：facts 的夹具表。**故意不建触发器与 ux_facts_active** —— 它们会直接把
 -- 违规样本拒之门外，于是「门禁能咬人」永远无法被证明（见文件头 C9-A 口径）。
 CREATE TABLE facts (
@@ -168,15 +167,14 @@ CREATE TABLE agent_decisions (
   id TEXT PRIMARY KEY, agent_id TEXT, work_unit_ref TEXT, created_at TEXT
 );`;
 
-/** 五种违规各塞一条 —— 判据抓不到它们就是判据写错了。 */
+/** 每种违规各塞一条 —— 判据抓不到它们就是判据写错了。 */
 const SEED_VIOLATIONS = `
 INSERT INTO mailbox_items VALUES
   ('mbx_g1','a','human_chat','queued','${SINCE}',NULL,NULL,NULL),
   ('mbx_g2','a','a2a_message','queued','${SINCE}','session:dangling:r1',NULL,NULL),
-  ('mbx_g4','a','human_chat','completed','${SINCE}','task_x_r1',NULL,'${SINCE}'),
   ('mbx_g5','a','task_status_update','completed','${SINCE}',NULL,'{"invalidatesPremise":true}','${SINCE}');
+<<<<<<< HEAD
 INSERT INTO work_units VALUES ('wu_g3','task_g3_r1','running','2000-01-01T00:00:00.000Z');
-INSERT INTO agent_activities VALUES ('act_g4','mbx_g4',NULL);
 -- C9-A：六条 facts 门禁各一条违规样本（夹具无触发器/唯一索引，故能塞进去）。
 INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_unit_ref, asserted_by, source_refs_json, verification_json, created_at) VALUES
   ('fact_g6','task','t1','task.completion_evidence','{}',NULL,'a1','["d1"]',NULL,'${SINCE}'),
@@ -189,10 +187,10 @@ INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${SINCE}');`;
 
 const FIX_VIOLATIONS = `
 UPDATE mailbox_items SET work_unit_ref='session:ok:r1'
- WHERE id IN ('mbx_g1','mbx_g2','mbx_g4','mbx_g5');
+ WHERE id IN ('mbx_g1','mbx_g2','mbx_g5');
 INSERT INTO work_units VALUES ('wu_ok','session:ok:r1','idle',NULL);
 UPDATE work_units SET lease_until=NULL WHERE id='wu_g3';
-UPDATE agent_activities SET ended_at='${SINCE}' WHERE id='act_g4';
+<<<<<<< HEAD
 -- C9-A：修好 facts 的六条违规 —— 每条只改它自己违规的那个字段。
 UPDATE facts SET work_unit_ref='task:audit:r1' WHERE id='fact_g6';
 UPDATE facts SET source_refs_json='["audit"]' WHERE id='fact_g7';
@@ -231,7 +229,7 @@ function selfTest() {
       console.log(`${ok ? '✓' : '✗'} 判据 ${g.id} 能抓到违规样本  ${g.name}  [count=${g.count}]`);
     }
 
-    // 修好违规 → 五条必须全部归零（否则判据会误报，误报等于没有）
+    // 修好违规 → 每条必须归零（否则判据会误报，误报等于没有）
     db.exec(FIX_VIOLATIONS);
 
     const clean = runGates(db);

@@ -53,6 +53,12 @@ export interface AgentActivity {
   taskId?: string;
   /** Links this activity back to the mailbox item that triggered it */
   mailboxItemId?: string;
+  /**
+   * C9-B: which WorkUnit (execution epoch) this activity belongs to. Nullable — a
+   * row without an identity is legal (old chain / no WorkUnit), and "still running"
+   * is never derived from this activity (see docs/architecture/observability-tables.md).
+   */
+  workUnitRef?: string | null;
   /** For heartbeat type, the heartbeat task name */
   heartbeatName?: string;
   startedAt: string;
