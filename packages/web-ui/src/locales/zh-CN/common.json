@@ -738,6 +738,11 @@
     "confidence": "置信度",
     "confidenceShort": "置信 {{pct}}%",
     "verificationTitle": "验证结果 · 验证者 · 时间",
+    "chain": {
+      "replacedBy": "已被 {{time}} 的新结论推翻",
+      "replacedByUnknown": "已被其他结论推翻（不在当前结果中）",
+      "replaces": "取代了 {{time}} 的旧结论"
+    },
     "evidence": "证据",
     "kind": {
       "task": "任务",

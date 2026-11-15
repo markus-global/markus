@@ -737,6 +737,11 @@
     "confidence": "Confianza",
     "confidenceShort": "conf {{pct}}%",
     "verificationTitle": "Resultado · verificador · hora",
+    "chain": {
+      "replacedBy": "Reemplazado por una conclusión nueva el {{time}}",
+      "replacedByUnknown": "Reemplazado por otra conclusión (fuera de este resultado)",
+      "replaces": "Reemplaza la conclusión anterior de {{time}}"
+    },
     "evidence": "Evidencia",
     "kind": {
       "task": "Tarea",

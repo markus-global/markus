@@ -583,10 +583,24 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
                         </span>
                       )}
                       {chain.outgoing && (
-                        <span className="text-[10.5px] text-fg-tertiary" data-testid="audit-facts-chain-out">{chain.outgoing}</span>
+                        <span
+                          className="text-[10.5px] text-fg-tertiary"
+                          title={chain.outgoing.factId}
+                          data-testid="audit-facts-chain-out"
+                        >
+                          {chain.outgoing.missing
+                            ? t('factsAudit.chain.replacedByUnknown')
+                            : t('factsAudit.chain.replacedBy', { time: shortTime(chain.outgoing.at ?? '') })}
+                        </span>
                       )}
                       {chain.incoming && (
-                        <span className="text-[10.5px] text-fg-tertiary" data-testid="audit-facts-chain-in">{chain.incoming}</span>
+                        <span
+                          className="text-[10.5px] text-fg-tertiary"
+                          title={chain.incoming.factId}
+                          data-testid="audit-facts-chain-in"
+                        >
+                          {t('factsAudit.chain.replaces', { time: shortTime(chain.incoming.at ?? '') })}
+                        </span>
                       )}
                     </div>
                   </div>

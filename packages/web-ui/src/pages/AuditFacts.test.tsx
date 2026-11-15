@@ -69,19 +69,21 @@ describe('supersede chain', () => {
     const oldRow = row({ id: 'fact_old', supersededBy: 'fact_new', supersededAt: '2026-11-15T02:00:00.000Z' });
     const newRow = row({ id: 'fact_new', assertedBy: 'agt_reviewer', createdAt: '2026-11-15T02:00:00.000Z' });
     const chain = describeSupersedeChain(oldRow, indexFacts([oldRow, newRow]));
-    expect(chain.outgoing).toContain('fact_new');
-    expect(chain.outgoing).toContain('agt_reviewer');
-    expect(chain.outgoing).toContain('2026-11-15T02:00:00.000Z');
+    expect(chain.outgoing?.factId).toBe('fact_new');
+    expect(chain.outgoing?.by).toBe('agt_reviewer');
+    expect(chain.outgoing?.at).toBe('2026-11-15T02:00:00.000Z');
+    expect(chain.outgoing?.missing).toBeUndefined();
     expect(chain.incoming).toBeNull();
 
     const back = describeSupersedeChain(newRow, indexFacts([oldRow, newRow]));
-    expect(back.incoming).toContain('fact_old');
+    expect(back.incoming?.factId).toBe('fact_old');
   });
 
-  it('says the replacement is outside the result set instead of inventing it', () => {
+  it('marks the replacement as missing instead of inventing it', () => {
     const only = row({ id: 'fact_old', supersededBy: 'fact_missing', supersededAt: '2026-11-15T02:00:00.000Z' });
     const chain = describeSupersedeChain(only, indexFacts([only]));
-    expect(chain.outgoing).toContain('not in this result set');
+    expect(chain.outgoing?.missing).toBe(true);
+    expect(chain.outgoing?.factId).toBe('fact_missing');
   });
 
   it('has no chain on a plain current row', () => {

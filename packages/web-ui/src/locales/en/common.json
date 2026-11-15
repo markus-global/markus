@@ -738,6 +738,11 @@
     "confidence": "Confidence",
     "confidenceShort": "conf {{pct}}%",
     "verificationTitle": "Result · verifier · time",
+    "chain": {
+      "replacedBy": "Overturned by a newer conclusion at {{time}}",
+      "replacedByUnknown": "Overturned by another conclusion (not in this result set)",
+      "replaces": "Replaces the earlier conclusion from {{time}}"
+    },
     "evidence": "Evidence",
     "kind": {
       "task": "Task",

@@ -117,23 +117,42 @@ export function sortFacts(rows: readonly FactRowView[]): FactRowView[] {
  * The superseding row is often not in the loaded set (a filter can hide it), so the text must
  * still be true when only the id is known — it then says so instead of inventing a value.
  */
+export interface SupersedeLink {
+  /** The other fact's id — for the `title` attribute, never for the visible label. */
+  factId: string;
+  /** When it happened (replacing fact's creation time out, this row's creation time in). */
+  at?: string;
+  /** Who asserted the replacing fact (outgoing only). */
+  by?: string;
+  /** The other end is not part of this result set. */
+  missing?: boolean;
+}
+
+export interface SupersedeChain {
+  outgoing: SupersedeLink | null;
+  incoming: SupersedeLink | null;
+}
+
 export function describeSupersedeChain(
   row: FactRowView,
   byId: Map<string, FactRowView>,
-): { outgoing: string | null; incoming: string | null } {
+): SupersedeChain {
+  // Structured, not pre-formatted. The previous version returned
+  // `→ fact_6d4f1fcb… (agt_b56c… @ 2026-11-15T05:50:02.801Z)` — three machine identifiers
+  // shown to the person the page exists for, and wording hard-coded past i18n. Data out,
+  // copy in the component (Owner 2026-11-15: 不要有让人迷惑的东西).
   const outgoing = row.supersededBy
     ? (() => {
         const next = byId.get(row.supersededBy);
-        const when = row.supersededAt ? ` @ ${row.supersededAt}` : '';
         return next
-          ? `→ ${next.id} (${next.assertedBy}${when})`
-          : `→ ${row.supersededBy}${when} (not in this result set)`;
+          ? { factId: next.id, at: row.supersededAt ?? next.createdAt, by: next.assertedBy }
+          : { factId: row.supersededBy, at: row.supersededAt ?? undefined, missing: true };
       })()
     : null;
 
   // Is this row itself a replacement for something? Rows are matched by supersededBy === this id.
   const previous = [...byId.values()].find(r => r.supersededBy === row.id);
-  const incoming = previous ? `← replaces ${previous.id}` : null;
+  const incoming = previous ? { factId: previous.id, at: previous.createdAt } : null;
 
   return { outgoing, incoming };
 }
