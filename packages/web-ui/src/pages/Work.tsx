@@ -28,6 +28,7 @@ import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
+import { ThreadStageBadge, EvidenceFold } from '../components/ThreadStage.tsx';
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
@@ -1121,7 +1122,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   }, []);
 
   return (
-    <div className="mt-5">
+    <div className="mt-5" id="task-activity">
       <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work:task.activityCommentsHeading')}</p>
       <div className="space-y-0.5 mb-3">
         {items.length === 0 && (
@@ -2374,6 +2375,13 @@ function TaskDetailPanel({
           <h3 className="flex-1 min-w-0 text-base font-semibold leading-snug text-fg-primary">
             {task.title}
             {' '}
+            {/*
+              C9-C：「在等谁」只读服务端派生好的闭集值（`deriveStage()` 的唯一输出）。
+              这里刻意**不再**由 approvals / blockedBy / 消息自己拼一次 —— 治理态徽章
+              （下面那段）回答的是另一个问题，两者同屏出现但不同轴。
+            */}
+            <ThreadStageBadge stage={task.threadStage} />
+            {' '}
             {(() => {
               // blocked 有子缘由（deps/hold/workflow），必须走 taskStatusPresentation 才能
               // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
@@ -2403,6 +2411,24 @@ function TaskDetailPanel({
           />
           <button onClick={onClose} className="text-fg-tertiary hover:text-fg-secondary text-xl leading-none shrink-0 mt-1">×</button>
         </div>
+      </div>
+
+      {/*
+        C9-C：「凭什么说做完了」。默认折叠 —— 证据是给人核对的，不是给人扫的；
+        空集合也渲染（「还没有证据事实」本身就是需要看见的信息）。
+      */}
+      <div className="px-6 shrink-0">
+        <EvidenceFold
+          evidence={task.evidence ?? []}
+          onOpenSource={(ref) => {
+            if (ref.startsWith('dlv_')) {
+              navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
+              return;
+            }
+            // 评论 / decision / 其它指针：回到本页的活动区（它就在同一屏里）。
+            document.getElementById('task-activity')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }}
+        />
       </div>
 
       {sendToChatOpen && (

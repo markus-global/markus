@@ -47,6 +47,24 @@ const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 
 /** C9-A：`facts` 的唯一 SQL 写者（声明放在规则表之前，规则表在模块初始化时就要读它）。 */
 const FACTS_SINGLE_WRITER = 'packages/org-manager/src/fact-service.ts';
 
+// ── 第九刀 C9-C：阶段闭集的辅助函数 ──────────────────────────────────────────
+//
+// 判据取「`THREAD_STAGES` 数组里那七个字面值」，而不是「文件里出现过这个名字」：
+// 注释、文档、其它地方的同名文字都不该被算进来。顺序一起比 —— 顺序就是文档顺序，
+// 前端按它渲染图例，一端插一个另一端没插会立刻被这条规则抓到。
+const THREAD_STAGE_ORDER = 'waiting_human|running|needs_evidence|in_verification|done|blocked_deps|failed';
+
+function extractStageList(text) {
+  const block = text.match(/THREAD_STAGES\s*=\s*\[([\s\S]*?)\]\s*as const/);
+  if (!block) return null;
+  return [...block[1].matchAll(/'([a-z_]+)'/g)].map(m => m[1]);
+}
+
+/** 去掉行注释与块注释：判定「实现体内有没有时钟/IO」时，注释里提到不算违规。 */
+function stripComments(text) {
+  return text.replace(/\/\*[\s\S]*?\*\//g, ' ').replace(/(^|[^:])\/\/[^\n]*/g, '$1 ');
+}
+
 const updateAllowlist = process.argv.includes('--update-allowlist');
 const listOnly = process.argv.includes('--list');
 
@@ -81,6 +99,54 @@ const listOnly = process.argv.includes('--list');
  * 永远不会红的门禁比没有门禁更危险）。
  */
 const INVARIANT_RULES = [
+  // 「同一条流的阶段」此前在四个组件里各拼一次；这份规则锁住派生是**纯函数**、
+  // 以及 core 与 web-ui 的闭集**不允许各自漂移**（漏一个 stage = 页面上出现空白徽章）。
+  {
+    id: 'thread-stage-closed-set',
+    title: 'deriveStage 是纯函数，且前后端阶段枚举逐字一致',
+    checks: [
+      {
+        file: 'packages/core/src/facts/derive-stage.ts',
+        label: 'core 的 THREAD_STAGES 声明 7 个 stage（顺序即文档顺序）',
+        hint: '派生闭集被改动 / 被删 → 前端按闭集渲染时漏项，或出现第 8 个未定义阶段',
+        detect: t => extractStageList(t)?.join('|') === THREAD_STAGE_ORDER,
+        fixtures: {
+          ok: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n] as const;",
+          bad: "export const THREAD_STAGES = ['waiting_human', 'running', 'done'] as const;",
+        },
+      },
+      {
+        file: 'packages/web-ui/src/lib/threadStage.ts',
+        label: 'web-ui 的镜像与 core 逐字一致',
+        hint: '前端枚举漂移 → 新增 stage 在界面上无文案（空白徽章），或前端编造服务端不会返回的值',
+        detect: t => extractStageList(t)?.join('|') === THREAD_STAGE_ORDER,
+        fixtures: {
+          ok: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n] as const;",
+          bad: "export const THREAD_STAGES = [\n  'waiting_human',\n  'running',\n  'needs_evidence',\n  'in_verification',\n  'done',\n  'blocked_deps',\n  'failed',\n  'saved',\n] as const;",
+        },
+      },
+      {
+        file: 'packages/core/src/facts/derive-stage.ts',
+        label: '派生实现体内没有 IO / 时钟 / 随机（去掉注释后不含 Date.now / Math.random / prepare / fetch / readFile）',
+        hint: '派生一旦能读时钟或读库，就不再可复现：同一份输入会给出两个答案，测试也就无从证明它',
+        detect: t => !/Date\.now|Math\.random|\.prepare\(|fetch\(|readFileSync|readFile\(|process\.env/.test(stripComments(t)),
+        fixtures: {
+          ok: 'export function deriveStage(input) { return input.fsm.status === "failed" ? "failed" : "done"; }',
+          bad: 'export function deriveStage(input) { const now = Date.now(); return input.fsm.status === "failed" ? "failed" : "done"; }',
+        },
+      },
+      {
+        file: 'packages/shared/src/facts/predicates.ts',
+        label: '`task.completion_evidence` 仍在谓词闭集里（派生的证据谓词不能是孤儿字符串）',
+        hint: '谓词改名 → 派生永远找不到证据，所有卡永久停在 needs_evidence',
+        detect: t => t.includes("'task.completion_evidence'"),
+        fixtures: {
+          ok: "predicate: 'task.completion_evidence',",
+          bad: "predicate: 'task.done',",
+        },
+      },
+    ],
+  },
   // 第九刀 C9-A：facts 的唯一写者必须存在，且真的写 facts。
   // 与路径级规则互补：那条拦住「第二个写者」，这条拦住「唯一的写者被
   // 重构成了不可写的空实现」—— 两个方向都松不得。

@@ -383,6 +383,18 @@ export {
   type FactVerification,
   type FactWriteResult,
 } from './facts/fact-service.js';
+// 第九刀 C9-C：`deriveStage()` —— 「这条流此刻在等谁」的唯一派生点（纯函数，零 IO）。
+export {
+  deriveStage,
+  isThreadStage,
+  THREAD_STAGES,
+  COMPLETION_EVIDENCE_PREDICATE,
+  type Approval,
+  type DeriveStageInput,
+  type FsmSnapshot,
+  type ThreadFsmStatus,
+  type ThreadStage,
+} from './facts/derive-stage.js';
 export {
   renderFactsBlock,
   renderFactsContext,

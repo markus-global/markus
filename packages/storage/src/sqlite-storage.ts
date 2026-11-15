@@ -6696,6 +6696,21 @@ export class SqliteWorkUnitRepo {
   }
 
   /**
+   * 第九刀 C9-C：某个 task 主体当前**在跑**的 WorkUnit 条数。
+   *
+   * 只做一件事：`status = 'running'` 且 `task_id = ?` 的计数。读面用它是为了给
+   * `deriveStage()` 一个正向信号（>0 才提升到 `running`）；为 0 不代表「没在跑」，
+   * 只代表「这一列查不到在跑的回合」——所以派生规则里它只升不降。
+   */
+  countRunningByTask(taskId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM work_units WHERE task_id = ? AND status = 'running'")
+      .get(taskId) as { n?: number | bigint } | undefined;
+    const n = row?.n ?? 0;
+    return typeof n === 'bigint' ? Number(n) : n;
+  }
+
+  /**
    * 让 C6 的墓碑变活：把 `mailbox_items.work_unit_ref` 写成本 WU 的 ref。
    *
    * 只有这一处写这列（本文件 + 本方法），而且只在**实体已存在之后**写：

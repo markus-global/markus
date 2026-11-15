@@ -1112,6 +1112,26 @@ export interface TaskInfo {
     nextRunAt?: string;
     paused?: boolean;
   };
+  /**
+   * C9-C：这条流此刻在等谁（服务端 `deriveStage()` 的闭集输出）。
+   *
+   * 前端**只读不算**：值不认识就按「不显示」处理（`asThreadStage()`），绝不自己
+   * 再从 approvals / blockedBy / 消息拼一次 —— 那正是同一个问题出现多个答案的来源。
+   */
+  threadStage?: string;
+  /** 「凭什么说做完了」的证据指针（当前事实的投影，不含原始 JSON）。 */
+  evidence?: ThreadEvidenceInfo[];
+}
+
+/** 与 `org-manager/src/thread-stage.ts` 的 `ThreadEvidenceView` 逐字对应。 */
+export interface ThreadEvidenceInfo {
+  factId: string;
+  predicate: string;
+  value: unknown;
+  assertedBy: string;
+  sourceRefs: string[];
+  verification: { result: 'pass' | 'fail'; verifiedBy: string } | null;
+  createdAt: string;
 }
 
 export interface DeliverableItem {
@@ -1841,8 +1861,10 @@ export const api = {
       return request<{ tasks: TaskInfo[]; total: number; page: number; pageSize: number; totalPages: number }>(`/tasks${qs ? `?${qs}` : ''}`)
         .then(r => ({ ...r, tasks: (r.tasks ?? []).map(normalizeTask) }));
     },
-    get: (id: string) => request<{ task: TaskInfo }>(`/tasks/${id}`)
-      .then(r => ({ ...r, task: normalizeTask(r.task) })),
+    get: (id: string) => request<{ task: TaskInfo; threadStage?: string; evidence?: ThreadEvidenceInfo[] }>(`/tasks/${id}`)
+      // C9-C: 阶段与证据是**同一个响应的一部分**（服务端派生一次），挂到任务视图上再交给
+      // 页面，避免每个读取点各自再拼一次「现在需要人做什么」。
+      .then(r => ({ ...r, task: { ...normalizeTask(r.task), threadStage: r.threadStage, evidence: r.evidence ?? [] } })),
     create: (title: string, description: string, assignedAgentId: string, reviewerId: string, priority?: string, projectId?: string, blockedBy?: string[], requirementId?: string, taskType?: string, scheduleConfig?: { every?: string; cron?: string; maxRuns?: number; timezone?: string }, reviewerType?: 'agent' | 'human') =>
       request<{ task: TaskInfo }>('/tasks', { method: 'POST', body: JSON.stringify({ title, description, assignedAgentId, reviewerId, priority, projectId, blockedBy, requirementId, taskType, scheduleConfig, reviewerType }) }),
     update: (id: string, data: { title?: string; description?: string; priority?: string; projectId?: string | null; requirementId?: string | null; blockedBy?: string[]; reviewerId?: string; reviewerType?: 'agent' | 'human' }) =>
