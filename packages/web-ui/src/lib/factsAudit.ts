@@ -18,6 +18,8 @@ export type FactSubjectKind = (typeof FACT_SUBJECT_KINDS)[number];
 export interface FactVerificationView {
   result: 'pass' | 'fail';
   verifiedBy: string;
+  /** 验证者名字；解析不到时回落到 id。 */
+  verifiedByName?: string | null;
   evidenceRefs?: string[];
   verifiedAt?: string;
   workUnitRef?: string;
@@ -27,10 +29,14 @@ export interface FactRowView {
   id: string;
   subjectKind: FactSubjectKind | string;
   subjectId: string;
+  /** 服务端解析出的可读名字（task.title / agent.name / …）；解析不到时回落到 id。 */
+  subjectLabel?: string | null;
   predicate: string;
   value: unknown;
   workUnitRef: string;
   assertedBy: string;
+  /** 断言者名字；解析不到时回落到 id。 */
+  assertedByName?: string | null;
   sourceRefs: string[];
   verification: FactVerificationView | null;
   confidence: number;

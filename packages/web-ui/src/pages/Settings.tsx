@@ -6,6 +6,7 @@ import { ListLoading } from '../components/AsyncState.tsx';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import AuditFactsPage from './AuditFacts.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -55,7 +56,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -63,6 +64,9 @@ interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolea
 export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  // C9-E：事实审计有正式入口，不再是"只有知道 URL 的人能看"。
+  // 位置紧跟「数据与存储」——两者回答同一个问题：平台到底记住了什么。
+  { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
@@ -74,7 +78,7 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
 ];
 
 export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
-  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
+  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage', 'facts'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
@@ -100,6 +104,8 @@ export function settingsTabLoads(tab: SettingsTab): SettingsLoadKey[] {
     case 'execution': return ['agent'];
     case 'browser': return ['browser'];
     case 'storage': return ['storage'];
+    // 事实审计自带数据加载与骨架态（AuditFacts 内部管理），不占 Settings 的懒加载清单。
+    case 'facts': return [];
     default: return [];
   }
 }
@@ -2950,7 +2956,24 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
           <div className={`${CARD} p-5 space-y-5`}>
-            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
+            {storageLoading && !storageInfo && (
+              <div className="space-y-4" data-testid="data-storage-skeleton">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-2">
+                    <div className="h-7 w-28 animate-pulse rounded bg-surface-secondary" />
+                    <div className="h-3 w-56 animate-pulse rounded bg-surface-secondary" />
+                  </div>
+                  <div className="h-8 w-24 animate-pulse rounded bg-surface-secondary" />
+                </div>
+                <div className="h-2 w-full animate-pulse rounded-full bg-surface-secondary" />
+                <div className="space-y-2">
+                  {[0, 1, 2, 3].map(i => (
+                    <div key={i} className="h-4 w-full animate-pulse rounded bg-surface-secondary" />
+                  ))}
+                </div>
+                <div className="text-xs text-fg-tertiary">{t('dataStorage.scanning')}</div>
+              </div>
+            )}
             {storageInfo && (() => {
               const rows = [...storageInfo.breakdown]
                 .filter(b => b.size > 0)
@@ -3062,6 +3085,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         </>}
+
+        {resolvedTab === 'facts' && <AuditFactsPage role={authUser?.role} authUser={authUser} />}
 
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 

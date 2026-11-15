@@ -227,7 +227,7 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
                             : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'
                         }`}
                       >
-                        {row.verification.result} · {row.verification.verifiedBy}
+                        {row.verification.result} · {row.verification.verifiedByName || row.verification.verifiedBy}
                         {row.verification.verifiedAt ? ` · ${shortTime(row.verification.verifiedAt)}` : ''}
                       </span>
                     ) : (
@@ -240,12 +240,17 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
                         {t('factsAudit.superseded')}
                       </span>
                     )}
-                    <span className="ml-auto font-mono text-[11px] text-fg-tertiary">{row.subjectKind}:{row.subjectId}</span>
+                    <span
+                      className="ml-auto max-w-[45%] truncate text-[11px] text-fg-secondary"
+                      title={`${row.subjectKind}:${row.subjectId}`}
+                    >
+                      {row.subjectLabel || `${row.subjectKind}:${row.subjectId}`}
+                    </span>
                   </div>
 
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-tertiary">
                     <span title={row.createdAt}>{shortTime(row.createdAt)}</span>
-                    <span className="font-mono">{row.assertedBy}</span>
+                    <span title={row.assertedBy}>{row.assertedByName || row.assertedBy}</span>
                     {row.workUnitRef && <span className="font-mono opacity-70">{row.workUnitRef}</span>}
                     <span className="tabular-nums">{Math.round((row.confidence ?? 0) * 100)}%</span>
                     {chain.outgoing && <span data-testid="audit-facts-chain-out">{chain.outgoing}</span>}

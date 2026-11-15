@@ -8490,20 +8490,44 @@ EXPLANATION_END`;
         verification?: { result: 'pass' | 'fail'; verified_by: string; evidence_refs?: string[]; verified_at?: string; work_unit_ref?: string };
         confidence: number; createdAt: string; supersededBy?: string; supersededAt?: string;
       }>;
+      // 页面是给人看的：能解析出名字就带名字，id 退到次级位置（title 提示保留 id）。
+      // 同一请求内缓存解析结果 —— 一张表里 200 行不该打出 400 次 findById。
+      const labelCache = new Map<string, string | null>();
+      const labelOf = (kind: string, id: string | null | undefined): string | null => {
+        if (!id) return null;
+        const key = `${kind}:${id}`;
+        if (labelCache.has(key)) return labelCache.get(key)!;
+        let label: string | null = null;
+        try {
+          const s = this.storage;
+          if (kind === 'task') label = (s?.taskRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'agent') label = (s?.agentRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+          else if (kind === 'requirement') label = (s?.requirementRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'deliverable') label = (s?.deliverableRepo?.findById(id) as { title?: string } | undefined)?.title ?? null;
+          else if (kind === 'project') label = (s?.projectRepo?.findById(id) as { name?: string } | undefined)?.name ?? null;
+        } catch {
+          label = null; // 主体已被删除 / repo 不可用：没有名字不是错误，页面回落到 id。
+        }
+        labelCache.set(key, label);
+        return label;
+      };
       this.json(res, 200, {
         facts: auditRows.map(r => ({
           id: r.id,
           subjectKind: r.subjectKind,
           subjectId: r.subjectId,
+          subjectLabel: labelOf(r.subjectKind, r.subjectId),
           predicate: r.predicate,
           value: r.value,
           workUnitRef: r.workUnitRef,
           assertedBy: r.assertedBy,
+          assertedByName: labelOf('agent', r.assertedBy),
           sourceRefs: r.sourceRefs,
           verification: r.verification
             ? {
                 result: r.verification.result,
                 verifiedBy: r.verification.verified_by,
+                verifiedByName: labelOf('agent', r.verification.verified_by),
                 evidenceRefs: r.verification.evidence_refs ?? [],
                 verifiedAt: r.verification.verified_at,
                 workUnitRef: r.verification.work_unit_ref,
