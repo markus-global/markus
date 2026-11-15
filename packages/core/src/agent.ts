@@ -57,6 +57,7 @@ import {
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
 } from '@markus/shared';
+import { WORK_UNIT_REF } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
 // 第九刀 C9-E：dream 的七条建议动作落 facts（关闭 DR7）—— 纯派生 + 唯一写者端口。
@@ -139,6 +140,20 @@ import { SessionBindingStore } from './session-bindings.js';
 interface TaskAsyncContext {
   taskId: string;
   requirementId?: string;
+  /**
+   * 本执行的 WorkUnit 身份（`task_<taskId>_r<round>`）。
+   *
+   * 为什么放在 ALS 而不是实例字段（2026-11-15 P0 死锁的根因）：
+   * 原来 `turnWorkUnitRef()` 只读实例字段 `currentTurnWorkUnitRef`，而它**唯一**的
+   * 写入点是 `onFocusChanged`（邮箱焦点链）。任务执行入口只写 `currentTaskId`，
+   * 从不写它 → 执行回合里 `fact_assert` 一律 `missing_provenance`。
+   * 而 `task_submit_review` / 打回两个终态闸门**恰好要求**先写事实：
+   * 写不进去 → 闸门永远无法满足 → 任何卡都进不了 review，全平台任务流转堵死。
+   *
+   * 实例字段在并发执行下还会互相覆盖（同一 agent 多卡并发）；ALS 一份执行一份，
+   * 且与 `taskId` 同源：会话 id 与 WU 身份必须用**同一个** round。
+   */
+  workUnitRef?: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
@@ -164,7 +179,12 @@ export interface TaskSubmissionState {
   /** 最近一次提交被拒绝的原因（用于在提醒里原样告知模型，而不是让它猜） */
   lastError?: string;
 }
-const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
+/**
+ * 执行回合作用域。@internal — 产品代码不要直接 run 它，只有两个执行入口
+ * （executeTaskConcurrent / executeChatTask）和评审回合在使用；导出仅为让测试
+ * 能验证「身份真的随作用域走」而无需伪造一个 ctx。
+ */
+export const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 
 interface ChatSubagentContext {
   subagentProgress: SubagentProgressCallback;
@@ -701,7 +721,11 @@ export class Agent {
    * 名字里的 turn 是约束：它只回答「这一回合跑在哪条 WU 上」，不是「按 agentId
    * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
-  turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
+  turnWorkUnitRef(): string | null {
+    // ALS 优先：任务执行/评审回合各自持有自己的 WU 身份（并发安全）。
+    // 聊天 / A2A 回合没有 taskAsyncContext，退回邮箱焦点链写入的实例字段。
+    return taskAsyncContext.getStore()?.workUnitRef ?? this.currentTurnWorkUnitRef;
+  }
 
   /**
    * C8-B —— 轮内 delta 注入（唯一入口）。
@@ -1242,7 +1266,7 @@ export class Agent {
         ensureChild: (seed) => this.workUnitPort?.ensureChild(seed) ?? null,
         settle: (ref, opts) => { this.workUnitPort?.settle(ref, opts); },
       },
-      turnWorkUnitRef: () => this.currentTurnWorkUnitRef,
+      turnWorkUnitRef: () => this.turnWorkUnitRef(),
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -3134,7 +3158,17 @@ export class Agent {
             buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
           );
           reply = reviewTaskId
-            ? await taskAsyncContext.run({ taskId: reviewTaskId }, runReviewTurn)
+            // 评审回合的 WU 身份来自派发方写入的 mailbox item（task-service 已带
+            // `WORK_UNIT_REF.task(taskId, reviewRound)`）；缺失时才由 round 现算，
+            // 且拿不到 round 就是「没有身份」——不猜，工具层会明确拒绝而不是写无源事实。
+            ? await taskAsyncContext.run(
+                {
+                  taskId: reviewTaskId,
+                  workUnitRef: item.workUnitRef
+                    ?? (reviewRound !== undefined ? WORK_UNIT_REF.task(reviewTaskId, reviewRound) : undefined),
+                },
+                runReviewTurn,
+              )
             : await runReviewTurn();
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
           // A review is finished only when the CARD changed. A closed turn is not evidence:
@@ -3891,10 +3925,16 @@ export class Agent {
       throw new Error('Task executor not initialized');
     }
 
+    // 聊天任务也是「执行回合」：必须带 WU 身份，否则终态闸门（提交评审先写事实）
+    // 在这条入口上同样会死锁。round 与会话 id 同源（_executeTaskInternal 默认 1）。
+    const chatRound = 1;
     const result = await this.taskExecutor.executeChatTask(
       taskId,
       async () => {
-        return this._executeTaskInternal(taskId, description, onLog, cancelToken);
+        return taskAsyncContext.run(
+          { taskId, workUnitRef: WORK_UNIT_REF.task(taskId, chatRound) },
+          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, undefined, chatRound),
+        );
       },
       {
         priority: TaskPriority.HIGH,
@@ -7182,9 +7222,16 @@ export class Agent {
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId, requirementId, submission: { submitted: false } }, () =>
-        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound, resumeNotice)
-      ),
+      () => {
+        // 单一事实源：本轮 round 只在这里解析一次，会话 id（_executeTaskInternal 内）
+        // 与 WU 身份共用它——两处各算一次就会漂移。
+        // 身份不存在时不能缺省：缺身份 → fact_* 工具直接拒绝 → 终态闸门死锁。
+        const round = executionRound ?? 1;
+        return taskAsyncContext.run(
+          { taskId, requirementId, workUnitRef: WORK_UNIT_REF.task(taskId, round), submission: { submitted: false } },
+          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, round, resumeNotice),
+        );
+      },
       {
         priority,
         onProgress: (progress: number, currentStep?: string) => {
