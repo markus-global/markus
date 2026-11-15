@@ -1,6 +1,13 @@
 # Messaging Gateway
 
 **Status:** implemented.
+
+> **Reading note.** The body of this document was written *before* the gateway shipped, so its
+> section names still say "Target model" and "Data model & migration". Read §4–§6 as **as-built**:
+> the four entities exist, and the migration in §5 has been executed. §11 (known limitations) is the
+> only part that still describes open work. Trimmed to as-built wording on 2026-11-15; the wording
+> below is kept so the decision trail (why these four entities) survives.
+
 **Related:** `packages/comms/docs/platform-manifest.md` (type contract + "how to add a
 platform"), issue #340.
 

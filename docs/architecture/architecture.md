@@ -36,6 +36,8 @@ and cross-referenced elsewhere. Start here, then follow the map below.
 | [tool-system.md](./tool-system.md) | Tool selection, tool result envelope, tool-execution loop, subagent spawn & budgets |
 | [streaming-and-reattach.md](./streaming-and-reattach.md) | SSE streaming, soft-disconnect, active-stream ring + UI snapshot, reattach, structured events, client resilience; LLM provider timeout/retry governance lives in [prompt-engineering.md §1.3](./prompt-engineering.md) |
 | [learning-loop.md](./learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
+| [messaging-gateway.md](./messaging-gateway.md) | Messaging gateway — bot instances, channel refs, bindings, conversation keys; outbound notification fan-out |
+| [configuration-model.md](./configuration-model.md) | Configuration & file locations — single reference for where each value lives |
 | [team-chat.md](./team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [../api/api.md](../api/api.md) | REST / WebSocket API reference |
 | [../guides/guide.md](../guides/guide.md) | Setup, deployment, and usage guide |

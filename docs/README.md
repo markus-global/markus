@@ -53,6 +53,9 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [tool-system.md](./architecture/tool-system.md) | Tool selection, tool result envelope, execution loop, subagent budgets |
 | [streaming-and-reattach.md](./architecture/streaming-and-reattach.md) | SSE streaming, soft-disconnect, reattach, client resilience |
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
+| [task-attention-economy.md](./architecture/task-attention-economy.md) | Task attention economy — comment storms, wakeup accounting, what may wake an agent |
+| [messaging-gateway.md](./architecture/messaging-gateway.md) | Messaging gateway — bot instances, channel refs, bindings, conversation keys; outbound notification fan-out |
+| [configuration-model.md](./architecture/configuration-model.md) | Configuration & file locations — the single reference for "where does this value live?" |
 | [facts.md](./architecture/facts.md) | C9 fact layer — contract (predicates, single writer, rejection matrix, schema, prompt surface) + independent verification (terminal hooks, dream suggestions, read-only audit page) |
 | [derived-views.md](./architecture/derived-views.md) | C9 derived views — thread stage, inbox derivation, and the four observation tables; all derived, never a second decider |
 | [team-chat.md](./architecture/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
@@ -73,6 +76,7 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [coding-tools.md](./guides/coding-tools.md) | External coding CLI integration (Claude Code / Codex / Cursor) |
 | [skill-ecosystem.md](./guides/skill-ecosystem.md) | Import/export skills from skills.sh, SkillHub, OpenClaw, AgentScope, MCP |
 | [remote-access.md](./guides/remote-access.md) | Cloudflare Tunnel, Tailscale, FRP, ngrok |
+| [mailbox-audit-checklist.md](./guides/mailbox-audit-checklist.md) | Doc × code audit procedure for the mailbox subsystem (how to check, not what it does) |
 | [release-and-distribution.md](./guides/release-and-distribution.md) | Build, packaging, publishing pipeline |
 | [community.md](./guides/community.md) | Community channels, rules, and launch plan |
 

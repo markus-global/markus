@@ -340,7 +340,7 @@ Live (operator):
 5. Deliverable update returns `version` bump
 6. `acceptTask(..., notes)` stores `approved_with_notes`
 
-## §6 Clock and heartbeat
+## §12 Clock and heartbeat
 
 Two timers used to exist (`HeartbeatScheduler` owned a `setInterval`, `AgentClock` owned
 another), and a heartbeat tick was modelled as a **message**: a queue row that carried
