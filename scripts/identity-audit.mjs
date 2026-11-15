@@ -190,7 +190,6 @@ INSERT INTO mailbox_items VALUES
   ('mbx_g1','a','human_chat','queued','${SINCE}',NULL,NULL,NULL),
   ('mbx_g2','a','a2a_message','queued','${SINCE}','session:dangling:r1',NULL,NULL),
   ('mbx_g5','a','task_status_update','completed','${SINCE}',NULL,'{"invalidatesPremise":true}','${SINCE}');
-<<<<<<< HEAD
 INSERT INTO work_units VALUES ('wu_g3','task_g3_r1','running','2000-01-01T00:00:00.000Z');
 -- C9-A：六条 facts 门禁各一条违规样本（夹具无触发器/唯一索引，故能塞进去）。
 INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_unit_ref, asserted_by, source_refs_json, verification_json, created_at) VALUES
@@ -209,7 +208,6 @@ UPDATE mailbox_items SET work_unit_ref='session:ok:r1'
  WHERE id IN ('mbx_g1','mbx_g2','mbx_g5');
 INSERT INTO work_units VALUES ('wu_ok','session:ok:r1','idle',NULL);
 UPDATE work_units SET lease_until=NULL WHERE id='wu_g3';
-<<<<<<< HEAD
 -- C9-A：修好 facts 的六条违规 —— 每条只改它自己违规的那个字段。
 UPDATE facts SET work_unit_ref='task:audit:r1' WHERE id='fact_g6';
 UPDATE facts SET source_refs_json='["audit"]' WHERE id='fact_g7';
