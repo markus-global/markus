@@ -112,7 +112,7 @@ shapes) so the caller passes what it already has:
 | channel | fields read | why |
 |---|---|---|
 | `approvals` | `status`, `title`, `requestedAt`, `agentName`, `agentId`, `questions`, `details.{taskId,requirementId}` | pending approvals ARE human needs |
-| `notifications` | `read`, `createdAt`, `priority`, `title`, `metadata`, `actionType/actionTarget` (via port) | unread messages, and the *duplicate* of an FSM/approval row. **A notification never raises a need** — its need is always `read`; the state comes from the row that owns it. Mapping `type = 'task_review'` → need `review` invented three blocking reviews for already-`completed` tasks on the first run over live data (`inbox-dual-run-diff.md` §3.4) |
+| `notifications` | `read`, `createdAt`, `priority`, `title`, `metadata`, `actionType/actionTarget` (via port) | unread messages, and the *duplicate* of an FSM/approval row. **A notification never raises a need** — its need is always `read`; the state comes from the row that owns it. Mapping `type = 'task_review'` → need `review` invented three blocking reviews for already-`completed` tasks on the first run over live data (`records/cut9-inbox-dual-run-diff-2026-11-15.md` §3.4) |
 | `tasks` | `status`, `reviewerType`, `blockedReason`, `priority`, `statusChangedAt`, `updatedAt`, `createdAt` | review / hold / failed |
 | `requirements` | `status`, `priority`, `createdAt` | requirement approval |
 | `stages` | `subjectKind`, `subjectId`, `stage` | facts-derived stage (C9-C): `failed` → `resolve_failure`, `waiting_human` → `answer`. They corroborate a row rather than invent one, so a stage can never create a row without a destination. |
@@ -139,5 +139,5 @@ would silently make every notification undeliverable (and every row disappear), 
 | no `action` ⇒ dropped, and the drop is recorded | same file; delete the `if (!action) continue` line and the case turns red (verified while developing) |
 | zero IO / zero clock / zero randomness | same file: no repo is mocked anywhere, and one case throws from `Date.now`/`Math.random` |
 | the adapter no longer decides membership | `scripts/architecture-guard.mjs` → `inbox-single-derivation` (fixtures included) |
-| the rendered list matches the old queue on real data | `scripts/inbox-dual-run.mjs` → `docs/architecture/inbox-dual-run-diff.md` (read-only on `~/.markus/data.db`) |
+| the rendered list matches the old queue on real data | `scripts/inbox-dual-run.mjs` → `docs/records/cut9-inbox-dual-run-diff-2026-11-15.md` (read-only on `~/.markus/data.db`) |
 | the badge never double-counts | `actionableCount()` keeps excluding `read`; unread stays merged in `lib/attentionCount` |

@@ -91,6 +91,22 @@ All mailbox item types, their metadata, and their processing behaviour **should*
 drifted (e.g. the sets were cited as lines 1493-1500 but live at 1595-1597), and a
 stale line number is worse than none because it looks authoritative.
 
+### 3.2 Identity on every enqueue
+
+Every `AgentMailbox.enqueue` must declare **where the item came from**. Otherwise the
+identity column is silently NULL and the item cannot be attributed to a turn — which is
+what produced the 2026-11-15 incident where terminal gates required a fact that the
+executing turn could not attribute.
+
+| Field | Meaning |
+|---|---|
+| `workUnitRef` | The turn that produced the item: `session:<id>:r<N>` for a chat turn, `task_<taskId>_r<N>` for a task execution, `a2a:<entity>` for agent-to-agent. This is the normal case. |
+| `refOrigin` | Only when there genuinely is no turn: `"pending-link"` (enqueued while wiring a link that will be attached on dispatch) or `"platform-internal"` (the platform itself, not an agent turn). |
+
+Enforcement is in `AgentMailbox.enqueue` (`packages/core/src/mailbox.ts`): an item carrying
+neither field logs an ERROR and is **rejected**, rather than being stored with a NULL
+identity. Adding a new caller means declaring one of the two — not adding a carve-out.
+
 <!-- verified-against-code: 2026-10-25, packages/core/src/attention.ts (USER_INTERACTION_TYPES, PEER_INTERACTION_TYPES, heuristicDecision) -->
 
 **Definition of record**: `packages/shared/src/types/mailbox.ts` — `MAILBOX_TYPE_REGISTRY`,

@@ -1,5 +1,9 @@
 # Inbox dual run — legacy `buildAttentionQueue` vs `deriveInbox` (C9-D)
 
+> **Historical record.** Moved here from `docs/architecture/` on 2026-11-15: this is a dated
+> measurement, not a description of current behaviour. The living contract is
+> [`inbox-derivation.md`](../architecture/inbox-derivation.md).
+
 Measured **2026-11-15 02:34 (Asia/Shanghai)** on the live database
 `~/.markus/data.db`, read-only, same input on both sides. This is the "灰度双跑" evidence
 required by the card: the two lists are produced by the **shipped legacy code** and by the

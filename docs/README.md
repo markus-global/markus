@@ -50,6 +50,11 @@ The canonical description of how Markus works. Read `architecture.md` first; it 
 | [streaming-and-reattach.md](./architecture/streaming-and-reattach.md) | SSE streaming, soft-disconnect, reattach, client resilience |
 | [llm-provider-timeouts.md](./architecture/llm-provider-timeouts.md) | Per-provider timeout/retry governance matrix, known risk inventory |
 | [learning-loop.md](./architecture/learning-loop.md) | Agent self-improvement, distillation, memory consolidation |
+| [facts-layer.md](./architecture/facts-layer.md) | Fact layer contract — predicates, single writer, rejection matrix, schema, prompt surface |
+| [facts-verification.md](./architecture/facts-verification.md) | Independent verifier, terminal hooks, dream suggestion actions, read-only facts audit page |
+| [thread-stage.md](./architecture/thread-stage.md) | Thread stage derivation — precedence rules over facts, FSM and approvals |
+| [inbox-derivation.md](./architecture/inbox-derivation.md) | Inbox derivation — needs from facts, FSM and approvals; one derivation, no parallel queue |
+| [observability-tables.md](./architecture/observability-tables.md) | Observability tables and their nullable work-unit provenance |
 | [frontend/team-chat.md](./architecture/frontend/team-chat.md) | Team Chat page (web-ui): state model and interaction reliability contracts |
 | [messaging-gateway.md](./architecture/messaging-gateway.md) | Comms layer: platform manifests, bot instances, inbound routing, outbound & notifications, capability model |
 
