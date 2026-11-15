@@ -771,6 +771,14 @@ export interface AttentionDecision {
   context: DecisionContext;
   reasoning: string;
   outcome?: string;
+  /**
+   * ①-2：这条决定属于哪个工作单元。与 MailboxItem.workUnitRef 同一轴。
+   *
+   * 没有它，「谁在哪个回合撤销了什么」只能靠 mailbox_item_id 反推，
+   * 而 mailbox 行会被 TTL 清理/合并 → 反查链路会断。
+   * NULL = 加列（2026-11-15）之前的旧纪元。
+   */
+  workUnitRef?: string | null;
   createdAt: string;
 }
 

@@ -2121,6 +2121,10 @@ export class AttentionController {
           .map(i => i.sourceType),
       },
       reasoning,
+      // ①-2：把邮箱行的身份带进决策台账。
+      // 不带的话，「谁在哪个回合撤销了什么」只能靠 mailbox_item_id 反推 ——
+      // 而邮箱行会被 TTL 清理/实体合并，反查链会断在中间。
+      workUnitRef: item.workUnitRef ?? null,
       createdAt: new Date().toISOString(),
       // C8-B：副作用已在回合内发生时，outcome 必须在**落库之前**就带上——
       // 先 save 再补字段等于写两次（第二次没人读，读到的永远是 null）。

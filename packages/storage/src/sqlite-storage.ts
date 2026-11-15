@@ -492,6 +492,10 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   context TEXT NOT NULL DEFAULT '{}',
   reasoning TEXT NOT NULL DEFAULT '',
   outcome TEXT,
+  -- 这条决定发生在哪个工作单元里。与 mailbox_items.work_unit_ref 同一轴：
+  -- 有了它才能反查「谁在哪个回合撤销了什么」。
+  -- 可空且不回填：加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」。
+  work_unit_ref TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
@@ -926,6 +930,9 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // A5: 自主档位。ADD COLUMN 带 DEFAULT，SQLite 会让历史行读出来就是 'act'，
     // 与加列之前的行为一致，因此不需要回填、也不需要迁移数据。
     { table: 'agents', column: 'autonomy', sql: "ALTER TABLE agents ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'act'" },
+    // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
+    // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
+    { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'deliverables', column: 'hub_share_id', sql: 'ALTER TABLE deliverables ADD COLUMN hub_share_id TEXT' },
     { table: 'deliverables', column: 'share_status', sql: 'ALTER TABLE deliverables ADD COLUMN share_status TEXT' },
@@ -5003,6 +5010,8 @@ export interface DecisionRow {
   context: Record<string, unknown>;
   reasoning: string;
   outcome: string | null;
+  /** ①-2：这条决定属于哪个工作单元。NULL = 加列之前的旧纪元。 */
+  workUnitRef: string | null;
   createdAt: string;
 }
 
@@ -5017,16 +5026,17 @@ export class SqliteDecisionRepo {
     context: Record<string, unknown>;
     reasoning: string;
     outcome?: string;
+    workUnitRef?: string | null;
     createdAt: string;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, work_unit_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         decision.id, decision.agentId, decision.decisionType,
         decision.mailboxItemId, toJson(decision.context), decision.reasoning,
-        decision.outcome ?? null, decision.createdAt,
+        decision.outcome ?? null, decision.workUnitRef ?? null, decision.createdAt,
       );
   }
 
@@ -5066,6 +5076,7 @@ export class SqliteDecisionRepo {
       context: fromJson<Record<string, unknown>>(r['context'] as string) ?? {},
       reasoning: r['reasoning'] as string,
       outcome: r['outcome'] as string | null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
     };
   }

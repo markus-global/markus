@@ -35,6 +35,16 @@ const SINCE = process.env.MARKUS_AUDIT_SINCE
   ?? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
 
 /**
+ * `agent_decisions.work_unit_ref` 的**纪元起点**（该列于 2026-11-15 加并接上写者）。
+ *
+ * 为何不跟 `SINCE` 滚动：加列之前的 22.7 万行按定义没有身份 —— 那是旧纪元，
+ * 不是违规。用滚动窗口会让判据 11 为一批永远不会被修的历史账亮一阵，
+ * 然后所有人学会忽略它（“永远亮着且不可行动”的告警比没有更糟）。
+ * 固定纪元起点说的是实话：这件事从这一天起才算数。
+ */
+const DECISIONS_IDENTITY_EPOCH = '2026-11-15T00:00:00.000Z';
+
+/**
  * 谓词闭集的白名单 —— 从**代码**派生，不在这里再抄一份。
  *
  * 两份白名单 = 同一个事实两个写者：代码里新增谓词、这里忘了改，门禁就会把
@@ -138,8 +148,9 @@ const GATES = [
   },
   {
     id: 11,
-    name: '新纪元观测行无身份（agent_decisions 缺 work_unit_ref）',    sql: `SELECT COUNT(*) AS c FROM agent_decisions
-           WHERE created_at >= '${SINCE}' AND work_unit_ref IS NULL`,
+    name: '新纪元决策行无身份（agent_decisions 有列却没写 work_unit_ref）',
+    sql: `SELECT COUNT(*) AS c FROM agent_decisions
+           WHERE created_at >= '${DECISIONS_IDENTITY_EPOCH}' AND work_unit_ref IS NULL`,
     // 依赖 C9-B 加的列：列未迁移时跳过（而不是永远红）。
     requiresColumn: { table: 'agent_decisions', column: 'work_unit_ref' },
   },
@@ -201,7 +212,7 @@ INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_uni
   -- C9-E：G12（无证据的验证）/ G13（无作者的验证）
   ('fact_g12','task','t5','task.completion_evidence','{}','task:t5:r1','a1','["d1"]','{"result":"pass","verified_by":"a2","evidence_refs":[]}','${SINCE}'),
   ('fact_g13','task','t6','task.completion_evidence','{}','task:t6:r1','a1','["d1"]','{"result":"pass","verified_by":"","evidence_refs":["c1"]}','${SINCE}');
-INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${SINCE}');`;
+INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${DECISIONS_IDENTITY_EPOCH}');`;
 
 const FIX_VIOLATIONS = `
 UPDATE mailbox_items SET work_unit_ref='session:ok:r1'
