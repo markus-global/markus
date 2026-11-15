@@ -44,6 +44,9 @@ const ALLOWLIST_FILE = join(ROOT, 'scripts', 'architecture-allowlist.json');
 const SCAN_ROOTS = ['packages'];
 const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.git', 'coverage', 'out']);
 
+/** C9-A：`facts` 的唯一 SQL 写者（声明放在规则表之前，规则表在模块初始化时就要读它）。 */
+const FACTS_SINGLE_WRITER = 'packages/org-manager/src/fact-service.ts';
+
 const updateAllowlist = process.argv.includes('--update-allowlist');
 const listOnly = process.argv.includes('--list');
 
@@ -78,6 +81,25 @@ const listOnly = process.argv.includes('--list');
  * 永远不会红的门禁比没有门禁更危险）。
  */
 const INVARIANT_RULES = [
+  // 第九刀 C9-A：facts 的唯一写者必须存在，且真的写 facts。
+  // 与路径级规则互补：那条拦住「第二个写者」，这条拦住「唯一的写者被
+  // 重构成了不可写的空实现」—— 两个方向都松不得。
+  {
+    id: 'facts-single-writer',
+    title: 'facts 的唯一 SQL 写者存在，且真的包含写语句',
+    checks: [
+      {
+        file: FACTS_SINGLE_WRITER,
+        label: 'FactService 实现里同时存在 INSERT INTO facts 与 UPDATE facts',
+        hint: '唯一写者丢失了写语句 → facts 永远写不进去（或改由别处写，违背单写者不变量）',
+        detect: t => /INSERT\s+INTO\s+facts\b/i.test(t) && /UPDATE\s+facts\b/i.test(t),
+        fixtures: {
+          ok: "this.db.prepare('INSERT INTO facts (id) VALUES (?)').run(id); this.db.prepare('UPDATE facts SET superseded_by = ? WHERE id = ?').run(a, b);",
+          bad: "this.db.prepare('SELECT * FROM facts').all();",
+        },
+      },
+    ],
+  },
   {
     id: 'mailbox-claim-uniqueness',
     title: 'item 认领唯一性（原子条件更新 + 幂等唯一键 + core 委托认领）',
@@ -380,6 +402,8 @@ const RULE_SCOPE = {
   'event-reachability': (relPath) => /^packages\/(core|org-manager|cli|a2a|comms)\/src\//.test(relPath),
   // 写门禁：只针对 shell 工具的接线点。
   'write-gate': (relPath) => relPath === 'packages/core/src/tools/shell.ts',
+  // facts 单写者：所有服务端 src 都可能成为「第二个写者」，所以全量扫。
+  'facts-single-writer': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -503,6 +527,36 @@ function checkEventReachability(file, text) {
 }
 
 /**
+ * 规则 6：facts-single-writer —— C9-A
+ *
+ * `facts` 的唯一写者是 `packages/org-manager/src/fact-service.ts`。任何其他
+ * 服务端 src 文件里出现 `INSERT INTO facts` / `UPDATE facts`，就是一个「第二个写者」：
+ * 两个写者 = 同一条结论两个当前值，而 supersede 历史会被静默绕过。
+ *
+ * 这不是代码风格，是不变量，所以它进 CI 而不是进 review 注释。
+ */
+function checkFactsSingleWriter(file, text) {
+  const relPath = rel(file);
+  if (!/^packages\/[^/]+\/src\//.test(relPath)) return [];
+  if (relPath === FACTS_SINGLE_WRITER) return [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; i += 1) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    // 注释里说“这点东西不许写”是**合法**的（而且应该鼓励）——只扫真语句。
+    if (trimmed.startsWith('*') || trimmed.startsWith('//') || trimmed.startsWith('/*')) continue;
+    const m = /\b(INSERT\s+INTO\s+facts|UPDATE\s+facts)\b/i.exec(raw);
+    if (!m) continue;
+    return [{
+      rule: 'facts-single-writer',
+      line: i + 1,
+      snippet: `${m[1].toUpperCase()} 出现在非唯一写者文件 —— facts 只能由 ${FACTS_SINGLE_WRITER} 写（用 supersede，不得直写）`,
+    }];
+  }
+  return [];
+}
+
+/**
  * 规则 5：write-gate —— shell 工具必须接入单一写门禁（P0-2 / G1）。
  * 若有人删掉 `assertShellWriteAllowed(` 调用，shell 重定向即可再次绕过写门禁。
  */
@@ -565,6 +619,7 @@ for (const file of collectSources()) {
     ...checkSessionIdentity(file, text),
     ...checkEventReachability(file, text),
     ...checkShellWriteGate(file, text),
+    ...checkFactsSingleWriter(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });

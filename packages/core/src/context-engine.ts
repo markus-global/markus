@@ -54,6 +54,7 @@ import { normalizeHistoryContent } from './llm/message-content.js';
 import { omittedNotice, isPlausibleReported, truncateWithNotice } from './context-budgets.js';
 import type { EnvironmentProfile } from './environment-profile.js';
 import { scenarioToPack, packToPromptProfile, type PromptProfile } from './capability-packs.js';
+import { renderFactsContext, type FactsPromptContext } from './facts/facts-block.js';
 import {
   compactionGuidance,
   compactionActionLine,
@@ -426,6 +427,20 @@ export class ContextEngine {
     } catch {
       // Cache only — the in-memory reading stays valid for this process.
     }
+  }
+
+  /**
+   * C9-A: the current subject's active facts, rendered into the volatile tail.
+   *
+   * Injected rather than derived here: the subject (which task this turn is
+   * about) is knowledge the agent owns, and the port keeps `ContextEngine` free
+   * of any database dependency. `null` ⇒ no block at all (no subject, or
+   * `FACTS_ENABLED=0`).
+   */
+  private factsProvider?: () => FactsPromptContext | null;
+
+  setFactsProvider(provider: (() => FactsPromptContext | null) | undefined): void {
+    this.factsProvider = provider;
   }
 
   setSemanticSearch(ss: SemanticMemorySearch): void {
@@ -1527,6 +1542,16 @@ export class ContextEngine {
     const segments: SystemPromptSegment[] = [];
     if (stableText) segments.push({ content: stableText, cacheBreakpoint: true });
     if (semiStableText) segments.push({ content: semiStableText, cacheBreakpoint: true });
+
+    // ─── FACTS → volatile tail, LAST (C9-A) ─────────────────────────────────
+    // `[FACTS:<subject>]` is per-subject live state: it changes when a fact is
+    // asserted, which must never invalidate the cached system prefix. It also
+    // sits last so the priority truncation of the block never pushes the
+    // behavioural sections (scenario / team docs) out of the tail.
+    if (this.factsProvider) {
+      const factsCtx = this.factsProvider();
+      if (factsCtx) volatile.push(`\n${renderFactsContext(factsCtx)}`);
+    }
 
     const volatileText = volatile.join('\n').trim();
 

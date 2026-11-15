@@ -23,6 +23,7 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
+  isFactsEnabled,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
@@ -68,6 +69,9 @@ import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
+import { createFactTools } from './tools/fact-tools.js';
+import { toFactView, type FactsPromptContext } from './facts/facts-block.js';
+import type { FactService } from './facts/fact-service.js';
 // C8-D: action-tool reachability — the whitelist is asserted against the live
 // face at assembly (below), so an "always reachable" tool can never be missing
 // without a loud failure.
@@ -1835,6 +1839,36 @@ export class AgentManager {
           : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
+
+    // 第九刀 C9-A：facts 三工具。
+    //
+    // 未接线（没注入 FactService）时**不注册**：与 work_status 的「恒在但诚实地回
+    // unavailable」不同，facts 是能力而不是自省 —— 一个不存在的事实层不应向模型
+    // 暴露一个永远拒绝的工具（那是把部署限制伪装成模型错）。
+    if (this.factService && isFactsEnabled()) {
+      const facts = this.factService;
+      for (const tool of createFactTools({
+        agentId: id,
+        facts,
+        // C8 身份链：本回合的 ref 从内存读，**不重新解析、不查库**。
+        turnWorkUnitRef: () => agent.turnWorkUnitRef(),
+      })) {
+        agent.registerTool(tool);
+      }
+      // `[FACTS:<subject>]` —— 只注入**当前 subject**（本回合正在做的那个 task）。
+      // 没有 task 的回合（chat / 心跳）不注入任何 facts：没有终态就不该有事实。
+      agent.getContextEngine().setFactsProvider(() => {
+        const taskId = agent.getCurrentTaskId();
+        if (!taskId) return null;
+        const active = facts.queryActive({ subjectKind: 'task', subjectId: taskId, activeOnly: true, limit: 20 });
+        const ctx: FactsPromptContext = {
+          subjectKind: 'task',
+          subjectId: taskId,
+          facts: active.map(toFactView),
+        };
+        return ctx;
+      });
+    }
 
     // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
     this.registerAddressTools(agent, id);
@@ -3699,10 +3733,29 @@ export class AgentManager {
    * 未注入 ⇒ 工具不注册（空能力不注册，而不是注册一个永远报错的空壳）。
    */
   private workUnitStatusProvider?: (agentId: string, opts: { limit?: number }) => unknown;
+
+  /**
+   * 第九刀 C9-A：facts 层的唯一写者（由 org-manager 注入 `SqliteFactService`）。
+   *
+   * core 只认 port —— 不认识 DatabaseSync，也不认识 SQL。不注入时三工具不注册、
+   * `[FACTS:…]` 不渲染，行为与今天完全一致（关闭通道 = 不接这个依赖）。
+   */
+  private factService?: FactService | null;
   setWorkUnitStatusProvider(
     fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
   ): void {
     this.workUnitStatusProvider = fn;
+  }
+
+  /**
+   * 第九刀 C9-A：接入 facts 的唯一写者（org-manager 装配时注入）。
+   *
+   * 传 `null` 与不调用等价：三工具不注册、`[FACTS:…]` 不渲染。
+   * 那正是 `FACTS_ENABLED=0` 的回滚通道 —— 关闭不是靠工具里多一个 if，
+   * 而是这个依赖根本不接。
+   */
+  setFactService(service: FactService | null): void {
+    this.factService = service;
   }
 
   /**

@@ -368,6 +368,32 @@ export {
   type ShareStatus,
 } from './deliverable-share.js';
 export { matchAgentsForSkillFanout, applyFanoutDailyCap } from './skill-fanout.js';
+// 第九刀 C9-A：facts 层的 port（唯一 SQL 写者在 org-manager/src/fact-service.ts）
+// 与 `[FACTS:<subject>]` 注入构造器（纯函数）。
+export {
+  stableJson,
+  type FactAssertInput,
+  type FactAsserted,
+  type FactRejected,
+  type FactRejectionCode,
+  type FactRecord,
+  type FactQuery,
+  type FactService,
+  type FactSupersedeInput,
+  type FactVerification,
+  type FactWriteResult,
+} from './facts/fact-service.js';
+export {
+  renderFactsBlock,
+  renderFactsContext,
+  factsSubjectLabel,
+  toFactView,
+  FACTS_BLOCK_MAX_FACTS,
+  FACTS_BLOCK_MAX_CHARS,
+  type FactView,
+  type FactsBlockOptions,
+  type FactsPromptContext,
+} from './facts/facts-block.js';
 export { extractTextFromFile, convertFilesToText, resetMarkitdownCache, type ConvertedFile } from './file-converter.js';
 export { requestHistoryStart, requestHistoryWindow } from './history-window.js';
 export {

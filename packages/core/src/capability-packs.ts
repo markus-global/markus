@@ -92,6 +92,13 @@ export const TOOL_DEF_PROTECTED = new Set([
   // task-execution state machine instead of the DM/comment loop. See
   // WORK_ENTITY_LIFECYCLE_TOOLS.
   ...WORK_ENTITY_LIFECYCLE_TOOLS,
+  // 第九刀 C9-A：facts 的三个入口。`task_submit_review` 会**要求**先断言
+  // `task.completion_evidence`（C9-E 的强制钩子），所以「被运行时要求调用的工具」
+  // 与上面同一类：被预算淘汰 = 模型被要求调一个它没有的工具 → 回合空转重试。
+  // `fact_query` 同轮保护：断言前要先看是否已有 active 事实，否则必然撞 must_supersede。
+  'fact_assert',
+  'fact_supersede',
+  'fact_query',
 ]);
 
 /**
