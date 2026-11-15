@@ -255,7 +255,17 @@ describe('消费侧身份：活动日志与轮内 delta 读的是本执行纪元
     await agent.start();
 
     const logged: Array<{ workUnitRef?: string | null }> = [];
-    agent.setActivityCallbacks({ onLog: (data) => logged.push({ workUnitRef: data.workUnitRef }) });
+    // `startActivity` 写入 activity **对象字段**的那一路，用 `onStart` 收。
+    // 旧写法读 `agent.getCurrentActivity()?.workUnitRef ?? `task_…_r2``：执行结束后
+    // currentActivity 已被 `endActivity` 清空，`??` 兜底让 null / undefined 也照样通过
+    // —— 那条断言永远不会红，等于没测（复审打回 ②）。这里不设任何兜底。
+    const startedTaskActivities: Array<{ workUnitRef?: string | null }> = [];
+    agent.setActivityCallbacks({
+      onStart: (activity) => {
+        if (activity.type === 'task') startedTaskActivities.push({ workUnitRef: activity.workUnitRef });
+      },
+      onLog: (data) => logged.push({ workUnitRef: data.workUnitRef }),
+    });
 
     await agent.executeTask(TASK_ID, 'probe activity identity', () => {}, undefined, undefined, 2);
 
@@ -263,8 +273,11 @@ describe('消费侧身份：活动日志与轮内 delta 读的是本执行纪元
     for (const entry of logged) {
       expect(entry.workUnitRef).toBe(`task_${TASK_ID}_r2`);
     }
-    // startActivity 写入 activity 字段的那一路
-    expect(agent.getCurrentActivity()?.workUnitRef ?? `task_${TASK_ID}_r2`).toBe(`task_${TASK_ID}_r2`);
+    // `startActivity` 那一路：必须真实收到过任务活动，且每一条都带本纪元的 ref。
+    expect(startedTaskActivities.length).toBeGreaterThan(0);
+    for (const a of startedTaskActivities) {
+      expect(a.workUnitRef).toBe(`task_${TASK_ID}_r2`);
+    }
     await agent.stop();
   });
 
