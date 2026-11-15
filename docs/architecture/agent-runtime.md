@@ -65,12 +65,10 @@ Test IDs: `B-approve-install`, `B-reject-feedback`, `B-stats-reject-feedback`.
 
 ### §2.1 Pack definitions
 
-| Pack | Scenarios | ToolDef budget (tokens) | Prompt profile |
-|------|-----------|-------------------------|----------------|
-| `reflex` | `memory_consolidation` (Dream), `memory_flush`, `distillation` | 3_000 | `reflex` |
-| `converse` | `heartbeat`, `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action`, `workflow_action` | 8_000 | `converse` |
-| `execute` | `task_execution` | 10_000 | `execute` |
-| `govern` | `review`, `deliberation` | 8_000 | `govern` |
+The pack table is defined once, in [`tool-system.md §1.0`](./tool-system.md). It is not repeated
+here: on 2026-11-15 the two copies had already drifted (this file and `tool-system.md` disagreed
+about whether `heartbeat` belongs to `reflex` or `converse`). Budgets and the scenario list live
+in that one table; this section only states the runtime obligation.
 
 MUST: `selectTools` / allowlists MUST resolve through the pack for the active scenario.
 

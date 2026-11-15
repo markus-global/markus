@@ -24,14 +24,22 @@ would inflate the system/tool prefix (token tax) and dilute the model's attentio
 
 ### 1.0 Spec: Scenario Capability Packs
 
+This table is the **single authoritative pack definition**. `agent-runtime.md` §2.1 points here
+instead of carrying its own copy; on 2026-11-15 the two copies had already drifted (one put
+`heartbeat` in `reflex`, the other in `converse`, and one omitted `workflow_action`). The code
+(`packages/core/src/capability-packs.ts`) is the final authority and agrees with this table.
+
 MUST: Each scenario maps to exactly one pack: `reflex` | `converse` | `execute` | `govern`.
 
 | Pack | Scenarios | `toolDefTokens` budget |
 |------|-----------|------------------------|
-| `reflex` | heartbeat, memory_consolidation, memory_flush, dream | 3_000 |
-| `converse` | chat, a2a, group_chat, comment_response, requirement_action | 8_000 |
-| `execute` | task_execution | 10_000 |
-| `govern` | review, deliberation | 8_000 |
+| `reflex` | `memory_consolidation` (dream), `memory_flush`, `distillation` | 3_000 |
+| `converse` | `heartbeat`, `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action`, `workflow_action` | 8_000 |
+| `execute` | `task_execution` | 10_000 |
+| `govern` | `review`, `deliberation` | 8_000 |
+
+`heartbeat` is `converse`, not `reflex`: a heartbeat turn is a full conversational turn with the
+same capability as a chat turn, and it no longer runs on a slim reflex toolset.
 
 MUST: `reflex` default allowlist MUST be the slim core in AGENT-RUNTIME §2.2
 (MUST NOT include `package_install`, `goal_*`, `spawn_subagent(s)`, `deliverable_create`, …).
