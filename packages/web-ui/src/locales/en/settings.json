@@ -19,6 +19,7 @@
     "search": "Web Search",
     "codingTools": "Coding Tools",
     "storage": "Data & Storage",
+    "facts": "Facts Audit",
     "users": "User Management",
     "remote": "Remote Access",
     "network": "Network & Access",
@@ -31,7 +32,8 @@
       "aiConfig": "AI Configuration",
       "tools": "Tools & Capabilities",
       "connections": "Connections",
-      "account": "Account"
+      "account": "Account",
+      "data": "Data & Audit"
     }
   },
   "appearance": {

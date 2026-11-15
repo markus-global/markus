@@ -8,6 +8,7 @@ import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { buildActivityTimeline } from '../lib/activityTimeline.ts';
 import { matchReviewActivities, isWithinReviewWindow } from '../lib/reviewActivities.ts';
+import { taskIsLive, type WorkUnitLivenessRow } from '../lib/workUnitLiveness.ts';
 import { SendToChatButton, SendToChatModal as SharedSendToChatModal, resolveDefaultChatTarget, shortForChip } from '../components/SendToChat.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { TaskScheduleFields } from '../components/TaskScheduleFields.tsx';
@@ -27,6 +28,8 @@ import { Avatar } from '../components/Avatar.tsx';
 import { TaskDAG } from '../components/TaskDAG.tsx';
 import { NewProjectModal } from '../components/NewProjectModal.tsx';
 import { CommentInput, type PendingImage } from '../components/CommentInput.tsx';
+import { ThreadStageBadge, EvidenceFold } from '../components/ThreadStage.tsx';
+import { commentsBeforeFirstRound as beforeFirstRound, commentsForRound } from '../lib/roundAttribution.ts';
 import { ProjectSidebar } from '../components/ProjectSidebar.tsx';
 import { ProjectKnowledgePanel } from '../components/ProjectKnowledgePanel.tsx';
 import { navBus } from '../navBus.ts';
@@ -1120,7 +1123,7 @@ function TaskActivitySection({ task, agents, users, authUser }: {
   }, []);
 
   return (
-    <div className="mt-5">
+    <div className="mt-5" id="task-activity">
       <p className="text-xs font-semibold text-fg-tertiary uppercase tracking-wider mb-3">{t('work:task.activityCommentsHeading')}</p>
       <div className="space-y-0.5 mb-3">
         {items.length === 0 && (
@@ -1266,6 +1269,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
   const [agentActivities, setAgentActivities] = useState<Map<string, ExecutionStreamEntryUI[]>>(new Map());
   const [imageAttachments, setImageAttachments] = useState<Array<{ type: string; url: string; name: string }>>([]);
   const [relatedActivities, setRelatedActivities] = useState<ActivityRecord[]>([]);
+  // C9-B：「在跑」只由 work_units 回答（不读 activity 的 endedAt）。
+  const [runningUnits, setRunningUnits] = useState<WorkUnitLivenessRow[]>([]);
   const [loadingActivities, setLoadingActivities] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const topRef = useRef<HTMLDivElement>(null);
@@ -1392,7 +1397,14 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
       .then(d => setRelatedActivities(d.activities))
       .catch(() => setRelatedActivities([]))
       .finally(() => setLoadingActivities(false));
+    // 同一回合的另一面：这一轮到底还在不在跑 —— 只问 work_units。
+    api.agents.workUnits(agentId, 'running')
+      .then(r => setRunningUnits(r.units))
+      .catch(() => setRunningUnits([]));
   }, [taskId, task.assignedAgentId]);
+
+  /** 这张卡自己那一轮是否在跑（别的任务/聊天在跑不算）。 */
+  const taskLive = taskIsLive(runningUnits, taskId);
 
   // Load a specific round's logs on demand
   const loadRound = useCallback((round: number) => {
@@ -1631,10 +1643,17 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
               <div className="text-xs text-fg-secondary mb-3 flex items-center gap-1.5">
                 <span className="inline-block w-1.5 h-1.5 rounded-full bg-blue-500" />
                 {t('work:task.relatedSessions', { agent: agent?.name ?? t('work:task.agent'), count: relatedActivities.length })}
+                {taskLive && (
+                  <span className="ml-1 flex items-center gap-1 text-[10px] text-green-500 font-medium">
+                    <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+                    {t('work:task.sessionLive')}
+                  </span>
+                )}
               </div>
               <div className="space-y-1.5">
                 {relatedActivities.map(act => {
-                  const isLive = !act.endedAt;
+                  // C9-B：这一行是**历史**。它是否“未结束”不是状态，绝不能拿来判在跑；
+                  // 在跑与否只看上面从 work_units 得来的 taskLive（页面级）。
                   const typeIcon = act.type === 'task' ? '🔧' : act.type === 'chat' ? '💬' : act.type === 'respond_in_session' ? '💬' : act.type === 'heartbeat' ? '💓' : '📋';
                   return (
                     <button
@@ -1650,16 +1669,10 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                           {act.endedAt ? ` — ${act.totalTools} tools, ${act.totalTokens.toLocaleString()} tokens` : ''}
                         </div>
                       </div>
-                      {isLive && (
-                        <span className="shrink-0 flex items-center gap-1 text-[10px] text-green-500 font-medium">
-                          <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
-                          {t('work:task.sessionLive')}
-                        </span>
-                      )}
-                      {!isLive && (
-                        <span className={`shrink-0 text-[10px] ${act.success ? 'text-fg-tertiary' : 'text-red-400'}`}>
-                          {act.success ? '✓' : '✗'}
-                        </span>
+                      {act.success ? (
+                        <span className="shrink-0 text-[10px] text-fg-tertiary">✓</span>
+                      ) : (
+                        <span className="shrink-0 text-[10px] text-red-400">✗</span>
                       )}
                       <span className="shrink-0 text-fg-tertiary text-[10px] opacity-0 group-hover:opacity-100 transition-opacity">→</span>
                     </button>
@@ -1696,18 +1709,11 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
     );
   }
 
-  // Assign comments to rounds based on timestamps
-  const getCommentsForRound = (rs: RoundSummary, nextRs?: RoundSummary) => {
-    const roundStart = rs.firstAt ? new Date(rs.firstAt).getTime() : 0;
-    const roundEnd = nextRs?.firstAt ? new Date(nextRs.firstAt).getTime() : Infinity;
-    return comments.filter(c => {
-      const ct = new Date(c.createdAt).getTime();
-      return ct >= roundStart && ct < roundEnd;
-    });
-  };
-  const commentsBeforeFirstRound = roundsSummary.length > 0
-    ? comments.filter(c => new Date(c.createdAt).getTime() < new Date(roundsSummary[0]!.firstAt).getTime())
-    : [];
+  // Assign comments to rounds based on timestamps —— 归属规则见 lib/roundAttribution.ts。
+  // 边界取「上一轮结束时刻」而非「下一轮首条日志」：上一轮已 settled 到下一轮产出首条
+  // 日志之间的**间隙**里的评论，应归下一轮（人不会对着一轮已结束的执行说话）。
+  const getCommentsForRound = (rs: RoundSummary) => commentsForRound(comments, roundsSummary, rs.round);
+  const commentsBeforeFirstRound = beforeFirstRound(comments, roundsSummary);
 
   // Multiple rounds — show round headers with lazy loading + comments
   return (
@@ -1772,7 +1778,7 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
           const isLatest = rs.round === roundsSummary[roundsSummary.length - 1]!.round;
           const logs = roundLogs.get(rs.round);
           const isLoading = loadingRounds.has(rs.round);
-          const roundComments = getCommentsForRound(rs, roundsSummary[rsIdx + 1]);
+          const roundComments = getCommentsForRound(rs);
           const statusIcon = rs.status === 'completed' || rs.status === 'execution_finished' ? '✅'
             : rs.status === 'failed' ? '❌'
             : rs.status === 'cancelled' ? '⏹'
@@ -2363,6 +2369,13 @@ function TaskDetailPanel({
           <h3 className="flex-1 min-w-0 text-base font-semibold leading-snug text-fg-primary">
             {task.title}
             {' '}
+            {/*
+              C9-C：「在等谁」只读服务端派生好的闭集值（`deriveStage()` 的唯一输出）。
+              这里刻意**不再**由 approvals / blockedBy / 消息自己拼一次 —— 治理态徽章
+              （下面那段）回答的是另一个问题，两者同屏出现但不同轴。
+            */}
+            <ThreadStageBadge stage={task.threadStage} />
+            {' '}
             {(() => {
               // blocked 有子缘由（deps/hold/workflow），必须走 taskStatusPresentation 才能
               // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
@@ -2789,6 +2802,27 @@ function TaskDetailPanel({
 
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
+              {/*
+                C9-C：「完成依据」——放在交付物 tab 里，不放 tab 上方。
+                理由（Owner 2026-11-15）：「凭什么说做完了」与「交付了什么」是同一个问题，
+                悬在所有 tab 顶上等于让每个页面都背着一块取证件；它不是导航，是这一页的内容。
+                并且**没有证据就不渲染**：空盒子不传递信息（阶段徽章已经会说「缺证据」），
+                真缺证据时该看见的是徽章，不是一块点开才知为空的折叠加。
+              */}
+              {(task.evidence?.length ?? 0) > 0 && (
+                <EvidenceFold
+                  evidence={task.evidence ?? []}
+                  nameOf={(id) => agents.find(a => a.id === id)?.name}
+                  onOpenSource={(ref) => {
+                    if (ref.startsWith('dlv_')) {
+                      navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
+                      return;
+                    }
+                    // 评论 / decision / 其它指针：回到本页的活动区（它就在同一屏里）。
+                    document.getElementById('task-activity')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                />
+              )}
               {(() => {
                 const validDeliverables = unifiedDeliverables.filter(
                   d => typeof d.reference === 'string' && d.reference.length > 0
@@ -5577,7 +5611,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
     const allTasks = Object.values(board).flat();
     const updated = allTasks.find(t => t.id === sel.id);
     if (updated && updated.updatedAt !== sel.updatedAt) {
-      setSelectedTask(updated);
+      // 看板项是 lean 的：它不带 evidence（证据只有详情接口 api.tasks.get 才返回）。
+      // 直接 setSelectedTask(updated) 会把详情拿到的事实清空 —— 真机现象就是
+      // 卡片刚刷新一下，「完成依据」从 2 条跳成 0 条（Owner 报的「点了没内容」之一）。
+      // 所以这里只拿看板拥有的字段，evidence 保留上一次详情的结果；
+      // 数据真变了时，markus:data-changed 处理器会重拉详情覆盖它（同一事实一个写者）。
+      setSelectedTask(prev => (prev && prev.id === updated.id ? { ...updated, evidence: prev.evidence } : updated));
     }
   }, [board]);
 

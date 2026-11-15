@@ -68,6 +68,9 @@ import { extractTextFromFile } from './file-converter.js';
 import { createOfficeGenerateTool } from './tools/office-generate.js';
 import { createMemoryTools } from './tools/memory.js';
 import { createMailboxTools, type MailboxToolContext } from './tools/mailbox-tools.js';
+import { createFactTools } from './tools/fact-tools.js';
+import { toFactView, type FactsPromptContext } from './facts/facts-block.js';
+import type { FactService } from './facts/fact-service.js';
 // C8-D: action-tool reachability — the whitelist is asserted against the live
 // face at assembly (below), so an "always reachable" tool can never be missing
 // without a loud failure.
@@ -444,6 +447,18 @@ export function wireAgentEventForwarding(
   }
 }
 
+/**
+ * C9-A：从一段文本里取第一个 `tsk_…` 主体 id。
+ *
+ * 纯正则、无推断：`tsk_` 前缀是平台自己的结构记号，用户点了名才命中；命中就注入那个 task
+ * 的事实，没点名就什么都不做（聊天回合默认不注入任何 facts）。
+ */
+function firstTaskIdIn(text: string | undefined): string | undefined {
+  if (!text) return undefined;
+  const m = text.match(/\btsk_[a-z0-9]{6,}/i);
+  return m ? m[0] : undefined;
+}
+
 export class AgentManager {
   private agents = new Map<string, Agent>();
   private eventBus: EventBus;
@@ -527,7 +542,7 @@ export class AgentManager {
   private static readonly MCP_IDLE_GRACE_MS = 30_000;
   private activityCallbacks?: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean }) => void;
   };
   private recallCallbacks?: RecallCallbacks;
@@ -1610,6 +1625,7 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
     this.applyWorkUnitPort(agent);
+    this.applyFactService(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
     // actively collapse stale session history on demand via the session tool.
@@ -1835,6 +1851,13 @@ export class AgentManager {
           : { status: 'unavailable', reason: 'work unit ledger is not wired in this deployment' },
     };
     for (const tool of createMailboxTools(mailboxToolCtx)) agent.registerTool(tool);
+
+    // 第九刀 C9-A：facts 三工具。
+    //
+    // 未接线（没注入 FactService）时**不注册**：与 work_status 的「恒在但诚实地回
+    // unavailable」不同，facts 是能力而不是自省 —— 一个不存在的事实层不应向模型
+    // 暴露一个永远拒绝的工具（那是把部署限制伪装成模型错）。
+    this.applyFactsCapability(agent);
 
     // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
     this.registerAddressTools(agent, id);
@@ -2563,6 +2586,7 @@ export class AgentManager {
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
     this.applyWorkUnitPort(agent);
+    this.applyFactService(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
     if (this.skillRegistry) {
@@ -3663,7 +3687,7 @@ export class AgentManager {
 
   setActivityCallbacks(cbs: {
     onStart: (activity: AgentActivity & { agentId: string }) => void;
-    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.activityCallbacks = cbs;
@@ -3699,10 +3723,93 @@ export class AgentManager {
    * 未注入 ⇒ 工具不注册（空能力不注册，而不是注册一个永远报错的空壳）。
    */
   private workUnitStatusProvider?: (agentId: string, opts: { limit?: number }) => unknown;
+
+  /**
+   * 第九刀 C9-A：facts 层的唯一写者（由 org-manager 注入 `SqliteFactService`）。
+   *
+   * core 只认 port —— 不认识 DatabaseSync，也不认识 SQL。不注入时三工具不注册、
+   * `[FACTS:…]` 不渲染，行为与今天完全一致（关闭通道 = 不接这个依赖）。
+   */
+  private factService?: FactService | null;
   setWorkUnitStatusProvider(
     fn: ((agentId: string, opts: { limit?: number }) => unknown) | undefined,
   ): void {
     this.workUnitStatusProvider = fn;
+  }
+
+  /**
+   * 第九刀 C9-A：接入 facts 的唯一写者（org-manager 装配时注入）。
+   *
+   * 传 `null` 与不调用等价：三工具不注册、`[FACTS:…]` 不渲染。
+   * （`FACTS_ENABLED=0` 开关已于 2026-11-15 删除：事实层是核心能力，不再提供
+   * “关掉整层”的运行形态；不接线的部署仍是合法的惰性状态。）
+   */
+  setFactService(service: FactService | null): void {
+    this.factService = service;
+    // C9-E：dream 的建议动作落事实需要 Agent 自己也拿得到同一个写者（dream 跑在
+    // Agent 内部，不绕 mailbox）。注入时对**已存在**的 agent 逐个补装，此后新建的
+    // agent 在建时就接上（`applyFactService`）。
+    for (const agent of this.agents.values()) this.applyFactService(agent);
+  }
+
+  /**
+   * C9-E：把同一个 facts 写者交给 Agent（dream 的建议动作落结构，以及回滚通道）。
+   *
+   * `null`/未注入 ⇒ **不触碰** agent：与 `setFactService` 的「不调用等价」口径一致，
+   * 也让未接 facts 的部署里 agent 完全不知道这一层存在。
+   *
+   * 注：`FACTS_ENABLED=0` 开关已于 2026-11-15 删除（Owner 决定）。事实层是核心能力，
+   * “关掉事实层”不该是长期可选的运行形态——开关存本身就是技术债：多 4 处分支、
+   * 多一条为回退而存在的测试，并给了一个“出问题就关掉”的错误出口。
+   */
+  private applyFactService(agent: Agent): void {
+    if (!this.factService) return;
+    agent.setFactService(this.factService);
+    // 写者与入口必须同行：补装只给 service、不给工具时，已存在的 agent 有写者却
+    // 没有任何调用入口，而终态钩子仍在要求它先断言事实 —— 任务流转会死锁
+    // （2026-11-15 真机事故：重启后全体存量 agent 没有任何 fact 工具）。
+    this.applyFactsCapability(agent);
+  }
+
+  /**
+   * C9-A/C9-E：facts 能力的**唯一**装配点（工具 + `[FACTS:…]` 注入 + 写者句柄）。
+   *
+   * 两条建 agent 的路径（`createAgent` / `restoreAgent`）与运行期补装
+   * （`setFactService` 对已存在 agent 的 re-apply）**都必须**走这里。
+   * 曾经的写法是在 `createAgent` 里内联装配、补装只 `setFactService`：结果重启后
+   * 所有存量 agent（全走 `restoreAgent`）都没有 fact 工具，而 `task_submit_review`
+   * 强制要求 `task.completion_evidence` 事实 —— 等于要求模型调用一个它不具备的工具。
+   *
+   * `Agent.registerTool` 是 `Map.set`，重复装配幂等（同名覆盖）。
+   */
+  private applyFactsCapability(agent: Agent): void {
+    const facts = this.factService;
+    if (!facts) return;
+    for (const tool of createFactTools({
+      agentId: agent.id,
+      facts,
+      // C8 身份链：本回合的 ref 从内存读，**不重新解析、不查库**。
+      turnWorkUnitRef: () => agent.turnWorkUnitRef(),
+    })) {
+      agent.registerTool(tool);
+    }
+    // `[FACTS:<subject>]` —— 只注入**当前 subject**（本回合正在做的那个 task）。
+    // 没有 task 的回合（chat / 心跳）不注入任何 facts：没有终态就不该有事实。
+    agent.getContextEngine().setFactsProvider(() => {
+      // 任务会话：认这一回合正在做的 task。
+      // 聊天回合没有 `currentTaskId` —— 但人可以点名一个 task（`tsk_…` 是稳定结构记号，
+      // 不是从自然语言里推断出来的），那就注入**那个 task** 的事实。否则"聊天里问某张卡
+      // 现在什么状态"只能靠模型自己想起来去 fact_query，注入层等于不存在。
+      const taskId = agent.getCurrentTaskId() ?? firstTaskIdIn(agent.getLastUserMessageText());
+      if (!taskId) return null;
+      const active = facts.queryActive({ subjectKind: 'task', subjectId: taskId, activeOnly: true, limit: 20 });
+      const ctx: FactsPromptContext = {
+        subjectKind: 'task',
+        subjectId: taskId,
+        facts: active.map(toFactView),
+      };
+      return ctx;
+    });
   }
 
   /**

@@ -261,6 +261,8 @@ CREATE TABLE IF NOT EXISTS task_logs (
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT DEFAULT '{}',
+  -- C9-B：这一行日志属于哪一轮执行（可空；调用方用 WORK_UNIT_REF.task 给出）。
+  work_unit_ref TEXT,
   execution_round INTEGER NOT NULL DEFAULT 1,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -527,6 +529,8 @@ CREATE TABLE IF NOT EXISTS agent_activities (
   task_id TEXT,
   started_at TEXT NOT NULL,
   ended_at TEXT,
+  -- C9-B：这一行属于哪一轮（可空）。老行为 NULL = 早于身份链（cut 7），不回填。
+  work_unit_ref TEXT,
   total_tokens INTEGER DEFAULT 0,
   total_tools INTEGER DEFAULT 0,
   success INTEGER DEFAULT 1,
@@ -539,6 +543,8 @@ CREATE INDEX IF NOT EXISTS idx_agent_activities_agent ON agent_activities(agent_
 CREATE TABLE IF NOT EXISTS agent_activity_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   activity_id TEXT NOT NULL REFERENCES agent_activities(id) ON DELETE CASCADE,
+  -- C9-B：从所属 activity 继承，日志不可能属于与它不同的那轮工作。
+  work_unit_ref TEXT,
   seq INTEGER NOT NULL,
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
@@ -556,6 +562,8 @@ CREATE TABLE IF NOT EXISTS execution_stream_logs (
   type TEXT NOT NULL,
   content TEXT NOT NULL DEFAULT '',
   metadata TEXT DEFAULT '{}',
+  -- C9-B：这一条事件属于哪一轮（可空；调用方给的是它已持有的身份，不反推）。
+  work_unit_ref TEXT,
   execution_round INTEGER,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -751,6 +759,43 @@ CREATE UNIQUE INDEX IF NOT EXISTS uq_work_units_ref ON work_units(ref);
 CREATE INDEX IF NOT EXISTS idx_work_units_agent_status ON work_units(agent_id, status);
 CREATE INDEX IF NOT EXISTS idx_work_units_parent ON work_units(parent_id);
 
+-- 第九刀 C9-A：facts —— 结构化事实（「这件活证明了什么」）。
+--
+-- 一个事实由「主体 + 谓词 + 值」构成，并且必须带三件身份（work_unit_ref /
+-- asserted_by / source_refs_json）：空值在这里是**错误**，不是默认值。
+--
+-- 不可改写：只允许 supersede（写 superseded_by / superseded_at），任何触碰
+-- value_json / predicate / 主体 / 身份列的 UPDATE 由触发器 facts_no_rewrite 拒绝
+-- —— 不依赖代码纪律。（触发器不在本模板内：SCHEMA_SQL 按分号切分执行，
+-- BEGIN...END 里的分号会被切坏，故单独一段 FACTS_TRIGGERS_SQL。）
+--
+-- 一个 subject + predicate 同时只有一条 active（partial unique index 兜底）。
+-- verification_json 存在断言行上：验证也是一种事实，但「谁验证的」不能成为
+-- 同一个结论的第二个写者。
+--
+-- 注意：本段位于 SCHEMA_SQL 模板字面量内，注释里禁止出现反引号。
+CREATE TABLE IF NOT EXISTS facts (
+  id               TEXT PRIMARY KEY,
+  subject_kind     TEXT NOT NULL,
+  subject_id       TEXT NOT NULL,
+  predicate        TEXT NOT NULL,
+  value_json       TEXT NOT NULL,
+  work_unit_ref    TEXT NOT NULL,
+  asserted_by      TEXT NOT NULL,
+  source_refs_json TEXT NOT NULL,
+  verification_json TEXT,
+  confidence       REAL NOT NULL DEFAULT 1.0,
+  created_at       TEXT NOT NULL,
+  superseded_by    TEXT REFERENCES facts(id),
+  superseded_at    TEXT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS ux_facts_active
+  ON facts(subject_kind, subject_id, predicate) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_subject
+  ON facts(subject_kind, subject_id) WHERE superseded_by IS NULL;
+CREATE INDEX IF NOT EXISTS ix_facts_predicate
+  ON facts(predicate) WHERE superseded_by IS NULL;
+
 CREATE TABLE IF NOT EXISTS user_read_cursors (
   user_id TEXT NOT NULL,
   conversation_key TEXT NOT NULL,
@@ -872,6 +917,42 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
 `;
 
+/**
+ * C9-A: `facts` 的两条 DB 层守卫 —— **不可改写** 与 **身份必填**。
+ *
+ * 为什么不放进 SCHEMA_SQL：那段模板按 `;` 切分逐条 exec，`BEGIN … END` 里的分号
+ * 会被切坏（切出来的碎片第一条就语法错）。触发器必须作为**完整语句**执行。
+ *
+ * 为什么是触发器而不是代码纪律：纪律要求"每个人都记得"，触发器只要求
+ * "库存在"。一个不变量只能有一个执行点，而"没人会绕过它"的那个点是这里。
+ *
+ * facts_no_rewrite 的 WHEN 子句只覆盖**结论性**列：supersede 本身要写
+ * superseded_by / superseded_at，那不是改写，是「新事实取代旧事实」的标记。
+ */
+const FACTS_TRIGGERS_SQL = `
+CREATE TRIGGER IF NOT EXISTS facts_no_rewrite
+BEFORE UPDATE ON facts
+WHEN OLD.value_json        <> NEW.value_json
+  OR OLD.predicate         <> NEW.predicate
+  OR OLD.subject_kind      <> NEW.subject_kind
+  OR OLD.subject_id        <> NEW.subject_id
+  OR OLD.asserted_by       <> NEW.asserted_by
+  OR OLD.work_unit_ref     <> NEW.work_unit_ref
+  OR OLD.source_refs_json  <> NEW.source_refs_json
+BEGIN
+  SELECT RAISE(ABORT, 'facts are immutable; supersede instead');
+END;
+
+CREATE TRIGGER IF NOT EXISTS facts_require_provenance
+BEFORE INSERT ON facts
+WHEN NEW.work_unit_ref IS NULL OR TRIM(NEW.work_unit_ref) = ''
+  OR NEW.asserted_by IS NULL OR TRIM(NEW.asserted_by) = ''
+  OR NEW.source_refs_json IS NULL OR TRIM(NEW.source_refs_json) = ''
+BEGIN
+  SELECT RAISE(ABORT, 'facts require provenance: work_unit_ref, asserted_by, source_refs_json');
+END;
+`;
+
 // ─── Open / close ────────────────────────────────────────────────────────────
 
 let _db: DatabaseSync | null = null;
@@ -898,6 +979,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
       .filter(Boolean)) {
       _db.exec(stmt);
     }
+
+    // C9-A: facts 的两条守卫（不可改写 / 身份必填）。整段执行 —— 触发器体内有分号，
+    // 不能过上面的逐条切分。放在同一事务内，与建表同生同灭。
+    _db.exec(FACTS_TRIGGERS_SQL);
 
   // Migrations for existing databases: add columns that were introduced after initial schema
   const migrations: Array<{ table: string; column: string; sql: string }> = [
@@ -1007,6 +1092,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
     { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
     { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
+    // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/observability-tables.md）──
+    // 只加列、不回填：~9M 历史行保持 NULL（= 早于身份链）。回填等于制造第二份历史真相。
+    // 索引在下面「依赖迁移列的索引」段创建 —— 老库上列还不存在时建索引会直接报错。
+    { table: 'agent_activities', column: 'work_unit_ref', sql: 'ALTER TABLE agent_activities ADD COLUMN work_unit_ref TEXT' },
+    { table: 'agent_activity_logs', column: 'work_unit_ref', sql: 'ALTER TABLE agent_activity_logs ADD COLUMN work_unit_ref TEXT' },
+    { table: 'execution_stream_logs', column: 'work_unit_ref', sql: 'ALTER TABLE execution_stream_logs ADD COLUMN work_unit_ref TEXT' },
+    { table: 'task_logs', column: 'work_unit_ref', sql: 'ALTER TABLE task_logs ADD COLUMN work_unit_ref TEXT' },
   ];
     const addedColumns: string[] = [];
     for (const m of migrations) {
@@ -1035,6 +1127,11 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
     // Indexes that depend on migrated columns (must run AFTER column migrations)
     _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    // C9-B：观测四表的 `work_unit_ref` 索引。必须在列迁移之后 —— 老库在 SCHEMA_SQL
+    // 阶段还没有这四列，把索引写进 SCHEMA_SQL 会让「打开旧库」直接 no such column。
+    for (const table of ['agent_activities', 'agent_activity_logs', 'execution_stream_logs', 'task_logs']) {
+      _db.exec(`CREATE INDEX IF NOT EXISTS idx_${table}_wu ON ${table}(work_unit_ref)`);
+    }
     _db.exec('CREATE INDEX IF NOT EXISTS idx_pending_callbacks_wake ON pending_callbacks(wake_at)');
     _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_source ON deliverables(source)');
     _db.exec('CREATE INDEX IF NOT EXISTS idx_deliverables_knowledge_root ON deliverables(knowledge_root)');
@@ -2316,12 +2413,14 @@ export class SqliteTaskLogRepo {
     content: string;
     metadata?: unknown;
     executionRound?: number;
+    /** C9-B：这一行属于哪一轮（调用方给的是它已持有的身份，不反推）。 */
+    workUnitRef?: string | null;
   }) {
     const id = generateId('tlog');
     const ts = now();
     this.db
       .prepare(
-        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO task_logs (id, task_id, agent_id, seq, type, content, metadata, work_unit_ref, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         id,
@@ -2331,6 +2430,7 @@ export class SqliteTaskLogRepo {
         data.type,
         data.content,
         projectJson(toJson(data.metadata ?? {})),
+        data.workUnitRef ?? null,
         data.executionRound ?? 1,
         ts
       );
@@ -4693,6 +4793,8 @@ export interface ActivityRecord {
   taskId?: string | null;
   startedAt: string;
   endedAt?: string | null;
+  /** C9-B：产生这一行的那轮工作（可空 —— 早于身份链的历史行合法）。 */
+  workUnitRef?: string | null;
   totalTokens: number;
   totalTools: number;
   success: boolean;
@@ -4723,23 +4825,13 @@ export class SqliteActivityRepo {
    *
    * @returns 收口条数（供启动日志，不静默）
    */
-  closeOrphansAgainstTerminalMailbox(): number {
-    const res = this.db
-      .prepare(
-        `UPDATE agent_activities
-            SET ended_at = COALESCE(
-                  (SELECT m.completed_at FROM mailbox_items m WHERE m.id = agent_activities.mailbox_item_id),
-                  strftime('%Y-%m-%dT%H:%M:%fZ','now'))
-          WHERE ended_at IS NULL
-            AND mailbox_item_id IS NOT NULL
-            AND mailbox_item_id IN (
-              SELECT id FROM mailbox_items
-               WHERE status IN ('completed','bounced','catch_all','merged'))`,
-      )
-      .run();
-    return ((res as { changes?: number }).changes ?? 0);
-  }
-
+  /**
+   * C9-B（删机制）：这里曾经有一个 C8-P2 的「僵尸活动收口」方法（`closeOrphansAgainstTerminalMailbox`，已删）—— 给
+   * 「触发它的 mailbox 行已终态」的未收口 activity 补写 `ended_at`，好让
+   * 「`ended_at` 为空 = 还在跑」这个错误读法看起来成立。那个读法已全仓删掉
+   * （「在跑」只认 `work_units`），于是“帮事件扮成状态”的后台写也一并删掉：
+   * **没有结束就是没有结束**。契约见 docs/architecture/observability-tables.md。
+   */
   insertActivity(data: {
     id: string;
     agentId: string;
@@ -4748,12 +4840,23 @@ export class SqliteActivityRepo {
     taskId?: string;
     mailboxItemId?: string;
     startedAt: string;
+    workUnitRef?: string | null;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_activities (id, agent_id, mailbox_item_id, type, label, task_id, started_at, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_activities (id, agent_id, mailbox_item_id, type, label, task_id, started_at, work_unit_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
-      .run(data.id, data.agentId, data.mailboxItemId ?? null, data.type, data.label, data.taskId ?? null, data.startedAt, now());
+      .run(
+        data.id,
+        data.agentId,
+        data.mailboxItemId ?? null,
+        data.type,
+        data.label,
+        data.taskId ?? null,
+        data.startedAt,
+        data.workUnitRef ?? null,
+        now(),
+      );
   }
 
   updateActivity(
@@ -4782,9 +4885,21 @@ export class SqliteActivityRepo {
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, created_at) VALUES (?, ?, ?, ?, ?, ?)'
+        // C9-B：日志的 `work_unit_ref` 从**所属 activity 行**继承 —— 一条日志不可能属于
+        // 与开启它的那轮不同的工作。用子查询取值而不是让调用方再传一遍：同一事实只有
+        // 一个写者，两边永远不会漂。
+        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, work_unit_ref, created_at) ' +
+          'VALUES (?, ?, ?, ?, ?, (SELECT work_unit_ref FROM agent_activities WHERE id = ?), ?)'
       )
-      .run(data.activityId, data.seq, data.type, data.content, projectJson(toJson(data.metadata ?? {})), now());
+      .run(
+        data.activityId,
+        data.seq,
+        data.type,
+        data.content,
+        projectJson(toJson(data.metadata ?? {})),
+        data.activityId,
+        now(),
+      );
   }
 
   queryActivities(
@@ -4893,6 +5008,7 @@ export class SqliteActivityRepo {
       taskId: r['task_id'] as string | null,
       startedAt: r['started_at'] as string,
       endedAt: r['ended_at'] as string | null,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
       totalTokens: (r['total_tokens'] as number) ?? 0,
       totalTools: (r['total_tools'] as number) ?? 0,
       success: (r['success'] as number) !== 0,
@@ -4915,6 +5031,8 @@ export interface ExecutionStreamRow {
   content: string;
   metadata: Record<string, unknown>;
   executionRound: number | null;
+  /** C9-B：这一条事件属于哪一轮（可空）。 */
+  workUnitRef?: string | null;
   createdAt: string;
 }
 
@@ -4928,6 +5046,8 @@ interface BufferedStreamRow {
   content: string;
   metadataJson: string;
   executionRound: number | null;
+  /** C9-B：这一条事件属于哪一轮（可空）。 */
+  workUnitRef: string | null;
   createdAt: string;
 }
 
@@ -4947,14 +5067,14 @@ export class SqliteExecutionStreamRepo {
   private writeBatch(rows: BufferedStreamRow[]): void {
     if (rows.length === 0) return;
     const stmt = this.db.prepare(
-      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+      'INSERT INTO execution_stream_logs (id, source_type, source_id, agent_id, seq, type, content, metadata, work_unit_ref, execution_round, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
     );
     let began = false;
     try {
       // Join an already-open outer transaction instead of nesting into it.
       try { this.db.exec('BEGIN IMMEDIATE'); began = true; } catch { began = false; }
       for (const r of rows) {
-        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.executionRound, r.createdAt);
+        stmt.run(r.id, r.sourceType, r.sourceId, r.agentId, r.seq, r.type, r.content, r.metadataJson, r.workUnitRef, r.executionRound, r.createdAt);
       }
       if (began) this.db.exec('COMMIT');
     } catch (err) {
@@ -4987,6 +5107,8 @@ export class SqliteExecutionStreamRepo {
     content: string;
     metadata?: unknown;
     executionRound?: number;
+    /** C9-B：调用方已持有的身份（`Agent.turnWorkUnitRef()` / `WORK_UNIT_REF.task`）；不反推。 */
+    workUnitRef?: string | null;
   }): ExecutionStreamRow {
     const id = generateId('esl');
     const ts = now();
@@ -5002,6 +5124,7 @@ export class SqliteExecutionStreamRepo {
       content: data.content,
       metadataJson: toJson(data.metadata ?? {}),
       executionRound: data.executionRound ?? null,
+      workUnitRef: data.workUnitRef ?? null,
       createdAt: ts,
     });
     return {
@@ -5014,6 +5137,7 @@ export class SqliteExecutionStreamRepo {
       content: data.content,
       metadata: (data.metadata as Record<string, unknown>) ?? {},
       executionRound: data.executionRound ?? null,
+      workUnitRef: data.workUnitRef ?? null,
       createdAt: ts,
     };
   }
@@ -6569,6 +6693,21 @@ export class SqliteWorkUnitRepo {
            FROM work_units WHERE parent_id = ? ORDER BY rowid ASC`,
       )
       .all(parentId) as unknown as WorkUnitRecord[];
+  }
+
+  /**
+   * 第九刀 C9-C：某个 task 主体当前**在跑**的 WorkUnit 条数。
+   *
+   * 只做一件事：`status = 'running'` 且 `task_id = ?` 的计数。读面用它是为了给
+   * `deriveStage()` 一个正向信号（>0 才提升到 `running`）；为 0 不代表「没在跑」，
+   * 只代表「这一列查不到在跑的回合」——所以派生规则里它只升不降。
+   */
+  countRunningByTask(taskId: string): number {
+    const row = this.db
+      .prepare("SELECT COUNT(*) AS n FROM work_units WHERE task_id = ? AND status = 'running'")
+      .get(taskId) as { n?: number | bigint } | undefined;
+    const n = row?.n ?? 0;
+    return typeof n === 'bigint' ? Number(n) : n;
   }
 
   /**

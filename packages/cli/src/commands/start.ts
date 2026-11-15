@@ -2243,6 +2243,8 @@ async function startServerCore(
             taskId: activity.taskId,
             mailboxItemId: activity.mailboxItemId,
             startedAt: activity.startedAt,
+            // C9-B：身份由生产者带入（回合的 WorkUnit ref），不在这里反推。
+            workUnitRef: activity.workUnitRef ?? null,
           });
         } catch (err) {
           log.warn('Failed to persist activity start', { activityId: activity.id, error: String(err) });
@@ -2259,6 +2261,8 @@ async function startServerCore(
               type: data.type,
               content: data.content,
               metadata: data.metadata,
+              // C9-B：与所属 activity 同一个 ref（同一回合身份，不在读路径再猜）。
+              workUnitRef: data.workUnitRef ?? null,
             });
           } catch (err) {
             log.warn('Failed to persist execution stream activity log', { activityId: data.activityId, error: String(err) });

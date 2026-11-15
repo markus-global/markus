@@ -56,9 +56,19 @@ import {
   type ExecutionStopReason,
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
+  WORK_UNIT_REF,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
+// 第九刀 C9-E：dream 的七条建议动作落 facts（关闭 DR7）—— 纯派生 + 唯一写者端口。
+import type { FactService } from './facts/fact-service.js';
+import {
+  parseConsolidationSuggestions,
+  deriveConsolidationSuggestions,
+  mergeSuggestions,
+  describeDropped,
+} from './facts/consolidation-suggestions.js';
+import { recordConsolidationSuggestions } from './facts/consolidation-recorder.js';
 import { contextGateRefusal } from './context-gate.js';
 import { shouldPersistRecoveredReply } from './recovered-reply-persist.js';
 import { summarizeForMailbox, displayLabelOf, turnContentOf } from './mailbox-summary.js';
@@ -74,8 +84,7 @@ import { HeartbeatScheduler, heartbeatStateFingerprint, type HeartbeatTimerMode 
 import { TriggerRegistry, type Subscription, type TriggerEvent, type WakeCondition } from './trigger.js';
 import { createTriggerTools } from './tools/trigger.js';
 import { AgentClock } from './clock.js';
-import type { LLMRouter } from './llm/router.js';
-import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
+import type { LLMRouter } from './llm/router.js';import { stripToolNoise, computeCacheHitRate } from './llm/provider-helpers.js';
 import { stabilizeToolOrder } from './tool-order.js';
 import { MemoryStore, loadNotebook, saveNotebook, pruneNotebookEntries, normalizeNotebookKey, type NotebookEntry, type NotebookEntryManaged } from './memory/store.js';
 import type { IMemoryStore, MemoryEntry } from './memory/types.js';
@@ -131,6 +140,20 @@ import { SessionBindingStore } from './session-bindings.js';
 interface TaskAsyncContext {
   taskId: string;
   requirementId?: string;
+  /**
+   * 本执行的 WorkUnit 身份（`task_<taskId>_r<round>`）。
+   *
+   * 为什么放在 ALS 而不是实例字段（2026-11-15 P0 死锁的根因）：
+   * 原来 `turnWorkUnitRef()` 只读实例字段 `currentTurnWorkUnitRef`，而它**唯一**的
+   * 写入点是 `onFocusChanged`（邮箱焦点链）。任务执行入口只写 `currentTaskId`，
+   * 从不写它 → 执行回合里 `fact_assert` 一律 `missing_provenance`。
+   * 而 `task_submit_review` / 打回两个终态闸门**恰好要求**先写事实：
+   * 写不进去 → 闸门永远无法满足 → 任何卡都进不了 review，全平台任务流转堵死。
+   *
+   * 实例字段在并发执行下还会互相覆盖（同一 agent 多卡并发）；ALS 一份执行一份，
+   * 且与 `taskId` 同源：会话 id 与 WU 身份必须用**同一个** round。
+   */
+  workUnitRef?: string;
   /** When set, executeTool/buildToolDefinitions use this instead of this.tools */
   tools?: Map<string, AgentToolHandler>;
   /** When set, subagent tools emit progress events through this callback */
@@ -156,7 +179,12 @@ export interface TaskSubmissionState {
   /** 最近一次提交被拒绝的原因（用于在提醒里原样告知模型，而不是让它猜） */
   lastError?: string;
 }
-const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
+/**
+ * 执行回合作用域。@internal — 产品代码不要直接 run 它，只有两个执行入口
+ * （executeTaskConcurrent / executeChatTask）和评审回合在使用；导出仅为让测试
+ * 能验证「身份真的随作用域走」而无需伪造一个 ctx。
+ */
+export const taskAsyncContext = new AsyncLocalStorage<TaskAsyncContext>();
 
 interface ChatSubagentContext {
   subagentProgress: SubagentProgressCallback;
@@ -665,8 +693,18 @@ export class Agent {
   private turnDeltaCursor = 0;
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
-  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {
-    this.workUnitPort = port;
+  setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
+  }
+
+  /**
+   * 第九刀 C9-E：dream 的建议动作要落成 `memory.consolidation_suggestion` 事实，
+   * 而 dream 跑在 Agent 内部（不再绕 mailbox），所以 Agent 需要同一个唯一写者端口。
+   *
+   * 传 `null` 与不调用等价：dream 照跑，但不写建议事实（也不会改回写口语）。
+   */
+  private factService?: FactService | null;
+  setFactService(service: FactService | null): void {
+    this.factService = service;
   }
 
   /**
@@ -683,7 +721,11 @@ export class Agent {
    * 名字里的 turn 是约束：它只回答「这一回合跑在哪条 WU 上」，不是「按 agentId
    * 反查当前 WU」—— 后者在库里无法成立（只有历史，没有「当前」）。
    */
-  turnWorkUnitRef(): string | null { return this.currentTurnWorkUnitRef; }
+  turnWorkUnitRef(): string | null {
+    // ALS 优先：任务执行/评审回合各自持有自己的 WU 身份（并发安全）。
+    // 聊天 / A2A 回合没有 taskAsyncContext，退回邮箱焦点链写入的实例字段。
+    return taskAsyncContext.getStore()?.workUnitRef ?? this.currentTurnWorkUnitRef;
+  }
 
   /**
    * C8-B —— 轮内 delta 注入（唯一入口）。
@@ -702,7 +744,9 @@ export class Agent {
     sessionId: string,
   ): { decision: 'continue' | 'cancel'; text: string; decisiveItemId: string | null } | null {
     if (!this.turnDeltaInjectionEnabled) return null;
-    const workUnitRef = this.currentTurnWorkUnitRef;
+    // 身份走 getter（ALS 优先）：直读实例字段会让并发执行回合拿到邮箱焦点那条 ref，
+    // 于是轮内 delta 注入挂到别人的 WU 上 —— 与 2026-11-15 死锁同一根因换记号。
+    const workUnitRef = this.turnWorkUnitRef();
     if (!workUnitRef) return null;
 
     const snapshotSeq = this.turnDeltaCursor;
@@ -906,7 +950,7 @@ export class Agent {
   private activityLogs = new Map<string, AgentActivityLogEntry[]>();
   private activitySeqCounters = new Map<string, number>();
   private onActivityStartCb?: (activity: AgentActivity & { agentId: string }) => void;
-  private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+  private onActivityLogCb?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
   private onActivityEndCb?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   private browserCloseTabsHelper?: (sessionId: string) => string | null;
   /** 【P3】回合回复落库回调：由 org-manager 装配注入（见 setAssistantReplyPersister）。 */
@@ -1224,7 +1268,7 @@ export class Agent {
         ensureChild: (seed) => this.workUnitPort?.ensureChild(seed) ?? null,
         settle: (ref, opts) => { this.workUnitPort?.settle(ref, opts); },
       },
-      turnWorkUnitRef: () => this.currentTurnWorkUnitRef,
+      turnWorkUnitRef: () => this.turnWorkUnitRef(),
     };
     this.tools.set('spawn_subagent', createSubagentTool(subagentCtx));
     this.tools.set('spawn_subagents', createParallelSubagentTool(subagentCtx));
@@ -2033,6 +2077,13 @@ export class Agent {
         priority: 1,
         // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
         intent: 'trigger_execution',
+        // C9 附带缺陷：本条事实**入队那一刻还没有身份** —— item id 只存在于 `enqueue` 的
+        // 返回值里，调用方随后用 `onItemEnqueued` 把 `mailbox_items.work_unit_ref` 写成
+        // `task_<taskId>_r<round>`（2026-11-15 真机 13/13 条命中行事后都落到该形状）。
+        // 因此显式表态 `pending-link`：身份是**迟到**，不是「没有」。缺这条声明时，
+        // C8-P0 守卫在 `MARKUS_STRICT_IDENTITY=1` 下直接抛错 —— 这就是今天 13 次
+        // ERROR 的来源，也是「闸门要求的能力在该回合不可达」的形态（声明通道零示例）。
+        refOrigin: 'pending-link',
         metadata: {
           taskId,
         },
@@ -2947,9 +2998,47 @@ export class Agent {
               return;
             }
 
+            // round 只有一个所有者：**派发侧**（TaskService 构造 task_execution item 时
+            // 写入 `task.executionRound ?? 1`，那里有「定义性缺省（从未执行过 = 第 1 轮）」的
+            // 唯一授权）。core 侧不设默认：拿不到权威轮次就不启动这个执行纪元 ——
+            // 猜 1 会把新纪元注入旧会话（C9-E 事故形态：r2 的评论落进 r1 会话），
+            // 而「不知道是第几轮」这件事本身是可以用一条结构化 warn 说清楚的。
+            const rawRound = extra.executionRound;
+            const executionRound =
+              typeof rawRound === 'number' && Number.isInteger(rawRound) && rawRound >= 1
+                ? rawRound
+                : undefined;
+            if (executionRound === undefined) {
+              log.warn('Task execution item carries no authoritative execution round — refusing to start an epoch without identity', {
+                event: 'task.execution_skipped_no_round',
+                agentId: this.id,
+                taskId,
+                itemId: item.id,
+                receivedRoundType: typeof rawRound,
+                receivedRound: typeof rawRound === 'number' ? rawRound : null,
+                missing: 'payload.extra.executionRound (a positive integer written by the dispatcher)',
+              });
+              try {
+                this.eventBus.emit('agent:task-execution-skipped-no-round', {
+                  agentId: this.id,
+                  taskId,
+                  itemId: item.id,
+                });
+              } catch (err) {
+                log.debug('emit task-execution-skipped-no-round failed', { error: String(err) });
+              }
+              // fail closed：本条不执行、不主张身份。派发侧补齐 round 后会重新派发
+              // （TaskService 的丢失执行自愈路径就是这么做的）。
+              try { this.mailbox.drop(item.id); } catch { /* 已留痕，drop 失败不改变「不执行」的结论 */ }
+              resolveResponse('');
+              return;
+            }
             const executionRegistration = {
-              sessionId: `task_${taskId}_r${(extra.executionRound as number | undefined) ?? 1}`,
-              round: (extra.executionRound as number | undefined) ?? 1,
+              // 身份字符串只有一个建造者：`WORK_UNIT_REF.task()`。
+              // 任务执行会话 id **就是**执行身份，不再单独拼一次（两处各拼一次 = 同一个
+              // 字符串两个写者，改格式时必有一处漏改 —— 这正是本轮要收掉的债）。
+              sessionId: WORK_UNIT_REF.task(taskId, executionRound),
+              round: executionRound,
               startedAt: Date.now(),
             };
             this.taskExecutionsInFlight.set(taskId, executionRegistration);
@@ -2960,7 +3049,7 @@ export class Agent {
                 onLog,
                 extra.cancelToken as { cancelled: boolean } | undefined,
                 extra.taskProjectContext as TaskProjectContext | undefined,
-                extra.executionRound as number | undefined,
+                executionRound,
                 item.payload.requirementId,
                 typeof extra.resumeNotice === 'string' ? extra.resumeNotice : undefined,
               );
@@ -3072,10 +3161,25 @@ export class Agent {
             Array.from(this.activeTasks, t => `task:${t}`),
           );
           if (destination === 'inject' && taskId) {
-            const round = this.getTaskExecutionRound(taskId);
-            const sessionId = `task_${taskId}_r${round}`;
-            this.injectUserMessage(sessionId, item.payload.content);
-          } else {
+            // 会话 id 不重算（旧实现用 `getTaskExecutionRound(taskId) → 1` 硬编码，r2 执行中
+            // 把人类评论注入到 r1 会话 —— 当前执行永远看不到，且消息静默消失）。
+            // 权威值只有一个：在飞登记里的 `sessionId`；拿不到就不注入。
+            const inFlight = this.getInFlightTaskExecution(taskId);
+            if (inFlight) {
+              this.injectUserMessage(inFlight.sessionId, item.payload.content, taskId);
+              resolveResponse('');
+              return;
+            }
+            log.warn('Task comment not injected — no live execution registration for this task', {
+              event: 'task.comment_injection_skipped_no_registration',
+              agentId: this.id,
+              taskId,
+              itemId: item.id,
+              missing: 'taskExecutionsInFlight registration (sessionId + round)',
+            });
+            // 不注入 ≠ 丢掉留言：落到下面的 else 分支排队一个回复回合，人看不到「石沉大海」。
+          }
+          {
             const commentTaskId = taskId ?? 'unknown';
             await this.handleMessage(
               item.payload.content,
@@ -3116,7 +3220,17 @@ export class Agent {
             buildHandleOpts({ sessionId: reviewSessionId, scenario: 'review' }),
           );
           reply = reviewTaskId
-            ? await taskAsyncContext.run({ taskId: reviewTaskId }, runReviewTurn)
+            // 评审回合的 WU 身份来自派发方写入的 mailbox item（task-service 已带
+            // `WORK_UNIT_REF.task(taskId, reviewRound)`）；缺失时才由 round 现算，
+            // 且拿不到 round 就是「没有身份」——不猜，工具层会明确拒绝而不是写无源事实。
+            ? await taskAsyncContext.run(
+                {
+                  taskId: reviewTaskId,
+                  workUnitRef: item.workUnitRef
+                    ?? (reviewRound !== undefined ? WORK_UNIT_REF.task(reviewTaskId, reviewRound) : undefined),
+                },
+                runReviewTurn,
+              )
             : await runReviewTurn();
           if (needsTurnCompletion) reply = this.acceptTurnReply(await this.ensureTurnCompleted(reply, reviewSessionId), item);
           // A review is finished only when the CARD changed. A closed turn is not evidence:
@@ -3346,13 +3460,6 @@ export class Agent {
       default:
         return 'processed';
     }
-  }
-
-  /**
-   * Get the current execution round for a task (used for session ID construction).
-   */
-  private getTaskExecutionRound(_taskId: string): number {
-    return 1;
   }
 
   /**
@@ -3818,14 +3925,16 @@ export class Agent {
    * (after all tool results are appended) to avoid breaking message ordering.
    * If no task loop is running for this session, the message is appended directly.
    */
-  injectUserMessage(sessionId: string, content: string): void {
+  injectUserMessage(sessionId: string, content: string, taskId: string): void {
     let session = this.memory.getSession?.(sessionId);
     if (!session) {
       session = this.memory.getOrCreateSession(this.id, sessionId);
     }
 
-    const taskId = sessionId.startsWith('task_') ? sessionId.replace(/^task_/, '').replace(/_r\d+$/, '') : undefined;
-    if (taskId && this.activeTasks.has(taskId)) {
+    // `taskId` 必填而不是从 `sessionId` 反解：反解是从身份字符串反推实体，是建造者的
+    // 镜像 —— 格式一动就静默解析错，分支走错也没有人知道（C9-E 事故的同类形态）。
+    // 调用方手上总归有实体 id（它有 item / 有 task 对象），结构上让它必须表态。
+    if (this.activeTasks.has(taskId)) {
       let queue = this.pendingInjections.get(sessionId);
       if (!queue) {
         queue = [];
@@ -3873,10 +3982,18 @@ export class Agent {
       throw new Error('Task executor not initialized');
     }
 
+    // 聊天任务也是「执行回合」：必须带 WU 身份，否则终态闸门（提交评审先写事实）
+    // 在这条入口上同样会死锁。
+    // chat 任务不是 DB 任务、没有派发轮次 —— round 恒为 1 是**该入口的定义域**（
+    // 不存在「第 2 轮 chat 任务」），不是从缺失值兜底出来的。
+    const chatRound = 1;
     const result = await this.taskExecutor.executeChatTask(
       taskId,
       async () => {
-        return this._executeTaskInternal(taskId, description, onLog, cancelToken);
+        return taskAsyncContext.run(
+          { taskId, workUnitRef: WORK_UNIT_REF.task(taskId, chatRound) },
+          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, undefined, chatRound),
+        );
       },
       {
         priority: TaskPriority.HIGH,
@@ -3949,6 +4066,24 @@ export class Agent {
    */
   getCurrentTaskId(): string | undefined {
     return taskAsyncContext.getStore()?.taskId ?? this.currentTaskId;
+  }
+
+  /**
+   * C9-A：本会话最近一条 user 消息的纯文本。
+   *
+   * 只给「用户点名了哪个主体」这类**结构化**用途（如识别 `tsk_…`），不参与任何语义推断。
+   * 聊天回合没有 `currentTaskId`，若不看这条消息，facts 注入在聊天里就永远为空 ——
+   * 而人恰恰会在聊天里问"那张卡现在什么状态"。
+   */
+  getLastUserMessageText(): string | undefined {
+    const sid = this.currentSessionId;
+    if (!sid) return undefined;
+    const messages = this.memory.getSession(sid)?.messages ?? [];
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role === 'user' && typeof m.content === 'string') return m.content;
+    }
+    return undefined;
   }
 
   private getCurrentRequirementId(): string | undefined {
@@ -5209,7 +5344,7 @@ export class Agent {
 
   setActivityCallbacks(cbs: {
     onStart?: (activity: AgentActivity & { agentId: string }) => void;
-    onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown> }) => void;
+    onLog?: (data: { activityId: string; agentId: string; seq: number; type: string; content: string; metadata?: Record<string, unknown>; workUnitRef?: string | null }) => void;
     onEnd?: (activityId: string, summary: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }) => void;
   }): void {
     this.onActivityStartCb = cbs.onStart;
@@ -5440,7 +5575,7 @@ export class Agent {
   private startActivity(type: AgentActivity['type'], label: string, extra?: Partial<AgentActivity>): string {
     const id = `act-${this.id}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
     const mailboxItemId = extra?.mailboxItemId ?? this.processingMailboxItemId;
-    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}) };
+    const activity: AgentActivity = { id, type, label, startedAt: new Date().toISOString(), ...extra, ...(mailboxItemId ? { mailboxItemId } : {}), workUnitRef: this.turnWorkUnitRef() };
     this.workspaceActivity = activity;
     this.activityLogs.set(id, []);
     this.activitySeqCounters.set(id, 0);
@@ -5553,7 +5688,7 @@ export class Agent {
       logs.splice(0, logs.length - Agent.MAX_ACTIVITY_LOG_ENTRIES);
     }
 
-    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
+    try { this.onActivityLogCb?.({ activityId, agentId: this.id, seq, type, content: cleanContent, metadata, workUnitRef: this.turnWorkUnitRef() }); } catch (err) { log.debug('Activity log callback error', { error: String(err) }); }
 
     this.eventBus.emit('agent:activity_log', {
       agentId: this.id,
@@ -7099,9 +7234,15 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: ExecutionCancelToken,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    cancelToken: ExecutionCancelToken | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    /**
+     * 本轮执行纪元（从 1 开始）。**必填 `number`，不设默认**：
+     * 唯一的缺省点在派发侧（TaskService 构造 task_execution item 时写
+     * `task.executionRound ?? 1`）。core 看不到权威轮次时不得代替它表态 ——
+     * 猜 1 会把新纪元注入旧会话（C9-E 事故形态）。
+     */
+    executionRound: number,
     requirementId?: string,
     /**
      * 本轮的「为什么重启」权威说明（由 org-manager 的 TaskService 生成：
@@ -7130,10 +7271,10 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: { cancelled: boolean },
+    cancelToken: { cancelled: boolean } | undefined,
     priority: TaskPriority = TaskPriority.MEDIUM,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    taskProjectContext: TaskProjectContext | undefined,
+    executionRound: number,
     requirementId?: string,
     resumeNotice?: string,
   ): Promise<void> {
@@ -7141,14 +7282,34 @@ export class Agent {
       throw new Error('Task executor not initialized');
     }
 
-    // 使用TaskExecutor执行任务
+    // 运行时闸（类型已要求 number，但载荷是未校验的 JSON，夹具会撒谎）：
+    // 拿不到轮次就 fail closed —— 不建会话、不主张身份、不跑任务。
+    // 唯一合法缺省点在派发侧（TaskService），core 不得用 1 冒充。
+    if (typeof executionRound !== 'number' || !Number.isInteger(executionRound) || executionRound < 1) {
+      log.warn('Refusing to start a task execution epoch without an authoritative round', {
+        event: 'task.execution_refused_no_round',
+        agentId: this.id,
+        taskId,
+        receivedRound: typeof executionRound === 'number' ? executionRound : null,
+        receivedType: typeof executionRound,
+      });
+      throw new Error(
+        `Task execution requires a positive integer executionRound (got ${String(executionRound)}). ` +
+        'The dispatcher owns that default; core must not guess a round.',
+      );
+    }
     // Wrap in AsyncLocalStorage context so concurrent task executions each
     // resolve their own taskId (prevents deliverable cross-contamination).
     const result = await this.taskExecutor.executeTaskTask(
       taskId,
-      () => taskAsyncContext.run({ taskId, requirementId, submission: { submitted: false } }, () =>
-        this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound, resumeNotice)
-      ),
+      () => {
+        // 单一事实源：本轮 round 在入口处**已经**确定（派发侧写的，或本入口的类型要求），
+        // 这里不再解析第二次 —— 两处各算一次就会漂移。
+        return taskAsyncContext.run(
+          { taskId, requirementId, workUnitRef: WORK_UNIT_REF.task(taskId, executionRound), submission: { submitted: false } },
+          () => this._executeTaskInternal(taskId, description, onLog, cancelToken, taskProjectContext, executionRound, resumeNotice),
+        );
+      },
       {
         priority,
         onProgress: (progress: number, currentStep?: string) => {
@@ -7183,9 +7344,10 @@ export class Agent {
       metadata?: unknown;
       persist: boolean;
     }) => void,
-    cancelToken?: ExecutionCancelToken,
-    taskProjectContext?: TaskProjectContext,
-    executionRound?: number,
+    cancelToken: ExecutionCancelToken | undefined,
+    taskProjectContext: TaskProjectContext | undefined,
+    /** 必填：见 `executeTask` 的同名参数说明（唯一缺省点在派发侧）。 */
+    executionRound: number,
     resumeNotice?: string,
   ): Promise<void> {
     this.currentTaskId = taskId;
@@ -7273,8 +7435,10 @@ export class Agent {
     // round reuse the existing message history (tool calls, file contents, etc.)
     // so the agent doesn't have to re-read files or redo work.
     // New rounds (scheduled reruns, review rejections) get a fresh session.
-    const round = executionRound ?? 1;
-    const sessionId = `task_${taskId}_r${round}`;
+    //
+    // 会话 id 就是执行身份，只有一个建造者（`WORK_UNIT_REF.task`）：以前这里再拼一次
+    // 同一个模板字符串，改格式时就有两处要同步 —— 同一个字符串两个写者。
+    const sessionId = WORK_UNIT_REF.task(taskId, executionRound);
     const session = this.memory.getOrCreateSession(this.id, sessionId);
     const isRetryWithHistory = session.messages.length > 0;
 
@@ -10759,7 +10923,7 @@ export class Agent {
           // heartbeat-triggered dream runs outside any tool call — so without this lock a
           // dream and a concurrent `memory_update` could interleave and lose one write.
           await this.resourceLocks.withLock(memoryResourceLock('knowledge'), async () => {
-            await this.dreamConsolidateMemory(entries);
+            await this.dreamConsolidateMemory(entries, windowKey);
             // §24 — `pruneMemoryMd()` was REMOVED: it deleted/deduped curated sections and
             // stripped `## daily-report-*` by heuristic string surgery over the agent's own
             // prose (heading equality, body-subset tests). That is R4 — the platform deciding
@@ -10792,7 +10956,7 @@ export class Agent {
    * "Dream" cycle: send memory entries to the LLM to identify duplicates,
    * outdated items, and merge opportunities. Apply changes programmatically.
    */
-  private async dreamConsolidateMemory(entries: MemoryEntry[]): Promise<void> {
+  private async dreamConsolidateMemory(entries: MemoryEntry[], windowKey = ''): Promise<void> {
     const MAX_ENTRIES_FOR_LLM = 500;
     const truncated = entries.length > MAX_ENTRIES_FOR_LLM;
     const batch = truncated ? entries.slice(-MAX_ENTRIES_FOR_LLM) : entries;
@@ -10839,6 +11003,9 @@ export class Agent {
       '  ],',
       '  "promote": [',
       '    { "sourceIds": ["id5", "id6", "id7"], "section": "procedures", "content": "synthesized insight" }',
+      '  ],',
+      '  "suggestions": [',
+      '    { "action": "archive", "target_refs": ["skill_or_observation_id"] }',
       '  ]',
       '}',
       '',
@@ -10848,6 +11015,20 @@ export class Agent {
       '- Promote only when 3+ entries point to the same pattern.',
       '- The `section` field uses the agent\'s own knowledge.md section names (agent-organized, not fixed).',
       '- If nothing needs consolidation, return { "remove": [], "merge": [], "promote": [] }',
+      '',
+      '**Phase 3 — Suggestion actions (structured, NOT prose):**',
+      'Add a `suggestions` array with the advisory actions below. Each item is',
+      '`{ "action": "<one of the seven>", "target_refs": ["<ids>"] }`. Emit an item ONLY when the',
+      'entries above actually support it, and never invent a target id. These become',
+      '`memory.consolidation_suggestion` facts — do NOT write them into knowledge.md, a notebook, or prose.',
+      '  1. archive — a skill with no usage and age > 30 days',
+      '  2. revise — a skill whose success/usage rate < 0.5 (usage >= 3)',
+      '  3. merge — duplicate skill names or colliding tags',
+      '  4. ttl — notebook entries past their tier TTL',
+      '  5. promote — 3+ observations sharing one theme',
+      '  6. negative_feedback — >= 3 negative feedback on a skill (needs a revision task)',
+      '  7. team_skill — >= 3 agents independently recorded the same theme',
+      'Return "suggestions": [] when none apply. An eighth action is not allowed.',
       '',
       '## Current Memory Entries',
       '',
@@ -10879,6 +11060,7 @@ export class Agent {
         remove?: string[];
         merge?: Array<{ removeIds: string[]; mergedContent: string; tags?: string[] }>;
         promote?: Array<{ sourceIds: string[]; section: string; content: string }>;
+        suggestions?: unknown;
       };
 
       // Guardrails: cap operations and validate IDs
@@ -10983,8 +11165,91 @@ export class Agent {
       } else {
         log.debug('Dream cycle: no changes needed', { agentId: this.id });
       }
+
+      // 第九刀 C9-E（关闭 DR7）：七条建议动作落结构。
+      //
+      // 两源合并：模型自己声明的 `suggestions`（闭集校验，非法动作/空目标**丢弃并留下日志**，
+      // 不静默改写成邻近动作）+ 代码从 promete 分组派生的 `promote`（>=3 条观察同一主题）。
+      // 两者都是「建议」，所以它们**不写 knowledge.md** —— 只落一条
+      // `memory.consolidation_suggestion` 事实（每 agent 一个当前快照，下次 dream supersede）。
+      // 没有 FactService（未接线）时跳过写事实，但也**不**退回写口语。
+      this.recordDreamSuggestions(plan, rawPlan.suggestions, windowKey);
     } catch (error) {
       log.warn('Dream cycle failed', { agentId: this.id, error: String(error) });
+    }
+  }
+
+  /**
+   * dream 的建议动作 → `memory.consolidation_suggestion` 事实（C9-E）。
+   *
+   * 为什么要单独一个方法而不是塞在两行之间：它必须是**纯策略 + 一个唯一写者**的组合，
+   * 而策略本身已经在 `consolidation-suggestions.ts` 里（纯函数、逐条可测）；这里只做
+   * “从本轮 plan 收集结构信号 → 写一条事实”。任何写 knowledge.md 的代码都不得出现在这里。
+   */
+  private recordDreamSuggestions(
+    plan: { promote?: Array<{ sourceIds: string[]; section: string; content: string }> },
+    declared: unknown,
+    windowKey: string,
+  ): void {
+    const facts = this.factService;
+    try {
+      const parsed = parseConsolidationSuggestions(declared);
+      if (parsed.dropped.length > 0) {
+        log.info('Dream cycle: suggestion items dropped', {
+          agentId: this.id,
+          dropped: parsed.dropped.length,
+          detail: describeDropped(parsed.dropped),
+        });
+      }
+
+      // **今天平台派生的只有 promote 一条**：只看「同主题 >=3 条观察」。
+      // 其余 6 条（archive / revise / merge / ttl / negative_feedback / team_skill）**没有**派生源，
+      // 只有模型自己在 `suggestions` 里声明时才落结构 —— 别在这里加「顺手猜一条」的规则：
+      //   · archive/revise/merge 需要每技能的 usage/success/name/tags/age，而 `learning-loop.ts`
+      //     里只有 `recordSkillActivation` 接了生产调用（agent.ts 技能激活路径），
+      //     `recordSkillTaskSuccess`/`recordSkillTaskRejection` 无生产调用者 ⇒ success_count 恒 0，
+      //     派生 revise 会对每个用过的技能误报（平台替 Agent 编建议 = R4）。
+      //   · ttl 是**永远的**空分支：过期条目在这之前已被 `pruneNotebookEntries` 按 tier TTL 删掉。
+      //   · team_skill 需要跨 agent 的观察视图，core `Agent` 没有这个源。
+      // 对应的确定事实写在 `docs/architecture/facts-verification.md §3`（那张表就是契约）。
+      const clusters = (plan.promote ?? [])
+        .filter(p => Array.isArray(p.sourceIds) && p.sourceIds.length > 0)
+        .map(p => ({ theme: p.section, observationIds: p.sourceIds }));
+      const derived = deriveConsolidationSuggestions({ observationClusters: clusters });
+
+      const merged = mergeSuggestions(derived, parsed.suggestions);
+      if (merged.length === 0) return;
+
+      if (!facts) {
+        log.info('Dream cycle: suggestions not recorded (facts layer not wired)', {
+          agentId: this.id, count: merged.length,
+        });
+        return;
+      }
+
+      const res = recordConsolidationSuggestions({
+        facts,
+        agentId: this.id,
+        suggestions: merged,
+        // dream 跑在时钟源上，没有回合 WU（C8-C：它不再是 mailbox item）。
+        // 身份用**本窗口的 dream 运行标识**：稳定、可反查、重复周期会 supersede 而不是叠加。
+        workUnitRef: `dream:${this.id}:${windowKey || 'adhoc'}`,
+        sourceRefs: merged.flatMap(s => s.target_refs),
+      });
+
+      if (res.status === 'rejected') {
+        log.warn('Dream cycle: suggestion fact rejected', {
+          agentId: this.id, code: res.code, message: res.message,
+        });
+      } else {
+        log.info('Dream cycle: suggestions recorded as fact', {
+          agentId: this.id, status: res.status, count: res.count, factId: res.factId,
+          actions: merged.map(s => s.action),
+        });
+      }
+    } catch (error) {
+      // 建议落结构失败不得使整个 dream 失败：记忆整理本身已经完成。但必须留痕。
+      log.warn('Dream cycle: recording suggestions failed', { agentId: this.id, error: String(error) });
     }
   }
 }

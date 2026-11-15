@@ -106,6 +106,50 @@
     "cancelled": "已取消",
     "archived": "已归档"
   },
+  "threadStage": {
+    "waitingHuman": "需要你",
+    "running": "执行中",
+    "needsEvidence": "缺证据",
+    "inVerification": "待核验",
+    "done": "已收口",
+    "blockedDeps": "等依赖",
+    "ended": "已终止",
+    "evidence": {
+      "title": "完成依据（{{count}} 条）",
+      "subtitle": "这张卡凭什么说自己做完了：每条结论、谁断言的、有没有人独立核验。",
+      "empty": "还没有证据事实",
+      "emptyHint": "提交评审前必须有一条「交付证据」，否则会被闸门拦住。",
+      "unverified": "尚未独立验证",
+      "assertedBy": "由 {{who}} 断言",
+      "verifiedBy": "由 {{who}} 核验",
+      "predicateOnly": "以结构化值记录，没有文字摘要。",
+      "expand": "展开全文",
+      "collapse": "收起",
+      "predicate": {
+        "task_completion_evidence": "交付证据",
+        "task_rejection_reason": "驳回原因",
+        "requirement_acceptance_met": "验收已达成",
+        "work_defect_class": "缺陷归类",
+        "agent_capability_claim": "能力声明",
+        "memory_consolidation_suggestion": "记忆整理建议"
+      },
+      "verification": {
+        "pass": "已验证",
+        "fail": "验证未通过"
+      },
+      "refKind": {
+        "deliverable": "交付物",
+        "comment": "评论",
+        "inPlace": "原始记录",
+        "commit": "提交",
+        "probe": "实测记录",
+        "task": "任务",
+        "record": "事实",
+        "transcript": "会话记录",
+        "other": "其他"
+      }
+    }
+  },
   "processStatus": {
     "idle": "空闲",
     "working": "工作中",
@@ -668,5 +712,84 @@
     "loadFailed": "邀请数据加载失败，请稍后重试",
     "unsupported": "当前 Hub 版本不支持邀请数据，请先升级 Hub",
     "openHub": "在 Hub 中查看"
+  },
+  "factsAudit": {
+    "title": "事实审计轨迹",
+    "subtitle": "只读：每条结论的旧值 → 新值 → 谁在何时，以及它的证据与验证者。",
+    "subjectKind": "主体类型",
+    "subjectId": "主体 ID",
+    "predicate": "谓词",
+    "any": "全部",
+    "since": "起始时间",
+    "until": "结束时间",
+    "includeSuperseded": "包含已被取代的历史行",
+    "disabled": "事实层当前已关闭（FACTS_ENABLED=0），因此这里没有可展示的数据；这不是“没有事实”。",
+    "empty": "当前过滤条件下没有事实。",
+    "truncated": "结果已达上限，请缩窄过滤条件。",
+    "unverified": "未经独立验证",
+    "colPredicate": "谓词",
+    "colSubject": "主体",
+    "colAsserted": "断言者 / 时间 / 回合",
+    "colVerification": "验证",
+    "colChain": "取代链",
+    "colValue": "值",
+    "statTotal": "条记录",
+    "statVerified": "条已独立验证",
+    "statSuperseded": "条已被推翻",
+    "fSubject": "关于谁",
+    "fKind": "类型",
+    "fConclusion": "结论类型",
+    "fTime": "时间范围",
+    "subjectSearchPlaceholder": "搜名字：任务 / 需求 / 智能体 / 产出物",
+    "subjectNoMatch": "没找到匹配的主体；留空就是看全部。",
+    "clearSubject": "清除已选主体",
+    "openSubject": "打开详情（{{id}}）",
+    "kindAll": "全部",
+    "conclusionAll": "全部结论",
+    "range": "时间范围",
+    "rangeAll": "全部时间",
+    "range24h": "近 24 小时",
+    "range7d": "近 7 天",
+    "range30d": "近 30 天",
+    "rangeCustom": "自定义…",
+    "emptyHint": "可以放宽时间范围，或清空主体 / 谓词过滤。",
+    "by": "{{name}} 断言",
+    "confidence": "置信度",
+    "confidenceShort": "置信 {{pct}}%",
+    "verificationTitle": "验证结果 · 验证者 · 时间",
+    "chain": {
+      "replacedBy": "已被 {{time}} 的新结论推翻",
+      "replacedByUnknown": "已被其他结论推翻（不在当前结果中）",
+      "replaces": "取代了 {{time}} 的旧结论"
+    },
+    "evidence": "证据",
+    "kind": {
+      "task": "任务",
+      "requirement": "需求",
+      "agent": "智能体",
+      "deliverable": "产出物",
+      "work_unit": "工作单元"
+    },
+    "predicateName": {
+      "task_completion_evidence": "交付证据",
+      "task_rejection_reason": "驳回原因",
+      "requirement_acceptance_met": "验收已达成",
+      "work_defect_class": "缺陷归类",
+      "agent_capability_claim": "能力声明",
+      "memory_consolidation_suggestion": "记忆整理建议"
+    },
+    "reset": "重置",
+    "superseded": "已被取代",
+    "wu": {
+      "session": "会话",
+      "sessionRound": "会话第 {{round}} 轮",
+      "a2a": "消息"
+    },
+    "src": {
+      "commit": "提交 {{hash}}",
+      "probe": "实测记录",
+      "task": "任务",
+      "deliverable": "产出物"
+    }
   }
 }

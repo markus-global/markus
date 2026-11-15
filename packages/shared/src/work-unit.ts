@@ -236,8 +236,11 @@ export function entityKeysOfWorkUnitRef(ref: string): string[] {
  * 它真正回答的问题。
  *
  * `undefined` = **这一层不声明会话身份**（不是「没有会话」），调用方必须走既有路径：
- * - `task_<id>_r<n>`：任务回合的会话 id 由在飞登记表与轮次解析
- *   （`getTaskExecutionRound`）；在这里再声明一次就是第二个写者。
+ * - `task_<id>_r<n>`：任务回合的会话 id = 执行身份，唯一建造者是 `WORK_UNIT_REF.task()`；
+ *   轮次的**唯一合法缺省点**在派发侧（TaskService 构造 task_execution item 时的
+ *   「定义性缺省：从未执行过 = 第 1 轮」）。消费侧一律**显式传实体 id**（taskId + round），
+ *   或读在飞登记里的 `sessionId`；core 没有、也不得有「按 taskId 现算当前轮次」的解析器
+ *   —— 在这里再声明一次就是第二个写者。
  * - `session:<cs>:r<n>`：聊天会话身份由 DB→内存绑定解析。
  *
  * 返回值必须是**安全字符集**：它会进入记忆会话 id，同时充当落盘文件名的一部分。

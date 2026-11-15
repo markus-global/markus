@@ -6,6 +6,7 @@ import { ListLoading } from '../components/AsyncState.tsx';
 import { SUPPORTED_LANGUAGES } from '../i18n/index.ts';
 import { navBus } from '../navBus.ts';
 import { PAGE } from '../routes.ts';
+import AuditFactsPage from './AuditFacts.tsx';
 import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
@@ -55,14 +56,13 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
 /** Module-scoped — used by Settings page and CollapsibleAvailableModels. */
 export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'appearance', labelKey: 'nav.appearance' },
-  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'providers', labelKey: 'nav.providers', adminOnly: true },
   { id: 'execution', labelKey: 'nav.execution', adminOnly: true },
   { id: 'browser', labelKey: 'nav.browser', adminOnly: true },
@@ -71,14 +71,20 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
+  { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
+  { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
 ];
 
 export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
-  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage'] },
+  { labelKey: 'nav.group.general', tabs: ['appearance'] },
+  // 「AI」组包含模型与执行策略：两者回答同一个问题——Agent 用什么脑子、按什么规矩动手。
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
+  // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
+  // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
+  { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
 ];
 
 /** Data each settings tab needs the first time it is opened (pure, testable). */
@@ -100,6 +106,8 @@ export function settingsTabLoads(tab: SettingsTab): SettingsLoadKey[] {
     case 'execution': return ['agent'];
     case 'browser': return ['browser'];
     case 'storage': return ['storage'];
+    // 事实审计自带数据加载与骨架态（AuditFacts 内部管理），不占 Settings 的懒加载清单。
+    case 'facts': return [];
     default: return [];
   }
 }
@@ -132,6 +140,8 @@ const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
 const SETTINGS_TAB_ICONS: Record<string, string> = {
   appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
   storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
+  // 事实审计：带核验勾的卷宗（不是放大镜——这是"已核验的记录"，不是"搜索"）
+  facts: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8.5 14.5l2.5 2.5 4-4.5',
   providers: 'M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3 M6 6h12v12H6z M9 9h6v6H9z',
   execution: 'M12 8V4H8 M4 8h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z M2 14h2 M20 14h2 M15 13v2 M9 13v2',
   browser: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',
@@ -2950,7 +2960,24 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'storage' && <>
         <Section title={t('dataStorage.title')}>
           <div className={`${CARD} p-5 space-y-5`}>
-            {storageLoading && !storageInfo && <div className="text-sm text-fg-tertiary">{t('dataStorage.scanning')}</div>}
+            {storageLoading && !storageInfo && (
+              <div className="space-y-4" data-testid="data-storage-skeleton">
+                <div className="flex items-start justify-between gap-3">
+                  <div className="space-y-2">
+                    <div className="h-7 w-28 animate-pulse rounded bg-surface-secondary" />
+                    <div className="h-3 w-56 animate-pulse rounded bg-surface-secondary" />
+                  </div>
+                  <div className="h-8 w-24 animate-pulse rounded bg-surface-secondary" />
+                </div>
+                <div className="h-2 w-full animate-pulse rounded-full bg-surface-secondary" />
+                <div className="space-y-2">
+                  {[0, 1, 2, 3].map(i => (
+                    <div key={i} className="h-4 w-full animate-pulse rounded bg-surface-secondary" />
+                  ))}
+                </div>
+                <div className="text-xs text-fg-tertiary">{t('dataStorage.scanning')}</div>
+              </div>
+            )}
             {storageInfo && (() => {
               const rows = [...storageInfo.breakdown]
                 .filter(b => b.size > 0)
@@ -3062,6 +3089,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         </>}
+
+        {resolvedTab === 'facts' && <AuditFactsPage role={authUser?.role} authUser={authUser} />}
 
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 

@@ -135,7 +135,7 @@ describe('AgentManager extended coverage', () => {
       tools: [],
     });
 
-    const execPromise = agent.executeTask('live_task', 'Current work', () => {});
+    const execPromise = agent.executeTask('live_task', 'Current work', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const raw = await agent.getTools().get('task_submit_review')!.execute({
@@ -238,7 +238,7 @@ describe('AgentManager extended coverage', () => {
       orgId: 'org_none',
       tools: [],
     });
-    const execPromise = agent.executeTask('done_task', 'Finished', () => {});
+    const execPromise = agent.executeTask('done_task', 'Finished', () => {}, undefined, undefined, 1);
     await vi.waitFor(() => agent.getActiveTasks().length > 0, { timeout: 2000 });
 
     const raw = await agent.getTools().get('task_submit_review')!.execute({

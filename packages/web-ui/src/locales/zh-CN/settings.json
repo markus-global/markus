@@ -19,6 +19,7 @@
     "search": "网络搜索",
     "codingTools": "编程工具",
     "storage": "数据与存储",
+    "facts": "事实审计",
     "users": "用户管理",
     "remote": "远程访问",
     "network": "网络与访问",
@@ -31,7 +32,8 @@
       "aiConfig": "AI 配置",
       "tools": "工具与能力",
       "connections": "连接与集成",
-      "account": "账户"
+      "account": "账户",
+      "data": "数据与审计"
     }
   },
   "appearance": {
