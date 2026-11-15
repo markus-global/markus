@@ -77,7 +77,7 @@ the guard never fired here. Listed as a candidate on the card; confirmed not aff
 ## 4. Why option A and not option B
 
 Option B (add `task_status_update` to `PLATFORM_INTERNAL_SOURCES`) is keyed by
-`sourceType`, so it would also silence \u00a73.1 — the one place where identity is real and
+`sourceType`, so it would also silence §3.1 — the one place where identity is real and
 merely late. That would trade a loud signal for a false one. Option A (per-call
 declaration) keeps the guard honest and matches its own message.
 
