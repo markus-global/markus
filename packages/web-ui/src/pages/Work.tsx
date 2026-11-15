@@ -2413,25 +2413,6 @@ function TaskDetailPanel({
         </div>
       </div>
 
-      {/*
-        C9-C：「凭什么说做完了」。默认折叠 —— 证据是给人核对的，不是给人扫的；
-        空集合也渲染（「还没有证据事实」本身就是需要看见的信息）。
-      */}
-      <div className="px-6 shrink-0">
-        <EvidenceFold
-          evidence={task.evidence ?? []}
-          nameOf={(id) => agents.find(a => a.id === id)?.name}
-          onOpenSource={(ref) => {
-            if (ref.startsWith('dlv_')) {
-              navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
-              return;
-            }
-            // 评论 / decision / 其它指针：回到本页的活动区（它就在同一屏里）。
-            document.getElementById('task-activity')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
-          }}
-        />
-      </div>
-
       {sendToChatOpen && (
         <SendToChatModal
           kind="task"
@@ -2827,6 +2808,27 @@ function TaskDetailPanel({
 
 
           <div className={activeTab === 'deliverables' ? 'px-6 py-4' : 'hidden'}>
+              {/*
+                C9-C：「完成依据」——放在交付物 tab 里，不放 tab 上方。
+                理由（Owner 2026-11-15）：「凭什么说做完了」与「交付了什么」是同一个问题，
+                悬在所有 tab 顶上等于让每个页面都背着一块取证件；它不是导航，是这一页的内容。
+                并且**没有证据就不渲染**：空盒子不传递信息（阶段徽章已经会说「缺证据」），
+                真缺证据时该看见的是徽章，不是一块点开才知为空的折叠加。
+              */}
+              {(task.evidence?.length ?? 0) > 0 && (
+                <EvidenceFold
+                  evidence={task.evidence ?? []}
+                  nameOf={(id) => agents.find(a => a.id === id)?.name}
+                  onOpenSource={(ref) => {
+                    if (ref.startsWith('dlv_')) {
+                      navBus.navigate(PAGE.DELIVERABLES, { openDeliverable: ref });
+                      return;
+                    }
+                    // 评论 / decision / 其它指针：回到本页的活动区（它就在同一屏里）。
+                    document.getElementById('task-activity')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                  }}
+                />
+              )}
               {(() => {
                 const validDeliverables = unifiedDeliverables.filter(
                   d => typeof d.reference === 'string' && d.reference.length > 0
