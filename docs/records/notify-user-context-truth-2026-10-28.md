@@ -1,5 +1,11 @@
 # 通知 ≠ 对话内容：`notify_user` 的上下文契约
 
+> **Historical record.** Moved here from `docs/architecture/` on 2026-11-15: this is a dated
+> incident analysis (2026-10-28), not a description of current behaviour. `docs/architecture/`
+> describes how the system works today; evidence chains belong in `records/`.
+> The living contract that came out of this incident is
+> [`notification-delivery.md`](../architecture/notification-delivery.md).
+
 > 事故：2026-10-28 GEO策略主管 在 90 秒内对同一条内容调用 `notify_user` 12 次（09:12:34 → 09:13:48，标题恒为「需要一条产品口径：Markus Free 层数量上限」，正文每轮改写）。
 > 本文记录**实测证据链**、根因、被放弃的错误修法，以及这次的修法与测试。
 

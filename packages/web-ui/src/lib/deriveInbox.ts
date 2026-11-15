@@ -13,7 +13,7 @@
  * and would start drifting from them on the first write. Membership, dedupe,
  * precedence and the destination of every row are decided here and nowhere else.
  *
- * ── Contract (see docs/architecture/inbox-derivation.md) ─────────────────
+ * ── Contract (see docs/architecture/derived-views.md §7–§13) ──────────────
  * 1. Identity is `subjectKind:subjectId:needKind`. Three sources pointing at the
  *    same subject and need produce ONE row carrying all three in `sources[]`.
  * 2. Rows are then folded per subject (`foldBySubject`): a list is scanned by
@@ -277,7 +277,7 @@ interface Candidate {
  *
  * This started out mapping `type = 'task_review'` → need `review`, which looked
  * tidy and was **wrong**. The very first dual run over the live DB (2026-11-15,
- * `docs/architecture/inbox-dual-run-diff.md`) showed three `task_review`
+ * `docs/records/cut9-inbox-dual-run-diff-2026-11-15.md`) showed three `task_review`
  * notifications whose tasks were already `completed`: the payload said "review
  * me" while the FSM said "done". Deriving a need out of a notification is the
  * same defect as deriving "the agent is busy" out of "a message exists" (C8-E).

@@ -3,7 +3,7 @@ export { RemoteAccessAgent, type RemoteAccessConfig, type RemoteAccessStatus } f
 // ── Frozen remote-access contract (T1) ────────────────────────────────────────
 // Single source of truth shared by the local CLI (TunnelManager / RegistryClient)
 // and the Markus Hub (endpoint registry + entry gate). See
-// docs/design/remote-access-contract.md for the normative prose.
+// docs/architecture/remote-access.md for the normative prose.
 export * from './contract.js';
 
 // ── Local tunnel orchestration (T6) ───────────────────────────────────────────

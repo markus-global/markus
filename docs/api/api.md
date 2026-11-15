@@ -317,6 +317,17 @@ interface GoalConfig {
 
 ---
 
+## Facts (C9)
+
+Read-only over HTTP. Every write goes through the single facts writer, never through these routes
+(schema and invariants: [`architecture/facts.md`](../architecture/facts.md)).
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/facts` | Read facts — active rows plus their verification state |
+
+---
+
 ## Health
 
 | Method | Path | Description |

@@ -1,7 +1,8 @@
 # Deliverable Sharing to Hub — Design Proposal
 
-> Author: CTO | Date: 2026-08-12 | **Status: partially implemented** — the Markus client side
-> shipped; the Hub (cloud) side is still pending. See the As-built note below.
+> Author: CTO | Date: 2026-08-12 | **Status: implemented, both ends** — Hub side verified 2026-11-15.
+> Moved here from `docs/design/` on 2026-11-15: `design/` is for work that is not settled yet, and
+> this one is settled. See the As-built note below.
 > Scope: joint work across both ends — the Markus client (desktop) + Markus Hub (cloud)
 
 > **As built:** the client side shipped. `DeliverableShareService` (`packages/core/src/deliverable-share.ts`) plus the
@@ -11,7 +12,13 @@
 > `GET /api/hub/deliverables/mine` via `listMine()`) through the client's **generic** `/api/hub/*` proxy in
 > `packages/org-manager/src/api-server.ts`, not a deliverables-specific route. The Hub-side items (§4.2 `DeliverableShare`
 > table, R2 object storage, `/deliverable/{slug}` page, sitemap/search, review queue) live in the separate markus.global
-> service and are not verifiable from this repo.
+> service.
+>
+> **Hub side verified 2026-11-15 — this note used to say "still pending, not verifiable from this
+> repo", and that was stale.** The `markus-hub` repo implements `/api/deliverables/publish|status|mine|revoke|media`
+> plus the public-page read, and ships `deliverables.integration.test.ts`,
+> `deliverable-public-page.integration.test.ts`, `deliverable-seo.integration.test.ts` and
+> `deliverable-share.test.ts`. Nothing in this design is pending on the Hub.
 
 ---
 

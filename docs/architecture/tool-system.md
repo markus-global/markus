@@ -24,14 +24,22 @@ would inflate the system/tool prefix (token tax) and dilute the model's attentio
 
 ### 1.0 Spec: Scenario Capability Packs
 
+This table is the **single authoritative pack definition**. `agent-runtime.md` §2.1 points here
+instead of carrying its own copy; on 2026-11-15 the two copies had already drifted (one put
+`heartbeat` in `reflex`, the other in `converse`, and one omitted `workflow_action`). The code
+(`packages/core/src/capability-packs.ts`) is the final authority and agrees with this table.
+
 MUST: Each scenario maps to exactly one pack: `reflex` | `converse` | `execute` | `govern`.
 
 | Pack | Scenarios | `toolDefTokens` budget |
 |------|-----------|------------------------|
-| `reflex` | heartbeat, memory_consolidation, memory_flush, dream | 3_000 |
-| `converse` | chat, a2a, group_chat, comment_response, requirement_action | 8_000 |
-| `execute` | task_execution | 10_000 |
-| `govern` | review, deliberation | 8_000 |
+| `reflex` | `memory_consolidation` (dream), `memory_flush`, `distillation` | 3_000 |
+| `converse` | `heartbeat`, `chat`, `a2a`, `group_chat`, `comment_response`, `requirement_action`, `workflow_action` | 8_000 |
+| `execute` | `task_execution` | 10_000 |
+| `govern` | `review`, `deliberation` | 8_000 |
+
+`heartbeat` is `converse`, not `reflex`: a heartbeat turn is a full conversational turn with the
+same capability as a chat turn, and it no longer runs on a slim reflex toolset.
 
 MUST: `reflex` default allowlist MUST be the slim core in AGENT-RUNTIME §2.2
 (MUST NOT include `package_install`, `goal_*`, `spawn_subagent(s)`, `deliverable_create`, …).
@@ -70,6 +78,22 @@ MUST: Activated skill bodies inject as `## Activated Skills` (not under the conv
 `dynamicContext` 800-char cap).
 
 Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
+
+### 1.0.2 Spec: action tools are always present, and eviction is reversible
+
+Tool definitions are capped by a token budget (§1.0.1). Eviction ranks by tier and then by
+schema size, so without an explicit rule an agent under pressure loses the tools that let it
+**act** — create / update / submit work, read its own ledger, look at its queue, answer a
+human — and is never told.
+
+| Rule | Statement |
+|---|---|
+| Whitelist is derived | `ACTION_TOOL_GROUPS` in `packages/core/src/capability-packs.ts` groups action tools by need (`task`, `ledger`, `human`); `ACTION_TOOL_IDS` is derived from those groups, never hand-listed. |
+| Fail closed on a ghost id | A name in the whitelist that is absent from the tool registry is a startup/test error, not silently filtered. The live sample: `request_user_input` was copied out of prose into an intended whitelist and did not exist in the registry. |
+| Action tools are not situational extras | They are selected unconditionally for the active pack, never treated as optional keyword additions. |
+| Eviction may only take what can come back | A tool the runtime tells the model to call is protected (§1.0.1 tier 0). Eviction is restricted to tools that can be re-discovered. |
+| The eviction hint is actionable | When a tool leaves the schema the model is told what left and how to get it back, instead of silently losing a capability. |
+| Single switch | One derived set answers "is this tool required", and selection, the assertion and the evictor all read it. |
 
 ### 1.1 Selection inputs
 

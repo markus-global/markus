@@ -1,5 +1,9 @@
 # Agent lifecycle: stop means stop
 
+> **Historical record.** Moved here from `docs/design/` on 2026-11-15 (design/ is for unsettled work,
+> and this shipped). The durable contract now lives in
+> [`architecture/agent-runtime.md`](../architecture/agent-runtime.md) Appendix B.
+
 Status: implemented on `feat/ui-optimize-1109` (merged from `fix/agent-stop-intent`).
 Owner rule (2026-11-08): **after an agent is stopped, it must not start again on its own —
 only a human can start it, or the agent's own pending approval/question being answered.**

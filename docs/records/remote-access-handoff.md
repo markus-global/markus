@@ -1,7 +1,7 @@
 # 远程访问重构 · 交付说明与手动验证（T10 收口）
 
 > 作者：CTO · 2026-10-14 · 状态：**交老板手动合入前的交付说明**
-> 需求：`req_656422cc529a09e31cd04990` · 设计：`remote-access-design.md`(v2) · 契约：`docs/design/remote-access-contract.md`（冻结 v1.0.0）
+> 需求：`req_656422cc529a09e31cd04990` · 设计：`remote-access-design.md`(v2) · 契约：`docs/architecture/remote-access.md`（冻结 v1.0.0）
 > 一句话：**用户自带隧道（Cloudflare / Tailscale）＋ Hub 只做入口域名 / 端点注册表 / 登录鉴权门**，数据通路不再经过我们的服务器。
 
 ---

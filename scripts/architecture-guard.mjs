@@ -773,7 +773,7 @@ function loadAllowlist() {
  *   · SQL 用 `ended_at IS NULL` 表达任何状态，以及那个已删除的「收口僵尸」扫库机制
  *     （它存在的唯一作用就是给错误读法铺垫可信度）。
  *
- * 契约见 docs/architecture/observability-tables.md。
+ * 契约见 docs/architecture/derived-views.md。
  */
 const ACTIVITY_LIVENESS_PATTERNS = [
   { id: 'negated-endedAt', re: /!\s*[A-Za-z_$][\w$]*(?:\.[\w$]+)*\.endedAt\b/ },

@@ -442,7 +442,7 @@ export const DEFAULT_BIND_HOST = '0.0.0.0';
 
 export class APIServer {
   /**
-   * A2A 投递/回复的**唯一**执行点（docs/architecture/mailbox-system.md §11.1.1–§11.1.4）。
+   * A2A 投递/回复的**唯一**执行点（docs/architecture/a2a-communication.md §11.1.1–§11.1.4）。
    *
    * 惰性构造：依赖 storage / ws / agentManager，而这些在构造期未必都已就绪。
    * 所有"把消息交给另一个 agent"的路径都必须经它；所有"agent 在频道里说了一句"
@@ -1494,7 +1494,7 @@ export class APIServer {
             //  persisted to channel and the other party is auto-triggered).
             for (const peerId of peerAgentIds) {
               try {
-                // ── 投递 = mailbox item（唯一机制，见 docs/architecture/mailbox-system.md §11.1.1）
+                // ── 投递 = mailbox item（唯一机制，见 docs/architecture/a2a-communication.md §11.1.1）
                 //
                 // 旧实现在这里用 30 秒墙钟冷却 `continue` 掉「唤醒」：消息留在了
                 // channel_messages 里，但对方永远不会被唤醒，而 agent_send_message
@@ -2049,7 +2049,7 @@ export class APIServer {
     // C9-B：这里曾经有一个「僵尸活动收口」步骤（给未收口 activity 补写 ended_at）。
     // 它存在的唯一理由是让「ended_at 为空 = 还在跑」这个读法成立；该读法已全仓删掉，
     // 「在跑」只认 work_units，所以这个后台写也一并删掉。
-    // 契约见 docs/architecture/observability-tables.md。
+    // 契约见 docs/architecture/derived-views.md。
     // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
     // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
     try {
@@ -5230,7 +5230,7 @@ export class APIServer {
         const fromAgentId = body['fromAgentId'] as string;
         const messageText = body['message'] as string;
         const fromAgent = this.orgService.getAgentManager().getAgent(fromAgentId);
-        // 唯一投递点（docs/architecture/mailbox-system.md §11.1.1）。
+        // 唯一投递点（docs/architecture/a2a-communication.md §11.1.1）。
         // 这里曾经直接 targetAgent.sendMessage(...)：绕过 deliver() 就成了
         // 一条「没有来源标记、不走 mailbox 合并、不记统一投递日志」的旁路，
         // 而文档却声称本层只有一个投递出口。
@@ -5248,7 +5248,7 @@ export class APIServer {
           chainId: newChainId(),
           depth: 1,
         });
-        // 投递即返回，不等回复（mailbox-system.md §11.2：A2A 永远异步）。
+        // 投递即返回，不等回复（a2a-communication.md §11.2：A2A 永远异步）。
         // 旧实现在这里同步等交对端回答，与异步契约直接矛盾：对端选择不回复时，
         // 请求就只能靠超时结束，调用方分不清「对方在思考」和「对方不回」。
         this.json(res, 200, {

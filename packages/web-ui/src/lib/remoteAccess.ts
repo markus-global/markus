@@ -10,7 +10,7 @@
  *
  * SINGLE SOURCE OF TRUTH for everything mirrored here:
  *   • `packages/remote/src/contract.ts`   (REMOTE_CONTRACT_VERSION 1.0.0, T1)
- *   • `docs/design/remote-access-contract.md`  (normative prose)
+ *   • `docs/architecture/remote-access.md`  (normative prose)
  * If the contract changes, this mirror + `test/remoteAccessWizard.test.ts` must
  * change with it. The enums below are runtime `const` arrays with the type
  * derived from them, so "the list" and "the union" can never drift here either.

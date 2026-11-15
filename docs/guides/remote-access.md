@@ -5,7 +5,7 @@
 > HTTP/WS proxy). That is gone. Your tunnel carries the data; Markus Hub only
 > provides the **entry domain**, an **endpoint registry**, and a **login gate**.
 >
-> Normative interface: [`docs/design/remote-access-contract.md`](../design/remote-access-contract.md) (frozen, T1).
+> Normative interface: [`docs/architecture/remote-access.md`](../architecture/remote-access.md) (frozen, T1).
 > Shared types: `packages/remote/src/contract.ts`. UI logic: `packages/web-ui/src/lib/remoteAccess.ts`.
 
 ---

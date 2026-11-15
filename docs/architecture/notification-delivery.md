@@ -11,6 +11,27 @@ The path is **platform-generic**. Feishu was merely the first platform where a
 user configured a destination and noticed; the same structural holes existed for
 every IM.
 
+## Merge record
+
+> **合并于 2026-11-15** — §12 (in-app user notifications) and §13 (agent→user tools:
+> `notify_user` vs `request_user_input`) were merged **verbatim** from
+> [`mailbox-system.md`](./mailbox-system.md) §12/§13, which now carry pointers only. The
+> pre-existing structure (§1–§11, the outbound-to-IM path) is unchanged; the merged chapters
+> keep their source numbering, so `mailbox-system.md §12.x / §13.x` references map one-to-one
+> onto this file.
+>
+> Layering, so the two halves cannot contradict each other: §1–§11 describe **outbound to a
+> person's IM** (destination resolution, send fidelity, approval cards, one-message-per-
+> notification); §12 describes the **in-app** store + WebSocket fan-out; §13 describes the
+> **agent-side tools** that feed both. They meet at `HITLService.notify()`, and the mechanism
+> description is taken from `mailbox-system.md` as authoritative: `notify()` fans out
+> **per person** for the in-app bell/WS and emits **exactly once** on the channel stream the
+> IM dispatcher subscribes to (§12.5 here, §9 above).
+>
+> What stays in [`mailbox-system.md`](./mailbox-system.md): enqueue, priority, merging,
+> leasing and retry of the mailbox items these paths produce. The mailbox only owns
+> *enqueueing and priority*; the delivery contract is this document.
+
 ## 1. The model — a destination is a concrete, sendable address
 
 First principle: **a notification destination is an address**
@@ -271,3 +292,203 @@ moves bytes.*
 - A desktop install with no group configured for a bot is correctly
   **unconfigured** — that is the designed state, not a defect.
 
+---
+
+## 12. User Notifications (Human Mailbox)
+
+> Merged 2026-11-15 from `mailbox-system.md` §12 (verbatim below). This is the **in-app**
+> layer — a DB row plus a WebSocket fan-out — i.e. the user-facing counterpart of the agent
+> mailbox. Outbound-to-IM delivery of the same notification is §1–§11 above; both are fed by
+> `HITLService.notify()`.
+
+Just as agents have a mailbox for incoming stimuli, users have a **persistent notification system** for events that require their attention. This is the user-facing counterpart to the agent mailbox.
+
+### 12.1 Storage
+
+```sql
+CREATE TABLE user_notifications (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL,
+  type TEXT NOT NULL,             -- UserNotificationType
+  title TEXT NOT NULL,
+  body TEXT DEFAULT '',
+  priority TEXT DEFAULT 'normal', -- 'low' | 'normal' | 'high' | 'urgent'
+  read INTEGER DEFAULT 0,
+  action_type TEXT,               -- 'navigate' | 'open_chat' | null
+  action_target TEXT,             -- JSON: { path } or { agentId, sessionId }
+  metadata TEXT DEFAULT '{}',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+```
+
+### 12.2 Notification Type Registry
+
+Analogous to `MAILBOX_TYPE_REGISTRY`, user notification types are defined in `USER_NOTIFICATION_TYPE_REGISTRY` in `@markus/shared`:
+
+| Type | Label | Icon | Default Priority | Action | Category |
+|------|-------|------|-----------------|--------|----------|
+| `approval_request` | Approval Request | 🔐 | high | navigate | approval |
+| `task_created` | Task Created | 📋 | normal | navigate | task |
+| `task_completed` | Task Completed | ✅ | normal | navigate | task |
+| `task_review` | Task Review | 👁️ | normal | navigate | task |
+| `task_failed` | Task Failed | ❌ | high | navigate | task |
+| `requirement_created` | Requirement Proposed | 📝 | high | navigate | task |
+| `requirement_decision` | Requirement Decision | ⚖️ | normal | navigate | task |
+| `agent_report` | Agent Report | 📊 | normal | none | agent |
+| `system` | System | ⚙️ | normal | none | system |
+
+### 12.3 Action Types
+
+Notifications can be **actionable** — clicking them navigates the user to the relevant context:
+
+| `action_type` | `action_target` format | Behaviour |
+|---------------|----------------------|-----------|
+| `navigate` | `{ "path": "/work?task=T123" }` | Navigate to the specified route |
+| `open_chat` | `{ "agentId": "...", "sessionId": "..." }` | Open chat with agent, resume session |
+| `none` | — | Notification only, no navigation |
+
+### 12.4 REST API
+
+| Method | Path | Description |
+|--------|------|-------------|
+| GET | `/api/notifications?type=...&limit=...&offset=...` | List notifications with filtering, returns `totalCount` and `unreadCount` |
+| POST | `/api/notifications/:id/read` | Mark single notification as read |
+| POST | `/api/notifications/mark-all-read` | Mark all notifications as read |
+
+### 12.5 Real-Time Delivery
+
+When a notification is created (via `HITLService.notify()`), a WebSocket `notification` event is broadcast. The frontend `App.tsx` listens for this and dispatches a `markus:notifications-changed` custom DOM event, which triggers the `NotificationBell` component to refresh.
+
+---
+
+## 13. Agent-to-User Communication
+
+> Merged 2026-11-15 from `mailbox-system.md` §13 (verbatim below). The distinction is a
+> contract, not guidance: `notify_user` informs (one-way), `request_user_input` asks
+> (blocking, returns the answer). Mailbox-side, the resulting items are ordinary mailbox
+> items — see [mailbox-system.md](./mailbox-system.md) §5 for enqueue and §4 for the
+> approval-wait backstop (`APPROVAL_WAIT_TIMEOUT_MS`, 24 h).
+
+Agents have two distinct modes for communicating with users. **They are not
+interchangeable** — the choice is decided by one question: *do I need an answer
+before I can continue?*
+
+| I need… | Tool | Semantics |
+|---|---|---|
+| to inform (status, report, alert, finding) | `notify_user` | **one-way**; do NOT expect a reply; must not wait for it |
+| an answer / authorization / a decision | `request_user_input` | **blocks** until the human responds; returns the answer |
+
+A question asked through `notify_user` does not block, brings no answer back, and
+leaves the agent permanently blocked — which in practice produces repeated
+notifications of the same ask (2026-10-25: 12 identical sends in 3 minutes). A
+notification sent through `request_user_input` would hold a turn open for an
+answer nobody needs to give. Each tool's own description states this boundary;
+it is enforced by the tools' contracts, not by caller discipline.
+
+### 13.1 `notify_user` — Proactive Chat Message + Notification
+
+Proactive messages that appear in the agent's chat **and** the user's notification bell. The user can reply in chat, and the agent has full context of what it sent.
+
+```typescript
+// Tool schema
+{
+  name: 'notify_user',
+  parameters: {
+    title: string,     // Short headline (1 line)
+    body: string,      // Full message content (visible in chat)
+    priority: 'low' | 'normal' | 'high' | 'urgent',  // optional, default 'normal'
+    related_task_id?: string,  // deep-link to task if applicable
+    target_user_id?: string    // target specific user (defaults to currentInteractingUserId)
+  }
+}
+```
+
+**When to use**: Status updates, task completion notices, FYI messages, findings, alerts — any proactive communication where the user may want to reply.
+
+**Flow**: `agent.executeTool('notify_user')` → builds formatted message with embedded context → `memory.appendMessage()` (in-memory session) → `eventBus.emit('agent:notify-user')` → `start.ts` handler: `chatSessionRepo.appendMessage()` (with `notifyUser` metadata) + `ws.broadcastProactiveMessage()` (with metadata) + `hitlService.notify()`
+
+**Notification routing**: With `related_task_id` → `actionType: 'navigate'` to Work page. Without task → `actionType: 'open_chat'` with `sessionId` to agent's chat.
+
+#### Message Metadata & Context Embedding
+
+Every `notify_user` message is persisted with **two layers of context**:
+
+1. **DB metadata** (`metadata` column): `{ notifyUser: true, priority, taskId?, requirementId? }` — used by the frontend to display context links and badges.
+
+2. **Embedded context comment** (appended to message content): `<!-- notify_context: task_id=xxx, requirement_id=yyy -->` — survives through `restoreSessionFromHistory()` (which only reads `role` + `content`), ensuring the agent retains context about what it notified the user about when the user replies.
+
+The agent's `chat` scenario system prompt instructs it to parse these `notify_context` references and use tools like `recall_activity` or `search_tasks` to retrieve full context before responding to user follow-ups.
+
+> **Referencing resources in the body**: `notify_user` bodies (and any chat/comment/report markdown) should reference Markus resources using the conventions in [prompt-engineering.md §2.2 "Referencing Markus Resources"](./prompt-engineering.md#referencing-markus-resources) — bare IDs (`tsk_…`, `dlv_…`, …), titled links `[Title](task:tsk_…)`, or a reference alone on its own line to render a card. This is separate from the `related_task_id` metadata (which drives the notification's deep-link badge).
+
+#### Real-time Visibility
+
+All `notify_user` messages are buffered in the frontend for every agent conversation immediately upon WebSocket receipt — regardless of whether the user is currently viewing that agent's chat. This ensures messages are visible as soon as the user navigates to the agent, without requiring a page reload.
+
+### 13.2 `request_user_input` — Blocking Decision Request
+
+Requests input or a decision from the user. The tool **blocks** until the user
+responds — no timeout. Supports multiple questions, default Approve/Reject
+options, custom options, and optional freeform text input.
+`request_user_approval` is a deprecated alias with identical behaviour, kept only
+so older prompts keep working.
+
+**Use it whenever you cannot continue without an answer** — an authorization, a
+scope call, an ambiguous choice, a fact only the human has ("I am blocked, I need
+one line of approval"). Asking through `notify_user` instead leaves the turn
+unblocked, brings no answer back, and produces repeated notifications of the same
+ask; the blocking tool is the only correct choice for a question that needs an
+answer.
+
+```typescript
+// Tool schema
+{
+  name: 'request_user_input',
+  parameters: {
+    title: string,           // Short headline
+    description: string,     // Detailed context
+    options?: Array<{        // Custom options (defaults to Approve/Reject)
+      id: string,
+      label: string,
+      description?: string
+    }>,
+    allow_freeform?: boolean, // Allow user to type custom text
+    related_task_id?: string,
+    priority?: 'normal' | 'high' | 'urgent'
+  }
+}
+// Returns: { status: 'ok', approved: boolean, selected_option: string, comment: string }
+```
+
+**When to use**: Approval requests, design decisions, choosing between approaches, anything requiring user input or decision.
+
+**Flow**: `agent.executeTool('request_user_input')` → `attentionController.setWaitingForApproval(true)` → `HITLService.requestApprovalAndWait(options)` → notification + WebSocket → NotificationBell renders options → user responds → `HITLService.respondToApproval(selectedOption)` → promise resolves → agent receives result
+
+The attention controller uses `APPROVAL_WAIT_TIMEOUT_MS` (24h) instead of the normal 45-minute backstop (`MAILBOX_PROCESSING_TIMEOUT_MS`) while waiting for approval, preventing the mailbox item from being requeued prematurely.
+
+### 13.3 Prompt Guidance
+
+The system prompt includes scenario-specific guidance on which tool to use:
+
+| Situation | Tool |
+|-----------|------|
+| Status report, progress update, FYI alert | `notify_user` — one-way; the user may reply, but do not wait |
+| Task completed notification | `notify_user` with `related_task_id` |
+| **Blocked: needs an authorization / decision to continue** | **`request_user_input`** (blocks, returns the answer) |
+| Need user to approve/reject something | `request_user_input` (default options) |
+| Need user to choose between approaches | `request_user_input` with custom `options` |
+| Need user freeform input | `request_user_input` with `allow_freeform: true` |
+| Want to discuss interactively | Mention user via task/requirement comment |
+| Need to review past execution details | `recall_activity` (list activities or get logs) |
+
+---
+
+## 14. What this document does *not* own
+
+- **Enqueueing, priority, merging, leasing, retry** of the notification / approval /
+  `a2a_message` items these paths produce — [`mailbox-system.md`](./mailbox-system.md) §4-§6,
+  §14, §17-§18.
+- **Which agent gets an inter-agent message and how** —
+  [`a2a-communication.md`](./a2a-communication.md) §11.
+- **Addresses, envelopes and bounces** (`refOrigin`, delivery facts, `bounced`) —
+  [`mailbox-system.md`](./mailbox-system.md) §28.

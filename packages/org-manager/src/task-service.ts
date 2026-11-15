@@ -1101,7 +1101,7 @@ export class TaskService implements ApprovalTargetPort {
    * 终态钩子 2（C9-E）：agent 打回时必须断言 `task.rejection_reason`。
    *
    * 仅对 **agent** 执行者生效：人类从 UI 打回没有回合身份，无法断言事实，
-   * 强求它只会阻止决定而不是记录决定（口径写在 facts-verification.md §2）。
+   * 强求它只会阻止决定而不是记录决定（口径写在 facts.md §9）。
    */
   private assertRejectionReason(task: Task, author: string | undefined): void {
     if (!this.factsActive()) return;

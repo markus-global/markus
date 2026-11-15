@@ -420,7 +420,7 @@ writes are dropped when the observation pool is read.
 
 Before the working context fills up, the agent is prompted to persist anything important so
 lossy compaction never silently discards decisions or learned facts. The prompt-side
-mechanics live in [prompt-engineering.md §5.7](./prompt-engineering.md); this is the
+mechanics live in [tool-loop-harness.md §5.7](./tool-loop-harness.md); this is the
 authoritative behavior spec.
 
 - **Behavior**: a **turn-level preflight** runs `memoryFlush` once per session when the

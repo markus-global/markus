@@ -214,7 +214,7 @@ const configuredLookup = new RepoNotifyTargetLookup({
   assert(deliveries[0]?.target.platform === 'telegram', 'a non-Feishu platform received the approval (D5 fixed)', deliveries[0]?.target);
   assert(deliveries[0]?.target.instanceId === telegramInstance.id, 'the real instance id travels with the outbound message', deliveries[0]?.target.instanceId);
   // Capabilities come from the REAL telegram manifest — expected format derived
-  // from the manifest declaration (docs/design §7.4: a declaring manifest gets
+  // from the manifest declaration (docs/records/deliverable-sharing-2026-08-12.md §7.4: a declaring manifest gets
   // markdown; only a platform with no capability block at all is plain text).
   const tgCaps = getManifest('telegram')?.capabilities;
   const expectFormat = !tgCaps ? 'text' : tgCaps.cards ? 'card' : 'markdown';

@@ -263,7 +263,7 @@ describe('done — closed out, and only a pass can say so', () => {
   });
 
   it('is produced for a cancelled thread: closed without claiming success', () => {
-    // Documented decision (see docs/architecture/thread-stage.md): cancelled/archived
+    // Documented decision (see docs/architecture/derived-views.md §3): cancelled/archived
     // are terminal but never claimed success, so there is no claim to verify. The
     // invariant "done ⇒ pass" therefore applies to the *success* terminals only.
     expect(stage({ fsm: fsm({ status: 'cancelled' }) })).toBe('done');

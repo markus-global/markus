@@ -21,7 +21,7 @@
  * 根因：投递被拆成「入库」+「唤醒」，唤醒上有墙钟丢弃闸；同一件事在
  * mailbox 层已有一套「合并」机制（§14），api-server 又叠了一套「丢弃」。
  *
- * 规范（docs/architecture/mailbox-system.md §11.1.1 / §14.5）：
+ * 规范（docs/architecture/a2a-communication.md §11.1.1 / mailbox-system.md §14.5）：
  *   · 唯一投递机制 = enqueueToMailbox('a2a_message')
  *   · 风暴控制 = 因果链 + 合并，**永不**墙钟丢弃
  *   · 不存在 delivered-but-not-awake

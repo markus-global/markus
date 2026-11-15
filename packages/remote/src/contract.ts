@@ -6,7 +6,7 @@
  * (endpoint registry API + entry gate).
  *
  * Normative companions:
- *   • docs/design/remote-access-contract.md   ← prose contract (freezes the same facts)
+ *   • docs/architecture/remote-access.md   ← prose contract (freezes the same facts)
  *   • docs/design/remote-access.md / remote-access-design.md (v2) ← design intent
  *
  * ⚠️ This file is a CONTRACT. Changing anything here is a breaking change that
