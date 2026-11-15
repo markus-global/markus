@@ -716,6 +716,17 @@
     "colValue": "值",
     "countLabel": "条记录",
     "reset": "重置",
-    "superseded": "已被取代"
+    "superseded": "已被取代",
+    "wu": {
+      "session": "会话",
+      "sessionRound": "会话第 {{round}} 轮",
+      "a2a": "消息"
+    },
+    "src": {
+      "commit": "提交 {{hash}}",
+      "probe": "实测记录",
+      "task": "任务",
+      "deliverable": "产出物"
+    }
   }
 }

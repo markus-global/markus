@@ -78,11 +78,14 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
 ];
 
 export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] }> = [
-  { labelKey: 'nav.group.general', tabs: ['appearance', 'storage', 'facts'] },
+  { labelKey: 'nav.group.general', tabs: ['appearance'] },
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
   { labelKey: 'nav.group.account', tabs: ['account'] },
+  // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
+  // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
+  { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
 ];
 
 /** Data each settings tab needs the first time it is opened (pure, testable). */
@@ -138,6 +141,8 @@ const STORAGE_SAFETY_LEVEL: Record<string, 'safe' | 'caution' | 'keep'> = {
 const SETTINGS_TAB_ICONS: Record<string, string> = {
   appearance: 'M21 4H14 M10 4H3 M21 12H12 M8 12H3 M21 20H16 M12 20H3 M14 2v4 M8 10v4 M16 18v4',
   storage: 'M12 8c4.418 0 8-1.343 8-3s-3.582-3-8-3-8 1.343-8 3 3.582 3 8 3Z M4 5v6c0 1.657 3.582 3 8 3s8-1.343 8-3V5 M4 11v6c0 1.657 3.582 3 8 3s8-1.343 8-3v-6',
+  // 事实审计：带核验勾的卷宗（不是放大镜——这是"已核验的记录"，不是"搜索"）
+  facts: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z M14 2v6h6 M8.5 14.5l2.5 2.5 4-4.5',
   providers: 'M9 2v3 M15 2v3 M9 19v3 M15 19v3 M2 9h3 M2 15h3 M19 9h3 M19 15h3 M6 6h12v12H6z M9 9h6v6H9z',
   execution: 'M12 8V4H8 M4 8h16a2 2 0 0 1 2 2v6a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2v-6a2 2 0 0 1 2-2z M2 14h2 M20 14h2 M15 13v2 M9 13v2',
   browser: 'M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20z M2 12h20 M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z',

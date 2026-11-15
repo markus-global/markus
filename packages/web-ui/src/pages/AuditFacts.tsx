@@ -29,6 +29,8 @@ import {
   describeSupersedeChain,
   indexFacts,
   isIndependentlyVerified,
+  parseSourceRef,
+  parseWorkUnitRef,
   sortFacts,
   type FactRowView,
 } from '../lib/factsAudit.js';
@@ -251,7 +253,20 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
                   <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-fg-tertiary">
                     <span title={row.createdAt}>{shortTime(row.createdAt)}</span>
                     <span title={row.assertedBy}>{row.assertedByName || row.assertedBy}</span>
-                    {row.workUnitRef && <span className="font-mono opacity-70">{row.workUnitRef}</span>}
+                    {row.workUnitRef && (
+                      <span className="opacity-80" title={row.workUnitRef}>
+                        {(() => {
+                          const wu = parseWorkUnitRef(row.workUnitRef);
+                          if (wu.kind === 'session') {
+                            return wu.round
+                              ? t('factsAudit.wu.sessionRound', { round: wu.round })
+                              : t('factsAudit.wu.session');
+                          }
+                          if (wu.kind === 'a2a') return t('factsAudit.wu.a2a');
+                          return wu.value;
+                        })()}
+                      </span>
+                    )}
                     <span className="tabular-nums">{Math.round((row.confidence ?? 0) * 100)}%</span>
                     {chain.outgoing && <span data-testid="audit-facts-chain-out">{chain.outgoing}</span>}
                     {chain.incoming && <span data-testid="audit-facts-chain-in">{chain.incoming}</span>}
@@ -259,11 +274,24 @@ export default function AuditFacts({ role, authUser }: AuditFactsProps) {
 
                   {row.sourceRefs?.length > 0 && (
                     <div className="mt-2 flex flex-wrap gap-1">
-                      {row.sourceRefs.map(ref => (
-                        <span key={ref} className="rounded bg-surface-secondary px-1.5 py-0.5 font-mono text-[10px] text-fg-secondary">
-                          {ref}
-                        </span>
-                      ))}
+                      {row.sourceRefs.map(ref => {
+                        const src = parseSourceRef(ref);
+                        const text =
+                          src.kind === 'commit' ? t('factsAudit.src.commit', { hash: src.hash })
+                          : src.kind === 'probe' ? t('factsAudit.src.probe')
+                          : src.kind === 'task' ? t('factsAudit.src.task')
+                          : src.kind === 'deliverable' ? t('factsAudit.src.deliverable')
+                          : src.value;
+                        return (
+                          <span
+                            key={ref}
+                            title={ref}
+                            className="rounded bg-surface-secondary px-1.5 py-0.5 text-[10px] text-fg-secondary"
+                          >
+                            {text}
+                          </span>
+                        );
+                      })}
                     </div>
                   )}
 

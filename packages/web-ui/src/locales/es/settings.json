@@ -32,7 +32,8 @@
       "aiConfig": "Configuración AI",
       "tools": "Herramientas y capacidades",
       "connections": "Conexión",
-      "account": "Cuenta"
+      "account": "Cuenta",
+      "data": "Datos y auditoría"
     }
   },
   "appearance": {

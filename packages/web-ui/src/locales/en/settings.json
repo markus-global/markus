@@ -32,7 +32,8 @@
       "aiConfig": "AI Configuration",
       "tools": "Tools & Capabilities",
       "connections": "Connections",
-      "account": "Account"
+      "account": "Account",
+      "data": "Data & Audit"
     }
   },
   "appearance": {

@@ -716,6 +716,17 @@
     "colValue": "Value",
     "countLabel": "records",
     "reset": "Reset",
-    "superseded": "Superseded"
+    "superseded": "Superseded",
+    "wu": {
+      "session": "Session",
+      "sessionRound": "Session · round {{round}}",
+      "a2a": "Message"
+    },
+    "src": {
+      "commit": "Commit {{hash}}",
+      "probe": "Live probe",
+      "task": "Task",
+      "deliverable": "Deliverable"
+    }
   }
 }

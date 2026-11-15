@@ -32,7 +32,8 @@
       "aiConfig": "AI 配置",
       "tools": "工具与能力",
       "connections": "连接与集成",
-      "account": "账户"
+      "account": "账户",
+      "data": "数据与审计"
     }
   },
   "appearance": {

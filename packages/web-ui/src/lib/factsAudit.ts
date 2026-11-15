@@ -145,3 +145,43 @@ export function isIndependentlyVerified(row: FactRowView): boolean {
   const verifier = (v.verifiedBy ?? '').trim();
   return verifier.length > 0 && verifier !== row.assertedBy;
 }
+
+/**
+ * 把内部 ref 拆成"人话 + 值"，由组件决定措辞（i18n 在这里断开，不在字符串里拼接）。
+ *
+ * `session:cs_66bc…:r89` 是**会话 id**，直接摊在页面上等于让读者去背一串随机字符。
+ * 读者真正要知道的是"这是一次会话的第 89 轮"，需要精确值时再 hover。
+ */
+export type WorkUnitRefLabel =
+  | { kind: 'session'; round: string | null }
+  | { kind: 'a2a' }
+  | { kind: 'raw'; value: string };
+
+export function parseWorkUnitRef(ref: string): WorkUnitRefLabel {
+  if (!ref) return { kind: 'raw', value: '' };
+  const m = /^session:[^:]+(?::r(\d+))?$/.exec(ref);
+  if (m) return { kind: 'session', round: m[1] ?? null };
+  if (ref.startsWith('a2a:')) return { kind: 'a2a' };
+  return { kind: 'raw', value: ref };
+}
+
+/** `commit:33cf01ef…` → 「提交 33cf01ef」；`probe:…` → 「实测记录」；认不出就原样。 */
+export type SourceRefLabel =
+  | { kind: 'commit'; hash: string }
+  | { kind: 'probe' }
+  | { kind: 'task'; id: string }
+  | { kind: 'deliverable'; id: string }
+  | { kind: 'raw'; value: string };
+
+export function parseSourceRef(ref: string): SourceRefLabel {
+  const idx = ref.indexOf(':');
+  const kind = idx === -1 ? '' : ref.slice(0, idx);
+  const value = idx === -1 ? '' : ref.slice(idx + 1);
+  switch (kind) {
+    case 'commit': return { kind: 'commit', hash: value.slice(0, 8) };
+    case 'probe': return { kind: 'probe' };
+    case 'task': return { kind: 'task', id: value };
+    case 'deliverable': return { kind: 'deliverable', id: value };
+    default: return { kind: 'raw', value: ref };
+  }
+}

@@ -715,6 +715,17 @@
     "colValue": "Valor",
     "countLabel": "registros",
     "reset": "Restablecer",
-    "superseded": "Reemplazado"
+    "superseded": "Reemplazado",
+    "wu": {
+      "session": "Sesión",
+      "sessionRound": "Sesión · ronda {{round}}",
+      "a2a": "Mensaje"
+    },
+    "src": {
+      "commit": "Commit {{hash}}",
+      "probe": "Prueba real",
+      "task": "Tarea",
+      "deliverable": "Entregable"
+    }
   }
 }
