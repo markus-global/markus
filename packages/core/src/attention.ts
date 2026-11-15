@@ -633,11 +633,12 @@ export class AttentionController {
                 // （重试 < 租约 TTL 延 15min，> TTL 被清成 dropped = 评审永久丢失）。
                 // 传 `reuseItemId` 后走 `resolveReinjectDecision` 的「复用原行回队」分支：
                 // 不新增行、无条件释放认领、刷新 `queued_at`，返回 `status='queued'`。
-                this.mailbox.enqueue(item.sourceType, item.payload, {
-                  priority: item.priority,
-                  metadata: item.metadata,
-                  reuseItemId: item.id,
-                });
+                //
+                // C9 相邻路径：回队只有**一个**实现（`reEnqueueOnShutdown`），身份表态也在
+                // 那里 —— 这里内联一份 `enqueue(...)` 就等于同一件事有两个写者：内联版会漏掉
+                // 「复用行继承 work_unit_ref」的声明，在 `MARKUS_STRICT_IDENTITY=1` 下直接抛错
+                // （真机探针见 docs/records/cut9-adjacent-identity-paths-2026-11-15.md）。
+                this.mailbox.reEnqueueOnShutdown(item);
               } catch (err) {
                 log.warn('Failed to re-enqueue item on shutdown', { itemId: item.id, error: String(err) });
               }
