@@ -114,7 +114,7 @@ describe('executeTask and task lifecycle', () => {
     const logs: Array<{ type: string; content: string }> = [];
     await agent.sendTaskExecution('task_exec_1', 'Implement a small feature', (entry) => {
       if (entry.persist) logs.push({ type: entry.type, content: entry.content });
-    }, undefined, undefined, undefined, undefined, undefined, undefined, () => {});
+    }, undefined, undefined, 1, undefined, undefined, undefined, () => {});
 
     expect(logs.some(l => l.type === 'status' && l.content === 'started')).toBe(true);
     expect(logs.some(l => l.type === 'status' && l.content === 'execution_finished')).toBe(true);
@@ -1047,6 +1047,8 @@ describe('performDeliberation and cognitive pipeline', () => {
         taskId: 'task_mbx_exec',
         extra: {
           onLog: (entry: { type: string; content: string }) => { logs.push(entry.type); },
+          // 派发侧是 round 的唯一缺省点：不带 round 的派发现在会被 fail closed
+          executionRound: 1,
         },
       }, { metadata: { taskId: 'task_mbx_exec' }, intent: 'trigger_execution', runtime: { responsePromise: { resolve: () => resolve(), reject } } });
     });
