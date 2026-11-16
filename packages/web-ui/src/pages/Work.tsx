@@ -3,7 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
 import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.ts';
-import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
+import { deriveReviewSessions, hasLiveReview, reviewerDisplayName, reviewBannerName, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
 import { buildActivityTimeline } from '../lib/activityTimeline.ts';
@@ -2144,14 +2144,20 @@ function TaskDetailPanel({
   const detailSwipe = useSwipeTabs(detailTabs, activeTab, switchTab);
 
   // 评审会话从**权威状态历史**派生（不新增后端/表）：一次「→ review」即一条。
+  // 评审人的名字只有**一个**来源：任务的指定 reviewer（人类查 users、Agent 查 agents）。
+  // 查不到就传空串 ⇒ 显示为空，绝不拿「提交评审的执行者」顶替。
   const [reviewSessions, setReviewSessions] = useState<ReviewSession[]>([]);
   useEffect(() => {
     let live = true;
+    const reviewerName = reviewerDisplayName(task, { agents, users });
     api.tasks.getHistory(task.id)
-      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: agents.find(a => a.id === task.reviewerId)?.name })); })
+      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName })); })
       .catch(() => { if (live) setReviewSessions([]); });
     return () => { live = false; };
-  }, [task.id, task.status, task.reviewerId, agents]);
+  }, [task.id, task.status, task.reviewerId, task.reviewerType, agents, users]);
+
+  // 「{reviewer} 正在评审」横幅该不该出现、显示谁——判据在纯函数里（人类评审者不显示）。
+  const reviewBanner = reviewBannerName(reviewSessions, { status: task.status, reviewerType: task.reviewerType });
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -2941,11 +2947,11 @@ function TaskDetailPanel({
           </div>
         )}
 
-        {task.status === 'review' && activeReviewSession(reviewSessions) && (
+        {reviewBanner && (
           <div className="mx-6 mt-3 flex items-start gap-2.5 rounded-lg border border-purple-500/30 bg-purple-500/8 px-3 py-2">
             <span className="mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400 animate-pulse" />
             <div className="min-w-0 flex-1 text-xs text-fg-primary">
-              {t('work:task.reviewInProgressBy', { agent: activeReviewSession(reviewSessions)!.reviewerName })}
+              {t('work:task.reviewInProgressBy', { agent: reviewBanner })}
             </div>
             <button onClick={() => switchTab('activity')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
           </div>

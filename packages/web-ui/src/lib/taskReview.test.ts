@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { deriveReviewSessions, activeReviewSession, hasLiveReview } from './taskReview.ts';
+import {
+  deriveReviewSessions, activeReviewSession, hasLiveReview, reviewerDisplayName, reviewBannerName,
+} from './taskReview.ts';
 import type { StatusTransitionInfo } from '../api.ts';
 
 function tr(id: number, fromStatus: string, toStatus: string, createdAt: string, extra: Partial<StatusTransitionInfo> = {}): StatusTransitionInfo {
@@ -11,7 +13,6 @@ describe('deriveReviewSessions — from authoritative status history', () => {
     const s = deriveReviewSessions([tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z')]);
     expect(s).toHaveLength(1);
     expect(s[0]!.status).toBe('reviewing');
-    expect(s[0]!.reviewerName).toBe('Reviewer');
     expect(s[0]!.completedAt).toBeNull();
   });
 
@@ -122,5 +123,115 @@ describe('deriveReviewSessions — outcome of each review round', () => {
     expect(s[1]!.round).toBe(2);
     expect(s[1]!.outcome).toBe('approved');
     expect(s[1]!.note).toBe('通过');
+  });
+});
+
+/**
+ * 事故（Owner 2026-11-16 打回）：评审者是**人类**的卡上，横幅显示「{某个 Agent} 正在评审」，
+ * 那个 Agent 其实是**提交评审的执行者**。
+ *
+ * 根因不是「人类名册查不到」这一条，而是「查不到就换个语义不同的人顶替」：
+ * 提交者 ≠ 评审者。所以评审人名只有**一个**来源——任务的指定 reviewer；
+ * 拿不到就是不显示，绝不回退。
+ */
+describe('deriveReviewSessions — 评审人名只来自指定 reviewer（不用提交者顶替）', () => {
+  it('Agent A 提交 → review、指定评审者是名册里查不到的人类 ⇒ reviewerName 不得是 A', () => {
+    // 人类评审者的名字由页面从 users 名册解析；模拟「解析不到」的两种入参形态：
+    //   ''    —— 现在的页面（reviewerDisplayName 查不到就返回空串）
+    //   undefined —— 旧页面（agents.find(...)?.name 查不到就是 undefined，正是事故现场）
+    for (const missing of ['', undefined] as const) {
+      const s = deriveReviewSessions(
+        [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', {
+          changedById: 'agt_submitter', changedByName: 'Submitter Agent',
+        })],
+        { reviewerId: 'user_human_reviewer', reviewerName: missing },
+      );
+      expect(s[0]!.reviewerName).not.toBe('Submitter Agent');
+      expect(s[0]!.reviewerName).toBe('');
+      expect(s[0]!.reviewerId).toBe('user_human_reviewer');
+    }
+  });
+
+  it('opts.reviewerName 缺省时留空串，不拿历史里的 changedByName 充数', () => {
+    const s = deriveReviewSessions([
+      tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', { changedByName: 'Submitter Agent' }),
+    ]);
+    expect(s[0]!.reviewerName).toBe('');
+  });
+});
+
+/** 名册解析：人类查 users、Agent 查 agents；判据是权威字段 reviewerType，不猜 id 前缀。 */
+describe('reviewerDisplayName — 按 reviewerType 查对应名册', () => {
+  const rosters = {
+    agents: [{ id: 'agt_rev', name: 'Secretary' }],
+    users: [{ id: 'user_owner', name: 'Jason Carter' }],
+  };
+
+  it('人类评审者 ⇒ 从 users 名册取名', () => {
+    expect(reviewerDisplayName({ reviewerId: 'user_owner', reviewerType: 'human' }, rosters)).toBe('Jason Carter');
+  });
+
+  it('Agent 评审者 ⇒ 从 agents 名册取名（回归：路径不变）', () => {
+    expect(reviewerDisplayName({ reviewerId: 'agt_rev', reviewerType: 'agent' }, rosters)).toBe('Secretary');
+  });
+
+  it('reviewerType 缺省按 agent 处理（老数据没有该字段）', () => {
+    expect(reviewerDisplayName({ reviewerId: 'agt_rev' }, rosters)).toBe('Secretary');
+  });
+
+  it('人类评审者即便 agents 名册里有同名 id，也不许从 agents 取名', () => {
+    const sameIdEverywhere = { agents: [{ id: 'user_x', name: 'Wrong Roster' }], users: [] as Array<{ id: string; name: string }> };
+    expect(reviewerDisplayName({ reviewerId: 'user_x', reviewerType: 'human' }, sameIdEverywhere)).toBe('');
+  });
+
+  it('查不到就是空串（不猜、不顶替）', () => {
+    expect(reviewerDisplayName({ reviewerId: 'user_ghost', reviewerType: 'human' }, rosters)).toBe('');
+    expect(reviewerDisplayName({ reviewerId: 'agt_ghost', reviewerType: 'agent' }, rosters)).toBe('');
+  });
+});
+
+/** 「{reviewer} 正在评审」横幅要不要显示、显示谁——单一判据，页面不再自己推。 */
+describe('reviewBannerName — 评审中横幅的归属', () => {
+  const sessionsFor = (reviewerId: string, reviewerName?: string) => deriveReviewSessions(
+    [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', {
+      changedById: 'agt_submitter', changedByName: 'Submitter Agent',
+    })],
+    { reviewerId, reviewerName },
+  );
+
+  it('人类评审者 + status=review ⇒ 不显示横幅（Owner 裁定）', () => {
+    expect(reviewBannerName(sessionsFor('user_owner', 'Jason Carter'), {
+      status: 'review', reviewerType: 'human',
+    })).toBeNull();
+  });
+
+  it('人类评审者即便名字解析不到，也不显示横幅', () => {
+    expect(reviewBannerName(sessionsFor('user_owner', ''), { status: 'review', reviewerType: 'human' })).toBeNull();
+  });
+
+  it('Agent 评审者 + status=review ⇒ 显示，姓名 = 评审者本人（回归）', () => {
+    expect(reviewBannerName(sessionsFor('agt_rev', 'Secretary'), {
+      status: 'review', reviewerType: 'agent',
+    })).toBe('Secretary');
+  });
+
+  it('Agent 评审者名字解析不到 ⇒ 不显示横幅，也不退回提交者', () => {
+    const name = reviewBannerName(sessionsFor('agt_rev', ''), { status: 'review', reviewerType: 'agent' });
+    expect(name).toBeNull();
+    expect(name).not.toBe('Submitter Agent');
+  });
+
+  it('任务不在 review 状态 ⇒ 不显示横幅', () => {
+    expect(reviewBannerName(sessionsFor('agt_rev', 'Secretary'), {
+      status: 'in_progress', reviewerType: 'agent',
+    })).toBeNull();
+  });
+
+  it('没有未关闭的评审会话 ⇒ 不显示横幅', () => {
+    const closed = deriveReviewSessions([
+      tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z'),
+      tr(2, 'review', 'completed', '2026-01-01T01:00:00Z'),
+    ], { reviewerId: 'agt_rev', reviewerName: 'Secretary' });
+    expect(reviewBannerName(closed, { status: 'review', reviewerType: 'agent' })).toBeNull();
   });
 });
