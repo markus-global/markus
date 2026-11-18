@@ -579,6 +579,13 @@ export class TaskService implements ApprovalTargetPort {
     if (input.intent === 'approve') {
       this.markReviewSettled(current, 'approved', reviewerId);
       this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
+      // 【为什么这里也要触发】反思是「任务收口」的副作用，不是「谁签的字」的副作用。
+      // 之前只有 `acceptTask()` 那条路触发，而人类在审批闸门点“通过”走的是**这条**
+      // （实测近 15 天 17 次 task_approval_granted vs 1 次 task_review_accepted），
+      // 于是绝大多数完成的任务从未反思过 —— Owner 2026-11-18 问的就是这件事。
+      if (current.assignedAgentId && this.agentManager) {
+        this.triggerPostTaskReflection(current);
+      }
       return;
     }
 
@@ -5684,7 +5691,20 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   private triggerPostTaskReflection(task: Task): void {
-    const agent = this.agentManager?.getAgent(task.assignedAgentId);
+    // 【为什么必须 try/catch】`getAgent()` 对**未加载**的 agent 是 throw（`Agent not found`），
+    // 而不是返回 undefined。调用点在 `acceptTask()` 的收尾，没有 catch —— 于是 worker 被
+    // 停掉的卡一旦被验收，反思既不发生、也没有任何日志（“反思最近没触发”的头号假象）。
+    // 反思是可选的增值动作：拿不到 agent 就跳过并留一条可查的日志，绝不把验收搞挂。
+    const agent = (() => {
+      try {
+        return this.agentManager ? this.agentManager.getAgent(task.assignedAgentId) : null;
+      } catch {
+        log.info('Skipping post-task reflection — worker agent is not loaded', {
+          taskId: task.id, agentId: task.assignedAgentId,
+        });
+        return null;
+      }
+    })();
     if (!agent) return;
 
     if (this.isReflectionRateLimited(task.assignedAgentId)) {
