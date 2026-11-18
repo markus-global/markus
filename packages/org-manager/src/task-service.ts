@@ -579,13 +579,7 @@ export class TaskService implements ApprovalTargetPort {
     if (input.intent === 'approve') {
       this.markReviewSettled(current, 'approved', reviewerId);
       this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
-      // 【为什么这里也要触发】反思是「任务收口」的副作用，不是「谁签的字」的副作用。
-      // 之前只有 `acceptTask()` 那条路触发，而人类在审批闸门点“通过”走的是**这条**
-      // （实测近 15 天 17 次 task_approval_granted vs 1 次 task_review_accepted），
-      // 于是绝大多数完成的任务从未反思过 —— Owner 2026-11-18 问的就是这件事。
-      if (current.assignedAgentId && this.agentManager) {
-        this.triggerPostTaskReflection(current);
-      }
+      // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发。
       return;
     }
 
@@ -3356,6 +3350,19 @@ export class TaskService implements ApprovalTargetPort {
       result.task, result.prevStatus, status, updatedBy, _skipAutoStart, resolvedBlockedReason,
     );
 
+    // 任务后反思的**唯一触发点**：`review → completed`（不区分谁签的字）。
+    //
+    // 【为什么下沉到这里，而不是各收口入口各接一次】“任务收口”至少有三个写者：
+    //   ① 评审 accept 接口（`acceptTask`）
+    //   ② 审批闸门 approve（`applyReviewGateDecision`，人类在 UI 点“通过”）
+    //   ③ **评审 agent 直接用 `task_update` 工具把状态写成 completed** ← 生产里最常见
+    // 前两处各接一次 = 同一契约两处实现（必漂），第三处根本没人接 —— 实测近 14 天
+    // 28 个完成任务只产生 2 条反思（Owner 2026-11-18 连续两次追问的就是这件事）。
+    // 落在唯一状态写入点后，新增收口入口不需要有人“记得接”，迁移本身即判据。
+    if (status === 'completed' && result.prevStatus === 'review' && result.task.assignedAgentId) {
+      this.triggerPostTaskReflection(result.task);
+    }
+
     log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
     return result.task;
   }
@@ -5668,9 +5675,8 @@ export class TaskService implements ApprovalTargetPort {
       metadata: { workerAgentId: task.assignedAgentId, notes: notes?.trim() },
     });
 
-    if (task.assignedAgentId && this.agentManager) {
-      this.triggerPostTaskReflection(task);
-    }
+    // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发
+    // （含“评审 agent 用 task_update 工具直接写 completed”这条主路径）。
 
     log.info(`Task accepted and completed: ${task.title}`, { id: task.id, withNotes: !!notes?.trim() });
     return task;
