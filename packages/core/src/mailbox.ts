@@ -1275,6 +1275,17 @@ export class AgentMailbox {
   /**
    * Wake all attention workers blocked in `dequeueAsync`.
    */
+  /**
+   * 公开的「把空闲的注意力循环叫起来」入口。
+   *
+   * 【为什么需要它】rest 条件命中时**不再**合成一条唤醒消息：被匹配的那条 item 就是
+   * 载体（它已在队列里，入队时已过一次 `wakeIdleLoop`）。但入队与订阅匹配之间存在
+   * 时序窗口，这里补一次唤醒只是**内部信号**，不新增任何记录。
+   */
+  pokeIdle(): void {
+    this.wakeIdleLoop();
+  }
+
   private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string }): void {
     if (this.idleWaiters.size === 0) return;
 

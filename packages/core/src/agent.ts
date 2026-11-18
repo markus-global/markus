@@ -8960,13 +8960,23 @@ export class Agent {
     const condition = sub.wakeOn.kind === 'mailbox-type'
       ? `a \`${sub.wakeOn.sourceType}\` item`
       : 'any new item';
-    this.mailbox.enqueue('system_event', {
-      summary: `Woke for the condition you rested on (${condition})`,
-      content: `[TRIGGER MATCHED] You had rested on ${condition}. An item of type \`${item.sourceType}\` arrived (id ${item.id}).`
-        + (sub.note ? ` Your note: ${sub.note}` : '')
-        + '\nThis is the turn you were waiting for.',
-      extra: { triggerWake: true, subscriptionId: sub.id, matchedItemId: item.id, wakeCause: 'rest-hit' },
-    } as never);
+    // 【不再把“唤醒”写成一条队列消息】命中是一个**已经有载体**的事件：
+    // 被匹配的那条 item 此刻就在队列里，而 `enqueue()` 已经调过 `wakeIdleLoop()`。
+    // 再塞一条 `system_event` 等于同一件事写两遍：队列多一条、可能多占一轮，
+    // 而它携带的信息（“X 到了”）那条 item 自己已经说过了。
+    // Owner 2026-11-18：“一条能正常处理的消息，还会触发一条 woke，这是一种浪费。”
+    //
+    // 为什么不会“死等”：唤醒的唯一必要条件——队列里有活——已经成立，
+    // 这里再 poke 一次只是把「可能错过的唤醒」补上，不新增记录。
+    // 到期（没有条目承载）与启动（状态变更）仍然必须落一条消息：它们是唯一载体。
+    this.mailbox.pokeIdle();
+    log.info('Trigger matched — waking on the item itself (no extra mailbox row)', {
+      agentId: this.id,
+      subscriptionId: sub.id,
+      wakeOn: sub.wakeOn,
+      matchedItemId: item.id,
+      note: sub.note,
+    });
   }
 
   /**
