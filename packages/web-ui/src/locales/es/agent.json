@@ -358,6 +358,7 @@
       "organizeCta": "Pedir al agente que ordene la memoria",
       "organizePrefill": "Tu knowledge.md supera el presupuesto ({{used}}/{{limit}} caracteres, {{pct}}%). Por favor ordénala: fusiona secciones duplicadas, elimina entradas sustituidas por conclusiones nuevas y conserva solo conclusiones reutilizables; no dejes procesos ni registros en el área curada. Muéstrame primero la lista de lo que piensas borrar/fusionar.",
       "organizePrefillHint": "Salta al chat y rellena la petición: tú decides si enviarla",
+      "detailsToggle": "Detalles (región curada · búfer de observaciones · archivo)",
       "injectionLine": "Inyectado en este turno (presupuesto del prompt)",
       "curatedLine": "Región curada en disco (si supera el presupuesto se archiva sin pérdida)",
       "observationLine": "Búfer de observaciones (no se inyecta)",

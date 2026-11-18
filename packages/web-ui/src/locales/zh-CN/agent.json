@@ -357,6 +357,7 @@
       "organizeCta": "让 Agent 整理记忆",
       "organizePrefill": "你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。",
       "organizePrefillHint": "会跳到聊天并预填指令，发送与否由你决定",
+      "detailsToggle": "明细（磁盘策展区 · 观察缓冲 · 归档）",
       "injectionLine": "本轮注入（prompt 预算）",
       "curatedLine": "磁盘策展区（超预算会无损归档）",
       "observationLine": "观察缓冲（不注入）",

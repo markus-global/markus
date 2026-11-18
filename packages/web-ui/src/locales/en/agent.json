@@ -358,6 +358,7 @@
       "organizeCta": "Ask agent to tidy memory",
       "organizePrefill": "Your knowledge.md is over budget ({{used}}/{{limit}} chars, {{pct}}%). Please tidy it: merge duplicate sections, drop entries superseded by newer conclusions, keep only reusable conclusions; keep process and logs out of the curated area. Show me the list of what you plan to delete/merge first.",
       "organizePrefillHint": "Jumps to chat and prefills the request — you decide whether to send it",
+      "detailsToggle": "Details (curated region · observation buffer · archive)",
       "injectionLine": "Injected this turn (prompt budget)",
       "curatedLine": "Curated region on disk (over-budget is archived losslessly)",
       "observationLine": "Observation buffer (not injected)",

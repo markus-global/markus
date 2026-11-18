@@ -1591,41 +1591,46 @@ function MemoryTab({ agentId }: { agentId: string }) {
                 )}
               </>
             )}
-            {/* ② 磁盘策展区：另一个预算，单独一行、单独百分比（仅报告，不画条）。 */}
-            {curatedPct != null && (
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-fg-tertiary">
-                  {t('agent:profilePage.memoryTab.curatedLine', '磁盘策展区（超预算会无损归档）')}
-                  <span className="text-fg-secondary"> {data.curatedChars ?? 0} / {data.curatedCap ?? 0} 字符</span>
-                </span>
-                <span className={pctText(curatedPct)}>{Math.round(curatedPct)}%</span>
+            {/* 其余三个预算与计数：**默认收起**。
+                这个板块只回答一个问题：「现在要不要整理？」——那就只有一根条、一句结论、
+                一个动作。磁盘策展区 / 观察缓冲 / 计数是「查」而不是「看」的东西，
+                平铺出来就是三个不同量纲的数字抢视线（Owner 2026-11-18：“这个板块是不是
+                太复杂了”）。 */}
+            <details className="text-[10px] text-fg-tertiary">
+              <summary className="cursor-pointer select-none hover:text-fg-secondary">
+                {t('agent:profilePage.memoryTab.detailsToggle', '明细（磁盘策展区 · 观察缓冲 · 归档）')}
+              </summary>
+              <div className="mt-1.5 space-y-1">
+                {curatedPct != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-fg-tertiary">
+                      {t('agent:profilePage.memoryTab.curatedLine', '磁盘策展区（超预算会无损归档）')}
+                      <span className="text-fg-secondary"> {data.curatedChars ?? 0} / {data.curatedCap ?? 0} 字符</span>
+                    </span>
+                    <span className={pctText(curatedPct)}>{Math.round(curatedPct)}%</span>
+                  </div>
+                )}
+                {data.observationLimit != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-fg-tertiary">
+                      {t('agent:profilePage.memoryTab.observationLine', '观察缓冲（不注入）')}
+                      <span className="text-fg-secondary"> {data.observationChars ?? 0} / {data.observationLimit ?? 0} 字符</span>
+                    </span>
+                    <span className={pctText(data.observationPercent ?? 0)}>{Math.round(data.observationPercent ?? 0)}%</span>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
+                  <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
+                  {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
+                  {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
+                </div>
               </div>
-            )}
-            {/* ③ 观察缓冲：第三个预算（不注入）。 */}
-            {data.observationLimit != null && (
-              <div className="flex items-center justify-between text-[10px]">
-                <span className="text-fg-tertiary">
-                  {t('agent:profilePage.memoryTab.observationLine', '观察缓冲（不注入）')}
-                  <span className="text-fg-secondary"> {data.observationChars ?? 0} / {data.observationLimit ?? 0} 字符</span>
-                </span>
-                <span className={pctText(data.observationPercent ?? 0)}>{Math.round(data.observationPercent ?? 0)}%</span>
-              </div>
-            )}
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-fg-tertiary">
-              <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
-              <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
-              {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
-              {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
-            </div>
-            {/* 整理杠杆跟着**磁盘策展区**走：会被无损归档的是它，不是本轮注入量。 */}
-            {curatedPct != null && curatedPct >= 70 && (
-              <div className="text-[10px] text-amber-600">
-                {t('agent:profilePage.memoryTab.overBudgetHint', '超预算的旧知识会被无损归档（不再注入）。可让 Agent 运行 memory_organize 整理。')}
-              </div>
-            )}
-            {/* 超预算时给一个可操作的杠杆：不是平台替它搛（SSOT 禁止），也不是替用户发送——
-                而是把需求预填到聊天框，由用户确认后自己发。 */}
-            {curatedPct != null && curatedPct >= 70 && (
+            </details>
+            {/* 一个动作，一个判据：**任一轴吃紧**就该整理了——
+                注入吃紧 = 这轮有段没进 prompt；磁盘吃紧 = 接下来会被归档。
+                两句解释文案全部删掉：明细里 104% 旁边的标签已经说完了。 */}
+            {((injectionPct ?? 0) >= 90 || (curatedPct ?? 0) >= 70) && (
               <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"
@@ -1636,7 +1641,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                       prefillMessage: t('agent:profilePage.memoryTab.organizePrefill', {
                         used: data.curatedChars ?? 0,
                         limit: data.curatedCap ?? 0,
-                        pct: Math.round(curatedPct),
+                        pct: Math.round(curatedPct ?? 0),
                         defaultValue: '你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。',
                       }),
                     });
