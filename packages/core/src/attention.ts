@@ -643,7 +643,7 @@ export class AttentionController {
                 //
                 // C9 相邻路径：回队只有**一个**实现（`reEnqueueOnShutdown`），身份表态也在
                 // 那里 —— 这里内联一份 `enqueue(...)` 就等于同一件事有两个写者：内联版会漏掉
-                // 「复用行继承 work_unit_ref」的声明，在 `MARKUS_STRICT_IDENTITY=1` 下直接抛错
+                // 「复用行继承 work_unit_ref」的声明，被入队守卫直接拒绝（默认行为）
                 // （真机探针见 docs/records/cut9-adjacent-identity-paths-2026-11-15.md）。
                 this.mailbox.reEnqueueOnShutdown(item);
               } catch (err) {

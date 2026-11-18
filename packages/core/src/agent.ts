@@ -2016,6 +2016,9 @@ export class Agent {
         priority: options?.priority,
         // C7-B：身份随消息一起落地（不是写入后回填），见 options.workUnitRef 的说明。
         workUnitRef: options?.workUnitRef ?? null,
+        // 表态：有 ref = 本回合身份；没有 = 活开始后才拿到，登记待链接。
+        // 「确实没有实体」与「忘了传」必须在入队前分开，否则下游只能猜。
+        refOrigin: options?.workUnitRef ? 'turn' : 'pending-link',
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -2065,6 +2068,7 @@ export class Agent {
       priority: 0,
       // 与 sendMessage / sendMessageStream 同源：身份随消息一起落地。
       workUnitRef: options.workUnitRef,
+      refOrigin: options.workUnitRef ? 'turn' : 'pending-link',
       metadata: {
         senderId,
         senderName: senderInfo?.name,
@@ -2143,6 +2147,7 @@ export class Agent {
         },
         // C7-B：同上 —— 流式路径也必须在入队前带上本轮 WU 身份。
         workUnitRef: options?.workUnitRef ?? null,
+        refOrigin: options?.workUnitRef ? 'turn' : 'pending-link',
         runtime: { responsePromise: { resolve, reject } },
       });
       options?.onItemEnqueued?.({ id: enqueued.id, sourceType: 'human_chat' });
@@ -2210,9 +2215,9 @@ export class Agent {
         // C9 附带缺陷：本条事实**入队那一刻还没有身份** —— item id 只存在于 `enqueue` 的
         // 返回值里，调用方随后用 `onItemEnqueued` 把 `mailbox_items.work_unit_ref` 写成
         // `task_<taskId>_r<round>`（2026-11-15 真机 13/13 条命中行事后都落到该形状）。
-        // 因此显式表态 `pending-link`：身份是**迟到**，不是「没有」。缺这条声明时，
-        // C8-P0 守卫在 `MARKUS_STRICT_IDENTITY=1` 下直接抛错 —— 这就是今天 13 次
-        // ERROR 的来源，也是「闸门要求的能力在该回合不可达」的形态（声明通道零示例）。
+        // 因此显式表态 `pending-link`：身份是**迟到**，不是「没有」。缺这条声明时
+        // 入队守卫直接拒绝（默认行为，见 mailbox.enqueue）——「闸门要求的能力在该
+        // 回合不可达」正是这么来的：声明通道存在，却没有任何调用方走它。
         refOrigin: 'pending-link',
         metadata: {
           taskId,

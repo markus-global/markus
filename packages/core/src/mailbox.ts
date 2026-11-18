@@ -1209,8 +1209,13 @@ export class AgentMailbox {
       const msg =
         `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
         'identity would be silently NULL (declare refOrigin: "pending-link" | "platform-internal")';
-      // 严格模式（CI 用）直接抛错；默认只报错+计数，不把业务打死。
-      if (process.env['MARKUS_STRICT_IDENTITY'] === '1') {
+      // 默认**拒绝**：可选的严格性不守任何东西。旧实现只在 CI 环境变量下抛错，
+      // 生产走「记日志 + 放行」，于是 242,496 条输入里只有 0.18% 带身份
+      //（2026-11-18 实测）—— 校验存在，但它不拦任何人。
+      //
+      // 平台只守硬不变量：拒绝 + 给可行动提示，不替调用方猜一个身份填进去。
+      // 应急放行用 MARKUS_LENIENT_IDENTITY=1（显式、可审计），不是默认。
+      if (process.env['MARKUS_LENIENT_IDENTITY'] !== '1') {
         throw new Error(msg);
       }
       log.error(msg, { agentId: this.agentId, sourceType, itemId: item.id });

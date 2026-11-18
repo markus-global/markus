@@ -46,6 +46,22 @@ mkdirSync(join(testHome, '.markus', 'logs'), { recursive: true });
 
 process.env.HOME = testHome;
 
+// ── 1b. synthetic mailbox fixtures ───────────────────────────────────────────
+/**
+ * `AgentMailbox.enqueue()` rejects an item that carries neither `workUnitRef`
+ * nor a `refOrigin` declaration — identity may not silently land as NULL.
+ * That default is a *production* invariant: a caller who forgets to declare
+ * must fail loudly rather than produce an untraceable turn.
+ *
+ * Test fixtures are synthetic inputs with no real work unit behind them, and
+ * there are ~300 such enqueue sites. Rather than sprinkle a declaration across
+ * every fixture (churn that says nothing), the harness states it once, here.
+ *
+ * This does NOT defuse the guard: `mailbox-identity-guard.test.ts` clears this
+ * variable and asserts the rejection, so removing the guard still turns red.
+ */
+process.env.MARKUS_LENIENT_IDENTITY = '1';
+
 // ── 2. credential isolation ──────────────────────────────────────────────────
 /**
  * Every env var that can redirect a provider at a *real* remote service or
