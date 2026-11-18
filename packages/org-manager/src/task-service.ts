@@ -5748,6 +5748,12 @@ export class TaskService implements ApprovalTargetPort {
       sourceType: 'system_event',
       sessionId: `sys_${agent.id}_${Date.now()}`,
       scenario: 'distillation',
+      // 【归属必须由生产者给】这条反思「关于哪个任务」在发起的这一刻就是结构事实
+      // （`task.id`），所以直接交给 `options.taskId` → `payload.taskId`。
+      // 之前不传，工作记录的路由器只能把它当成「无实体」→ 落进「历史记录」，
+      // 而标题里明明写着 `Task "…" (ID: tsk_…)`。从正文里再抠 id 是 in-band 推断，
+      // 一旦抠错没人发现 —— 结构只能由生产者给。
+      taskId: task.id,
       allowedTools: getDistillationAllowlist(isManager),
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });

@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, MAILBOX_TYPE_REGISTRY } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -6325,11 +6325,28 @@ export class APIServer {
           // （ref 要等会话身份解析后才有），所以库里那列是 NULL。但它明确标了
           // `extra.loopWake`，属于决策循环，不是「未归属」。
           const extra = (payload['extra'] ?? {}) as Record<string, unknown>;
-          // 启动唤醒标 `extra.loopWake`；rest 条件达成 / 到期唤醒标 `extra.triggerWake`。
-          // **两者都是决策循环自己的信号**，不是外部输入，更不是「未归属」。
-          // 之前只认 loopWake，于是所有 `Woke for the condition you rested on`
-          // 都沉到了「历史记录」里，而真正的决策循环实体反而是空的。
-          if (extra['loopWake'] === true || extra['triggerWake'] === true) {
+          /**
+           * 「它自己」只有**一个**身份：常驻实体 `channel:loop_<agentId>`（决策循环）。
+           *
+           * 属于它的信号有三类，但主人是一个：
+           *  - `extra.loopWake` / `extra.triggerWake`：启动唤醒、rest 条件达成/到期；
+           *  - `category === 'system'` 的投递类型（system_event / heartbeat /
+           *    memory_consolidation / daily_report / callback_result）：它自己的内部事务。
+           *
+           * 【为什么不另外开一个 `self:` 键】2026-11-18 Owner 当场质问过：
+           * “为什么有了 forever loop，又搞出一个 self？” —— 因为那两个键回答的是同一个
+           * 问题（“这件事是不是它自己的”），一条事件却只能有一个写者。两个键的后果不是
+           * 重复展示，而是**同一条事实两种归属**：同一次心跳在一处叫“决策循环”、在另一处
+           * 叫“自身”，谁也不知道该看哪个。所以归并到一个键，判据也只有这一处。
+           *
+           * 【类别只读登记表】不在本文件里抄一份系统类型名单 —— 新加一个系统类型
+           * （登记表写 `category: 'system'`）时它自动归属，不需要改这里。
+           */
+          const stType = String(item.sourceType ?? '');
+          const isAgentOwn = extra['loopWake'] === true
+            || extra['triggerWake'] === true
+            || MAILBOX_TYPE_REGISTRY[stType as keyof typeof MAILBOX_TYPE_REGISTRY]?.category === 'system';
+          if (isAgentOwn) {
             return put('channel', `loop_${agentId}`, '决策循环（Loop）', '决策循环');
           }
 
@@ -6380,7 +6397,7 @@ export class APIServer {
             const inner = ref.slice('a2a:'.length);
             return put('channel', inner, undefined, '会话');
           }
-          // 6) 解不出 → null，前端显示「未归属」，不猜、不塞进别的实体
+          // 7) 解不出 → null，前端显示「未归属」，不猜、不塞进别的实体
           return null;
         };
         // ── 工作记录：左栏 = 实体分组（服务端聚合 + 分页）───────────
