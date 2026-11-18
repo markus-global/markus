@@ -1045,6 +1045,26 @@ export function openSqlite(dbPath: string): DatabaseSync {
       }
     }
 
+    // 历史 `dropped` 行的理由回填（一次性，随本次升级触发）。
+    //
+    // `dropped` 早已不在状态值域内，读路径归一为 `bounced`；写路径也确实停了
+    // （实测末条 2026-11-13，此后为 0）。但留下的 28,633 行**全部没有 drop_reason**：
+    // 它们不是「正在静默丢」，而是「丢了却没留理由」，永久不可解释。
+    //
+    // 回填一个诚实的标记，让「不可解释」成为可查询的事实而不是空白。不猜具体原因 ——
+    // 原始理由已经不存在，编一个出来比留空更坏。
+    if (addedColumns.includes('agent_decisions.source')) {
+      const labelled = _db
+        .prepare(
+          `UPDATE mailbox_items SET drop_reason = 'legacy_unexplained'
+           WHERE status = 'dropped' AND (drop_reason IS NULL OR drop_reason = '')`
+        )
+        .run();
+      if (labelled.changes > 0) {
+        log.info(`Migration: labelled legacy dropped rows without a reason (${labelled.changes} rows)`);
+      }
+    }
+
     // Indexes that depend on migrated columns (must run AFTER column migrations)
     _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
     // C9-B：观测四表的 `work_unit_ref` 索引。必须在列迁移之后 —— 老库在 SCHEMA_SQL

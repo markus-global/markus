@@ -36,6 +36,72 @@ The cycle is **continuous**: heartbeat patrols re-enter the loop, checking activ
 
 **Concurrency note.** This five-stage cycle describes the **serial** (single-worker) attention loop. When an agent runs a concurrent worker pool ([concurrent-processing.md](./concurrent-processing.md)), each worker executes a *reduced* loop — Stimulus → Context Assembly → Deliberation → Action → Reflection — and deliberately **skips Triage / Appraisal and interrupt/preempt logic** ("concurrency without interruption", Scheme A). Triage, deliberation-over-queue, preemption and cancellation remain the serial loop's responsibility. Cross-worker consistency is instead handled structurally: an entity-affinity lock in the mailbox plus a `ConcurrentHandoffLog` whose records are injected into each worker's volatile context.
 
+**What is never skipped: the books.** Recording is not part of deliberation. Both paths converge on `processFocusedItem`, which is the single execution point that writes the `pick` row — so a reduced loop still produces a complete ledger.
+
+### End-to-end turn, with states
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+autonumber
+
+title One stimulus → one turn → one terminal state (concurrent path shown)
+
+actor "Human / peer / task" as Src
+participant "Mailbox" as MB
+participant "Worker loop" as W
+participant "processFocusedItem" as P
+participant "ContextEngine" as CE
+participant "LLM + tools" as LLM
+database "agent_decisions" as DEC
+database "mailbox_items" as ITEMS
+
+Src -> MB : enqueue(type, payload,\nworkUnitRef | refOrigin)
+activate MB
+MB -> MB : **identity gate**
+alt neither ref nor declaration
+  MB --> Src : **rejected** + actionable hint
+else declared
+  MB -> ITEMS : row status = **queued**
+end
+deactivate MB
+
+W -> MB : dequeueAsync()
+MB -> ITEMS : status = **processing**, lease claimed
+W -> MB : lockEntities(entity ∪ session keys)
+alt any key already held
+  MB --> W : putBack + backoff\nstatus back to **queued**
+else all keys acquired
+  W -> P : processFocusedItem(item)
+  activate P
+  P -> DEC : **pick** {source: rule, workUnitRef}
+  P -> CE : assemble context
+  CE --> P : fixed segments + volatile tail
+  P -> LLM : run the turn
+  loop each turn boundary
+    LLM -> P : checkYieldPoint()
+    P -> DEC : {type, source: model|heuristic,\noverrode?}
+  end
+  LLM --> P : reply | end_turn | error
+  alt reply or typed end_turn
+    P -> ITEMS : status = **completed**
+  else abnormal, retries left
+    P -> ITEMS : requeue → **queued**
+  else retry exhausted / cancelled / orphan
+    P -> ITEMS : **bounced** + drop_reason
+  end
+  deactivate P
+  W -> MB : unlockEntities()
+end
+
+note over DEC, ITEMS
+  Every processed item can now be traced:
+  mailbox row → pick row → turn (workUnitRef)
+  → who decided (source) → terminal state.
+end note
+@enduml
+```
+
 ---
 
 ## 2. Cognitive Science Foundations
@@ -175,6 +241,103 @@ Processes the **Mailbox** — the agent's unified stimulus queue. Responsibiliti
   rule table
 
 The queue decides **what** to process (priority + enqueue order). How context is prepared for processing is now deterministic (§3), not a second LLM stage.
+
+#### Attention states
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+hide empty description
+
+title AttentionController — states (per worker in concurrent mode)
+
+[*] --> idle
+
+idle --> deciding : item dequeued\n(serial path: pre-triage runs here)
+idle --> focused : concurrent worker\nlocks entities, skips triage
+
+deciding --> focused : processFocusedItem()\n**records `pick`**
+
+focused --> deciding : checkYieldPoint()\nnew mail raised interruptSignal
+focused --> idle : turn finished\nfocus cleared, lease released
+
+deciding --> focused : continue / merge\n(back to the same turn)
+focused --> idle : preempt / cancel\n(item requeued or bounced)
+
+note right of focused
+  Every entry into `focused` leaves a
+  `pick` row: processFocusedItem is the
+  single recording point for both loops.
+  Before 2026-11-18 the concurrent path
+  entered this state without recording.
+end note
+
+note bottom of deciding
+  In concurrent mode this state is not
+  used: workers do not deliberate.
+  Skipping judgement never skips the books.
+end note
+@enduml
+```
+
+#### Who decided — provenance at a yield point
+
+Every ledger row carries `source` (`model` / `heuristic` / `rule` / `user`). A platform
+rule that refuses the model's choice records **one** final row with `overrode` set,
+not two rows nobody can order.
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+
+title checkYieldPoint — one decision, with its provenance
+
+start
+:turn boundary reached;
+if (user pressed cancel?) then (yes)
+  :decision = cancel\nsource = user;
+  stop
+endif
+if (interruptSignal and currentFocus?) then (no)
+  :decision = continue\n(no ledger row — nothing was decided);
+  stop
+endif
+
+if (delegate present?) then (yes)
+  :evaluateInterrupt()\nsource = **model**;
+else (no)
+  :heuristicDecision()\nsource = **heuristic**;
+endif
+
+if (delegate threw?) then (yes)
+  :heuristicDecision()\nsource = **heuristic**\n(degradation is recorded, not hidden);
+endif
+
+if (decision == defer AND isStrictStateItem?) then (yes)
+  :overrode = defer\nheuristicDecision()\nsource = **heuristic**;
+else (no)
+endif
+
+:formatDecisionReasoning();
+:**recordDecision** — one row\n{type, source, overrode, workUnitRef};
+
+switch (decision)
+case (merge)
+  :mailbox.merge();
+case (defer)
+  :mailbox.defer();
+case (preempt)
+  :lastYieldDecision = preempt;
+case (cancel)
+  :lastYieldDecision = cancel;
+case (continue)
+endswitch
+stop
+@enduml
+```
+
+Reading the ledger afterwards answers three questions without guesswork: **which turn**
+(`workUnitRef`), **who decided** (`source`), and **what a rule overturned** (`overrode`).
 
 ### Heartbeat
 

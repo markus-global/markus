@@ -717,6 +717,72 @@ Historical activities without `mailbox_item_id` remain valid but lack the causal
    rows carrying it are read-only and normalised to `bounced` on the read path.
    A bounce is a first-class terminal state, not an error case — and never a silent one.
 
+### 6.6 Item state machine
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+hide empty description
+
+title mailbox_items — states and the transitions that write them
+
+[*] --> queued : enqueue()\n**identity gate**: ref or refOrigin,\nelse rejected
+
+queued --> processing : dequeue / dequeueAsync\n+ lease claimed
+queued --> merged : dedup / consolidateByEntity\nmerged_into → survivor
+queued --> deferred : deferItem()\ndeferred_until
+queued --> bounced : bounceSignal / duplicate /\nstale purge — **drop_reason mandatory**
+
+deferred --> queued : resurfaceDue()
+
+processing --> completed : turn produced a reply\nor typed end_turn
+processing --> queued : requeue()\nabnormal reply, retries left
+processing --> bounced : retry exhausted /\norphan abandoned /\ncancel — with reason
+processing --> catch_all : bounce collected\nbounce_target set
+
+merged --> [*]
+completed --> [*]
+bounced --> [*]
+catch_all --> [*]
+
+note right of bounced
+  `dropped` is **not** in the value domain.
+  Historical rows are read-only and
+  normalised to `bounced` on read.
+  Rows with no reason are labelled
+  `legacy_unexplained` by migration —
+  unexplained is a fact, not a blank.
+end note
+
+note right of processing
+  Entering this state always leaves a
+  `pick` row in agent_decisions:
+  processFocusedItem is the single
+  recording point for both loop paths.
+end note
+@enduml
+```
+
+### 6.7 Identity is mandatory at enqueue
+
+An item carries either a `workUnitRef` or an explicit `refOrigin` declaration:
+
+| Declaration | Meaning |
+|---|---|
+| `entity` / `turn` | a ref is present (entity identity / current turn identity) |
+| `pending-link` | identity legitimately arrives after the work starts |
+| `platform-internal` | genuinely no entity (receipts, internal events) |
+
+Neither present ⇒ **`enqueue()` rejects** with an actionable message. The guard is
+not opt-in: an optional strictness guards nothing. Under the previous
+`MARKUS_STRICT_IDENTITY=1` opt-in, production took the "log and let it through"
+branch and 242,496 inputs ended up with 0.18% identity coverage (measured
+2026-11-18). `MARKUS_LENIENT_IDENTITY=1` is an explicit, auditable escape hatch —
+used by the test harness for synthetic fixtures, never the default.
+
+The distinction that matters: **"no entity yet" and "forgot to pass it" must not be
+the same value.** Both are NULL in the column; only the declaration tells them apart.
+
 ---
 
 ## 7. Integration with State Machines
@@ -1005,7 +1071,7 @@ This is safe because:
 
 After all queued items are restored from the database, `recoverStaleItems()` runs `deduplicateQueue()` to collapse redundant entries that accumulated before the restart:
 
-1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `dropped`.
+1. **Heartbeat collapse**: Multiple queued heartbeats are reduced to a single entry (the most recent). Older heartbeats are marked `bounced` with a `drop_reason` (`dropped` is not in the status value domain — see §28.5).
 2. **Comment merging**: `task_comment` items with the same `taskId` are merged. Same for `requirement_comment` by `requirementId`.
 3. **Channel coalescing**: `a2a_message` items with the same `extra.channelKey` are merged (`CHANNEL_DEDUP_TYPES`). This rule was missing from earlier revisions of this list at §17 (it appeared only in §14).
 4. **Priority escalation**: When merging, the survivor inherits the highest priority of all merged items.

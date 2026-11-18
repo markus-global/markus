@@ -154,6 +154,56 @@ deliberately does **not** run triage, LLM deliberation, or interrupt/preempt log
 Those remain the serial `runLoop`'s job. This keeps the concurrent path small and
 predictable: a worker only ever dequeues, locks, processes, unlocks, and loops.
 
+**Skipping judgement does not mean skipping the books.** The original wording let
+"no deliberation" swallow "no recording" as well, and the cost was measured on
+2026-11-18: a full day of 116 inputs produced 3 ledger rows, all `drop`, while 388
+execution epochs ran. The ledger had become a refusal log — every `pick` was
+recorded inside `runLoop`, which the worker pool never enters.
+
+The invariant now is structural rather than per-path: **`processFocusedItem` is the
+single recording execution point**, and both loops call it. A worker cannot process
+an item without leaving a `pick` row, because there is no second place to put it.
+
+```plantuml
+@startuml
+skinparam componentStyle rectangle
+skinparam defaultTextAlignment center
+
+title One recording execution point, two loop paths
+
+rectangle "runLoop (workerCount = 1)" as Serial {
+  card "dequeue" as S1
+  card "pre-triage\n(purge + consolidate)" as S2
+  card "coalesce window" as S3
+}
+
+rectangle "concurrentWorkerLoop × N (workerCount > 1)" as Conc {
+  card "dequeueAsync" as C1
+  card "lockEntities\n(entity ∪ session keys,\nall-or-nothing)" as C2
+  card "conflict → putBack\n+ 250+retry×250ms backoff" as C3
+}
+
+rectangle "processFocusedItem" as Shared #LightGreen {
+  card "recordDecision('pick', source='rule')\n**only writer**" as P1
+  card "delegate.processMailboxItem\n(the LLM turn)" as P2
+  card "terminal projection\n(complete / requeue / bounce)" as P3
+}
+
+database "agent_decisions" as Ledger
+
+S1 --> S2
+S2 --> S3
+S3 --> P1
+C1 --> C2
+C2 --> P1 : lock acquired
+C2 --> C3 : any key held
+C3 --> C1
+P1 --> P2
+P2 --> P3
+P1 --> Ledger
+@enduml
+```
+
 - `workerCount === 1` → the original `runLoop` is used verbatim (no behavioural drift).
 - Worker state (current focus, processing start time, in-flight user cancel) is held
   per worker in `workerStates: Map<number, AttentionWorkerState>`.
@@ -478,6 +528,7 @@ See [streaming-and-reattach.md](./streaming-and-reattach.md) for the stream life
 | Loop | original `runLoop` | `concurrentWorkerLoop` × N |
 | Workspace | shared `rootWorkspace` | one per worker |
 | Attention/triage/deliberation | full pipeline | not run in worker loops |
+| Decision recording (`pick`) | `processFocusedItem` | `processFocusedItem` — **same execution point** |
 | Entity lock | no-op (no contention) | enforced |
 | Handoff log | written on lifecycle (harmless) | injected into prompts |
 | Status | instance-level | aggregated across workers |
