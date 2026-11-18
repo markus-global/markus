@@ -705,10 +705,7 @@ export class AttentionController {
             // 一次带工具的分拣/审议回合，让模型决定 reorder/defer/drop；它既贵（整轮工具
             // 调用）又不可观测（决定只落在日志里），而它想解决的问题（同一实体多条消息）
             // 已经由三层吸收机制在结构上解决了。
-            const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Idle, processing';
-            const decision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
-            this.delegate?.onDecisionMade(decision);
-
+            // 记账不在这里做 —— 唯一执行点是 processFocusedItem（两条 loop 的共同下游）。
             await this.processFocusedItem(item);
           } catch (err) {
             const isUserInteraction = AttentionController.USER_INTERACTION_TYPES.has(item.sourceType);
@@ -920,6 +917,12 @@ export class AttentionController {
     this.processingStartedAt = Date.now();
     this.delegate?.onFocusChanged(item);
 
+    // 记账的唯一执行点。串行 runLoop 与并发 concurrentWorkerLoop 都经过这里，
+    // 所以「选中并开始处理」只有一个写者。放在任何一条 loop 里，另一条就会静默漏账：
+    // 2026-11-18 实测，并发模式下当日 116 条输入只留下 3 条 drop 决策，台账成了拒绝簿。
+    const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Processing';
+    const pickDecision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
+    this.delegate?.onDecisionMade(pickDecision);
 
     let reply: string | void = undefined;
     let timedOut = false;
@@ -1489,6 +1492,21 @@ export class AttentionController {
 
     this.setState('focused');
 
+    // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：持久化会丢失 onLog
+    // 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
+    //
+    // 否决在**记账之前**算完，台账只留一条最终判断。旧实现先记一条 defer、再记一条
+    // 启发式改判：同一件事两个写者，读台账的人分不清哪条作数。折叠后分支块也不再重复。
+    if (decisionType === 'defer' && isStrictStateItem(newItem)) {
+      log.info('Refusing to defer strict state item — falling back to heuristic', {
+        agentId: this.agentId,
+        itemId: newItem.id,
+        type: newItem.sourceType,
+        taskId: newItem.payload.taskId,
+      });
+      decisionType = this.heuristicDecision(this.currentFocus, newItem);
+    }
+
     const reasoning = this.formatDecisionReasoning(decisionType, this.currentFocus, newItem);
     const decision = this.recordDecision(decisionType, newItem, reasoning);
     this.delegate?.onDecisionMade(decision);
@@ -1499,35 +1517,6 @@ export class AttentionController {
     }
 
     if (decisionType === 'defer') {
-      // 严格状态管理事件（正式任务执行/评审/收尾动作）绝不能 defer：
-      // 持久化会丢失 onLog 等闭包，resurface 后无法真正执行 → 任务卡死在 in_progress。
-      // 对这类新事件回退到启发式（高优先级任务执行通常 preempt 当前工作 → 立即单独执行）。
-      if (isStrictStateItem(newItem)) {
-        log.info('Refusing to defer strict state item — falling back to heuristic', {
-          agentId: this.agentId,
-          itemId: newItem.id,
-          type: newItem.sourceType,
-          taskId: newItem.payload.taskId,
-        });
-        decisionType = this.heuristicDecision(this.currentFocus!, newItem);
-        this.setState('focused');
-        const reasoning2 = this.formatDecisionReasoning(decisionType, this.currentFocus!, newItem);
-        const decision2 = this.recordDecision(decisionType, newItem, reasoning2);
-        this.delegate?.onDecisionMade(decision2);
-        if (decisionType === 'preempt') {
-          this.lastYieldDecision = 'preempt';
-          return { decision: 'preempt', item: newItem, reasoning: reasoning2 };
-        }
-        if (decisionType === 'cancel') {
-          this.lastYieldDecision = 'cancel';
-          return { decision: 'cancel', item: newItem, reasoning: reasoning2 };
-        }
-        if (decisionType === 'merge') {
-          const merged = this.mailbox.merge(newItem.id, this.currentFocus!.id);
-          return { decision: 'merge', item: merged ?? newItem, reasoning: reasoning2 };
-        }
-        return { decision: 'continue', reasoning: reasoning2 };
-      }
       this.mailbox.defer(newItem.id);
       return { decision: 'defer', item: newItem, reasoning };
     }
