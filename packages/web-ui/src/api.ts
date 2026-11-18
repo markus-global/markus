@@ -1298,10 +1298,22 @@ export interface AgentMemorySummary {
   dailyLog: string | null;
   recentDailyLogs: string | null;
   longTermMemory: string | null;
-  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）
-  usedPercent?: number;
-  budgetChars?: number;
-  budgetLimit?: number;
+  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）。
+  // 【两个独立预算，不共用一个分母】注入轴 = 本轮 prompt 实际注入 / 本轮注入上限；
+  // 磁盘策展区 = knowledge.md 的 curated 区 / 15000（仅报告）。
+  // 一个进度条只能代表一个轴，否则数字与长度会永远对不上。
+  injectedChars?: number;
+  injectionCapChars?: number;
+  injectionPercent?: number;
+  injectionOmittedCount?: number;
+  injectionMeasured?: boolean;
+  curatedChars?: number;
+  curatedCap?: number;
+  curatedPercent?: number;
+  // 观察缓冲：第三个独立预算（不注入）
+  observationChars?: number;
+  observationLimit?: number;
+  observationPercent?: number;
   observationCount?: number;
   curatedCount?: number;
   archivedChars?: number;

@@ -1549,54 +1549,94 @@ function MemoryTab({ agentId }: { agentId: string }) {
     { key: 'daily' as const, label: t('agent:profilePage.memoryTab.dailyLogs') },
   ];
 
+  // 【两个独立预算，一条一次只能代表一个轴】记忆健康有两个不同分母：
+  //   ① 注入轴 = 本轮实际注入 / 本轮注入上限（4800 或 6000）；
+  //   ② 磁盘策展区 = curated 区字节 / 15000（仅报告）。
+  // 旧写法数字取 ②、条宽取 ① —— 数字是 100% 而条只有 93%，永远对不上。
+  // 现在每个百分比只在**它自己那一行**出现，条只画注入轴。
+  const curatedPct = data.curatedCap && data.curatedCap > 0
+    ? ((data.curatedChars ?? 0) / data.curatedCap) * 100
+    : null;
+  const injectionPct = data.injectionCapChars && data.injectionCapChars > 0
+    ? ((data.injectedChars ?? 0) / data.injectionCapChars) * 100
+    : null;
+  const pctText = (pct: number) => (pct >= 90 ? 'text-red-500 font-medium' : pct >= 70 ? 'text-amber-600 font-medium' : 'text-fg-tertiary');
+  const pctBar = (pct: number) => (pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-brand-500');
+
   return (
     <div className="space-y-4">
-      {data.usedPercent != null && (
+      {(data.curatedChars != null || data.injectedChars != null) && (
         <Card title={t('agent:profilePage.memoryTab.healthTitle', '记忆健康（knowledge.md）')}>
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-secondary">{data.budgetChars ?? 0} / {data.budgetLimit ?? 0} 字符</span>
-              <span className={data.usedPercent >= 90 ? 'text-red-500 font-medium' : data.usedPercent >= 70 ? 'text-amber-600 font-medium' : 'text-fg-tertiary'}>
-                {/* 用真实比值而不是 API 的 `usedPercent`：后者被夹到 100，于是
-                    16747 / 15000 这种超预算会显示「100%」，读起来是“正好满，健康”，
-                    而事实是已经超了 11.6%。超过 100 就必须显式大于 100。 */}
-                {data.budgetLimit ? Math.round(((data.budgetChars ?? 0) / data.budgetLimit) * 100) : data.usedPercent}%
-              </span>
-            </div>
-            <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
-              <div
-                className={`h-full rounded-full ${data.usedPercent >= 90 ? 'bg-red-500' : data.usedPercent >= 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
-                style={{ width: `${Math.min(100, data.usedPercent)}%` }}
-              />
-            </div>
+            {/* ① 注入轴：数字与进度条**同一对数字**（本轮注入 / 本轮注入上限）。 */}
+            {injectionPct != null && (
+              <>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-fg-secondary">
+                    {t('agent:profilePage.memoryTab.injectionLine', '本轮注入（prompt 预算）')}
+                    <span className="text-fg-tertiary"> {data.injectedChars ?? 0} / {data.injectionCapChars ?? 0} 字符</span>
+                  </span>
+                  <span className={pctText(injectionPct)}>{Math.round(injectionPct)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
+                  <div className={`h-full rounded-full ${pctBar(injectionPct)}`} style={{ width: `${Math.min(100, injectionPct)}%` }} />
+                </div>
+                {(data.injectionOmittedCount ?? 0) > 0 && (
+                  <div className="text-[10px] text-amber-600">
+                    {t('agent:profilePage.memoryTab.injectionOmittedHint', {
+                      count: data.injectionOmittedCount ?? 0,
+                      defaultValue: '已有 {{count}} 段因超出注入上限而未内联（仍可按需检索）',
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+            {/* ② 磁盘策展区：另一个预算，单独一行、单独百分比（仅报告，不画条）。 */}
+            {curatedPct != null && (
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-fg-tertiary">
+                  {t('agent:profilePage.memoryTab.curatedLine', '磁盘策展区（超预算会无损归档）')}
+                  <span className="text-fg-secondary"> {data.curatedChars ?? 0} / {data.curatedCap ?? 0} 字符</span>
+                </span>
+                <span className={pctText(curatedPct)}>{Math.round(curatedPct)}%</span>
+              </div>
+            )}
+            {/* ③ 观察缓冲：第三个预算（不注入）。 */}
+            {data.observationLimit != null && (
+              <div className="flex items-center justify-between text-[10px]">
+                <span className="text-fg-tertiary">
+                  {t('agent:profilePage.memoryTab.observationLine', '观察缓冲（不注入）')}
+                  <span className="text-fg-secondary"> {data.observationChars ?? 0} / {data.observationLimit ?? 0} 字符</span>
+                </span>
+                <span className={pctText(data.observationPercent ?? 0)}>{Math.round(data.observationPercent ?? 0)}%</span>
+              </div>
+            )}
             <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-fg-tertiary">
               <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
               <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
               {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
               {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
             </div>
-            {data.usedPercent >= 70 && (
+            {/* 整理杠杆跟着**磁盘策展区**走：会被无损归档的是它，不是本轮注入量。 */}
+            {curatedPct != null && curatedPct >= 70 && (
               <div className="text-[10px] text-amber-600">
                 {t('agent:profilePage.memoryTab.overBudgetHint', '超预算的旧知识会被无损归档（不再注入）。可让 Agent 运行 memory_organize 整理。')}
               </div>
             )}
             {/* 超预算时给一个可操作的杠杆：不是平台替它搛（SSOT 禁止），也不是替用户发送——
                 而是把需求预填到聊天框，由用户确认后自己发。 */}
-            {data.usedPercent >= 70 && (
+            {curatedPct != null && curatedPct >= 70 && (
               <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"
                   onClick={() => {
-                    const pct = data.budgetLimit
-                      ? Math.round(((data.budgetChars ?? 0) / data.budgetLimit) * 100)
-                      : data.usedPercent;
                     navBus.navigate(PAGE.TEAM, {
                       agentId,
                       preferMain: '1',
                       prefillMessage: t('agent:profilePage.memoryTab.organizePrefill', {
-                        used: data.budgetChars ?? 0,
-                        limit: data.budgetLimit ?? 0,
-                        pct,
+                        used: data.curatedChars ?? 0,
+                        limit: data.curatedCap ?? 0,
+                        pct: Math.round(curatedPct),
                         defaultValue: '你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。',
                       }),
                     });

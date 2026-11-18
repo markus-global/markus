@@ -6876,12 +6876,44 @@ export class APIServer {
         // 否则「观察缓冲很大」会被误读成「注入知识超预算」。
         const health = (() => {
           try {
-            const h = (mem as unknown as { getMemoryHealth?: () => { percent: number; curatedChars: number; curatedCap: number; observationPercent: number; observationChars: number; observationCap: number; observations: number; curatedSections: number; archiveChars: number; lastConsolidatedAt: string | null } }).getMemoryHealth?.();
+            const h = (mem as unknown as {
+              getMemoryHealth?: () => {
+                injectedChars: number;
+                injectionCapChars: number;
+                injectionUsedPercent: number;
+                omittedSectionCount: number;
+                injectionMeasured: boolean;
+                curatedChars: number;
+                curatedCap: number;
+                curatedPercent: number;
+                observationPercent: number;
+                observationChars: number;
+                observationCap: number;
+                observations: number;
+                curatedSections: number;
+                archiveChars: number;
+                lastConsolidatedAt: string | null;
+              };
+            }).getMemoryHealth?.();
+            // 【为什么要交两套数字，而不是一个 usedPercent】记忆有两个**独立预算**：
+            //   ① 注入轴：本轮 prompt 实际注入了多少知识 / 本轮注入上限（4800 或 6000）；
+            //   ② 磁盘策展区：knowledge.md 的 curated 区字节数 / 15000（仅报告）。
+            // 旧响应只交 `usedPercent`（注入轴）+ `budgetChars/budgetLimit`（磁盘轴）——
+            // 前端拿一个当数字、另一个当进度条宽度，于是“百分比”与“条”永远对不上。
+            // 现在两轴各自成套下发（名字与分子分母同名），前端不需要再自己猜哪个是哪个。
             return h
               ? {
-                  usedPercent: h.percent,
-                  budgetChars: h.curatedChars,
-                  budgetLimit: h.curatedCap,
+                  // ① 注入轴（每轮变，受 prompt 预算约束）
+                  injectedChars: h.injectedChars,
+                  injectionCapChars: h.injectionCapChars,
+                  injectionPercent: h.injectionUsedPercent,
+                  injectionOmittedCount: h.omittedSectionCount,
+                  injectionMeasured: h.injectionMeasured,
+                  // ② 磁盘策展区（仅报告；超了会被无损归档）
+                  curatedChars: h.curatedChars,
+                  curatedCap: h.curatedCap,
+                  curatedPercent: h.curatedPercent,
+                  // ③ 观察缓冲（不注入）
                   observationPercent: h.observationPercent,
                   observationChars: h.observationChars,
                   observationLimit: h.observationCap,
