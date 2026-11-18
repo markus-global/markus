@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus, MAILBOX_TYPE_REGISTRY } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -6326,27 +6326,27 @@ export class APIServer {
           // `extra.loopWake`，属于决策循环，不是「未归属」。
           const extra = (payload['extra'] ?? {}) as Record<string, unknown>;
           /**
-           * 「它自己」只有**一个**身份：常驻实体 `channel:loop_<agentId>`（决策循环）。
+           * 归属判据（按顺序，互斥）：
            *
-           * 属于它的信号有三类，但主人是一个：
-           *  - `extra.loopWake` / `extra.triggerWake`：启动唤醒、rest 条件达成/到期；
-           *  - `category === 'system'` 的投递类型（system_event / heartbeat /
-           *    memory_consolidation / daily_report / callback_result）：它自己的内部事务。
+           * ① **结构身份优先**：`taskId` / `requirementId` / 工作单元 ref（下面 1~5 条）。
+           * ② **自身事务**：只有**它自己的决策与维护**（唤醒信号 / dream / 日报）归决策循环。
+           * ③ 其余（心跳 tick、无主的后台命令回执）是**执行流水/遥测**——不属于任何「事」，
+           *    由调用方从工作记录的聚合里滤掉（`WORKLOG_TELEMETRY_TYPES`）。
            *
-           * 【为什么不另外开一个 `self:` 键】2026-11-18 Owner 当场质问过：
-           * “为什么有了 forever loop，又搞出一个 self？” —— 因为那两个键回答的是同一个
-           * 问题（“这件事是不是它自己的”），一条事件却只能有一个写者。两个键的后果不是
-           * 重复展示，而是**同一条事实两种归属**：同一次心跳在一处叫“决策循环”、在另一处
-           * 叫“自身”，谁也不知道该看哪个。所以归并到一个键，判据也只有这一处。
+           * 【为什么不再用 `category === 'system'`】`category` 回答的是「**怎么投递的**」，
+           * 不是「**是谁的活**」。把投递类别当归属判据，`callback_result`（后台命令回执）
+           * 就被当成“决策”扫进了决策循环 —— Owner 2026-11-18 实测到 203 条
+           * `[BACKGROUND PROCESS COMPLETED] … tail -c 200 …` 躺在里面。
+           * 同一个谓词回答两个问题，就是这类 bug 的温床。
            *
-           * 【类别只读登记表】不在本文件里抄一份系统类型名单 —— 新加一个系统类型
-           * （登记表写 `category: 'system'`）时它自动归属，不需要改这里。
+           * 【“它自己”只有一个键】不另开 `self:`/`自身运维` 之类的第二个键：
+           * 同一条事实两个归属，谁也不知道该看哪个（Owner 当日追问过此点）。
            */
           const stType = String(item.sourceType ?? '');
-          const isAgentOwn = extra['loopWake'] === true
-            || extra['triggerWake'] === true
-            || MAILBOX_TYPE_REGISTRY[stType as keyof typeof MAILBOX_TYPE_REGISTRY]?.category === 'system';
-          if (isAgentOwn) {
+          const isWake = extra['loopWake'] === true || extra['triggerWake'] === true;
+          /** 它自己的决策与维护：有唤醒标记，或只是这三种自护类型。 */
+          const SELF_OWNED_TYPES = new Set(['system_event', 'memory_consolidation', 'daily_report']);
+          if (isWake || SELF_OWNED_TYPES.has(stType)) {
             return put('channel', `loop_${agentId}`, '决策循环（Loop）', '决策循环');
           }
 
@@ -6422,6 +6422,26 @@ export class APIServer {
          * 「按状态筛选后的计数」会把筛选自身当成事实来回答。
          */
         type ResolvedMailboxRow = { row: Record<string, unknown>; kind: string; key: string; name: string };
+        /**
+         * 工作记录**不收录**的执行流水/遥测：
+         *
+         *  - `heartbeat`：旧调度器的节拍器 tick（登记表 `producedBy: ['legacy']`）。
+         *    全库 169 233 条，不回答「这是哪件事」；它的去处是「心跳」页与运行态。
+         *  - **无实体归属**的 `callback_result`：后台命令回执（`[BACKGROUND PROCESS
+         *    COMPLETED] … tail -c 200 …`）。有实体归属（带 workUnitRef / taskId）的
+         *    回执照常进工作记录并落在那个实体上；没归属的只回答“命令跑完了”。
+         *
+         * 【为什么在扫描层统一滤】左栏实体、kindCounts、statusCounts、右栏记录必须
+         * 同一个宇宙；只滤一处就是同一条事实两种统计。数据一条不删，只不进这块面板。
+         */
+        const WORKLOG_ALWAYS_TELEMETRY = new Set(['heartbeat']);
+        const WORKLOG_TELEMETRY_WHEN_UNOWNED = new Set(['callback_result']);
+        const isWorkLogRow = (r: ResolvedMailboxRow): boolean => {
+          const t = String(r.row['sourceType'] ?? '');
+          if (WORKLOG_ALWAYS_TELEMETRY.has(t)) return false;
+          if (r.kind === 'none' && WORKLOG_TELEMETRY_WHEN_UNOWNED.has(t)) return false;
+          return true;
+        };
         const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: ResolvedMailboxRow[] }> };
         const scanCache = (scanCacheRef.__wrScanCache ??= new Map());
         const scanKey = JSON.stringify([agentId, SCAN]);
@@ -6439,7 +6459,7 @@ export class APIServer {
               key: ent ? `${ent.kind}:${ent.id}` : 'none:',
               name: ent?.name ?? '',
             };
-          });
+          }).filter(isWorkLogRow);
           if (scanCache.size > 32) scanCache.clear();
           scanCache.set(scanKey, { at: now, rows });
           return rows;

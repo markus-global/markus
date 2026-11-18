@@ -1157,6 +1157,18 @@ export class Agent {
    *  The completion fires *later*, outside any turn, so `activeScenario` is no
    *  longer the launching scenario by then — it must be captured at registration. */
   private bgSessionScenario = new Map<string, AgentScenario>();
+  /**
+   * 后台会话 → **发起它的那个回合的工作单元身份**（`workUnitRef`）。
+   *
+   * 【为什么必须有】回调行的归属只能靠结构字段。之前只带 `originSessionId`，
+   * 而它在心跳/思考回合里长得像 `hb_agt_x_173…`、`deliberation_agt_x_…` ——
+   * 都不是 `chat_sessions` 的行，路由器就无从归属，于是 203 条
+   * `[BACKGROUND PROCESS COMPLETED] … tail -c 200 …` 回执沉到无主桶，
+   * 又被「系统类」判据一把推进了决策循环（Owner 2026-11-18 实测质问）。
+   * 工作单元 identity 是**唯一带解析器**的实体键（`taskIdOfWorkUnitRef`），
+   * 所以由生产者在启动时记下、完成时交回去 —— 不在读路径另写一份语法。
+   */
+  private bgSessionWorkUnit = new Map<string, string>();
   private _maxToolIterations: number;
   /** C8-B：轮内 delta 注入开关（关掉 = C8-A 排队语义，见 `AgentOptions.turnDeltaInjection`）。 */
   private turnDeltaInjectionEnabled: boolean;
@@ -1433,6 +1445,8 @@ export class Agent {
       this.bgSessionOrigin.delete(notification.sessionId);
       const originScenario = this.bgSessionScenario.get(notification.sessionId);
       this.bgSessionScenario.delete(notification.sessionId);
+      const originWorkUnitRef = this.bgSessionWorkUnit.get(notification.sessionId);
+      this.bgSessionWorkUnit.delete(notification.sessionId);
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
       const parts = [
@@ -1456,6 +1470,8 @@ export class Agent {
         deliveryMode: 'in_session',
         originSessionId: originSession,
         originScenario,
+        // 结构身份：回执属于「发起它的那个回合」——不是心跳、不是决策循环。
+        workUnitRef: originWorkUnitRef,
         summary: `Background process ${status}: ${notification.command.slice(0, 80)}`,
         content: parts.join('\n'),
         exitCode: notification.exitCode,
@@ -8611,6 +8627,8 @@ export class Agent {
     type: CallbackType;
     deliveryMode: CallbackDelivery;
     originSessionId?: string;
+    /** 发起回合的工作单元身份（有则回执直接落到那个实体上）。 */
+    workUnitRef?: string;
     /** Scenario the callback was registered from — replayed on delivery (see
      *  `PendingCallback.originScenario`). Falls back to `heartbeat` when absent. */
     originScenario?: string;
@@ -8649,7 +8667,8 @@ export class Agent {
         exitCode: cb.exitCode,
         scenario: cb.originScenario,
       },
-    });
+      // 结构身份交给 mailbox（本文件不拼 ref 语法）：回执因此能落到发起它的任务/会话上。
+    }, cb.workUnitRef ? { workUnitRef: cb.workUnitRef } : undefined);
   }
 
   /**
@@ -8756,6 +8775,9 @@ export class Agent {
   ): void {
     this.bgSessionOrigin.set(bgSessionId, originSessionId);
     if (originScenario) this.bgSessionScenario.set(bgSessionId, originScenario);
+    // 记下发起回合的工作单元身份：回调回来时才能落到「哪件事」上。
+    const wu = this.turnWorkUnitRef();
+    if (wu) this.bgSessionWorkUnit.set(bgSessionId, wu);
     pendingCallbackRegistry.register({
       id: bgSessionId,
       agentId: this.id,
