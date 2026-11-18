@@ -204,6 +204,44 @@ export interface MailboxTypeDescriptor extends MailboxTypePresentation {
 //   `task_comment` creates no activity when injected into a running turn, but does
 //   when it falls through to handleMessage — the outcome is contextual. Nothing
 //   read the field, so it recorded a rule the runtime never followed.
+/**
+ * 唤醒原因 —— 让处于 sleep/idle 的决策循环开始新一轮的**闭集**。
+ *
+ * 【第一性：唤醒与「处理」是两个问题】
+ * - **入队**是投递语义：一条信号到达了。它能不能被直接处理，与决策无关；
+ *   能直接处理时，它的痕迹就是**那条 mailbox 行自己**（queued→processing→completed
+ *   + queued_at/started_at/claimed_by/lease）—— 不需要另写一条“唤醒行”。
+ *   所以 `enqueue` 不落“唤醒行”不是为了省事，而是为了避免同一条事实写两遍。
+ * - **积压/排队**是竞争语义：同一刻有多个候选（或更高优先到达、或 strict-state
+ *   项插入）时，才进入决策 loop 的职责：取舍（pick/continue/preempt/merge/
+ *   defer/delegate/drop）并记下理由（`agent_decisions`）。无竞争时它不决策。
+ * - **rest 命中/到期**与**启动/恢复**是另一回事：它们是 agent 自己等待的事件的
+ *   终结，以及“我被重新拉起”这个状态变更 —— 启动意味着 in-flight 丢失、
+ *   租约失效、rest 窗口作废，**这类事件必须可感知、必须留痕**，否则重启频率、
+ *   残留租约这类真问题就只能靠猜。留痕与“进哪个面板”是两件事。
+ *
+ * 【本枚举的作用】让三类可区分、可计数（`extra.wakeCause`），不是为了减少记录。
+ * 2026-11-18 Owner 否掉了我上一版的错误说法（“唤醒不该进工作记录”）——那是删账，
+ * 只能掩盖问题。
+ */
+export type WakeCause =
+  /**
+   * 队列里有活：`enqueue` / `requeue` / 租约回收 / 启动恢复。
+   *
+   * **不另写唤醒行** —— 痕迹是那条被投递的条目自己（见本类型的头部说明）。
+   * 消费点是 `mailbox.wakeIdleLoop()`。
+   */
+  | 'enqueue'
+  /** rest 的等待条件命中（哪个条件/哪条被唤醒的条目在 `extra` 里）。 */
+  | 'rest-hit'
+  /** rest 的等待窗口自然到期（没有命中）。 */
+  | 'rest-expired'
+  /** 进程启动 / 恢复：决策循环被重新拉起（`[RESTARTED]`）。 */
+  | 'start';
+
+/** 真正**落行**的唤醒原因（`enqueue` 的痕迹在条目自身，不需要额外一条唤醒行）。 */
+export type WakeRecordCause = Exclude<WakeCause, 'enqueue'>;
+
 export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescriptor> = {
   //                                                                                     ── policy.affinity (precedence order; MUST end with 'system')
   system_event:         { label: 'System Event',         category: 'system',       icon: '⚙',  signalClass: 'system',           policy: { priority: 1, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },

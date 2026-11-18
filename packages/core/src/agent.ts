@@ -1760,7 +1760,7 @@ export class Agent {
           + ' rest window ending: look at the mailbox and decide what needs doing.'
           + ' If there is still nothing to do, `rest` again — ending the turn without declaring'
           + ' a new wait means this agent goes silent.',
-        extra: { triggerWake: true, loopWake: true },
+        extra: { triggerWake: true, loopWake: true, wakeCause: 'start' },
       } as never);
     } catch (err) {
       log.warn('Failed to enqueue loop wake on start', { agentId: this.id, error: String(err) });
@@ -8935,7 +8935,7 @@ export class Agent {
         + (sub.note ? ` Your note: ${sub.note}` : '')
         + '\nLook at the mailbox again and decide. If there is still nothing to do, `rest` again —'
         + ' ending the turn without declaring a new wait means this agent goes silent.',
-      extra: { triggerWake: true, expiredSubscriptionId: sub.id, wakeOn: sub.wakeOn },
+      extra: { triggerWake: true, expiredSubscriptionId: sub.id, wakeOn: sub.wakeOn, wakeCause: 'rest-expired' },
     } as never);
   }
 
@@ -8965,7 +8965,7 @@ export class Agent {
       content: `[TRIGGER MATCHED] You had rested on ${condition}. An item of type \`${item.sourceType}\` arrived (id ${item.id}).`
         + (sub.note ? ` Your note: ${sub.note}` : '')
         + '\nThis is the turn you were waiting for.',
-      extra: { triggerWake: true, subscriptionId: sub.id, matchedItemId: item.id },
+      extra: { triggerWake: true, subscriptionId: sub.id, matchedItemId: item.id, wakeCause: 'rest-hit' },
     } as never);
   }
 
