@@ -28,7 +28,7 @@ export function chipTypeToEntityType(chipType: string): EntityType | undefined {
 }
 
 export const ENTITY_TYPE_ICON: Record<EntityType, string> = {
-  task: '📋', requirement: '📝', project: '📁', deliverable: '📦', agent: '🤖', team: '👥',
+  task: '☑️', requirement: '🎯', project: '📁', deliverable: '📦', agent: '🤖', team: '👥',
 };
 
 export const ENTITY_TYPE_LABEL: Record<EntityType, string> = {

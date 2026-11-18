@@ -174,11 +174,10 @@ const VOCABULARY: Record<string, Record<string, string>> = {
   },
 
   // ── Stale-task detector ────────────────────────────────────────────────────
-  'notifications.titles.staleReview': {
-    en: 'Stale review',
-    zh: '审核停滞',
-    es: 'Revisión estancada',
-  },
+  // `notifications.titles.staleReview` was removed with the timed stale-review human
+  // notification (Owner 2026-11-18). Historical notification rows that still carry the
+  // key render their stored `title` instead (`notifyText.ts` passes it as
+  // `defaultValue`), so nothing turns into a raw key on screen.
   'notifications.titles.stuckTask': {
     en: 'Stuck task',
     zh: '任务卡住',

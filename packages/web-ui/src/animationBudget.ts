@@ -71,7 +71,14 @@ const TICK_INTERVAL_MS = 250;
  * a consumer is missing here.
  */
 const TICK_CLASSES = [
-  'animate-pulse',
+  // 【为什么把 animate-pulse 拿掉（2026-11-16）】
+  // `.animate-pulse` 的元素大量存在于**聊天消息体**里（状态圆点）。这个 tick 每
+  // 250ms 给它写一次属性，消息体子树里的 MutationObserver 就跟着 setState →
+  // React 重渲染整段 Markdown → 子节点被替换。实测（CDP）：只屏蔽 animate-pulse，
+  // 3 秒内的 childList 重建从 270 降到 **0**，attributes 从 106 降到 12。
+  // 而 opacity 动画本来就能交给合成器免费做 —— 用 JS 每 250ms 写变量把它变成
+  // “强制样式重算 + 触发 React 重渲染”，是净亏损。回归原生 CSS 动画。
+  // 'animate-pulse',
   'animate-spin',
   'animate-bounce',
   'activity-text-shimmer',

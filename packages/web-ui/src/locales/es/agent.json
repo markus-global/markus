@@ -137,7 +137,7 @@
       "runtimeStatus": "Estado del horario de ejecución",
       "usage": "Uso",
       "storage": "Almacenamiento",
-      "openFolder": "Carpeta abierta →",
+      "openFolder": "Abrir carpeta",
       "llmConfiguration": "Configuración LLM",
       "recentHeartbeats": "Heartbeats recientes",
       "recentA2A": "Comunicaciones recientes A2A",
@@ -202,6 +202,8 @@
       "runningTitle": "En ejecución",
       "runningNone": "ninguna unidad de trabajo en ejecución",
       "runningInternal": "sesión interna",
+      "runningWorker": "proceso …{id}",
+      "runningBudgetHint": "usado / límite de llamadas de este turno",
       "runningUnavailable": "el estado de ejecución no está disponible",
       "startAgent": "▶ Comienzo",
       "stopAgent": "⏹ Detener",
@@ -213,8 +215,22 @@
         "confirm": "Detener"
       },
       "lifetimeCaption": "Acumulado desde que se creó el agente",
+      "storageTotalHint": "total del directorio de datos del agente",
+      "storageMore": "otros {{count}} elementos · {{size}} en total",
       "storageDepthLimited": "El árbol de directorios es profundo: el uso real puede ser mayor",
       "sections": {
+        "run": {
+          "title": "Resumen",
+          "hint": "Qué está ejecutando · pendientes · descanso y despertar · actividad reciente"
+        },
+        "capability": {
+          "title": "Capacidades",
+          "hint": "Habilidades y herramientas"
+        },
+        "settings": {
+          "title": "Ajustes",
+          "hint": "Config ROLE / POLICIES · uso y almacenamiento"
+        },
         "files": {
           "title": "Archivos",
           "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
@@ -457,7 +473,7 @@
       "deferred": "Diferido: {{count}}",
       "dropped": "Suelto: {{count}}",
       "inlineCompleted": "Inline Completed: {{count}}",
-      "mailboxHistory": "Historial del buzón",
+      "mailboxHistory": "Registro de trabajo",
       "noHistory": "No hay historial de buzón todavía",
       "loadEarlier": "Cargar anteriores...",
       "decisions": "Decisiones",

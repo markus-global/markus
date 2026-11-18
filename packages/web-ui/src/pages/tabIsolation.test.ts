@@ -11,47 +11,37 @@ import { shouldInterruptForSend, shouldSettleDetachedSession } from './ChatHelpe
 
 const NEW_CHAT = '__new_chat__';
 
-describe('shouldInterruptForSend —— 「要发的那个会话」自己有没有在途流', () => {
-  it('【根因回归】A 在跑，在 B 发消息 → 不打断（旧实现会杀 A）', () => {
-    // 旧判据是 "activeSessionId 是真 id" → B 是真 id → 判成「打断当前流」，
-    // 于是 abort 掉 A 的 SSE 并 cancelProcessing(A)。
+describe('shouldInterruptForSend —— 只问「服务端确认这个会话在跑吗」', () => {
+  it('服务端确认在跑 → 打断重发（同一会话连发同一句 = 重试）', () => {
     expect(shouldInterruptForSend({
-      liveSessions: new Set(['A']),
-      sendSessionId: 'B',
-    })).toBe(false);
-  });
-
-  it('要发的会话自身在跑 → 打断并重发', () => {
-    expect(shouldInterruptForSend({
-      liveSessions: new Set(['A']),
+      authorityStreaming: true,
       sendSessionId: 'A',
     })).toBe(true);
   });
 
-  it('新 tab（占位 id）自身有流 → 打断（同一条 tab 重复发送）', () => {
+  it('【根因回归 2026-11-17】服务端说没在跑 → 绝不打断（哪怕本地登记簿说在跑）', () => {
+    // 现场：`sending` 与 membership 都是「记账式」副本，漏销账就永久为真；
+    // 旧判据拿它当打断依据 → 发送瞬间 abort 掉刚起的那一轮。
+    // runtime log 里 `cancelActiveStream: matched no active stream` 命中 8 次，
+    // 全部落在“上一轮已结束、下一轮未开始”= 用户按下发送的那一刻。
     expect(shouldInterruptForSend({
-      liveSessions: new Set([NEW_CHAT]),
-      sendSessionId: NEW_CHAT,
-    })).toBe(true);
-  });
-
-  it('别的 tab 在跑，但目标会话是占位 → 不打断', () => {
-    expect(shouldInterruptForSend({
-      liveSessions: new Set(['A']),
-      sendSessionId: NEW_CHAT,
+      authorityStreaming: false,
+      sendSessionId: 'A',
     })).toBe(false);
   });
 
-  it('没有任何在途流 → 不打断', () => {
-    expect(shouldInterruptForSend({ liveSessions: new Set(), sendSessionId: 'A' })).toBe(false);
-    expect(shouldInterruptForSend({ liveSessions: undefined, sendSessionId: 'A' })).toBe(false);
-    expect(shouldInterruptForSend({ liveSessions: null, sendSessionId: 'A' })).toBe(false);
+  it('别的会话在跑与本会话无关（权威按会话回答）', () => {
+    // A 在跑对 B 不是一个事实：调用方传入的 authorityStreaming 已经是**本会话**的值。
+    expect(shouldInterruptForSend({
+      authorityStreaming: false,
+      sendSessionId: 'B',
+    })).toBe(false);
   });
 
   it('拿不到发送会话身份 → 一律不打断（保守：宁可不打断，不可误杀）', () => {
-    expect(shouldInterruptForSend({ liveSessions: new Set(['A']), sendSessionId: undefined })).toBe(false);
-    expect(shouldInterruptForSend({ liveSessions: new Set(['A']), sendSessionId: null })).toBe(false);
-    expect(shouldInterruptForSend({ liveSessions: new Set(['A']), sendSessionId: '' })).toBe(false);
+    expect(shouldInterruptForSend({ authorityStreaming: true, sendSessionId: undefined })).toBe(false);
+    expect(shouldInterruptForSend({ authorityStreaming: true, sendSessionId: null })).toBe(false);
+    expect(shouldInterruptForSend({ authorityStreaming: true, sendSessionId: '' })).toBe(false);
   });
 });
 

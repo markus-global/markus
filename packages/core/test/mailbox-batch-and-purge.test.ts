@@ -5,10 +5,11 @@
  *
  * 1. **批量分拣不能被"严格状态项"一票否决。**
  *    严格状态项（triggerExecution / review_request / requirement|workflow(actionRequired)）
- *    本来就被排除在 deliberation 的视界之外（attention 循环里的 allItems 过滤）。旧实现
- *    却在 `needsLLMTriage` 里加了「队列里只要有一条 strict 就 return false」，于是**整个队列**
+ *    本来就被排除在分拣的视界之外（attention 循环里的 allItems 过滤）。旧实现
+ *    却在批量分拣的判据里加了「队列里只要有一条 strict 就 return false」，于是**整个队列**
  *    跳过批量分拣 → 退化成逐条各触发一次 LLM run（回复风暴）。判据必须只看**会被分拣看见的**
- *    那部分队列。
+ *    那部分队列。（历史注记：这里说的批量分拣机制本身已在 Forever Loop 重构 M1–M7 中删除；
+ *    本文件锁的是「strict 状态项不被 defer」这条至今仍然成立的不变量。）
  *
  * 2. **按年龄的陈旧清理不得回收「仍欠动作/带用户可见回复」的项。**
  *    清理的职权范围只有**纯信息类**项；否则真实消息会无声消失（静默丢消息）。
@@ -41,7 +42,6 @@ function makeController() {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
   };
   const controller = new AttentionController(AGENT_ID, mailbox, new EventBus());
@@ -54,43 +54,7 @@ export {}; // keep this module a module
 // ─────────────────────────────────────────────────────────────────────────────
 // 1. 批量分拣不被 strict 项一票否决
 // ─────────────────────────────────────────────────────────────────────────────
-describe('needsLLMTriage · strict 项不得否决整队列的批量分拣', () => {
-  it('普通消息 + 普通消息 + review_request ⇒ 仍应批量分拣（今天会 false ⇒ 逐条唤醒）', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: '1', content: '1' });
-    // 模拟真实取值点：head 已出队
-    mailbox.dequeue();
-    mailbox.enqueue('a2a_message', { summary: '2', content: '2' });
-    mailbox.enqueue('review_request', { summary: 'r', content: 'r' });
-
-    expect(controller['needsLLMTriage'](head)).toBe(true);
-  });
-
-  it('队列里只剩 strict 项 ⇒ 无需分拣（避免空转一次 LLM）', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: '1', content: '1' });
-    mailbox.dequeue();
-    mailbox.enqueue('review_request', { summary: 'r', content: 'r' });
-
-    expect(controller['needsLLMTriage'](head)).toBe(false);
-  });
-
-  it('头部本身是 strict 项 ⇒ 不分拣（原有语义不变）', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('review_request', { summary: 'r', content: 'r' });
-    mailbox.enqueue('a2a_message', { summary: '2', content: '2' });
-
-    expect(controller['needsLLMTriage'](head)).toBe(false);
-  });
-
-  it('人消息头部 ⇒ 永不分拣（原有语义不变）', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('human_chat', { summary: 'hi', content: 'hi' });
-    mailbox.enqueue('a2a_message', { summary: '2', content: '2' });
-
-    expect(controller['needsLLMTriage'](head)).toBe(false);
-  });
-});
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2. 按年龄的陈旧清理不得回收"欠动作/用户可见"的项
@@ -205,27 +169,7 @@ describe('purgeStaleItems · 只回收纯信息类', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. 安全网：批量分拣运行时，队列中的 strict 项必须受保护
 // ─────────────────────────────────────────────────────────────────────────────
-describe('批量分拣与 strict 项共存 · 安全网', () => {
-  it('分拣结果试图 defer/drop/inline 一个 strict 项时，它必须原样留在队列', () => {
-    const { controller, mailbox } = makeController();
-    const head = mailbox.enqueue('a2a_message', { summary: 'a', content: 'a' });
-    const strict = mailbox.enqueue('review_request', { summary: 'r', content: 'r', taskId: 'tsk_x' });
-    // 真实循环里「待处理的那一条」先出队（按 id 取，避免优先级队列取走 strict 项）
-    mailbox.dequeueById(head.id);
-
-    controller['applyDeliberationResult'](head, {
-      processItemIds: [head.id],
-      processItemId: head.id,
-      deferItemIds: [strict.id],
-      dropItemIds: [strict.id],
-      inlineCompletedIds: [strict.id],
-      batchContext: undefined,
-      reasoning: 'test',
-    } as never);
-
-    expect(mailbox.getQueuedItems().some(i => i.id === strict.id)).toBe(true);
-  });
-});
+// ─────────────────────────────────────────────────────────────────────────────
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 4. D · 合并无损：心跳折叠不得吞掉带动作的心跳

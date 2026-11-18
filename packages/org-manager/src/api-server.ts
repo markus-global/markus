@@ -507,6 +507,8 @@ export class APIServer {
    * 没有 WU 是可知的降级，不是隐藏的崩溃。
    */
   private _workUnits?: WorkUnitService | null;
+  /** 僵尸 `running` 周期纠偏定时器（`setStorage()` 建立，`stop()` 清除）。 */
+  private workUnitReconcileTimer?: ReturnType<typeof setInterval>;
   get workUnits(): WorkUnitService | null {
     // 只缓存「有」，**绝不缓存「没有」**。
     //
@@ -2052,11 +2054,25 @@ export class APIServer {
     // 契约见 docs/architecture/derived-views.md。
     // C8：僵尸 running 纠偏 —— `status='running'` 但触发它的 mailbox 行已终态的，
     // 就地收口为 idle。这是真正的根因面：收口漏写会让「在跑」变成一堆幽灵。
+    //
+    // 只跑一次不够：回合可能在启动**之后**结束，而收口路径本身漏写（取消 / 停止 /
+    // 异常）。真机 2026-11-17：`session:cs_…:r224/r225` 的 mailbox 行早已 `completed`，
+    // WU 仍停在 `running` → `work_status()` 与概览把已结束的回合当成「在跑」。
+    // 所以改成周期纠偏：判据仍是结构事实（触发行终态 / 孤儿 session 行），不看时间。
+    this.reconcileStaleWorkUnits();
+    if (!this.workUnitReconcileTimer) {
+      this.workUnitReconcileTimer = setInterval(() => this.reconcileStaleWorkUnits(), 60_000);
+      this.workUnitReconcileTimer.unref?.();
+    }
+  }
+
+  /** 僵尸 `running` 纠偏的**唯一**触发点（SQL 本体仍只有 repo 一份）。 */
+  private reconcileStaleWorkUnits(): void {
     try {
       const reconciled = this.storage?.workUnitRepo?.reconcileRunningAgainstTerminalMailbox?.();
       if (reconciled) log.info('Reconciled stale running WorkUnits', { count: reconciled });
     } catch (err) {
-      // 纠偏失败不阻断启动，但要说出来（静默失败比不纠偏更坏）。
+      // 纠偏失败不阻断启动/心跳，但要说出来（静默失败比不纠偏更坏）。
       log.warn('Failed to reconcile stale running WorkUnits', { error: String(err) });
     }
   }
@@ -2700,7 +2716,11 @@ export class APIServer {
           : null;
         const ref = turnWorkUnitRef ?? linkedRef ?? WORK_UNIT_REF.chat(session.id, round);
         // C7-B：`context_ref` 优先记记忆会话 id（`sess_*`），它才是会话锁键的同源事实。
-        const wu = units.ensure({ ref, agentId, contextRef: memorySessionId ?? session.id });
+        // C9-工作记录：`addressRef` 记**对话地址**（chat session id）——它是这条 WU
+        // 所属实体的结构事实。不写它，「这条记录属于哪个会话」就只能从 ref 字符串
+        // 反解；而 ref 是派生键，名字也不在里面。实测修复前 129 个 session 单元的
+        // `address_ref` 全为 NULL，UI 只能靠正则猜。
+        const wu = units.ensure({ ref, agentId, addressRef: session.id, contextRef: memorySessionId ?? session.id });
         void wu;
         // 收口走唯一执行点（非流式入口同样调它，见 settleChatTurnWorkUnit）。
         this.settleChatTurnWorkUnit(agentId, ref, {
@@ -2806,7 +2826,7 @@ export class APIServer {
       // 回合正在开始 ⇒ 这一行**必须是** running。`ensure()` 对已存在的行什么都不做，
       // 所以 ref 撞上一个已收口的 idle 行时（重试 / 同轮重入 / 早先提前收口）
       // 必须显式拉回 running —— 否则台账说「没在跑」而回合正在输出。
-      const row = units.ensure({ ref, agentId, status: 'running', contextRef: null });
+      const row = units.ensure({ ref, agentId, addressRef: sid, status: 'running', contextRef: null });
       if (row && row.status !== 'running') {
         units.transition(ref, 'running');
       }
@@ -3192,6 +3212,10 @@ export class APIServer {
     // Same reasoning as applyBindHost(): http close() waits for every connection
     // to end, and an open /ws socket never ends on its own. Drop WS + force-close
     // sockets so shutdown does not hang.
+    if (this.workUnitReconcileTimer) {
+      clearInterval(this.workUnitReconcileTimer);
+      this.workUnitReconcileTimer = undefined;
+    }
     this.ws.detach();
     const live = this.server;
     if (!live) return;
@@ -4815,6 +4839,8 @@ export class APIServer {
       try {
         reply = await agent.sendMessage(text, senderId, senderInfo, {
           sourceType: 'human_chat',
+          // 人类直聊 → 'chat'。显式表态，不靠下游 `?? 'chat'`。
+          scenario: 'chat',
           channelContext,
           images,
           fileNames,
@@ -5494,6 +5520,8 @@ export class APIServer {
           let enqueuedItemId: string | null = null;
           try {
             reply = await agent.sendMessage(agentText, senderId, senderInfo, {
+              // 非流式团队聊天 = 人类直聊 → 'chat'（显式表态）。
+              scenario: 'chat',
               images, fileNames, imagePaths, toolEventCollector: toolEvents,
               workUnitRef: turnRef,
               onItemEnqueued: (item) => { enqueuedItemId = item.id; },
@@ -6251,6 +6279,11 @@ export class APIServer {
       const status = url.searchParams.get('status') ?? undefined;
       const category = url.searchParams.get('category') ?? undefined;
       const sourceType = url.searchParams.get('sourceType') ?? undefined;
+      // 列表单条正文的截断上限。实测 human_chat 单条可达 ~100KB，
+      // 50 条 = 2.68MB；收起态用不到全文，展开时走 /mailbox/:itemId 取。
+      const CONTENT_PREVIEW_CHARS = 800;
+      // 单条详情：列表把正文截到 800 字，展开时用 `?itemId=` 取那一条的全文。
+      const itemId = url.searchParams.get('itemId') ?? undefined;
       try {
         const agent = this.orgService.getAgentManager().getAgent(agentId);
         const queued = agent.getMailbox().getQueuedItems();
@@ -6265,7 +6298,250 @@ export class APIServer {
         }
 
         let history: Array<Record<string, unknown>> = [];
-        if (this.storage?.mailboxRepo) {
+        // ── 实体解析：一条记录属于哪件事，名字从**实体表**取 ──────────────
+        //
+        // 为什么在这里而不是前端：名字不在 `work_unit.ref` 里（那是 `(实体,轮次)`
+        // 的序列化键），在 `tasks` / `chat_sessions` 自己的 title 列里。前端用正则
+        // 反解 ref 再拼「任务 tsk_xxx」是把派生键当结构源，且永远拿不到名字。
+        //
+        // 旧数据必须能读（main 上的历史行）：`workUnitRef` 大量为 NULL，且实体行
+        // 可能已被删。所以解析失败一律**降级到短 id 标签**，绝不返回空。
+        const entityMemo = new Map<string, { kind: string; id: string; name: string }>();
+        const short = (id: string) => (id.length > 12 ? `${id.slice(0, 10)}…` : id);
+        const put = (kind: string, id: string, name: string | undefined, fallbackPrefix: string) => {
+          const key = `${kind}:${id}`;
+          const hit = entityMemo.get(key);
+          if (hit) return hit;
+          const v = { kind, id, name: (name && name.trim()) || `${fallbackPrefix} ${short(id)}` };
+          entityMemo.set(key, v);
+          return v;
+        };
+        const resolveEntity = (item: Record<string, unknown>) => {
+          const payload = (item.payload ?? {}) as Record<string, unknown>;
+          const meta = (item.metadata ?? {}) as Record<string, unknown>;
+          const ref = typeof item.workUnitRef === 'string' ? item.workUnitRef : '';
+
+          // 启动唤醒（`start()` 里的 [RESTARTED]）：直接入队，**没有** `work_unit_ref`
+          // （ref 要等会话身份解析后才有），所以库里那列是 NULL。但它明确标了
+          // `extra.loopWake`，属于决策循环，不是「未归属」。
+          const extra = (payload['extra'] ?? {}) as Record<string, unknown>;
+          // 启动唤醒标 `extra.loopWake`；rest 条件达成 / 到期唤醒标 `extra.triggerWake`。
+          // **两者都是决策循环自己的信号**，不是外部输入，更不是「未归属」。
+          // 之前只认 loopWake，于是所有 `Woke for the condition you rested on`
+          // 都沉到了「历史记录」里，而真正的决策循环实体反而是空的。
+          if (extra['loopWake'] === true || extra['triggerWake'] === true) {
+            return put('channel', `loop_${agentId}`, '决策循环（Loop）', '决策循环');
+          }
+
+          // 1) 任务：结构事实优先（载荷/元数据上的 taskId），不依赖 ref
+          const taskId = (payload['taskId'] ?? meta['taskId']) as string | undefined;
+          if (taskId) {
+            return put('task', taskId, this.taskService?.getTask(taskId)?.title, '任务');
+          }
+          // 2) 需求
+          const reqId = payload['requirementId'] as string | undefined;
+          if (reqId) {
+            const title = (this.storage?.requirementRepo?.findById?.(reqId) as { title?: string } | undefined)?.title;
+            return put('requirement', reqId, title, '需求');
+          }
+          // 3) ref 里解（旧行可能没有 ref → 直接跳过）。
+          //    ref 的语法只许住在 `@markus/shared` 的构造器旁边 —— 这里调它的官方
+          //    反解函数，不在这里再写一份正则（两份正则 = 两个语法写者）。
+          const taskIdFromRef = taskIdOfWorkUnitRef(ref);
+          if (taskIdFromRef) {
+            return put('task', taskIdFromRef, this.taskService?.getTask(taskIdFromRef)?.title, '任务');
+          }
+          const sessFromRef = /^session:(.+?):r\d+$/.exec(ref);
+          if (sessFromRef) {
+            const sid = sessFromRef[1]!;
+            const title = (this.storage?.chatSessionRepo?.getSession?.(sid) as { title?: string } | undefined)?.title;
+            return put('channel', sid, title, sid.startsWith('loop_') ? '决策循环' : '会话');
+          }
+          // 4) 委派 → 递归到父单元（它服务的那件事才是实体）
+          if (ref.startsWith('delegation:')) {
+            const body = ref.slice('delegation:'.length);
+            const hash = body.indexOf('#');
+            const parentRef = hash > 0 ? body.slice(0, hash) : body;
+            return resolveEntity({ ...item, workUnitRef: parentRef });
+          }
+          // 5) a2a：ref 里已带实体键
+          if (ref.startsWith('a2a:task:')) {
+            const id = ref.slice('a2a:task:'.length);
+            return put('task', id, this.taskService?.getTask(id)?.title, '任务');
+          }
+          if (ref.startsWith('a2a:channel:')) {
+            const id = ref.slice('a2a:channel:'.length);
+            return put('channel', id, undefined, '频道');
+          }
+          // `a2a:dm:a2a:agt_x:agt_y` —— agent 间 DM。之前只认 task/channel 两种前缀，
+          // DM 形状就落到 null → 「未归属」了（实测全库 17 条能归却没归）。
+          // DM 本身就是一条会话地址，所以归「会话」而不是未归属。
+          if (ref.startsWith('a2a:')) {
+            const inner = ref.slice('a2a:'.length);
+            return put('channel', inner, undefined, '会话');
+          }
+          // 6) 解不出 → null，前端显示「未归属」，不猜、不塞进别的实体
+          return null;
+        };
+        // ── 工作记录：左栏 = 实体分组（服务端聚合 + 分页）───────────
+        // 聚合必须在**整段历史**上做，否则实体计数会随当前页漂移。
+        const wrmode = url.searchParams.get('mode') ?? '';
+        const entityKey = url.searchParams.get('entity') ?? '';
+        const SCAN = Math.min(Number.parseInt(url.searchParams.get('scan') ?? '5000', 10) || 5000, 50000);
+        /**
+         * 扫描缓存。
+         *
+         * `groups` 和 `entity` 两条通路都需要在**整段历史**上做实体解析（实体是
+         * `workUnitRef` + payload 兼底解出来的，没法用 SQL 直接过滤）。
+         * 旧写法每点一个实体就把 5000 行重新拉一遍并逐行 resolve → 手感上就是「很卡」。
+         * 按 (agent, 筛选) 缓存 15s：翻实体、来回切换都不再重扫。
+         */
+        const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: Array<Record<string, unknown>> }> };
+        const scanCache = (scanCacheRef.__wrScanCache ??= new Map());
+        const scanKey = JSON.stringify([agentId, sourceTypes ?? null, status ?? null, SCAN]);
+        const scannedRows = (): Array<Record<string, unknown>> => {
+          const now = Date.now();
+          const hit = scanCache.get(scanKey);
+          if (hit && now - hit.at < 15000) return hit.rows;
+          const rows = this.storage!.mailboxRepo!.getHistory(agentId, { limit: SCAN, offset: 0, sourceTypes, status }) as unknown as Array<Record<string, unknown>>;
+          if (scanCache.size > 32) scanCache.clear();
+          scanCache.set(scanKey, { at: now, rows });
+          return rows;
+        };
+
+        if (wrmode === 'groups' && this.storage?.mailboxRepo) {
+          const all = scannedRows();
+          const agg = new Map<string, { kind: string; id: string; name: string; count: number; units: Set<string>; latestAt: string }>();
+          const toIndex: Array<{ id: string; kind: string; entityId: string }> = [];
+          for (const row of all) {
+            const ent = resolveEntity(row as never);
+            // 未归属桶用**非空哨兵键** `none:`：空串在客户端会被当成「没选实体」，
+            // 于是右栏根本不去取数，只留着上一个实体的内容（实测就是这样错位的）。
+            const key = ent ? `${ent.kind}:${ent.id}` : 'none:';
+            // 顺手把解析结果回填到 entity_kind/entity_id（只填 NULL 行）。
+            // 旧库因此会在第一次扫描后自己完成迁移，不需要单独跑迁移脚本。
+            if (ent && ent.kind && ent.id && row['entityId'] == null) {
+              toIndex.push({ id: String(row['id']), kind: ent.kind, entityId: ent.id });
+            }
+            const at = String(row['queuedAt'] ?? row['createdAt'] ?? '');
+            const hit = agg.get(key);
+            const ref = row['workUnitRef'];
+            if (hit) {
+              hit.count++;
+              if (typeof ref === 'string') hit.units.add(ref);
+              if (at > hit.latestAt) hit.latestAt = at;
+            } else {
+              agg.set(key, {
+                kind: ent?.kind ?? 'none',
+                id: ent?.id ?? '',
+                name: ent?.name ?? '',
+                count: 1,
+                units: new Set<string>(typeof ref === 'string' ? [ref] : []),
+                latestAt: at,
+              });
+            }
+          }
+          const sorted = [...agg.entries()]
+            .map(([key, g]) => ({ key, kind: g.kind, id: g.id, name: g.name, count: g.count, units: g.units.size, latestAt: g.latestAt }))
+            .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
+          try { this.storage.mailboxRepo.setEntityKeys(toIndex); } catch { /* 回填失败不影响本次返回 */ }
+          const size = Math.min(Math.max(limit, 1), 200);
+          this.json(res, 200, {
+            groups: sorted.slice(offset, offset + size),
+            totalGroups: sorted.length,
+            scanned: all.length,
+            offset,
+            limit: size,
+            hasNext: offset + size < sorted.length,
+          });
+          return;
+        }
+
+        if (entityKey && this.storage?.mailboxRepo) {
+          // ── 工作记录：右栏 = 某实体的**全部**记录（不分页）───────────
+          const MAX_ITEMS = 2000;
+          const [entKindRaw, ...entIdParts] = entityKey.split(':');
+          const entKind = entKindRaw ?? '';
+          const entId = entIdParts.join(':');
+          // 1) 已回填的行：走 idx_mailbox_entity（快路径，不再扫全量）
+          const indexed = (entKind && entId
+            ? this.storage.mailboxRepo.getByEntityKey(agentId, entKind, entId, MAX_ITEMS)
+            : []) as unknown as Array<Record<string, unknown>>;
+          // 2) 旧行（entity_* 为 NULL）：用**同一个**解析器兜底 —— 旧库照旧可读，
+          //    不依赖任何迁移脚本先跑过。
+          const legacyAll = this.storage.mailboxRepo.getUnindexed(agentId, SCAN) as unknown as Array<Record<string, unknown>>;
+          const legacyMatched = legacyAll.filter(row => {
+            const ent = resolveEntity(row as never);
+            return (ent ? `${ent.kind}:${ent.id}` : 'none:') === entityKey;
+          });
+          // 顺手把命中行的解析结果回填，下次就走索引
+          try {
+            this.storage.mailboxRepo.setEntityKeys(legacyMatched.map(row => {
+              const ent = resolveEntity(row as never);
+              return { id: String(row['id']), kind: ent?.kind ?? '', entityId: ent?.id ?? '' };
+            }).filter(x => x.kind && x.entityId));
+          } catch { /* 回填失败不影响本次返回 */ }
+          const matched = [...indexed, ...legacyMatched]
+            .sort((a, b) => (String(b['queuedAt'] ?? '') > String(a['queuedAt'] ?? '') ? 1 : -1))
+            .slice(0, MAX_ITEMS);
+          const ids = matched.map(r => String(r['id']));
+          const dMap = this.storage.decisionRepo ? this.storage.decisionRepo.getByMailboxItemIds(ids) : new Map<string, unknown[]>();
+          const aMap = this.storage.activityRepo ? this.storage.activityRepo.getByMailboxItemIds(ids) : new Map<string, unknown>();
+          history = matched.map(row => {
+            const enriched: Record<string, unknown> = { ...row };
+            enriched.decisions = dMap.get(String(row['id'])) ?? [];
+            enriched.entity = resolveEntity(row as never);
+            const act = aMap.get(String(row['id'])) as Record<string, unknown> | undefined;
+            enriched.activity = act ? {
+              id: act.id, type: act.type, label: act.label,
+              startedAt: act.startedAt, endedAt: act.endedAt,
+              workUnitRef: act.workUnitRef ?? null,
+              totalTokens: act.totalTokens, totalTools: act.totalTools, success: act.success,
+            } : null;
+            // 正文不在列表里带（两条记录路径同一规则）：展开单卡时走 `?itemId=` 取。
+            const rawPayload = enriched.payload as Record<string, unknown> | undefined;
+            let slim: Record<string, unknown> | undefined = rawPayload;
+            const extra = rawPayload?.['extra'] as Record<string, unknown> | undefined;
+            if (extra && (extra['sessionHint'] || extra['sessionRestore'])) {
+              const se: Record<string, unknown> = { ...extra };
+              for (const k of ['sessionHint', 'sessionRestore'] as const) {
+                const v = se[k] as Record<string, unknown> | undefined;
+                if (!v || typeof v !== 'object' || !('messages' in v)) continue;
+                const dropped = v['messages'];
+                const copy: Record<string, unknown> = { ...v };
+                delete copy['messages'];
+                copy['messagesDropped'] = Array.isArray(dropped) ? dropped.length : 0;
+                se[k] = copy;
+              }
+              slim = { ...rawPayload, extra: se };
+            }
+            const content = slim?.['content'];
+            if (typeof content === 'string' && content.length > 0) {
+              const lean: Record<string, unknown> = { ...slim };
+              delete lean['content'];
+              slim = lean;
+              enriched.contentTruncated = true;
+              enriched.contentLength = content.length;
+            }
+            if (slim !== rawPayload) enriched.payload = slim;
+            return enriched;
+          });
+          this.json(res, 200, { history, matched: matched.length, truncatedByScan: legacyAll.length >= SCAN });
+          return;
+        }
+
+        if (itemId && this.storage?.mailboxRepo) {
+          // 单条详情：不截断，原样返回全文。
+          const one = this.storage.mailboxRepo.getById(itemId);
+          if (one) {
+            const enriched: Record<string, unknown> = { ...one };
+            enriched.entity = resolveEntity(one as unknown as Record<string, unknown>);
+            enriched.decisions = this.storage?.decisionRepo
+              ? (this.storage.decisionRepo.getByMailboxItemIds([itemId]).get(itemId) ?? [])
+              : [];
+            history = [enriched];
+          }
+        } else if (this.storage?.mailboxRepo) {
           const raw = this.storage.mailboxRepo.getHistory(agentId, { limit, offset, sourceTypes, status });
           const itemIds = raw.map((item: { id: string }) => item.id);
 
@@ -6279,6 +6555,7 @@ export class APIServer {
           history = raw.map((item: { id: string; [k: string]: unknown }) => {
             const enriched: Record<string, unknown> = { ...item };
             enriched.decisions = decisionsMap.get(item.id) ?? [];
+            enriched.entity = resolveEntity(item);
             const act = activitiesMap.get(item.id) as Record<string, unknown> | undefined;
             enriched.activity = act ? {
               id: act.id,
@@ -6291,6 +6568,44 @@ export class APIServer {
               totalTools: act.totalTools,
               success: act.success,
             } : null;
+            // 【列表只给摘要】一条 `human_chat` 的 `payload.content` 实测可达 ~100KB，
+            // 50 条 = **2.68MB**：每次交互前端都要先 JSON.parse 这份载荷、再在它上面
+            // 重新分组/渲染，滚一次又追加 2.68MB。DB 查询只要 48ms，卡的是载荷。
+            // 收起态只用 title/subtitle/徽标，用不到全文 → 这里截断并打标记，
+            // 展开时前端再走 `GET /agents/:id/mailbox/:itemId` 取全文。
+            const rawPayload = enriched.payload as Record<string, unknown> | undefined;
+            let slimPayload: Record<string, unknown> | undefined = rawPayload;
+            // 【真正的重量在这里】一条 human_chat 实测 ~95KB，其中 **98% 是
+            // `payload.extra.sessionHint.messages` 与 `payload.extra.sessionRestore.messages`**
+            // —— 同一份会话历史被内嵌了两遍（各约 46KB）。那是**入队时给回合用的路由上下文**，
+            // 工作记录列表从不渲染它。列表里只留标量路由字段（kind / dbSessionId / isRetry …），
+            // 消息数组丢掉并留一个长度计数，需要时能看出它存在但不再占载荷。
+            const extra = rawPayload?.['extra'] as Record<string, unknown> | undefined;
+            if (extra && (extra['sessionHint'] || extra['sessionRestore'])) {
+              const slimExtra: Record<string, unknown> = { ...extra };
+              for (const k of ['sessionHint', 'sessionRestore'] as const) {
+                const v = slimExtra[k] as Record<string, unknown> | undefined;
+                if (!v || typeof v !== 'object' || !('messages' in v)) continue;
+                const dropped = v['messages'];
+                const copy: Record<string, unknown> = { ...v };
+                delete copy['messages'];
+                copy['messagesDropped'] = Array.isArray(dropped) ? dropped.length : 0;
+                slimExtra[k] = copy;
+              }
+              slimPayload = { ...rawPayload, extra: slimExtra };
+            }
+            // 【列表不带正文】正文只在展开单卡时取（`?itemId=`）。收起态只渲染标题/副标题/
+            // 徽标，正文是纯死重量：带着它，每追加一页就多一份 JSON.parse + 对象图遍历，
+            // 而「加载过程中」正是体感最卡的时候（加载完不再追加就变顺）。
+            const content = slimPayload?.['content'];
+            if (typeof content === 'string' && content.length > 0) {
+              const lean: Record<string, unknown> = { ...slimPayload };
+              delete lean['content'];
+              slimPayload = lean;
+              enriched.contentTruncated = true;
+              enriched.contentLength = content.length;
+            }
+            if (slimPayload !== rawPayload) enriched.payload = slimPayload;
             return enriched;
           });
         }
@@ -7518,6 +7833,8 @@ EXPLANATION_END`;
         const turnRef = await this.prepareChatTurnWorkUnit(targetAgentId, senderId);
         try {
           reply = await agent.sendMessage(userText, senderId, senderInfo, {
+            // Agent Chat 面板的人类消息 → 'chat'（显式表态）。
+            scenario: 'chat',
             images, fileNames, imagePaths, toolEventCollector: toolEvents, sessionHint,
             workUnitRef: turnRef,
             onItemEnqueued: (item) => {

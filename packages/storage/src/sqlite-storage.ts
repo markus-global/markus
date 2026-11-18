@@ -455,6 +455,10 @@ CREATE TABLE IF NOT EXISTS mailbox_items (
   signal_class TEXT,
   intent TEXT,
   message_id TEXT,
+  -- 工作记录：实体键物化（旧库靠 migrations 里的 ALTER 补；新库在 DDL 里直接有）。
+  -- 旧行为 NULL = 未回填，读路径回退到原解析。
+  entity_kind TEXT,
+  entity_id TEXT,
   drop_reason TEXT,
   bounce_target TEXT
 );
@@ -482,7 +486,18 @@ CREATE TABLE IF NOT EXISTS data_migrations (
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_queued ON mailbox_items(agent_id, priority, queued_at);
+-- 工作记录分页：ORDER BY queued_at DESC LIMIT ? OFFSET ? 的支撑索引。
+--
+-- 缺它时实测查询计划是 SEARCH ... USING INDEX idx_mailbox_agent_source (agent_id=?)
+-- 加 USE TEMP B-TREE FOR ORDER BY —— 也就是说每翻一页都要把该 agent 的全部行
+-- （本机 24 万）拉进临时 B 树重排一次，越翻越慢。有了这个索引，SQLite 能沿索引
+-- 顺序边扫边取，不需要临时排序。IF NOT EXISTS 同时覆盖新库与旧库升级。
+CREATE INDEX IF NOT EXISTS idx_mailbox_agent_history ON mailbox_items(agent_id, queued_at DESC);
 CREATE INDEX IF NOT EXISTS idx_mailbox_agent_source ON mailbox_items(agent_id, source_type);
+-- 注意：不要把 entity_kind/entity_id 的索引写在这里。SCHEMA_SQL 在 migrations **之前**
+-- 执行，而这两列是新库靠 DDL、旧库靠 ALTER 才有的 —— 写在这里会让旧库建索引时
+-- 报「no such column」→ storage 初始化失败 → 启动报 storage not available。
+-- 该索引在 migrations 跑完之后单独创建（见下方 idx_mailbox_entity）。
 
 CREATE TABLE IF NOT EXISTS agent_decisions (
   id TEXT PRIMARY KEY,
@@ -833,6 +848,17 @@ export function openSqlite(dbPath: string): DatabaseSync {
   _db.exec('PRAGMA journal_mode = WAL');
   _db.exec('PRAGMA foreign_keys = ON');
   _db.exec('PRAGMA busy_timeout = 5000');
+  // 实测（2026-11-16）：库已经 12 GB，最大的三张日志表 447 万 / 379 万 / 295 万行，
+  // 而 SQLite 默认只给 2 MB 页缓存、且 mmap 关闭 —— 任何冷读都走磁盘。
+  // 这条页面自己的查询确实亚毫秒（索引覆盖），但一旦触到日志表就会反复读盘，
+  // 那就是用户感受到的“整体卡”。
+  //
+  // cache_size 负数 = KiB（-131072 = 128 MB）；mmap_size 让读走内存映射（256 MB）。
+  // 两者相加只有 384 MB，相对于 12 GB 库是保守值；不支持 mmap 的平台会忽略。
+  try {
+    _db.exec('PRAGMA cache_size = -131072');
+    _db.exec('PRAGMA mmap_size = 268435456');
+  } catch { /* 平台不支持时忽略，不阻塞启动 */ }
 
   // ── schema 自举：建表 / 加列 / 建索引全部包在**一个事务**里 ────────────────
   // 原先这三段每条 DDL 都是独立提交 = 每条一次 fsync。WAL + synchronous=FULL
@@ -968,6 +994,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'mailbox_items', column: 'work_unit_ref', sql: 'ALTER TABLE mailbox_items ADD COLUMN work_unit_ref TEXT' },
     { table: 'mailbox_items', column: 'signal_class', sql: 'ALTER TABLE mailbox_items ADD COLUMN signal_class TEXT' },
     { table: 'mailbox_items', column: 'intent', sql: 'ALTER TABLE mailbox_items ADD COLUMN intent TEXT' },
+    // 工作记录：把「这条记录属于哪个实体」物化下来（kind/id 两列）。
+    // 旧行这两列为 NULL —— 读路径继续走原解析兜底（兼容旧库），下一次扫描时惰性回填。
+    { table: 'mailbox_items', column: 'entity_kind', sql: 'ALTER TABLE mailbox_items ADD COLUMN entity_kind TEXT' },
+    { table: 'mailbox_items', column: 'entity_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN entity_id TEXT' },
     { table: 'mailbox_items', column: 'message_id', sql: 'ALTER TABLE mailbox_items ADD COLUMN message_id TEXT' },
     { table: 'mailbox_items', column: 'drop_reason', sql: 'ALTER TABLE mailbox_items ADD COLUMN drop_reason TEXT' },
     { table: 'mailbox_items', column: 'bounce_target', sql: 'ALTER TABLE mailbox_items ADD COLUMN bounce_target TEXT' },
@@ -1021,6 +1051,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // 依赖 mailbox_items.lease_until 列，必须在列迁移（migrations）之后创建，
     // 否则既有数据库上 openSqlite 会在 SCHEMA_SQL 阶段报 no such column 导致 storage 初始化整体失败。
     _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_agent_lease ON mailbox_items(agent_id, status, lease_until)');
+    // migrations 跑完之后才能建这条：列是新加的，旧库在上面的 ALTER 里才拥有它。
+    _db.exec('CREATE INDEX IF NOT EXISTS idx_mailbox_entity ON mailbox_items(agent_id, entity_kind, entity_id)');
     // P0 幂等键：同一 agent 下 dedup_key 非空则唯一（部分唯一索引）。
     // 非空时重复投递被拒；dedup_key 为 NULL 的项不受约束（SQLite 允许多个 NULL）。
     _db.exec('CREATE UNIQUE INDEX IF NOT EXISTS uq_mailbox_agent_dedup ON mailbox_items(agent_id, dedup_key) WHERE dedup_key IS NOT NULL');
@@ -4891,6 +4923,44 @@ export class SqliteMailboxRepo {
   }
 
   /**
+   * 工作记录：把已解析出的「这条记录属于哪个实体」落库。
+   *
+   * 只在扫描时惰性回填（`AND entity_id IS NULL`），所以：
+   * - 旧库无需迁移脚本，第一次扫描后自己就填上了；
+   * - 不覆盖已有值，避免读路径反向成为实体归属的第二个写者。
+   */
+  setEntityKeys(entries: Array<{ id: string; kind: string; entityId: string }>): void {
+    if (entries.length === 0) return;
+    const stmt = this.db.prepare('UPDATE mailbox_items SET entity_kind = ?, entity_id = ? WHERE id = ? AND entity_id IS NULL');
+    // `node:sqlite` 的 DatabaseSync 没有 better-sqlite3 那种 transaction() 包装，
+    // 批量更新自己开显式事务。
+    this.db.exec('BEGIN');
+    try {
+      for (const r of entries) stmt.run(r.kind, r.entityId, r.id);
+      this.db.exec('COMMIT');
+    } catch (err) {
+      try { this.db.exec('ROLLBACK'); } catch { /* 回滚失败也要把原错误抛出去 */ }
+      throw err;
+    }
+  }
+
+  /** 工作记录：按实体键取（走 idx_mailbox_entity）。 */
+  getByEntityKey(agentId: string, kind: string, entityId: string, limit = 2000): MailboxItemRow[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM mailbox_items WHERE agent_id = ? AND entity_kind = ? AND entity_id = ? ORDER BY queued_at DESC LIMIT ?',
+    ).all(agentId, kind, entityId, limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /** 工作记录：尚未回填实体键的行（旧数据），读路径兼底用。 */
+  getUnindexed(agentId: string, limit = 2000): MailboxItemRow[] {
+    const rows = this.db.prepare(
+      'SELECT * FROM mailbox_items WHERE agent_id = ? AND entity_id IS NULL ORDER BY queued_at DESC LIMIT ?',
+    ).all(agentId, limit) as Array<Record<string, unknown>>;
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /**
    * C3：只读一行的当前状态（ghost 路径让矩阵裁决用）。
    *
    * 单独一条轻量查询：调用方（`AgentMailbox.drop` 对不在内存队列的 id）只需要
@@ -5713,7 +5783,22 @@ export class SqliteWorkUnitRepo {
       .run();
     const a = (settledByTerminal as { changes?: number }).changes ?? 0;
     const b = (settledOrphan as { changes?: number }).changes ?? 0;
-    return a + b;
+    // 规则三（子存活 ⊂ 父存活）：子 WU 跑在父回合里（`spawn_subagent` 被 await），
+    // 父不在 running 时子不可能在跑。
+    //
+    // 为什么必须有：规则二只覆盖 `session:%`，而委派子 WU 的 ref 是
+    // `delegation:…`。进程被杀 / 回合异常结束时子 WU 的 `settle()` 永不执行，
+    // 那一行就永远是 `running`（真机 2026-11-17 实测：父 `session:…:r127` 已 idle，
+    // 子 `delegation:…r127#sub_…` 仍 running）。
+    const settledByParent = this.db
+      .prepare(
+        `UPDATE work_units SET status='idle', stop_reason='reconciled_parent_not_running'
+          WHERE status='running' AND parent_id IS NOT NULL
+            AND parent_id IN (SELECT id FROM work_units WHERE status <> 'running')`,
+      )
+      .run();
+    const c = (settledByParent as { changes?: number }).changes ?? 0;
+    return a + b + c;
   }
 
   getByRef(ref: string): WorkUnitRecord | undefined {

@@ -67,7 +67,7 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
-import { sessionHasLiveStream, shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
+import { shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
   sessionStreamState,
   useAgentSessionStreaming,
@@ -113,6 +113,10 @@ import { useChatStream, type ChatStreamVolatileState } from '../hooks/useChatStr
 import { Avatar, AvatarUpload } from '../components/Avatar.tsx';
 import { ChatModelMenu, applyChatModelSelection, type ChatModelSelection } from '../components/ChatModelMenu.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+// 实体图标唯一权威：EntityCard 导出的 ENTITY_TYPE_ICON。
+// 本文件曾自己又写一份（requirement: '📋' / task: '✅'），与统一后的 🎯/☑️ 墨守不一致 ——
+// 同一个概念两地不同图，就是「一个事实多个写者」的图形版。
+import { ENTITY_TYPE_ICON } from '../components/EntityCard.tsx';
 import {
   type MsgSegment, type ChatMsg, type ChatMode,
   dbMsgToChat, channelMsgToChat, stripNotifyContext, insertChatMsgByCreatedAt,
@@ -3103,12 +3107,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // For direct mode, sending state is only relevant if the stream belongs
     // to the session we're switching TO. Otherwise a stream in session A
     // would incorrectly cause session B to appear as "streaming".
-    const streamingSessions = getStreamSession(newKey);
+    //
+    // 判据只认**权威**（服务端镜像）：membership 登记簿回答的是「我这条传输还连着吗」，
+    // 不是「这一轮结束了没有」（传输结束 ≠ 回合结束）。拿登记簿回答存活性，切 tab 时
+    // 就会把正在输出的会话画成已结束、把已结束的画成在跑 —— 与 send 路径同一个误用。
     const targetSession = savedActiveSession ?? activeSessionId;
-    // 同 switchSession：在途与否只由会话自身的登记决定。
     const isSendingNow = chatMode !== 'direct'
       ? isSendingFor(newKey)
-      : sessionHasLiveStream(streamingSessions, targetSession);
+      : sessionStreamState.isStreaming(targetSession);
 
     // Activities are keyed by session, not convKey
     const actBufKey = targetSession ?? newKey;
@@ -3734,14 +3740,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     newMsgCountRef.current = 0;
     setNewMsgCount(0);
     // Sync sending visual with the target session:
-    // - If stream belongs to THIS session → show spinner
-    // - If stream belongs to a DIFFERENT session → suppress spinner
-    const streamingSessions = getStreamSession(key);
-    const streamForThis = sessionHasLiveStream(streamingSessions, s.id);
-    // 只由「本会话是否真有在途流」决定，不再叠加 Agent 级 sendCount：
-    // 那个计数器是会话级事实的重复副本，会被别的 tab 的发送/中断清零，
-    // 于是正在输出的 tab 会瞬间显示为“已结束”。
-    const isStreaming = streamForThis;
+    // - If the target session is really streaming → show spinner
+    // - Otherwise → suppress spinner
+    //
+    // 判据只读权威（服务端镜像）。旧写法读 membership 登记簿：它是「传输附着」账，
+    // 漏销一次就永久为真，于是“已结束的 tab 永远转圈”或“正在输出的 tab 不转圈”。
+    const isStreaming = sessionStreamState.isStreaming(s.id);
     setSending(isStreaming);
     if (isStreaming) {
       setActivities(actBuffers.get(s.id) ?? []);
@@ -4338,7 +4342,6 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     .filter(a => channelTeamMemberIds ? channelTeamMemberIds.has(a.id) : true)
     .filter(a => a.name.toLowerCase().includes(mentionFilter));
   const filteredEntityItems = entityMentionItems.filter(e => e.name.toLowerCase().includes(mentionFilter));
-  const ENTITY_TYPE_ICON: Record<string, string> = { workflow: '⚙️', project: '📁', requirement: '📋', task: '✅', deliverable: '📦' };
   type MentionDropdownItem = { kind: 'agent'; agent: AgentInfo } | { kind: 'entity'; entity: EntityMentionItem };
   const allMentionItems: MentionDropdownItem[] = useMemo(() => [
     ...filteredAgents.map(a => ({ kind: 'agent' as const, agent: a })),
@@ -5758,7 +5761,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         </span>
                       )}
                       {msg.sender === 'user'
-                        ? <div className="text-sm text-fg-secondary whitespace-pre-wrap">
+                        ? <div className="text-sm text-fg-secondary whitespace-pre-wrap msg-break-anywhere">
                             {msg.images && msg.images.length > 0 && (
                               <div className="flex flex-wrap gap-1.5 mb-1">
                                 {msg.images.map((src, idx) => (
@@ -5793,13 +5796,13 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                             ? <ActivityIndicator activities={activities} isActive />
                             : <ErrorBoundary
                                 resetKeys={[msg.text]}
-                                fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                                fallback={<div className="whitespace-pre-wrap break-words msg-break-anywhere text-sm text-fg-secondary">{msg.text}</div>}
                               >
                                 <MarkdownMessage content={msg.text} className="text-sm text-fg-secondary" onMentionClick={handleMentionClick} knownNames={agentNames} />
                               </ErrorBoundary>)
                           : <ErrorBoundary
                               resetKeys={[msg.id, msg.text, msg.segments?.length, isStreamingMsg]}
-                              fallback={<div className="whitespace-pre-wrap break-words text-sm text-fg-secondary">{msg.text}</div>}
+                              fallback={<div className="whitespace-pre-wrap break-words msg-break-anywhere text-sm text-fg-secondary">{msg.text}</div>}
                             >
                               <AgentMessageBody
                                 msg={msg}
@@ -6076,7 +6079,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     i === mentionSelectedIndex ? 'bg-brand-500/15 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'
                   }`}
                 >
-                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ENTITY_TYPE_ICON[item.entity.entityType] ?? '📄'}</span>
+                  <span className="w-6 h-6 flex items-center justify-center text-sm shrink-0">{ (ENTITY_TYPE_ICON as Record<string, string>)[item.entity.entityType] ?? '📄' }</span>
                   <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-overlay text-fg-tertiary shrink-0">{t(`page.mentionType.${item.entity.entityType}`, { defaultValue: item.entity.entityType })}</span>
                   <span className="flex-1 min-w-0 truncate">{item.entity.name}</span>
                   <span className="text-xs text-fg-tertiary ml-auto shrink-0">{item.entity.role}</span>

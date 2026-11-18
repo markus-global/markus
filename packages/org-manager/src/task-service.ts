@@ -5373,7 +5373,14 @@ export class TaskService implements ApprovalTargetPort {
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id, round: reviewRound, workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound) },
+        {
+          sourceType: 'review_request',
+          // 评审回合的形状由信号类型决定（mailboxScenario('review_request') = 'review'）。
+          scenario: 'review',
+          taskId: task.id,
+          round: reviewRound,
+          workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound),
+        },
       ).then(() => {
         // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
         // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。

@@ -124,7 +124,7 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
       name: 'notebook_read',
       description:
         'Read your Notebook (working memory) — all entries, or a single key. Read-only. ' +
-        'Entries are agent-written (your priorities/context) and machine-written (triage/deliberation), each with a TTL.',
+        'Entries are agent-written (your priorities/context) and machine-written (consolidation), each with a TTL.',
       inputSchema: {
         type: 'object',
         properties: {
@@ -322,10 +322,11 @@ export function createMailboxTools(ctx: MailboxToolContext): AgentToolHandler[] 
         'execution epoch, or one A2A delivery), answered from the work_units object — NOT from ' +
         'mailbox payload text — so the rows cannot drift from execution. ' +
         'Each row carries ref / status / parentId / claimedBy / leaseUntil / budget / used. Read-only. ' +
-        'IMPORTANT — what this does NOT tell you: in cut 7 the chat WorkUnit is created when the turn ' +
-        'settles, so `status` is `idle` for finished work and **no `running` row appears for an ' +
-        'in-flight turn**. Treat an empty result as "no unit on record", never as "nothing is running"; ' +
-        'live-turn observability is C7-B scope.',
+        'IMPORTANT — `status: "running"` means a turn is executing now; stale rows whose triggering ' +
+        'mailbox item already reached a terminal state are reconciled to `idle` within a minute ' +
+        '(periodic backstop), so a `running` row is never a permanent phantom. For "who is working ' +
+        'on what right this second" also read the Concurrency Context block — that one comes from live ' +
+        'worker state, not from history.',
       inputSchema: {
         type: 'object',
         properties: {

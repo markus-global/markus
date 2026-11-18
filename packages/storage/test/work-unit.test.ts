@@ -161,6 +161,44 @@ describe('linkMailboxItem（让 C6 的墓碑变活）', () => {
   });
 });
 
+describe('reconcileRunningAgainstTerminalMailbox（僵尸 running 收口）', () => {
+  it('规则三：父回合已不在 running → 委派子 WU 不再被算作在跑', () => {
+    const r = repo();
+    const parent = r.ensure({ ref: 'session:cs_x:r1', agentId: 'agt_a' }).row;
+    r.ensure({
+      ref: 'delegation:session:cs_x:r1#sub_a',
+      agentId: 'agt_a',
+      parentId: parent.id,
+    });
+
+    // 父回合结束（子 WU 的 settle() 在进程被杀/异常时永不执行 → 子停在 running）
+    r.transition(parent.ref, 'idle');
+    expect(r.getByRef('delegation:session:cs_x:r1#sub_a')!.status).toBe('running');
+
+    r.reconcileRunningAgainstTerminalMailbox();
+
+    expect(r.getByRef('delegation:session:cs_x:r1#sub_a')!.status).toBe('idle');
+    expect(r.getByRef('delegation:session:cs_x:r1#sub_a')!.stopReason)
+      .toBe('reconciled_parent_not_running');
+  });
+
+  it('规则三不误伤：父仍 running 时子必须保持 running', () => {
+    const r = repo();
+    // 父用非 `session:` ref，避开规则二（孤儿收口）的干扰面 —— 本用例只问规则三。
+    const parent = r.ensure({ ref: 'task_tsk_t1_r1', agentId: 'agt_a' }).row;
+    r.ensure({
+      ref: 'delegation:task_tsk_t1_r1#sub_b',
+      agentId: 'agt_a',
+      parentId: parent.id,
+    });
+
+    r.reconcileRunningAgainstTerminalMailbox();
+
+    expect(r.getByRef(parent.ref)!.status).toBe('running');
+    expect(r.getByRef('delegation:task_tsk_t1_r1#sub_b')!.status).toBe('running');
+  });
+});
+
 describe('listByAgent / listChildren（自省读面）', () => {
   it('按 agent 读取，默认排除 archived', () => {
     const r = repo();

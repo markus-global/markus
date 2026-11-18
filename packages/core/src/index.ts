@@ -23,7 +23,6 @@ export {
   type SkillWarnings,
   type SkillLookup,
 } from './skill-warnings.js';
-export { HeartbeatScheduler } from './heartbeat.js';
 export { ContextEngine, type OrgContext, type ContextConfig, type LLMSummarizer, type SystemPromptResult, type SystemPromptSegment } from './context-engine.js';
 export {
   SmartTokenCounter,
@@ -155,7 +154,6 @@ export {
   AttentionController,
   type AttentionDelegate,
   type DecisionPersistence,
-  type LLMDecisionJudge,
 } from './attention.js';
 export { SecurityGuard, defaultSecurityGuard, type SecurityPolicy } from './security.js';
 export {

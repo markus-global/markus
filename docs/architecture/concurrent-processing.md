@@ -180,7 +180,7 @@ into a per-worker `SessionWorkspace`:
 | `processingMailboxItemId` | `Agent.processingMailboxItemId` |
 | `lastInjectedActivityType` | dedup hint for injected activities |
 | `turnModelOverride` | per-turn model pick |
-| `volatileState` / `pendingDeliberationResult` | per-turn transient state |
+| `volatileState` | per-turn volatile prompt tail (time, mailbox summary, status, memories…) — rebuilt deterministically on every turn |
 | `toolSticky` | `Agent.toolSticky` (recent/activated tool schema names) |
 | `activatedSkills` | `Agent.activatedSkillInstructions` (skill instruction bodies) |
 
@@ -258,18 +258,20 @@ points:
 
 | `kind` | When | Purpose |
 |---|---|---|
-| `declared` | worker starts an item | declares intent → prevents duplicate work |
-| `fact` | worker establishes a global fact | makes side effects visible |
+| `declared` | worker starts an item | declares intent (history only — **never** read as "still running") |
 | `done` | worker finishes / fails | summary of result + leftovers |
 | `conflict` | worker meets a locked entity | surfaces contention |
 
-- Storage: in-memory ring buffer (last `HANDOFF_MAX_KEEP = 64`) **plus** JSONL
-  persistence under the agent's data dir. `O_APPEND` single writes make concurrent
-  appends atomic — no interleaving, and history survives restart.
-- `inFlight()` reconstructs "who is doing what right now" from `declared`/`fact`
-  records that have no matching `done`/`conflict`, paired by **(worker, entity)** — a
-  worker serving several entities keeps *all* of them visible (keying by `workerId`
-  alone silently dropped all but the last).
+- **This log is history, not state.** A `declared` record means "at some past moment I
+  started this"; it never expires on its own, so it cannot answer "who is working on X
+  right now". The old `inFlight()` helper tried to reconstruct liveness from
+  `declared`/`fact` records without a matching `done`, and the prompt rendered those as
+  "in progress" — which is how the same conversation once appeared under both "in
+  progress" and "completed" in a single prompt, making a worker announce "another worker
+  is handling this" and stop (2026-11-17 incident). `inFlight()` is deleted.
+- **Authoritative liveness lives elsewhere**: `AttentionController.getActiveClaims()`
+  returns the live snapshot (workers that hold the entity lock and are mid-turn). No other
+  code path may claim that an entity is occupied.
 - The JSONL file **compacts** once `HANDOFF_COMPACT_THRESHOLD = 512` lines accumulate:
   the in-memory ring buffer is rewritten wholesale, so the file is bounded by
   `HANDOFF_MAX_KEEP + threshold` instead of growing without limit for the process
@@ -286,18 +288,25 @@ points:
 ### 4.2 Prompt injection — `packages/core/src/context-engine.ts`
 
 `buildSystemPrompt` appends a **`## Concurrency Context（并发上下文）`** block when
-concurrency is active and more than one worker is running. It contains:
+concurrency is active and more than one worker is running. It contains two clearly
+separated halves:
 
-- the current worker id and total worker count;
-- other workers' in-flight intents;
-- the most recent handoff records (`HANDOFF_CONTEXT_LIMIT = 8`, own records filtered);
-- three consistency rules — *do not assume exclusive cognition*, *never process an
-  entity another worker holds*, *report conflicts instead of overwriting*.
+- **who is holding something right now** — `liveClaims`, i.e. the live snapshot from
+  `AttentionController.getActiveClaims()`: worker id, the actual lock keys it holds
+  (`conv:` / `session:` / `task:` …) and the item type. Deliberately **content-free**:
+  occupancy is a structural fact, and shipping the item body would leak one session's
+  text into another session's prompt.
+- **handoff history** — the most recent terminal records (`done` / `conflict`, own records
+  filtered, capped). Rendered under a heading that says explicitly that history does not
+  mean "occupied".
+- three consistency rules — *do not assume exclusive cognition*, *only entities listed
+  under "currently held" are off-limits; a name that merely appeared in history is free to
+  take*, *report conflicts instead of overwriting*.
 
-The block is injected into the **volatile** segment only, so the stable prompt prefix
-(and its cache) is untouched. This is precisely the owner's requirement: a worker knows
-it is one of several, knows what others finished, and can avoid contradictory or
-duplicate actions.
+The block keeps a **fixed shape**: when nothing is held it prints an explicit `（无）` line
+instead of dropping the section, so the prompt never changes template with the data and a
+worker can tell "nothing is held" from "this section was not injected". It is injected into
+the **volatile** segment only, so the stable prompt prefix (and its cache) is untouched.
 
 ### 4.3 Tool write lock — `packages/core/src/agent.ts` + `packages/core/src/resource-locks.ts`
 
@@ -541,7 +550,9 @@ Concurrency-specific suites under `packages/core/test/`:
 | `agent-write-lock.test.ts` | domain-lock serialisation, per-path/per-entity parallelism, no-leak on throw, **write-tool classification totality**, lock-free HITL tools, unknown-tool per-name domain |
 | `resource-locks.test.ts` | domain conflict matrix, FIFO fairness, reentrancy |
 | `resource-locks-chain.test.ts` | **nested conflicting acquisition fails fast (no self-deadlock)**, cross-chain exclusion not weakened, parallel siblings still serialised |
-| `concurrent-handoff.test.ts` | **`clear()` truncates disk**, `inFlight()` pairs by (worker, entity), **file compaction bound**, id uniqueness across instances, corrupt-line tolerance |
+| `concurrent-handoff.test.ts` | **`clear()` truncates disk**, **file compaction bound**, id uniqueness across instances, corrupt-line tolerance |
+| `context-concurrency-notebook.test.ts` | **history never renders as "in progress"**, live claims render with lock keys + item type, notebook snapshot caps |
+| `agent-concurrent-e2e.test.ts` | two chat sessions truly overlap, no session-id bleed, **two items of one session never run in parallel**, no dropped message |
 | `memory-session-debounce.test.ts` | **per-session debounce isolation** (two workers' sessions both persist) |
 | `attention-directed-cancel.test.ts` | `cancelActiveStream(target)` routing |
 

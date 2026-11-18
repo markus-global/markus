@@ -1745,8 +1745,8 @@ function TaskExecutionLogs({ task, isRunning, authUser, agents, reviewSessions =
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{icon}</span>
                     <span className="text-xs text-fg-secondary font-medium">{t('work:task.reviewRoundLabel', { round: s.round })}</span>
-                    <span className="text-[10px] text-fg-tertiary">{s.reviewerName}</span>
-                    {live && <span className="text-[10px] text-purple-400">{t('work:task.reviewLive')}</span>}
+                    <span className="text-[10px] text-fg-tertiary">{s.reviewerName ?? t('work:task.reviewerUnknown')}</span>
+                    {live && <span className="text-[10px] text-purple-400">{s.reviewerType === 'human' ? t('work:task.reviewWaiting') : t('work:task.reviewLive')}</span>}
                   </div>
                   <div className="flex items-center gap-3">
                     <span className="text-[10px] text-fg-tertiary tabular-nums">{new Date(s.queuedAt).toLocaleString()}</span>
@@ -2151,13 +2151,28 @@ function TaskDetailPanel({
 
   // 评审会话从**权威状态历史**派生（不新增后端/表）：一次「→ review」即一条。
   const [reviewSessions, setReviewSessions] = useState<ReviewSession[]>([]);
+  /**
+   * 评审人的可读名：**按权威字段 `reviewerType` 选名册**。
+   *
+   * 旧实现只查 agent 名册（`agents.find(...)`），人类评审人必然查不到 →
+   * `deriveReviewSessions` 回退到「把卡推进 review 的提交者」，于是显示成
+   * 「CTO 正在评审」（评审人变成了提交人）。名册选择由 reviewerType 决定；
+   * 两边都查一遍只是同一个实体的两个表，不是换实体。
+   */
+  const reviewerDisplayName = (() => {
+    const id = task.reviewerId;
+    if (!id) return undefined;
+    const fromAgents = agents.find(a => a.id === id)?.name;
+    const fromUsers = users.find(u => u.id === id)?.name;
+    return task.reviewerType === 'human' ? (fromUsers ?? fromAgents) : (fromAgents ?? fromUsers);
+  })();
   useEffect(() => {
     let live = true;
     api.tasks.getHistory(task.id)
-      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: agents.find(a => a.id === task.reviewerId)?.name })); })
+      .then(r => { if (live) setReviewSessions(deriveReviewSessions(r.history, { reviewerId: task.reviewerId, reviewerName: reviewerDisplayName, reviewerType: task.reviewerType })); })
       .catch(() => { if (live) setReviewSessions([]); });
     return () => { live = false; };
-  }, [task.id, task.status, task.reviewerId, agents]);
+  }, [task.id, task.status, task.reviewerId, task.reviewerType, reviewerDisplayName, agents, users]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -2975,15 +2990,25 @@ function TaskDetailPanel({
           </div>
         )}
 
-        {task.status === 'review' && activeReviewSession(reviewSessions) && (
+        {task.status === 'review' && activeReviewSession(reviewSessions) && (() => {
+          const s = activeReviewSession(reviewSessions)!;
+          // 人类评审人：没有回合在跑，只是「在等人」。原文案「X 正在评审」会把「等待」
+          // 说成「进行中」，脉冲小点也误导。两种对象分开表达。
+          const waitingOnHuman = s.reviewerType === 'human';
+          return (
           <div className="mx-6 mt-3 flex items-start gap-2.5 rounded-lg border border-purple-500/30 bg-purple-500/8 px-3 py-2">
-            <span className="mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400 animate-pulse" />
+            <span className={`mt-1 w-1.5 h-1.5 shrink-0 rounded-full bg-purple-400${waitingOnHuman ? '' : ' animate-pulse'}`} />
             <div className="min-w-0 flex-1 text-xs text-fg-primary">
-              {t('work:task.reviewInProgressBy', { agent: activeReviewSession(reviewSessions)!.reviewerName })}
+              {s.reviewerName
+                ? (waitingOnHuman
+                    ? t('work:task.reviewWaitingFor', { name: s.reviewerName })
+                    : t('work:task.reviewInProgressBy', { agent: s.reviewerName }))
+                : t('work:task.reviewInProgress')}
             </div>
             <button onClick={() => switchTab('activity')} className="shrink-0 rounded-md border border-purple-500/30 px-2 py-1 text-[11px] font-medium text-purple-400 hover:bg-purple-500/10 transition-colors">{t('work:task.reviewViewSession')}</button>
           </div>
-        )}
+          );
+        })()}
 
         {/* Actions */}
         <div className="px-6 py-4 border-t border-border-default flex items-center justify-between gap-2">

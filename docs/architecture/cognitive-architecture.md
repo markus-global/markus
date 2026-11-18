@@ -167,15 +167,22 @@ Three interlocking mechanisms drive agent attention and sustained work:
 Processes the **Mailbox** — the agent's unified stimulus queue. Responsibilities:
 
 - Priority ordering and preemption
-- LLM-driven triage (`TriageJudge` + `onTriageCompleted`) and full-session deliberation
-- Triage decisions persisted to notebook (`triage-decision`)
-- Yields to higher-priority items (e.g., human chat during deliberation)
+- Rule-based preemption only: `heuristicDecision()` in `attention.ts` is a pure rule table
+  (same-session follow-up → merge, human chat preempts background, peer message preempts
+  background, priority comparison) — deciding whether to interrupt costs **no** model call
+- One `pick` decision per dequeued item; the priority queue alone decides processing order
+- Yields to higher-priority items at turn boundaries (`checkYieldPoint()`), applying the same
+  rule table
 
-Triage decides **what** to process. How context is prepared for processing is now deterministic (§3), not a second LLM stage.
+The queue decides **what** to process (priority + enqueue order). How context is prepared for processing is now deterministic (§3), not a second LLM stage.
 
 ### Heartbeat
 
-Periodic patrol re-enters the cognitive cycle without external stimulus. Each heartbeat checks:
+A patrol re-enters the cognitive cycle without external stimulus. Nothing schedules it on a
+timer: `AgentClock` owns the only timers (two sources, `mailbox-maintenance` and
+`trigger-expiry`), and a patrol runs only when the liveness fallback asks for one
+(`agent.triggerHeartbeat()` from the manager / API server). The resting default is
+`rest(wakeOn)`, whose wake arrives as a mailbox `system_event`. Each patrol checks:
 
 - Active goals (Goal/Loop — see below)
 - Timed-out `PendingCallbackRegistry` entries
@@ -187,23 +194,25 @@ There is no depth ladder anymore — every path, heartbeat included, uses the sa
 
 #### Spec: active-hours timezone (C1)
 
-`HeartbeatScheduler` skips ticks outside `config.activeHours`. Previously
-`isWithinActiveHours()` used the host machine's local clock (`new Date().getHours()`), which
-could disagree with the agent's configured timezone.
+`isWithinActiveHours()` is the policy that says whether a patrol may run inside
+`config.activeHours`. It and `minutesOfDayInTimeZone()` live in
+`packages/core/src/heartbeat.ts` as pure functions; since the periodic scheduler was
+deleted, **no runtime caller gates a tick on them** — there is no tick to gate. The C1 fix
+they carry is the timezone rule: evaluation uses the **configured** timezone rather than the
+host's local clock.
 
 - **Behavior**: `activeHours` is evaluated in the **configured timezone** (falling back to
   host local time only when none is configured or the id is invalid), so an agent set to
-  `09:00–18:00` patrols during those hours in *its* timezone regardless of where the process
-  runs.
+  `09:00–18:00` is in-window during those hours in *its* timezone regardless of where the
+  process runs.
 - **Invariants**: same-instant evaluation yields the correct in/out-of-window result for a
   given configured timezone; the start minute is inclusive and the end minute exclusive; the
   midnight-wrap case (e.g. `22:00–06:00`) still works.
-- **Testing** (`packages/core/test/heartbeat.test.ts` — the "C1:" cases): with a fixed
-  instant (`2026-07-23T12:00:00Z`) and different configured timezones (UTC / Los_Angeles /
-  Tokyo), assert the active-window decision matches the configured zone, plus the
-  invalid-timezone fallback and midnight-wrap cases.
+- **Testing**: the two helpers are pure and side-effect-free, so the invariants above are
+  directly unit-testable at a fixed instant; the old dedicated heartbeat test file is gone
+  along with the scheduler.
 - **Status**: implemented (pure `isWithinActiveHours` / `minutesOfDayInTimeZone` via
-  `Intl.DateTimeFormat`; `HeartbeatScheduler.isWithinActiveHours` delegates to them).
+  `Intl.DateTimeFormat`), currently unreferenced from production code.
 
 > Prompt-cache note: heartbeat situational content (mailbox meta, notebook, timestamps) is
 > injected in the volatile `[Live context]` tail, never into the byte-stable system prefix — see

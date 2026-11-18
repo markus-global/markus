@@ -23,8 +23,6 @@ describe('StaleDetector', () => {
     onStaleItems = vi.fn();
     detector = new StaleDetector(taskService as never, {
       maxInProgressMs: 24 * 60 * 60 * 1000,
-      maxReviewWaitMs: 12 * 60 * 60 * 1000,
-      maxBranchDivergenceCommits: 100,
     }, onStaleItems);
   });
 
@@ -37,14 +35,18 @@ describe('StaleDetector', () => {
       expect(items[0]?.taskId).toBe('task-1');
     });
 
-    it('detects stale review tasks', async () => {
+    it('detects an untouched review as a REVIEWER reminder only (no human tier)', async () => {
       taskService.listTasks.mockReturnValue([createTask({
         status: 'review',
         updatedAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
         reviewerId: 'agent-reviewer',
       })]);
       const items = await detector.scan();
-      expect(items.some(i => i.type === 'review_stale')).toBe(true);
+      // Owner 2026-11-18: the 4h "Stale review" human notification is gone. However
+      // long the card sits, the only signal is the reviewer reminder.
+      expect(items).toHaveLength(1);
+      expect(items[0]?.type).toBe('review_reminder');
+      expect(items[0]?.agentId).toBe('agent-reviewer');
     });
 
     it('stays quiet on a pending task — unstarted cards are not a reminder any more', async () => {
@@ -103,14 +105,14 @@ describe('StaleDetector', () => {
       const first = await detector.scan();
       expect(first.some(i => i.type === 'stuck_task')).toBe(true);
 
-      // now in review stale (different type, not yet notified)
+      // now in review — a different type, not yet notified
       taskService.listTasks.mockReturnValue([createTask({
         status: 'review',
         updatedAt: new Date(Date.now() - 13 * 60 * 60 * 1000).toISOString(),
         reviewerId: 'agent-reviewer',
       })]);
       const second = await detector.scan();
-      expect(second.some(i => i.type === 'review_stale')).toBe(true);
+      expect(second.some(i => i.type === 'review_reminder')).toBe(true);
 
       // repeat review scan → no duplicate
       const third = await detector.scan();

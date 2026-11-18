@@ -839,10 +839,6 @@ describe('metrics and configuration', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consumeDeliberationResult returns undefined when none pending', () => {
-    const agent = createAgent(makeMockRouter());
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-  });
 });
 
 describe('handleMessage with reasoning and daily log', () => {
@@ -1200,34 +1196,6 @@ describe('vision and channel key sessions', () => {
 
     expect(reply).toContain('Channel reply');
     await agent.stop();
-  });
-});
-
-describe('complete_deliberation tool', () => {
-  it('records deliberation result via complete_deliberation tool', async () => {
-    const agent = createAgent(makeMockRouter());
-    agent.registerTool({
-      name: 'complete_deliberation',
-      description: 'Complete deliberation',
-      inputSchema: { type: 'object', properties: { process_item_id: { type: 'string' } } },
-      execute: async (args) => {
-        (agent as unknown as { pendingDeliberationResult?: unknown }).pendingDeliberationResult = {
-          processItemId: args.process_item_id,
-          deferItemIds: [],
-          dropItemIds: [],
-          inlineCompletedIds: [],
-          reasoning: 'Focus on human chat',
-        };
-        return JSON.stringify({ status: 'ok' });
-      },
-    });
-
-    const tool = agent.getTools().get('complete_deliberation')!;
-    await tool.execute({ process_item_id: 'mbx_item_1', reasoning: 'Focus on human chat' });
-
-    const result = agent.consumeDeliberationResult();
-    expect(result?.processItemId).toBe('mbx_item_1');
-    expect(result?.reasoning).toBe('Focus on human chat');
   });
 });
 

@@ -12,7 +12,7 @@
 the single source of truth for *how a signal enters, waits, is merged, is claimed, is retried
 and is finally delivered to an agent*: the item-type registry (§3), the attention controller
 (§4), the enqueue API (§5), persistence (§6), state-machine integration (§7), enqueue-time
-deduplication (§14), restart/retry (§17/§18), triage and deliberation (§21), and the
+deduplication (§14), restart/retry (§17/§18), the attention decision rules (§21), and the
 address/envelope/bounce layer (§28). Priorities and the delivery invariants stated here are
 binding for every producer.
 
@@ -48,7 +48,7 @@ Early Markus let an agent handle multiple messages simultaneously, which caused:
 The mailbox model fixed this by treating the agent's attention as a scarce, serial resource. Concurrent processing re-introduces parallelism **only *between* entities**, and addresses each of these three failures directly:
 
 - **Memory contamination** → per-worker [`SessionWorkspace`](../../packages/core/src/session-workspace.ts) isolation via `AsyncLocalStorage`.
-- **Cognitive interference** → concurrent worker loops are pure consumers; triage / deliberation / preempt logic runs only in the serial loop.
+- **Cognitive interference** → concurrent worker loops are pure consumers; decide / preempt logic runs only in the serial loop.
 - **Non-deterministic races** → entity-affinity lock in the mailbox + an agent-level tool write-lock.
 
 See [concurrent-processing.md](./concurrent-processing.md) for the full guarantees, configuration, and known limitations.
@@ -340,7 +340,7 @@ There is **no polling**. When a new item arrives while the agent is focused:
 1. The mailbox emits `mailbox:new-item` via the EventBus.
 2. The `AttentionController` sets an **interrupt signal**.
 3. At the next **safe yield point** (between LLM turns in the tool loop), the agent calls `checkYieldPoint()`.
-4. The controller evaluates the pending item using **heuristics first** (fast, no LLM call), then optionally falls back to an **LLM interrupt judge** for ambiguous cases where heuristics return `continue`. The LLM judge sees both the current work context and the full content of the new message, enabling it to understand semantic intent (e.g., "stop publishing" → cancel, "hold off for now" → preempt).
+4. The controller evaluates the pending item with `heuristicDecision()` — a **pure rule table** (priority + type + session identity), no LLM call at any point. There is no "ask a model when the table says `continue`" fallback: the table's `continue` is final.
 
 ### Decision Types
 
@@ -362,7 +362,7 @@ These two decisions handle fundamentally different situations:
 - **Preempt (pause)**: "暂停" — The current work is saved. The mailbox item is moved to `deferred` status and will automatically resurface when the agent is idle. Session context (conversation history) is preserved by `sessionId`, so processing continues from where it left off.
 - **Cancel (stop)**: "取消" — The current work is permanently abandoned. The mailbox item is marked as `completed` and will NOT be resumed. Used when the incoming message explicitly revokes or invalidates the current work.
 
-The heuristic interrupt rules (`heuristicDecision`) never produce `cancel` — only the **LLM interrupt judge** can make this semantic distinction, since it requires understanding message content (e.g., distinguishing "wait before deploying" from "cancel the deployment entirely").
+The heuristic interrupt rules (`heuristicDecision`) never produce `cancel`, and nothing else in the decision path does either — there is no model in the loop to infer "the user meant stop". Cancellation is an **explicit act** (the user aborts, or the item is cancelled through its own terminal path); an ambiguous instruction like "wait before deploying" lands as `continue` or `preempt`, never as a silent irreversible cancel.
 
 ### Priority Invariant: User Interactions First
 
@@ -372,7 +372,7 @@ Only user chat (`human_chat`) is assigned **priority 0 (critical)** — the high
 2. **R1**: If a new `human_chat` arrives while the agent is focused on any non-user work, the agent **always preempts** to handle it immediately. Only `human_chat` is in `USER_INTERACTION_TYPES`, so comments do **not** preempt this way — a `task_comment` / `requirement_comment` on the focused task/requirement is **merged** into context instead (R2 / R3).
 3. When idle with multiple items queued, the priority queue ensures user interactions are dequeued first.
 4. The agent's system prompt includes a **summary** of the mailbox queue — the pending count plus the top items, each truncated to `SYSTEM_MAILBOX_ITEM_PREVIEW_CHARS` (`ContextEngine.buildMailboxSection`). It is deliberately a truncated view. An earlier revision claimed the opposite ("the full mailbox queue, not a truncated view"); the code has always sliced.
-5. **Deliberation abort**: If a `human_chat` arrives during active deliberation, the deliberation is aborted immediately and the user message is processed first. Deliberation results are discarded; items remain in queue for next cycle.
+5. **Preemption is resumable**: if a `human_chat` arrives while the agent is working, R1 returns `preempt` — the running item is parked with `deferDequeued()` and the user message is processed first; the parked item keeps its session and resumes on the next idle cycle (§22). Nothing is discarded.
 
 <!-- verified-against-code: 2026-10-25, packages/shared/src/types/mailbox.ts (category tables), packages/core/src/attention.ts (USER_INTERACTION_TYPES, heuristicDecision, checkYieldPoint) -->
 
@@ -789,7 +789,7 @@ The Agent Mind tab provides a unified view of the agent's cognitive state and hi
    `callback_result`. Labels stay in i18n: copying English labels here would fight
    the translation layer.
 4. **Expandable detail** — clicking a mailbox item shows: (a) decision badge(s), (b) activity summary, (c) lazy-loaded activity logs.
-5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `bounced` (red), `catch_all` (amber-red, triage), `queued` (amber).
+5. **Status indicators**: `completed` (green), `processing` (blue pulse), `merged` (blue), `deferred` (purple), `bounced` (red), `catch_all` (amber-red, bounces awaiting collection), `queued` (amber).
 
 ---
 
@@ -876,7 +876,7 @@ This prevents scenarios where 5 rapid-fire comments on the same task each trigge
 
 ### Channel Coalescing
 
-Group chat and A2A messages from the same `channelKey` are coalesced both at enqueue time and during pre-triage consolidation. The merged item carries a `messages` array providing structured context:
+Group chat and A2A messages from the same `channelKey` are coalesced both at enqueue time and during entity consolidation. The merged item carries a `messages` array providing structured context:
 
 ```typescript
 payload.messages: Array<{
@@ -889,7 +889,7 @@ payload.messages: Array<{
 
 ### Burst Coalescing Window
 
-After dequeuing a non-user item, the attention loop pauses for `MAILBOX_COALESCE_WINDOW_MS` (default 200ms) before starting triage. This gives rapid-fire messages time to arrive and merge via enqueue-time dedup, reducing redundant processing for burst scenarios (e.g., multiple agents posting to the same group chat within milliseconds).
+After dequeuing a non-user item, the attention loop pauses for `MAILBOX_COALESCE_WINDOW_MS` (default 200ms) before purge/consolidation. This gives rapid-fire messages time to arrive and merge via enqueue-time dedup, reducing redundant processing for burst scenarios (e.g., multiple agents posting to the same group chat within milliseconds).
 
 **Execution-trigger safety**: Items with `extra.triggerExecution` (task execution triggers) are **never merged** — neither as the incoming item nor as the merge target. Execution items carry critical callbacks (`onLog`, `cancelToken`, `taskProjectContext`) in their `extra` field that would be lost during a content merge. They must always remain standalone queue entries.
 
@@ -961,7 +961,7 @@ The frontend Agent Mind view supports filtering by both **category** and **statu
 | `merged` | Blue | Absorbed into another item |
 | `deferred` | Purple | Postponed for later |
 | `bounced` | Red | Delivery failed — `drop_reason` is mandatory |
-| `catch_all` | Amber-red | Bounce collected into the overview, awaiting triage |
+| `catch_all` | Amber-red | Bounce collected into the overview, awaiting collection |
 
 Both category and status filters are passed as query parameters to the mailbox API endpoint.
 
@@ -1077,7 +1077,6 @@ task:failed         ──────────►  task:failed         ─�
 mailbox:new-item    ──────────►  mailbox:new-item    ──────►  agent:mailbox WS event
 attention:decision  ──────────►  attention:decision  ──────►  agent:decision WS event
 attention:state-changed ──────►  attention:state-changed ──►  agent:attention WS event
-attention:triage    ──────────►  attention:triage    ──────►  agent:triage WS event
 ```
 
 Events emitted directly on the manager's bus (no forwarding needed):
@@ -1179,210 +1178,181 @@ finish cleanly.
 
 ---
 
-## 21. Mailbox Triage System
+## 21. Attention Decision: One Rule Table, Zero Model Calls
 
-When an agent dequeues a mailbox item and additional items remain in the queue, the Attention Controller triggers an LLM-driven **triage phase** before processing. This ensures the agent considers all pending work holistically rather than blindly following priority order.
+When an agent dequeues a mailbox item while other items are still queued, **nothing is
+"triaged"**. There is exactly one decision surface, and it is a deterministic rule table in
+`packages/core/src/attention.ts`. There is no second model call, no batch decision phase,
+no decision protocol the agent must answer before it is allowed to work, and no prompt that
+turns "what should I do next?" into a paid inference question. An earlier revision of this
+document described a three-tier model (Tier 0 reflex / Tier 1 LLM classifier / Tier 2
+full-session deliberation, with a `[DELIBERATION MODE]` prompt and a structured
+decision-tool result); that whole stack has been deleted. What follows is what the code
+does today.
 
-### Pre-Triage Entity Consolidation
+### 21.1 The single entry point: `heuristicDecision(current, new)`
 
-Before triage (or processing), the system automatically consolidates queued items that share the same `taskId` or `requirementId` — regardless of `sourceType`. This is a cross-type merge: a `task_status_update`, `a2a_message`, `mention`, and `task_comment` all referencing `tsk_abc123` are collapsed into a single rich-context item.
+`AttentionController.heuristicDecision()` (`packages/core/src/attention.ts`, ~:1515) is a
+top-to-bottom rule table — **first match wins**, zero model calls:
+
+| Rule | Condition | Decision |
+|------|-----------|----------|
+| R0 | Same sender, same session, both `human_chat` | `merge` |
+| R0x | New `human_chat` is an explicit NEW session | `continue` |
+| R1 | New is `human_chat`, current is not | `preempt` |
+| R1.5 | New is `a2a_message`, current is background | `preempt` |
+| R2 | `task_comment` on the same `taskId` as current | `merge` |
+| R3 | Requirement update/comment on the same requirement | `merge` |
+| R4 | New priority is `critical`, current is not | `preempt` |
+| R6 | New has strictly higher priority (lower number) | `preempt` |
+| R8 | Same priority, current is background/system | `preempt` |
+| R9 | New is a mention, current priority ≥ normal | `preempt` |
+| — | Otherwise | `continue` |
+
+The production delegate (`agent.ts` → `evaluateInterrupt`) returns exactly
+`heuristicDecision(current, new)`; the model-based interrupt judge it once consulted is
+gone, so no interrupt can cost a model call. Note also what the table does **not** produce:
+`cancel`. The heuristic never cancels, and nothing else in the decision path infers a
+cancel either — cancellation is an explicit terminal act.
+
+Every decision is recorded (`recordDecision` → `attention:decision` ledger row with the
+rule's reasoning), which makes the whole surface reproducible and testable: same queue
+state, same decision.
+
+### 21.2 Entity consolidation before processing
+
+Before anything is decided, a non-user item's queue is cleaned up:
+
+- **Stale purge** — `purgeStaleItems()` drops expired informational items (old heartbeats,
+  superseded status updates) that would only cost a turn.
+- **Cross-type entity merge** — the head item is temporarily put back
+  (`putBack(headItem)`), `consolidateByEntity()` collapses queued items sharing the same
+  `taskId` / `requirementId` (and `a2a_message`s sharing a `channelKey`) into a single
+  rich-context item, and the head is re-dequeued.
 
 This differs from enqueue-time dedup (which only merges same-type comments):
 - **Enqueue-time**: `task_comment` + `task_comment` for same task → merged (fast, prevents accumulation)
-- **Pre-triage**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
+- **Pre-processing**: `task_comment` + `a2a_message` + `task_status_update` for same task → consolidated (comprehensive, gives agent full entity context)
 
-The headItem is temporarily put back into the queue so it participates in consolidation, then re-dequeued.
+Strict state items are never used as merge targets (see §21.4), so a formal task execution
+cannot be folded into a neighbour's context.
 
-### Three-Tier Cognitive Model
-
-The triage system implements a three-tier cognitive model inspired by Dual Process Theory (Kahneman, 2011):
-
-- **Tier 0 (Reflexive / System 1)**: Queue depth = 0 after consolidation, or priorities clearly separate items → no LLM call needed. Process immediately.
-- **Tier 1 (Quick Classification / System 1+)**: Interrupt arrives during focused work, heuristic says "continue" but LLM may disagree → single LLM call returning one word (`continue`/`preempt`/`cancel`/`merge`/`defer`).
-- **Tier 2 (Full Deliberation / System 2)**: Multiple items with overlapping priorities AND `performDeliberation` configured → full agent session with complete tool access and memory.
-
-### Triage Flow
+### 21.3 Decision flow
 
 ```
-dequeueAsync() → headItem
+dequeueAsync() → item
   │
-  ├─ queue empty? → TIER 0: record 'pick' → process(headItem)
+  ├─ USER INTERACTION (human_chat)? → skip cleanup, process immediately
   │
-  └─ queue non-empty?
-       ├─ CONSOLIDATION: putBack(headItem) → consolidateByEntity() → dequeue()
-       │    (items sharing same taskId/requirementId merged cross-type)
-       │
-       ├─ queue empty after consolidation? → TIER 0
-       │
-       └─ priorities clearly separate? → TIER 0
-       │
-       └─ ambiguous priorities AND (performDeliberation OR triageJudge)?
+  └─ otherwise
+       ├─ COALESCE WINDOW: MAILBOX_COALESCE_WINDOW_MS pause when the queue is non-empty
+       │    (lets rapid-fire messages merge via enqueue-time dedup)
+       ├─ putBack(item) → purgeStaleItems() → consolidateByEntity() → dequeue()
+       ├─ record 'pick' — which item is next is decided by the priority queue alone
+       └─ processFocusedItem(item)
             │
-            ├─ performDeliberation available?
-            │    → TIER 2: Full-session deliberation (scenario='deliberation')
-            │         ├─ Agent deliberates AS ITSELF with full identity
-            │         ├─ Access to memory, recall_activity, task tools
-            │         ├─ Can handle simple items INLINE (notify, comment, message)
-            │         ├─ Calls complete_deliberation tool with decision
-            │         ├─ Apply inline-completed / defer / drop / choose
-            │         └─ Working memory updated (`deliberation` key from situational awareness)
-            │
-            └─ triageJudge only (fallback)?
-                 → Mini triage loop (up to TRIAGE_MAX_TOOL_ITERATIONS rounds)
-                      ├─ Build prompt with candidates + context
-                      ├─ LLM calls read-only tools to gather context
-                      ├─ Returns JSON: { processItemId, deferItemIds, dropItemIds }
-                      └─ Apply decisions
+            └─ new item arrives mid-processing?
+                 → heuristicDecision(current, new)   ← one rule table, first match wins
+                      ├─ merge / continue → keep working (merge injects context)
+                      ├─ preempt          → suspend current (deferDequeued → resumes
+                      │                     with its session context when idle)
+                      └─ defer            → park the NEW item (refused for strict state)
 ```
 
-### Full-Session Deliberation (Tier 2)
+There is no third branch to take: ordering is not a judgement call. The priority queue
+(priority + enqueue sequence) is the only producer of "which item is next", and the rule
+table is the only producer of "should this one interrupt that one".
 
-When `delegate.performDeliberation` is available (always in production), the attention controller delegates triage to a full agent session:
+### 21.4 Strict state items are never deferred
 
-1. The agent receives all queued items formatted as a `[DELIBERATION MODE]` prompt.
-2. It uses `handleMessage()` with `scenario: 'deliberation'` — the same code path as chat/task but with restricted tool access (`DELIBERATION_ALLOWED_TOOLS`).
-3. The agent deliberates **as itself** (full system prompt, identity, memory access).
-4. It can handle simple items **inline** (e.g., send a quick notification, post a comment).
-5. It calls `complete_deliberation` with its structured decision.
-6. The attention controller applies the decision: mark inline items completed, defer/drop others, choose the focus item.
-
-**Deliberation is atomic**: yield points are suppressed during deliberation (new mail sets the interrupt signal but is not evaluated until deliberation completes).
-
-**Strict state items are excluded from deliberation (critical safety)**:
-
-Items carrying formal task/requirement/workflow state transitions — collectively **strict state items** (predicate `isStrictStateItem` in `@markus/shared`):
+Items carrying formal task/requirement/workflow state transitions — collectively **strict
+state items** (predicate `isStrictStateItem` in `@markus/shared`):
 - `task_status_update` with `extra.triggerExecution` (formal task execution)
 - `review_request` (review request)
 - `requirement_update` / `workflow_update` with `extra.actionRequired` (closure action)
 
-are **filtered out of the deliberation view entirely**:
+are protected at four points:
 
-1. **They are invisible to the LLM during deliberation** — `performDeliberation` receives only non-strict items; the optionality prompt (`[DELIBERATION MODE]`) and tool docs instruct the agent that `isStrictState: true` items seen via `check_mailbox` may only be reordered, never deferred/dropped/batched/inline-completed.
-2. **They never trigger deliberation** — `needsLLMTriage` returns false when the head or any queued item is strict, so tasks/reviews are processed by the normal single-item execution path with the full tool set (including `task_update` / `task_submit_review` / shell / file).
-3. **Yield-point defer is refused** — if the interrupt evaluator returns `defer` for a strict item, it falls back to the heuristic (high-priority task execution → `preempt` → executed as its own item).
-4. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an error for strict items (defense in depth), and `complete_deliberation` rejects results that list strict items in `defer/drop/inline/batch`. The orphan-completeness check **excludes** strict items (they are not part of the deliberation view).
-5. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence **without its callback closures** (e.g. deferred before start, then resurfaced after restart), the agent no longer silently completes it: it emits an `agent:incomplete` event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` — re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress` and has no active execution. This prevents tasks from hanging in `in_progress` forever.
+1. **`defer` is refused and falls back to the table** — if the evaluated decision is
+   `defer` for a strict item, the controller logs the refusal and re-runs
+   `heuristicDecision` (`attention.ts` ~:1442-1465). A high-priority task execution comes
+   back `preempt`, i.e. it is executed as its own item.
+2. **Mailbox tools refuse them** — `defer_mailbox_item` / `drop_mailbox_item` return an
+   error (defense in depth); only `prioritize_mailbox_item` may change their priority.
+3. **Consolidation never swallows them** — `consolidateByEntity()` skips strict items, so
+   they cannot be merged away into another item's context.
+4. **Lost-closure recovery** — if a task execution item ever resurfaces from persistence
+   **without its callback closures** (e.g. deferred before start, then resurfaced after
+   restart), the agent no longer silently completes it: it emits an `agent:incomplete`
+   event with `reason: resurfaced-task-execution-lost-closures`, and the org-manager
+   `TaskService` subscribes to that event and calls `recoverLostTaskExecution(taskId)` —
+   re-dispatches the task via `runTask` (with proper closures) if it is still `in_progress`
+   and has no active execution. This prevents tasks from hanging in `in_progress` forever.
 
-Why this matters: task execution, review, and requirement/workflow finalization must run through their dedicated state machines (`executeTask(taskId, onLog)` with live `onLog`/`cancelToken`/`responsePromise` closures). If they were deferred/dropped/merged/batched by deliberation, the closures are lost with persistence, task logs never land under the task, and the task can remain `in_progress` with nobody working it.
+Why this matters: task execution, review, and requirement/workflow finalization must run
+through their dedicated state machines (`executeTask(taskId, onLog)` with live
+`onLog`/`cancelToken`/`responsePromise` closures). Deferral persists the item and loses the
+closures with it, so task logs never land under the task and the task can remain
+`in_progress` with nobody working it.
 
-### Tool Access During Deliberation
+**Preemption is a pause, not a loss.** When a running item is preempted, the controller
+parks it with `mailbox.deferDequeued(item)`; the payload keeps its `sessionId`, so when it
+resurfaces on the next idle cycle it resumes where it left off (§22). Only an explicit
+cancel resolves an item as `dropped` — and even then it is recorded as a bounce with a
+reason and collected into the catch-all overview (§28), never silently erased.
 
-Defined by `DELIBERATION_ALLOWED_TOOLS` in `@markus/shared`:
+### 21.5 Mailbox management tools
 
-| Category | Tools |
-|----------|-------|
-| Context gathering | `task_list`, `task_get`, `requirement_list`, `requirement_get`, `list_projects`, `team_list`, `team_status`, `recall_activity`, `memory_search` |
-| Inline communication | `notify_user`, `task_comment`, `requirement_comment`, `agent_send_message`, `agent_send_group_message`, `agent_create_group_chat`, `agent_list_group_chats` |
-| Mailbox management | `check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `prioritize_mailbox_item` |
-| Working memory | `notebook_upsert`, `notebook_clear`, `notebook_read` |
-| Memory | `memory_save`, `memory_update`, `memory_update_longterm` |
-| Decision output | `complete_deliberation` |
+The agent manages its own queue with per-item tools (registered in the `mailbox-admin`
+domain, available in every scenario):
 
-**Excluded**: `task_create`, `task_update`, `requirement_propose`, code/shell tools, `spawn_subagent`. These are heavy side-effect tools that belong in the processing phase.
-
-### Agent Mailbox Management Tools
-
-In addition to the batch decision via `complete_deliberation`, agents can manage
-individual mailbox items using dedicated tools:
-
-| Tool | Available In | Purpose |
-|------|-------------|---------|
-| `check_mailbox` | All scenarios | Read-only queue inspection |
-| `defer_mailbox_item` | Deliberation + focused processing | Postpone an item |
-| `drop_mailbox_item` | Deliberation + focused processing | Discard stale item |
-| `prioritize_mailbox_item` | Deliberation only | Re-prioritize item |
-| `notebook_upsert` | All scenarios | Update situational awareness |
-| `notebook_clear` | All scenarios | Clear stale awareness |
+| Tool | Purpose |
+|------|---------|
+| `check_mailbox` | Read-only queue inspection |
+| `defer_mailbox_item` | Postpone an item (optional `defer_minutes`) |
+| `drop_mailbox_item` | Discard a stale item — recorded as a `stale_signal` bounce, not a silent drop |
+| `prioritize_mailbox_item` | Re-prioritize an item (0-4) |
+| `notebook_upsert` | Update situational awareness |
+| `notebook_clear` | Clear stale awareness |
 
 **Safety**: `human_chat` items are protected — they cannot be deferred, dropped,
 or reprioritized by tool calls. **Strict state items** (formal task execution / review /
-requirement·workflow closure actions — see above) are protected too: `defer_mailbox_item` /
+requirement·workflow closure actions — see §21.4) are protected too: `defer_mailbox_item` /
 `drop_mailbox_item` return an error, and only `prioritize_mailbox_item` may change their priority;
 they are ultimately executed one at a time by the normal dequeue path.
 
-**Relationship to `complete_deliberation`**: The individual tools take immediate
-effect. `complete_deliberation` handles remaining items in bulk. They are additive.
+Each tool takes effect immediately on the queue. There is no second, batched interface to
+pair them with — one item, one call, observable in the queue right away.
 
-### DeliberationResult
-
-```typescript
-interface DeliberationResult {
-  processItemId: string;       // Primary item (backward compat)
-  processItemIds?: string[];   // Batch: multiple items to process together
-  batchContext?: string;       // Synthesis/instruction for batch processing
-  deferItemIds: string[];      // Postpone for later
-  dropItemIds: string[];       // Discard (stale/redundant)
-  inlineCompletedIds: string[]; // Already handled during deliberation
-  reasoning: string;
-  situationalAwareness?: string; // Agent-authored metacognitive summary
-  memoryUpdates?: Array<{      // Memory operations applied after deliberation
-    type: 'working' | 'longterm';
-    key: string;
-    content: string;
-  }>;
-}
-```
-
-### Batch Processing
-
-When `processItemIds` contains more than one item, the attention controller dequeues all of them and composes their content into a single LLM session. This is efficient for:
-- Multiple `a2a_message` items from the same channel (already partially merged by dedup)
-- Related notifications about the same project/topic
-- Multiple low-priority items that can be acknowledged together
-
-All batch items share one LLM call. If processing is interrupted (preempt/cancel/timeout), all batch items are requeued.
-
-### Memory Updates During Deliberation
-
-Deliberation can produce `memoryUpdates` — both working memory (volatile, per-session) and long-term memory (curated, persisted to MEMORY.md). This enables the agent to:
-- Record team decisions observed in merged messages
-- Note user preferences inferred from multiple interactions
-- Build context continuity across processing cycles
-
-Tools `memory_save` and `memory_update_longterm` are also available during deliberation for immediate effect.
-```
-
-### Working Memory Injection
+### 21.6 Notebook (keyed working memory)
 
 The agent maintains a **keyed working memory store** (`workingMemory` Map) that
 replaces the former `currentCognition` string. Each entry has:
-- A key (agent-chosen label, e.g., "deliberation", "task-priorities")
+- A key (agent-chosen label, e.g., "task-priorities")
 - Content text
 - Update timestamp
 
-Working memory is populated from three sources:
-1. **Deliberation**: `situationalAwareness` → key `"deliberation"`
-2. **Triage**: reasoning → key `"triage-decision"`
-3. **Agent tools**: `notebook_upsert` / `notebook_clear`
+Entries have exactly two writers: the agent itself through `notebook_upsert` /
+`notebook_clear`, and a one-shot import of the retired `state.md` (`legacy-state` key).
+The former machine-written `deliberation` / `triage-decision` keys disappeared with the
+mechanisms that produced them — nothing writes a decision summary into the notebook behind
+the agent's back.
 
 All entries are injected into every system prompt as a `## Notebook` block with
 age labels per entry. (The internal field is still named `workingMemory`; the prompt
 heading was renamed to `## Notebook`, so the old name survives only in code.) The agent decides what to keep, update, or expire.
 
-### Mini Triage Loop (Fallback)
-
-When `performDeliberation` is unavailable, the system falls back to the legacy mini triage loop:
-- Triage LLM uses the agent's name and role in its system prompt.
-- Can call tools from `TRIAGE_ALLOWED_TOOLS` (including `recall_activity`, `memory_search`) up to `TRIAGE_MAX_TOOL_ITERATIONS` (6) rounds.
-- Returns a structured JSON decision (same as `TriageResult`).
-
-### Key Methods
+### 21.7 Key methods
 
 | Method | Location | Purpose |
 |--------|----------|---------|
-| `performDeliberation()` | `agent.ts` | Full-session deliberation via handleMessage(scenario='deliberation') |
-| `applyDeliberationResult()` | `attention.ts` | Applies inline/defer/drop/choose from deliberation |
-| `complete_deliberation` (tool) | `agent.ts` executeTool | Captures structured decision during deliberation |
-| `applyTriageResult()` | `attention.ts` | Applies defer/drop/choose from mini triage (fallback) |
-| `performTriage()` | `attention.ts` | Mini triage loop (fallback path) |
-| `buildTriagePrompt()` | `attention.ts` | Constructs the triage prompt with candidates + context |
-| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type) |
-| `updateCognitionFromDeliberation()` | `agent.ts` | Writes deliberation `situationalAwareness` into `workingMemory` under key `"deliberation"` |
-| `evaluateWithLLMFallback()` | `attention.ts` | Heuristic-first interrupt decision with optional LLM fallback |
-
-### Triage Prompt Identity
-
-Both deliberation (Tier 2) and the mini triage loop (fallback) use first-person perspective: "You are {agentName}." The agent deliberates **as itself** with its role context, not as an external "attention manager."
+| `heuristicDecision()` | `attention.ts` (~:1515) | The entire decision surface: top-to-bottom rule table, first match wins |
+| `evaluateInterrupt()` (delegate) | `agent.ts` | Returns `heuristicDecision(current, new)` unchanged — no model call |
+| `consolidateByEntity()` | `mailbox.ts` | Merges items sharing same taskId/requirementId (cross-type); skips strict state items |
+| `purgeStaleItems()` | `mailbox.ts` | Drops expired informational items before consolidation |
+| `deferDequeued()` | `mailbox.ts` | Parks a preempted item so it can resume; only an explicit cancel drops |
+| `recordDecision()` | `attention.ts` | Writes the `attention:decision` ledger row (reasoning + queue context) |
+| `defer_mailbox_item` / `drop_mailbox_item` / `prioritize_mailbox_item` | `tools/mailbox-tools.ts` | Per-item queue management; refuse strict state items |
 
 ---
 
@@ -1402,30 +1372,47 @@ Deferred mailbox items are automatically resurfaced when the agent is idle:
 - **→ `review`**: Notifies reviewer (agent via mailbox, or human via approval request)
 - **Terminal states**: Checks and unblocks dependent tasks
 
-Agents do NOT need to take action on these notifications — they serve as episodic memory and triage decision context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
+Agents do NOT need to take action on these notifications — they serve as episodic memory and processing context. Agents should NOT send A2A messages to duplicate what the side-effect system already does.
 
-## 24. Cognitive Science Foundation
+## 24. Why a Rule Table (and not a model)
 
-The three-tier triage model (§21) is grounded in established cognitive science:
+§21's decision surface is a lookup table on purpose. The earlier three-tier framing
+(Kahneman's System 1 / System 2) described a mechanism that no longer exists in the code:
+there is one tier, it costs zero tokens, and it is decidable from the queue alone.
 
-| Theory | Application in Markus |
-|--------|----------------------|
-| **Dual Process Theory** (Kahneman, 2011) | Tier 0/1 = System 1 (fast, automatic); Tier 2 = System 2 (slow, deliberative) |
-| **Situational Awareness** (Endsley, 1995) | Full deliberation achieves Level 2+3 SA (comprehension + projection) via memory access |
-| **Working Memory / Episodic Buffer** (Baddeley, 2000) | `recall_activity` and `memory_search` serve as the episodic buffer linking current stimuli to long-term memory |
-| **Metacognition** (Flavell, 1979) | `situationalAwareness` field in `DeliberationResult` enables agent self-monitoring |
-| **Prospective Memory** (Einstein & McDaniel, 2005) | During deliberation, agents can check pending commitments and proactively notify users |
-| **Cognitive Load Theory** (Sweller, 1988) | Unified identity in deliberation eliminates task-switching cost between "triage assistant" and "agent self" |
+| Concern | How the rule table answers it |
+|--------|------------------------------|
+| **Dual Process Theory** (Kahneman, 2011) | The fast path *is* the only path — an interrupt is decided by priority and type, never by reflection |
+| **Determinism** | Same queue state ⇒ same decision; no sampling, no model variance, no unrepeatable ordering |
+| **Observability** | Every decision lands in the `attention:decision` ledger with the rule's reasoning and the queue context that produced it |
+| **Interaction cost** | 0 model calls and 0 added latency per interrupt — the agent's budget goes to the work, not to deciding what the work is |
+| **Working Memory / Episodic Buffer** (Baddeley, 2000) | The `## Notebook` block carries keyed, agent-authored context across processing cycles |
+| **Prospective Memory** (Einstein & McDaniel, 2005) | `rest(wakeOn)` declares a wait and gets a turn back when it matches or expires — the mailbox, not a poll loop, is the reminder |
 
 ### Design Rationale
 
-- **Why not always use Tier 2?** Cost and latency. Tier 2 deliberation costs 5-15K tokens vs 0 for Tier 0. Now with `TRIAGE_BACKLOG_THRESHOLD = 2`, deliberation fires whenever 2+ items are queued (non-user head). The cost increase is acceptable because:
-  - (a) most single-item processing still takes the fast path,
-  - (b) deliberation with 2-3 items is much cheaper than with 5+, and
-  - (c) the agent can now use `drop_mailbox_item` during deliberation to clean up before committing to expensive processing.
-- **Why allow inline handling?** Cognitive science shows humans handle simple items (quick email replies) during triage rather than queuing them separately. This reduces total cognitive load and latency.
-- **Why suppress yield points during deliberation?** Deliberation is a metacognitive process — interrupting it would break the agent's reasoning coherence (analogous to interrupting someone mid-thought during planning).
-- **Why inject working memory into future prompts?** This implements **metacognitive regulation** — keyed summaries (deliberation, triage, agent-authored entries) persist across processing contexts, maintaining behavioral consistency.
+- **Why not let a model reorder the queue?** Because it is a decidable question. Priority +
+  enqueue sequence already produce the order; paying a full tool-enabled turn for it bought
+  nothing and made the order unobservable (the decision only landed in a log). The original
+  motivation — several messages about the same entity — is absorbed structurally by the
+  merge layers (enqueue-time dedup, coalescing window, `consolidateByEntity`), not by a
+  smarter judge.
+- **Why not let a model classify interrupts?** Same reason: "is a `human_chat` more
+  important than a status update?" is answered by the rule table without inference. An
+  interrupt that costs a model call is an interrupt that can be delayed by the very work it
+  is meant to interrupt.
+- **Why keep the per-item tools?** `defer` / `drop` / `prioritize` are still the agent's own
+  judgement about its queue — but expressed one item at a time, immediately, and visibly in
+  the queue. That is the opposite trade-off from a bulk model decision: local, cheap,
+  auditable.
+- **Why does `preempt` defer instead of drop?** Because "interrupted" is not "finished":
+  the paused item keeps its session and resumes (§22).
+- **Why is `defer` refused for strict state items?** Persistence loses the closures a task
+  execution runs on; a resurfaced execution cannot actually execute and the task hangs in
+  `in_progress` (§21.4).
+- **Why inject the notebook into future prompts?** This is **metacognitive regulation** —
+  keyed, agent-authored summaries persist across processing contexts and keep behaviour
+  consistent without a machine-written decision trail.
 
 ---
 
@@ -1447,7 +1434,7 @@ The three-tier triage model (§21) is grounded in established cognitive science:
 | Notification bell | **Yes** — `HITLService.notify()` creates persistent notification |
 | Target specific user by ID | **Yes** — `target_user_id` parameter (optional) |
 | Fallback when no target specified | Uses `currentInteractingUserId` (last human who chatted), then team owner |
-| Initiate first-ever conversation with user | **Yes** — via `target_user_id` during deliberation or heartbeat |
+| Initiate first-ever conversation with user | **Yes** — via `target_user_id` during any processing turn |
 
 **Flow**:
 ```
@@ -1475,7 +1462,6 @@ Agent calls notify_user(title, body, target_user_id?)
 | Message visible to all channel members | **Yes** — persisted + WebSocket broadcast |
 | Triggers other agents in channel | **Yes** — enqueues `a2a_message` to peer agents |
 | Create new group chat | **Yes** — `agent_create_group_chat` tool |
-| Available during deliberation | **Yes** — in `DELIBERATION_ALLOWED_TOOLS` |
 
 ### 25.3 Agent-to-Agent (A2A)
 
@@ -1487,25 +1473,23 @@ A2A messages route through persistent DM channels (`dm:a2a:{sorted_ids}`) — se
 | `agent_broadcast_status` | Status update to all colleagues (lightweight, no LLM) |
 | `agent_delegate_task` | Formal task delegation with protocol |
 
-### 25.4 Proactive Messaging During Deliberation
+### 25.4 Proactive Messaging During Focused Processing
 
-During full-session deliberation (Tier 2), agents can handle simple items inline by calling communication tools directly:
+There is no separate decision turn in which to speak: every proactive message is sent from
+the item's own processing turn, where the agent already has memory, activity recall and the
+task/requirement tools.
 
 ```
-Deliberation session starts (5 items queued)
+Focused turn starts (item #1 dequeued)
   → Agent calls memory_search to check commitments
-  → Agent calls notify_user(target_user_id="usr_alice", ...) — handles item #3 inline
-  → Agent calls task_comment(...) — handles item #5 inline
-  → Agent calls complete_deliberation({
-      process_item_id: "item_1",
-      inline_completed_ids: ["item_3", "item_5"],
-      defer_item_ids: ["item_4"],
-      drop_item_ids: ["item_2"],
-      reasoning: "Item 1 is an urgent review request; handled notifications inline"
-    })
+  → Agent calls notify_user(target_user_id="usr_alice", ...)  — the notification this item called for
+  → Agent calls task_comment(...)                             — records the finding on the task
+  → Agent calls defer_mailbox_item("item_4", reason)          — parks unrelated work (refused for strict items)
 ```
 
-This collapses what would have been 5 separate triage+process cycles into a single deliberation + 1 processing cycle.
+One item, one turn, one LLM call. Work that needs its own turn gets its own turn — that is
+what the queue is for, and there is no protocol by which the agent can declare other items
+"handled inline".
 
 ---
 
@@ -1514,10 +1498,7 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 - **Proactive messaging scheduler** *(implemented)*: Agents schedule time-based follow-ups via `schedule_wakeup` (one-shot or recurring); a coarse per-agent sweep fires due wakeups into the mailbox. See [a2a-communication.md](./a2a-communication.md) §11.3.
 - **Cross-agent priority coordination**: Allow a manager agent to influence subordinate agents' mailbox priorities.
 - **Decision pattern learning**: Use long-term decision history to adaptively tune heuristic thresholds.
-- **Deliberation cost optimization**: Implement adaptive deliberation depth — use cheaper models or shorter budgets for simple multi-item scenarios, full budget only for genuinely complex triage.
 - **Working memory persistence**: Persist keyed working memory across agent restarts (currently volatile).
-- **Adaptive deliberation model selection**: Use cheaper models for simple 2-item queues; reserve fuller budgets for genuinely complex triage.
-- **Recursive deliberation**: Allow deliberation to trigger sub-deliberation for complex multi-step planning (with depth limits).
 
 ---
 
@@ -1539,10 +1520,10 @@ This collapses what would have been 5 separate triage+process cycles into a sing
 
 ### 27.2 Known gaps (no-timeout awaits)
 
-- **GAP-A — triage deliberation is NOT inside the backstop**: `deliberate` (Tier-2 full
-  deliberation) can await the model with no timeout — the **closest existing path to a
-  permanent block**. Mitigation today: only reachable with a non-empty queue; still, it
-  deserves a timeout + fail-loud.
+- **GAP-A — ~~triage deliberation is NOT inside the backstop~~ (stale, closed)**: the
+  Tier-2 decision-model await was deleted with LLM triage (§21). The decision path is a
+  pure rule table with no model call, so the only unbounded model work in a mailbox turn
+  is the item's own processing turn — covered by the 45-min watchdog above.
 - **GAP-B — ~~task-queue has no per-task timeout~~ (stale, closed)**: `TaskService.checkTimeouts()`
   enforces `task.timeoutMs` against `startedAt` and fails the task with an explicit message.
   Do not spend time "adding" this — it exists.
@@ -1559,7 +1540,7 @@ visibility-first invariant as §4.1 — a failure must never look like success.
 ### 27.4 Design intent
 
 The chain is allowed to **stall (bounded) but never to block silently forever**. Any new
-`await` inserted into the main loop or attention/triage path must be either (a) bounded by
+`await` inserted into the main loop or attention path must be either (a) bounded by
 a timeout/backstop, or (b) explicitly justified as blocking by design. Watchdog + backstop
 values are single-source constants in `packages/core/src/` — do not fork them per caller.
 
@@ -1732,7 +1713,7 @@ drops stay `stale_signal`).
 
 `bounceSignal()` performs two real transitions through the single execution point
 (`AgentMailbox.updateSignalStatus()`): `X → bounced` (the fact that delivery failed) and
-`bounced → catch_all` (the fact that it is now someone's to triage). Collapsing them into
+`bounced → catch_all` (the fact that it is now nobody's to collect yet). Collapsing them into
 one state would make "recorded but not yet collected" inexpressible.
 
 ### 28.6 Invariants (guarded by behavioural tests)

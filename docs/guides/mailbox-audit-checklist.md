@@ -1,5 +1,7 @@
 # Mailbox System — Documentation × Code Audit Checklist
 
+> 历史记录：**本文档全部内容**描述 2026-11 之前的旧机制（双时钟心跳调度 / 队列分拣 / deliberation），这些机制已在 Forever Loop 重构（M1–M7）中删除，本文仅作为当时的审计记录保留；现行机制见 docs/architecture/architecture.md。下文出现的类名/函数名均为历史符号，在 src 中已 0 命中。
+
 > **Moved** here from `docs/architecture/` on 2026-11-15: this is a how-to audit checklist, not a
 > description of the system. The behaviour it audits is described in
 > [`mailbox-system.md`](../architecture/mailbox-system.md) (§1–§28). Figure references below date

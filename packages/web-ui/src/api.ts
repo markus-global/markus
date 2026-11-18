@@ -863,12 +863,6 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
-  isDeliberating?: boolean;
-  deliberationActivity?: {
-    activityId: string;
-    label: string;
-    startedAt: string;
-  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;
@@ -888,14 +882,6 @@ export interface AgentMindState {
     reasoning: string;
     createdAt: string;
   }>;
-  lastTriage?: {
-    reasoning: string;
-    processedItemId: string;
-    deferredItemIds: string[];
-    droppedItemIds: string[];
-    inlineCompletedIds?: string[];
-    timestamp: string;
-  };
   notebook?: Array<{
     key: string;
     text: string;
@@ -1603,6 +1589,15 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    /**
+     * 给单个 agent 发一条消息（= 用户自己开口），用于「让 Agent 整理记忆」这类
+     * 需要 Agent 自己动手（memory_organize）的场景——平台不替 Agent 搬运记忆。
+     */
+    sendToAgent: (agentId: string, text: string) =>
+      request<{ status: string }>('/message', {
+        method: 'POST',
+        body: JSON.stringify({ targetAgentId: agentId, text }),
+      }),
     triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
     cancelWakeup: (id: string, wakeupId: string) => request<{ status: string; wakeupId: string }>(`/agents/${id}/wakeups/${wakeupId}`, { method: 'DELETE' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
@@ -1620,13 +1615,19 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; itemId?: string; mode?: string; entity?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
+      // 单条详情：列表把正文裁到 800 字，展开时用这个取全文。
+      if (opts?.itemId) params.set('itemId', opts.itemId);
+      // 工作记录：`mode=groups` = 左栏实体列表（服务端聚合 + 分页）；
+      // `entity=<kind:id>` = 右栏该实体的**全部**记录。
+      if (opts?.mode) params.set('mode', opts.mode);
+      if (opts?.entity) params.set('entity', opts.entity);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);    },
     // C8-E：「在跑」只读 work_units（status + claimed_by + lease_until）。

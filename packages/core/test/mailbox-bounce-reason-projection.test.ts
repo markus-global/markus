@@ -61,7 +61,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };

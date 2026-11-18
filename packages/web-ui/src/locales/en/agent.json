@@ -137,7 +137,7 @@
       "runtimeStatus": "Runtime Status",
       "usage": "Usage",
       "storage": "Storage",
-      "openFolder": "Open folder →",
+      "openFolder": "Open folder",
       "detailsToggle": "Usage & storage details",
       "stopAgentConfirm": {
         "title": "Stop this agent?",
@@ -145,8 +145,18 @@
         "confirm": "Stop"
       },
       "lifetimeCaption": "Cumulative since the agent was created",
+      "storageTotalHint": "total size of the agent data directory",
+      "storageMore": "other {{count}} items · {{size}} in total",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
       "sections": {
+        "run": {
+          "title": "Overview",
+          "hint": "What it is running · pending · rest & wake · recent activity"
+        },
+        "capability": {
+          "title": "Capabilities",
+          "hint": "Skills and tools"
+        },
         "files": {
           "title": "Files",
           "hint": "ROLE.md / HEARTBEAT.md / knowledge.md, etc."
@@ -165,13 +175,17 @@
           "hint": "Enabled skills and tools"
         },
         "memory": {
-          "title": "Memory & Heartbeat",
-          "hint": "Long-term memory · sessions · heartbeat rhythm"
+          "title": "Memory",
+          "hint": "Long-term memory · observations · sessions"
         },
         "usage": {
           "title": "Usage & Storage",
           "hint": "Lifetime tokens · requests · disk usage",
           "empty": "No usage data yet"
+        },
+        "settings": {
+          "title": "Settings",
+          "hint": "ROLE / POLICIES config · usage & storage"
         }
       },
       "storageBuckets": {
@@ -250,6 +264,8 @@
       "runningTitle": "Running now",
       "runningNone": "no unit of work is running",
       "runningInternal": "internal session",
+      "runningWorker": "worker …{id}",
+      "runningBudgetHint": "used / tool-call budget for this turn",
       "runningUnavailable": "running state is unavailable right now",
       "startAgent": "▶ Start",
       "stopAgent": "⏹ Stop",
@@ -326,7 +342,7 @@
       "loadingDetails": "Loading skill details…",
       "toolsHeading": "Tools ({{count}})",
       "detailsUnavailable": "Skill details not available (skill may not be registered in the store)",
-      "installedCount": "{{count}} skills installed — descriptions auto-injected into agent context",
+      "installedCount": "{{count}} skill packs installed — descriptions are already in context; bodies (SOP) load on demand via `discover_tools`",
       "noSkills": "No skills installed",
       "byAuthor": "by {{author}}",
       "missingSkillsTitle": "{{count}} assigned skill not installed",
@@ -463,7 +479,7 @@
       "deferred": "Deferred: {{count}}",
       "dropped": "Dropped: {{count}}",
       "inlineCompleted": "Inline Completed: {{count}}",
-      "mailboxHistory": "Mailbox History",
+      "mailboxHistory": "Work record",
       "noHistory": "No mailbox history yet",
       "loadEarlier": "Load Earlier...",
       "decisions": "Decisions",

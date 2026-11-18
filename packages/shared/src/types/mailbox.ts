@@ -735,34 +735,6 @@ export interface TriageContext {
   activeTaskIds?: string[];
 }
 
-export interface TriageResult {
-  processItemId: string;
-  deferItemIds: string[];
-  dropItemIds: string[];
-  inlineCompletedIds?: string[];
-  reasoning: string;
-}
-
-export interface DeliberationResult {
-  /** Primary item to process (backward compat). Ignored if processItemIds is set. */
-  processItemId: string;
-  /** Batch of items to process together in one LLM session. Overrides processItemId when length > 1. */
-  processItemIds?: string[];
-  /** Optional synthesis/instruction for batch processing context. */
-  batchContext?: string;
-  deferItemIds: string[];
-  dropItemIds: string[];
-  inlineCompletedIds: string[];
-  reasoning: string;
-  situationalAwareness?: string;
-  /** Memory operations to apply after deliberation completes. */
-  memoryUpdates?: Array<{
-    type: 'working' | 'longterm';
-    key: string;
-    content: string;
-  }>;
-}
-
 export interface AttentionDecision {
   id: string;
   agentId: string;
@@ -796,12 +768,6 @@ export type AttentionState = 'idle' | 'focused' | 'deciding';
 
 export interface AgentMindState {
   attentionState: AttentionState;
-  isDeliberating?: boolean;
-  deliberationActivity?: {
-    activityId: string;
-    label: string;
-    startedAt: string;
-  };
   currentFocus?: {
     mailboxItemId: string;
     type: MailboxItemType;
@@ -826,14 +792,6 @@ export interface AgentMindState {
     deferredUntil?: string;
   }>;
   recentDecisions: AttentionDecision[];
-  lastTriage?: {
-    reasoning: string;
-    processedItemId: string;
-    deferredItemIds: string[];
-    droppedItemIds: string[];
-    inlineCompletedIds: string[];
-    timestamp: string;
-  };
 }
 
 // ─── User Notification Type Registry ─────────────────────────────────────────

@@ -12,21 +12,10 @@ export interface StaleConfig {
    * produced nothing", not "the reviewer is slow".
    */
   reviewReminderMs: number;
-  /**
-   * Human escalation: only after the reviewer has already been reminded and the card
-   * is STILL untouched does a human get a notification.
-   *
-   * History: this used to be the ONLY review signal (12h, humans only). Reviewers were
-   * never reminded at all, so a review turn that produced no action (2026-10-17: four
-   * cards, two independent reviewers, 21s/26s/45s turns) sat silent until a human
-   * happened to notice 15 hours later. Notify the responsible party first.
-   */
-  maxReviewWaitMs: number;
-  maxBranchDivergenceCommits: number;
 }
 
 export interface StaleItem {
-  type: 'stuck_task' | 'review_reminder' | 'review_stale' | 'branch_diverged';
+  type: 'stuck_task' | 'review_reminder';
   taskId?: string;
   ageMs: number;
   agentId?: string;
@@ -42,10 +31,33 @@ export interface StaleItem {
 const DEFAULT_CONFIG: StaleConfig = {
   maxInProgressMs: 24 * 60 * 60 * 1000,
   reviewReminderMs: 30 * 60 * 1000,
-  maxReviewWaitMs: 4 * 60 * 60 * 1000,
-  maxBranchDivergenceCommits: 100,
 };
 
+/**
+ * Periodic task-stall detector.
+ *
+ * ## What this detector may NOT do (Owner 2026-11-18)
+ *
+ * Two human-facing notifications were removed from here:
+ *
+ *   · `review_stale` ("Stale review", 4h in review) — a timed ping to the human
+ *     notification list. A card waiting for review is waiting on a NAMED reviewer;
+ *     pinging everyone on a timer tells the reader nothing they can act on, which is
+ *     exactly the "always lit, never actionable" signal that trains people to ignore
+ *     the channel.
+ *   · the human fallback for an unreachable reviewer (it surfaced under the title
+ *     "Unstarted task", which was doubly wrong: the card is not unstarted, and the
+ *     reader is not the party responsible for it).
+ *
+ * What remains:
+ *   · `stuck_task` — a card in_progress past the threshold. Still notified (once per
+ *     stall episode) because nobody is blocked on a review there; the work itself is
+ *     the thing that may need a human decision.
+ *   · `review_reminder` — wakes the RESPONSIBLE REVIEWER agent. This is self-healing,
+ *     not a human notification: it enters the agent's mailbox, never the human bell.
+ *     If the reviewer cannot be reached the consumer logs it and stops; it does not
+ *     escalate to a human.
+ */
 export class StaleDetector {
   private config: StaleConfig;
   private scanInterval?: ReturnType<typeof setInterval>;
@@ -128,23 +140,13 @@ export class StaleDetector {
       // timestamp has not been acted on at all — measured scoped to the current review
       // round, this separated all four 2026-10-17 stuck cards from the 20 review turns
       // that really did decide, with no false positives and no new instrumentation.
+      //
+      // This wakes the RESPONSIBLE REVIEWER (agent), never the human notification list.
       if (task.status === 'review' && age > this.config.reviewReminderMs) {
         this.pushIfNotNotified(staleItems, currentKeys, task.id, 'review_reminder', {
           ageMs: age,
           agentId: task.reviewerId ?? task.assignedAgentId,
           message: `Task "${task.title}" has been awaiting your review for ${Math.round(age / 60000)}min with no action on the card`,
-          i18n: {
-            bodyKey: 'notifications.bodies.staleTaskInReview',
-            bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
-          },
-        });
-      }
-
-      if (task.status === 'review' && age > this.config.maxReviewWaitMs) {
-        this.pushIfNotNotified(staleItems, currentKeys, task.id, 'review_stale', {
-          ageMs: age,
-          agentId: task.reviewerId ?? task.assignedAgentId,
-          message: `Task "${task.title}" has been in review for ${Math.round(age / 3600000)}h with no action`,
           i18n: {
             bodyKey: 'notifications.bodies.staleTaskInReview',
             bodyParams: { title: task.title, hours: Math.round(age / 3600000) },
