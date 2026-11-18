@@ -5,7 +5,7 @@ import { readdirSync, readFileSync, existsSync, writeFileSync, mkdirSync, rmSync
 import { gzipSync, brotliCompressSync } from 'node:zlib';
 import { homedir } from 'node:os';
 import { execSync } from 'node:child_process';
-import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef } from '@markus/shared';
+import { createLogger, generateId, type FactSubjectKind, userId as genUserId, resolveJwtSecret, imAddressRef, resolveInitialAdminPassword, initialAdminPasswordFile, clearInitialAdminPassword, kebab, saveConfig, loadConfig, setEnvValue, unsetEnvValue, persistProviderSecret as storeProviderSecret, markusHome, getTextContent, stripInternalBlocks, extractThinkBlocks, APP_VERSION, checkForUpdate, buildManifest, manifestFilename, CHANNEL_CONTEXT_MESSAGES, SESSION_RESTORE_MAX_MESSAGES, PROVIDERS, REMOTE_TUNNEL_MODES, getProviderBootstrapModel, pickOrgSecretary, checkTagsInput, type TaskStatus, type TaskPriority, type TaskSortField, type SortOrder, type PackageType, type RequirementStatus, type IntegrationConfig, type UserInputAnswer, type AgentActivity, taskIdOfWorkUnitRef, normalizeSignalStatus } from '@markus/shared';
 import {
   GatewayError,
   createDefaultTeamTemplates,
@@ -6387,41 +6387,76 @@ export class APIServer {
         // 聚合必须在**整段历史**上做，否则实体计数会随当前页漂移。
         const wrmode = url.searchParams.get('mode') ?? '';
         const entityKey = url.searchParams.get('entity') ?? '';
+        /** 左栏实体类别筛选：`task` / `requirement` / `channel` / `none`（空 = 全部）。 */
+        const entityKindFilter = (url.searchParams.get('entityKind') ?? '').trim();
         const SCAN = Math.min(Number.parseInt(url.searchParams.get('scan') ?? '5000', 10) || 5000, 50000);
+        /** 状态的唯一读取归一：`status=bounced` 必须能命中历史 `dropped` 行（反之亦然）。 */
+        const statusWanted = status ? normalizeSignalStatus(status) : undefined;
         /**
          * 扫描缓存。
          *
          * `groups` 和 `entity` 两条通路都需要在**整段历史**上做实体解析（实体是
          * `workUnitRef` + payload 兼底解出来的，没法用 SQL 直接过滤）。
          * 旧写法每点一个实体就把 5000 行重新拉一遍并逐行 resolve → 手感上就是「很卡」。
-         * 按 (agent, 筛选) 缓存 15s：翻实体、来回切换都不再重扫。
+         *
+         * 【为什么缓存键**不含**状态/类别筛选】筛选现在是**扫描后**在内存里做的：
+         * 同一批行要同时回答「左栏有几条 / 右栏有哪些 / 另一根轴各多少个」。
+         * 把筛选放进缓存键就会为同一个 agent 缓存多份几乎一样的行，而且
+         * 「按状态筛选后的计数」会把筛选自身当成事实来回答。
          */
-        const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: Array<Record<string, unknown>> }> };
+        type ResolvedMailboxRow = { row: Record<string, unknown>; kind: string; key: string; name: string };
+        const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: ResolvedMailboxRow[] }> };
         const scanCache = (scanCacheRef.__wrScanCache ??= new Map());
-        const scanKey = JSON.stringify([agentId, sourceTypes ?? null, status ?? null, SCAN]);
-        const scannedRows = (): Array<Record<string, unknown>> => {
+        const scanKey = JSON.stringify([agentId, SCAN]);
+        const scannedRows = (): ResolvedMailboxRow[] => {
           const now = Date.now();
           const hit = scanCache.get(scanKey);
           if (hit && now - hit.at < 15000) return hit.rows;
-          const rows = this.storage!.mailboxRepo!.getHistory(agentId, { limit: SCAN, offset: 0, sourceTypes, status }) as unknown as Array<Record<string, unknown>>;
+          const raw = this.storage!.mailboxRepo!.getHistory(agentId, { limit: SCAN, offset: 0 }) as unknown as Array<Record<string, unknown>>;
+          const rows: ResolvedMailboxRow[] = raw.map(row => {
+            const ent = resolveEntity(row as never);
+            return {
+              row,
+              kind: ent?.kind ?? 'none',
+              // 未归属桶用**非空哨兵键** `none:`：空串在客户端会被当成「没选实体」。
+              key: ent ? `${ent.kind}:${ent.id}` : 'none:',
+              name: ent?.name ?? '',
+            };
+          });
           if (scanCache.size > 32) scanCache.clear();
           scanCache.set(scanKey, { at: now, rows });
           return rows;
         };
+        /** 当前 agent 里**陈旧** processing 行数（与「清理」按钮同一判据）。 */
+        const staleProcessingCount = (() => {
+          try { return agent.getMailbox().countStaleProcessing(); } catch { return 0; }
+        })();
 
         if (wrmode === 'groups' && this.storage?.mailboxRepo) {
-          const all = scannedRows();
+          // 扫描结果 = 全量历史（无筛选）。两根轴（实体类别 / 状态）在这里**各筛一次**，
+          // 计数与列表从同一批行派生 —— 否则「筛选后的列表」与「筛选后的计数」会互相矛盾。
+          const base = scannedRows().filter(r => {
+            if (!sourceTypes || sourceTypes.length === 0) return true;
+            return sourceTypes.includes(String(r.row['sourceType'] ?? ''));
+          });
+          const kindCounts: Record<string, number> = {};
+          for (const r of base) kindCounts[r.kind] = (kindCounts[r.kind] ?? 0) + 1;
+          const kindScoped = entityKindFilter ? base.filter(r => r.kind === entityKindFilter) : base;
+          const statusCounts: Record<string, number> = {};
+          for (const r of kindScoped) {
+            const s = normalizeSignalStatus(String(r.row['status'] ?? ''));
+            statusCounts[s] = (statusCounts[s] ?? 0) + 1;
+          }
+          const all = statusWanted
+            ? kindScoped.filter(r => normalizeSignalStatus(String(r.row['status'] ?? '')) === statusWanted)
+            : kindScoped;
           const agg = new Map<string, { kind: string; id: string; name: string; count: number; units: Set<string>; latestAt: string }>();
           const toIndex: Array<{ id: string; kind: string; entityId: string }> = [];
-          for (const row of all) {
-            const ent = resolveEntity(row as never);
-            // 未归属桶用**非空哨兵键** `none:`：空串在客户端会被当成「没选实体」，
-            // 于是右栏根本不去取数，只留着上一个实体的内容（实测就是这样错位的）。
-            const key = ent ? `${ent.kind}:${ent.id}` : 'none:';
+          for (const { row, kind, key, name } of all) {
             // 顺手把解析结果回填到 entity_kind/entity_id（只填 NULL 行）。
             // 旧库因此会在第一次扫描后自己完成迁移，不需要单独跑迁移脚本。
-            if (ent && ent.kind && ent.id && row['entityId'] == null) {
-              toIndex.push({ id: String(row['id']), kind: ent.kind, entityId: ent.id });
+            if (kind !== 'none' && row['entityId'] == null) {
+              toIndex.push({ id: String(row['id']), kind, entityId: key.slice(kind.length + 1) });
             }
             const at = String(row['queuedAt'] ?? row['createdAt'] ?? '');
             const hit = agg.get(key);
@@ -6432,9 +6467,9 @@ export class APIServer {
               if (at > hit.latestAt) hit.latestAt = at;
             } else {
               agg.set(key, {
-                kind: ent?.kind ?? 'none',
-                id: ent?.id ?? '',
-                name: ent?.name ?? '',
+                kind,
+                id: kind === 'none' ? '' : key.slice(kind.length + 1),
+                name,
                 count: 1,
                 units: new Set<string>(typeof ref === 'string' ? [ref] : []),
                 latestAt: at,
@@ -6450,6 +6485,9 @@ export class APIServer {
             groups: sorted.slice(offset, offset + size),
             totalGroups: sorted.length,
             scanned: all.length,
+            kindCounts,
+            statusCounts,
+            staleProcessingCount,
             offset,
             limit: size,
             hasNext: offset + size < sorted.length,
@@ -6481,8 +6519,17 @@ export class APIServer {
               return { id: String(row['id']), kind: ent?.kind ?? '', entityId: ent?.id ?? '' };
             }).filter(x => x.kind && x.entityId));
           } catch { /* 回填失败不影响本次返回 */ }
-          const matched = [...indexed, ...legacyMatched]
-            .sort((a, b) => (String(b['queuedAt'] ?? '') > String(a['queuedAt'] ?? '') ? 1 : -1))
+          const matched0 = [...indexed, ...legacyMatched]
+            .sort((a, b) => (String(b['queuedAt'] ?? '') > String(a['queuedAt'] ?? '') ? 1 : -1));
+          // 右栏必须听筛选片的话：此前这条通路**完全忽略** `status` / `sourceTypes`
+          // （只有左栏的 groups 通路应用了它们），于是「切换状态筛选，右栏列表纹丝不动」。
+          // 状态比对走读路径归一（`bounced` ↔ 历史 `dropped`）。
+          const matched = matched0
+            .filter(row => {
+              if (!sourceTypes || sourceTypes.length === 0) return true;
+              return sourceTypes.includes(String(row['sourceType'] ?? ''));
+            })
+            .filter(row => !statusWanted || normalizeSignalStatus(String(row['status'] ?? '')) === statusWanted)
             .slice(0, MAX_ITEMS);
           const ids = matched.map(r => String(r['id']));
           const dMap = this.storage.decisionRepo ? this.storage.decisionRepo.getByMailboxItemIds(ids) : new Map<string, unknown[]>();
@@ -6526,7 +6573,7 @@ export class APIServer {
             if (slim !== rawPayload) enriched.payload = slim;
             return enriched;
           });
-          this.json(res, 200, { history, matched: matched.length, truncatedByScan: legacyAll.length >= SCAN });
+          this.json(res, 200, { history, matched: matched.length, truncatedByScan: legacyAll.length >= SCAN, staleProcessingCount });
           return;
         }
 
@@ -6625,6 +6672,7 @@ export class APIServer {
           queueDepth: queued.length,
           statusCounts,
           sourceTypeCounts,
+          staleProcessingCount,
           history,
         });
       } catch {
@@ -6648,6 +6696,31 @@ export class APIServer {
         this.json(res, 200, { bounced });
       } catch {
         this.json(res, 404, { error: `Agent not found: ${agentId}` });
+      }
+      return;
+    }
+
+    // 单个 agent 的磁盘占用（只扫它自己的目录）。
+    //
+    // 【为什么需要独立入口】概览「设置」组原先调 `/api/system/storage` —— 它会遍历
+    // 整个数据目录（每个 agent 子目录都扫一遍，实测 1.4s / 60KB+），而页面上只用到
+    // 其中一个 agent 的数字。一次「看一眼」要等全组织扫描，体感就是「加载特别慢」。
+    // 这里只走 `bucketedDirUsage(agentDir)`：同一套分桶规则（标签不会与内容漂移），
+    // 代价从 O(全部 agent) 降为 O(1 个 agent)。
+    if (path.match(/^\/api\/agents\/[^/]+\/storage$/) && req.method === 'GET') {
+      const agentId = path.split('/')[3]!;
+      try {
+        const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agentId);
+        const usage = bucketedDirUsage(agentDataDir);
+        this.json(res, 200, {
+          agentId,
+          dataDir: agentDataDir,
+          size: usage.total,
+          subItems: usage.buckets,
+          depthLimited: usage.depthLimited,
+        });
+      } catch (err) {
+        this.json(res, 404, { error: `Agent storage unavailable: ${String(err)}` });
       }
       return;
     }
@@ -7508,7 +7581,11 @@ EXPLANATION_END`;
             heartbeatIntervalMs: agent.config.heartbeatIntervalMs,
             orgId: agent.config.orgId,
             teamId: agent.config.teamId,
-            createdAt: agent.config.createdAt,
+            // 【为什么取持久层那一列】`agent.config.createdAt` 是**运行时对象**的
+            // 字段（构造/恢复时生成），重启一次就是「现在」——前端把它当「创建时间」
+            // 展示，于是同一个 agent 每次重启都“新建”一次。真正的创建时间只有
+            // `agents.created_at` 这一列有（写入即不变）。
+            createdAt: storedAgent?.createdAt ? storedAgent.createdAt.toISOString() : agent.config.createdAt,
           },
           effectiveModel: (agent as unknown as { getEffectiveModelInfo?: () => { provider?: string; model?: string; source: 'override' | 'custom' | 'global' } }).getEffectiveModelInfo?.() ?? { source: 'global' },
           tools: toolList,

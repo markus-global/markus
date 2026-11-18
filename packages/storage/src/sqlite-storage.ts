@@ -4844,6 +4844,39 @@ export class SqliteMailboxRepo {
    *
    * @returns 被判 `bounced` 的条数（回队的 strict-state 行不计入）。
    */
+  /**
+   * 陈旧 `processing` 行的**唯一判据**（共享实现：写口 `markStaleProcessingAsBounced`
+   * 与只读口 `countStaleProcessing` 必须回答同一个问题）。复制一份判据就是让「什么算陈旧」
+   * 出现第二个写者 —— 两个调用点一旦漂移，UI 的警告条与「清理」按钮就会对不上。
+   */
+  private staleProcessingWhere(currentOwnerId?: string): { where: string; params: (where: string) => string[] } {
+    const where =
+      `agent_id = ? AND status = 'processing'
+        AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until < ?`
+      + (currentOwnerId ? ' OR (claimed_by IS NOT NULL AND claimed_by <> ?)' : '')
+      + ')';
+    return {
+      where,
+      params: (agentId: string) => (currentOwnerId ? [agentId, new Date().toISOString(), currentOwnerId] : [agentId, new Date().toISOString()]),
+    };
+  }
+
+  /**
+   * 只读：这个 agent 有多少条**陈旧** `processing` 行（同一判据见上）。
+   *
+   * 为什么需要它：概览页的「存在异常处理中项目」告警条此前是从**前端当前可见的那一页
+   * 记录**里数 `status === 'processing'` 得到的 —— 那是「一个实体的、被筛选过的一页」，
+   * 却被当成「这个 agent 的邮箱状态」来回答。于是同一条事实按你点哪个实体给出不同答案。
+   * 归口到服务端后，答案与「清理」按钮的作用域完全一致（清理的就是这些行）。
+   */
+  countStaleProcessing(agentId: string, currentOwnerId?: string): number {
+    const { where, params } = this.staleProcessingWhere(currentOwnerId);
+    const row = this.db
+      .prepare(`SELECT COUNT(*) AS cnt FROM mailbox_items WHERE ${where}`)
+      .get(...params(agentId)) as { cnt: number } | undefined;
+    return row?.cnt ?? 0;
+  }
+
   markStaleProcessingAsBounced(agentId: string, nowIso?: string, currentOwnerId?: string): number {
     const now = nowIso ?? new Date().toISOString();
 

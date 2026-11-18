@@ -145,6 +145,12 @@
         "confirm": "停止"
       },
       "lifetimeCaption": "自 Agent 创建以来累计",
+      "storageLabel": "磁盘占用",
+      "storageScanBtn": "查看磁盘占用",
+      "storageLoading": "读取中…",
+      "cleanupCta": "让 Agent 清理数据",
+      "cleanupHint": "会在聊天里预填指令，发送与否由你决定；Agent 拿不准时会先问你。",
+      "cleanupPrefill": "请检查你自己的数据（工作区、日志、会话历史、记忆归档），列出一份「可以安全清理」的清单与理由。\n不确定的项先问我，不要自行删除；我确认后你再动手。",
       "storageTotalHint": "智能体数据目录合计",
       "storageMore": "其他 {{count}} 项 · 合计 {{size}}",
       "storageDepthLimited": "目录层级较深，实际占用可能高于此值",
@@ -348,6 +354,9 @@
       "missingSkillsHint": "该技能未安装，相关工具不可用。请安装该技能，或将其从本智能体移除。"
     },
     "memoryTab": {
+      "organizeCta": "让 Agent 整理记忆",
+      "organizePrefill": "你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。",
+      "organizePrefillHint": "会跳到聊天并预填指令，发送与否由你决定",
       "loading": "正在加载记忆…",
       "loadFailed": "加载记忆数据失败",
       "recent": "最近（{{count}}）",
@@ -490,12 +499,12 @@
       "from": "来自：",
       "tokensCount": "{{count}} Token",
       "toolsCount": "{{count}} 个工具",
-      "categoryFilters": {
+      "entityFilters": {
         "all": "全部",
-        "interaction": "交互",
         "task": "任务",
-        "notification": "通知",
-        "system": "系统"
+        "requirement": "需求",
+        "channel": "会话",
+        "none": "未归属"
       },
       "statusFilters": {
         "all": "全部",

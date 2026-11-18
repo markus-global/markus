@@ -954,6 +954,14 @@ export interface AgentMailboxResponse {
   queueDepth: number;
   statusCounts?: Record<string, number>;
   sourceTypeCounts?: Record<string, number>;
+  /** 左栏实体类别计数（`mode=groups` 返回）。 */
+  kindCounts?: Record<string, number>;
+  /**
+   * **陈旧** `processing` 行数（Agent 已空闲却仍挂在处理中）。
+   * 服务端用与「清理」按钮**同一判据**算出，是 agent 级的权威读数 ——
+   * 不要用「可见那页记录里有多少条 processing」代替它。
+   */
+  staleProcessingCount?: number;
   history: EnrichedMailboxItem[];
 }
 
@@ -1590,6 +1598,16 @@ export const api = {
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
     /**
+     * 单个 agent 的磁盘占用（只扫它自己的目录）。
+     *
+     * 不要用 `system.storage()` 代替 —— 后者遍历整个数据目录（每个 agent 都扫一遍，
+     * 实测 1.4s / 60KB+），而本页只要一个 agent 的数字。
+     */
+    storage: (id: string) =>
+      request<{ agentId: string; dataDir: string; size: number; subItems: Array<{ name: string; size: number }>; depthLimited: boolean }>(
+        `/agents/${id}/storage`,
+      ),
+    /**
      * 给单个 agent 发一条消息（= 用户自己开口），用于「让 Agent 整理记忆」这类
      * 需要 Agent 自己动手（memory_organize）的场景——平台不替 Agent 搬运记忆。
      */
@@ -1615,7 +1633,7 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; itemId?: string; mode?: string; entity?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; itemId?: string; mode?: string; entity?: string; entityKind?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
@@ -1628,6 +1646,8 @@ export const api = {
       // `entity=<kind:id>` = 右栏该实体的**全部**记录。
       if (opts?.mode) params.set('mode', opts.mode);
       if (opts?.entity) params.set('entity', opts.entity);
+      // 左栏实体类别筛选（task / requirement / channel / none）。
+      if (opts?.entityKind) params.set('entityKind', opts.entityKind);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);    },
     // C8-E：「在跑」只读 work_units（status + claimed_by + lease_until）。

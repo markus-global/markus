@@ -254,6 +254,8 @@ export interface MailboxPersistence {
    *  treated as stale (a dead instance's claim must not be "respected" merely because its
    *  lease has not expired yet). */
   markStaleProcessingAsBounced?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
+  /** 只读：有多少条**陈旧** `processing` 行（与 `markStaleProcessingAsBounced` 同一判据）。 */
+  countStaleProcessing?(agentId: string, currentOwnerId?: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -781,6 +783,17 @@ export class AgentMailbox {
    */
   cleanStaleProcessing(): number {
     return this.persistence?.markStaleProcessingAsBounced?.(this.agentId, undefined, this.ownerId) ?? 0;
+  }
+
+  /**
+   * 只读：还有多少条**陈旧** `processing` 行（Agent 已空闲却仍挂在处理中）。
+   *
+   * 与 `cleanStaleProcessing()` 同一判据（持久层唯一实现）。UI 用它决定是否显示
+   * 「存在异常处理中项目」告警条 —— 而不是去数「当前可见的那一页记录」。
+   * 未实现持久层读口 ⇒ 0（不主张存在异常）。
+   */
+  countStaleProcessing(): number {
+    return this.persistence?.countStaleProcessing?.(this.agentId, this.ownerId) ?? 0;
   }
 
   /**

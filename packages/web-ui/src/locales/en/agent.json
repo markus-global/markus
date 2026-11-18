@@ -145,6 +145,12 @@
         "confirm": "Stop"
       },
       "lifetimeCaption": "Cumulative since the agent was created",
+      "storageLabel": "Disk usage",
+      "storageScanBtn": "Check disk usage",
+      "storageLoading": "Reading…",
+      "cleanupCta": "Ask agent to clean up data",
+      "cleanupHint": "Prefills the request in chat — you decide whether to send it. The agent will ask first when unsure.",
+      "cleanupPrefill": "Review your own data (workspace, logs, session history, memory archive) and list what can be safely removed, with reasons.\nAsk me about anything you are unsure of — do not delete on your own; wait for my confirmation.",
       "storageTotalHint": "total size of the agent data directory",
       "storageMore": "other {{count}} items · {{size}} in total",
       "storageDepthLimited": "Directory tree is deep — actual usage may be higher",
@@ -349,6 +355,9 @@
       "missingSkillsHint": "This skill is not installed, so its related tools are unavailable. Install it or remove it from this agent."
     },
     "memoryTab": {
+      "organizeCta": "Ask agent to tidy memory",
+      "organizePrefill": "Your knowledge.md is over budget ({{used}}/{{limit}} chars, {{pct}}%). Please tidy it: merge duplicate sections, drop entries superseded by newer conclusions, keep only reusable conclusions; keep process and logs out of the curated area. Show me the list of what you plan to delete/merge first.",
+      "organizePrefillHint": "Jumps to chat and prefills the request — you decide whether to send it",
       "loading": "Loading memory...",
       "loadFailed": "Failed to load memory data",
       "recent": "Recent ({{count}})",
@@ -491,12 +500,12 @@
       "from": "From:",
       "tokensCount": "{{count}} tokens",
       "toolsCount": "{{count}} tools",
-      "categoryFilters": {
+      "entityFilters": {
         "all": "All",
-        "interaction": "Interaction",
         "task": "Task",
-        "notification": "Notification",
-        "system": "System"
+        "requirement": "Requirement",
+        "channel": "Conversation",
+        "none": "Unassigned"
       },
       "statusFilters": {
         "all": "All",

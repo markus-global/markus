@@ -2,9 +2,9 @@ import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
+import { mailboxTypeIcon } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
@@ -177,7 +177,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
-            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
+            <OverviewTab agent={agent} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
           {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
@@ -241,7 +241,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {bodyTabFor(tab) === 'overview' && (
-          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
+          <OverviewTab agent={agent} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
         {bodyTabFor(tab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
@@ -346,12 +346,12 @@ function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
   );
 }
 
-function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
+function OverviewTab({ agent, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
   // 持久化活动历史（SQLite），不是内存里的「此刻在跑」。类型见 api.ts 的 ActivityRecord。
   const [recentActivities, setRecentActivities] = useState<ActivityRecord[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
-  const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
+  const [agentStorage, setAgentStorage] = useState<{ size: number; subItems: Array<{ name: string; size: number }>; depthLimited: boolean } | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
@@ -394,21 +394,19 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
     }).catch(() => {});
   }, [agent.id, activeTaskIdsKey, agent.state.status]);
 
-  // 【为什么懒加载到「用量」分组才拉】/api/system/storage 会遍历整个数据目录
-  // （每个 agent 的子目录都扫一遍，实测 1.4s、60KB+），而**只有「用量」分组**渲染它。
-  // 旧实现挂在挂载时就发，切到概览要先等这一发——看着就是「卡半天」。
-  useEffect(() => {
-    if (section !== 'settings') return;
-    let cancelled = false;
+  // 【为什么是「按需读取」而不是进组就拉】旧版本组开就调 `/api/system/storage`，
+  // 它会遍历整个数据目录（每个 agent 都扫一遍，实测 1.4s / 60KB+），而这里只用一个
+  // agent 的数字。改成用户点了「查看磁盘占用」才读、且只读该 agent 的目录。
+  const loadAgentStorage = useCallback(async () => {
+    if (loadingStorage) return;
     setLoadingStorage(true);
-    api.system.storage().then(info => {
-      if (cancelled) return;
-      setAgentDataDir(info.dataDir + '/agents/' + agent.id);
-      const match = info.agents.find(a => a.id === agent.id);
-      if (match) setAgentStorage(match);
-    }).catch(() => {}).finally(() => { if (!cancelled) setLoadingStorage(false); });
-    return () => { cancelled = true; };
-  }, [section, agent.id]);
+    try {
+      const info = await api.agents.storage(agent.id);
+      setAgentDataDir(info.dataDir);
+      setAgentStorage({ size: info.size, subItems: info.subItems ?? [], depthLimited: info.depthLimited });
+    } catch { /* 读不到就不展示数字，不弹错 */ }
+    finally { setLoadingStorage(false); }
+  }, [agent.id, loadingStorage]);
 
   // 【为什么懒加载到「最近活动」分组才拉】这是**持久化**活动历史（agent_activities
   // 表，可能上百条、几十 KB），同样只有「最近活动」分组渲染它。
@@ -428,15 +426,6 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
   }, [section, agent.id]);
 
   // 同一页面的「在跑」集合：只读 work_units（与 RunningWorkUnits 同一个权威）。
-
-  // 停止是「一次性」动作：后端把「人类按的停止」记成粘性意图，agent 侧的唤醒
-  // 都不会拉起它，只有人类再次启动（单个或整个团队）或回答它自己的审批才会恢复。
-  // 所以这里必须先确认一句，否则“停止”看起来像可以随手恢复的“暂停”。
-  const [confirmingStop, setConfirmingStop] = useState(false);
-  const toggleAgent = () => {
-    if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
-    else setConfirmingStop(true);
-  };
 
   const GATEWAY_ENDPOINTS = useMemo(() => [
     { method: 'POST' as const, path: '/api/gateway/sync', desc: t('agent:profilePage.gateway.sync') },
@@ -551,30 +540,22 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
               </span>
             : <span className="text-fg-tertiary">{t('agent:profilePage.overview.labels.followsGlobal')}</span>}
         </KV>
+        {/* 「今日 token」与创建时间同一行：两者都是「这个 agent 是谁 / 今天干了多少」的
+            身份级事实。原先它躲在下面那张「运行时」卡里，读的时候要跨两处对眼神。
+            【为什么用 KV 而不是 StatBox】这一行是「标签在上/值在下」的身份信息流，
+            StatBox 是「大数字在前/小标签在后」的计数器语法 —— 两种语法混在同一行里，
+            读者会以为 token 是另一个层级的对象。同一行只能有一种排版语法。 */}
+        <KV label={t('agent:profilePage.overview.labels.tokensToday')}>{fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))}</KV>
         <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
       </div>
 
-      {/* Runtime + Usage + Storage in a single compact card */}
+      {/* 运行时异常/进行中横幅。
+          【为什么这里没有统计行】「今日 token」已上移到顶部身份行；「进行中任务」计数与
+          启停按钮已按 Owner 要求移除（启停仍可在团队侧栏 / 团队详情面板操作，行为未删）。
+          剩下的两个块只在**真有事**时才出现，所以外层卡片也一起条件渲染 —— 否则页面会
+          多出一个只有 padding 的空盒子。 */}
+      {(agent.state.status === 'error' || (agent.state.status === 'working' && (activeN > 0 || queuedCount > 0 || agent.runtime?.activityLabel))) && (
       <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
-        {/* 运行时事实行。
-            【为什么不在这里再画一次状态】进程状态已经由 Team Chat 顶部那颗常驻徽标
-            展示（同页可见、不随滚动消失）。这里再画一遍，一页上就出现两个「空闲」；
-            而且两者来源不同、可能互相矛盾（徽标曾把 offline 画成绿色「空闲」）。
-            页面内这一行只回答三个问题：用了多少、手里有几个活、怎么启停。 */}
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))} />
-          <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(activeN)} color={activeN > 0 ? 'blue' : undefined} />
-          {/* 「上次心跳」已从概览移除：它读的是 agent.state.lastHeartbeat（进程内、
-              重启即丢，因此常年显示「从未」，而该 agent 的 metrics 里有 2000 条心跳记录），
-              而「心跳」tab 用 /agents/:id/heartbeat 已经给出准确的上次心跳与下次唤醒。
-              同一个数字留两处、其中一处是错的，只会让人怀疑整个面板。 */}
-          {canManageAgents && (
-            <button onClick={toggleAgent} className="ml-auto px-3 py-1 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors shrink-0">
-              {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
-            </button>
-          )}
-        </div>
-
         {agent.state.status === 'error' && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1">
@@ -615,8 +596,8 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
             </div>
           </div>
         )}
-
       </div>
+      )}
 
       {/* 概览分组改成了子 tab：切组只有一次点击，不需要「收起上一组 → 向下滚很远」。 */}
       <OverviewSectionTabs section={section} onChange={setSection} t={t} />
@@ -629,75 +610,89 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
 
       {section === 'settings' && (
         <SectionPanel>
-          {/* 用量与存储明细。
-              这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
-              【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
-              （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
-              上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
-              70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
-              坏了。与其加免责说明，不如不显示。 */}
-          {(usageInfo || agentStorage) ? (
-            <div className="space-y-2">
-                {usageInfo && (
-                  <div className="space-y-1">
-                    <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                      <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
-                      <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
-                      <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
-                    </div>
-                  </div>
-                )}
-                {agentStorage && (
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                      <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
-                      {(() => {
-                        // 20+ 项平铺成一排 StatBox = 数字挤成一坨且看不出主次。
-                        // 只显示体积最大的 6 项，其余合成一行汇总（数据不丢，只是不抢位置）。
-                        const buckets = visibleStorageBuckets(agentStorage.subItems).slice().sort((a, b) => b.size - a.size);
-                        const rest = buckets.slice(6);
-                        return (
-                          <>
-                            {buckets.slice(0, 6).map(sub => {
-                              const labelKey = storageBucketLabelKey(sub.name);
-                              return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
-                            })}
-                            {rest.length > 0 && (
-                              <span className="text-[10px] text-fg-tertiary" title={rest.map(b => b.name).join(', ')}>
-                                {t('agent:profilePage.overview.storageMore', { count: rest.length, size: fmtBytesLocal(rest.reduce((n, b) => n + b.size, 0)) })}
-                              </span>
-                            )}
-                          </>
-                        );
-                      })()}
-                      <button onClick={() => void api.system.openPath(agentDataDir)}
-                        className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
-                    </div>
-                    {agentStorage.depthLimited && (
-                      // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
-                      // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
-                      // 不如说明它是什么。
-                      <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-          ) : loadingStorage ? (
-            // 数字可以等，页面不能等：加载中先把栏目名与骨架渲染出来，数字位显示「—」。
-            // 之前这里只有一行 “loading”，等于让用户对着空页等接口。
+          {/* 用量 / 磁盘 / 清理。
+              【为什么重排】旧版是一排平铺 StatBox：累计 token、请求数、工具调用、总占用、
+              6 个目录桶 —— 不同量纲、不同来源、没有分组，而且**一进这组就去扫整个数据目录**
+              （`/api/system/storage` 遍历每个 agent，实测 1.4s / 60KB+）。现在：
+              · 只回答两个问题：「用了多少（累计）」「占了多少磁盘」；
+              · 磁盘改为**按需**读单个 agent 的目录（`/agents/:id/storage`，O(1 个 agent)），
+                默认不发起请求；
+              · 桶数量降到 4 个，其余合一行（数据不丢，只是不抢位置）。 */}
+          <div className="space-y-3">
             <div className="space-y-1">
               <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
-              <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value="—" />
-                <StatBox label={t('agent:profilePage.overview.labels.requests')} value="—" />
-                <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value="—" />
-                <StatBox label={t('agent:profilePage.overview.storage')} value="—" />
-              </div>
+              {usageInfo ? (
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                  <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+                  <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+                  <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
+                </div>
+              ) : (
+                <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
+              )}
             </div>
-          ) : (
-            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
-          )}
+
+            <div className="border-t border-border-subtle pt-2 space-y-1">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageLabel', '磁盘占用')}</span>
+                {agentStorage ? (
+                  <>
+                    <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
+                    {visibleStorageBuckets(agentStorage.subItems).slice(0, 4).map(sub => {
+                      const labelKey = storageBucketLabelKey(sub.name);
+                      return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
+                    })}
+                    {visibleStorageBuckets(agentStorage.subItems).length > 4 && (
+                      <span className="text-[10px] text-fg-tertiary">
+                        {t('agent:profilePage.overview.storageMore', {
+                          count: visibleStorageBuckets(agentStorage.subItems).length - 4,
+                          size: fmtBytesLocal(visibleStorageBuckets(agentStorage.subItems).slice(4).reduce((n, b) => n + b.size, 0)),
+                        })}
+                      </span>
+                    )}
+                    <button onClick={() => void api.system.openPath(agentDataDir)}
+                      className="text-[10px] text-fg-tertiary hover:text-fg-secondary">{t('agent:profilePage.overview.openFolder')} →</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => { void loadAgentStorage(); }}
+                    disabled={loadingStorage}
+                    className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40 disabled:opacity-50"
+                  >
+                    {loadingStorage ? t('agent:profilePage.overview.storageLoading', '读取中…') : t('agent:profilePage.overview.storageScanBtn', '查看磁盘占用')}
+                  </button>
+                )}
+              </div>
+              {agentStorage?.depthLimited && (
+                // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
+                // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
+                // 不如说明它是什么。
+                <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
+              )}
+            </div>
+
+            {/* 【为什么是「跳转 + 预填」而不是直接发指令】清理是**不可逆**的（删掉的东西不会回来），
+                所以发送权归用户；Agent 拿到需求后先列清单，拿不准先问人。 */}
+            <div className="border-t border-border-subtle pt-2 space-y-1">
+              <button
+                type="button"
+                onClick={() => navBus.navigate(PAGE.TEAM, {
+                  agentId: agent.id,
+                  preferMain: '1',
+                  prefillMessage: t('agent:profilePage.overview.cleanupPrefill', {
+                    name: agent.name,
+                    defaultValue: '请检查你自己的数据（工作区、日志、会话历史、记忆归档），列出一份「可以安全清理」的清单与理由。\n不确定的项先问我，不要自行删除；我确认后你再动手。',
+                  }),
+                })}
+                className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40"
+              >
+                {t('agent:profilePage.overview.cleanupCta', '让 Agent 清理数据')}
+              </button>
+              <p className="text-[10px] text-fg-tertiary">
+                {t('agent:profilePage.overview.cleanupHint', '会在聊天里预填指令，发送与否由你决定；Agent 拿不准时会先问你。')}
+              </p>
+            </div>
+          </div>
         </SectionPanel>
       )}
 
@@ -734,19 +729,6 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
         <SectionPanel>
           <MemoryTab agentId={agent.id} />
         </SectionPanel>
-      )}
-      {/** 「停止」确认：与页面其他确认弹窗同一个 ConfirmModal。 */}
-      {confirmingStop && (
-        <ConfirmModal
-          title={t('agent:profilePage.overview.stopAgentConfirm.title')}
-          message={t('agent:profilePage.overview.stopAgentConfirm.message')}
-          confirmLabel={t('agent:profilePage.overview.stopAgentConfirm.confirm')}
-          onConfirm={() => {
-            setConfirmingStop(false);
-            api.agents.stop(agent.id).then(onUpdate);
-          }}
-          onCancel={() => setConfirmingStop(false)}
-        />
       )}
     </div>
   );
@@ -1516,9 +1498,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [longContent, setLongContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
-  /** 「让 Agent 自己整理记忆」的发送状态。平台不替 Agent 搬运记忆（SSOT），
-   *  这里只能替用户开这个口，整理动作由 Agent 自己调 memory_organize。 */
-  const [organizeState, setOrganizeState] = useState<'idle' | 'sending' | 'sent' | 'error'>('idle');
+  /** 「让 Agent 整理记忆」的旧实现是**直接发送**；现在改为「跳聊天 + 预填」，
+   *  发送权归用户（整理是不可逆的，不能点一下就走）。所以不再需要发送状态。 */
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   /**
    * R10 · 记忆会话消息：读失败**不等于**「这个会话没有消息」。
@@ -1599,39 +1580,34 @@ function MemoryTab({ agentId }: { agentId: string }) {
                 {t('agent:profilePage.memoryTab.overBudgetHint', '超预算的旧知识会被无损归档（不再注入）。可让 Agent 运行 memory_organize 整理。')}
               </div>
             )}
-            {/* 超标时给一个可操作的杠杆：不是平台替它搛（SSOT 禁止），而是替用户开口。 */}
+            {/* 超预算时给一个可操作的杠杆：不是平台替它搛（SSOT 禁止），也不是替用户发送——
+                而是把需求预填到聊天框，由用户确认后自己发。 */}
             {data.usedPercent >= 70 && (
               <div className="flex items-center gap-2 pt-1">
                 <button
                   type="button"
-                  disabled={organizeState === 'sending'}
-                  onClick={async () => {
-                    setOrganizeState('sending');
-                    try {
-                      const pct = data.budgetLimit
-                        ? Math.round(((data.budgetChars ?? 0) / data.budgetLimit) * 100)
-                        : data.usedPercent;
-                      await api.agents.sendToAgent(
-                        agentId,
-                        `你的 knowledge.md 已超出预算（${data.budgetChars ?? 0}/${data.budgetLimit ?? 0} 字符，${pct}%）。请现在运行 memory_organize 整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。`,
-                      );
-                      setOrganizeState('sent');
-                    } catch {
-                      setOrganizeState('error');
-                    }
+                  onClick={() => {
+                    const pct = data.budgetLimit
+                      ? Math.round(((data.budgetChars ?? 0) / data.budgetLimit) * 100)
+                      : data.usedPercent;
+                    navBus.navigate(PAGE.TEAM, {
+                      agentId,
+                      preferMain: '1',
+                      prefillMessage: t('agent:profilePage.memoryTab.organizePrefill', {
+                        used: data.budgetChars ?? 0,
+                        limit: data.budgetLimit ?? 0,
+                        pct,
+                        defaultValue: '你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。',
+                      }),
+                    });
                   }}
-                  className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40 disabled:opacity-50"
+                  className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40"
                 >
-                  {organizeState === 'sending'
-                    ? t('agent:profilePage.memoryTab.organizeSending', '发送中…')
-                    : t('agent:profilePage.memoryTab.organizeCta', '让 Agent 整理记忆')}
+                  {t('agent:profilePage.memoryTab.organizeCta', '让 Agent 整理记忆')}
                 </button>
-                {organizeState === 'sent' && (
-                  <span className="text-[10px] text-green-500">{t('agent:profilePage.memoryTab.organizeSent', '已发给该 Agent，它会在下一轮自行整理')}</span>
-                )}
-                {organizeState === 'error' && (
-                  <span className="text-[10px] text-red-500">{t('agent:profilePage.memoryTab.organizeError', '发送失败，请到聊天里直接说')}</span>
-                )}
+                <span className="text-[10px] text-fg-tertiary">
+                  {t('agent:profilePage.memoryTab.organizePrefillHint', '会跳到聊天并预填指令，发送与否由你决定')}
+                </span>
               </div>
             )}
           </div>
@@ -2305,7 +2281,12 @@ const ATTENTION_COLORS: Record<string, string> = {
 // (lib/mailboxTypeMeta.ts) and are kept honest by
 // packages/shared/test/mailbox-type-mirror.test.ts. The local map that used to
 // live here had silently lost `workflow_update` and `callback_result`.
-const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'system'] as const;
+/**
+ * 工作记录左栏的**实体类别**筛选：不再是 mailbox 源类型分类（交互/任务/通知/系统）——
+ * 左栏列的是**实体**（任务 / 需求 / 会话 / 未归属），拿源类型筛选只会让人问「一条任务评论
+ * 该算任务还是交互」。实体类别是左栏自己的轴。
+ */
+const ENTITY_FILTER_KEYS = ['all', 'task', 'requirement', 'channel', 'none'] as const;
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
@@ -2479,8 +2460,15 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [catFilter, setCatFilter] = useState<string>('all');
+  /** 左栏实体类别筛选（task / requirement / channel / none）。 */
+  const [entityKind, setEntityKind] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  /** 左栏实体类别计数（服务端在整段历史上聚合，不受当前页影响）。 */
+  const [kindCounts, setKindCounts] = useState<Record<string, number>>({});
+  /** 状态筛选片的计数（已按实体类别限定）。 */
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  /** 「陈旧处理中」条数 —— 服务端权威读数（与「清理」按钮同一判据），不是可见那页的行数。 */
+  const [staleProcessingCount, setStaleProcessingCount] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [queueExpanded, setQueueExpanded] = useState(false);
@@ -2536,14 +2524,20 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     const target = Math.max(0, pageNo ?? pageRef.current);
     if (reset) setLoading(true);
     try {
-      const catParam = catFilter === 'all' ? undefined : catFilter;
+      const kindParam = entityKind === 'all' ? undefined : entityKind;
       const statusParam = statusFilterParam(statusFilter);
       const [m, gr] = await Promise.all([
         api.agents.getMindState(agentId),
-        api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: target * PAGE, category: catParam, status: statusParam }),
+        api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: target * PAGE, entityKind: kindParam, status: statusParam }),
       ]);
       setMind(m);
-      const raw = gr as unknown as { groups?: Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>; hasNext?: boolean };
+      const raw = gr as unknown as {
+        groups?: Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>;
+        hasNext?: boolean;
+        kindCounts?: Record<string, number>;
+        statusCounts?: Record<string, number>;
+        staleProcessingCount?: number;
+      };
       const gs = raw.groups ?? [];
       // 页码用 ref 承接：`load` 的身份不能随翻页变化，否则依赖它的 effect
       // （以及实时刷新订阅）会反复重新装载。
@@ -2552,14 +2546,21 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       hasNextRef.current = Boolean(raw.hasNext);
       setHasNext(Boolean(raw.hasNext));
       setServerGroups(gs);
-      // 默认选中第一个实体（右栏跟着加载它的完整记录）
-      if (!unitKey) {
-        const first = gs.find(g => g.key);
-        if (first) setUnitKey(first.key);
-      }
+      setKindCounts(raw.kindCounts ?? {});
+      setStatusCounts(raw.statusCounts ?? {});
+      if (typeof raw.staleProcessingCount === 'number') setStaleProcessingCount(raw.staleProcessingCount);
+      // 【为什么必须重新选一次】筛选变了之后，旧选中的实体很可能**不在新列表里**：
+      // 此时右栏还在拉那个旧实体（表头却回退显示第一个）→「左栏变了、右栏没变」。
+      // 常驻的 Loop 组是前端注入的（服务端聚合里本来就没有它），单独放行。
+      setUnitKey(prev => {
+        const loopKey = `channel:loop_${agentId}`;
+        const noFilter = entityKind === 'all' && statusFilter === 'all';
+        if (prev && ((noFilter && prev === loopKey) || gs.some(g => g.key === prev))) return prev;
+        return gs.find(g => g.key)?.key ?? null;
+      });
     } catch { /* ignore */ }
     setLoading(false);
-  }, [agentId, catFilter, statusFilter]);
+  }, [agentId, entityKind, statusFilter]);
 
   /**
    * 右栏：选中实体的**全部记录**（不分页）。
@@ -2571,14 +2572,17 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     let cancelled = false;
     (async () => {
       try {
-        const catParam = catFilter === 'all' ? undefined : catFilter;
+        // 右栏只跟「选中的实体 + 状态筛选」：实体类别已由选中的 key 本身回答。
         const statusParam = statusFilterParam(statusFilter);
-        const r = await api.agents.getMailbox(agentId, { entity: unitKey, category: catParam, status: statusParam });
-        if (!cancelled) setMailbox(prev => (prev ? { ...prev, history: r.history } : r));
+        const r = await api.agents.getMailbox(agentId, { entity: unitKey, status: statusParam });
+        if (!cancelled) {
+          setMailbox(prev => (prev ? { ...prev, history: r.history } : r));
+          if (typeof r.staleProcessingCount === 'number') setStaleProcessingCount(r.staleProcessingCount);
+        }
       } catch { /* 取不到就保持现状 */ }
     })();
     return () => { cancelled = true; };
-  }, [agentId, unitKey, catFilter, statusFilter]);
+  }, [agentId, unitKey, statusFilter]);
 
   /**
    * 滑到底追加下一页**实体**（左栏）。
@@ -2592,9 +2596,9 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     groupsLoadingRef.current = true;
     const nextPage = pageRef.current + 1;
     try {
-      const catParam = catFilter === 'all' ? undefined : catFilter;
+      const kindParam = entityKind === 'all' ? undefined : entityKind;
       const statusParam = statusFilterParam(statusFilter);
-      const gr = await api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: nextPage * PAGE, category: catParam, status: statusParam });
+      const gr = await api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: nextPage * PAGE, entityKind: kindParam, status: statusParam });
       const raw = gr as unknown as { groups?: Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>; hasNext?: boolean };
       const gs = raw.groups ?? [];
       pageRef.current = nextPage;
@@ -2604,7 +2608,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       setServerGroups(prev => [...prev, ...gs]);
     } catch { /* 下一页取不到就停在这里，不弹错 */ }
     finally { groupsLoadingRef.current = false; }
-  }, [agentId, catFilter, statusFilter]);
+  }, [agentId, entityKind, statusFilter]);
 
   useEffect(() => {
     const el = groupsEndRef.current;
@@ -2656,7 +2660,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const memoGroups = useMemo(() => {
     // 带了筛选时**不**插常驻 Loop：那是「全局无主信号」的子，与当前筛选无关，
     // 强行插进去就会出现「筛选为空却还显示 0 条 · 0 轮」的怪状。
-    const noFilter = catFilter === 'all' && statusFilter === 'all';
+    const noFilter = entityKind === 'all' && statusFilter === 'all';
     if (!noFilter) return serverGroups;
     const loopKey = `channel:loop_${agentId}`;
     if (serverGroups.some(g => g.key === loopKey)) return serverGroups;
@@ -2664,7 +2668,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
       { key: loopKey, kind: 'channel', id: `loop_${agentId}`, name: '', count: 0, units: 0, latestAt: '' },
       ...serverGroups,
     ];
-  }, [serverGroups, agentId, catFilter, statusFilter]);
+  }, [serverGroups, agentId, entityKind, statusFilter]);
   /**
    * 右栏单次最多渲染多少条记录。
    *
@@ -2780,7 +2784,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return raw;
   })();
 
-  const hasStaleProcessingItems = effectiveAttentionState === 'idle' && mailbox?.history?.some(h => h.status === 'processing');
+  // 「陈旧处理中」= 服务端权威读数（同一判据：无认领 / 租约过期 / 认领者非本实例）。
+  // 旧写法是「当前可见那一页记录里有多少条 status==='processing'」—— 那是把一个实体的
+  // 一页当成整个邮箱的结论，于是换个实体/换个筛选条就自相矛盾。
+  const hasStaleProcessingItems = agentRunning && staleProcessingCount > 0;
   const hasStuckQueue = (mind?.attentionState ?? 'idle') === 'idle' && queueDepth > 0;
 
   return (
@@ -2958,29 +2965,28 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         <div className="flex items-center gap-2 mb-2">
           <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.mailboxHistory')}</h3>
           <div className="flex gap-1 ml-auto flex-wrap">
-            {CATEGORY_FILTER_KEYS.map(key => {
-              const stc = mailbox?.sourceTypeCounts;
-              const catCount = key === 'all'
-                ? (stc ? Object.values(stc).reduce((a, b) => a + b, 0) : undefined)
-                : (stc ? (MAILBOX_CATEGORY_TYPES[key as keyof typeof MAILBOX_CATEGORY_TYPES] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
+            {ENTITY_FILTER_KEYS.map(key => {
+              const cnt = key === 'all'
+                ? Object.values(kindCounts).reduce((a, b) => a + b, 0)
+                : kindCounts[key];
               return (
-                <button key={key} onClick={() => setCatFilter(key)}
+                <button key={key} onClick={() => setEntityKind(key)}
                   className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
-                    catFilter === key
+                    entityKind === key
                       ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
                       : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
                   }`}
-                >{t(`agent:profilePage.mind.categoryFilters.${key}`)}{catCount != null && catCount > 0 && <span className="ml-1 opacity-60">{catCount}</span>}</button>
+                >{t(`agent:profilePage.mind.entityFilters.${key}`)}{cnt != null && cnt > 0 && <span className="ml-1 opacity-60">{cnt}</span>}</button>
               );
             })}
           </div>
         </div>
         <div className="flex gap-1 mb-2 flex-wrap">
           {MAILBOX_STATUS_FILTERS.map(f => {
-            const sc = mailbox?.statusCounts;
+            const sc = statusCounts;
             const cnt = f.key === 'all'
-              ? (sc ? Object.values(sc).reduce((a, b) => a + b, 0) : undefined)
-              : sc?.[f.key];
+              ? Object.values(sc).reduce((a, b) => a + b, 0)
+              : sc[f.key];
             return (
               <button key={f.key} onClick={() => setStatusFilter(f.key)}
                 className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
@@ -2995,7 +3001,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 
         {serverGroups.length === 0 && !loading && (
           <div className="text-center text-fg-tertiary text-sm py-8">
-            {catFilter === 'all' && statusFilter === 'all'
+            {entityKind === 'all' && statusFilter === 'all'
               ? t('agent:profilePage.mind.noHistory', '暂无邮箱历史')
               : t('agent:profilePage.mind.noMatch', '这个筛选下没有记录')}
           </div>

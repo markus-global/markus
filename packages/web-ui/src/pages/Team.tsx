@@ -1266,6 +1266,15 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * 该停在哪」的意图，和 pendingRestoreRef 属于同一族。
    */
   const pendingFocusRef = useRef<NavigationFocus | null>(null);
+  /**
+   * 预填文本 + 「落地要等会话切完」的排队区。
+   *
+   * 【为什么需要它】会话切换会**重载该会话自己的草稿**（渲染期 derive 那段），
+   * 所以「跳转 + 预填」如果同时要求切会话（`preferMain` / `sessionId`），
+   * 立刻 `setInput` 会在切完之后被旧草稿盖掉 —— 用户看到的是一个空输入框。
+   * 这里把文本挂起，等 `pendingFocusRef` 的握手真的切完会话再落（单一写者）。
+   */
+  const pendingPrefillRef = useRef<string | null>(null);
 
   /** 正在执行的 focus 导航（防止 effect 重入、重复切会话）。 */
   const focusNavRef = useRef<typeof pendingFocusRef.current>(null);
@@ -1702,6 +1711,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
           if (detail.params?.autoSend === 'true') {
             setTimeout(() => sendRef.current?.(msg), 300);
           } else {
+            // 同时要求切会话（主会话 / 指定会话）时，文本要等切完再落，否则会被
+            // 目标会话的旧草稿覆盖。仍然先 setInput 一次：即便握手没发生（例如
+            // session 列表还没回来），也已经退化成「预填但没切会话」，不会丢内容。
+            if (detail.params?.preferMain === '1' || detail.params?.sessionId) {
+              pendingPrefillRef.current = msg;
+            }
             setInput(msg);
             setTimeout(() => {
               const el = textareaRef.current;
@@ -3909,12 +3924,22 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   // nothing and silently did nothing (「消息都没加载出来」).
   useEffect(() => {
     const p = pendingFocusRef.current;
-    if (!p) return;
+    if (!p) {
+      // 没有待办导航时，挂起的预填不应该无限期活着（否则会污染下一次切会话）。
+      pendingPrefillRef.current = null;
+      return;
+    }
 
     const finish = () => {
       focusNavRef.current = null;
       if (pendingFocusRef.current !== p) return; // superseded by a newer navigation
       pendingFocusRef.current = null;
+      // 会话已切完：这时落预填文本才是最终值（切换途中的旧草稿已重载过）。
+      const queuedPrefill = pendingPrefillRef.current;
+      if (queuedPrefill != null) {
+        pendingPrefillRef.current = null;
+        setInput(queuedPrefill);
+      }
       if (p.messageId) void jumpToMessage(p.messageId, p.createdAt);
     };
 
