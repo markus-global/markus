@@ -7,6 +7,7 @@ import {
   type AttentionState,
   type AttentionDecision,
   type DecisionType,
+  type DecisionSource,
   type DecisionContext,
   type AgentMindState,
   type TriageContext,
@@ -1481,6 +1482,9 @@ export class AttentionController {
     this.setState('deciding');
 
     let decisionType: DecisionType;
+    // 谁拍板的，必须和判断本身一起落账。降级到启发式时如实标 heuristic ——
+    // 让平台的规则判断在台账上冒充模型判断，是「行为不可解释」的直接来源。
+    let source: DecisionSource = this.delegate ? 'model' : 'heuristic';
     try {
       decisionType = this.delegate
         ? await this.delegate.evaluateInterrupt(this.currentFocus, newItem)
@@ -1488,6 +1492,7 @@ export class AttentionController {
     } catch (err) {
       log.debug('Delegate evaluateInterrupt failed, falling back to heuristic', { error: String(err) });
       decisionType = this.heuristicDecision(this.currentFocus, newItem);
+      source = 'heuristic';
     }
 
     this.setState('focused');
@@ -1497,6 +1502,7 @@ export class AttentionController {
     //
     // 否决在**记账之前**算完，台账只留一条最终判断。旧实现先记一条 defer、再记一条
     // 启发式改判：同一件事两个写者，读台账的人分不清哪条作数。折叠后分支块也不再重复。
+    let overrode: DecisionType | undefined;
     if (decisionType === 'defer' && isStrictStateItem(newItem)) {
       log.info('Refusing to defer strict state item — falling back to heuristic', {
         agentId: this.agentId,
@@ -1504,11 +1510,13 @@ export class AttentionController {
         type: newItem.sourceType,
         taskId: newItem.payload.taskId,
       });
+      overrode = decisionType;
       decisionType = this.heuristicDecision(this.currentFocus, newItem);
+      source = 'heuristic';
     }
 
     const reasoning = this.formatDecisionReasoning(decisionType, this.currentFocus, newItem);
-    const decision = this.recordDecision(decisionType, newItem, reasoning);
+    const decision = this.recordDecision(decisionType, newItem, reasoning, undefined, source, overrode);
     this.delegate?.onDecisionMade(decision);
 
     if (decisionType === 'merge') {
@@ -1790,6 +1798,8 @@ export class AttentionController {
     item: MailboxItem,
     reasoning: string,
     outcome?: string,
+    source: DecisionSource = 'rule',
+    overrode?: DecisionType,
   ): AttentionDecision {
     const decision: AttentionDecision = {
       id: generateId('dec'),
@@ -1810,6 +1820,9 @@ export class AttentionController {
       // 不带的话，「谁在哪个回合撤销了什么」只能靠 mailbox_item_id 反推 ——
       // 而邮箱行会被 TTL 清理/实体合并，反查链会断在中间。
       workUnitRef: item.workUnitRef ?? null,
+      // 谁拍板的。缺了它，规则做的不可逆动作和模型深思后的判断在台账上长得一样。
+      source,
+      ...(overrode ? { overrode } : {}),
       createdAt: new Date().toISOString(),
       // C8-B：副作用已在回合内发生时，outcome 必须在**落库之前**就带上——
       // 先 save 再补字段等于写两次（第二次没人读，读到的永远是 null）。

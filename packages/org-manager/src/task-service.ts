@@ -3378,7 +3378,11 @@ export class TaskService implements ApprovalTargetPort {
    * collaborator happened to be wired. It wasn't, and the guard silently passed.
    */
   private resolveActorTypeForGuard(updatedBy?: string): 'human' | 'agent' | 'system' {
-    if (!updatedBy) return 'system';
+    // 解析不出身份时按 agent 处理（拒绝），不按 system 放行。
+    // 真正的系统路径本来就显式传 actorType='system'，走不到这里；
+    // 而「没传 updatedBy」是调用方漏传，不是系统特权的证据 —— 让它默认拿到
+    // 最高权限，等于把守卫的最后一道门留成 fail-open。
+    if (!updatedBy) return 'agent';
     if (this.agentManager?.hasAgent(updatedBy)) return 'agent';
     if (this.userNameLookup) {
       try {

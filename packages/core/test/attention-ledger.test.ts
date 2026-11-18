@@ -180,5 +180,66 @@ describe('attention ledger — a strict-state override is one decision, not two'
     expect(forItem, 'override must leave exactly one ledger row').toHaveLength(1);
     expect(forItem[0].decisionType).toBe(result.decision);
     expect(forItem[0].decisionType).not.toBe('defer');
+    // The row must say a rule overrode the model, and what it overrode.
+    expect(forItem[0].source).toBe('heuristic');
+    expect(forItem[0].overrode).toBe('defer');
+  });
+
+  it('a model judgement is recorded as model, not silently as a rule', async () => {
+    const eventBus = new EventBus();
+    const mailbox = new AgentMailbox(AGENT_ID, eventBus);
+    const delegate: AttentionDelegate = {
+      processMailboxItem: vi.fn().mockResolvedValue('done'),
+      onDecisionMade: vi.fn(),
+      onFocusChanged: vi.fn(),
+      evaluateInterrupt: vi.fn().mockResolvedValue('preempt'),
+      onTriageCompleted: vi.fn(),
+      onDeliberationCompleted: vi.fn(),
+    };
+    const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
+    controller.setDelegate(delegate);
+
+    const current = makeItem({ sourceType: 'a2a_message', id: 'focus_model' });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      id: 'incoming_model',
+      priority: 0 as MailboxPriority,
+    });
+    controller['currentFocus'] = current;
+    controller['state'] = 'focused';
+    controller['interruptSignal'] = true;
+    controller['pendingInterruptItem'] = incoming;
+
+    await controller.checkYieldPoint();
+
+    const row = controller
+      .getRecentDecisions(50)
+      .find(d => d.mailboxItemId === incoming.id);
+    expect(row?.source).toBe('model');
+    expect(row?.overrode).toBeUndefined();
+  });
+
+  it('with no delegate the judgement is honestly labelled heuristic', async () => {
+    const eventBus = new EventBus();
+    const mailbox = new AgentMailbox(AGENT_ID, eventBus);
+    const controller = new AttentionController(AGENT_ID, mailbox, eventBus);
+    // No delegate: the platform decides on its own and must say so.
+    const current = makeItem({ sourceType: 'a2a_message', id: 'focus_nodeleg' });
+    const incoming = makeItem({
+      sourceType: 'human_chat',
+      id: 'incoming_nodeleg',
+      priority: 0 as MailboxPriority,
+    });
+    controller['currentFocus'] = current;
+    controller['state'] = 'focused';
+    controller['interruptSignal'] = true;
+    controller['pendingInterruptItem'] = incoming;
+
+    await controller.checkYieldPoint();
+
+    const row = controller
+      .getRecentDecisions(50)
+      .find(d => d.mailboxItemId === incoming.id);
+    expect(row?.source).toBe('heuristic');
   });
 });

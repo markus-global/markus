@@ -773,6 +773,21 @@ export interface TriageContext {
   activeTaskIds?: string[];
 }
 
+/**
+ * Who actually made this decision.
+ *
+ * Without it the ledger cannot answer "who decided, and on what grounds":
+ * a platform heuristic and a model judgement land in the same column with
+ * the same shape, so an irreversible action taken by a rule reads exactly
+ * like a deliberated one.
+ *
+ * - `model`     — the agent's own LLM judgement (delegate.evaluateInterrupt)
+ * - `heuristic` — platform fallback rules (heuristicDecision)
+ * - `rule`      — a structural invariant, not a judgement (queue order, strict-state)
+ * - `user`      — an explicit human action (cancel button)
+ */
+export type DecisionSource = 'model' | 'heuristic' | 'rule' | 'user';
+
 export interface AttentionDecision {
   id: string;
   agentId: string;
@@ -781,6 +796,15 @@ export interface AttentionDecision {
   context: DecisionContext;
   reasoning: string;
   outcome?: string;
+  /** Who decided. Required on every new row; NULL only for pre-2026-11-18 epochs. */
+  source?: DecisionSource;
+  /**
+   * Set when a platform rule overrode an earlier judgement in the same yield
+   * point (e.g. the model said `defer` but a strict-state item may not defer).
+   * The overridden type is kept so the ledger shows one final row *with* its
+   * provenance, instead of two rows nobody can order.
+   */
+  overrode?: DecisionType;
   /**
    * ①-2：这条决定属于哪个工作单元。与 MailboxItem.workUnitRef 同一轴。
    *

@@ -511,6 +511,12 @@ CREATE TABLE IF NOT EXISTS agent_decisions (
   -- 有了它才能反查「谁在哪个回合撤销了什么」。
   -- 可空且不回填：加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」。
   work_unit_ref TEXT,
+  -- 谁拍板的：model / heuristic / rule / user。缺了它，规则的不可逆动作
+  -- 和模型深思后的判断在台账上长得一样，行为就不可解释。
+  -- 可空：加列（2026-11-18）之前的旧纪元 NULL 是诚实的「不知道」。
+  source TEXT,
+  -- 平台规则推翻了同一让点里的前一个判断时，记下被推翻的那个类型。
+  overrode TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_agent ON agent_decisions(agent_id, created_at);
@@ -959,6 +965,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
     // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
     { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
+    { table: 'agent_decisions', column: 'source', sql: 'ALTER TABLE agent_decisions ADD COLUMN source TEXT' },
+    { table: 'agent_decisions', column: 'overrode', sql: 'ALTER TABLE agent_decisions ADD COLUMN overrode TEXT' },
     { table: 'deliverables', column: 'format', sql: 'ALTER TABLE deliverables ADD COLUMN format TEXT' },
     { table: 'deliverables', column: 'hub_share_id', sql: 'ALTER TABLE deliverables ADD COLUMN hub_share_id TEXT' },
     { table: 'deliverables', column: 'share_status', sql: 'ALTER TABLE deliverables ADD COLUMN share_status TEXT' },
@@ -5115,6 +5123,10 @@ export interface DecisionRow {
   outcome: string | null;
   /** ①-2：这条决定属于哪个工作单元。NULL = 加列之前的旧纪元。 */
   workUnitRef: string | null;
+  /** 谁拍板的：model / heuristic / rule / user。NULL = 加列（2026-11-18）之前的旧纪元。 */
+  source: string | null;
+  /** 平台规则在同一让点推翻的前一个判断类型。 */
+  overrode: string | null;
   createdAt: string;
 }
 
@@ -5130,16 +5142,19 @@ export class SqliteDecisionRepo {
     reasoning: string;
     outcome?: string;
     workUnitRef?: string | null;
+    source?: string;
+    overrode?: string;
     createdAt: string;
   }): void {
     this.db
       .prepare(
-        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, work_unit_ref, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)'
+        'INSERT INTO agent_decisions (id, agent_id, decision_type, mailbox_item_id, context, reasoning, outcome, work_unit_ref, source, overrode, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
       )
       .run(
         decision.id, decision.agentId, decision.decisionType,
         decision.mailboxItemId, toJson(decision.context), decision.reasoning,
-        decision.outcome ?? null, decision.workUnitRef ?? null, decision.createdAt,
+        decision.outcome ?? null, decision.workUnitRef ?? null,
+        decision.source ?? null, decision.overrode ?? null, decision.createdAt,
       );
   }
 
@@ -5180,6 +5195,8 @@ export class SqliteDecisionRepo {
       reasoning: r['reasoning'] as string,
       outcome: r['outcome'] as string | null,
       workUnitRef: (r['work_unit_ref'] as string | null) ?? null,
+      source: (r['source'] as string | null) ?? null,
+      overrode: (r['overrode'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
     };
   }

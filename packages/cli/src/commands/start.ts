@@ -2485,6 +2485,13 @@ async function startServerCore(
                 context: decision.context as unknown as Record<string, unknown>,
                 reasoning: decision.reasoning ?? '',
                 outcome: decision.outcome,
+                // 身份与判断来源必须一起穿过这一层。此前这里逐字段手抄却漏了
+                // workUnitRef —— 上游 recordDecision 写了、下游 INSERT 也有列，
+                // 唯独中间的适配器把它丢掉，于是 22.7 万条决策 0 条能回溯到回合
+                //（2026-11-18 实测）。字段在两端都存在，不代表它穿得过中间。
+                workUnitRef: decision.workUnitRef ?? null,
+                source: decision.source,
+                overrode: decision.overrode,
                 createdAt: decision.createdAt,
               });
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
