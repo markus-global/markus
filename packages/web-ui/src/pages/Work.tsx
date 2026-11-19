@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, type DragEvent, type
 import { useTranslation } from 'react-i18next';
 import { api, wsClient, ApiError, invalidateApiCache, type ProjectInfo, type TaskInfo, type AgentInfo, type TaskLogEntry, type TaskComment, type RequirementComment, type RequirementInfo, type HumanUserInfo, type RoundSummary, type AuthUser, type ActivityRecord, type StatusTransitionInfo, type WorkflowInfo, type WorkflowRunInfo, type WorkflowTemplateInfo } from '../api.ts';
 import { isTerminal as isTerminalStatus, TERMINAL_REQUIREMENT_STATUSES } from '../lib/taskStatus.ts';
-import { taskStatusLabel, taskStatusPresentation } from '../lib/stateVocabulary.ts';
+import { BLOCKED_TONE, taskStatusLabel, taskStatusChip } from '../lib/stateVocabulary.ts';
 import { deriveReviewSessions, activeReviewSession, hasLiveReview, type ReviewSession } from '../lib/taskReview.ts';
 import { TONE, taskTone, requirementTone } from '../lib/tone.ts';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
@@ -46,7 +46,7 @@ import { setMobileNavDepth } from '../lib/mobileNavDepth.ts';
 import { ROW_GRID_CLS, ROW_GRID_2COL_CLS, ROW_LABEL_CLS, ROW_INPUT_CLS, ROW_ADD_BTN_CLS } from '../lib/dialogStyles.ts';
 import { filterBoardTasks } from '../lib/boardFilters.ts';
 import { agentsFromIds } from '../lib/commentThinking.ts';
-import { needsHumanDecision, blockedReasonOf } from '../lib/blockedReason.ts';
+import { blockedReasonOf, type BlockedReasonValue } from '../lib/blockedReason.ts';
 import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 import { WorkflowCard } from '../components/WorkflowCard.tsx';
 import { WorkflowRunDrawer } from '../components/WorkflowRunDrawer.tsx';
@@ -2348,7 +2348,9 @@ function TaskDetailPanel({
   const finishedCount = completedCount + cancelledCount;
   const isRunning = task.status === 'in_progress';
   const isBlocked = task.status === 'blocked';
-  const isAbnormallyBlocked = isBlocked && needsHumanDecision(task, id => allTasks.find(t => t.id === id));
+  // blocked 缘由与 chip 共用同一次解析（带依赖查找）：旧行上两者不得分叉。
+  const blockedReason = isBlocked ? blockedReasonOf(task, id => allTasks.find(t => t.id === id)) : undefined;
+  const needsHuman = blockedReason === 'hold';
   const isCompleted = task.status === 'completed';
   const isFailed = task.status === 'failed';
   const isRejected = task.status === 'rejected';
@@ -2392,13 +2394,12 @@ function TaskDetailPanel({
             <ThreadStageBadge stage={task.threadStage} />
             {' '}
             {(() => {
-              // blocked 有子缘由（deps/hold/workflow），必须走 taskStatusPresentation 才能
-              // 区分「等待依赖/已挂起」；静态 taskStatusBadges 是「切换状态菜单」的通用词，
-              // 拿来展示会把 deps 永远渲染成通用「已阻塞」（同一事实两个写者）。
-              if (task.status === 'blocked') {
-                const p = taskStatusPresentation(task.status, t, blockedReasonOf(task));
+              // blocked 有子缘由（deps/hold/workflow），闭态 chip 走 taskStatusChip（唯一写者）；
+              // 静态 taskStatusBadges 是「切换状态菜单」的通用词，不得拿来展示。
+              const chip = taskStatusChip(task.status, t, blockedReason);
+              if (chip) {
                 return (
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${p.tone?.chip ?? 'bg-gray-500/15 text-fg-tertiary'}`}>{p.label}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle ${chip.cls}`}>{chip.label}</span>
                 );
               }
               const badge = taskStatusBadges[task.status];
@@ -2408,9 +2409,7 @@ function TaskDetailPanel({
                 <span className="text-[10px] px-2 py-0.5 rounded-full font-medium bg-gray-500/15 text-fg-tertiary whitespace-nowrap align-middle">{taskStatusLabel(task.status, t)}</span>
               );
             })()}
-            {isAbnormallyBlocked && (
-              <span className="text-[10px] px-2 py-0.5 rounded-full font-medium whitespace-nowrap align-middle bg-red-500/15 text-red-500">{t('work:task.abnormalBlock')}</span>
-            )}
+            {/* hold 不再另挂徽章：「已挂起」chip 已说明状态，行动指引在依赖区 holdHint（同一事实不写两遍）。 */}
           </h3>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -2581,13 +2580,13 @@ function TaskDetailPanel({
                 ) : (
                   <p className="text-[11px] text-fg-tertiary mb-2">{t('work:task.noDependencies')}</p>
                 )}
-                {isAbnormallyBlocked && (
-                  <div className="flex items-center gap-1.5 px-2.5 py-1.5 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-500 mb-2">
+                {needsHuman && (
+                  <div className={`flex items-center gap-1.5 px-2.5 py-1.5 border rounded-lg text-xs mb-2 ${BLOCKED_TONE.hold.card} ${TONE.blocked.text}`}>
                     <svg className="w-3.5 h-3.5 shrink-0" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" />
                       <line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" />
                     </svg>
-                    <span>{t('work:task.abnormalBlockHint')}</span>
+                    <span>{t('work:task.holdHint')}</span>
                   </div>
                 )}
                 {!isTerminal && (
@@ -3516,16 +3515,19 @@ function relativeTime(iso: string, t: (key: string, opts?: Record<string, unknow
   return t('work:relative.daysAgo', { count: days });
 }
 
-function TagPicker({ value, options, onSelect, allowedValues }: {
+function TagPicker({ value, options, onSelect, allowedValues, display }: {
   value: string;
   options: Array<{ value: string; label: string; cls: string }>;
   onSelect: (val: string) => void;
   allowedValues?: ReadonlySet<string>;
+  /** 闭态展示覆写（label + cls）。菜单选项保持通用词表；展示态可以带缘由（如 blocked → 已挂起）。 */
+  display?: { label: string; cls: string };
 }) {
   const [open, setOpen] = useState(false);
   const btnRef = useRef<HTMLButtonElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const current = options.find(o => o.value === value);
+  const displayCurrent = display ?? current;
 
   useEffect(() => {
     if (!open) return;
@@ -3544,9 +3546,9 @@ function TagPicker({ value, options, onSelect, allowedValues }: {
       <button
         ref={btnRef}
         onClick={() => setOpen(v => !v)}
-        className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer hover:ring-1 hover:ring-current/30 ${current?.cls ?? 'bg-gray-500/15 text-fg-tertiary'}`}
+        className={`text-[11px] px-2 py-0.5 rounded-full font-medium transition-colors cursor-pointer hover:ring-1 hover:ring-current/30 ${displayCurrent?.cls ?? 'bg-gray-500/15 text-fg-tertiary'}`}
       >
-        {current?.label ?? value}
+        {displayCurrent?.label ?? value}
       </button>
       {open && (
         <div ref={panelRef} className="absolute top-full left-0 mt-1 w-40 bg-surface-overlay border border-border-default rounded-lg shadow-xl z-50 py-1 max-h-64 overflow-y-auto">
@@ -3661,7 +3663,7 @@ function QuickAddRow({
   );
 }
 
-function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, isAbnormalBlocked }: {
+function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onReqClick, onRowDragStart, onRowDragEnd, handleStatusChange, handlePriorityChange, selected, isMobile, blockedReason }: {
   row: BacklogRow; idx: number; dragIdx: number | null;
   agentMap: Map<string, AgentInfo>; projMap: Map<string, ProjectInfo>;
   onTaskClick: (t: TaskInfo) => void; onReqClick: (r: RequirementInfo) => void;
@@ -3670,7 +3672,8 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   handlePriorityChange: (row: BacklogRow, val: string) => Promise<void>;
   selected?: boolean;
   isMobile?: boolean;
-  isAbnormalBlocked?: boolean;
+  /** 父级解析好的 blocked 缘由（带依赖查找）；非 task 行 / 非 blocked 为 undefined。 */
+  blockedReason?: BlockedReasonValue;
 }) {
   const { t } = useTranslation(['work', 'common']);
   const taskStatusBadges = useMemo(() => buildTaskStatusBadges(t), [t]);
@@ -3678,6 +3681,9 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
   const priorityBadges = useMemo(() => buildPriorityBadges(t), [t]);
   const status = row.data.status;
   const priority = row.data.priority;
+  const isHold = blockedReason === 'hold';
+  // 闭态 chip 走词表（带缘由）；静态 taskStatusBadges 只留给切换菜单。
+  const statusDisplay = row.kind === 'task' ? taskStatusChip(status, t, blockedReason) ?? undefined : undefined;
   const assignee = row.kind === 'task' ? agentMap.get(row.data.assignedAgentId ?? '') : undefined;
   const proj = (() => {
     const p = projMap.get(row.kind === 'task' ? (row.data.projectId ?? '') : (row.data.projectId ?? ''));
@@ -3701,13 +3707,14 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       >
         <div className="flex items-center gap-2 min-w-0">
           {typeBadge}
-          {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500">⚠</span>}
+          {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
           <span className="text-sm text-fg-primary truncate flex-1">{row.data.title}</span>
         </div>
         <div className="flex items-center gap-2 mt-1.5 flex-wrap">
           <div onClick={e => e.stopPropagation()}>
             <TagPicker
               value={status}
+              display={statusDisplay}
               options={
                 row.kind === 'task'
                   ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
@@ -3749,11 +3756,12 @@ function BacklogRowView({ row, idx, dragIdx, agentMap, projMap, onTaskClick, onR
       <div className="w-12 shrink-0">{typeBadge}</div>
       <div className="flex-1 min-w-[200px] text-sm text-fg-primary truncate flex items-center gap-1.5">
         <span className="truncate">{row.data.title}</span>
-        {isAbnormalBlocked && <span className="text-[9px] px-1.5 py-0.5 rounded font-semibold bg-red-500/15 text-red-500 shrink-0">⚠</span>}
+        {isHold && <span className={`text-[9px] px-1.5 py-0.5 rounded font-semibold shrink-0 ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
       </div>
       <div className="w-[130px] shrink-0" onClick={e => e.stopPropagation()}>
         <TagPicker
           value={status}
+          display={statusDisplay}
           options={
             row.kind === 'task'
               ? TASK_STATUS_CYCLE.map(s => ({ value: s, label: taskStatusBadges[s]?.label ?? s, cls: taskStatusBadges[s]?.cls ?? 'bg-gray-500/15 text-fg-tertiary' }))
@@ -3823,9 +3831,10 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
     return m;
   }, [tasks]);
 
-  const checkAbnormalBlocked = useCallback((task: TaskInfo): boolean => {
-    if (task.status !== 'blocked') return false;
-    return needsHumanDecision(task, id => taskMap.get(id));
+  // 行的 blocked 缘由唯一解析点（带依赖查找）：chip 文案与 ⚠（hold）都从它派生。
+  const resolveBlockedReason = useCallback((task: TaskInfo): BlockedReasonValue | undefined => {
+    if (task.status !== 'blocked') return undefined;
+    return blockedReasonOf(task, id => taskMap.get(id));
   }, [taskMap]);
 
   const rows = useMemo(() => {
@@ -3994,7 +4003,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
                   <span className="text-[10px] text-fg-tertiary">{groupCounts[groupId] ?? 0}</span>
                 </div>
                 {groupRows.map(row => (
-                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+                  <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={rowIndexMap.get(row) ?? 0} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} blockedReason={row.kind === 'task' ? resolveBlockedReason(row.data) : undefined} />
                 ))}
                 {/* Quick-capture placeholder — pinned to the bottom of the 待办 group. */}
                 {groupId === 'todo' && (
@@ -4005,7 +4014,7 @@ function BacklogTable({ tasks, requirements, agents, projects, onTaskClick, onRe
           })
         ) : (
           rows.map((row, idx) => (
-            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} isAbnormalBlocked={row.kind === 'task' ? checkAbnormalBlocked(row.data) : false} />
+            <BacklogRowView key={`${row.kind}-${row.data.id}`} row={row} idx={idx} dragIdx={dragIdx} agentMap={agentMap} projMap={projMap} onTaskClick={onTaskClick} onReqClick={onReqClick} onRowDragStart={onRowDragStart} onRowDragEnd={onRowDragEnd} handleStatusChange={handleStatusChange} handlePriorityChange={handlePriorityChange} selected={row.kind === 'task' ? row.data.id === selectedTaskId : row.data.id === selectedReqId} isMobile={isMobile} blockedReason={row.kind === 'task' ? resolveBlockedReason(row.data) : undefined} />
           ))
         )}
         {loadingMore && (
@@ -7068,14 +7077,15 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                             const taskCreatorName = task.createdBy ? (resolveActorName(task.createdBy, agents, users) ?? task.createdBy) : null;
                             const isSelected = selectedTask?.id === task.id;
                             const priorityDot: Record<string, string> = { urgent: 'bg-red-500', high: 'bg-amber-500', medium: 'bg-blue-500', low: 'bg-gray-400' };
-                            const cardAbnormalBlocked = task.status === 'blocked' && needsHumanDecision(task, id => boardTaskMap.get(id));
+                            const cardBlockedReason = task.status === 'blocked' ? blockedReasonOf(task, id => boardTaskMap.get(id)) : undefined;
+                            const cardNeedsHuman = cardBlockedReason === 'hold';
                             return (
                               <div key={task.id} data-work-item-id={task.id} role="button" tabIndex={0} aria-label={task.title} draggable={!isApprovalTask}
                                 onDragStart={e => !isApprovalTask && onDragStartTask(e, task)} onDragEnd={onDragEnd}
                                 onClick={() => handleSelectTask(task)} onKeyDown={e => e.key === 'Enter' && handleSelectTask(task)}
                                 className={`group rounded-lg p-2.5 border border-transparent transition-all ${
-                                  cardAbnormalBlocked
-                                    ? 'bg-red-500/[0.06] border-red-500/30 ring-1 ring-red-500/15 cursor-pointer'
+                                  cardNeedsHuman
+                                    ? `${BLOCKED_TONE.hold.card} cursor-pointer`
                                     : isApprovalTask
                                     ? 'bg-amber-500/[0.06] border-amber-500/30 ring-1 ring-amber-500/15 cursor-pointer'
                                     : isSchedTask
@@ -7086,8 +7096,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${priorityDot[task.priority] ?? 'bg-gray-400'}`} title={task.priority} />
                                   {isSchedTask && <span className="text-blue-500 shrink-0" title={schedLabel ?? 'Scheduled'}><svg className="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21.5 2v6h-6M2.5 22v-6h6M2 11.5a10 10 0 0 1 18.8-4.3M22 12.5a10 10 0 0 1-18.8 4.3"/></svg></span>}
                                   {isSchedTask && schedLabel && <span className="text-[9px] px-1.5 py-0.5 rounded-md bg-blue-500/10 text-blue-500 whitespace-nowrap">{schedLabel}</span>}
-                                  {badge && <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${badge.cls}`}>{badge.label}</span>}
-                                  {cardAbnormalBlocked && <span className="text-[10px] px-1.5 py-0.5 rounded-md shrink-0 bg-red-500/15 text-red-500 font-medium">⚠</span>}
+                                  {(() => {
+                                    // blocked 闭态 chip 走词表（带缘由）；静态 subStatusBadges 是菜单词。
+                                    const chip = taskStatusChip(task.status, t, cardBlockedReason) ?? badge;
+                                    return chip ? <span className={`text-[10px] px-1.5 py-0.5 rounded-md ml-auto shrink-0 ${chip.cls}`}>{chip.label}</span> : null;
+                                  })()}
+                                  {cardNeedsHuman && <span className={`text-[10px] px-1.5 py-0.5 rounded-md shrink-0 font-medium ${BLOCKED_TONE.hold.chip}`}>⚠</span>}
                                 </div>
                                 <div className="text-[13px] font-medium leading-snug text-fg-primary line-clamp-2 mb-1">{task.title}</div>
                                 {task.description && <div className="text-[11px] text-fg-tertiary line-clamp-1 mb-1.5">{task.description}</div>}
