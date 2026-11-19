@@ -26,6 +26,17 @@ describe('WORK_UNIT_REF.a2a — 身份是「这件事」，不是「这次投递
   });
 });
 
+describe('WORK_UNIT_REF.requirement — 需求实体身份（C10-0A）', () => {
+  it('同一需求同一 ref；形状 requirement:<id>（唯一构造器，调用方不得拼字符串）', () => {
+    expect(WORK_UNIT_REF.requirement('req_x')).toBe('requirement:req_x');
+    expect(WORK_UNIT_REF.requirement('req_x')).toBe(WORK_UNIT_REF.requirement('req_x'));
+  });
+
+  it('实体键落到需求实体本身（信号归组不猜）', () => {
+    expect(entityKeysOfWorkUnitRef('requirement:req_x')).toEqual(['requirement:req_x']);
+  });
+});
+
 describe('entityKeysOfWorkUnitRef — ref 属于哪个实体', () => {
   const cases: Array<[string, string[]]> = [
     ['task_tsk_a_r2', ['task:tsk_a']],

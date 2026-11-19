@@ -26,6 +26,7 @@ import {
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
+import type { MailboxIdentityPort } from './mailbox.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
 import { loopSessionId, resolveTarget } from './session-target.js';
 
@@ -3849,8 +3850,16 @@ export class AgentManager {
     for (const agent of this.agents.values()) agent.setWorkUnitPort(port);
   }
 
+  /** C10-0A：身份 ensure 端口 —— 与委派端口同一装配纪律：两条建 Agent 的路径都要走。 */
+  private mailboxIdentityPort?: MailboxIdentityPort;
+  setMailboxIdentityPort(port: MailboxIdentityPort | undefined): void {
+    this.mailboxIdentityPort = port;
+    for (const agent of this.agents.values()) agent.setMailboxIdentityPort(port);
+  }
+
   private applyWorkUnitPort(agent: Agent): void {
     if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
+    if (this.mailboxIdentityPort) agent.setMailboxIdentityPort(this.mailboxIdentityPort);
   }
 
   private registerAddressTools(agent: Agent, agentId: string): void {

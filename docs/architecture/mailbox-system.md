@@ -130,6 +130,22 @@ Enforcement is in `AgentMailbox.enqueue` (`packages/core/src/mailbox.ts`): an it
 neither field logs an ERROR and is **rejected**, rather than being stored with a NULL
 identity. Adding a new caller means declaring one of the two — not adding a carve-out.
 
+**Ensure at assembly (C10-0A).** A declared ref is a promise that the entity exists.
+At the same enqueue assembly point, `AgentMailbox` calls the identity port
+(`MailboxIdentityPort.ensureIdentity`, wired by `APIServer.wireWorkUnits`) to
+insert-or-nothing the `work_units` row **before** the item is stored — a reference
+without an entity is the dangling-identity defect this gate exists to prevent.
+Owner resolution belongs to org-manager (task → assignee, requirement → creator,
+fallback: the recipient); core never guesses entity semantics. Ensure failure does
+not break the business path: it is counted (`takeIdentityEnsureFailedCount`) and
+surfaced, never silent. Entity refs (`requirement:<id>`, `task_<taskId>_r<N>`) are
+constructed only via `WORK_UNIT_REF` in `packages/shared/src/work-unit.ts`.
+
+A WU pre-created `idle` by a notification is transitioned to `running` by
+`TaskService.linkExecutionEpoch` when execution actually starts (an
+`execution_started` row in `status_transitions`) — a turn must never run on an
+idle WU, and the transition reuses the same row (ensure is insert-or-nothing).
+
 <!-- verified-against-code: 2026-10-25, packages/core/src/attention.ts (USER_INTERACTION_TYPES, PEER_INTERACTION_TYPES, heuristicDecision) -->
 
 **Definition of record**: `packages/shared/src/types/mailbox.ts` — `MAILBOX_TYPE_REGISTRY`,

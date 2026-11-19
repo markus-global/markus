@@ -955,6 +955,9 @@ export class TaskService implements ApprovalTargetPort {
           }, {
             ...(isHumanReq ? { priority: 0 as const } : {}),
             metadata: { senderName: authorName, senderRole: isHumanReq ? 'user' : 'agent' },
+            // C10-0A：需求评论/提及的身份是**需求实体**（与 task_comment 同口径：
+            // 精到实体，不挂接收方当前回合，避免错误注入；回合外不再落 NULL）。
+            workUnitRef: WORK_UNIT_REF.requirement(requirementId),
           });
           notifiedAgentIds.push(agentId);
         } catch { /* agent not found */ }
@@ -2761,7 +2764,12 @@ export class TaskService implements ApprovalTargetPort {
     // 取不到 assignee 时传空串：`ensure()` 会把它记成结构化的 ensure_failed 事件，
     // 而不是静默跳过 —— 静默跳过就是下一个“引用悬空”。
     const agentId = this.tasks.get(taskId)?.assignedAgentId ?? '';
-    units.ensure({ ref, agentId, taskId, status: 'running', contextRef: ref });
+    const row = units.ensure({ ref, agentId, taskId, status: 'running', contextRef: ref });
+    // C10-0A：通知可能已在入队时把这条 WU 预建为 idle（ensure 是 insert-or-nothing）。
+    // 执行开始必须把它迁移到 running —— 否则回合跑在一条 idle WU 上。
+    if (row && row.status !== 'running') {
+      units.transition(ref, 'running', { changedByType: 'system', reason: 'execution_started' });
+    }
     units.linkMailboxItem(itemId, ref);
   }
 

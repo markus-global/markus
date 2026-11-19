@@ -112,7 +112,7 @@ import { createSubagentTool, createParallelSubagentTool, type SubagentContext, t
 import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
-import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin } from './mailbox.js';
+import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin, type MailboxIdentityPort } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
 import { requestHistoryWindow } from './history-window.js';
@@ -769,6 +769,11 @@ export class Agent {
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
+  }
+
+  /** C10-0A：身份 ensure 端口转发给 mailbox（装配唯一入口 wireWorkUnits）。 */
+  setMailboxIdentityPort(port: MailboxIdentityPort | undefined): void {
+    this.mailbox.setIdentityPort(port);
   }
 
   /**
