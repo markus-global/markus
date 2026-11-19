@@ -406,3 +406,39 @@ instance self-initialises a database on first boot.
   the doc owner; it does not affect this probe's conclusion.
 - Requirement `req_dcbf7ddf997c6346e0ee1ba2` status: the reviewer closes it. The worker
   asserting acceptance would be self-verification wearing a different hat.
+
+---
+
+## 13. Step 6 — documentation close-out (ordered by CTO, same card, same PR)
+
+The R2 fact in §10.1 was paid off inside this PR rather than deferred. `docs/architecture/facts.md`
+no longer documents the deleted switch as a live mechanism:
+
+| Location | Before | After |
+|---|---|---|
+| §6 (was `### 6. \`FACTS_ENABLED\``) | the flag restores old behaviour; read once in `isFactsEnabled()` | the flag appears **only** inside an explicitly marked *historical note: was deleted on 2026-11-15*; the section states that an unwired facts dependency is the only legal lazy form, and why the switch was removed |
+| §9 rollback line | "with `FACTS_ENABLED=0` (or a `TaskService` built without a fact service) both hooks are inert" | "the only rollback is the dependency (§6)" + pointer to §7 of this record |
+| §12 | "`FACTS_ENABLED=0` now covers five surfaces" | "the lazy form is an unwired facts dependency", five surfaces re-stated against the dependency, plus the two-port criterion |
+
+Gate readings, 2026-11-19 19:38 CST:
+
+```bash
+grep -rn "FACTS_ENABLED" --include=*.ts packages/*/src | grep -v "已于 2026-11-15 删除|was deleted" → 0
+grep -n  "FACTS_ENABLED" docs/architecture/facts.md
+```
+
+Three hits remain, all explainable and none of them a live-mechanism claim:
+
+| line | what it is |
+|---|---|
+| 132 | the explicitly marked *historical, deleted* note in §6 |
+| 261 | the §9 rollback line, which says the flag "was deleted on 2026-11-15 and cannot be executed" |
+| 389 | the gate command itself, inside the §12 code fence |
+
+Reported rather than "cleaned": deleting the literal from the gate command would make the
+check look greener while checking less. One related item is **not** fixed here because it is
+product copy, not documentation: three UI locale strings
+(`packages/web-ui/src/locales/{zh-CN,es,en}/common.json`) still say the facts page is disabled
+"(FACTS_ENABLED=0)". The state they describe still exists (an unwired deployment), but they
+name a dead flag as the cause; that is a product-text change and belongs to whoever owns the
+copy.
