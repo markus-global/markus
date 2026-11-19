@@ -127,17 +127,33 @@ Guarantees (each one machine-tested, no mocked repo):
   "Omit the whole block when empty" is forbidden: two prefixes would mean two cache entries for
   the same state.
 
-### 6. `FACTS_ENABLED`
+### 6. Turning the facts layer off: the switch is gone, the wiring is the state
 
-`FACTS_ENABLED=0` restores today's behaviour exactly:
+> Historical note, explicitly marked: `FACTS_ENABLED=0` **was deleted on 2026-11-15**
+> (Owner decision; see `agent-manager.ts:3768` and `:3785`). It is recorded here only so a
+> reader who meets it in an old record knows what it meant. It is not a supported runtime
+> form and must not be reintroduced.
 
+Why it was removed: a switch that can turn the whole layer off is itself the debt. It
+branches four call sites, keeps a test that exists only for rollback, and hands out "just
+switch it off" as the escape hatch for what is now a core capability.
+
+What remains — and is the **only legal lazy form** — is a deployment that never wires the
+facts dependency. That is a *dependency absence at assembly time*, not a runtime flag:
+
+- `setFactService` is never called on `AgentManager` (`api-server.ts:2099`), so every agent
+  is built without fact tools, and never called on `TaskService` (`api-server.ts:2101`), so
+  both terminal hooks stay inert;
 - the four tools (`fact_assert` / `fact_supersede` / `fact_query` / `fact_verify`) are **not registered** (they do not appear in any tool schema);
-- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to before);
+- no `[FACTS:…]` block is rendered (the volatile tail is byte-identical to pre-C9);
+- submission and rejection by an agent behave exactly as before C9-E;
 - nothing reads or writes the `facts` table, so `DROP TABLE facts` is a complete rollback.
 
-Default is **enabled** (`FACTS_ENABLED` unset or any value other than `0`). The flag is read once,
-in `isFactsEnabled()` (`packages/shared/src/facts/predicates.ts`), so there is one reader, not one
-per call site.
+The state is not reachable by configuration in a normal start: `storage-bridge.ts:272`
+constructs the writer unconditionally, so only a deployment or test harness that omits the
+dependency gets there. Measured (2026-11-19): `docs/records/cut9-runtime-probe-2026-11-19.md`
+§7 — an instance with the dependency absent reads **both** consumer ports as `null`, drops
+the agent tool count **117 → 113**, and accepts a submission with no evidence.
 
 ### 7. CI gates
 
@@ -240,8 +256,10 @@ Out of scope on purpose, and stated here so nobody "fixes" it later by accident:
 - `rejectTask` (a human rejecting a *pending* task at the approval gate) is a different event:
   it decides whether work starts, not whether work is done.
 
-**Rollback**: with `FACTS_ENABLED=0` (or a `TaskService` built without a fact service) both hooks
-are inert and submission/rejection behave exactly as before C9-E. Measured, not assumed — see §12.
+**Rollback**: the only rollback is the dependency (§6): a deployment that never wires the
+facts port leaves both hooks inert, and submission/rejection behave exactly as before C9-E.
+It is not `FACTS_ENABLED`, which was deleted on 2026-11-15 and cannot be executed — there is
+no reader left to notice it. Measured, not assumed — see `cut9-runtime-probe-2026-11-19.md` §7.
 
 ### 10. dream output: seven suggestion actions land as facts (closes DR7)
 
@@ -351,14 +369,30 @@ API: `GET /api/facts` — `subjectKind`, `subjectId`, `predicate`, `predicatePre
 
 ### 12. Rollback and CI
 
-`FACTS_ENABLED=0` now covers **five** surfaces, all measured in the acceptance run:
+There is no flag (deleted 2026-11-15, §6). The lazy form is an **unwired facts dependency**,
+and it covers five surfaces, all measured in `cut9-runtime-probe-2026-11-19.md` §7:
 
-1. `fact_assert` / `fact_supersede` / `fact_query` / `fact_verify` are not registered;
+1. `fact_assert` / `fact_supersede` / `fact_query` / `fact_verify` are not registered (tool count 117 → 113);
 2. no `[FACTS:…]` block in the volatile tail;
-3. `GET /api/facts` returns `503`-equivalent "facts disabled" (the page then shows the disabled
-   state rather than an empty table — an empty table would look like "no data");
+3. `GET /api/facts` answers "facts unavailable" for that deployment (the page then shows the
+   disabled state rather than an empty table — an empty table would look like "no data");
 4. `task_submit_review` and reviewer rejection behave exactly as they did before C9-E;
 5. the dream cycle runs, but asserts no suggestion fact (it never writes prose either way).
+
+Both `AgentManager.factService` and `TaskService.factService` must read `null` in that state.
+They are two independent injection points (`api-server.ts:2099` / `:2101`); verifying only
+"the tools disappeared" would leave a half-wired instance undetected.
+
+Gate for this document itself:
+
+```bash
+grep -rn "FACTS_ENABLED" docs/
+```
+
+Every hit must be inside an explicitly marked *deleted* historical note. As of 2026-11-19 the
+only remaining places that still name the flag as a live mechanism are three UI locale
+strings under `packages/web-ui/src/locales/`; they describe the disabled state of the facts
+page and are product copy, so they are reported rather than edited as part of a docs change.
 
 CI gates added on top of §7:
 

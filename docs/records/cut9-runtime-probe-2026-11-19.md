@@ -211,24 +211,43 @@ dir, each on its own port. **The serving instance was not touched** (§9).
 
 | | wired (`:8066`) | unwired (`:8067`) |
 |---|---|---|
-| pid / data dir | 11314 · `/tmp/mpw5/.markus` | 11436 · `/tmp/mpw6/.markus` |
-| read at (CST) | 19:27:50 | 19:28:48 |
+| pid / data dir | 11966 · `/tmp/mpw-w2/.markus` | 12133 · `/tmp/mpw-u2/.markus` |
+| read at (CST) | 19:34:00 | 19:34:55 |
 | `storage.factService` present | **true** | **false** |
+| **`AgentManager.factService`** (injection point `api-server.ts:2099`) | object | **`null`** |
+| **`TaskService.factService`** (injection point `api-server.ts:2101`) | object | **`null`** |
+| work units still wired (`workUnits` + `TaskService.workUnitService`) | true | **true** |
+| `work_status` tool present | true | **true** |
 | agent tool count | **117** | **113** |
 | `fact_*` tools registered | **`fact_assert`, `fact_supersede`, `fact_query`, `fact_verify`** | **`[]`** — all four absent |
 | `submitForReview` with no fact | **REJECTED** (terminal hook active) | **ACCEPTED** → `status=review` |
 
 The four-tool delta is exactly 117 − 113. The unwired instance keeps every other tool and
 runs the identical `TaskService.submitForReview` code path — the only difference is that
-`setFactService(null)` was called at assembly, which is the documented inert state.
+neither consumer received a writer at assembly, which is the documented inert state.
+
+The two port readings are the part that matters most: `api-server.ts:2099` and `:2101` are
+**two independent injection points**, so "the tools are gone" alone would still be
+consistent with a half-wired instance where `TaskService` kept its writer. Both read
+`null`, and work units stayed wired in the same instance — so the laziness is scoped to the
+facts dependency, not produced by a wiring call that returned early.
 
 ### 7.3 How "unwired" was produced (and why this is not a product change)
 
-`probe2-suite.mjs` replaces `APIServer.prototype.wireWorkUnits` for the probe process only,
-dropping `storage.factService` immediately before the original runs. Both ports
-(`api-server.ts:2099` for `AgentManager`, `:2101` for `TaskService`) therefore receive
-`null` through the **real** call path — the same thing a deployment without a facts writer
-would do. No file under `packages/` was modified.
+The normal startup path cannot reach this state by configuration: `storage-bridge.ts:272`
+constructs `SqliteFactService` unconditionally, and `wireWorkUnits()` then passes it to both
+consumers at `api-server.ts:2099` / `:2101`. There is no flag left to skip either step
+(§7.1). So the probe removes the **dependency**, not the call: `probe2-suite.mjs` drops
+`storage.factService` immediately before the original `wireWorkUnits()` runs, in the probe
+process only.
+
+Two things this deliberately does *not* do:
+
+- it does not take `wireWorkUnits()`'s `if (!units) return;` early exit — work units stay
+  wired and were measured wired (§7.2), so the inert facts layer cannot be an artefact of a
+  skipped wiring call;
+- it does not touch any file under `packages/` — the product diff of this card is
+documentation only.
 
 ---
 
@@ -313,10 +332,14 @@ subject is this card:
 
 So the subject was resolved (the header names this task) while its fact set rendered empty,
 twelve minutes after the fact was committed, through eleven turns. Re-checked at 19:33 CST
-with **two** active facts on the same subject (`work.defect_class` at 19:20:20 and
-`task.completion_evidence` at 19:32:28, both returned by `fact_query`): the block still read
-`(no facts yet)`. The empty render is therefore stable for the life of the session, not a
-lag of one turn.
+with **two** active facts on the same subject: the block still read `(no facts yet)`.
+
+And then, at 19:34 CST — immediately after a context checkpoint — the block rendered both
+facts. So it is a **lag with an unknown boundary**, not a permanent outage: the same block
+went from empty to populated without any new fact being written. Refined hypothesis: the
+block is built from a snapshot refreshed at session/checkpoint boundaries rather than per
+turn. Still not verified, and still not claimed as a defect — but the window (≈14 minutes,
+≈20 turns) is long enough to matter during a single task round, which is why it is here.
 
 Two candidate causes, neither verified — this record does not pick one:
 
