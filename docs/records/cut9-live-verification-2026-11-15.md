@@ -18,6 +18,28 @@ already paid for this lesson (see `cut8-live-verification-2026-11-14.md`); C9 re
 it. The fix is not "be more careful next time", it is "the record is a deliverable,
 not a by-product".
 
+## 1a. Runtime half — verified 2026-11-19
+
+Everything in this record was measured on the **branch**, not on a running build: at the
+time of writing the serving instance predated C9-E, so "the terminal hooks bite" was
+inferred from tests and live-DB reads.
+
+That half is now done and recorded separately:
+**`docs/records/cut9-runtime-probe-2026-11-19.md`** (C10-0D) — steps 0–5 executed against
+the instance restarted into the `#464` build at 2026-11-19 14:09:30 CST. Read both
+together: this file proves the *code and data* are right, that one proves the *running
+system* behaves that way.
+
+Two things that file corrects about this one:
+
+- The `FACTS_ENABLED=0` rollback described in §6 of `docs/architecture/facts.md` no longer
+  exists (deleted 2026-11-15, Owner decision). The lazy form is "a deployment that never
+  wires the facts port", measured at `storage.factService` absent → four `fact_*` tools
+  unregistered and both terminal hooks inert.
+- `submitForReview` checks **pending subtasks before** the completion-evidence gate
+  (`task-service.ts:5104`), so a probe taken on a card with open subtasks measures the
+  subtask gate. The facts-gate rejection requires a card with none pending.
+
 ## 2. Verification tree — which code is being verified
 
 **The code under test is on `feat/refactor-plan`, not `main`.** Per master plan §5.1
