@@ -657,8 +657,6 @@ export const DELIBERATION_ALLOWED_TOOLS: readonly string[] = [
   'notify_user', 'task_comment', 'requirement_comment',
   'agent_send_message', 'agent_send_group_message',
   'agent_create_group_chat', 'agent_list_group_chats',
-  // Decision output
-  'complete_deliberation',
 ];
 
 // ─── Heartbeat ──────────────────────────────────────────────────────────────

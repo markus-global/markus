@@ -11,8 +11,31 @@ describe('deriveReviewSessions — from authoritative status history', () => {
     const s = deriveReviewSessions([tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z')]);
     expect(s).toHaveLength(1);
     expect(s[0]!.status).toBe('reviewing');
-    expect(s[0]!.reviewerName).toBe('Reviewer');
+    // 迁移上的 `changedByName`（'Reviewer'）是**把卡推进 review 的提交者**，不是评审人。
+    // 评审人未知时必须是 null —— 绝不拿另一个实体顶替（那是「CTO 正在评审」的来源）。
+    expect(s[0]!.reviewerName).toBeNull();
     expect(s[0]!.completedAt).toBeNull();
+  });
+
+  it('【事故回归】提交者绝不冒充评审人（人类评审人不在 agent 名册时也是）', () => {
+    // 现场：评审人=人类 → agent 名册查不到 → 旧回退链落到 `h.changedByName`
+    // ＝ 提交者本身 → 横幅显示「CTO 正在评审」。
+    const s = deriveReviewSessions(
+      [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', { changedByName: 'CTO', changedById: 'agt_cto' })],
+      { reviewerId: 'usr_jason', reviewerType: 'human' },
+    );
+    expect(s[0]!.reviewerName).not.toBe('CTO');
+    expect(s[0]!.reviewerName).toBeNull();
+    expect(s[0]!.reviewerType).toBe('human');
+  });
+
+  it('人类评审人给了名字就显示那个名字（不换实体）', () => {
+    const s = deriveReviewSessions(
+      [tr(1, 'in_progress', 'review', '2026-01-01T00:00:00Z', { changedByName: 'CTO' })],
+      { reviewerId: 'usr_jason', reviewerName: 'Jason Carter', reviewerType: 'human' },
+    );
+    expect(s[0]!.reviewerName).toBe('Jason Carter');
+    expect(s[0]!.reviewerType).toBe('human');
   });
 
   it('a later transition CLOSES the session (completed)', () => {

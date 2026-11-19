@@ -21,6 +21,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -252,7 +253,9 @@ describe('入口 fail closed：派发不带 round → 不启动纪元、无身�
 describe('消费侧身份：活动日志与轮内 delta 读的是本执行纪元的 ref', () => {
   it('活动日志（startActivity / onActivityLogCb）带的是执行纪元的 workUnitRef', async () => {
     const agent = makeAgent();
-    await agent.start();
+    // Settle startup BEFORE arming the callbacks: the startup wake is its own
+    // epoch, and capturing it would assert against the wrong work unit.
+    await startSettled(agent);
 
     const logged: Array<{ workUnitRef?: string | null }> = [];
     // `startActivity` 写入 activity **对象字段**的那一路，用 `onStart` 收。

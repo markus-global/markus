@@ -1301,39 +1301,52 @@ async function startServerCore(
   archiveService.setRequirementService(requirementService);
   archiveService.start();
 
-  // Stale task detection: alert humans when tasks are stuck in review/in_progress/pending
+  // Stale task detection. Scope (Owner 2026-11-18): the ONLY things this periodic
+  // scan may surface are (a) `stuck_task` → one human notification, and
+  // (b) `review_reminder` → a message to the RESPONSIBLE REVIEWER agent.
+  //
+  // Removed on purpose: the timed "Stale review" human notification (a card waiting on
+  // a NAMED reviewer does not need the whole org pinged on a clock), and the human
+  // fallback when a reviewer is unreachable (it surfaced as "Unstarted task", wrong on
+  // both counts — not unstarted, and not the reader's job). A reminder that cannot be
+  // delivered is logged and dropped; it never becomes a human notification.
   const staleDetector = new StaleDetector(taskService, undefined, (items) => {
     for (const item of items) {
-      // A review reminder belongs to the REVIEWER, not to a human. The 2026-10-17
-      // failure was exactly this inversion: nobody able to act was ever told, and the
-      // only signal fired 12h later into the human's bell. Wake the owner of the step
-      // first; escalate to a human only if that agent cannot be reached.
-      if (item.type === 'review_reminder' && item.agentId) {
+      if (item.type === 'review_reminder') {
+        if (!item.agentId) {
+          log.warn('Review reminder has no reviewer to wake — dropped (no human escalation)', {
+            taskId: item.taskId,
+          });
+          continue;
+        }
         try {
           const reviewer = agentManager.getAgent(item.agentId);
           void reviewer
             .sendMessage(item.message, undefined, undefined, {
               sourceType: 'review_request',
+              // 评审提醒 = 评审回合（mailboxScenario('review_request') = 'review'）。
+              scenario: 'review',
               ...(item.taskId ? { taskId: item.taskId } : {}),
             })
             .catch((err: unknown) =>
               log.warn('Review reminder delivery failed', { taskId: item.taskId, error: String(err) }),
             );
-          continue;
         } catch (err) {
-          log.warn('Reviewer unavailable for reminder — escalating to human', {
+          log.warn('Reviewer unavailable for reminder — dropped (no human escalation)', {
             agentId: item.agentId,
             taskId: item.taskId,
             error: String(err),
           });
         }
+        continue;
       }
+      // Only `stuck_task` reaches the human notification list.
       hitlService.notify({
         targetUserId: 'all',
         type: 'system',
-        title: item.type === 'review_stale' ? 'Stale review' : item.type === 'stuck_task' ? 'Stuck task' : 'Unstarted task',
+        title: 'Stuck task',
         body: item.message,
-        priority: item.type === 'review_stale' ? 'high' : 'normal',
+        priority: 'normal',
         actionType: item.taskId ? 'navigate' : 'none',
         actionTarget: item.taskId ? JSON.stringify({ path: `/work?openTask=${item.taskId}` }) : undefined,
         metadata: {
@@ -1343,10 +1356,7 @@ async function startServerCore(
           // The title and body as structure: the detector knows *what* to say,
           // this is the only place that knows the sentence's key.
           i18n: {
-            titleKey:
-              item.type === 'review_stale'
-                ? 'notifications.titles.staleReview'
-                : 'notifications.titles.stuckTask',
+            titleKey: 'notifications.titles.stuckTask',
             ...(item.i18n ?? {}),
           },
         },
@@ -2475,35 +2485,24 @@ async function startServerCore(
                 context: decision.context as unknown as Record<string, unknown>,
                 reasoning: decision.reasoning ?? '',
                 outcome: decision.outcome,
+                // 身份与判断来源必须一起穿过这一层。此前这里逐字段手抄却漏了
+                // workUnitRef —— 上游 recordDecision 写了、下游 INSERT 也有列，
+                // 唯独中间的适配器把它丢掉，于是 22.7 万条决策 0 条能回溯到回合
+                //（2026-11-18 实测）。字段在两端都存在，不代表它穿得过中间。
+                workUnitRef: decision.workUnitRef ?? null,
+                source: decision.source,
+                overrode: decision.overrode,
                 createdAt: decision.createdAt,
               });
             } catch (e) { log.warn('Failed to persist decision', { id: decision.id, error: String(e) }); }
           },
         });
-        // Wire LLM interrupt judge — evaluates whether to preempt current
-        // work when a new message arrives (e.g. "stop publishing", "pause that task").
-        // Only called when heuristics return 'continue' for ambiguous cases.
-        const triageProvider = agent.config.llmConfig?.modelMode === 'custom'
-          ? agent.config.llmConfig.primary : undefined;
-        const interruptSystemPrompt = 'You are an attention interrupt judge. Decide whether to interrupt current work for a new incoming message. Reply with ONLY one word: continue, preempt, cancel, merge, or defer. Use "preempt" to pause (resume later) and "cancel" to permanently stop current work.';
-        const interruptCacheSegments = [{ content: interruptSystemPrompt, cacheBreakpoint: true }];
-        agent.getAttentionController().setLLMJudge(async (prompt: string) => {
-          const response = await llmRouter.chat({
-            messages: [
-              { role: 'system', content: interruptSystemPrompt },
-              { role: 'user', content: prompt },
-            ],
-            systemCacheSegments: interruptCacheSegments,
-            temperature: 0.1,
-            // No maxTokens cap: a tight cap (e.g. 32) is fully consumed by a
-            // reasoning model's hidden reasoning, leaving content empty so the
-            // judge always degrades to 'continue'. The router fills the model's
-            // real limit; the one-word answer stops the generation naturally.
-          }, triageProvider);
-          const raw = response.content.trim().toLowerCase();
-          const valid: DecisionType[] = ['continue', 'preempt', 'cancel', 'merge', 'defer'];
-          return valid.includes(raw as DecisionType) ? (raw as DecisionType) : 'continue';
-        });
+        // Interrupt decisions are purely heuristic (priority + type). There is
+        // deliberately no LLM judge here: "should I pause this work for that
+        // message?" is a decidable rule question, not a reasoning question.
+        // The old wiring paid a model call on every same-priority interrupt and
+        // could only answer 'continue' when the model produced no content —
+        // a silent degradation nobody could observe.
       } catch { /* agent not found */ }
     };
 
@@ -2669,6 +2668,8 @@ async function startServerCore(
       const channelKey =
         target.conversationKey === MAIN_CONVERSATION_KEY ? undefined : target.conversationKey;
       const reply = await agent.sendMessage(message.content.text ?? '', message.senderId, undefined, {
+        // IM 入站 = 外部人类发来的消息 → 聊天回合（显式表态）。
+        scenario: 'chat',
         channelKey,
         // 第六刀 C2（§2.3 投递点 1）：IM 入站交出信封的 from/messageId。
         // `message.id` 是平台自己的 native 消息 id → 同一条群消息被适配器重投时

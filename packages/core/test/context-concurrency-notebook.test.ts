@@ -51,6 +51,7 @@ describe('P1-2 · 并发上下文注入分身共享工作记忆', () => {
         enabled: true,
         workerId: 1,
         workerCount: 3,
+        liveClaims: [],
         handoffs: [
           {
             workerId: 2,
@@ -101,6 +102,7 @@ describe('P1-2 · 并发上下文注入分身共享工作记忆', () => {
         enabled: false,
         workerId: 1,
         workerCount: 1,
+        liveClaims: [],
         handoffs: [],
         notebook: [{ key: 'k', text: 't', updatedAt: Date.now(), managed: 'agent' }],
       },
@@ -122,6 +124,7 @@ describe('P1-2 · 并发上下文注入分身共享工作记忆', () => {
         enabled: true,
         workerId: 1,
         workerCount: 2,
+        liveClaims: [],
         handoffs: [],
         notebook: [],
       },
@@ -130,5 +133,68 @@ describe('P1-2 · 并发上下文注入分身共享工作记忆', () => {
     const v = result.volatile ?? '';
     expect(v).toContain('## Concurrency Context（并发上下文）');
     expect(v).not.toContain('分身共享工作记忆');
+  });
+
+  // ── 2026-11-17 真机事故回归：在途 = 实时状态，不是历史 ─────────────────────
+  // 现场：同一对话串同时出现在「正在进行中」与「已完成」两处 —— 旧实现把
+  // `handoffs` 里的 `declared` 当成「正在处理」，而 `done` 另起一段。分身读到
+  // 「正在处理」就停手，向 Owner 宣称「由另一个 worker 处理」。
+  it('交接历史里出现过的实体绝不得被渲染成「正在处理」', async () => {
+    const engine = new ContextEngine({ memorySearchTopK: 3 });
+    const memory = new MemoryStore(tempDir);
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_cc',
+      agentName: 'CC Agent',
+      role: MOCK_ROLE,
+      memory,
+      currentQuery: 'hi',
+      concurrentContext: {
+        enabled: true,
+        workerId: 2,
+        workerCount: 5,
+        // 权威在途：无。但历史里既有 declared 也有 done（同一个实体）。
+        liveClaims: [],
+        handoffs: [
+          { workerId: 1, kind: 'declared', entityKey: 'conv:cs_abc', summary: 'human_chat: "仍然很卡"' },
+          { workerId: 1, kind: 'done', entityKey: 'conv:cs_abc', summary: '处理完成：human_chat: "仍然很卡"' },
+        ],
+      },
+    });
+
+    const v = result.volatile ?? '';
+    // 必须声明「此刻无人占用」，且不能再出现旧的「正在进行中的其他分身」段
+    expect(v).toContain('此刻真正被占用');
+    expect(v).toContain('（无：');
+    expect(v).not.toContain('正在进行中的其他分身');
+    // 历史段只能说「过去」，且该实体只能出现在历史段里（不能又冒出一句「在途」）
+    expect(v).toContain('交接历史');
+    const inFlightSection = v.slice(v.indexOf('此刻真正被占用'), v.indexOf('交接历史'));
+    expect(inFlightSection).not.toContain('conv:cs_abc');
+  });
+
+  it('实时 claim 才渲染为占用（worker/subject 均可见，且排除自己）', async () => {
+    const engine = new ContextEngine({ memorySearchTopK: 3 });
+    const memory = new MemoryStore(tempDir);
+    const result = await engine.buildSystemPrompt({
+      agentId: 'agt_cc',
+      agentName: 'CC Agent',
+      role: MOCK_ROLE,
+      memory,
+      currentQuery: 'hi',
+      concurrentContext: {
+        enabled: true,
+        workerId: 2,
+        workerCount: 5,
+        liveClaims: [
+          { workerId: 1, entityKeys: ['conv:cs_live', 'session:sess_1'], itemType: 'human_chat', startedAt: Date.now() },
+        ],
+        handoffs: [],
+      },
+    });
+
+    const v = result.volatile ?? '';
+    expect(v).toContain('worker 1 → conv:cs_live, session:sess_1（human_chat）');
+    // 没有占用的两个反例都不应出现
+    expect(v).not.toContain('（无：');
   });
 });

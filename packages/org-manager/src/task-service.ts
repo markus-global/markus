@@ -579,6 +579,7 @@ export class TaskService implements ApprovalTargetPort {
     if (input.intent === 'approve') {
       this.markReviewSettled(current, 'approved', reviewerId);
       this.updateTaskStatus(current.id, 'completed', reviewerId, false, false, 'human', 'Review approved');
+      // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发。
       return;
     }
 
@@ -3349,6 +3350,19 @@ export class TaskService implements ApprovalTargetPort {
       result.task, result.prevStatus, status, updatedBy, _skipAutoStart, resolvedBlockedReason,
     );
 
+    // 任务后反思的**唯一触发点**：`review → completed`（不区分谁签的字）。
+    //
+    // 【为什么下沉到这里，而不是各收口入口各接一次】“任务收口”至少有三个写者：
+    //   ① 评审 accept 接口（`acceptTask`）
+    //   ② 审批闸门 approve（`applyReviewGateDecision`，人类在 UI 点“通过”）
+    //   ③ **评审 agent 直接用 `task_update` 工具把状态写成 completed** ← 生产里最常见
+    // 前两处各接一次 = 同一契约两处实现（必漂），第三处根本没人接 —— 实测近 14 天
+    // 28 个完成任务只产生 2 条反思（Owner 2026-11-18 连续两次追问的就是这件事）。
+    // 落在唯一状态写入点后，新增收口入口不需要有人“记得接”，迁移本身即判据。
+    if (status === 'completed' && result.prevStatus === 'review' && result.task.assignedAgentId) {
+      this.triggerPostTaskReflection(result.task);
+    }
+
     log.info(`Task status updated: ${result.task.title}`, { id, status, prevStatus: result.prevStatus });
     return result.task;
   }
@@ -3364,7 +3378,11 @@ export class TaskService implements ApprovalTargetPort {
    * collaborator happened to be wired. It wasn't, and the guard silently passed.
    */
   private resolveActorTypeForGuard(updatedBy?: string): 'human' | 'agent' | 'system' {
-    if (!updatedBy) return 'system';
+    // 解析不出身份时按 agent 处理（拒绝），不按 system 放行。
+    // 真正的系统路径本来就显式传 actorType='system'，走不到这里；
+    // 而「没传 updatedBy」是调用方漏传，不是系统特权的证据 —— 让它默认拿到
+    // 最高权限，等于把守卫的最后一道门留成 fail-open。
+    if (!updatedBy) return 'agent';
     if (this.agentManager?.hasAgent(updatedBy)) return 'agent';
     if (this.userNameLookup) {
       try {
@@ -5373,7 +5391,14 @@ export class TaskService implements ApprovalTargetPort {
         reviewMessage,
         task.assignedAgentId ?? 'system',
         { name: assigneeName, role: 'worker' },
-        { sourceType: 'review_request', taskId: task.id, round: reviewRound, workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound) },
+        {
+          sourceType: 'review_request',
+          // 评审回合的形状由信号类型决定（mailboxScenario('review_request') = 'review'）。
+          scenario: 'review',
+          taskId: task.id,
+          round: reviewRound,
+          workUnitRef: WORK_UNIT_REF.task(task.id, reviewRound),
+        },
       ).then(() => {
         // 成功：**保留**去重键（本轮重复 / 迟到投递应继续被抑制）；
         // 键在任务离开 review 时统一清理（见 cleanupOnLeaveStatus）。
@@ -5654,9 +5679,8 @@ export class TaskService implements ApprovalTargetPort {
       metadata: { workerAgentId: task.assignedAgentId, notes: notes?.trim() },
     });
 
-    if (task.assignedAgentId && this.agentManager) {
-      this.triggerPostTaskReflection(task);
-    }
+    // 反思不在这里触发：由 `updateTaskStatus()` 在 `review → completed` 迁移处统一发
+    // （含“评审 agent 用 task_update 工具直接写 completed”这条主路径）。
 
     log.info(`Task accepted and completed: ${task.title}`, { id: task.id, withNotes: !!notes?.trim() });
     return task;
@@ -5677,7 +5701,20 @@ export class TaskService implements ApprovalTargetPort {
   }
 
   private triggerPostTaskReflection(task: Task): void {
-    const agent = this.agentManager?.getAgent(task.assignedAgentId);
+    // 【为什么必须 try/catch】`getAgent()` 对**未加载**的 agent 是 throw（`Agent not found`），
+    // 而不是返回 undefined。调用点在 `acceptTask()` 的收尾，没有 catch —— 于是 worker 被
+    // 停掉的卡一旦被验收，反思既不发生、也没有任何日志（“反思最近没触发”的头号假象）。
+    // 反思是可选的增值动作：拿不到 agent 就跳过并留一条可查的日志，绝不把验收搞挂。
+    const agent = (() => {
+      try {
+        return this.agentManager ? this.agentManager.getAgent(task.assignedAgentId) : null;
+      } catch {
+        log.info('Skipping post-task reflection — worker agent is not loaded', {
+          taskId: task.id, agentId: task.assignedAgentId,
+        });
+        return null;
+      }
+    })();
     if (!agent) return;
 
     if (this.isReflectionRateLimited(task.assignedAgentId)) {
@@ -5741,6 +5778,12 @@ export class TaskService implements ApprovalTargetPort {
       sourceType: 'system_event',
       sessionId: `sys_${agent.id}_${Date.now()}`,
       scenario: 'distillation',
+      // 【归属必须由生产者给】这条反思「关于哪个任务」在发起的这一刻就是结构事实
+      // （`task.id`），所以直接交给 `options.taskId` → `payload.taskId`。
+      // 之前不传，工作记录的路由器只能把它当成「无实体」→ 落进「历史记录」，
+      // 而标题里明明写着 `Task "…" (ID: tsk_…)`。从正文里再抠 id 是 in-band 推断，
+      // 一旦抠错没人发现 —— 结构只能由生产者给。
+      taskId: task.id,
       allowedTools: getDistillationAllowlist(isManager),
     }).catch(err => {
       log.warn('Post-task reflection failed', { taskId: task.id, error: String(err) });

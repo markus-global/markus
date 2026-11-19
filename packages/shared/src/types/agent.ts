@@ -1,26 +1,5 @@
 export type AgentStatus = 'idle' | 'working' | 'offline' | 'error';
 
-/**
- * A5: 这个 agent 能自主到什么程度。**二值**，不是四档——四档（只读/建议/受限执行…）
- * 属产品语义，Owner 明确留待单独拍板，不混进本轮。
- */
-export type AgentAutonomy = 'observe' | 'act';
-
-/**
- * A5 的**唯一判据**：「这个 agent 能不能自作主张开工」。
- *
- * 为什么做成具名纯函数而不是各处内联 `=== 'act'`：
- *   - 判据只有一个执行点，`declarations-witness` 的见证者才能是个真实符号；
- *   - 缺省/未知值统一落到 `act`（加这个字段之前的行为），历史行不需要迁移；
- *   - 新增第二个消费点会被 `autonomy-single-consumer.test.ts` 咬住。
- *
- * 只有 `'observe'` 会拦下；其余任何值（含 undefined、历史的脏值）都视为 `act` ——
- * 这是**故意 fail-open 到旧行为**：新字段不该让存量 agent 突然停摆。
- */
-export function maySelfInitiate(autonomy: AgentAutonomy | string | undefined): boolean {
-  return autonomy !== 'observe';
-}
-
 export interface AgentConfig {
   id: string;
   name: string;
@@ -28,14 +7,6 @@ export interface AgentConfig {
   orgId: string;
   teamId?: string;
   agentRole: 'manager' | 'worker';
-  /**
-   * A5: 自主档位。**唯一消费点** = `agent.ts` 的心跳 tick 监听器
-   * （`heartbeat:trigger`）：判定为 `observe` 时不自发巡逻，只记存活跳过。
-   *
-   * 缺省 / 未设置 = `act`。DB 列带 `DEFAULT 'act'`，历史行读出来就是 `act`，
-   * 等价于加这个字段之前的行为 —— 所以「旧数据兼容读」靠的是默认值，不是迁移。
-   */
-  autonomy?: AgentAutonomy;
   skills: string[];
   profile?: AgentProfile;
   /** 并发处理配置（智能体设置 → 并发处理）。 */

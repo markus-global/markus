@@ -1,5 +1,10 @@
 # Cut 8-C — readings and evidence (2026-11-14)
 
+> **Historical record (2026-11-14).** The mechanisms measured here (dual-clock heartbeat scheduling,
+> `HEARTBEAT_CLOCK_SOURCE`, per-tick dream trigger) were changed or deleted by the Forever Loop
+> refactor (M1–M7). Current mechanism: `docs/architecture/architecture.md`. Symbol names below are
+> historical and have 0 hits in `packages/*/src`.
+
 Companion to `docs/records/cut8-c-single-clock-design-2026-11-14.md`.
 Branch `task/c8-c-single-clock` → PR to `feat/refactor-plan`.
 

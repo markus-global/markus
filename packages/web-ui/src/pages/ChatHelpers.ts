@@ -400,16 +400,35 @@ export function resolveTurnBubbleIdx(msgs: ChatMsg[], id?: string): number {
  * 正确语义：只有你要发的那个会话自身有在途流时，才谈得上"打断它"；
  * 否则交给后端 mailbox 排队/合并，一个字节都不要动别人的流。
  */
+/**
+ * 发送消息时是否应当"打断并重发"。
+ *
+ * ## 判据：**服务端确认**的在途状态，不是任何本地副本
+ *
+ * 旧实现读两样本地副本：`sending`（Agent 级一个布尔）与 `getStreamSession(convKey)`
+ * （传输附着登记簿）。两者都是**记账式**的：正确性依赖每一条路径都记得销账 ——
+ * abort、切 tab、组件重挂、catch 分支、重启，漏一条就永久为真。而它恰好是打断决策
+ * 的输入，于是下次发送会 abort 掉刚起的那一轮：
+ *
+ *   真机 2026-11-17（runtime log）：`cancelActiveStream: scoped target matched no
+ *   active stream — ignoring` 命中 8 次，全部落在“上一轮早已结束、下一轮开始前
+ *   11–49 秒”= 用户按下发送的那一刻。客户端说在跑，服务端说没有。
+ *
+ * 新判据只问一件事：“服务端确认这个会话此刻在输出吗？”
+ *   · 是 → 打断重发（真的还在跑，重发合理）；
+ *   · 否 / 问不到 → **不打断**，交给 mailbox 排队/合并。
+ *
+ * 代价不对称：多排一次队只是慢一点，错打断是“回答被撕掉”。这与 `decideOnStreamEnd`
+ * 里“歧义时永远 reattach”是同一条原理。
+ */
 export function shouldInterruptForSend(input: {
-  /** convKey 维度当前登记的在途会话（含 NEW_CHAT 占位）。 */
-  liveSessions: ReadonlySet<string> | undefined | null;
+  /** 服务端确认该会话正在输出（`sessionStreamState.isServerConfirmedStreaming`）。 */
+  authorityStreaming: boolean;
   /** 本次发送所属的会话（新 tab 时为 NEW_CHAT 占位 id）。 */
   sendSessionId: string | undefined | null;
 }): boolean {
   if (!input.sendSessionId) return false;
-  const live = input.liveSessions;
-  if (!live || live.size === 0) return false;
-  return live.has(input.sendSessionId);
+  return input.authorityStreaming;
 }
 
 /**

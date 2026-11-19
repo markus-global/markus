@@ -102,12 +102,40 @@ export const TOOL_DEF_PROTECTED = new Set([
   // C9-E：验证同样是被运行时要求的动作（拿不到它就无法把一条流推进到 done），
   // 且它写入的是「一个只写一列」的路径 —— 被预算淘汰会和上面完全相同地卡住评审人。
   'fact_verify',
+  // Forever Loop：Loop 会话的回合**被提示词强制要求以 `rest` 收尾**
+  // 与 `task_submit_review` / `end_turn` 同一危
+  // 害类：被预算挤掉 = 模型被要求调一个它没有的工具 → 嘘回提醒轮�� 3 次都是空
+  // 转，最后每轮都靠平台兜底。schema 很小，保护成本几乎为零。
+  'rest',
 ]);
+
+/**
+ * Tools whose semantics belong to the decision loop and nowhere else.
+ *
+ * `rest` means "I am ending my turn and waiting for an external event". That is a
+ * loop statement: a chat turn owes the human a reply and a task turn owes the task
+ * a result — neither may park for eight hours instead. Registering it in every
+ * scenario let any turn declare a wait, while only loop sessions were held to the
+ * "must rest" contract: one tool, two different meanings.
+ *
+ * Eviction protection (TOOL_DEF_PROTECTED) and scenario admission are separate
+ * axes: protected means "never dropped for budget", not "present everywhere".
+ */
+export const LOOP_ONLY_TOOLS: ReadonlySet<string> = new Set(['rest']);
+
+export function isLoopOnlyTool(name: string): boolean {
+  return LOOP_ONLY_TOOLS.has(name);
+}
+
+/** Loop-only tools may be LIVE solely in the decision-loop scenario. */
+export function allowsLoopOnlyTools(scenario?: string): boolean {
+  return scenario === 'loop';
+}
 
 /**
  * Tools whose schemas are unconditionally injected by ToolSelector.pushUnique
  * (schedule_wakeup / cancel_wakeup / set_heartbeat_interval / recall_activity /
- * complete_deliberation / notebook_upsert / notebook_clear). discover_tools must
+ * notebook_upsert / notebook_clear). discover_tools must
  * treat them as activate-able (sticky activated → protected from eviction), or
  * they dead-lock once budget pressure moves them into the Deferred catalog.
  *
@@ -118,7 +146,6 @@ export const SCHEMA_INJECTED_TOOLS = new Set([
   'cancel_wakeup',
   'set_heartbeat_interval',
   'recall_activity',
-  'complete_deliberation',
   'notebook_upsert',
   'notebook_clear',
   // Right-panel control (Team Chat). Same hazard as the group above: pushed via
@@ -406,8 +433,7 @@ export function isEntityBoundScenario(scenario?: string): boolean {
     || scenario === 'review'
     || scenario === 'comment_response'
     || scenario === 'requirement_action'
-    || scenario === 'workflow_action'
-    || scenario === 'deliberation';
+    || scenario === 'workflow_action';
 }
 
 /** Whether work-context-bound tools may appear LIVE for this pack/scenario. */
@@ -433,7 +459,6 @@ export function scenarioToPack(scenario: string | undefined): CapabilityPack {
     case 'task_execution':
       return 'execute';
     case 'review':
-    case 'deliberation':
       return 'govern';
     case 'chat':
     case 'a2a':

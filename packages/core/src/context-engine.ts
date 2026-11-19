@@ -514,7 +514,12 @@ export class ContextEngine {
       content: string;
       anchor?: { section: string; itemId?: string };
     }>;
-    scenario?: AgentScenario;
+    /**
+     * 这一轮的回合形状。**必填**：它决定注入的「你现在处于人类对话 / A2A /
+     * 群聊」段以及提示词剖面。旧写法可选 + 下游 `?? 'chat'`，等于“不知道就说
+     * 是人类对话” —— 会把 A2A 回合描述成“用户看着你说话”。
+     */
+    scenario: AgentScenario;
     /** When scenario is 'a2a', indicates whether the sender is blocking for a reply */
     a2aWaitForReply?: boolean;
     /** Live per-colleague runtime status (agentId → AgentState['status']).
@@ -567,11 +572,26 @@ export class ContextEngine {
     promptProfile?: PromptProfile;
     /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected so agents do NOT need to search for it. If omitted, a source-dir path is used as fallback. */
     handbookPath?: string;
-    /** 并发上下文（仅并发模式 worker>1 时注入）：分身声明 + 其他 worker 交接记录。 */
+    /** 并发上下文（仅并发模式 worker>1 时注入）：实时在途快照 + 交接历史。 */
     concurrentContext?: {
       enabled: boolean;
       workerId: number;
       workerCount: number;
+      /**
+       * 权威在途信号：**此刻真的被其他分身持有**的实体（实时状态，不是历史推断）。
+       * 来源 `AttentionController.getActiveClaims()`，已排除本 worker。
+       */
+      liveClaims: Array<{
+        workerId: number;
+        entityKeys: string[];
+        /** 条目类型（如 `human_chat`）；不带正文。 */
+        itemType: string;
+        startedAt: number;
+      }>;
+      /**
+       * 交接历史（只含终态 `done`/`conflict`）：只用于避免重复动作，
+       * **不构成「正在处理」**——历史里的实体现在可能是空闲的。
+       */
       handoffs: ConcurrentHandoffLite[];
       /**
        * 分身共享工作记忆快照（agent 级 NOTEBOOK.md）。notebook 是 agent 级共享的，
@@ -1000,7 +1020,7 @@ export class ContextEngine {
     // inside a group chat, where the reply IS auto-sent and human-visible. The
     // A2A-ness of a group message is conveyed by the caller's injected
     // `[AGENT COLLABORATION]` prefix, not by switching the scenario.
-    const rawScenario = opts.scenario ?? 'chat';
+    const rawScenario = opts.scenario;
     const isGroupChannel = !!opts.channelKey && opts.channelKey.startsWith('group:');
     const scenario: AgentScenario =
       rawScenario === 'a2a' && isGroupChannel ? 'group_chat' : rawScenario;
@@ -1509,30 +1529,47 @@ export class ContextEngine {
     }
 
     // ─── Concurrency Context: volatile segment injected ONLY in concurrent mode ───
-    // Per-turn data: handoff records change constantly, so it lives in the
+    // Per-turn data: live claims change every second, so it lives in the
     // volatile tail (never invalidates the stable/semiStable prefix cache).
+    //
+    // 在途 = **实时状态**（`liveClaims`，来自实体锁 + worker focus），历史 = `handoffs`（终态）。
+    // 旧实现把历史里的 `declared` 当「正在进行中」注入 → 同一实体既「在进行中」又
+    // 「已完成」，分身据此宣布「由另一个 worker 处理」并停手（2026-11-17 真机事故）。
+    // 形状固定：没有占用也要显式写「无」——否则模板随数据变形，且 agent 分不清
+    // 「没人占」和「这段没注入」。
     const cc = opts.concurrentContext;
     if (cc?.enabled && cc.workerCount > 1) {
       const lines: string[] = ['\n## Concurrency Context（并发上下文）'];
       lines.push(
         `- 当前 Agent 处于并发模式：本会话是你（worker ${cc.workerId}）处理的多个会话之一，共有 ${cc.workerCount} 个分身。`
       );
-      const flight = cc.handoffs.filter(h => (h.kind === 'declared' || h.kind === 'fact')).slice(-4);
-      if (flight.length > 0) {
-        lines.push('- 正在进行中的其他分身：');
-        for (const h of flight) {
-          if (h.workerId !== cc.workerId) lines.push(`  - worker ${h.workerId}${h.entityKey ? ` → ${h.entityKey}` : ''}：${h.summary}`);
+
+      lines.push('- 此刻真正被占用（**唯一权威**：实体锁实时状态；只有这里的实体现在不能动）：');
+      if (cc.liveClaims.length === 0) {
+        lines.push('  - （无：现在没有任何实体被其他分身持有）');
+      } else {
+        for (const c of cc.liveClaims) {
+          const keys = c.entityKeys.length > 0 ? c.entityKeys.join(', ') : 'system';
+          lines.push(`  - worker ${c.workerId} → ${keys}（${c.itemType}）`);
         }
       }
-      const done = cc.handoffs.filter(h => h.workerId !== cc.workerId && (h.kind === 'done' || h.kind === 'conflict')).slice(-4).reverse();
-      if (done.length > 0) {
-        lines.push('- 最近完成的交接：');
-        for (const h of done) lines.push(`  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`);
+
+      const history = cc.handoffs.filter(h => h.workerId !== cc.workerId).slice(-4).reverse();
+      lines.push('- 交接历史（**只说明过去发生了什么，不代表现在被占用**）：');
+      if (history.length === 0) {
+        lines.push('  - （无）');
+      } else {
+        for (const h of history) {
+          lines.push(
+            `  - worker ${h.workerId}（${h.kind === 'done' ? '完成' : '冲突'}）${h.entityKey ? ` ${h.entityKey}` : ''}：${h.summary}`
+          );
+        }
       }
+
       lines.push(
         '- 一致性规则：',
         '  1. 你并不独占认知。做任何持久化决策前，先查共享知识 + 交接记录，避免与已完成/进行中的工作矛盾或重复。',
-        '  2. 同一任务/需求/对话串同时只能有一个分身处理——发现实体已被占用，不要强行开做，如实说明。',
+        '  2. **占用只认上面「此刻真正被占用」那一段。** 列在其中的实体现在由别的分身在跑，不要同时动它；没列在其中的实体（哪怕刚在交接历史里出现过）现在**没有被占用**，照常接手 —— 不要因为一条历史记录就停手，更不要向用户宣称「这件事正由另一个 worker 处理」。',
         '  3. 发现事实冲突时（你的认知与交接记录矛盾），优先报告差异并请求合并决策，不静默覆盖。'
       );
 
@@ -1686,13 +1723,12 @@ export class ContextEngine {
       lines.push('');
       lines.push('## Message Processing Checklists');
       lines.push('');
-      lines.push('### When Deliberating (multiple queued items)');
+      lines.push('### 处理待决项');
       lines.push('1. **Scan**: Read all items — identify human messages, urgent items, stale items.');
       lines.push('2. **Clean**: `drop_mailbox_item` for stale informational items (old heartbeats, outdated status updates, superseded notifications).');
       lines.push('3. **Group**: Items sharing a taskId / requirementId / channel → plan to handle together.');
       lines.push('4. **Inline**: Handle trivial items now (quick ack via `notify_user`, one-line `task_comment`). Mark as inline_completed.');
       lines.push('5. **Assess**: `notebook_upsert` with your situational summary — priorities, blockers, what you plan to do.');
-      lines.push('6. **Focus**: `complete_deliberation` — choose the most important remaining item.');
       lines.push('');
       lines.push('### Per-Type Processing');
       lines.push('');
@@ -1758,8 +1794,7 @@ export class ContextEngine {
    * restricts to task/review/deliberation scenarios.
    */
   private buildScenarioPolicyBlocks(scenario: AgentScenario): string | undefined {
-    const needsExecutionPolicies = scenario === 'task_execution' || scenario === 'review'
-      || scenario === 'deliberation';
+    const needsExecutionPolicies = scenario === 'task_execution' || scenario === 'review';
     if (!needsExecutionPolicies) return undefined;
 
     const lines: string[] = [];
@@ -2127,31 +2162,49 @@ export class ContextEngine {
         lines.push('Never `hub_install` or auto-deploy agents/teams. If nothing durable → stop without tools.');
         break;
 
-      case 'deliberation':
-        lines.push('You are in **deliberation mode** — reviewing your mailbox before committing to work.');
+      case 'loop':
+        // ─── [LOOP CONTRACT] ────────────────────────────────────────────────
+        // 这条会话只做一件事：对**没有归属**的信号做决定。它不写代码、不写文案、
+        // 不做任务执行 —— 那些有自己的回合。它唯一的产物是一个决定。
+        lines.push('[LOOP CONTRACT]');
         lines.push('');
-        lines.push('**Purpose**: You have multiple pending items. Assess the full picture before deciding.');
+        lines.push('## 你是谁');
+        lines.push('你是这个 agent 的**决策面**，不是执行面。发到你这里的，全是**平台路由不了**的信号：没有实体归属、或者指向一条已经不存在的会话。换句话：能直接投递的事已经投完了，剩下的需要一个人看一看。');
         lines.push('');
-        lines.push('**What you can do**:');
-        lines.push('1. **Inspect queue**: `check_mailbox` — see your full mailbox at any time.');
-        lines.push('2. **Gather context**: `recall_activity`, `task_get`, `memory_search` — understand history.');
-        lines.push('3. **Manage queue**: `defer_mailbox_item` — postpone items; `drop_mailbox_item` — discard stale ones.');
-        lines.push('4. **Handle inline**: `notify_user`, `task_comment`, `agent_send_message` — handle trivial items now.');
-        lines.push('5. **Record awareness**: `notebook_upsert` — persist your situational assessment.');
+        lines.push('## 你每次醒来会看到什么');
+        lines.push('1. `check_mailbox` — 当前待决清单（每条带来源、时间、为什么没被自动路由）。');
+        lines.push('2. `[SLOTS]` — 你自己上一轮钉下的工作锚点（你在等什么、下一步是什么）。');
+        lines.push('3. 上一轮的台账（你做过什么决定、为什么）。');
         lines.push('');
-        lines.push('**Rules**:');
-        lines.push('- Human messages and comments are ALWAYS highest priority.');
-        lines.push('- Stale informational items (old heartbeats, status updates) should be dropped aggressively.');
-        lines.push('- **Batch related items**: Multiple items for the same task/requirement → handle with ONE context lookup + ONE reply. Mark all as inline_completed.');
+        lines.push('## 你可以做的六个动作（只有这六个）');
+        lines.push('| 动作 | 工具 | 什么时候用 |');
+        lines.push('|---|---|---|');
+        lines.push('| delegate | `agent_delegate_task` / `delegate_message` | 这件事该另一个 agent 做 |');
+        lines.push('| spawn | `spawn_subagent`（窄活）/ `task_create`（长活） | 这件事需要真实的执行回合 |');
+        lines.push('| defer | `defer_mailbox_item` | 现在不是时候，但以后是 |');
+        lines.push('| drop | `drop_mailbox_item`（**必须给理由**） | 过期、重复、无意义 |');
+        lines.push('| reply | 直接写文字 | 只需要一句话回答 |');
+        lines.push('| rest | `rest` | 没事可做，去睡 |');
         lines.push('');
-        lines.push('**⚠ 严格状态管理事件（任务执行 / 评审 / 需求·工作流收尾动作）保护**:');
-        lines.push('- `check_mailbox` 中标记为 `isStrictState: true` 的项是「正式任务执行/评审/收尾动作」，承载任务状态机与执行闭包。');
-        lines.push('- 你**只能**通过 `prioritize_mailbox_item` 调整它们的优先级顺序；**绝不** `defer_mailbox_item` / `drop_mailbox_item` / 将它们放入 `process_item_ids` 批处理 / `inline_completed_ids`。');
-        lines.push('- 它们会由正常出队路径**单独执行**（带完整 task 工具链），你在这里的分拣职责只是排序。');
+        lines.push('## 三条纪律');
+        lines.push('1. **不要自己干活**。你写代码、写文案、执行任务，就是把决策面当成执行面用——那样你就丢掉了全局视角，而这是你唯一的价值。');
+        lines.push('2. **每条待决项都必须有一条台账**：做了什么（六动作之一）+ 为什么。没有台账 = 这条信号消失了，而「静默消失」是这套系统里最贵的 bug。');
+        lines.push('3. **拿不准就 defer，不要猜**。 defer 有成本（它还会回来），猜错的成本更高（它会以错的形式被执行）。');
         lines.push('');
-        lines.push('- When done, call `complete_deliberation` with your decision.');
+        lines.push('## 什么时候去睡');
+        lines.push('待决清单空了 → `rest`。**不要轮询**。你可以声明两个唤醒条件：`wakeOn`（有新信号再叫我）与 `timeoutMs`（最迟多久后回来看看）。没有 `rest` 就结束回合，等于静默丢掉这段时间。');
         lines.push('');
-        lines.push('**Communication channel**: Your text output is NOT visible to anyone. Only tool calls have effect.');
+        lines.push('## 被「到期」叫醒时');
+        lines.push('你会收到一条 `[REST EXPIRED]` 系统信号：它表示你声明的等待窗口到期了，**不是**「没事了」。先 `check_mailbox` 再决定；如果仍然无事可做，**再 `rest` 一次**（可以换一个更长的 `timeoutMs`）。醒来后直接结束回合而不重新 `rest`，等于这个 agent 从此静默 —— 到期唤醒只负责把你叫醒，不负责替你重新声明等待。');
+        lines.push('');
+        lines.push('## 这条会话会活很久 —— 压缩纪律');
+        lines.push('Loop 会话是**永久会话**，它会一直长。历史被压缩时，能活下来的只有写进固定段的东西，所以：');
+        lines.push('1. **工作锚点必须 pin 到 `[SLOTS]`**，不能只写在对话里 —— 对话会被摘要，`[SLOTS]` 不会。');
+        lines.push('2. **决定必须落台账**（动作 + 理由）。台账是这条会话存在的证据；只存在于对话中的决定等同于没做过。');
+        lines.push('3. **不要在 Loop 里展开内容**。需要写代码/写文案就 `spawn` 一个执行回合，它有自己的上下文和自己的压缩曲线；把成品写进 Loop 只会把永久会话变成垃圾桶。');
+        lines.push('4. **压缩后先看 `[SLOTS]` 与台账**。它们是重建现场的唯一入口；不要因为读不到细节就重新看一遍全部历史（那会把刚释放的预算再烧掉）。');
+        lines.push('');
+        lines.push('**Communication channel**: 你的文字会写进这条会话（下一轮你自己能看到），但**不会主动通知任何人**。需要别人知道，就用工具。');
         break;
 
       case 'requirement_action':
@@ -2375,8 +2428,13 @@ export class ContextEngine {
      */
     cacheHitRate?: number;
     /**
-     * The turn's scenario. Used only to decide whether the context banner may
-     * name a lever (compaction) — scenarios that must read everything get none.
+     * The turn's scenario. Decides whether the context banner may name a lever
+     * (compaction) — scenarios that must read everything get none.
+     *
+     * 可选，因为 `prepareMessages` 也会在回合之外被调（post-turn 安全网、压缩预演）。
+     * 但**未传时不得静默当成 'chat'**：那会让 `memory_consolidation` / `distillation`
+     * 回合被建议去 compact，而那两场景恰恰不该动历史。未传 → 不注入可行动建议
+     * （宁可不提示，也不给一个用不了的杠杆）。
      */
     scenario?: AgentScenario;
   }): Promise<PreparedContext> {

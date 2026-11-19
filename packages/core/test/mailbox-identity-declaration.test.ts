@@ -26,7 +26,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 
-const STRICT = 'MARKUS_STRICT_IDENTITY';
+// 严格是默认；LENIENT=1 才是豁免。全局夹具设了 LENIENT，所以这里要**清掉**它。
+const LENIENT = 'MARKUS_LENIENT_IDENTITY';
 const TASK_ID = 'task_identity_declaration';
 
 let tempDir: string;
@@ -80,12 +81,12 @@ function makeAgent(): Agent {
 
 beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'markus-identity-declaration-'));
-  process.env[STRICT] = '1';
+  delete process.env[LENIENT];
   takeUnclaimedIdentityCount();
 });
 
 afterEach(() => {
-  delete process.env[STRICT];
+  process.env[LENIENT] = '1';
   takeUnclaimedIdentityCount();
   rmSync(tempDir, { recursive: true, force: true });
 });

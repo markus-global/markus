@@ -71,8 +71,29 @@ function makeProbeRouter(): RouterProbe {
   ) => {
     const messages = request.messages.map(m => ({ role: String(m.role), text: getTextContent(m.content) }));
     const text = messages.map(m => m.text).join('\n');
-    const token = extractToken(text);
+    // 分类只看**本会话真实用户消息**里的 token（排除 per-turn 的 volatile 快照）。
+    //
+    // 旧写法用「prompt 任何位置出现 TOKEN_X」分类 —— 而并发上下文会（有意地）把
+    // 兄弟分身的进度摘要带进 prompt，于是心跳/兄弟会话的调用也会被误判成「正在服务
+    // 那个会话」：一个心跳回合同时「服务 了 A 和 B」-> 伪重叠。那是夹具缺陷，会把真正的
+    // 并发违规淹死在假红里（实测：两例 e2e 在未改动的 HEAD 上也恒红）。
+    const realUserMsgs = messages.filter(
+      m => m.role === 'user' && !m.text.startsWith('[SYSTEM] [Live context]'),
+    );
+    const ownText = realUserMsgs.length > 0 ? realUserMsgs[realUserMsgs.length - 1]!.text : '';
+    const token = extractToken(ownText);
     calls.push({ token, sessionId: options?.sessionId, text, messages });
+
+    // 重叠只统计**聊天会话**（`sess_*`）：心跳/系统事件的 loop 会话不算「正在服务一个
+    // 会话」，否则它的存在就会污染安全属性的度量。
+    const isChatTurn = (options?.sessionId ?? '').startsWith('sess_') && token !== 'NONE';
+    if (!isChatTurn) {
+      return {
+        content: `reply-for-${token}`,
+        finishReason: 'end_turn',
+        usage: { inputTokens: 10, outputTokens: 5 },
+      };
+    }
 
     activeTokens.add(token);
     if (activeTokens.size >= 2) {
@@ -239,8 +260,11 @@ describe('端到端并发：两个独立会话被两个分身同时服务（A �
       expect(probe.overlap).toBeNull();
 
       // 2. 该会话的所有 LLM 调用都只带自己的 sessionId（没串到别的会话）。
-      expect(probe.calls.length).toBeGreaterThan(0);
-      expect(new Set(probe.calls.map(c => c.sessionId))).toEqual(new Set(['sess_SAME']));
+      //    只看真正服务这个会话的调用（token 来自本会话用户消息）——
+      //    心跳/loop 会话的调用不属于这个断言的对象。
+      const sameSessionCalls = probe.calls.filter(c => c.token !== 'NONE');
+      expect(sameSessionCalls.length).toBeGreaterThan(0);
+      expect(new Set(sameSessionCalls.map(c => c.sessionId))).toEqual(new Set(['sess_SAME']));
 
       // 3. 不丢消息：两条消息都必须进入过模型上下文。
       //    这一条与「串行」还是「合并成一次 turn」的实现选择解耦 —— 无论走哪条路径，

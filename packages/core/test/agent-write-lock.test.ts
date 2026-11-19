@@ -167,8 +167,8 @@ describe('P2-A Agent 工具写互斥', () => {
       'background_exec', 'process', 'create_project', 'update_project', 'delete_project',
       'workflow_run', 'workflow_cancel', 'team_update', 'agent_start', 'agent_update',
       'generate_image', 'office_generate', 'task_note', 'task_assign',
-      // 共享可变状态：session 切会话、complete_deliberation 关信箱
-      'session', 'complete_deliberation']) {
+      // 共享可变状态：session 切会话
+      'session']) {
       expect(cls.isWriteTool(w), `${w} 应判为写`).toBe(true);
     }
     // 读 / 纯计算（即使带 task_/workflow_ 前缀）
@@ -315,7 +315,7 @@ describe('P2-A Agent 工具写互斥', () => {
       'generate_image', 'generate_video', 'office_generate', 'text_to_speech',
       'exec_terminal', 'write_terminal', 'new_terminal', 'close_terminal',
       // discover_tools 曾在此清单 —— 已改判免锁（纯内存元工具，见 TOOL_LOCK_FREE）
-      'session', 'complete_deliberation',
+      'session',
     ];
     for (const name of MUST_BE_REGISTERED) {
       expect(cls.WRITE_TOOL_NAMES.has(name), `${name} 必须登记资源域`).toBe(true);

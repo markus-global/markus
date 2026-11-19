@@ -226,7 +226,6 @@
       "requirementChangesRequested": "Cambios solicitados en el requisito: {{title}}",
       "mentionedYou": "{{authorName}} te mencionó",
       "groupMessage": "{{senderName}} en {{groupName}}",
-      "staleReview": "Revisión estancada",
       "stuckTask": "Tarea atascada",
       "agentNeedsHelp": "El agente necesita ayuda",
       "taskComment": "Comentario en la tarea {{title}}"

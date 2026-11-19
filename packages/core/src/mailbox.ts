@@ -254,6 +254,8 @@ export interface MailboxPersistence {
    *  treated as stale (a dead instance's claim must not be "respected" merely because its
    *  lease has not expired yet). */
   markStaleProcessingAsBounced?(agentId: string, nowIso?: string, currentOwnerId?: string): number;
+  /** 只读：有多少条**陈旧** `processing` 行（与 `markStaleProcessingAsBounced` 同一判据）。 */
+  countStaleProcessing?(agentId: string, currentOwnerId?: string): number;
   /** Load persisted queued items for this agent (for recovery on restart). */
   loadQueued?(agentId: string): MailboxItem[];
   /** Load persisted deferred items for this agent (for auto-resurface). */
@@ -784,6 +786,17 @@ export class AgentMailbox {
   }
 
   /**
+   * 只读：还有多少条**陈旧** `processing` 行（Agent 已空闲却仍挂在处理中）。
+   *
+   * 与 `cleanStaleProcessing()` 同一判据（持久层唯一实现）。UI 用它决定是否显示
+   * 「存在异常处理中项目」告警条 —— 而不是去数「当前可见的那一页记录」。
+   * 未实现持久层读口 ⇒ 0（不主张存在异常）。
+   */
+  countStaleProcessing(): number {
+    return this.persistence?.countStaleProcessing?.(this.agentId, this.ownerId) ?? 0;
+  }
+
+  /**
    * Deduplicate the in-memory queue after bulk restoration.
    * - For task_comment: merge items with the same taskId.
    * - For requirement_comment: merge items with the same requirementId.
@@ -1196,8 +1209,13 @@ export class AgentMailbox {
       const msg =
         `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
         'identity would be silently NULL (declare refOrigin: "pending-link" | "platform-internal")';
-      // 严格模式（CI 用）直接抛错；默认只报错+计数，不把业务打死。
-      if (process.env['MARKUS_STRICT_IDENTITY'] === '1') {
+      // 默认**拒绝**：可选的严格性不守任何东西。旧实现只在 CI 环境变量下抛错，
+      // 生产走「记日志 + 放行」，于是 242,496 条输入里只有 0.18% 带身份
+      //（2026-11-18 实测）—— 校验存在，但它不拦任何人。
+      //
+      // 平台只守硬不变量：拒绝 + 给可行动提示，不替调用方猜一个身份填进去。
+      // 应急放行用 MARKUS_LENIENT_IDENTITY=1（显式、可审计），不是默认。
+      if (process.env['MARKUS_LENIENT_IDENTITY'] !== '1') {
         throw new Error(msg);
       }
       log.error(msg, { agentId: this.agentId, sourceType, itemId: item.id });
@@ -1262,6 +1280,17 @@ export class AgentMailbox {
   /**
    * Wake all attention workers blocked in `dequeueAsync`.
    */
+  /**
+   * 公开的「把空闲的注意力循环叫起来」入口。
+   *
+   * 【为什么需要它】rest 条件命中时**不再**合成一条唤醒消息：被匹配的那条 item 就是
+   * 载体（它已在队列里，入队时已过一次 `wakeIdleLoop`）。但入队与订阅匹配之间存在
+   * 时序窗口，这里补一次唤醒只是**内部信号**，不新增任何记录。
+   */
+  pokeIdle(): void {
+    this.wakeIdleLoop();
+  }
+
   private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string }): void {
     if (this.idleWaiters.size === 0) return;
 

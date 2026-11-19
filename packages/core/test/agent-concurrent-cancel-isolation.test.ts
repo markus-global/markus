@@ -159,10 +159,21 @@ interface AgentInternals {
 
 const internalsOf = (agent: unknown): AgentInternals => agent as unknown as AgentInternals;
 
-async function waitFor(cond: () => boolean, label: string, timeoutMs = 12000, stepMs = 5): Promise<void> {
+async function waitFor(
+  cond: () => boolean,
+  label: string,
+  timeoutMs = 12000,
+  stepMs = 5,
+  diag?: () => string,
+): Promise<void> {
   const start = Date.now();
   while (!cond()) {
-    if (Date.now() - start > timeoutMs) throw new Error(`waitFor timeout: ${label}`);
+    if (Date.now() - start > timeoutMs) {
+      // A bare "timeout" names the symptom, not the stuck condition. Dump the
+      // observed state so the failure says WHICH part refused to converge.
+      const detail = diag ? ` — ${diag()}` : '';
+      throw new Error(`waitFor timeout: ${label}${detail}`);
+    }
     await new Promise(r => setTimeout(r, stepMs));
   }
 }
@@ -400,6 +411,16 @@ describe('端到端并发取消隔离（A 层，无密钥）', () => {
           && attention.getInFlightWorkerIds().length === 0
           && workerIds.every(w => attention.getWorkerSnapshot(w)?.state === 'idle'),
         '两侧状态收敛',
+        12000,
+        5,
+        () => {
+          const f = attention.getWorkerFocus(1);
+          return `depth=${mailbox.depth} inFlight=[${attention.getInFlightWorkerIds().join(',')}] `
+            + `workers=${workerIds.map(w => `${w}:${attention.getWorkerSnapshot(w)?.state}`).join(' ')} `
+            + `agentStatus=${agent.getState().status} `
+            + `focus1=${f ? `${f.sourceType}/${f.id}/retry=${f.retryCount}/status=${f.status}` : 'none'} `
+            + `llmCalls=[${probe.calls.map(c => c.token).join(',')}] active=[${probe.activeTokens().join(',')}]`;
+        },
       );
 
       expect(mailbox.depth).toBe(0);

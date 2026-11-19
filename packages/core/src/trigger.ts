@@ -46,7 +46,8 @@ export interface TriggerEvent {
 export interface Subscription {
   id: string;
   agentId: string;
-  wakeOn: WakeCondition;
+  /** 缺省 = **只等到期**：不匹配任何条目，只作为「定时唤醒」存在。 */
+  wakeOn?: WakeCondition;
   note?: string;
   createdAt: number;
   /** Absolute epoch ms; `null` = never expires. */
@@ -60,7 +61,8 @@ export interface Subscription {
 
 export interface SubscribeInput {
   agentId: string;
-  wakeOn: WakeCondition;
+  /** 缺省 = 只等到期（定时唤醒），不因任何条目命中。 */
+  wakeOn?: WakeCondition;
   note?: string;
   now?: number;
   timeoutMs?: number;
@@ -127,7 +129,7 @@ export class TriggerRegistry {
     for (const sub of this.subs.values()) {
       if (sub.agentId !== event.agentId) continue;
       if (sub.expiresAt !== null && at >= sub.expiresAt) continue;
-      if (!matchesWakeCondition(sub.wakeOn, event)) continue;
+      if (!sub.wakeOn || !matchesWakeCondition(sub.wakeOn, event)) continue;
       sub.firedAt = at;
       matched.push(sub);
       if (sub.once) this.subs.delete(sub.id);

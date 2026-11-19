@@ -5,6 +5,8 @@ import {
   ACTION_TOOL_IDS,
   actionToolGuardEnabled,
   allowsWorkContextBoundTools,
+  allowsLoopOnlyTools,
+  isLoopOnlyTool,
   CONVERSE_FORBIDDEN_DEFAULT,
   evictToolsToBudget,
   getReflexAllowlist,
@@ -206,6 +208,14 @@ export class ToolSelector {
     isReview?: boolean;
     /** Team Chat (DM) — enables right-panel layout tools. */
     isChat?: boolean;
+    /**
+     * 本回合的回复**直接呈现给人**（`human_chat`）。
+     *
+     * 为 true 时**不提供** `end_turn`：人类对话里静默收尾 == 没回复（用户只看到空白）。
+     * 判据必须是 item 的 `sourceType`，不能用 `scenario`（A2A 有不传 scenario、默认
+     * `'chat'` 的调用点）。
+     */
+    humanFacing?: boolean;
     skillCatalog?: SkillManifest[];
     /** Scenario capability pack (AGENT-RUNTIME §2). Default converse. */
     pack?: CapabilityPack;
@@ -235,6 +245,8 @@ export class ToolSelector {
     const scenario = opts.scenario
       ?? (opts.isTaskExecution ? 'task_execution' : opts.isReview ? 'review' : undefined);
     const allowWorkCtx = allowsWorkContextBoundTools(pack, scenario);
+    // `rest` 只属于决策 loop：别的场景欠人回复/欠任务结果，不该停泊 8 小时。
+    const allowLoopOnly = allowsLoopOnlyTools(scenario);
     // C8-D: one switch for "action tools are always reachable". Off ⇒ legacy face.
     const actionGuard = opts.actionToolGuard ?? actionToolGuardEnabled();
     const selected = new Set<string>();
@@ -351,12 +363,14 @@ export class ToolSelector {
           if (!opts.allTools.has(name)) continue;
           if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
           if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+          if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
           selected.add(name);
         }
       }
       for (const name of activated) {
         if (!opts.allTools.has(name)) continue;
         if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+        if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
         selected.add(name);
       }
     }
@@ -375,6 +389,10 @@ export class ToolSelector {
       if (isSkillOrMcpToolName(name) && !activated.has(name)) continue;
       // Defense in depth: work-context tools stay out of free chat / reflex
       if (isWorkContextBoundTool(name) && !allowWorkCtx) continue;
+      // Defense in depth: `rest` is a loop statement. This is the single choke
+      // point every path funnels through, so protected/activated/sticky entries
+      // cannot smuggle it into a chat or task schema.
+      if (isLoopOnlyTool(name) && !allowLoopOnly) continue;
       const tool = opts.allTools.get(name);
       if (tool) {
         result.push({
@@ -428,11 +446,16 @@ export class ToolSelector {
     // telling the model to "reply [NO_RESPONSE]" invites it to paraphrase the
     // decision into prose — and that prose IS a message, which re-triggers the peer
     // and restarts the loop it was meant to end. A tool call cannot be paraphrased.
+    //
+    // 人类对话里不提供这个工具（Owner 2026-11-18）。**排除点在函数末尾统一执行**：
+    // end_turn 同时存在于 `TOOL_DEF_PROTECTED` / `TOOL_DEF_CORE_KEEP` / `ACTION_TOOL_IDS`
+    // 三个强制加入路径，逐个堵 = 同一不变量多个执行点（漏一个就失效）。
     pushUnique({
       name: 'end_turn',
       description:
         'End this turn WITHOUT sending any message to the conversation. '
-        + 'Use it in an agent-to-agent conversation when the exchange is complete — you have no new fact, no question, and no correction. '
+        + 'Use it ONLY in an agent-to-agent conversation when the exchange is complete — you have no new fact, no question, and no correction. '
+        + 'Never use it in a conversation with a human: there your reply IS the deliverable, so stay silent and the user sees nothing. '
         + 'This is the ONLY correct way to stop a back-and-forth loop: do NOT write a reply saying you have nothing to add, and do NOT write an acknowledgement. '
         + 'Call end_turn and write no message text.',
       inputSchema: {
@@ -616,38 +639,6 @@ export class ToolSelector {
       },
     });
 
-    pushUnique({
-      name: 'complete_deliberation',
-      description: 'Finalize your mailbox deliberation. Declare which item(s) to process next, which to defer/drop, and which you handled inline. Supports batch processing: pass multiple IDs in process_item_ids to handle related items together in one session. Only available in deliberation mode.',
-      inputSchema: {
-        type: 'object',
-        properties: {
-          process_item_id: { type: 'string', description: 'ID of the primary mailbox item to process next. Required unless process_item_ids is provided.' },
-          process_item_ids: { type: 'array', items: { type: 'string' }, description: 'Batch mode: IDs of multiple items to process together in one session. Use for related items (same channel, same topic). Overrides process_item_id when length > 1.' },
-          batch_context: { type: 'string', description: 'When using batch mode, optional synthesis/instruction for how to handle the batch together.' },
-          defer_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items to defer for later' },
-          drop_item_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of stale/redundant items to drop' },
-          inline_completed_ids: { type: 'array', items: { type: 'string' }, description: 'IDs of items you already handled inline during this deliberation (e.g., sent a notification, posted a comment)' },
-          reasoning: { type: 'string', description: '1-2 sentence explanation of your decision' },
-          situational_awareness: { type: 'string', description: 'Your current understanding of the situation — injected into future prompts for continuity' },
-          memory_updates: {
-            type: 'array',
-            items: {
-              type: 'object',
-              properties: {
-                type: { type: 'string', enum: ['working', 'longterm'], description: 'working = volatile per-session memory, longterm = persisted to knowledge.md' },
-                key: { type: 'string', description: 'Memory key/section name' },
-                content: { type: 'string', description: 'Content to store' },
-              },
-              required: ['type', 'key', 'content'],
-            },
-            description: 'Memory updates to apply after deliberation. Use to record observations, team decisions, or context for future cycles.',
-          },
-        },
-        required: ['reasoning'],
-      },
-    });
-
     // check_mailbox / defer / drop / prioritize are available via DELIBERATION_ALLOWED_TOOLS
     // only — they are NOT always-on during normal processing to prevent the agent
     // from getting distracted by the full backlog instead of focusing on the
@@ -772,7 +763,10 @@ export class ToolSelector {
       groups: this.groups.filter(g => g.toolNames.some(n => selected.has(n))).map(g => g.name),
     });
 
-    return applyContextGateToTools(capped, opts.contextPct);
+    // 人类对话的唯一排除点：静默收尾 = 用户看到空白，所以 human_chat 回合的工具面里
+    // 不允许出现 end_turn（执行侧还有第二道闸，见 Agent.runTool 的 humanFacing 分支）。
+    const face = opts.humanFacing ? capped.filter((t) => t.name !== 'end_turn') : capped;
+    return applyContextGateToTools(face, opts.contextPct);
   }
 
   /**

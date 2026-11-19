@@ -12,15 +12,26 @@
  * 存储：进程内环形缓冲（保留最近 N 条）+ append-only JSONL 持久化（agent dataDir 下），
  * 重启后仍可追溯。写入用 O_APPEND 单次写，天然原子，多 worker 并发写不交错。
  *
+ * ## 本日志是**历史**，不是状态（2026-11-17 事故后确立）
+ *
+ * 一条 `declared` 说的是「过去某一刻我开始做过」，它**不会**因为时间流逝而失效，也
+ * 不会因为环形缓冲挤出而变成「没发生过」。所以任何「现在谁在干活」的问题都**不能**
+ * 用本日志回答 —— 旧实现正是这么干的（`recent().filter(declared)` 当作「正在进行中」），
+ * 结果同一个实体在同一段并发上下文里既「在进行中」又「已完成」，分身据此宣布
+ * 「由另一个 worker 处理」并停手。
+ *
+ * 权威在途信号只有一个：`AttentionController.getActiveClaims()`（已拿锁 + 正在跑回合
+ * 的 worker 实时快照）。本日志只回答「过去发生过什么」。
+ *
  * 消费方：
- *   - context-engine buildSystemPrompt 的「并发上下文」段（每轮注入最近 N 条）
+ *   - context-engine buildSystemPrompt 的「交接历史」段（只含终态 `done`/`conflict`）
  *   - attention concurrentWorkerLoop 的交接钩子（declared/done/conflict）
  */
 
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 
-/** 交接记录类型。 */
-export type ConcurrentHandoffKind = 'declared' | 'fact' | 'done' | 'conflict';
+/** 交接记录类型。`declared` = 开始做过；`done` = 结束；`conflict` = 撞锁让位。 */
+export type ConcurrentHandoffKind = 'declared' | 'done' | 'conflict';
 
 /** 单条交接记录。 */
 export interface ConcurrentHandoff {
@@ -156,39 +167,6 @@ export class ConcurrentHandoffLog {
     return this.items.slice(-Math.min(n, this.items.length));
   }
 
-  /** 某实体的全部记录（用于实体亲和冲突检测）。 */
-  byEntity(entityKey: string | undefined): ConcurrentHandoff[] {
-    if (!entityKey) return [];
-    return this.items.filter(r => r.entityKey === entityKey);
-  }
-
-  /**
-   * 当前**进行中**的记录：`declared`/`fact` 之后尚未 `done` 的 (worker, 实体) 组合。
-   *
-   * 旧实现只按 `workerId` 去重 —— 一个 worker 服务多个实体时只保留最后一条，
-   * 其余在途工作从并发上下文里消失；且环形缓冲挤出 `declared` 后，长任务会被
-   * 误判为「不在途」。现在按 `(workerId, entityKey)` 配对跟踪，并优先以实体为键
-   * 返回（同一实体永远只有一条在途记录）。
-   */
-  inFlight(): ConcurrentHandoff[] {
-    const open = new Map<string, ConcurrentHandoff>();
-    const closed = new Set<string>();
-    for (const r of this.items) {
-      const key = `${r.workerId}\u0000${r.entityKey ?? ''}`;
-      if (r.kind === 'declared' || r.kind === 'fact') {
-        open.set(key, r);
-      } else if (r.kind === 'done' || r.kind === 'conflict') {
-        // `done` 关闭该 (worker, 实体)；`conflict` 表示实体被他人占用、
-        // 本 worker 已放回队列 —— 同样不再「在途」。
-        closed.add(key);
-        open.delete(key);
-      }
-    }
-    return [...open.entries()]
-      .filter(([key]) => !closed.has(key))
-      .map(([, rec]) => rec);
-  }
-
   /** 清空（测试用 + 手动重置）—— 内存与**磁盘**同时清空。 */
   clear(): void {
     this.items = [];
@@ -211,18 +189,9 @@ export class ConcurrentHandoffLog {
   }
 }
 
-/** 把交接记录格式化为上下文注入文本（供 buildSystemPrompt 使用）。 */
-export function formatHandoffsForContext(handoffs: ConcurrentHandoff[]): string {
-  if (handoffs.length === 0) return '';
-  const lines = handoffs.map(h => {
-    const who = `worker ${h.workerId}`;
-    const kindLabel =
-      h.kind === 'declared' ? '开始'
-      : h.kind === 'fact' ? '发现'
-      : h.kind === 'done' ? '完成'
-      : '冲突';
-    const ent = h.entityKey ? `（${h.entityKey}）` : '';
-    return `- ${who} ${kindLabel}${ent}：${h.summary}`;
-  });
-  return lines.join('\n');
+/**
+ * 磁盘已写入行数（观测/测试用）。
+ */
+export interface HandoffDiskStats {
+  lines: number;
 }

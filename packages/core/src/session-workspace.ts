@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
-import type { DeliberationResult, AgentActivity, AgentActivityType } from '@markus/shared';
+import type { AgentActivity, AgentActivityType } from '@markus/shared';
 
 /**
  * AgentScenario：一次 handleMessage / stream turn 的场景标签。
@@ -18,7 +18,8 @@ export type AgentScenario =
   | 'review'
   | 'requirement_action'
   | 'workflow_action'
-  | 'deliberation'
+  /** The agent's single permanent Loop turn (forever-loop M2): it only decides. */
+  | 'loop'
   /** Answering another agent's blocking question (`agent_ask_agent`). */
   | 'peer_query';
 
@@ -37,7 +38,7 @@ export const AGENT_SCENARIOS: readonly AgentScenario[] = [
   'review',
   'requirement_action',
   'workflow_action',
-  'deliberation',
+  'loop',
   'peer_query',
 ];
 
@@ -70,7 +71,7 @@ export const SCENARIO_ACTIVITY_TYPE: Record<AgentScenario, AgentActivityType> = 
   review: 'internal',
   requirement_action: 'internal',
   workflow_action: 'internal',
-  deliberation: 'chat',
+  loop: 'internal',
   peer_query: 'chat',
 };
 
@@ -113,10 +114,43 @@ export interface SessionWorkspace {
   chainDepth?: number;
   /** Scheme A: per-turn volatile state (time, mailbox, status, memories…) */
   volatileState?: string;
-  pendingDeliberationResult?: DeliberationResult;
   /** Buffered user messages injected while tool calls are in-flight. */
   pendingInjections: Map<string, string[]>;
   activeStreamToken?: { cancelled: boolean; userStopped?: boolean };
+  /**
+   * 本回合的回复是否**直接呈现给人**（`human_chat` 回合）。
+   *
+   * 判据只能来自**结构事实**（mailbox item 的 `sourceType`），不能从 `scenario` 推断：
+   * A2A 的 `sendMessage` 有不传 scenario 的调用点（默认成 `'chat'`），用它判定会把
+   * agent↔agent 回合误判成人类对话，静默地撤掉防刷屏的 `end_turn`。
+   *
+   * 用途：人类对话**不提供** `end_turn` 工具（Owner 2026-11-18 要求：“human chat 应该
+   * 只能 stop，不应该允许 end_turn”）。人与 agent 对话时静默收尾等于没回复，而在 A2A
+   * 里静默是合法且必要的（防审犯式来回）。
+   */
+  humanFacing?: boolean;
+  /**
+   * 本回合是否已收到 `end_turn` 工具信号（= “这个回合结束了”的唯一事实）。
+   *
+   * **必须住在工作区里（per-worker、per-turn），不能放 Agent 实例上。** 放实例上时
+   * 5 个并发 worker 共用一个布尔：心跳/loop 回合调了 `end_turn` 后，另一个会话正在跑的
+   * 回合读到真值 → 工具循环直接退出，已生成的工具调用被整批丢弃（2026-11-17 真机：
+   * 15:07:42 心跳 end_turn，15:08:08 chat 回合的 apply_patch 从未执行，用户看到
+   * “你怎么又断了？”）。
+   */
+  endTurnRequested?: boolean;
+  /**
+   * 本 worker 的 `end_turn` 单调计数。
+   *
+   * 供“本回合是否以 end_turn 收尾”的快照比较（回合开始时取值，回合结束后比较）。
+   * 同样必须 per-workspace：计数在 Agent 级时，别的 worker 的一次 end_turn 会让本回合
+   * 误以为是自己收的尾。
+   */
+  endTurnSeq?: number;
+  /** 上一回合是否以 `end_turn` 收尾（由本 worker 的计数器差值判定）。 */
+  lastTurnEndedViaEndTurn?: boolean;
+  /** 上一回合的 scenario（post-turn 安全网用；per-workspace，避免被别的分身覆盖）。 */
+  lastTurnScenario?: AgentScenario;
   /** One chat turn / session model pick from the Chat UI (provider must be enabled). */
   turnModelOverride?: { provider: string; model: string };
   /** The mailbox item ID currently being processed – threaded into activity records. */

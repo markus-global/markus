@@ -278,7 +278,7 @@ export function splitRecentActivity<T extends { type: string }>(
  * `usage` 殿后。「用量」不是被删掉，是退到后面：首屏已经有一行紧凑的用量概览，
  * 需要细节时多点一次即可。
  */
-export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory' | 'usage';
+export type OverviewSectionId = 'run' | 'memory' | 'settings';
 
 /**
  * Canonical order of the overview sub-tabs. The page maps over this array, so the
@@ -290,7 +290,7 @@ export type OverviewSectionId = 'files' | 'mind' | 'recent' | 'tools' | 'memory'
  * 一旦各写一遍，迟早会出现「默认高亮的是第 4 个」这类只有肉眼能发现的错位。
  */
 export const OVERVIEW_SECTION_IDS: readonly OverviewSectionId[] = [
-  'files', 'mind', 'recent', 'tools', 'memory', 'usage',
+  'run', 'memory', 'settings',
 ];
 
 /** 打开概览时落在哪一组：与 `OVERVIEW_SECTION_IDS[0]` 同源，见上方注释。 */
@@ -313,9 +313,171 @@ export function resolveOverviewSection(
   initialSection?: string | null,
   highlightMailboxId?: string | null,
 ): OverviewSectionId {
-  if (highlightMailboxId) return 'mind';
+  if (highlightMailboxId) return 'run';
   const known = OVERVIEW_SECTION_IDS.find(id => id === initialSection);
   return known ?? DEFAULT_OVERVIEW_SECTION;
+}
+
+// ─── 工作记录（按实体分组，不是按 work unit）─────────────────────────────
+
+export type WorkUnitEntityKind = 'task' | 'requirement' | 'channel' | 'none';
+
+export interface WorkUnitEntity {
+  kind: WorkUnitEntityKind;
+  /** 稳定分组键：`task:<id>` / `requirement:<id>` / `channel:<key>`；`''` = 无归属 */
+  key: string;
+}
+
+/**
+ * 分组键只读后端算好的 `entity`，本层**不再反解 ref**。
+ *
+ * work unit 是**一次执行纪元（一轮）**，不是实体：一段对话可能有上百个 unit
+ * （`session:cs_…:r79` … `r147`），它们全是**同一个会话**。按 unit 分组得到上百个
+ * 只有一条记录的桶，等于没分组。所以分组键必须是实体。
+ *
+ * 实体由**后端**从 `tasks` / `chat_sessions` 的 title 列解出并随每条记录下发
+ * （`enriched.entity = resolveEntity(item)`），因为名字不在 `work_unit.ref` 里。
+ * 前端再写一份 ref 语法就是同一个身份的第二个写者 —— 旧实现就是这么漂的：
+ * 一个自造 builder + 两个反解正则。拿不到 `entity` 就归 `''`（历史记录），不猜。
+ */
+
+/**
+ * 实体 key → 图标。
+ *
+ * **不新造图标语言**：直接复用 `mailboxTypeMeta.ts` 里已有的 emoji 词表
+ * （任务 📋 / 需求 📝 / 会话 💬 / 默认 ●），只是把「work unit 的实体」映射到同类图标。
+ * 之前我造了一套 ASCII 记号（▤ ◈ ↻ #），与界面既有的 emoji 完全不是一个体系 ——
+ * 那就是两套图标语言，丑且不一致。
+ *
+ * 为什么不给实体上色：这个面板里色相已经被状态占满（蓝=processing、琥珀=queued、
+ * 紫=deferred、绿=completed、红=bounced、灰=continue），再让蓝色表示「任务」就成了
+ * 一个形状回答两个问题。所以**图标编码类别，颜色只编码紧迫度**。
+ */
+export function workUnitEntityIcon(key: string): string {
+  // 选图标的唯一判据：**小尺寸下剪影能分开**。
+  // 📋（夹板）与 📝（带横线的纸）剪影几乎一样，所以需求改用 🎯。
+  // 「未归属」不出图标：它本身就是「没有实体」，用一个点/问号反而多了一形语义。
+  if (!key) return '';
+  if (key.startsWith('channel:loop_')) return '♻️';  // 决策循环（表里无对应项）
+  if (key.startsWith('task:')) return '☑️';   // 勾选框：任务 = 待办
+  if (key.startsWith('requirement:')) return '🎯'; // 与 📋 剪影相异（需求 = 目标）
+  if (key.startsWith('channel:')) return '💬'; // 同 human_chat / task_comment
+  return '';
+}
+
+/**
+ * Loop 会话的实体键。
+ *
+ * 它是**常驻实体**：每个 agent 恒有一条决策循环会话（`loop_<agentId>`），
+ * 而不是「收到东西才存在」的派生分组。之前只从邮箱记录反推实体，所以一个
+ * 零收件的 Loop 永远不会出现在左栏 —— 那是错的：
+ * 「它在睡」也是状态，得能被看到。
+ */
+export function residentLoopEntityKey(agentId: string): string {
+  return `channel:loop_${agentId}`;
+}
+
+/**
+ * 把常驻实体（Loop）合并进「按记录派生」的分组列表。
+ *
+ * 不新造 UI、不新造接口：左栏本来就是一组 `EntityGroup`，这里只是保证
+ * Loop 那一项**始终在**（零记录时 count=0 / items=[]）。
+ * 排序上 Loop 固定在第一位——它是这个 agent 的决策面，不是普通会话之一。
+ */
+export function withResidentLoopGroup<T>(
+  groups: EntityGroup<T>[],
+  agentId: string,
+): EntityGroup<T>[] {
+  const key = residentLoopEntityKey(agentId);
+  const existing = groups.find(g => g.key === key);
+  const loopGroup: EntityGroup<T> = existing ?? {
+    key,
+    name: '决策循环（Loop）',
+    count: 0,
+    latestAt: '',
+    units: 0,
+    items: [],
+  };
+  return [loopGroup, ...groups.filter(g => g.key !== key)];
+}
+
+/** 实体 key → 人话标题。实体 id 截短，完整值放 hover。 */
+export function workUnitEntityLabel(key: string): string {
+  if (!key) return '';
+  const [kind, ...rest] = key.split(':');
+  const id = rest.join(':');
+  const short = id.length > 14 ? `${id.slice(0, 12)}…` : id;
+  if (kind === 'task') return `任务 ${short}`;
+  if (kind === 'requirement') return `需求 ${short}`;
+  // 主动 Agent 的决策循环有自己唯一的会话（`loop_<agentId>`）：它不是「某个会话」，
+  // 它是这个 agent 的决策面，所以在工作记录左栏单独标出来。
+  if (kind === 'channel' && id.startsWith('loop_')) return '决策循环（Loop）';
+  if (kind === 'channel') return `会话 ${short}`;
+  return `${kind} ${short}`;
+}
+
+export interface EntityGroup<T> {
+  /** 实体键；`''` = 无归属 */
+  key: string;
+  /** **实体自己的名字**（后端 join 实体表取得）；取不到时为空，UI 再退回 ref 标签 */
+  name?: string;
+  count: number;
+  /** 组内最新一条的时间（组间排序用） */
+  latestAt: string;
+  /** 组内跨了多少个 work unit —— 让「一个实体 = 多条记录 / 多轮」可见 */
+  units: number;
+  items: T[];
+}
+
+/**
+ * 按**实体**分组。
+ *
+ * 分组键与**名字**都优先用后端给的 `entity`（后端按 `work_units.task_id` join
+ * `tasks.title` 等实体表——名字不在 ref 里）。后端没给（旧服务端 / 旧行）时才退回
+ * 从 ref 解出的实体键，名字留空，由 UI 显示短 id 标签。
+ *
+ * 组间按最近活动倒序，组内也倒序；无实体的记录归 `''` 桶。
+ */
+export function groupByEntity<
+  T extends {
+    workUnitRef?: string | null;
+    createdAt?: string;
+    queuedAt?: string;
+    entity?: { kind: string; id: string; name: string } | null;
+  },
+>(items: readonly T[]): EntityGroup<T>[] {
+  const at = (i: T): string => i.createdAt ?? i.queuedAt ?? '';
+  const keyOf = (i: T): string =>
+    i.entity ? `${i.entity.kind}:${i.entity.id}` : '';
+  const buckets = new Map<string, T[]>();
+  for (const it of items) {
+    const key = keyOf(it);
+    const bucket = buckets.get(key);
+    if (bucket) bucket.push(it);
+    else buckets.set(key, [it]);
+  }
+  return [...buckets.entries()]
+    .map(([key, list]) => {
+      const sorted = list.slice().sort((a, b) => (at(b) > at(a) ? 1 : at(b) < at(a) ? -1 : 0));
+      const units = new Set(list.map(i => i.workUnitRef ?? '')).size;
+      const name = list.map(i => i.entity?.name).find(n => typeof n === 'string' && n.trim().length > 0);
+      return {
+        key,
+        name,
+        count: sorted.length,
+        latestAt: sorted.length > 0 ? at(sorted[0]) : '',
+        units,
+        items: sorted,
+      };
+    })
+    .sort((a, b) => {
+      // 无实体归属的历史记录**永远排最后**（Owner 2026-11-16 定）。
+      // 理由：它不是一个「实体」，而是「归不了类的历史」。让它按 latestAt 参与
+      // 排序会把它顶到第一条（历史本来就又多又新），把真正有实体的新数据挤下去。
+      if (a.key === '' && b.key !== '') return 1;
+      if (b.key === '' && a.key !== '') return -1;
+      return b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0;
+    });
 }
 
 // ─── Deliverable click routing ───────────────────────────────────────────────
@@ -337,39 +499,6 @@ export function deliverableClickTarget(hostAvailable: boolean | undefined): 'rig
 }
 
 // ─── Triage / batch visibility ───────────────────────────────────────────────
-
-export interface TriageBatchSummary {
-  processed: number;
-  deferred: number;
-  dropped: number;
-  inlineCompleted: number;
-  /** Every item this triage cycle accounted for. */
-  total: number;
-  /** True when the cycle handled more than one item — i.e. batching actually engaged. */
-  isBatch: boolean;
-}
-
-/**
- * Summarise one triage/deliberation cycle.
- *
- * The overview already listed 处理中 / 延后 / 丢弃 chips, but nothing answered the
- * question the operator actually has: *was this wake-up a batch, or a single
- * message?* A cycle that only ever shows `total === 1` is the signature of
- * batching not engaging — every message waking the agent on its own, i.e. the
- * reply storm. Making the batch size visible is what turns that from a
- * suspicion into an observable.
- */
-export function deriveTriageBatchSummary(
-  lastTriage?: {
-    deferredItemIds?: string[];
-    droppedItemIds?: string[];
-    inlineCompletedIds?: string[];
-  } | null,
-): TriageBatchSummary {
-  const deferred = lastTriage?.deferredItemIds?.length ?? 0;
-  const dropped = lastTriage?.droppedItemIds?.length ?? 0;
-  const inlineCompleted = lastTriage?.inlineCompletedIds?.length ?? 0;
-  const processed = 1; // the primary item the triage picked
-  const total = processed + deferred + dropped + inlineCompleted;
-  return { processed, deferred, dropped, inlineCompleted, total, isBatch: total > 1 };
-}
+// The triage cycle no longer exists (forever-loop M4): queue order is priority
+// and the only decision surface is the loop session. `deriveTriageBatchSummary`
+// went with it — it summarised a verdict that is no longer produced.

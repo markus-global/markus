@@ -218,7 +218,6 @@
       "requirementChangesRequested": "Requirement changes requested: {{title}}",
       "mentionedYou": "{{authorName}} mentioned you",
       "groupMessage": "{{senderName}} in {{groupName}}",
-      "staleReview": "Stale review",
       "stuckTask": "Stuck task",
       "agentNeedsHelp": "Agent needs help",
       "taskComment": "Comment on task {{title}}"

@@ -25,7 +25,16 @@ export interface ReviewSession {
   /** 稳定身份：进入 review 的那条迁移 id */
   id: string;
   reviewerId: string;
-  reviewerName: string;
+  /**
+   * 评审人可读名。**未解析出来时为 `null`** —— 绝不拿别的实体顶替。
+   *
+   * 旧实现把它当作非空字符串，回退链里写了 `?? h.changedByName`：那个字段是
+   * **把卡推进 review 的提交者**，于是人类评审人（不在 agent 名册里、解析不到名字）
+   * 的卡会显示成「CTO 正在评审」—— 评审人变成了提交人自己。
+   */
+  reviewerName: string | null;
+  /** 权威字段：评审人是 agent 还是人类。未提供时 null（旧行）。 */
+  reviewerType: 'agent' | 'human' | null;
   status: ReviewSessionStatus;
   queuedAt: string;
   completedAt: string | null;
@@ -43,11 +52,17 @@ export interface ReviewSession {
  * 从状态迁移历史派生评审会话。纯函数：同输入同输出，不读时钟、不读网络。
  *
  * @param history 已按时间升序（服务端 ORDER BY created_at ASC 保证）
- * @param reviewerNameOf 把迁移里的 changedById 解析成可读名（可选）
+ * @param reviewerNameOf 把**评审人 id** 解析成可读名（可选）
  */
 export function deriveReviewSessions(
   history: readonly StatusTransitionInfo[],
-  opts: { reviewerId?: string; reviewerName?: string; reviewerNameOf?: (id: string | null) => string | undefined } = {},
+  opts: {
+    reviewerId?: string;
+    reviewerName?: string;
+    /** 权威字段（`task.reviewerType`）：决定去哪个名册解析名字。 */
+    reviewerType?: 'agent' | 'human';
+    reviewerNameOf?: (id: string | null) => string | undefined;
+  } = {},
 ): ReviewSession[] {
   const sessions: ReviewSession[] = [];
   for (let i = 0; i < history.length; i++) {
@@ -57,18 +72,21 @@ export function deriveReviewSessions(
     const open = !next; // 停在 review 的必是最后一条
     const id = `review:${h.id}`;
     const reviewerId = opts.reviewerId ?? h.changedById ?? '';
-    // 评审人 = 任务的指定 reviewer（opts.reviewerName / reviewerId），**不是**把任务推进
-    // review 的提交者（h.changedByName）——否则会把「CTO 提交评审」显示成「CTO 正在评审」。
+    // 评审人 = 任务的指定 reviewer（`opts.reviewerName` / `reviewerId`）。
+    //
+    // **绝不回退到 `h.changedByName`**：那是把卡推进 review 的**提交者**，不是评审人。
+    // 用提交者填充评审人位置，正是「CTO 提交评审」被显示成「CTO 正在评审」的机制，
+    // 而人类评审人恰好会走这条回退（人类不在 agent 名册里，前面解析必空）。
+    // 回退只能止于「未知」（null），不能换成语义不同的实体。
     const reviewerName =
       (opts.reviewerName ?? undefined)
-      ?? (h.changedByName ?? undefined)
-      ?? (h.changedById ? opts.reviewerNameOf?.(h.changedById) : undefined)
-      ?? reviewerId
-      ?? 'reviewer';
+      ?? (reviewerId ? opts.reviewerNameOf?.(reviewerId) : undefined)
+      ?? null;
     sessions.push({
       id,
       reviewerId,
       reviewerName,
+      reviewerType: opts.reviewerType ?? null,
       // 停在 review = 评审进行中（服务端此刻正在等/跑评审这一轮）。
       status: open ? 'reviewing' : 'completed',
       queuedAt: h.createdAt,

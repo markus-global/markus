@@ -20,7 +20,6 @@ import { EventBus } from '../src/events.js';
 import { displayLabelOf, mergeCountOf } from '../src/mailbox-summary.js';
 import {
   type MailboxItem,
-  type DeliberationResult,
 } from '@markus/shared';
 
 const AGENT_ID = 'overhaul-test-agent';
@@ -39,7 +38,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };
@@ -258,120 +256,6 @@ describe('Same-User Message Merge (R0 Heuristic)', () => {
 
     const decision = controller.heuristicDecision(currentItem, newItem);
     expect(decision).toBe('preempt');
-  });
-});
-
-describe('Deliberation Abort on Human Chat', () => {
-  it('sets deliberationAbortSignal when human_chat arrives during deliberation', () => {
-    const { controller, mailbox, eventBus } = makeController();
-
-    // Simulate deliberation state and manually invoke onNewMail
-    (controller as any).isDeliberating = true;
-    (controller as any).state = 'deciding';
-
-    // Directly trigger onNewMail since start() also launches the loop
-    mailbox.enqueue('human_chat', {
-      summary: 'Urgent user msg',
-      content: 'Please help now',
-    }, { metadata: { senderId: 'user_1' } });
-
-    // Manually invoke onNewMail to simulate the event handler
-    (controller as any).onNewMail();
-
-    expect(controller.shouldAbortDeliberation).toBe(true);
-  });
-
-  it('does not set abort signal for non-user messages during deliberation', () => {
-    const { controller, mailbox } = makeController();
-
-    (controller as any).isDeliberating = true;
-    (controller as any).state = 'deciding';
-
-    mailbox.enqueue('a2a_message', {
-      summary: 'Agent msg',
-      content: 'Hey colleague',
-    });
-
-    // Manually invoke onNewMail
-    (controller as any).onNewMail();
-
-    expect(controller.shouldAbortDeliberation).toBe(false);
-  });
-});
-
-describe('Batch Deliberation Processing', () => {
-  it('passes batch items to processMailboxItem when deliberation returns multiple processItemIds', async () => {
-    const processedBatches: { item: MailboxItem; batch?: MailboxItem[]; ctx?: string }[] = [];
-
-    const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem, batchItems?: MailboxItem[], batchContext?: string) => {
-        processedBatches.push({ item, batch: batchItems, ctx: batchContext });
-        return `processed`;
-      }),
-      performDeliberation: vi.fn().mockImplementation(async (_head: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
-        return {
-          processItemId: allItems[0].id,
-          processItemIds: allItems.map(i => i.id),
-          batchContext: 'Handle all messages together',
-          deferItemIds: [],
-          dropItemIds: [],
-          inlineCompletedIds: [],
-          reasoning: 'All items are from same channel — batch process',
-        };
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'Msg 1', content: 'First' });
-    mailbox.enqueue('a2a_message', { summary: 'Msg 2', content: 'Second' });
-    mailbox.enqueue('a2a_message', { summary: 'Msg 3', content: 'Third' });
-
-    controller.start();
-
-    await vi.waitFor(() => {
-      expect(processedBatches).toHaveLength(1);
-    }, { timeout: 3000 });
-
-    controller.stop();
-
-    expect(processedBatches[0].batch).toHaveLength(2);
-    expect(processedBatches[0].ctx).toBe('Handle all messages together');
-  });
-
-  it('applies memoryUpdates from deliberation result', async () => {
-    const memoryUpdates: Array<{ type: string; key: string; content: string }> = [];
-
-    const { controller, mailbox } = makeController({
-      performDeliberation: vi.fn().mockImplementation(async (_head: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
-        return {
-          processItemId: allItems[0].id,
-          deferItemIds: [],
-          dropItemIds: allItems.slice(1).map(i => i.id),
-          inlineCompletedIds: [],
-          reasoning: 'Process first, drop rest',
-          memoryUpdates: [
-            { type: 'working' as const, key: 'team-decision', content: 'Team agreed on API design' },
-            { type: 'longterm' as const, key: 'Architecture', content: 'REST API chosen over GraphQL' },
-          ],
-        };
-      }),
-      applyMemoryUpdates: vi.fn().mockImplementation((updates) => {
-        memoryUpdates.push(...updates);
-      }),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'Msg 1', content: 'Let us use REST' });
-    mailbox.enqueue('a2a_message', { summary: 'Msg 2', content: 'Agreed' });
-
-    controller.start();
-
-    await vi.waitFor(() => {
-      expect(memoryUpdates).toHaveLength(2);
-    }, { timeout: 3000 });
-
-    controller.stop();
-
-    expect(memoryUpdates[0]).toEqual({ type: 'working', key: 'team-decision', content: 'Team agreed on API design' });
-    expect(memoryUpdates[1]).toEqual({ type: 'longterm', key: 'Architecture', content: 'REST API chosen over GraphQL' });
   });
 });
 
