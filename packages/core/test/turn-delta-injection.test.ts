@@ -6,6 +6,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { RoleTemplate, AttentionDecision } from '@markus/shared';
+import { startSettled } from './helpers/agent-start.js';
 
 /**
  * C8-B — behavioural tests on the REAL agent loop.
@@ -38,11 +39,22 @@ interface TraceRecorder {
   trace: string[];
   captured: Array<Array<{ role: string; content: string }>>;
   llmCalls: () => number;
+  /**
+   * The scripted responses are indexed by call number (call 1 asks for a tool,
+   * call 2 ends). `start()` wakes the Loop, so without this gate the startup
+   * turn consumes call 1 and the work turn opens with `end_turn` — no tool, no
+   * mid-turn fact, nothing to inject. Unarmed calls end immediately and are not
+   * counted, so the script stays aligned with the turn under test.
+   */
+  armed: boolean;
 }
 
 function makeRouter(rec: TraceRecorder): LLMRouter {
   let calls = 0;
   const call = async (req: { messages: Array<{ role: string; content: string }> }) => {
+    if (!rec.armed) {
+      return { content: 'Startup.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+    }
     calls += 1;
     rec.trace.push(`llm#${calls}`);
     rec.captured.push(req.messages.map(m => ({ role: m.role, content: String(m.content ?? '') })));
@@ -90,6 +102,9 @@ function makeRouter(rec: TraceRecorder): LLMRouter {
 function makeMultiRoundRouter(rec: TraceRecorder, toolRounds: number): LLMRouter {
   let calls = 0;
   const call = async (req: { messages: Array<{ role: string; content: string }> }) => {
+    if (!rec.armed) {
+      return { content: 'Startup.', finishReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 5 } };
+    }
     calls += 1;
     rec.trace.push(`llm#${calls}`);
     rec.captured.push(req.messages.map(m => ({ role: m.role, content: String(m.content ?? '') })));
@@ -172,11 +187,30 @@ function newRecorder(): TraceRecorder {
     trace,
     captured,
     llmCalls: () => trace.filter(t => t.startsWith('llm#')).length,
+    armed: false,
   };
 }
 
 const messagesText = (rec: TraceRecorder, index: number) =>
   (rec.captured[index] ?? []).map(m => m.content).join('\n');
+
+/**
+ * Bring the agent up and hand the recorder a clean slate.
+ *
+ * `start()` wakes the Loop, so startup spends LLM calls of its own. Every test
+ * below is about the WORK turn, and indexes `rec.captured[n]` / `llm#n` to mean
+ * "the nth call of that turn". Without this reset each index is shifted by the
+ * startup turn — which silently weakens the negative cases (index 1 lands on a
+ * call that could never contain a delta) and breaks the positive ones.
+ */
+async function startWorkTurn(agent: Agent, rec: TraceRecorder): Promise<void> {
+  await startSettled(agent);
+  // Startup also persists its own attention decisions, which the router gate
+  // cannot suppress — drop those, then arm the script for the work turn.
+  rec.trace.length = 0;
+  rec.captured.length = 0;
+  rec.armed = true;
+}
 
 let agent: Agent | undefined;
 
@@ -204,7 +238,7 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
         );
       },
     });
-    await agent.start();
+    await startWorkTurn(agent, rec);
 
     await processViaMailbox(agent, WU);
 
@@ -240,7 +274,7 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
         deltaItemId = item.id;
       },
     });
-    await agent.start();
+    await startWorkTurn(agent, rec);
 
     const reply = await processViaMailbox(agent, WU);
 
@@ -274,7 +308,7 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
         );
       },
     });
-    await agent.start();
+    await startWorkTurn(agent, rec);
 
     await processViaMailbox(agent, WU);
 
@@ -302,7 +336,7 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
         );
       },
     });
-    await agent.start();
+    await startWorkTurn(agent, rec);
 
     await processViaMailbox(agent, WU);
 
@@ -331,7 +365,7 @@ describe('C8-B — in-turn delta injection (real loop)', () => {
         );
       },
     });
-    await agent.start();
+    await startWorkTurn(agent, rec);
 
     await processViaMailbox(agent, WU);
 

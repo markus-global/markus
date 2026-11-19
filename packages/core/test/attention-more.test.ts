@@ -36,7 +36,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };
@@ -111,22 +110,6 @@ describe('AttentionController processFocusedItem outcomes', () => {
     const item = mailbox.enqueue('a2a_message', { summary: 'err', content: 'body' });
 
     await expect(controller['processFocusedItem'](item)).resolves.not.toThrow();
-  });
-
-  it('completes batch siblings when primary succeeds', async () => {
-    const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockResolvedValue('batch done'),
-    });
-    const primary = mailbox.enqueue('a2a_message', { summary: 'primary', content: 'p' });
-    const batch1 = mailbox.enqueue('a2a_message', { summary: 'batch1', content: 'b1' });
-    controller['pendingBatchItems'] = [batch1];
-    controller['running'] = true;
-
-    await controller['processFocusedItem'](primary);
-
-    expect(primary.status).toBe('completed');
-    expect(batch1.status).toBe('completed');
-    expect(controller.getCurrentFocus()).toBeUndefined();
   });
 
   it('requeues batch siblings when primary is preempted', async () => {

@@ -246,9 +246,15 @@ output is invisible will end the turn with prose and accomplish nothing.
 | `requirement_action` | no | `requirement_comment` / `notify_user` | — | ≥1 action tool required |
 | `workflow_action` | no | `notify_user` | — | ≥1 action tool required |
 | `review` | no | `task_comment` / `notify_user` | — | reviewer ≠ assignee |
-| `deliberation` | no | `complete_deliberation` | — | strict-state items untouchable |
 | `distillation` | no | `notify_user` (rare) | stop with no tools if nothing durable | Learning Habits |
 | `memory_consolidation` | no | — (tools forbidden) | — | JSON-only output |
+
+There is **no `deliberation` scenario**: the batch assess-then-commit turn
+and its whole-queue completion tool were **deleted** in the Forever Loop refactor (M1–M7).
+Which item the agent works on next — and whether a new arrival preempts, merges with
+or queues behind it — is decided before the turn by the pure rule table `heuristicDecision()`
+in `attention.ts` (R0–R9): no model call, no triage, no deliberation turn. Strict-state items
+stay untouchable at the tool layer (`defer_mailbox_item` / `drop_mailbox_item` refuse them).
 
 **Invariant 13a — a caller-supplied scenario is authoritative.** `agent.ts` used to force
 `opts.scenario = 'a2a'` for every `sourceType: 'a2a_message'`, clobbering an explicit scenario

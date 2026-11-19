@@ -2,16 +2,16 @@ import { useEffect, useState, useRef, useCallback, useMemo, lazy, Suspense, type
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
 import { api, wsClient, hubApi, kebab } from '../api.ts';
-import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, StorageAgentItem, AuthUser, DeliverableInfo } from '../api.ts';
+import type { AgentDetail, AgentToolInfo, AgentMemorySummary, AgentHeartbeatInfo, TaskInfo, TaskLogEntry, AgentUsageInfo, ExternalAgentInfo, ActivitySummary, AgentActivityLogEntry, ActivityRecord, AgentActivityType, RoleUpdateStatus, AuthUser, DeliverableInfo } from '../api.ts';
 import { navBus } from '../navBus.ts';
-import { mailboxTypeIcon, MAILBOX_CATEGORY_TYPES } from '../lib/mailboxTypeMeta.ts';
+import { mailboxTypeIcon } from '../lib/mailboxTypeMeta.ts';
 import { PAGE } from '../routes.ts';
 import { ExecEntryRow, StreamingText, filterCompletedStarts, attachSubagentLogsToEntries, type ExecEntry, type ToolCallInfo, type ExecutionStreamEntryUI } from '../components/ExecutionTimeline.tsx';
 import { PageLoading } from '../components/AsyncState.tsx';
 import { taskLogToStreamEntry, activityLogToStreamEntry } from '../api.ts';
 import { RunningWorkUnits } from '../components/RunningWorkUnits.tsx';
 import { isActivityLive, liveRefSet } from '../lib/workUnitLiveness.ts';
-import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, deriveTriageBatchSummary, type OverviewSectionId } from '../lib/agentOverview.ts';
+import { resolveTokensToday, visibleStorageBuckets, storageBucketLabelKey, agentStatusPresentation, recentActivityRows, splitRecentActivity, RECENT_ACTIVITY_FETCH_LIMIT, OVERVIEW_SECTION_IDS, resolveOverviewSection, deliverableClickTarget, groupByEntity, workUnitEntityLabel, workUnitEntityIcon, withResidentLoopGroup, type OverviewSectionId } from '../lib/agentOverview.ts';
 import { MAILBOX_STATUS_FILTERS, statusFilterParam } from '../lib/mailboxStatusFilters.ts';
 import { MarkdownMessage } from '../components/MarkdownMessage.tsx';
 import { useSwipeTabs } from '../hooks/useSwipeTabs.ts';
@@ -36,6 +36,36 @@ const LazyMarkdownMessage = lazy(() => import('../components/MarkdownMessage.tsx
 
 interface Props { agentId: string; onBack: () => void; inline?: boolean; defaultTab?: ProfileTab; onSwipeBack?: () => void; highlightMailboxId?: string; authUser?: AuthUser; headless?: boolean; activeTab?: ProfileTab; initialSection?: OverviewSectionId }
 
+/**
+ * 日期格式化缓存。
+ *
+ * 工作记录右栏一次挂 60 张卡，每张每次渲染都要格式化 queuedAt / completedAt；
+ * `toLocaleString()` 走 Intl，单次几十微秒，百次级就是明确的掉帧源。
+ * 用 ISO 串做键缓存结果，渲染热路径上不再重复进 Intl。键数有界（= 历史条数），
+ * 超过上限就清一次，避免无界增长。
+ */
+const _dtCache = new Map<string, string>();
+const _tmCache = new Map<string, string>();
+const _capCache = (m: Map<string, string>) => { if (m.size > 4000) m.clear(); };
+export const fmtDateTime = (v?: string | null): string => {
+  if (!v) return '';
+  const hit = _dtCache.get(v);
+  if (hit !== undefined) return hit;
+  _capCache(_dtCache);
+  const out = new Date(v).toLocaleString();
+  _dtCache.set(v, out);
+  return out;
+};
+export const fmtTime = (v?: string | null): string => {
+  if (!v) return '';
+  const hit = _tmCache.get(v);
+  if (hit !== undefined) return hit;
+  _capCache(_tmCache);
+  const out = new Date(v).toLocaleTimeString();
+  _tmCache.set(v, out);
+  return out;
+};
+
 export type ProfileTab = 'overview' | 'mind' | 'files' | 'tools' | 'memory' | 'deliverables';
 
 /**
@@ -47,9 +77,9 @@ export type { OverviewSectionId };
 
 /** 旧的 tab 标识 → 概览分组：历史深链（如 Work 页的 profileTab:'mind'）继续有效。 */
 export const LEGACY_TAB_SECTION: Partial<Record<ProfileTab, OverviewSectionId>> = {
-  mind: 'mind',
-  files: 'files',
-  tools: 'tools',
+  mind: 'run',
+  files: 'settings',
+  tools: 'settings',
   memory: 'memory',
 };
 
@@ -147,7 +177,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       <div className="flex-1 overflow-y-auto bg-surface-primary">
         <div className="p-5">
           {bodyTabFor(effectiveTab) === 'overview' && (
-            <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
+            <OverviewTab agent={agent} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={sectionForTab(effectiveTab)} />
           )}
           {bodyTabFor(effectiveTab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
         </div>
@@ -211,7 +241,7 @@ export function AgentProfile({ agentId, onBack, inline, defaultTab, onSwipeBack,
       </div>
       <div className="p-5" onTouchStart={isMobile ? profileSwipe.onTouchStart : undefined} onTouchEnd={isMobile ? profileSwipe.onTouchEnd : undefined}>
         {bodyTabFor(tab) === 'overview' && (
-          <OverviewTab agent={agent} onUpdate={reload} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
+          <OverviewTab agent={agent} externalInfo={externalInfo} t={t} canManageAgents={canManageAgents} highlightMailboxId={highlightMailboxId} initialSection={initialSection ?? localLegacySection} />
         )}
         {bodyTabFor(tab) === 'deliverables' && <DeliverablesTab agentId={agentId} />}
       </div>
@@ -316,12 +346,12 @@ function ActivityRow({ agentId, act, dotClass, expanded, onToggle }: {
   );
 }
 
-function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; onUpdate: () => void; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
+function OverviewTab({ agent, externalInfo, t, canManageAgents, highlightMailboxId, initialSection }: { agent: AgentDetail; externalInfo?: ExternalAgentInfo | null; t: TFunction; canManageAgents: boolean; highlightMailboxId?: string; initialSection?: OverviewSectionId }) {
   const [usageInfo, setUsageInfo] = useState<AgentUsageInfo | null>(null);
   // 持久化活动历史（SQLite），不是内存里的「此刻在跑」。类型见 api.ts 的 ActivityRecord。
   const [recentActivities, setRecentActivities] = useState<ActivityRecord[]>([]);
   const [expandedActivityId, setExpandedActivityId] = useState<string | null>(null);
-  const [agentStorage, setAgentStorage] = useState<StorageAgentItem | null>(null);
+  const [agentStorage, setAgentStorage] = useState<{ size: number; subItems: Array<{ name: string; size: number }>; depthLimited: boolean } | null>(null);
   const [agentDataDir, setAgentDataDir] = useState('');
   const [activeTasks, setActiveTasks] = useState<TaskInfo[]>([]);
   // 排队消息数（mailbox 待处理）——用于 working 但无执行中任务时说明「在哪忙」
@@ -364,21 +394,19 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
     }).catch(() => {});
   }, [agent.id, activeTaskIdsKey, agent.state.status]);
 
-  // 【为什么懒加载到「用量」分组才拉】/api/system/storage 会遍历整个数据目录
-  // （每个 agent 的子目录都扫一遍，实测 1.4s、60KB+），而**只有「用量」分组**渲染它。
-  // 旧实现挂在挂载时就发，切到概览要先等这一发——看着就是「卡半天」。
-  useEffect(() => {
-    if (section !== 'usage') return;
-    let cancelled = false;
+  // 【为什么是「按需读取」而不是进组就拉】旧版本组开就调 `/api/system/storage`，
+  // 它会遍历整个数据目录（每个 agent 都扫一遍，实测 1.4s / 60KB+），而这里只用一个
+  // agent 的数字。改成用户点了「查看磁盘占用」才读、且只读该 agent 的目录。
+  const loadAgentStorage = useCallback(async () => {
+    if (loadingStorage) return;
     setLoadingStorage(true);
-    api.system.storage().then(info => {
-      if (cancelled) return;
-      setAgentDataDir(info.dataDir + '/agents/' + agent.id);
-      const match = info.agents.find(a => a.id === agent.id);
-      if (match) setAgentStorage(match);
-    }).catch(() => {}).finally(() => { if (!cancelled) setLoadingStorage(false); });
-    return () => { cancelled = true; };
-  }, [section, agent.id]);
+    try {
+      const info = await api.agents.storage(agent.id);
+      setAgentDataDir(info.dataDir);
+      setAgentStorage({ size: info.size, subItems: info.subItems ?? [], depthLimited: info.depthLimited });
+    } catch { /* 读不到就不展示数字，不弹错 */ }
+    finally { setLoadingStorage(false); }
+  }, [agent.id, loadingStorage]);
 
   // 【为什么懒加载到「最近活动」分组才拉】这是**持久化**活动历史（agent_activities
   // 表，可能上百条、几十 KB），同样只有「最近活动」分组渲染它。
@@ -387,7 +415,7 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
   // 「最近活动」的卡片只在 agent 正在干活时才有内容。持久化历史一直在写
   // （agent_activities 表），只是从来没被这个面板读过。
   useEffect(() => {
-    if (section !== 'recent') return;
+    if (section !== 'run') return;
     let cancelled = false;
     setLoadingActivities(true);
     api.agents.getActivities(agent.id, { limit: RECENT_ACTIVITY_FETCH_LIMIT })
@@ -398,15 +426,6 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
   }, [section, agent.id]);
 
   // 同一页面的「在跑」集合：只读 work_units（与 RunningWorkUnits 同一个权威）。
-
-  // 停止是「一次性」动作：后端把「人类按的停止」记成粘性意图，agent 侧的唤醒
-  // 都不会拉起它，只有人类再次启动（单个或整个团队）或回答它自己的审批才会恢复。
-  // 所以这里必须先确认一句，否则“停止”看起来像可以随手恢复的“暂停”。
-  const [confirmingStop, setConfirmingStop] = useState(false);
-  const toggleAgent = () => {
-    if (agent.state.status === 'offline') api.agents.start(agent.id).then(onUpdate);
-    else setConfirmingStop(true);
-  };
 
   const GATEWAY_ENDPOINTS = useMemo(() => [
     { method: 'POST' as const, path: '/api/gateway/sync', desc: t('agent:profilePage.gateway.sync') },
@@ -521,30 +540,22 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
               </span>
             : <span className="text-fg-tertiary">{t('agent:profilePage.overview.labels.followsGlobal')}</span>}
         </KV>
+        {/* 「今日 token」与创建时间同一行：两者都是「这个 agent 是谁 / 今天干了多少」的
+            身份级事实。原先它躲在下面那张「运行时」卡里，读的时候要跨两处对眼神。
+            【为什么用 KV 而不是 StatBox】这一行是「标签在上/值在下」的身份信息流，
+            StatBox 是「大数字在前/小标签在后」的计数器语法 —— 两种语法混在同一行里，
+            读者会以为 token 是另一个层级的对象。同一行只能有一种排版语法。 */}
+        <KV label={t('agent:profilePage.overview.labels.tokensToday')}>{fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))}</KV>
         <KV label={t('agent:profilePage.overview.labels.created')}>{agent.config?.createdAt ? new Date(agent.config.createdAt).toLocaleDateString() : t('agent:profilePage.emDash')}</KV>
       </div>
 
-      {/* Runtime + Usage + Storage in a single compact card */}
+      {/* 运行时异常/进行中横幅。
+          【为什么这里没有统计行】「今日 token」已上移到顶部身份行；「进行中任务」计数与
+          启停按钮已按 Owner 要求移除（启停仍可在团队侧栏 / 团队详情面板操作，行为未删）。
+          剩下的两个块只在**真有事**时才出现，所以外层卡片也一起条件渲染 —— 否则页面会
+          多出一个只有 padding 的空盒子。 */}
+      {(agent.state.status === 'error' || (agent.state.status === 'working' && (activeN > 0 || queuedCount > 0 || agent.runtime?.activityLabel))) && (
       <div className="bg-surface-elevated rounded-xl px-4 py-3 space-y-3">
-        {/* 运行时事实行。
-            【为什么不在这里再画一次状态】进程状态已经由 Team Chat 顶部那颗常驻徽标
-            展示（同页可见、不随滚动消失）。这里再画一遍，一页上就出现两个「空闲」；
-            而且两者来源不同、可能互相矛盾（徽标曾把 offline 画成绿色「空闲」）。
-            页面内这一行只回答三个问题：用了多少、手里有几个活、怎么启停。 */}
-        <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-          <StatBox label={t('agent:profilePage.overview.labels.tokensToday')} value={fmtNum(resolveTokensToday(usageInfo, agent.state.tokensUsedToday))} />
-          <StatBox label={t('agent:profilePage.overview.labels.activeTasks')} value={String(activeN)} color={activeN > 0 ? 'blue' : undefined} />
-          {/* 「上次心跳」已从概览移除：它读的是 agent.state.lastHeartbeat（进程内、
-              重启即丢，因此常年显示「从未」，而该 agent 的 metrics 里有 2000 条心跳记录），
-              而「心跳」tab 用 /agents/:id/heartbeat 已经给出准确的上次心跳与下次唤醒。
-              同一个数字留两处、其中一处是错的，只会让人怀疑整个面板。 */}
-          {canManageAgents && (
-            <button onClick={toggleAgent} className="ml-auto px-3 py-1 text-xs border border-border-default rounded-lg hover:border-brand-500 transition-colors shrink-0">
-              {agent.state.status === 'offline' ? t('agent:profilePage.overview.startAgent') : t('agent:profilePage.overview.stopAgent')}
-            </button>
-          )}
-        </div>
-
         {agent.state.status === 'error' && (
           <div className="bg-red-500/10 border border-red-500/20 rounded-lg p-3">
             <div className="flex items-center gap-2 mb-1">
@@ -585,142 +596,139 @@ function OverviewTab({ agent, onUpdate, externalInfo, t, canManageAgents, highli
             </div>
           </div>
         )}
-
       </div>
+      )}
 
       {/* 概览分组改成了子 tab：切组只有一次点击，不需要「收起上一组 → 向下滚很远」。 */}
       <OverviewSectionTabs section={section} onChange={setSection} t={t} />
 
-      {section === 'usage' && (
-        <SectionPanel>
-          {/* 用量与存储明细。
-              这里全是一次性/累计遥测：真要查的时候有用，一瞥面板时是噪音。
-              【为什么不显示 提示/补全 Token】这两个计数器加起来 ≠ 总数
-              （实测 3.03B vs 2.65B），因为 38,235 次请求里只有 590 次带过 provider
-              上报的 prompt 计数，且 getUsageStats() 在计数器为 0 时会用写死的
-              70/30 比例**编造**这两个值。一个加不起来的分解，看的人只会认为是面板
-              坏了。与其加免责说明，不如不显示。 */}
-          {(usageInfo || agentStorage) ? (
-            <div className="space-y-2">
-                {usageInfo && (
-                  <div className="space-y-1">
-                    <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                      <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
-                      <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
-                      <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
-                    </div>
-                  </div>
-                )}
-                {agentStorage && (
-                  <div className="space-y-1">
-                    <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
-                      <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
-                      {visibleStorageBuckets(agentStorage.subItems).map(sub => {
-                        const labelKey = storageBucketLabelKey(sub.name);
-                        // 子项标题用真实目录名（服务端不再改写标签），已知的走 i18n，
-                        // 未知的直接显示目录名——新目录会以正确的名字出现，而不是被漏掉。
-                        return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
-                      })}
-                      <button onClick={() => void api.system.openPath(agentDataDir)}
-                        className="text-[10px] text-fg-tertiary hover:text-fg-secondary ml-auto">{t('agent:profilePage.overview.openFolder')} →</button>
-                    </div>
-                    {agentStorage.depthLimited && (
-                      // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
-                      // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
-                      // 不如说明它是什么。
-                      <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-          ) : loadingStorage ? (
-            <p className="text-xs text-fg-tertiary">{t('common:loading')}</p>
-          ) : (
-            <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
-          )}
-        </SectionPanel>
-      )}
-
-      {/* 最近活动 —— 心跳与 A2A 的遥测。 */}
-      {section === 'recent' && (
-        <SectionPanel>
-          {recentCaption && <p className="text-[10px] text-fg-tertiary mb-2">{recentCaption}</p>}
-          {heartbeats.total > 0 && (
-            <div>
-              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentHeartbeats')}</h4>
-              <div className="divide-y divide-gray-800/50">
-                {heartbeats.shown.map(act => (
-                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-green-400"
-                    expanded={expandedActivityId === act.id}
-                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
-                ))}
-              </div>
-            </div>
-          )}
-          {comms.total > 0 && (
-            <div className="mt-3">
-              <h4 className="text-[10px] text-fg-tertiary uppercase tracking-wider mb-1">{t('agent:profilePage.overview.recentA2A')}</h4>
-              <div className="divide-y divide-gray-800/50">
-                {comms.shown.map(act => (
-                  <ActivityRow key={act.id} agentId={agent.id} act={act} dotClass="bg-blue-400"
-                    expanded={expandedActivityId === act.id}
-                    onToggle={() => setExpandedActivityId(expandedActivityId === act.id ? null : act.id)} />
-                ))}
-              </div>
-            </div>
-          )}
-          {heartbeats.total === 0 && comms.total === 0 && (
-            loadingActivities
-              ? <p className="text-xs text-fg-tertiary">{t('common:loading')}</p>
-              : <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.recent.empty')}</p>
-          )}
-        </SectionPanel>
-      )}
-
-      {/* ── 其余四组收进概览后依然「只挂载当前组」：它们各自都会发请求，若六组全部挂载、
-          只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把「入口太多」换成了
-          「页面卡」。 */}
-      {/* C8-E：「在跑」只读 work_units —— 不读 activity，也不读内存注册表。 */}
-      {section === 'mind' && <RunningWorkUnits agentId={agent.id} />}
-      {section === 'mind' && (
-        <SectionPanel>
-          <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
-        </SectionPanel>
-      )}
-
-      {section === 'files' && (
+      {section === 'settings' && (
         <SectionPanel>
           <FilesTab agentId={agent.id} />
         </SectionPanel>
       )}
 
-      {section === 'tools' && (
+      {section === 'settings' && (
         <SectionPanel>
-          <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+          {/* 用量 / 磁盘 / 清理。
+              【为什么重排】旧版是一排平铺 StatBox：累计 token、请求数、工具调用、总占用、
+              6 个目录桶 —— 不同量纲、不同来源、没有分组，而且**一进这组就去扫整个数据目录**
+              （`/api/system/storage` 遍历每个 agent，实测 1.4s / 60KB+）。现在：
+              · 只回答两个问题：「用了多少（累计）」「占了多少磁盘」；
+              · 磁盘改为**按需**读单个 agent 的目录（`/agents/:id/storage`，O(1 个 agent)），
+                默认不发起请求；
+              · 桶数量降到 4 个，其余合一行（数据不丢，只是不抢位置）。 */}
+          <div className="space-y-3">
+            <div className="space-y-1">
+              <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.lifetimeCaption')}</p>
+              {usageInfo ? (
+                <div className="flex flex-wrap items-center gap-x-5 gap-y-1.5">
+                  <StatBox label={t('agent:profilePage.overview.labels.totalTokens')} value={fmtNum(usageInfo.totalTokens)} />
+                  <StatBox label={t('agent:profilePage.overview.labels.requests')} value={String(usageInfo.requestCount)} />
+                  <StatBox label={t('agent:profilePage.overview.labels.toolCalls')} value={String(usageInfo.toolCalls)} />
+                </div>
+              ) : (
+                <p className="text-xs text-fg-tertiary">{t('agent:profilePage.overview.sections.usage.empty')}</p>
+              )}
+            </div>
+
+            <div className="border-t border-border-subtle pt-2 space-y-1">
+              <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+                <span className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageLabel', '磁盘占用')}</span>
+                {agentStorage ? (
+                  <>
+                    <StatBox label={t('agent:profilePage.overview.storage')} value={fmtBytesLocal(agentStorage.size)} />
+                    {visibleStorageBuckets(agentStorage.subItems).slice(0, 4).map(sub => {
+                      const labelKey = storageBucketLabelKey(sub.name);
+                      return <StatBox key={sub.name} label={labelKey ? t(labelKey) : sub.name} value={fmtBytesLocal(sub.size)} />;
+                    })}
+                    {visibleStorageBuckets(agentStorage.subItems).length > 4 && (
+                      <span className="text-[10px] text-fg-tertiary">
+                        {t('agent:profilePage.overview.storageMore', {
+                          count: visibleStorageBuckets(agentStorage.subItems).length - 4,
+                          size: fmtBytesLocal(visibleStorageBuckets(agentStorage.subItems).slice(4).reduce((n, b) => n + b.size, 0)),
+                        })}
+                      </span>
+                    )}
+                    <button onClick={() => void api.system.openPath(agentDataDir)}
+                      className="text-[10px] text-fg-tertiary hover:text-fg-secondary">{t('agent:profilePage.overview.openFolder')} →</button>
+                  </>
+                ) : (
+                  <button
+                    onClick={() => { void loadAgentStorage(); }}
+                    disabled={loadingStorage}
+                    className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40 disabled:opacity-50"
+                  >
+                    {loadingStorage ? t('agent:profilePage.overview.storageLoading', '读取中…') : t('agent:profilePage.overview.storageScanBtn', '查看磁盘占用')}
+                  </button>
+                )}
+              </div>
+              {agentStorage?.depthLimited && (
+                // 目录遍历有深度上限（无上限的全量遍历在本机要 60s 以上），
+                // 所以这是下界而非精确值。与其把有上限的估算当精确数字展示，
+                // 不如说明它是什么。
+                <p className="text-[10px] text-fg-tertiary">{t('agent:profilePage.overview.storageDepthLimited')}</p>
+              )}
+            </div>
+
+            {/* 【为什么是「跳转 + 预填」而不是直接发指令】清理是**不可逆**的（删掉的东西不会回来），
+                所以发送权归用户；Agent 拿到需求后先列清单，拿不准先问人。 */}
+            <div className="border-t border-border-subtle pt-2 space-y-1">
+              <button
+                type="button"
+                onClick={() => navBus.navigate(PAGE.TEAM, {
+                  agentId: agent.id,
+                  preferMain: '1',
+                  prefillMessage: t('agent:profilePage.overview.cleanupPrefill', {
+                    name: agent.name,
+                    defaultValue: '请检查你自己的数据（工作区、日志、会话历史、记忆归档），列出一份「可以安全清理」的清单与理由。\n不确定的项先问我，不要自行删除；我确认后你再动手。',
+                  }),
+                })}
+                className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40"
+              >
+                {t('agent:profilePage.overview.cleanupCta', '让 Agent 清理数据')}
+              </button>
+              <p className="text-[10px] text-fg-tertiary">
+                {t('agent:profilePage.overview.cleanupHint', '会在聊天里预填指令，发送与否由你决定；Agent 拿不准时会先问你。')}
+              </p>
+            </div>
+          </div>
         </SectionPanel>
+      )}
+
+      {/* 概览组：只回答「现在在做什么 / 有没有卡住」+ 工作记录。
+          「在跑什么」那块（work unit 计数）已删：它只能回答「它在跑」——用户本来就知道。 */}
+      {section === 'run' && (
+        <SectionPanel>
+          <MindTab agentId={agent.id} highlightId={highlightMailboxId} agentStatus={agent.state.status} canManageAgents={canManageAgents} />
+        </SectionPanel>
+      )}
+
+      {/* 「最近心跳 + 最近活动流」已删（2026-11-16）：
+          § 主动 Agent 会自己 rest / 自己醒，心跳是旧调度器时代的产物；
+          § 那 5 条心跳里 4 条是 `Heartbeat check-in (idle skip)`（空转）；
+          § 5 条 A2A 只有「某人说过话 + 时间」，没有一个字的摘要。
+          结论：它不提供信息，只提供行数。真正的「发生了什么」在下方工作记录里。 */}
+      {/* ── 其余四组收进概览后依然「只挂载当前组」：它们各自都会发请求，若六组全部挂载、
+          只用 CSS 隐藏，打开概览就等于同时打六组接口——那就把「入口太多」换成了
+          「页面卡」。 */}
+      {/* C8-E：「在跑」只读 work_units —— 不读 activity，也不读内存注册表。 */}
+      {/* 能力：合并进设置页底部，**默认收起**——193 个工具/46 个技能是「查」而不是「看」的东西。 */}
+      {section === 'settings' && (
+        <details className="mt-4 border border-border-default rounded-xl bg-surface-elevated/30">
+          <summary className="cursor-pointer px-4 py-3 text-xs font-medium text-fg-secondary select-none">
+            {t('agent:profilePage.overview.capabilityCollapsed', '能力（工具与技能）— 点开查看')}
+          </summary>
+          <div className="px-4 pb-4">
+            <CapabilitiesTab tools={agent.tools ?? []} agent={agent} />
+          </div>
+        </details>
       )}
 
       {section === 'memory' && (
         <SectionPanel>
-          <HeartbeatTab agentId={agent.id} initialData={agent.heartbeat} />
-          <div className="mt-6">
-            <MemoryTab agentId={agent.id} />
-          </div>
+          <MemoryTab agentId={agent.id} />
         </SectionPanel>
-      )}
-      {/** 「停止」确认：与页面其他确认弹窗同一个 ConfirmModal。 */}
-      {confirmingStop && (
-        <ConfirmModal
-          title={t('agent:profilePage.overview.stopAgentConfirm.title')}
-          message={t('agent:profilePage.overview.stopAgentConfirm.message')}
-          confirmLabel={t('agent:profilePage.overview.stopAgentConfirm.confirm')}
-          onConfirm={() => {
-            setConfirmingStop(false);
-            api.agents.stop(agent.id).then(onUpdate);
-          }}
-          onCancel={() => setConfirmingStop(false)}
-        />
       )}
     </div>
   );
@@ -951,8 +959,10 @@ function FilesTab({ agentId }: { agentId: string }) {
       setFiles(d.files);
       setRoleStatus(status);
       if (d.files.length > 0 && !selected) {
-        setSelected(d.files[0].name);
-        setEditContent(d.files[0].content);
+        // 不自动选中第一个文件：第一项是 ROLE.md，自动选中等于把整篇人设当首屏。
+        // 用户点哪一个才展开哪一个。
+        setSelected(null);
+        setEditContent('');
       }
     }).catch(() => {}).finally(() => setLoading(false));
   }, [agentId]);
@@ -1488,6 +1498,8 @@ function MemoryTab({ agentId }: { agentId: string }) {
   const [longContent, setLongContent] = useState('');
   const [saving, setSaving] = useState(false);
   const [expandedEntryIdx, setExpandedEntryIdx] = useState<number | null>(null);
+  /** 「让 Agent 整理记忆」的旧实现是**直接发送**；现在改为「跳聊天 + 预填」，
+   *  发送权归用户（整理是不可逆的，不能点一下就走）。所以不再需要发送状态。 */
   const [expandedSessionId, setExpandedSessionId] = useState<string | null>(null);
   /**
    * R10 · 记忆会话消息：读失败**不等于**「这个会话没有消息」。
@@ -1537,32 +1549,110 @@ function MemoryTab({ agentId }: { agentId: string }) {
     { key: 'daily' as const, label: t('agent:profilePage.memoryTab.dailyLogs') },
   ];
 
+  // 【两个独立预算，一条一次只能代表一个轴】记忆健康有两个不同分母：
+  //   ① 注入轴 = 本轮实际注入 / 本轮注入上限（4800 或 6000）；
+  //   ② 磁盘策展区 = curated 区字节 / 15000（仅报告）。
+  // 旧写法数字取 ②、条宽取 ① —— 数字是 100% 而条只有 93%，永远对不上。
+  // 现在每个百分比只在**它自己那一行**出现，条只画注入轴。
+  const curatedPct = data.curatedCap && data.curatedCap > 0
+    ? ((data.curatedChars ?? 0) / data.curatedCap) * 100
+    : null;
+  const injectionPct = data.injectionCapChars && data.injectionCapChars > 0
+    ? ((data.injectedChars ?? 0) / data.injectionCapChars) * 100
+    : null;
+  const pctText = (pct: number) => (pct >= 90 ? 'text-red-500 font-medium' : pct >= 70 ? 'text-amber-600 font-medium' : 'text-fg-tertiary');
+  const pctBar = (pct: number) => (pct >= 90 ? 'bg-red-500' : pct >= 70 ? 'bg-amber-500' : 'bg-brand-500');
+
   return (
     <div className="space-y-4">
-      {data.usedPercent != null && (
+      {(data.curatedChars != null || data.injectedChars != null) && (
         <Card title={t('agent:profilePage.memoryTab.healthTitle', '记忆健康（knowledge.md）')}>
           <div className="space-y-2">
-            <div className="flex items-center justify-between text-xs">
-              <span className="text-fg-secondary">{data.budgetChars ?? 0} / {data.budgetLimit ?? 0} 字符</span>
-              <span className={data.usedPercent >= 90 ? 'text-red-500 font-medium' : data.usedPercent >= 70 ? 'text-amber-600 font-medium' : 'text-fg-tertiary'}>
-                {data.usedPercent}%
-              </span>
-            </div>
-            <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
-              <div
-                className={`h-full rounded-full ${data.usedPercent >= 90 ? 'bg-red-500' : data.usedPercent >= 70 ? 'bg-amber-500' : 'bg-brand-500'}`}
-                style={{ width: `${Math.min(100, data.usedPercent)}%` }}
-              />
-            </div>
-            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[10px] text-fg-tertiary">
-              <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
-              <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
-              {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
-              {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
-            </div>
-            {data.usedPercent >= 70 && (
-              <div className="text-[10px] text-amber-600">
-                {t('agent:profilePage.memoryTab.overBudgetHint', '超预算的旧知识会被无损归档（不再注入）。可让 Agent 运行 memory_organize 整理。')}
+            {/* ① 注入轴：数字与进度条**同一对数字**（本轮注入 / 本轮注入上限）。 */}
+            {injectionPct != null && (
+              <>
+                <div className="flex items-center justify-between text-xs">
+                  <span className="text-fg-secondary">
+                    {t('agent:profilePage.memoryTab.injectionLine', '本轮注入（prompt 预算）')}
+                    <span className="text-fg-tertiary"> {data.injectedChars ?? 0} / {data.injectionCapChars ?? 0} 字符</span>
+                  </span>
+                  <span className={pctText(injectionPct)}>{Math.round(injectionPct)}%</span>
+                </div>
+                <div className="h-1.5 rounded-full bg-surface-overlay overflow-hidden">
+                  <div className={`h-full rounded-full ${pctBar(injectionPct)}`} style={{ width: `${Math.min(100, injectionPct)}%` }} />
+                </div>
+                {(data.injectionOmittedCount ?? 0) > 0 && (
+                  <div className="text-[10px] text-amber-600">
+                    {t('agent:profilePage.memoryTab.injectionOmittedHint', {
+                      count: data.injectionOmittedCount ?? 0,
+                      defaultValue: '已有 {{count}} 段因超出注入上限而未内联（仍可按需检索）',
+                    })}
+                  </div>
+                )}
+              </>
+            )}
+            {/* 其余三个预算与计数：**默认收起**。
+                这个板块只回答一个问题：「现在要不要整理？」——那就只有一根条、一句结论、
+                一个动作。磁盘策展区 / 观察缓冲 / 计数是「查」而不是「看」的东西，
+                平铺出来就是三个不同量纲的数字抢视线（Owner 2026-11-18：“这个板块是不是
+                太复杂了”）。 */}
+            <details className="text-[10px] text-fg-tertiary">
+              <summary className="cursor-pointer select-none hover:text-fg-secondary">
+                {t('agent:profilePage.memoryTab.detailsToggle', '明细（磁盘策展区 · 观察缓冲 · 归档）')}
+              </summary>
+              <div className="mt-1.5 space-y-1">
+                {curatedPct != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-fg-tertiary">
+                      {t('agent:profilePage.memoryTab.curatedLine', '磁盘策展区（超预算会无损归档）')}
+                      <span className="text-fg-secondary"> {data.curatedChars ?? 0} / {data.curatedCap ?? 0} 字符</span>
+                    </span>
+                    <span className={pctText(curatedPct)}>{Math.round(curatedPct)}%</span>
+                  </div>
+                )}
+                {data.observationLimit != null && (
+                  <div className="flex items-center justify-between">
+                    <span className="text-fg-tertiary">
+                      {t('agent:profilePage.memoryTab.observationLine', '观察缓冲（不注入）')}
+                      <span className="text-fg-secondary"> {data.observationChars ?? 0} / {data.observationLimit ?? 0} 字符</span>
+                    </span>
+                    <span className={pctText(data.observationPercent ?? 0)}>{Math.round(data.observationPercent ?? 0)}%</span>
+                  </div>
+                )}
+                <div className="flex flex-wrap gap-x-4 gap-y-1">
+                  <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
+                  <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
+                  {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
+                  {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
+                </div>
+              </div>
+            </details>
+            {/* 一个动作，一个判据：**任一轴吃紧**就该整理了——
+                注入吃紧 = 这轮有段没进 prompt；磁盘吃紧 = 接下来会被归档。
+                两句解释文案全部删掉：明细里 104% 旁边的标签已经说完了。 */}
+            {((injectionPct ?? 0) >= 90 || (curatedPct ?? 0) >= 70) && (
+              <div className="flex items-center gap-2 pt-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    navBus.navigate(PAGE.TEAM, {
+                      agentId,
+                      preferMain: '1',
+                      prefillMessage: t('agent:profilePage.memoryTab.organizePrefill', {
+                        used: data.curatedChars ?? 0,
+                        limit: data.curatedCap ?? 0,
+                        pct: Math.round(curatedPct ?? 0),
+                        defaultValue: '你的 knowledge.md 已超出预算（{{used}}/{{limit}} 字符，{{pct}}%）。请整理：合并同类段落、删掉已被新结论取代的条目，只留可复用的结论；过程与流水不要留在策展区。整理前先把打算删/合并的清单给我看。',
+                      }),
+                    });
+                  }}
+                  className="text-[11px] px-2 py-1 rounded border border-border-default text-fg-secondary hover:text-fg-primary hover:border-brand-500/40"
+                >
+                  {t('agent:profilePage.memoryTab.organizeCta', '让 Agent 整理记忆')}
+                </button>
+                <span className="text-[10px] text-fg-tertiary">
+                  {t('agent:profilePage.memoryTab.organizePrefillHint', '会跳到聊天并预填指令，发送与否由你决定')}
+                </span>
               </div>
             )}
           </div>
@@ -2236,7 +2326,12 @@ const ATTENTION_COLORS: Record<string, string> = {
 // (lib/mailboxTypeMeta.ts) and are kept honest by
 // packages/shared/test/mailbox-type-mirror.test.ts. The local map that used to
 // live here had silently lost `workflow_update` and `callback_result`.
-const CATEGORY_FILTER_KEYS = ['all', 'interaction', 'task', 'notification', 'system'] as const;
+/**
+ * 工作记录左栏的**实体类别**筛选：不再是 mailbox 源类型分类（交互/任务/通知/系统）——
+ * 左栏列的是**实体**（任务 / 需求 / 会话 / 未归属），拿源类型筛选只会让人问「一条任务评论
+ * 该算任务还是交互」。实体类别是左栏自己的轴。
+ */
+const ENTITY_FILTER_KEYS = ['all', 'task', 'requirement', 'channel', 'none'] as const;
 
 const STATUS_COLORS: Record<string, string> = {
   completed: 'bg-green-500', processing: 'bg-blue-400 animate-pulse',
@@ -2410,26 +2505,59 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
   const [mind, setMind] = useState<import('../api.ts').AgentMindState | null>(null);
   const [mailbox, setMailbox] = useState<import('../api.ts').AgentMailboxResponse | null>(null);
   const [loading, setLoading] = useState(true);
-  const [catFilter, setCatFilter] = useState<string>('all');
+  /** 左栏实体类别筛选（task / requirement / channel / none）。 */
+  const [entityKind, setEntityKind] = useState<string>('all');
   const [statusFilter, setStatusFilter] = useState<string>('all');
+  /** 左栏实体类别计数（服务端在整段历史上聚合，不受当前页影响）。 */
+  const [kindCounts, setKindCounts] = useState<Record<string, number>>({});
+  /** 状态筛选片的计数（已按实体类别限定）。 */
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({});
+  /** 「陈旧处理中」条数 —— 服务端权威读数（与「清理」按钮同一判据），不是可见那页的行数。 */
+  const [staleProcessingCount, setStaleProcessingCount] = useState(0);
   const [expandedId, setExpandedId] = useState<string | null>(highlightId ?? null);
   const [highlightedId, setHighlightedId] = useState<string | null>(highlightId ?? null);
   const [queueExpanded, setQueueExpanded] = useState(false);
   const [notebookExpanded, setNotebookExpanded] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
   const [cancelConfirmId, setCancelConfirmId] = useState<string | null>(null);
   const PAGE = 50;
+  /**
+   * 传统分页：0-based 页码 + 是否还有下一页。
+   *
+   * 翻页**整页替换**列表，不再自动追加。自动追加这条路只要「追加 → 依赖变化 →
+   * 重新判定」三者同时成立就会退化成自我触发的连发（实测：加载期间一直卡，加载完
+   * 就不卡），分页没有这个问题：每一页都是用户主动点出来的。
+   */
+  const [page, setPage] = useState(0);
+  const [hasNext, setHasNext] = useState(false);
+  const pageRef = useRef(0);
+  /** 左栏：服务端聚合的实体分组（分页）。右栏：选中实体的全部记录（不分页）。 */
+  const [serverGroups, setServerGroups] = useState<Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>>([]);
+  /** 左栏滚动加载（滑到底自动追加下一页实体）。 */
+  const groupsEndRef = useRef<HTMLDivElement | null>(null);
+  const hasNextRef = useRef(false);
+  const groupsLoadingRef = useRef(false);
   const QUEUE_COLLAPSE_THRESHOLD = 3;
   const [actionBusyId, setActionBusyId] = useState<string | null>(null);
 
   // C9-B：「在跑」只由 work_units 回答 —— 与 RunningWorkUnits 同一个权威，
   // 不再从 activity 的 endedAt 推断（僵尸行曾因此在 UI 上永远显示「在跑」）。
   const [runningUnitRefs, setRunningUnitRefs] = useState<Set<string>>(new Set());
+  /** 工作记录左栏选中的 work unit。`undefined` = 默认选最上面（最近）那个。 */
+  const [unitKey, setUnitKey] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     const loadRunning = () => {
       api.agents.workUnits(agentId, 'running')
-        .then(r => { if (!cancelled) setRunningUnitRefs(liveRefSet(r.units)); })
+        .then(r => {
+          if (cancelled) return;
+          // 每 15s 新建一个 Set 会让 setState **恒判不等** → 无论有没有变化都重渲染
+          // 整块工作记录。内容没变就把 prev 原样返回，把轮询成本降到零。
+          setRunningUnitRefs(prev => {
+            const next = liveRefSet(r.units);
+            if (prev.size === next.size && [...next].every(x => prev.has(x))) return prev;
+            return next;
+          });
+        })
         .catch(() => { /* 读不到就不主张在跑 */ });
     };
     void loadRunning();
@@ -2437,21 +2565,114 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return () => { cancelled = true; window.clearInterval(timer); };
   }, [agentId]);
 
-  const load = useCallback(async (reset = true) => {
+  const load = useCallback(async (reset = true, pageNo?: number) => {
+    const target = Math.max(0, pageNo ?? pageRef.current);
     if (reset) setLoading(true);
     try {
-      const catParam = catFilter === 'all' ? undefined : catFilter;
+      const kindParam = entityKind === 'all' ? undefined : entityKind;
       const statusParam = statusFilterParam(statusFilter);
-      const [m, mb] = await Promise.all([
+      const [m, gr] = await Promise.all([
         api.agents.getMindState(agentId),
-        api.agents.getMailbox(agentId, { limit: PAGE, category: catParam, status: statusParam }),
+        api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: target * PAGE, entityKind: kindParam, status: statusParam }),
       ]);
       setMind(m);
-      setMailbox(mb);
-      setHasMore((mb.history?.length ?? 0) >= PAGE);
+      const raw = gr as unknown as {
+        groups?: Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>;
+        hasNext?: boolean;
+        kindCounts?: Record<string, number>;
+        statusCounts?: Record<string, number>;
+        staleProcessingCount?: number;
+      };
+      const gs = raw.groups ?? [];
+      // 页码用 ref 承接：`load` 的身份不能随翻页变化，否则依赖它的 effect
+      // （以及实时刷新订阅）会反复重新装载。
+      pageRef.current = target;
+      setPage(target);
+      hasNextRef.current = Boolean(raw.hasNext);
+      setHasNext(Boolean(raw.hasNext));
+      setServerGroups(gs);
+      setKindCounts(raw.kindCounts ?? {});
+      setStatusCounts(raw.statusCounts ?? {});
+      if (typeof raw.staleProcessingCount === 'number') setStaleProcessingCount(raw.staleProcessingCount);
+      // 【为什么必须重新选一次】筛选变了之后，旧选中的实体很可能**不在新列表里**：
+      // 此时右栏还在拉那个旧实体（表头却回退显示第一个）→「左栏变了、右栏没变」。
+      // 常驻的 Loop 组是前端注入的（服务端聚合里本来就没有它），单独放行。
+      setUnitKey(prev => {
+        const loopKey = `channel:loop_${agentId}`;
+        const noFilter = entityKind === 'all' && statusFilter === 'all';
+        if (prev && ((noFilter && prev === loopKey) || gs.some(g => g.key === prev))) return prev;
+        return gs.find(g => g.key)?.key ?? null;
+      });
     } catch { /* ignore */ }
     setLoading(false);
-  }, [agentId, catFilter, statusFilter]);
+  }, [agentId, entityKind, statusFilter]);
+
+  /**
+   * 右栏：选中实体的**全部记录**（不分页）。
+   *
+   * 左栏翻页只换实体列表；右栏只跟「选中的那个实体」走，一次拉全。
+   */
+  useEffect(() => {
+    if (!unitKey) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        // 右栏只跟「选中的实体 + 状态筛选」：实体类别已由选中的 key 本身回答。
+        const statusParam = statusFilterParam(statusFilter);
+        const r = await api.agents.getMailbox(agentId, { entity: unitKey, status: statusParam });
+        if (!cancelled) {
+          setMailbox(prev => (prev ? { ...prev, history: r.history } : r));
+          if (typeof r.staleProcessingCount === 'number') setStaleProcessingCount(r.staleProcessingCount);
+        }
+      } catch { /* 取不到就保持现状 */ }
+    })();
+    return () => { cancelled = true; };
+  }, [agentId, unitKey, statusFilter]);
+
+  /**
+   * 滑到底追加下一页**实体**（左栏）。
+   *
+   * 分页搬到服务端后，一页只是 20 个实体（几十字节一条），追加不再触发任何
+   * 「重新分组 / 合并 / 全量重算」—— 所以自动加载在这里是安全的。
+   * 依赖里不放 `serverGroups`：否则每次追加都换新身份，带动 observer 重建（旧的连发 bug）。
+   */
+  const loadMoreGroups = useCallback(async () => {
+    if (groupsLoadingRef.current || !hasNextRef.current) return;
+    groupsLoadingRef.current = true;
+    const nextPage = pageRef.current + 1;
+    try {
+      const kindParam = entityKind === 'all' ? undefined : entityKind;
+      const statusParam = statusFilterParam(statusFilter);
+      const gr = await api.agents.getMailbox(agentId, { mode: 'groups', limit: PAGE, offset: nextPage * PAGE, entityKind: kindParam, status: statusParam });
+      const raw = gr as unknown as { groups?: Array<{ key: string; kind: string; id: string; name: string; count: number; units: number; latestAt: string }>; hasNext?: boolean };
+      const gs = raw.groups ?? [];
+      pageRef.current = nextPage;
+      setPage(nextPage);
+      hasNextRef.current = Boolean(raw.hasNext);
+      setHasNext(Boolean(raw.hasNext));
+      setServerGroups(prev => [...prev, ...gs]);
+    } catch { /* 下一页取不到就停在这里，不弹错 */ }
+    finally { groupsLoadingRef.current = false; }
+  }, [agentId, entityKind, statusFilter]);
+
+  useEffect(() => {
+    const el = groupsEndRef.current;
+    if (!el || !hasNext) return;
+    // root 必须是左栏自己的滚动容器：IO 默认 root 是视口，容器内滚动它感知不到。
+    const io = new IntersectionObserver((entries) => {
+      if (!entries.some(e => e.isIntersecting)) return;
+      if (groupsLoadingRef.current) return;
+      void loadMoreGroups().finally(() => {
+        // IO **只在相交状态变化时**回调。追加后哨兵仍在视口里 → 不会再有回调
+        // → 加载停死（上一版就是这么把「加载更多」弄没的）。强制重新判定一次：
+        // 还在视口就继续拉下一页，滑出视口就自然停下。
+        const node = groupsEndRef.current;
+        if (node) { io.unobserve(node); io.observe(node); }
+      });
+    }, { root: el.parentElement, rootMargin: '120px' });
+    io.observe(el);
+    return () => io.disconnect();
+  }, [loadMoreGroups, hasNext]);
 
   /** 丢弃：只丢这一条 mailbox 项，带理由（可回溯）——终态是 bounced(stale_signal) 并进 catch-all 概览。 */
   const handleDrop = useCallback(async (itemId: string) => {
@@ -2463,16 +2684,61 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     finally { setActionBusyId(null); }
   }, [agentId, load]);
 
-  const loadMore = useCallback(async () => {
-    if (!mailbox) return;
-    const catParam = catFilter === 'all' ? undefined : catFilter;
-    const statusParam = statusFilterParam(statusFilter);
+  /** 翻到指定页（整页替换，不追加）。 */
+  const goToPage = useCallback((next: number) => {
+    const target = Math.max(0, next);
+    if (target === pageRef.current) return;
+    void load(true, target);
+  }, [load]);
+  /**
+   * 分组结果只在「历史变了」时重算。
+   *
+   * 旧写法把 `groupByEntity(mailbox.history)` 写在 render 里，而 MindTab 还有
+   * 一个 15s 的在跑轮询会触发 render（以及用户每次展开/收起卡片）—— 于是每翻一页
+   * 之后，**每一次 render 都要重新分组 + 排序 + 每组去重**，行数越多越卡。
+   */
+  /**
+   * 左栏的实体列表来自**服务端聚合**（`mode=groups`）：聚合在整段历史上做，
+   * 所以计数不会随当前页漂移；翻页只翻实体，不翻记录。
+   * 决策循环是常驻实体：没有记录时也固定出现在第一位。
+   */
+  const memoGroups = useMemo(() => {
+    // 带了筛选时**不**插常驻 Loop：那是「全局无主信号」的子，与当前筛选无关，
+    // 强行插进去就会出现「筛选为空却还显示 0 条 · 0 轮」的怪状。
+    const noFilter = entityKind === 'all' && statusFilter === 'all';
+    if (!noFilter) return serverGroups;
+    const loopKey = `channel:loop_${agentId}`;
+    if (serverGroups.some(g => g.key === loopKey)) return serverGroups;
+    return [
+      { key: loopKey, kind: 'channel', id: `loop_${agentId}`, name: '', count: 0, units: 0, latestAt: '' },
+      ...serverGroups,
+    ];
+  }, [serverGroups, agentId, entityKind, statusFilter]);
+  /**
+   * 右栏单次最多渲染多少条记录。
+   *
+   * 旧写法把选中组的**全部** items 一次性挂进 DOM：自动加载每次 append 50 条，
+   * 滚 10 次就是 500 个重卡片（每张带决策、活动、操作区）。未归属那一组实测能到
+   * 231 条，直接就是主线程卡顿源。这里给渲染硬上限，超出部分按住「显示更多」再展开
+   * —— **数据不丢，只是不进 DOM**。
+   */
+  const GROUP_RENDER_CAP = 60;
+  const [groupCap, setGroupCap] = useState(GROUP_RENDER_CAP);
+  /** 窄容器下右栏是「右侧抽屉」而不是堆在下面。 */
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  /**
+   * 列表接口把正文截到 800 字（否则 50 条 = **2.68MB**，实测 human_chat 单条约 100KB），
+   * 展开时再按 id 取全文并缓存在这里。取不到就继续显示摘要，不阻塞展开。
+   */
+  const [fullContent, setFullContent] = useState<Record<string, string>>({});
+  const loadFullContent = useCallback(async (id: string) => {
     try {
-      const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: mailbox.history.length, category: catParam, status: statusParam });
-      setMailbox(prev => prev ? { ...prev, history: [...prev.history, ...mb.history] } : mb);
-      setHasMore((mb.history?.length ?? 0) >= PAGE);
-    } catch { /* ignore */ }
-  }, [agentId, mailbox, catFilter, statusFilter]);
+      const r = await api.agents.getMailbox(agentId, { itemId: id });
+      const full = (r.history?.[0]?.payload as { content?: string } | undefined)?.content;
+      if (typeof full === 'string') setFullContent(prev => ({ ...prev, [id]: full }));
+    } catch { /* 取不到全文就保持摘要，不弹错 */ }
+  }, [agentId]);
+  // 自动追加（哨兵 + IntersectionObserver）已整体移除，改为底部传统分页。
 
   // 「运行与注意力」stale processing 手动恢复入口（docs/records/message-stop-cancel-fix-plan.md §2.6 步骤 2c）：
   // 把卡在 processing 的陈旧行（无认领/租约已过期）标为 bounced(lease_expired) 并归集到
@@ -2503,27 +2769,29 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         const timer = setTimeout(() => setHighlightedId(null), 3000);
         return () => clearTimeout(timer);
       }
-    } else if (hasMore && !autoLoadingForHighlightRef.current) {
+    } else if (hasNext && !autoLoadingForHighlightRef.current) {
       autoLoadingForHighlightRef.current = true;
       (async () => {
-        let currentHistory = mailbox?.history ?? [];
-        let moreAvailable: boolean = hasMore;
-        while (moreAvailable) {
-          try {
-            const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: currentHistory.length });
-            const newHistory = [...currentHistory, ...mb.history];
-            currentHistory = newHistory;
-            moreAvailable = (mb.history?.length ?? 0) >= PAGE;
-            const itemFound = mb.history.some(h => h.id === highlightedId);
-            setMailbox(prev => prev ? { ...prev, history: newHistory } : mb);
-            setHasMore(moreAvailable);
-            if (itemFound || !moreAvailable) break;
-          } catch { break; }
-        }
+        // 分页模式：深链要的那条可能在后几页 —— 逐页往后找，找到就停在那页。
+        let p = pageRef.current + 1;
+        try {
+          for (let guard = 0; guard < 20; guard++) {
+            const mb = await api.agents.getMailbox(agentId, { limit: PAGE, offset: p * PAGE });
+            if (mb.history.some(h => h.id === highlightedId)) {
+              pageRef.current = p;
+              setPage(p);
+              setMailbox(mb);
+              setHasNext((mb.history?.length ?? 0) >= PAGE);
+              break;
+            }
+            if ((mb.history?.length ?? 0) < PAGE) break;
+            p++;
+          }
+        } catch { /* 找不到就停在当前页 */ }
         autoLoadingForHighlightRef.current = false;
       })();
     }
-  }, [highlightedId, loading, mailbox, hasMore, agentId]);
+  }, [highlightedId, loading, mailbox, hasNext, agentId]);
 
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null;
@@ -2561,7 +2829,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
     return raw;
   })();
 
-  const hasStaleProcessingItems = effectiveAttentionState === 'idle' && mailbox?.history?.some(h => h.status === 'processing');
+  // 「陈旧处理中」= 服务端权威读数（同一判据：无认领 / 租约过期 / 认领者非本实例）。
+  // 旧写法是「当前可见那一页记录里有多少条 status==='processing'」—— 那是把一个实体的
+  // 一页当成整个邮箱的结论，于是换个实体/换个筛选条就自相矛盾。
+  const hasStaleProcessingItems = agentRunning && staleProcessingCount > 0;
   const hasStuckQueue = (mind?.attentionState ?? 'idle') === 'idle' && queueDepth > 0;
 
   return (
@@ -2734,83 +3005,33 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
         );
       })()}
 
-      {/* ── Live Deliberation Activity ── */}
-      {mind?.deliberationActivity && (
-        <section className="bg-surface-elevated rounded-lg border border-amber-500/20 p-3">
-          <div className="flex items-center gap-2 mb-2">
-            <span className="text-sm">🧠</span>
-            <h4 className="text-xs font-medium text-amber-500 uppercase tracking-wider">{t('agent:profilePage.mind.deliberationInProgress')}</h4>
-            <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-500/15 text-indigo-300">{t('agent:profilePage.mind.batchDeliberating')}</span>
-            <span className="text-[10px] text-fg-muted ml-auto">{t('agent:profilePage.mind.since', { time: new Date(mind.deliberationActivity.startedAt).toLocaleTimeString() })}</span>
-          </div>
-          <ActivityLog agentId={agentId} activityId={mind.deliberationActivity.activityId} isLive />
-        </section>
-      )}
-
-      {/* ── Last Triage Decision ── */}
-      {mind?.lastTriage && (() => {
-        const triageAgeMs = Date.now() - new Date(mind.lastTriage.timestamp).getTime();
-        const isStale = triageAgeMs > 60_000;
-        const batchSummary = deriveTriageBatchSummary(mind.lastTriage);
-        return (
-          <section className={`bg-surface-elevated rounded-lg border p-3 transition-opacity ${isStale ? 'border-border-subtle opacity-60' : 'border-indigo-500/20'}`}>
-            <details open={!isStale}>
-              <summary className="flex items-center gap-2 cursor-pointer list-none">
-                <span className="text-sm">🧠</span>
-                <h4 className="text-xs font-medium text-indigo-400 uppercase tracking-wider">{t('agent:profilePage.mind.triageDecision')}</h4>
-                <span className="text-[10px] text-fg-muted ml-auto">{new Date(mind.lastTriage.timestamp).toLocaleTimeString()}</span>
-              </summary>
-              <p className="text-xs text-fg-secondary leading-relaxed mt-2">{mind.lastTriage.reasoning}</p>
-              <div className="flex flex-wrap gap-2 mt-2 text-[10px]">
-                <span className="px-1.5 py-0.5 rounded bg-green-500/10 text-green-400">{t('agent:profilePage.mind.processingItem', { id: mind.lastTriage.processedItemId.slice(0, 12) })}</span>
-                <span className={`px-1.5 py-0.5 rounded ${batchSummary.isBatch ? 'bg-indigo-500/15 text-indigo-300' : 'bg-surface-overlay text-fg-tertiary'}`}>
-                  {batchSummary.isBatch
-                    ? t('agent:profilePage.mind.batchSize', { count: batchSummary.total })
-                    : t('agent:profilePage.mind.singleItem')}
-                </span>
-                {mind.lastTriage.deferredItemIds.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400">{t('agent:profilePage.mind.deferred', { count: mind.lastTriage.deferredItemIds.length })}</span>
-                )}
-                {mind.lastTriage.droppedItemIds.length > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-red-500/10 text-red-400">{t('agent:profilePage.mind.dropped', { count: mind.lastTriage.droppedItemIds.length })}</span>
-                )}
-                {(mind.lastTriage.inlineCompletedIds?.length ?? 0) > 0 && (
-                  <span className="px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400">{t('agent:profilePage.mind.inlineCompleted', { count: mind.lastTriage.inlineCompletedIds!.length })}</span>
-                )}
-              </div>
-            </details>
-          </section>
-        );
-      })()}
-
       {/* ── Mailbox History ── */}
       <section>
         <div className="flex items-center gap-2 mb-2">
           <h3 className="text-xs font-medium text-fg-tertiary uppercase tracking-wider">{t('agent:profilePage.mind.mailboxHistory')}</h3>
           <div className="flex gap-1 ml-auto flex-wrap">
-            {CATEGORY_FILTER_KEYS.map(key => {
-              const stc = mailbox?.sourceTypeCounts;
-              const catCount = key === 'all'
-                ? (stc ? Object.values(stc).reduce((a, b) => a + b, 0) : undefined)
-                : (stc ? (MAILBOX_CATEGORY_TYPES[key as keyof typeof MAILBOX_CATEGORY_TYPES] ?? []).reduce((s, t2) => s + (stc[t2] ?? 0), 0) : undefined);
+            {ENTITY_FILTER_KEYS.map(key => {
+              const cnt = key === 'all'
+                ? Object.values(kindCounts).reduce((a, b) => a + b, 0)
+                : kindCounts[key];
               return (
-                <button key={key} onClick={() => setCatFilter(key)}
+                <button key={key} onClick={() => setEntityKind(key)}
                   className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors ${
-                    catFilter === key
+                    entityKind === key
                       ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
                       : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
                   }`}
-                >{t(`agent:profilePage.mind.categoryFilters.${key}`)}{catCount != null && catCount > 0 && <span className="ml-1 opacity-60">{catCount}</span>}</button>
+                >{t(`agent:profilePage.mind.entityFilters.${key}`)}{cnt != null && cnt > 0 && <span className="ml-1 opacity-60">{cnt}</span>}</button>
               );
             })}
           </div>
         </div>
         <div className="flex gap-1 mb-2 flex-wrap">
           {MAILBOX_STATUS_FILTERS.map(f => {
-            const sc = mailbox?.statusCounts;
+            const sc = statusCounts;
             const cnt = f.key === 'all'
-              ? (sc ? Object.values(sc).reduce((a, b) => a + b, 0) : undefined)
-              : sc?.[f.key];
+              ? Object.values(sc).reduce((a, b) => a + b, 0)
+              : sc[f.key];
             return (
               <button key={f.key} onClick={() => setStatusFilter(f.key)}
                 className={`px-2 py-0.5 text-[10px] rounded-md border transition-colors flex items-center gap-1 ${
@@ -2823,12 +3044,128 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           })}
         </div>
 
-        {(!mailbox?.history || mailbox.history.length === 0) && !loading && (
-          <div className="text-center text-fg-tertiary text-sm py-8">{t('agent:profilePage.mind.noHistory')}</div>
+        {serverGroups.length === 0 && !loading && (
+          <div className="text-center text-fg-tertiary text-sm py-8">
+            {entityKind === 'all' && statusFilter === 'all'
+              ? t('agent:profilePage.mind.noHistory', '暂无邮箱历史')
+              : t('agent:profilePage.mind.noMatch', '这个筛选下没有记录')}
+          </div>
         )}
 
-        <div className="space-y-1">
-          {mailbox?.history?.map(item => {
+        {/* 工作记录：左 = 工作单元，右 = 该单元的记录。右栏行渲染与旧邮箱历史同一份代码。 */}
+        {(() => {
+          // 分组只在「历史变了 / 选中项变了」时重算。旧写法在每次 render 都跑一遍
+          // groupByEntity（需要分组 + 排序 + 每组去重统计 unit），而 MindTab 里还有
+          // 15s 一次的在跑轮询会触发 render —— 于是越加载越卡。这里用 useMemo 把
+          // 重算闸在真正的输入变化上。
+          const groups = memoGroups;
+          const activeGroup = groups.find(g => g.key === unitKey) ?? groups[0];
+          // 右栏 = 选中实体的**完整记录**（服务端按 entity 过滤后返回，不再翻页）。
+          const items = mailbox?.history ?? [];
+          return (
+        /* 断点必须看**容器宽度**，不能看视口：这个面板只有几百像素宽，而窗口可能是宽的。
+           之前用 `sm:`（视口 640px）→ 窗口宽就强行左右分栏，右栏被挤成一条缝、卡片被裁。 */
+        <div className="@container relative overflow-hidden">
+        <div className="flex flex-col @2xl:flex-row gap-3 items-stretch">
+          <div className="w-full @2xl:w-48 shrink-0 space-y-1 max-h-[30rem] overflow-y-auto pr-1">
+            {groups.map((g) => {
+              const isActive = (activeGroup?.key ?? '') === g.key;
+              return (
+                <button key={g.key || '__none__'} onClick={() => { setUnitKey(g.key); setGroupCap(GROUP_RENDER_CAP); setDrawerOpen(true); }}
+                  className={`w-full text-left px-2 py-1.5 rounded-md border transition-colors ${
+                    isActive
+                      ? 'bg-brand-500/20 border-brand-500/40 text-brand-300'
+                      : 'bg-surface-elevated border-border-subtle text-fg-secondary hover:bg-surface-overlay'
+                  }`}
+                >
+                  <div className="flex items-center gap-1.5">
+                    {/* 字形区分类别、中性色；颜色留给状态（红边 = 投递失败） */}
+                    <span className="w-4 shrink-0 text-center text-[11px]">
+                      {workUnitEntityIcon(g.key)}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[11px] font-medium">
+                      {g.name || (g.kind === 'none' || !g.key ? t('agent:profilePage.mind.unitOrphan', '历史记录') : workUnitEntityLabel(g.key))}
+                    </span>
+                  </div>
+                  <div className="text-[10px] text-fg-tertiary tabular-nums">
+                    {g.count} 条 · {g.latestAt ? new Date(g.latestAt).toLocaleTimeString() : '—'}
+                  </div>
+                </button>
+              );
+            })}
+            {hasNext && (
+              <div ref={groupsEndRef} className="flex items-center justify-center py-2 text-[10px] text-fg-tertiary">
+                {t('agent:profilePage.mind.scrollForMore', '下滑加载更多')}
+              </div>
+            )}
+          </div>
+          {/* 窄容器：右侧抽屉（不是堆在下面）。宽容器（@2xl）：恢复并排两栏。 */}
+          {drawerOpen && (
+            <div className="@2xl:hidden absolute inset-0 z-30 bg-black/40" onClick={() => setDrawerOpen(false)} />
+          )}
+          <div
+            className={`
+              absolute inset-y-0 right-0 z-40 w-full max-w-none @sm:w-[86%] @sm:max-w-md overflow-y-auto bg-surface-primary border-l border-border-default shadow-2xl px-3 pb-3
+              transition-transform duration-200 ease-out
+              ${drawerOpen ? 'translate-x-0' : 'translate-x-full'}
+              @2xl:static @2xl:z-auto @2xl:w-auto @2xl:max-w-none @2xl:translate-x-0 @2xl:overflow-y-auto
+              @2xl:bg-transparent @2xl:border-0 @2xl:shadow-none @2xl:p-0
+              @2xl:flex-1 @2xl:min-w-0 @2xl:max-h-[30rem] space-y-1
+            `}
+          >
+            {/* 【为什么没有负上边距】sticky 的吸附边界是滚动容器的 padding 边缘。
+                之前抽屉有 `pt-3`、标题靠 `-mt-3` 反向出血去贴顶边 —— 两个补偿互相抵消
+                不干净，滚动时内容就从错位的那条缝里透出来（看起来像标题背景“镂空”）。
+                现在抽屉取消上内边距，标题自然贴着容器顶边，`top-0` 与静态位置重合，
+                不透明背景就能严密盖住滚过去的内容。 */}
+            <div className="@2xl:hidden sticky top-0 z-10 -mx-3 mb-2 px-3 py-2 bg-surface-primary border-b border-border-default flex items-center gap-2">
+              <span className="text-[11px] font-medium text-fg-secondary truncate flex-1">
+                {activeGroup?.name || (activeGroup?.key ? workUnitEntityLabel(activeGroup.key) : '')}
+              </span>
+              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label="close">✕</button>
+            </div>
+          {/* 「本轮决策」——把这条实体下所有记录的决策聚合成一行一条。
+              数据来源是邮箱响应里已经带的 `decisions`（
+              `agent_decisions` 按 `mailbox_item_id` 关联），不新造接口、不猜。
+              这样一条工作单元读起来是「收到 X → 决定 Y」，而不是一堆输入。 */}
+          {(() => {
+            type Dec = { id: string; decisionType: string; reasoning?: string; createdAt?: string };
+            const all = items.flatMap(i => ((i as { decisions?: Dec[] }).decisions ?? []));
+            if (all.length === 0) return null;
+            const byType = new Map<string, Dec[]>();
+            for (const d of all) {
+              const bucket = byType.get(d.decisionType);
+              if (bucket) bucket.push(d); else byType.set(d.decisionType, [d]);
+            }
+            return (
+              <div className="mb-2 rounded-lg border border-border-subtle bg-surface-elevated/40 px-2 py-1.5">
+                <div className="text-[10px] uppercase tracking-wider text-fg-tertiary mb-1">
+                  {t('agent:profilePage.mind.roundDecisions', '本轮决策')}
+                </div>
+                <div className="space-y-0.5">
+                  {[...byType.entries()].map(([type, list]) => (
+                    <div key={type} className="flex items-baseline gap-2 text-[11px]">
+                      <span className="shrink-0 font-medium text-fg-primary">{type}</span>
+                      <span className="shrink-0 tabular-nums text-fg-tertiary">×{list.length}</span>
+                      <span className="truncate text-fg-secondary" title={list[0]?.reasoning ?? ''}>
+                        {list[0]?.reasoning ?? ''}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
+          {/* 只有「确实选中了一个实体、但它没有记录」时才说这句。否则会和外层的
+              「这个筛选下没有记录」重复成两条空态，又丑又互相矛盾。 */}
+          {items.length === 0 && serverGroups.length > 0 && (
+            <p className="text-xs text-fg-tertiary py-6 text-center">
+              {activeGroup && activeGroup.key.startsWith('channel:loop_')
+                ? t('agent:profilePage.mind.loopIdle', '这段时间没有需要它判断的信号 —— 它在睡或已完成处置')
+                : t('agent:profilePage.mind.unitEmpty', '这个实体目前没有记录')}
+            </p>
+          )}
+          {items.map(item => {
             const isExpanded = expandedId === item.id;
             const icon = mailboxTypeIcon(item.sourceType);
             const display = getMailboxItemDisplay(item, t);
@@ -2844,37 +3181,49 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
             const senderRole = item.metadata?.senderRole as string | undefined;
             const isHighlighted = highlightedId === item.id;
             return (
-              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-elevated rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : 'border-border-subtle'}`}>
+              <div key={item.id} id={`mbx-${item.id}`} className={`bg-surface-elevated rounded-lg border transition-colors duration-1000 ${isHighlighted ? 'border-brand-500 ring-1 ring-brand-500/40' : item.status === 'bounced' || item.status === 'catch_all' ? 'border-border-subtle border-l-2 border-l-red-500' : 'border-border-subtle'}`}>
                 <button
                   className="w-full px-3 py-2.5 flex items-start gap-2 text-left hover:bg-surface-overlay/50 transition-colors rounded-lg"
-                  onClick={() => setExpandedId(isExpanded ? null : item.id)}
+                  onClick={() => {
+                    const next = isExpanded ? null : item.id;
+                    setExpandedId(next);
+                    // 正文被后端截断过 → 展开时补取全文（每条只取一次）
+                    if (next && (item as { contentTruncated?: boolean }).contentTruncated && !fullContent[next]) {
+                      void loadFullContent(next);
+                    }
+                  }}
                 >
-                  <span className="text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
+                  {/* 极窄容器下不显示展开桥：整行本来就可点，桥上 12px + gap 在 300px 级宽度上
+                      就是白白吃掉标题宽度。@sm（容器 384px）以上再显示。 */}
+                  <span className="hidden @sm:inline text-xs mt-0.5 text-fg-tertiary">{isExpanded ? '▾' : '▸'}</span>
                   <span className={`w-2 h-2 mt-1.5 rounded-full shrink-0 ${rowDisplayStatus === 'stale' ? 'bg-amber-400/70' : (STATUS_COLORS[item.status] ?? 'bg-gray-400')}`} />
                   <span className="text-sm">{icon}</span>
                   <div className="flex-1 min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className={`text-xs font-medium text-fg-primary ${isExpanded ? '' : 'truncate'}`}>{display.title}</span>
-                      {display.badge && (
-                        <span className={`text-[10px] font-medium shrink-0 ${display.badge.color}`}>{display.badge.label}</span>
-                      )}
-                      <span className={`text-[10px] shrink-0 ${PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}`}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: '' })}</span>
-                    </div>
+                    {/* 标题独占一行。上一版是 `flex-wrap` + 标题 `flex-1` —— 但 `flex-1`
+                        允许无限收缩，flex-wrap 因此**永不触发**：标题被压成窄柱（实测
+                        275px 容器里标题只剩 ~117px）、每个字都换行，卡片反而更高。
+                        现在标题块级占满整行（实测同容器 283px）；徽标 / 优先级降到元信息行；
+                        `sourceType` 收起态**不显示**（左边图标已编码类型，常驻会再折一行、
+                        实测卡片比旧版高 4px），展开态给。 */}
+                    <div className={`text-xs font-medium text-fg-primary break-words ${isExpanded ? '' : 'truncate'}`}>{display.title}</div>
                     {display.subtitle && (
-                      <div className={`text-[11px] text-fg-secondary mt-0.5 ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
+                      <div className={`text-[11px] text-fg-secondary mt-0.5 break-words ${isExpanded ? '' : 'truncate'}`}>{display.subtitle}</div>
                     )}
-                    <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap">
-                      <span>{new Date(item.queuedAt).toLocaleString()}</span>
-                      {item.completedAt && <span>→ {new Date(item.completedAt).toLocaleTimeString()}</span>}
+                    <div className="text-[10px] text-fg-tertiary mt-0.5 flex gap-2 flex-wrap items-center">
+                      <span>{fmtDateTime(item.queuedAt)}</span>
+                      {item.completedAt && <span>→ {fmtTime(item.completedAt)}</span>}
                       {item.activity && (
                         <>
-                          {item.activity.totalTokens > 0 && <span>{t('agent:profilePage.mind.tokensCount', { count: fmtNum(item.activity.totalTokens) })}</span>}
-                          {item.activity.totalTools > 0 && <span>{t('agent:profilePage.mind.toolsCount', { count: item.activity.totalTools })}</span>}
+                          {item.activity.totalTokens > 0 && <span className="hidden @sm:inline">{t('agent:profilePage.mind.tokensCount', { count: fmtNum(item.activity.totalTokens) })}</span>}
+                          {item.activity.totalTools > 0 && <span className="hidden @sm:inline">{t('agent:profilePage.mind.toolsCount', { count: item.activity.totalTools })}</span>}
                         </>
                       )}
+                      {display.badge && (
+                        <span className={`font-medium ${display.badge.color}`}>{display.badge.label}</span>
+                      )}
+                      <span className={PRIORITY_COLORS[item.priority] ?? 'text-fg-tertiary'}>{t(`agent:profilePage.mind.priority.${PRIORITY_KEYS[item.priority] ?? item.priority}`, { defaultValue: '' })}</span>
                     </div>
                   </div>
-                  <span className="text-[10px] text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded shrink-0">{item.sourceType}</span>
                   {canManageAgents && canCancelMailboxItem({
                     agentRunning,
                     itemId: item.id,
@@ -2892,6 +3241,10 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
 
                 {isExpanded && (
                   <div className="border-t border-border-subtle px-3 py-3 space-y-3">
+                    {/* 收起态不显示 sourceType（见上方注释）：类型在展开态给，信息不丢。 */}
+                    <div className="text-[10px] text-fg-tertiary">
+                      <span className="bg-surface-overlay px-1.5 py-0.5 rounded">{item.sourceType}</span>
+                    </div>
                     {/* Sender & contextual metadata */}
                     {senderName && (
                       <div className="text-[10px] text-fg-tertiary">
@@ -2901,9 +3254,11 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                     )}
 
                     {/* Full content for message-type items (chat, a2a, comments, reviews) */}
-                    {item.payload?.content && ['human_chat', 'a2a_message', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'mention'].includes(item.sourceType) && (
+                    {['human_chat', 'a2a_message', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'mention'].includes(item.sourceType) && (
                       <div className="text-xs text-fg-secondary bg-surface-primary/50 rounded-md p-2.5 whitespace-pre-wrap break-words max-h-60 overflow-y-auto">
-                        {item.payload.content}
+                        {fullContent[item.id] ?? item.payload?.content ?? (
+                          <span className="text-fg-tertiary">{t('agent:profilePage.mind.loadingContent', '正在载入完整正文…')}</span>
+                        )}
                       </div>
                     )}
 
@@ -2964,13 +3319,19 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               </div>
             );
           })}
-        </div>
-
-        {hasMore && (mailbox?.history?.length ?? 0) > 0 && (
-          <div className="text-center mt-3">
-            <button onClick={loadMore} className="text-xs text-brand-400 hover:text-brand-300 transition-colors">{t('agent:profilePage.mind.loadEarlier')}</button>
+          {items.length > groupCap && (
+            <button onClick={() => setGroupCap(c => c + GROUP_RENDER_CAP)}
+              className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 py-2">
+              {t('agent:profilePage.mind.showMore', '显示更多')}（还有 {items.length - groupCap} 条）
+            </button>
+          )}
           </div>
-        )}
+        </div>
+        </div>
+          );
+        })()}
+
+        {/* 右栏是选中实体的完整记录，不分页（分页在左栏）。 */}
       </section>
 
       {cancelConfirmId && (

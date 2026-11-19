@@ -9,7 +9,7 @@ function round(n: number, firstAt: string, lastAt = firstAt): RoundSummary {
 
 function session(id: string, roundNo: number, queuedAt: string, completedAt: string | null = null): ReviewSession {
   return {
-    id, reviewerId: 'agt_rev', reviewerName: 'Secretary', status: completedAt ? 'completed' : 'reviewing',
+    id, reviewerId: 'agt_rev', reviewerName: 'Secretary', reviewerType: 'agent', status: completedAt ? 'completed' : 'reviewing',
     queuedAt, completedAt, round: roundNo, outcome: completedAt ? 'approved' : null,
     decidedByName: completedAt ? 'Secretary' : null, note: null,
   };

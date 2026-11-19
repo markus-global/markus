@@ -3,10 +3,12 @@
  *
  * 根因（agent-self-management-redesign.md §二 P0-1）：schedule_wakeup /
  * cancel_wakeup / set_heartbeat_interval / recall_activity /
- * complete_deliberation / notebook_upsert / notebook_clear 由
+ * notebook_upsert / notebook_clear 由
  * ToolSelector.pushUnique 无条件注入 schema，但 handler 未经过 registerTool
  * 注册（走 agent.ts if-branch dispatch）。预算压力下被驱逐进 Deferred catalog
  * 后，discover_tools 只认注册表 + skillRegistry → 激活永远失败（unknown）。
+ *（历史注记：当年清单里还有一个「结束分拣」类工具，它随 Forever Loop M7 一起被删除了，
+ * 所以不再出现在这里；本用例锁的是 schema-injected 工具的 discover 激活路径。）
  *
  * 修复：
  *  1. capability-packs 导出 SCHEMA_INJECTED_TOOLS（与 pushUnique 清单同源）
@@ -78,7 +80,6 @@ describe('P0-1 · SCHEMA_INJECTED_TOOLS 集合', () => {
       'cancel_wakeup',
       'set_heartbeat_interval',
       'recall_activity',
-      'complete_deliberation',
       'notebook_upsert',
       'notebook_clear',
     ]) {

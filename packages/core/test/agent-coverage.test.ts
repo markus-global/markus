@@ -5,6 +5,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -431,19 +432,6 @@ describe('callbacks, hooks, and helpers', () => {
     expect(router.chat).toHaveBeenCalled();
   });
 
-  it('consumeDeliberationResult returns and clears pending result', () => {
-    const agent = createAgent(makeMockRouter());
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-
-    (agent as unknown as { pendingDeliberationResult: unknown }).pendingDeliberationResult = {
-      decision: 'proceed',
-      reasoning: 'test',
-    };
-    const result = agent.consumeDeliberationResult();
-    expect(result?.decision).toBe('proceed');
-    expect(agent.consumeDeliberationResult()).toBeUndefined();
-  });
-
   it('getAgentStatusSummary reflects active tasks without state manager path', async () => {
     const router = makeMockRouter({
       streamFn: async () => makeResponse('Working.', 'end_turn'),
@@ -549,7 +537,10 @@ describe('mailbox scenarios not covered elsewhere', () => {
   it('acknowledges memory_consolidation in clock mode (C8-C: the clock owns the dream)', async () => {
     const router = makeMockRouter();
     const agent = createAgent(router);
-    await agent.start();
+    await startSettled(agent);
+    // The startup wake legitimately spends LLM calls; this test's subject is the
+    // consolidation row only, so start counting after startup has settled.
+    vi.mocked(router.chat).mockClear();
 
     const reply = await processViaMailbox(agent, 'memory_consolidation', {
       summary: 'Consolidate',
@@ -804,6 +795,8 @@ describe('agent lifecycle and metrics', () => {
   it('start sets idle and stop sets offline', async () => {
     const agent = createAgent(makeMockRouter());
     await agent.start({ initialHeartbeatDelayMs: 999999 });
+    // start() also wakes the Loop, so `idle` is the SETTLED state, not a snapshot.
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     await agent.stop();
     expect(agent.getState().status).toBe('offline');
@@ -892,50 +885,14 @@ describe('agent lifecycle and metrics', () => {
   });
 });
 
-describe('performDeliberation and cognitive pipeline', () => {
-  it('performDeliberation completes via complete_deliberation tool', async () => {
-    const router = makeMockRouter({
-      chatFn: async (req: unknown) => {
-        const messages = (req as { messages: Array<{ role: string; content: unknown }> }).messages;
-        const userContent = messages
-          .filter(m => m.role === 'user')
-          .map(m => (typeof m.content === 'string' ? m.content : JSON.stringify(m.content)))
-          .join('\n');
-
-        if (userContent.includes('[DELIBERATION MODE]')) {
-          const allIds = [...userContent.matchAll(/id="([^"]+)"/g)].map(m => m[1]);
-          const processId = allIds[0] ?? 'mbx_head';
-          return makeResponse('', 'tool_use', [{
-            id: 'tc_delib',
-            name: 'complete_deliberation',
-            arguments: {
-              process_item_id: processId,
-              reasoning: 'Focus on highest priority peer message',
-              defer_item_ids: allIds.filter(id => id !== processId),
-              inline_completed_ids: [],
-              memory_updates: [{ type: 'working', key: 'delib_focus', content: 'Handle peer messages first' }],
-            },
-          }]);
-        }
-        return makeResponse(`Handled.`, 'end_turn');
-      },
-    });
-
-    const agent = createAgent(router);
-    const headItem = agent.enqueueToMailbox('a2a_message', { summary: 'msg-1', content: 'first peer message' });
-    const queuedItem = agent.enqueueToMailbox('a2a_message', { summary: 'msg-2', content: 'second peer message' });
-
-    expect(typeof (agent as unknown as { performDeliberation?: unknown }).performDeliberation).toBe('function');
-
-    const result = await (agent as unknown as {
-      performDeliberation: (head: typeof headItem, all: typeof headItem[]) => Promise<unknown>;
-    }).performDeliberation(headItem, [headItem, queuedItem]) as {
-      processItemId: string;
-      reasoning: string;
-    } | null;
-    expect(result).not.toBeNull();
-    expect(result!.processItemId).toBe(headItem.id);
-    expect(result!.reasoning).toContain('Focus');
+// The block below covers the cognitive pipeline that is actually left after the
+// multi-stage CPP removal: deterministic context assembly inside handleMessage, plus
+// the mailbox-driven turns that feed it. (The old LLM deliberation step is gone —
+// nothing here exercises it.)
+describe('cognitive pipeline over handleMessage', () => {
+  it('cognitive pipeline helpers remain wired', () => {
+    const agent = createAgent(makeMockRouter());
+    expect(typeof agent.getMindState).toBe('function');
   });
 
   it('makes NO CPP LLM calls — the multi-stage pipeline is removed (审计 §8.1)', async () => {
@@ -1121,7 +1078,7 @@ describe('performDeliberation and cognitive pipeline', () => {
     await agent.stop('maintenance');
     expect(agent.getState().status).toBe('offline');
     expect(agent.getStopReason()).toBe('maintenance');
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     expect(agent.getStopReason()).toBeUndefined();
     await agent.stop();

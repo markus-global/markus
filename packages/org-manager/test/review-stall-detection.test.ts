@@ -11,8 +11,13 @@ import { StaleDetector } from '../src/stale-detector.js';
  * human-visible signal existed before then.
  *
  * The detector now measures `now - task.updatedAt`, which IS the authoritative
- * "when did anyone last touch this card" fact, and escalates in two steps:
- * reviewer first (fast), human only if the card still has not moved.
+ * "when did anyone last touch this card" fact, and wakes the RESPONSIBLE REVIEWER.
+ *
+ * Owner 2026-11-18 removed the human tier that used to follow it: a card waiting on a
+ * named reviewer does not need the whole org pinged on a clock, and the fallback
+ * surfaced under the wrong title ("Unstarted task") to the wrong party. There is now
+ * exactly ONE review signal, and it goes to the reviewer agent's mailbox — never to
+ * the human notification list.
  */
 
 const MIN = 60 * 1000;
@@ -39,8 +44,6 @@ describe('review stall detection', () => {
     detector = new StaleDetector(taskService as never, {
       maxInProgressMs: 24 * HOUR,
       reviewReminderMs: 30 * MIN,
-      maxReviewWaitMs: 4 * HOUR,
-      maxBranchDivergenceCommits: 100,
     });
   });
 
@@ -62,13 +65,15 @@ describe('review stall detection', () => {
     expect(items[0]?.ageMs).toBeGreaterThan(30 * MIN);
   });
 
-  it('escalates to a human only after the reviewer reminder had its chance', async () => {
+  it('never produces a second, human-facing review tier — however long the card sits', async () => {
+    // A genuinely abandoned card (5h untouched) must still yield exactly ONE signal,
+    // addressed to the reviewer. No human escalation, in any time frame.
     taskService.listTasks.mockReturnValue([reviewTask(5 * 60)]);
-    const types = (await detector.scan()).map(i => i.type);
+    const items = await detector.scan();
+    const types = items.map(i => i.type);
 
-    // Both tiers fire for a genuinely abandoned card: reminder first, escalation after.
-    expect(types).toContain('review_reminder');
-    expect(types).toContain('review_stale');
+    expect(types).toEqual(['review_reminder']);
+    expect(items[0]?.agentId).toBe('agent-reviewer');
   });
 
   it('does not re-notify on every scan while the card keeps not moving', async () => {

@@ -6,6 +6,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -376,7 +377,7 @@ describe('status and metrics helpers', () => {
     expect(agent.getState().status).toBe('offline');
     expect(agent.getStopReason()).toBe('maintenance');
 
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     expect(agent.getStopReason()).toBeUndefined();
   });
@@ -418,7 +419,7 @@ describe('status and metrics helpers', () => {
 describe('lifecycle', () => {
   it('start sets agent to idle', async () => {
     const agent = createTestAgent(makeMockRouter());
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
   });
 
@@ -794,14 +795,14 @@ describe('org context and callbacks', () => {
 describe('Agent.reconcileToIdle — OB-3 残留脏态兜底清理', () => {
   it('无残留且已 idle → 返回 false 无副作用（幂等）', async () => {
     const agent = createTestAgent(makeMockRouter());
-    await agent.start();
+    await startSettled(agent);
     expect(agent.reconcileToIdle()).toBe(false);
     expect(agent.getState().status).toBe('idle');
   });
 
   it('idle + 残留 currentActivity → 清除活动并保持 idle，返回 true', async () => {
     const agent = createTestAgent(makeMockRouter());
-    await agent.start();
+    await startSettled(agent);
     // 注入遗留活动痕迹（模拟执行路径未清理的残留）
     (agent as any).state.currentActivity = {
       id: 'act-leftover',

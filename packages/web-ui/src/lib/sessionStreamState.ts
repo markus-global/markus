@@ -129,6 +129,23 @@ export class SessionStreamState {
   }
 
   /**
+   * **服务端确认**该会话正在输出（本地乐观提示不算）。
+   *
+   * 为什么必须要这个与 {@link isStreaming} 分开的读法：`isStreaming` 把“本地乐观”
+   * 也算作在跑（发完消息立刻就看到“输出中”，体验需要如此）。但**基于它做打断
+   * 决策**等于让本地提示当权威 —— 发送 → `applyLocalOptimistic(true)` → 下一次发送
+   * 读到“在跑” → abort 自己刚起的流。
+   *
+   * 所以：**渲染可以用 `isStreaming`，决策只能用本方法。** 判据：本地提示只描述
+   * “我请求了”，描述不了“它真的在跑”。问不到权威 → 返回 false（宁可不打断）。
+   */
+  isServerConfirmedStreaming(sessionId: string | null | undefined): boolean {
+    if (!sessionId) return false;
+    const e = this.bySession.get(sessionId);
+    return !!e && e.source === 'server' && e.streaming;
+  }
+
+  /**
    * 「此刻唯一那个活着的 assistant 气泡」的 id。
    *
    * 一个回合最多只有一个在飞的 assistant 消息，所以答案**只能是一个 id**，

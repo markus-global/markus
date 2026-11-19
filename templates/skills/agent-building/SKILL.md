@@ -114,7 +114,7 @@ After the JSON is saved, write each file individually using `file_write`. The ba
    - Output standards and quality criteria
    - Domain-specific knowledge and context
 
-3. **HEARTBEAT.md** (RECOMMENDED) — Defines what the agent proactively checks every ~30 minutes via `HeartbeatScheduler`. **Without this file, the agent is purely reactive** — it will only respond to direct messages and task assignments, never proactively monitor its environment. Write a role-specific checklist:
+3. **HEARTBEAT.md** (RECOMMENDED) — The checklist the agent follows when a **liveness patrol** runs. Patrols are *not* on a timer: `AgentClock` owns an agent's only timers (just two sources — `mailbox-maintenance` and `trigger-expiry`) and no heartbeat source is registered on it. A patrol starts when the liveness fallback asks for one (`agent.triggerHeartbeat()`, reached from the manager / API-server dirty-state check); the agent's default state between patrols is `rest(wakeOn)`, and the wake it waits for arrives as a mailbox `system_event`. **Without this file the patrol has nothing role-specific to run** — the agent falls back to a generic check-in and is effectively reactive only: it responds to direct messages and task assignments but never proactively monitors its environment. Write a role-specific checklist:
    - Check mailbox for new messages and respond to urgent items
    - Review assigned tasks — update progress, unblock if possible
    - Check team announcements for new information

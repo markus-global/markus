@@ -37,6 +37,12 @@ import type { AgentScenario } from './agent.js';
  * cannot drift.
  */
 export const MAILBOX_TYPE_SCENARIO: Partial<Record<MailboxItemType, AgentScenario>> = {
+  // A human message IS a chat turn — the shape follows from the signal, not from
+  // whichever entry point happened to enqueue it. Stated here so `sendMessage`
+  // does not have to invent a default (it used to leave `scenario` undefined and
+  // let `handleMessage` guess `'chat'` for *any* type, which made a forgotten
+  // scenario indistinguishable from a human message).
+  human_chat: 'chat',
   // Agent-to-agent traffic is a conversational turn, whichever envelope carries it
   // (`a2a_message` and a `mention` are the same shape — both arrive as `a2a`).
   a2a_message: 'a2a',
@@ -54,11 +60,17 @@ export const MAILBOX_TYPE_SCENARIO: Partial<Record<MailboxItemType, AgentScenari
 
 /**
  * The turn shape for a signal type, or `undefined` when the type is not part of
- * this mapping (the caller then keeps its own default).
+ * this mapping (the caller then states its own path fact).
  *
- * Pure and total: it answers only from the table above, so there is no second
- * place where the same question could be answered differently.
+ * Overloaded so that a **literal** type in the table yields a definite
+ * `AgentScenario` — inside a `switch (item.sourceType) { case 'task_comment': … }`
+ * TypeScript narrows the type to the literal, so `mailboxScenario(item.sourceType)`
+ * is total there and no `?? default` is needed. Only a genuinely unknown string
+ * gets `| undefined`, which forces the caller to decide rather than inherit a
+ * human-chat-shaped default.
  */
+export function mailboxScenario<K extends keyof typeof MAILBOX_TYPE_SCENARIO>(type: K): AgentScenario;
+export function mailboxScenario(type: string | undefined): AgentScenario | undefined;
 export function mailboxScenario(type: string | undefined): AgentScenario | undefined {
   if (!type) return undefined;
   return MAILBOX_TYPE_SCENARIO[type as MailboxItemType];

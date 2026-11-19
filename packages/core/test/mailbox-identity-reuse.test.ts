@@ -36,7 +36,8 @@ import { openSqlite, closeSqlite, SqliteMailboxRepo, SqliteWorkUnitRepo } from '
 const AGENT = 'agt_identity_reuse';
 const TASK = 'tsk_identity_reuse';
 const REF = `task_${TASK}_r2`;
-const STRICT = 'MARKUS_STRICT_IDENTITY';
+// 严格是默认；LENIENT=1 才是豁免。全局夹具设了 LENIENT，所以这里要**清掉**它。
+const LENIENT = 'MARKUS_LENIENT_IDENTITY';
 
 let tempDir: string;
 let db: ReturnType<typeof openSqlite>;
@@ -94,12 +95,12 @@ beforeEach(() => {
   db = openSqlite(join(tempDir, 'reuse.db'));
   repo = new SqliteMailboxRepo(db);
   units = new SqliteWorkUnitRepo(db);
-  process.env[STRICT] = '1';
+  delete process.env[LENIENT];
   takeUnclaimedIdentityCount();
 });
 
 afterEach(() => {
-  delete process.env[STRICT];
+  process.env[LENIENT] = '1';
   takeUnclaimedIdentityCount();
   closeSqlite();
   rmSync(tempDir, { recursive: true, force: true });

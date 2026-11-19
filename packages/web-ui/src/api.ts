@@ -863,12 +863,6 @@ export interface ActivityRecord {
 
 export interface AgentMindState {
   attentionState: string;
-  isDeliberating?: boolean;
-  deliberationActivity?: {
-    activityId: string;
-    label: string;
-    startedAt: string;
-  };
   currentFocus?: {
     mailboxItemId: string;
     type: string;
@@ -888,14 +882,6 @@ export interface AgentMindState {
     reasoning: string;
     createdAt: string;
   }>;
-  lastTriage?: {
-    reasoning: string;
-    processedItemId: string;
-    deferredItemIds: string[];
-    droppedItemIds: string[];
-    inlineCompletedIds?: string[];
-    timestamp: string;
-  };
   notebook?: Array<{
     key: string;
     text: string;
@@ -968,6 +954,14 @@ export interface AgentMailboxResponse {
   queueDepth: number;
   statusCounts?: Record<string, number>;
   sourceTypeCounts?: Record<string, number>;
+  /** 左栏实体类别计数（`mode=groups` 返回）。 */
+  kindCounts?: Record<string, number>;
+  /**
+   * **陈旧** `processing` 行数（Agent 已空闲却仍挂在处理中）。
+   * 服务端用与「清理」按钮**同一判据**算出，是 agent 级的权威读数 ——
+   * 不要用「可见那页记录里有多少条 processing」代替它。
+   */
+  staleProcessingCount?: number;
   history: EnrichedMailboxItem[];
 }
 
@@ -1304,10 +1298,22 @@ export interface AgentMemorySummary {
   dailyLog: string | null;
   recentDailyLogs: string | null;
   longTermMemory: string | null;
-  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）
-  usedPercent?: number;
-  budgetChars?: number;
-  budgetLimit?: number;
+  // 审计 P-12/§9.1：记忆健康可观测字段（由 /agents/:id/memory 返回）。
+  // 【两个独立预算，不共用一个分母】注入轴 = 本轮 prompt 实际注入 / 本轮注入上限；
+  // 磁盘策展区 = knowledge.md 的 curated 区 / 15000（仅报告）。
+  // 一个进度条只能代表一个轴，否则数字与长度会永远对不上。
+  injectedChars?: number;
+  injectionCapChars?: number;
+  injectionPercent?: number;
+  injectionOmittedCount?: number;
+  injectionMeasured?: boolean;
+  curatedChars?: number;
+  curatedCap?: number;
+  curatedPercent?: number;
+  // 观察缓冲：第三个独立预算（不注入）
+  observationChars?: number;
+  observationLimit?: number;
+  observationPercent?: number;
   observationCount?: number;
   curatedCount?: number;
   archivedChars?: number;
@@ -1603,6 +1609,25 @@ export const api = {
     removeSkill: (id: string, skillName: string) =>
       request<{ ok: boolean; skills: string[] }>(`/agents/${id}/skills/${encodeURIComponent(skillName)}`, { method: 'DELETE' }),
     getHeartbeat: (id: string) => request<AgentHeartbeatInfo>(`/agents/${id}/heartbeat`),
+    /**
+     * 单个 agent 的磁盘占用（只扫它自己的目录）。
+     *
+     * 不要用 `system.storage()` 代替 —— 后者遍历整个数据目录（每个 agent 都扫一遍，
+     * 实测 1.4s / 60KB+），而本页只要一个 agent 的数字。
+     */
+    storage: (id: string) =>
+      request<{ agentId: string; dataDir: string; size: number; subItems: Array<{ name: string; size: number }>; depthLimited: boolean }>(
+        `/agents/${id}/storage`,
+      ),
+    /**
+     * 给单个 agent 发一条消息（= 用户自己开口），用于「让 Agent 整理记忆」这类
+     * 需要 Agent 自己动手（memory_organize）的场景——平台不替 Agent 搬运记忆。
+     */
+    sendToAgent: (agentId: string, text: string) =>
+      request<{ status: string }>('/message', {
+        method: 'POST',
+        body: JSON.stringify({ targetAgentId: agentId, text }),
+      }),
     triggerHeartbeat: (id: string) => request<{ status: string; message: string }>(`/agents/${id}/heartbeat/trigger`, { method: 'POST' }),
     cancelWakeup: (id: string, wakeupId: string) => request<{ status: string; wakeupId: string }>(`/agents/${id}/wakeups/${wakeupId}`, { method: 'DELETE' }),
     getRecentActivities: (id: string) => request<{ activities: ActivitySummary[] }>(`/agents/${id}/recent-activities`),
@@ -1620,13 +1645,21 @@ export const api = {
     getMindState: (id: string) => request<AgentMindState>(`/agents/${id}/mind`),
     sendCommand: (id: string, command: string, args?: string) =>
       request<{ status: string; command: string }>(`/agents/${id}/command`, { method: 'POST', body: JSON.stringify({ command, args }) }),
-    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string }) => {
+    getMailbox: (id: string, opts?: { limit?: number; offset?: number; category?: string; sourceType?: string; status?: string; itemId?: string; mode?: string; entity?: string; entityKind?: string }) => {
       const params = new URLSearchParams();
       if (opts?.limit) params.set('limit', String(opts.limit));
       if (opts?.offset) params.set('offset', String(opts.offset));
       if (opts?.category) params.set('category', opts.category);
       if (opts?.sourceType) params.set('sourceType', opts.sourceType);
       if (opts?.status) params.set('status', opts.status);
+      // 单条详情：列表把正文裁到 800 字，展开时用这个取全文。
+      if (opts?.itemId) params.set('itemId', opts.itemId);
+      // 工作记录：`mode=groups` = 左栏实体列表（服务端聚合 + 分页）；
+      // `entity=<kind:id>` = 右栏该实体的**全部**记录。
+      if (opts?.mode) params.set('mode', opts.mode);
+      if (opts?.entity) params.set('entity', opts.entity);
+      // 左栏实体类别筛选（task / requirement / channel / none）。
+      if (opts?.entityKind) params.set('entityKind', opts.entityKind);
       const qs = params.toString();
       return request<AgentMailboxResponse>(`/agents/${id}/mailbox${qs ? '?' + qs : ''}`);    },
     // C8-E：「在跑」只读 work_units（status + claimed_by + lease_until）。

@@ -27,6 +27,7 @@ import {
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
+import { loopSessionId, resolveTarget } from './session-target.js';
 
 /**
  * Peer agent as seen by `askAgent` (the `agent_ask_agent` tool).
@@ -355,8 +356,6 @@ export interface CreateAgentRequest {
   agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
-  /** A5: 自主档位。缺省 'act'（= 加这个字段之前的行为）。 */
-  autonomy?: 'observe' | 'act';
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
@@ -798,12 +797,21 @@ export class AgentManager {
           status: task.status,
         });
       } else {
-        // No task service — send as a direct message to the agent
+        // No task service = an ASSEMBLY ERROR, not a routing decision: a delegation is work
+        // owned by a task, so with no task there is no entity to open a session for. Route it
+        // to the agent's Loop session — the one destination for signals without an identity
+        // (M2) — instead of inventing a `sys_<sender>_<ts>` placeholder that nobody will ever
+        // read again (and that makes the agent amnesiac by construction).
+        log.warn('Delegation has no task service — routing to the Loop session, not a placeholder session', {
+          to: envelope.to,
+          from: envelope.from,
+          title: delegation.title,
+        });
         await targetAgent.sendMessage(
           `[Delegated Task from ${envelope.from}]\nTitle: ${delegation.title}\nDescription: ${delegation.description}\nPriority: ${delegation.priority}`,
           envelope.from,
           { name: envelope.from, role: 'manager' },
-          { sourceType: 'a2a_message', sessionId: `sys_${envelope.from}_${Date.now()}`, waitForReply: false }
+          { sourceType: 'a2a_message', scenario: 'a2a', sessionId: loopSessionId(envelope.to), waitForReply: false }
         );
       }
     });
@@ -1432,14 +1440,28 @@ export class AgentManager {
     }
 
     // Fallback: direct enqueue when group chat handlers are not wired.
+    //
+    // The session comes from the SAME resolver as every other signal (M1). A DM's channel
+    // key IS its conversational identity, so two deliveries in the same DM land in one
+    // session; the old `a2a_<target>_<ts>` opened a brand-new session per message, which is
+    // the historical "every a2a is amnesiac" defect (618k tokens, 0% cache hit). A resolver
+    // miss cannot happen here (the channel key is always supplied) but would still route to
+    // the Loop session rather than being guessed.
     const target = this.getAgent(targetId);
+    const routed = resolveTarget({
+      sourceType: 'a2a_message',
+      agentId: targetId,
+      conversationId: dmChannelKey,
+      channelSessionId: dmChannelKey,
+      ts: Date.now(),
+    });
     const reply = await target.sendMessage(
       message,
       fromId,
       { name: fromName, role: this.getAgent(fromId)?.config.agentRole ?? 'worker' },
       {
         sourceType: 'a2a_message',
-        sessionId: `a2a_${targetId}_${Date.now()}`,
+        sessionId: routed?.sessionId ?? loopSessionId(targetId),
         scenario: 'a2a',
         channelKey: dmChannelKey,
         priority: priority as 0 | 1 | 2 | 3 | 4 | undefined,
@@ -1582,7 +1604,6 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
-      autonomy: request.autonomy ?? 'act',
       concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2271,7 +2292,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message, _from) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', scenario: 'a2a', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>
@@ -2475,8 +2496,6 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
-    /** A5: 自主档位。历史行为 'act'；缺列时按 'act' 处理（见下）。 */
-    autonomy?: string;
     profile?: unknown;
     tokensUsedToday?: number;
     activeTaskIds?: unknown;
@@ -2550,8 +2569,6 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
-      // A5: 历史行经 ADD COLUMN DEFAULT 'act' 读出 'act'，与加列前行为一致。
-      autonomy: row.autonomy === 'observe' ? 'observe' : 'act',
       concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -3206,7 +3223,7 @@ export class AgentManager {
           }),
         delegateMessage: async (targetId, message) => {
           const target = this.getAgent(targetId);
-          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', waitForReply: false });
+          const reply = await target.sendMessage(message, id, { name: config.name, role: 'manager' }, { sourceType: 'a2a_message', scenario: 'a2a', waitForReply: false });
           return stripInternalBlocks(reply);
         },
         getTeamStatus: () =>

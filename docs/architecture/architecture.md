@@ -467,7 +467,9 @@ converged the mechanism as follows:
    timestamp (`recordHeartbeatSkip()`, which never calls the LLM); LLM inspection happens only when
    state actually changed — fingerprinted by `heartbeatStateFingerprint()` (queue-content signature
    + activeTaskIds signature). Every heartbeat trigger funnels through `heartbeat:trigger` → the
-   single handler in `agent.ts` → `mailbox.enqueue('heartbeat')` → single-item coalesced processing.
+   single handler in `agent.ts`, which runs the patrol directly (`runHeartbeatPatrol()`); the
+   `mailbox.enqueue('heartbeat')` queue-row path is gone — cut 9 made `rest` the only sleep
+   entry, so there is no rollback channel back to queue rows.
 3. **Single safety-net arbiter (Conservator)**: `packages/org-manager/src/agent-conservator.ts`
    **collapses the dirty / stale / stall verdicts into one component** (as of refactor 4 the
    decision primitives are inlined and the component is fully self-contained):
@@ -818,7 +820,13 @@ Markus supports multiple human users and agents communicating through various ch
 
 ## 9. Heartbeat Tasks
 
-After Agent startup, HeartbeatScheduler triggers periodic tasks at configured intervals:
+A patrol is **not** on a timer. `AgentClock` owns the process's only timers — two sources,
+`mailbox-maintenance` (defer release / lease reclaim / stale cleanup) and `trigger-expiry`
+(`rest(wakeOn)` expiry and scheduled wakeups) — and no heartbeat source is registered on it.
+A patrol runs when the liveness fallback asks for one (`agent.triggerHeartbeat()`, reached
+from the manager / API server dirty-state check); the default resting behaviour is
+`rest(wakeOn)`, and the wake it waits for is delivered as a mailbox `system_event`. When a
+patrol does run:
 
 - Each run executes checks with `[HEARTBEAT CHECK-IN]` prompt under the "Patrol, Don't Build" principle
 - **Active goals check**: injects standing objectives from requirements with `GoalConfig.loopEnabled`

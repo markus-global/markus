@@ -7,7 +7,7 @@
  *
  * 删掉 mailbox.enqueue 里那段守卫，本文件立刻变红。
  */
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
 import { AgentMailbox, takeUnclaimedIdentityCount } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
 
@@ -15,6 +15,46 @@ const payload = { summary: 'probe', content: 'probe' } as never;
 
 afterEach(() => {
   takeUnclaimedIdentityCount(); // 重置计数，避免跨用例串味
+});
+
+/**
+ * The default is REJECTION, not a log line. An optional strictness guards
+ * nothing: the old `MARKUS_STRICT_IDENTITY=1` opt-in left production on the
+ * "count and let it through" branch, and 242,496 inputs ended up with 0.18%
+ * identity coverage (measured 2026-11-18).
+ *
+ * The global harness sets MARKUS_LENIENT_IDENTITY=1 for synthetic fixtures,
+ * so these cases clear it to exercise the real default.
+ */
+describe('入队身份缺失 —— 默认拒绝', () => {
+  beforeEach(() => {
+    delete process.env.MARKUS_LENIENT_IDENTITY;
+  });
+  afterEach(() => {
+    process.env.MARKUS_LENIENT_IDENTITY = '1';
+  });
+
+  it('非平台事实、既无 ref 又无声明 → 抛错，且提示可行动', () => {
+    const mb = new AgentMailbox('agt_probe', new EventBus());
+    expect(() => mb.enqueue('human_chat', payload, {})).toThrow(/refOrigin/);
+  });
+
+  it('声明 pending-link → 放行（语义明确：稍后才拿身份）', () => {
+    const mb = new AgentMailbox('agt_probe', new EventBus());
+    expect(() => mb.enqueue('human_chat', payload, { refOrigin: 'pending-link' })).not.toThrow();
+  });
+
+  it('带了 ref → 放行', () => {
+    const mb = new AgentMailbox('agt_probe', new EventBus());
+    expect(() =>
+      mb.enqueue('human_chat', payload, { workUnitRef: 'session:cs_x:r1', refOrigin: 'turn' }),
+    ).not.toThrow();
+  });
+
+  it('平台内部类型豁免（回执 / 内部事件）', () => {
+    const mb = new AgentMailbox('agt_probe', new EventBus());
+    expect(() => mb.enqueue('system_event', payload, {})).not.toThrow();
+  });
 });
 
 describe('C8-P0：入队身份缺失守卫', () => {

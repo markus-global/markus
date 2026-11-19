@@ -34,7 +34,7 @@ P2 (Directed Retrieval) and P4 (Assembly) are code-only phases with no LLM call.
 | 2 | **Human Chat** (stream/SSE) | API `/api/agents/:id/chat?stream=1` | `handleMessageStream()` | Yes | Yes | Yes | 200 (safety net) |
 | 3 | **Task Execution** | `TaskService.runTask()` → `_executeTaskInternal()` | `llmRouter.chatStream()` | Yes | Yes | Yes | **None** |
 | 4 | **Respond-in-Session** | API `/api/agents/:id/sessions/:sid/messages` | `respondInSession()` | Yes | Yes | Yes | 200 (safety net) |
-| 5 | **Heartbeat** | `HeartbeatScheduler` → `handleHeartbeat()` | `handleMessage(scenario:'heartbeat')` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
+| 5 | **Heartbeat / liveness patrol** | `agent.triggerHeartbeat()` (manager / API-server dirty-state fallback) → `runHeartbeatPatrol()` → `handleHeartbeat()` | `handleMessage(scenario:'heartbeat')` | No | Subset | Yes (via handleMessage) | 200 + 3 retries |
 | 6 | **A2A Chat** | API `/api/agents/:id/a2a` / channel routing | `handleMessage(scenario:'a2a')` | No | Yes | Yes (via handleMessage) | 200 |
 | 7 | **Comment Response** | Mailbox `task_comment` / `requirement_update` | `handleMessage(scenario:'comment_response')` | No | Yes | Yes (via handleMessage) | 200 |
 | 8 | **Internal (Lightweight)** | Various | `handleMessage(scenario:'heartbeat')` | No | Varies | Yes (via handleMessage) | 200 |
@@ -217,7 +217,7 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 
 `buildSystemPrompt()` returns `{ text, segments, volatile }` under **Scheme A**: `text` is a byte-stable, two-tier system (Tier 1 STABLE + Tier 2 SEMI-STABLE); all per-call dynamic content lives in `volatile`, assembled by `prepareMessages()` into a single `[SYSTEM] [Live context]` message (role `user`) appended as the **last message of the request** (after all history). Details:
 
-1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ deliberation). A cache breakpoint after this tier caches this prefix across all calls.
+1. **Tier 1 (Stable)**: Role, policies, tool usage rules, communication rules, collaboration rules. Scenario-free — stay cached across ALL mode switches (chat ↔ heartbeat ↔ a2a ↔ task_execution). A cache breakpoint after this tier caches this prefix across all calls.
 
 2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, NOTEBOOK.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
 
@@ -525,7 +525,7 @@ The legacy notebook aliases `update_working_memory` / `clear_working_memory` wer
 | **L0** | Role, tool rules, search, **Learning Habits** (≤1600 chars; look-back / encode-where / skill impact — [learning-loop.md](./learning-loop.md) §8), autonomy, security, resource refs, user language, shortest task workflow | Always (non-dream) |
 | **L1** | Identity (capped roster), org/workspace, knowledge, active tasks | Identity always; tasks when present |
 | **L2** | Skill catalog metadata (name + one-line description) | Always via identity / discover_tools |
-| **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `deliberation` / `comment_response` |
+| **L3+** | Skill full bodies, Error Recovery, Quality Gates, full Task Workflow, deliverable format | `discover_tools` activate, or scenarios: `task_execution` / `review` / `comment_response` |
 
 > **SSOT**: Budgets, packs, and afford fail-closed rules live in [agent-runtime.md](./agent-runtime.md). The sections below are normative Spec supplements.
 
@@ -599,9 +599,18 @@ Placed at the **end of Tier 2** so the identity/org prefix remains stable across
 | `a2a` | Coordination only. Concise, structured. Complex work → `task_create`. | Visible to **peer agent** only | Reply directly; `notify_user` to escalate to humans |
 | `group_chat` | Team group chat channel. Silence by default, @mention routing, processing checklist, reply-in-group rules. | Visible to **all team members** | `agent_send_group_message` for replies; `notify_user` for private escalation |
 | `comment_response` | Context-first protocol. Batch awareness (handle bundled comments as one). Use `reply_to_comment_id` for structural quoting. Convergence check before replying. | **Not directly visible** | `task_comment` / `requirement_comment` for thread (with `reply_to_comment_id`); `notify_user` if urgent |
-| `deliberation` | Multiple mailbox items — assess before committing. Use `check_mailbox` for full queue inspection; `defer_mailbox_item` / `drop_mailbox_item` for queue management; `notebook_upsert` to record situational assessment; finish with `complete_deliberation`. Goal tools (`goal_create`, `goal_update`, `goal_status`) available. | **Not visible** | Inline handling via deliberation whitelist (`notify_user`, `task_comment`, `agent_send_message`, etc.) |
 | `review` | Evaluate deliverable quality against acceptance criteria. | **Not directly visible** | `task_update` for verdict; `notify_user` optionally |
 | `memory_consolidation` | Internal memory management. Purely private. | **Not visible**; internal only | No communication tools needed |
+
+There is **no `deliberation` scenario**. The batch "assess the whole queue, then commit" turn
+and its whole-queue completion tool were **deleted** in the Forever Loop refactor (M1–M7): no
+`## Current Interaction Mode` block is rendered for it and no such turn is ever started.
+Pick-order and interruption are decided **before** any turn starts, by the pure rule table
+`heuristicDecision()` in `attention.ts` (R0–R9, first match wins: same-user/same-session `merge`,
+new human chat `preempt`, same-task comment `merge`, higher priority `preempt`, otherwise
+`continue`): no model call, no triage, no deliberation turn. Queue inspection and queue management
+(`check_mailbox`, `defer_mailbox_item`, `drop_mailbox_item`, `notebook_upsert`) and the goal tools
+(`goal_create`, `goal_update`, `goal_status`) stay available inside *whichever* scenario is running.
 
 #### Referencing Markus Resources
 
@@ -758,7 +767,7 @@ Five primary memory tools (down from seven); legacy aliases preserved:
 
 **Legacy memory aliases** (same handlers): `memory_list`, `memory_delete`, `memory_update_longterm`. (The notebook aliases `update_working_memory` / `clear_working_memory` were removed — use `notebook_upsert` / `notebook_clear`.)
 
-Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **heartbeat** and **deliberation** for standing-goal management.
+Goal tools (`goal_create`, `goal_update`, `goal_status`) are available in every scenario — including **heartbeat** patrols — for standing-goal management.
 
 `ToolSelector.selectTools()` determines which tools appear in each LLM call:
 
@@ -769,7 +778,7 @@ Goal tools (`goal_create`, `goal_update`, `goal_status`) are available during **
 5. **Recently used tools**: Tools used in recent calls are re-included to maintain continuity
 6. **Mailbox management tools**: `defer_mailbox_item`, `drop_mailbox_item`,
    `prioritize_mailbox_item` — registered for all agents, available during
-   deliberation and focused processing.
+   every scenario, including heartbeat patrols and focused processing.
 7. **Activated tools**: Tools the agent explicitly activated via `discover_tools`
 8. **Skill-provided tools**: MCP tools from activated skills
 9. **`discover_tools` meta-tool**: Always present, enabling agents to list/activate/install skills at runtime

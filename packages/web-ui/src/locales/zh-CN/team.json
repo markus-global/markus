@@ -218,7 +218,6 @@
       "requirementChangesRequested": "需求已打回：{{title}}",
       "mentionedYou": "{{authorName}} 提到了你",
       "groupMessage": "{{senderName}} 在 {{groupName}} 中",
-      "staleReview": "审核停滞",
       "stuckTask": "任务卡住",
       "agentNeedsHelp": "智能体需要帮助",
       "taskComment": "任务「{{title}}」有新评论"

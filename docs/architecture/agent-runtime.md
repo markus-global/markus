@@ -342,16 +342,17 @@ Live (operator):
 
 ## §12 Clock and heartbeat
 
-Two timers used to exist (`HeartbeatScheduler` owned a `setInterval`, `AgentClock` owned
-another), and a heartbeat tick was modelled as a **message**: a queue row that carried
-retention, triage and drop semantics a tick never needed — `heartbeat` rows dominated the
-completed population (~70% of `mailbox_items`).
+`AgentClock` is the single periodic driver, and a heartbeat is no longer a **message**. The earlier
+design had two timers (a heartbeat scheduler and `AgentClock` both owning a `setInterval`) and
+modelled every tick as a `mailbox_items` queue row, which carried retention, triage and drop
+semantics a tick never needed — `heartbeat` rows dominated the completed population (~70% of
+`mailbox_items`). Both are gone (Forever Loop M6).
 
 | Invariant | How it is enforced |
 |---|---|
-| **One clock** | `AgentClock` is the only owner of `setInterval`. `HeartbeatScheduler` keeps its policy (interval, active hours, deep-sleep growth, status reporting) and loses its timer: it registers as a clock source named `heartbeat`. Deep-sleep re-registers that source instead of restarting a private timer, so a cadence change still takes effect immediately and still leaves one timer in the process. |
-| **A tick is not a message** | In `clock` mode the `heartbeat:trigger` listener runs the patrol directly. No `mailbox_items` row is produced, so the patrol has no retention, triage or age-based drop semantics. Re-entrancy is guarded by a single in-flight flag, which replaces the previous "heartbeat folding" inside `Mailbox.enqueue` — one guard, not two mechanisms. |
-| **One dream trigger** | The dream runs from the clock source `memory-consolidation`. The `memory_consolidation` mailbox type is not a second entry link, and must not be subject to age-based dropping: otherwise the only cleaning task can be silently discarded when the queue is busy. |
+| **One clock, two sources** | `AgentClock` is the only periodic driver **of the agent runtime**: one timer per agent, coarse tick (`tickMs`, 1000 ms), each source keeping its own cadence and failure-isolated from the others. (The invariant is about the *agent cadence*, not about every `setInterval` in the process — unrelated subsystems keep their own: shell-session output polling, model-catalog refresh, OAuth device polling.) Exactly two sources are registered — `mailbox-maintenance` (defer release / lease reclaim / stale-row cleanup) and `trigger-expiry` (`rest(wakeOn)` expiry sweep + scheduled-wakeup sweep). **No heartbeat source exists on it**: a patrol is not time-driven at all — it runs only when the liveness fallback asks for one (`agent.triggerHeartbeat()` → `runHeartbeatPatrol()`), so the patrol interval is no longer a timer question, and a cadence change can never leave a second timer in the process. |
+| **A tick is not a message** | The `heartbeat:trigger` listener runs the patrol directly. No `mailbox_items` row is produced, so the patrol has no retention, triage or age-based drop semantics. Re-entrancy is guarded by a single in-flight flag, which replaces the previous "heartbeat folding" inside `Mailbox.enqueue` — one guard, not two mechanisms. The `mailbox.enqueue('heartbeat')` row path is **gone**: cut 9 made `rest` the only sleep entry, so there is no rollback channel back to queue rows. |
+| **One dream trigger** | The dream has no clock source: it is a **pre-sleep** act — `restOn()` runs `runDreamTick()` → `shouldRunDreamCycle` before parking, so the only producer is the decision to sleep. The `memory_consolidation` mailbox type is not a second entry link (and must not be subject to age-based dropping, otherwise the only cleaning task can be silently discarded when the queue is busy); in `clock` dream-path mode such a row is acknowledged, never replayed as a second trigger. |
 | **One decision function** | `shouldRunDreamCycle` remains the only place that answers "should the dream run now". |
 
 ---

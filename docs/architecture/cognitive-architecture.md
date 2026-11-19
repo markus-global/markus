@@ -36,6 +36,72 @@ The cycle is **continuous**: heartbeat patrols re-enter the loop, checking activ
 
 **Concurrency note.** This five-stage cycle describes the **serial** (single-worker) attention loop. When an agent runs a concurrent worker pool ([concurrent-processing.md](./concurrent-processing.md)), each worker executes a *reduced* loop — Stimulus → Context Assembly → Deliberation → Action → Reflection — and deliberately **skips Triage / Appraisal and interrupt/preempt logic** ("concurrency without interruption", Scheme A). Triage, deliberation-over-queue, preemption and cancellation remain the serial loop's responsibility. Cross-worker consistency is instead handled structurally: an entity-affinity lock in the mailbox plus a `ConcurrentHandoffLog` whose records are injected into each worker's volatile context.
 
+**What is never skipped: the books.** Recording is not part of deliberation. Both paths converge on `processFocusedItem`, which is the single execution point that writes the `pick` row — so a reduced loop still produces a complete ledger.
+
+### End-to-end turn, with states
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+autonumber
+
+title One stimulus → one turn → one terminal state (concurrent path shown)
+
+actor "Human / peer / task" as Src
+participant "Mailbox" as MB
+participant "Worker loop" as W
+participant "processFocusedItem" as P
+participant "ContextEngine" as CE
+participant "LLM + tools" as LLM
+database "agent_decisions" as DEC
+database "mailbox_items" as ITEMS
+
+Src -> MB : enqueue(type, payload,\nworkUnitRef | refOrigin)
+activate MB
+MB -> MB : **identity gate**
+alt neither ref nor declaration
+  MB --> Src : **rejected** + actionable hint
+else declared
+  MB -> ITEMS : row status = **queued**
+end
+deactivate MB
+
+W -> MB : dequeueAsync()
+MB -> ITEMS : status = **processing**, lease claimed
+W -> MB : lockEntities(entity ∪ session keys)
+alt any key already held
+  MB --> W : putBack + backoff\nstatus back to **queued**
+else all keys acquired
+  W -> P : processFocusedItem(item)
+  activate P
+  P -> DEC : **pick** {source: rule, workUnitRef}
+  P -> CE : assemble context
+  CE --> P : fixed segments + volatile tail
+  P -> LLM : run the turn
+  loop each turn boundary
+    LLM -> P : checkYieldPoint()
+    P -> DEC : {type, source: model|heuristic,\noverrode?}
+  end
+  LLM --> P : reply | end_turn | error
+  alt reply or typed end_turn
+    P -> ITEMS : status = **completed**
+  else abnormal, retries left
+    P -> ITEMS : requeue → **queued**
+  else retry exhausted / cancelled / orphan
+    P -> ITEMS : **bounced** + drop_reason
+  end
+  deactivate P
+  W -> MB : unlockEntities()
+end
+
+note over DEC, ITEMS
+  Every processed item can now be traced:
+  mailbox row → pick row → turn (workUnitRef)
+  → who decided (source) → terminal state.
+end note
+@enduml
+```
+
 ---
 
 ## 2. Cognitive Science Foundations
@@ -167,15 +233,119 @@ Three interlocking mechanisms drive agent attention and sustained work:
 Processes the **Mailbox** — the agent's unified stimulus queue. Responsibilities:
 
 - Priority ordering and preemption
-- LLM-driven triage (`TriageJudge` + `onTriageCompleted`) and full-session deliberation
-- Triage decisions persisted to notebook (`triage-decision`)
-- Yields to higher-priority items (e.g., human chat during deliberation)
+- Rule-based preemption only: `heuristicDecision()` in `attention.ts` is a pure rule table
+  (same-session follow-up → merge, human chat preempts background, peer message preempts
+  background, priority comparison) — deciding whether to interrupt costs **no** model call
+- One `pick` decision per dequeued item; the priority queue alone decides processing order
+- Yields to higher-priority items at turn boundaries (`checkYieldPoint()`), applying the same
+  rule table
 
-Triage decides **what** to process. How context is prepared for processing is now deterministic (§3), not a second LLM stage.
+The queue decides **what** to process (priority + enqueue order). How context is prepared for processing is now deterministic (§3), not a second LLM stage.
+
+#### Attention states
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+hide empty description
+
+title AttentionController — states (per worker in concurrent mode)
+
+[*] --> idle
+
+idle --> deciding : item dequeued\n(serial path: pre-triage runs here)
+idle --> focused : concurrent worker\nlocks entities, skips triage
+
+deciding --> focused : processFocusedItem()\n**records `pick`**
+
+focused --> deciding : checkYieldPoint()\nnew mail raised interruptSignal
+focused --> idle : turn finished\nfocus cleared, lease released
+
+deciding --> focused : continue / merge\n(back to the same turn)
+focused --> idle : preempt / cancel\n(item requeued or bounced)
+
+note right of focused
+  Every entry into `focused` leaves a
+  `pick` row: processFocusedItem is the
+  single recording point for both loops.
+  Before 2026-11-18 the concurrent path
+  entered this state without recording.
+end note
+
+note bottom of deciding
+  In concurrent mode this state is not
+  used: workers do not deliberate.
+  Skipping judgement never skips the books.
+end note
+@enduml
+```
+
+#### Who decided — provenance at a yield point
+
+Every ledger row carries `source` (`model` / `heuristic` / `rule` / `user`). A platform
+rule that refuses the model's choice records **one** final row with `overrode` set,
+not two rows nobody can order.
+
+```plantuml
+@startuml
+skinparam defaultTextAlignment center
+
+title checkYieldPoint — one decision, with its provenance
+
+start
+:turn boundary reached;
+if (user pressed cancel?) then (yes)
+  :decision = cancel\nsource = user;
+  stop
+endif
+if (interruptSignal and currentFocus?) then (no)
+  :decision = continue\n(no ledger row — nothing was decided);
+  stop
+endif
+
+if (delegate present?) then (yes)
+  :evaluateInterrupt()\nsource = **model**;
+else (no)
+  :heuristicDecision()\nsource = **heuristic**;
+endif
+
+if (delegate threw?) then (yes)
+  :heuristicDecision()\nsource = **heuristic**\n(degradation is recorded, not hidden);
+endif
+
+if (decision == defer AND isStrictStateItem?) then (yes)
+  :overrode = defer\nheuristicDecision()\nsource = **heuristic**;
+else (no)
+endif
+
+:formatDecisionReasoning();
+:**recordDecision** — one row\n{type, source, overrode, workUnitRef};
+
+switch (decision)
+case (merge)
+  :mailbox.merge();
+case (defer)
+  :mailbox.defer();
+case (preempt)
+  :lastYieldDecision = preempt;
+case (cancel)
+  :lastYieldDecision = cancel;
+case (continue)
+endswitch
+stop
+@enduml
+```
+
+Reading the ledger afterwards answers three questions without guesswork: **which turn**
+(`workUnitRef`), **who decided** (`source`), and **what a rule overturned** (`overrode`).
 
 ### Heartbeat
 
-Periodic patrol re-enters the cognitive cycle without external stimulus. Each heartbeat checks:
+A patrol re-enters the cognitive cycle without external stimulus. Nothing schedules it on a
+timer: `AgentClock` owns the only timers (two sources, `mailbox-maintenance` and
+`trigger-expiry`), and a patrol runs only when the liveness fallback asks for one
+(`agent.triggerHeartbeat()` from the manager / API server). The resting default is
+`rest(wakeOn)`, whose wake arrives as a mailbox `system_event`. Each patrol checks:
 
 - Active goals (Goal/Loop — see below)
 - Timed-out `PendingCallbackRegistry` entries
@@ -187,23 +357,25 @@ There is no depth ladder anymore — every path, heartbeat included, uses the sa
 
 #### Spec: active-hours timezone (C1)
 
-`HeartbeatScheduler` skips ticks outside `config.activeHours`. Previously
-`isWithinActiveHours()` used the host machine's local clock (`new Date().getHours()`), which
-could disagree with the agent's configured timezone.
+`isWithinActiveHours()` is the policy that says whether a patrol may run inside
+`config.activeHours`. It and `minutesOfDayInTimeZone()` live in
+`packages/core/src/heartbeat.ts` as pure functions; since the periodic scheduler was
+deleted, **no runtime caller gates a tick on them** — there is no tick to gate. The C1 fix
+they carry is the timezone rule: evaluation uses the **configured** timezone rather than the
+host's local clock.
 
 - **Behavior**: `activeHours` is evaluated in the **configured timezone** (falling back to
   host local time only when none is configured or the id is invalid), so an agent set to
-  `09:00–18:00` patrols during those hours in *its* timezone regardless of where the process
-  runs.
+  `09:00–18:00` is in-window during those hours in *its* timezone regardless of where the
+  process runs.
 - **Invariants**: same-instant evaluation yields the correct in/out-of-window result for a
   given configured timezone; the start minute is inclusive and the end minute exclusive; the
   midnight-wrap case (e.g. `22:00–06:00`) still works.
-- **Testing** (`packages/core/test/heartbeat.test.ts` — the "C1:" cases): with a fixed
-  instant (`2026-07-23T12:00:00Z`) and different configured timezones (UTC / Los_Angeles /
-  Tokyo), assert the active-window decision matches the configured zone, plus the
-  invalid-timezone fallback and midnight-wrap cases.
+- **Testing**: the two helpers are pure and side-effect-free, so the invariants above are
+  directly unit-testable at a fixed instant; the old dedicated heartbeat test file is gone
+  along with the scheduler.
 - **Status**: implemented (pure `isWithinActiveHours` / `minutesOfDayInTimeZone` via
-  `Intl.DateTimeFormat`; `HeartbeatScheduler.isWithinActiveHours` delegates to them).
+  `Intl.DateTimeFormat`), currently unreferenced from production code.
 
 > Prompt-cache note: heartbeat situational content (mailbox meta, notebook, timestamps) is
 > injected in the volatile `[Live context]` tail, never into the byte-stable system prefix — see

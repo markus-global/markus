@@ -30,6 +30,44 @@ const ALL_BUILTIN = [
   'team_list', 'team_status', 'delegate_message', 'package_list', 'session',
 ];
 
+describe('rest is a loop-only tool', () => {
+  const withRest = [...ALL_BUILTIN, 'rest'];
+
+  it('is available in the decision loop', () => {
+    const selector = new ToolSelector();
+    const selected = selector.selectTools({
+      allTools: makeToolMap(withRest), userMessage: 'what next', pack: 'converse', scenario: 'loop',
+    });
+    expect(selected.map(t => t.name)).toContain('rest');
+  });
+
+  it.each(['chat', 'task_execution', 'heartbeat', 'a2a'])(
+    'is absent from %s — that turn owes a reply or a result, not an 8h park',
+    (scenario) => {
+      const selector = new ToolSelector();
+      const selected = selector.selectTools({
+        allTools: makeToolMap(withRest), userMessage: 'hello', pack: 'converse', scenario,
+      });
+      expect(selected.map(t => t.name)).not.toContain('rest');
+    },
+  );
+
+  it('stays out even when recent/protected paths try to carry it in', () => {
+    // `rest` is eviction-protected, and sticky/recent selection runs before the
+    // final emission loop. Protection means "never dropped for budget", not
+    // "present in every scenario" — the choke point must still filter it.
+    const selector = new ToolSelector();
+    const selected = selector.selectTools({
+      allTools: makeToolMap(withRest),
+      userMessage: 'hello',
+      pack: 'converse',
+      scenario: 'chat',
+      recentToolNames: ['rest'],
+    });
+    expect(selected.map(t => t.name)).not.toContain('rest');
+  });
+});
+
 describe('ToolSelector', () => {
   it('always includes base tools when available', () => {
     const selector = new ToolSelector();

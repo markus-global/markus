@@ -10,7 +10,6 @@
  */
 import { describe, it, expect } from 'vitest';
 import {
-  deriveTriageBatchSummary,
   resolveTokensToday,
   visibleStorageBuckets,
   storageBucketLabelKey,
@@ -281,17 +280,24 @@ describe('OVERVIEW_SECTION_IDS', () => {
     expect(DEFAULT_OVERVIEW_SECTION).toBe(OVERVIEW_SECTION_IDS[0]);
   });
 
-  // 打开概览先看到「这个 agent 是谁」（人设 / 心跳 / 记忆文件）；统计数字退到后面。
-  it('leads with files and keeps usage last', () => {
-    expect(OVERVIEW_SECTION_IDS[0]).toBe('files');
-    expect(OVERVIEW_SECTION_IDS[OVERVIEW_SECTION_IDS.length - 1]).toBe('usage');
+  // 打开概览先看到「它现在怎么样」；配置与用量退到最后。
+  it('leads with run and keeps settings last', () => {
+    expect(OVERVIEW_SECTION_IDS[0]).toBe('run');
+    expect(OVERVIEW_SECTION_IDS[OVERVIEW_SECTION_IDS.length - 1]).toBe('settings');
   });
 
-  // 两份 locale 的键顺序是给人看的文档（读者会按它推断 UI 顺序）。顺序不一致本身
-  // 不会报错，但会让下一个改顺序的人以为漏改了——所以与 UI 顺序显式对齐。
+  it('is exactly three groups (capability folded into settings)', () => {
+    expect(OVERVIEW_SECTION_IDS).toEqual(['run', 'memory', 'settings']);
+  });
+
+  // 两份 locale 里除了四个在用分组，还留着旧 id 的条目（`sections.recent.empty`
+  // 这类子键仍被引用）。所以这里不比对“键集合相等”，而是锁「四个在用分组在
+  // locale 里的相对顺序与 UI 一致」——那才是读者会拿来推断 UI 顺序的东西。
   it('keeps both locale files in the same order as the UI', () => {
     for (const [localeName, sections] of [['zh', zhSections], ['en', enSections]] as const) {
-      expect(Object.keys(sections), `${localeName} section order`).toEqual([...OVERVIEW_SECTION_IDS]);
+      const keys = Object.keys(sections);
+      const present = keys.filter(k => (OVERVIEW_SECTION_IDS as readonly string[]).includes(k));
+      expect(present, `${localeName} section order`).toEqual([...OVERVIEW_SECTION_IDS]);
     }
   });
 
@@ -316,13 +322,22 @@ describe('resolveOverviewSection', () => {
   });
 
   it('honours a known requested section', () => {
-    expect(resolveOverviewSection('files')).toBe('files');
+    expect(resolveOverviewSection('memory')).toBe('memory');
+    expect(resolveOverviewSection('settings')).toBe('settings');
+  });
+
+  // 旧深链（profileTab:'mind' / 'files' / 'tools' / 'usage'）不再是分组 id：
+  // 它们必须落到默认组，而不是渲染一个空面板。
+  it('treats the pre-consolidation ids as unknown', () => {
+    for (const legacy of ['files', 'mind', 'recent', 'tools', 'usage']) {
+      expect(resolveOverviewSection(legacy)).toBe(DEFAULT_OVERVIEW_SECTION);
+    }
   });
 
   // The mailbox highlight must win: it points at one item that only exists inside
-  // 运行与注意力, so landing on any other group hides the thing the link promised.
+  // 概览（运行），so landing on any other group hides the thing the link promised.
   it('lets a mailbox highlight win over the requested section', () => {
-    expect(resolveOverviewSection('files', 'msg_abc')).toBe('mind');
+    expect(resolveOverviewSection('settings', 'msg_abc')).toBe('run');
   });
 
   // A stale/unknown link must not select a group that has no panel.
@@ -331,9 +346,9 @@ describe('resolveOverviewSection', () => {
     expect(resolveOverviewSection('')).toBe(DEFAULT_OVERVIEW_SECTION);
   });
 
-  // `''` is falsy — an empty highlight must not silently select 运行与注意力.
+  // `''` is falsy — an empty highlight must not silently select 概览.
   it('ignores an empty mailbox id', () => {
-    expect(resolveOverviewSection('files', '')).toBe('files');
+    expect(resolveOverviewSection('memory', '')).toBe('memory');
   });
 });
 
@@ -389,24 +404,3 @@ describe('resolveAgentStatus', () => {
   });
 });
 
-describe('deriveTriageBatchSummary — 是否在批量处理必须可见', () => {
-  it('只有主项 ⇒ 单条（isBatch=false）', () => {
-    expect(deriveTriageBatchSummary(undefined)).toMatchObject({ processed: 1, total: 1, isBatch: false });
-    expect(deriveTriageBatchSummary({})).toMatchObject({ total: 1, isBatch: false });
-    expect(deriveTriageBatchSummary({ deferredItemIds: [], droppedItemIds: [] })).toMatchObject({ total: 1, isBatch: false });
-  });
-
-  it('延后/丢弃/inline 计入批次大小 ⇒ isBatch=true', () => {
-    expect(deriveTriageBatchSummary({ deferredItemIds: ['a', 'b'] })).toMatchObject({
-      processed: 1, deferred: 2, dropped: 0, inlineCompleted: 0, total: 3, isBatch: true,
-    });
-    expect(deriveTriageBatchSummary({
-      droppedItemIds: ['x'], inlineCompletedIds: ['y'],
-    })).toMatchObject({ processed: 1, dropped: 1, inlineCompleted: 1, total: 3, isBatch: true });
-  });
-
-  it('容错缺失的可选数组', () => {
-    expect(deriveTriageBatchSummary({ deferredItemIds: undefined })).toMatchObject({ total: 1, isBatch: false });
-    expect(deriveTriageBatchSummary(null)).toMatchObject({ total: 1, isBatch: false });
-  });
-});

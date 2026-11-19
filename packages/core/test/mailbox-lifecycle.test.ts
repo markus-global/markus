@@ -17,7 +17,6 @@ import { EventBus } from '../src/events.js';
 import {
   type MailboxItem,
   type MailboxPriority,
-  type DeliberationResult,
 } from '@markus/shared';
 
 const AGENT_ID = 'lifecycle-agent';
@@ -36,7 +35,6 @@ function makeController(delegateOverrides?: Partial<AttentionDelegate>) {
     onFocusChanged: vi.fn(),
     evaluateInterrupt: vi.fn().mockResolvedValue('continue'),
     onTriageCompleted: vi.fn(),
-    performDeliberation: vi.fn().mockResolvedValue(null),
     onDeliberationCompleted: vi.fn(),
     ...delegateOverrides,
   };
@@ -190,141 +188,6 @@ describe('Mailbox Lifecycle: abnormal completion → retry', () => {
 
     expect(callCount).toBe(3);
     expect(mailbox.depth).toBe(0);
-  });
-});
-
-describe('Mailbox Lifecycle: deliberation → triage', () => {
-  it('deliberation reorders items when backlog exists', async () => {
-    const processedIds: string[] = [];
-    let firstDeliberationChosenId: string | undefined;
-    let deliberationCallCount = 0;
-
-    const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
-        processedIds.push(item.id);
-        return `done`;
-      }),
-      performDeliberation: vi.fn().mockImplementation(
-        async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
-          deliberationCallCount++;
-          // Only record the first deliberation's choice
-          const chosen = allItems[allItems.length - 1];
-          if (deliberationCallCount === 1) {
-            firstDeliberationChosenId = chosen.id;
-          }
-          return {
-            processItemId: chosen.id,
-            inlineCompletedIds: [],
-            deferItemIds: [],
-            dropItemIds: [],
-            reasoning: 'chose last item for testing',
-          };
-        },
-      ),
-    });
-
-    // Enqueue 3 items at same priority to trigger deliberation
-    mailbox.enqueue('a2a_message', { summary: 'msg-1', content: 'first' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-2', content: 'second' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-3', content: 'third' });
-
-    controller.start();
-
-    await vi.waitFor(() => {
-      expect(processedIds.length).toBeGreaterThanOrEqual(1);
-    }, { timeout: 3000 });
-
-    controller.stop();
-
-    // Deliberation was called at least once
-    expect(deliberationCallCount).toBeGreaterThanOrEqual(1);
-    // The first processed item matches what the first deliberation chose
-    expect(processedIds[0]).toBe(firstDeliberationChosenId);
-  });
-
-  it('deliberation can inline-complete items', async () => {
-    const processedIds: string[] = [];
-    const inlineCompletedIds: string[] = [];
-
-    const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
-        processedIds.push(item.id);
-        return `done`;
-      }),
-      performDeliberation: vi.fn().mockImplementation(
-        async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
-          // Process head, inline-complete one of the queued items
-          const toInlineComplete = allItems[1]; // pick second item
-          inlineCompletedIds.push(toInlineComplete.id);
-          return {
-            processItemId: headItem.id,
-            inlineCompletedIds: [toInlineComplete.id],
-            deferItemIds: [],
-            dropItemIds: [],
-            reasoning: 'inline completed one item',
-          };
-        },
-      ),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'msg-A', content: 'A' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-B', content: 'B' });
-    mailbox.enqueue('a2a_message', { summary: 'msg-C', content: 'C' });
-
-    controller.start();
-
-    // Wait for remaining items to be processed
-    await vi.waitFor(() => {
-      expect(processedIds.length).toBeGreaterThanOrEqual(2);
-    }, { timeout: 5000 });
-
-    controller.stop();
-
-    // The inline-completed item should NOT appear in processedIds
-    for (const id of inlineCompletedIds) {
-      expect(processedIds).not.toContain(id);
-    }
-    // At least 2 items should have been fully processed (head + remaining after inline)
-    expect(processedIds.length).toBeGreaterThanOrEqual(2);
-  });
-
-  it('deliberation protects human_chat from being dropped', async () => {
-    const processedIds: string[] = [];
-
-    const { controller, mailbox } = makeController({
-      processMailboxItem: vi.fn().mockImplementation(async (item: MailboxItem) => {
-        processedIds.push(item.id);
-        return `done`;
-      }),
-      performDeliberation: vi.fn().mockImplementation(
-        async (headItem: MailboxItem, allItems: MailboxItem[]): Promise<DeliberationResult> => {
-          // Try to drop everything except processItemId
-          return {
-            processItemId: allItems[0].id,
-            inlineCompletedIds: [],
-            deferItemIds: [],
-            dropItemIds: allItems.slice(1).map(i => i.id),
-            reasoning: 'drop all non-essential',
-          };
-        },
-      ),
-    });
-
-    mailbox.enqueue('a2a_message', { summary: 'agent work', content: 'work' });
-    const humanItem = mailbox.enqueue('human_chat', { summary: 'user msg', content: 'hello' });
-    mailbox.enqueue('heartbeat', { summary: 'heartbeat', content: 'check' });
-
-    controller.start();
-
-    // Wait until everything is processed
-    await vi.waitFor(() => {
-      expect(processedIds.length).toBeGreaterThanOrEqual(2);
-    }, { timeout: 5000 });
-
-    controller.stop();
-
-    // human_chat should be protected from dropping — it must be processed
-    expect(processedIds).toContain(humanItem.id);
   });
 });
 

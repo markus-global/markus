@@ -148,25 +148,6 @@ export const DECLARATIONS = {
     witness: { type: 'trigger', at: 'wakeForTriggerMatch' },
     note: 'Producer: mailbox:new-item. Consumer: wakeForTriggerMatch(). Sweep still covers timeout only.',
   },
-  'trigger.wakeupSweepInterval': {
-    kind: 'limit',
-    declaredAt: 'packages/core/src/agent.ts:WAKEUP_SWEEP_INTERVAL_MS',
-    witness: { type: 'trigger', at: 'sweepDueWakeups' },
-    onExceed: 'act',
-    note: 'Transitional: after H4/A4 this drops to a timeout-only safety net, not the wakeup path.',
-  },
-
-  // ── Agent identity / autonomy ───────────────────────────────────────────
-  'agent.autonomyLevel': {
-    kind: 'param',
-    declaredAt: 'packages/shared/src/types/agent.ts:AgentConfig',
-    // SETTLED (2026-11-15, A5). Binary 'observe' | 'act', default 'act'.
-    // One consumer: `maySelfInitiate()` is called from exactly one place
-    // (the heartbeat tick in agent.ts). A second call site turns
-    // packages/shared/test/autonomy-single-consumer.test.ts red on purpose.
-    witness: { type: 'reader', at: 'maySelfInitiate' },
-    note: "DEFAULT 'act' in the agents table keeps historical rows identical to pre-column behaviour — compatible read, no data migration.",
-  },
   'agent.scenarioIsDeclared': {
     kind: 'param',
     declaredAt: 'packages/core/src/agent.ts:scenario',

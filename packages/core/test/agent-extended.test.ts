@@ -6,6 +6,7 @@ import type { RoleTemplate } from '@markus/shared';
 import { mkdtempSync, rmSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { startSettled } from './helpers/agent-start.js';
 
 let tempDir: string;
 
@@ -281,7 +282,7 @@ describe('stopped agent behavior', () => {
     const agent = createAgent(makeMockRouter());
     await agent.stop();
     expect(agent.getState().status).toBe('offline');
-    await agent.start();
+    await startSettled(agent);
     expect(agent.getState().status).toBe('idle');
     await agent.stop();
   });
