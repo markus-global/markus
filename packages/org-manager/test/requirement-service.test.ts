@@ -90,6 +90,8 @@ describe('RequirementService', () => {
         entityId: req.id,
         fromStatus: 'pending',
         toStatus: 'in_progress',
+        // No canned English annotation: the transition + actor already say "approved".
+        reason: null,
       }));
     });
 
@@ -116,6 +118,11 @@ describe('RequirementService', () => {
       expect(resubmitted.title).toBe('Better title');
       expect(resubmitted.rejectedReason).toBeUndefined();
       expect(repo.updateStatus).toHaveBeenCalledWith(req.id, 'pending');
+      expect(statusTransitionRepo.record).toHaveBeenCalledWith(expect.objectContaining({
+        fromStatus: 'rejected',
+        toStatus: 'pending',
+        reason: null,
+      }));
     });
 
     it('throws when resubmitting non-rejected requirement', () => {
