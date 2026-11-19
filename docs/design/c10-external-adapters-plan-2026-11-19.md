@@ -22,7 +22,7 @@ Concept SSOT: master refactor plan (workspace deliverable `markus-master-refacto
   #461 (C9 doc placement), #462 (C8 residuals, merged 2026-11-15 22:04 CST),
   #464 (forever loop + work record by entity, merged 2026-11-19 12:11 CST).
   At snapshot time no code PR was open against the integration branch; the first are
-  this plan (#466) and C10-0A (#467).
+  this plan (PR #470, consolidated from the closed #466) and C10-0A (#467).
 - Master plan §5.1 rule 0 stands: **nothing enters `main` until all cuts are complete
   and accepted.** All probes run against feature-branch builds.
 - The running instance **now contains the new build**: process started 2026-11-19
@@ -369,7 +369,14 @@ the next step — no human UI clicks — with corresponding rows in `work_units`
 ## 3. Execution discipline
 
 - Branches `task/c10-<slice>` from `origin/feat/refactor-plan`; one worktree per
-  card; PR base `feat/refactor-plan`, never `main`.
+  card. **Integration (Owner 2026-11-19):** after task-board review approval the
+  CTO merges the card branch into `build/c10-integration` (`--no-ff`); the single
+  PR #470 (`build/c10-integration` -> `feat/refactor-plan`) accumulates those
+  merges and is the one gate into the feature branch. No per-card PRs target the
+  integration branch: CI only runs on bases `main` / `feat/**`, so a PR to
+  `build/**` would silently skip CI — card verification happens at review time,
+  and PR #470's CI is the final gate. The main checkout stays on
+  `build/c10-integration` for this phase; never branch from its HEAD.
 - Per slice: red test first → implement → real-data probe on the running build →
   full regression in CI order; one rollback-able commit per slice.
 - Evidence: every reading carries a timestamp; live counts written as "≥N + read
