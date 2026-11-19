@@ -428,14 +428,27 @@ pnpm test:skipped-audit
    (`.github/workflows/ci.yml` is the authority). It is a local extra, not part of the
    CI set — label it as such, or wire it into CI on its own card. Writing it as
    "CI-equivalent" would claim a gate that does not exist.
-5. The `backend-coverage` job additionally runs `test:coverage:web-ui` +
-   `coverage:ratchet`, and `coverage:node` + `coverage:ratchet:node`. Those ratchets
-   only run on PRs.
+5. Coverage steps sit outside the seven and **none of them block**: the `quality` job
+   ends with "Frontend coverage (web-ui, blocking)" (`test:coverage:web-ui`) and
+   "Coverage ratchet" (`coverage:ratchet`), both carrying `continue-on-error: true`;
+   `backend-coverage` is a whole job with `continue-on-error: true` (build →
+   `coverage:node` → `coverage:ratchet:node`), where only the last step deliberately
+   omits the flag, so that job turns red while the run stays green — a signal, not a
+   merge gate. **Do not judge blocking from a step name**: one is literally called
+   "blocking" and carries `continue-on-error: true`; the flag is the authority.
+6. CI fires on `push` to `main` **and** on `pull_request` targeting `main` or `feat/**`
+   (`ci.yml:3-13`), so these coverage steps also run on every merge to `main` — not
+   only on PRs.
 
 **What local cannot cover:** `storage-cross-platform` runs on ubuntu *and* windows; the
 Windows half is unreachable on a Mac. Local green therefore means
 "`quality`-equivalent", and a delivery must mark the Windows storage matrix as **not
 covered locally** — never as "all green".
+
+**When a change may skip both layers:** when it touches only `docs/**`. `lint` scans
+`packages/*/src/` and `typecheck` never reads markdown, so neither layer has anything
+to say about it. The criterion is where the change lands, not what it looks like:
+anything under `packages/*/src`, `scripts/`, or a test file runs both layers.
 - Owner gates: backlog disposition (0B) and orphan disposition (0C) **adjudicated
   2026-11-19** (no migration / no DROP; fixed epoch constant). Remaining: each
   DNS/policy change (C10-D), and the final `main` merge after all cuts are accepted.
