@@ -1,12 +1,18 @@
 # C10 — External Source Adapters: Execution Plan
 
-Date: 2026-11-19 · Author: CTO · Status: **proposal — Owner approval pending**
+Date: 2026-11-19 · Author: CTO · Status: **Owner-approved 2026-11-19 (with amendments); Part 1 in execution**
 Base: `feat/refactor-plan` @ `617e9fda` (branch `task/c10-plan`)
 Concept SSOT: master refactor plan (workspace deliverable `markus-master-refactor-plan-2026-11-11.md`, §4.9 / §5.2 C10 row / appendix A-4). This doc is the execution plan only; it does not redefine concepts.
 
 > Owner instruction 2026-11-19: write the C10 plan; **anything still broken from earlier
 > cuts gets fixed in the first half of C10**, with the problem and the solution written
 > here. Part 1 is that first half. Part 2 is C10 proper.
+>
+> Owner decision 2026-11-19 (adjudicates the ⚖ gates below): **no data migration and no
+> DROP — old-user compatibility is preserved**; everything else is delegated to the CTO
+> on first principles. Fix existing defects completely before starting C10 proper.
+> Consequences: 0C becomes freeze-and-guard (no table drop); 0B's disposition uses a
+> fixed product-wide epoch constant in code, never an instance restart reading.
 
 ---
 
@@ -15,7 +21,8 @@ Concept SSOT: master refactor plan (workspace deliverable `markus-master-refacto
 - C6–C9 code is merged into `feat/refactor-plan`: #451 (C8), #459 (C9 integration),
   #461 (C9 doc placement), #462 (C8 residuals, merged 2026-11-15 22:04 CST),
   #464 (forever loop + work record by entity, merged 2026-11-19 12:11 CST).
-  No PR is open against the integration branch.
+  At snapshot time no code PR was open against the integration branch; the first are
+  this plan (#466) and C10-0A (#467).
 - Master plan §5.1 rule 0 stands: **nothing enters `main` until all cuts are complete
   and accepted.** All probes run against feature-branch builds.
 - The running instance **now contains the new build**: process started 2026-11-19
@@ -67,7 +74,7 @@ Code facts (HEAD `617e9fda`):
 
 Six cards, cut by independently reviewable seam. Owner decision gates are marked ⚖.
 
-### C10-0A · Identity enforcement at the single assembly point (P1+P2+P3)
+### C10-0A · Identity enforcement at the single assembly point (P1+P2+P3) — DONE (#467)
 
 **Problem.** Three leaks, one root cause: a mailbox item can declare (or omit) a
 `work_unit_ref` without anyone checking that the referenced WorkUnit exists.
@@ -76,18 +83,27 @@ Six cards, cut by independently reviewable seam. Owner decision gates are marked
   ensured (5 dangling rows).
 - P3: `pick` decisions inherit whatever the item had (23 rows, old process).
 
-**Solution (structure, not guards).** `mailbox.enqueue` is already the single envelope
-assembly point (C2). Make it the single **identity enforcement point** too:
-1. Every non-platform-internal enqueue must carry a resolvable `work_unit_ref`.
-2. If the caller declares a ref whose WorkUnit does not exist, the assembly point
-   ensures it via `WorkUnitService.ensure(ref)` (the one writer, C7) — "declared but
-   uncreated" becomes structurally unrepresentable.
-3. If no ref is declared and the source is not platform-internal: ensure an
-   entity-level WorkUnit (the #464 work-record-by-entity mechanism) keyed by the
-   entity the signal is about (`requirement_<id>` / `task_<id>_r<round>`), with
-   `refOrigin` declared. The `?? null` fallbacks at the three requirement-service
-   sites are deleted, not guarded.
-4. `recordDecision` keeps copying `item.workUnitRef` — no second writer, no new
+**Solution (structure, not guards) — implemented in #467.** `mailbox.enqueue` is
+already the single envelope assembly point (C2). It is now the single **identity
+enforcement point** too:
+1. Every non-platform-internal enqueue must carry a resolvable `work_unit_ref` or an
+   explicit `refOrigin` declaration; the guard rejects with an actionable message
+   pointing at the two legal exits (constructor / declaration).
+2. A declared ref is ensured at the assembly point via `MailboxIdentityPort.ensureIdentity`
+   (wired by `APIServer.wireWorkUnits` to `WorkUnitService.ensure`, the one writer, C7) —
+   "declared but uncreated" becomes structurally unrepresentable. Ensure failures are
+   counted (`takeIdentityEnsureFailedCount`), never silent, never break the business
+   path. Owner resolution lives in org-manager: task → assignee, requirement → creator,
+   fallback: recipient. Core never guesses entity semantics.
+3. The three requirement-service sites carry
+   `turnWorkUnitRef ?? WORK_UNIT_REF.requirement(id)` — never NULL. The turn ref is kept
+   when present because C8-B same-turn delta matching is exact-ref; the entity ref
+   (`requirement:<id>`, single constructor in shared) covers human-triggered events
+   outside any turn. The `?? null` fallbacks are deleted, not guarded.
+4. `linkExecutionEpoch` transitions a notification-prebuilt idle WU to `running`
+   (`execution_started` transition row) — a turn never runs on an idle row; ensure is
+   insert-or-nothing, the same row is reused.
+5. `recordDecision` keeps copying `item.workUnitRef` — no second writer, no new
    mechanism; once items are honest, decisions are honest.
 
 **Acceptance (probes on the running build, not fixtures).**
@@ -102,7 +118,14 @@ assembly point (C2). Make it the single **identity enforcement point** too:
   `--self-test` still 13/13 (fixtures use post-epoch timestamps).
 - Full regression green in CI order (typecheck → lint → architecture-guard → tests).
 
-### C10-0B · Backlog disposition + audit execution point (P4+P6) ⚖
+**Status 2026-11-19**: code + tests + docs landed in #467 (target suite red(10) →
+green(53); real-SQLite probes for the idle→running transition and the identity-port
+wiring; full regression core+org-manager+shared 6012 passed / 11 skipped, 449 files;
+eslint 0 errors; architecture-guard 27/27). The runtime probes above run after #467
+merges into `feat/refactor-plan` and the instance restarts into it — they are 0B's
+entry evidence, not a fixture substitute.
+
+### C10-0B · Backlog disposition + audit execution point (P4+P6) — policy adjudicated
 
 **Problem.** After 0A, the gates still read red for rows that can never be fixed:
 gate 2's 5 rows (no time filter) and gate 11's 23 rows (fixed epoch 11-15, all
@@ -112,10 +135,12 @@ periodically (G4): CI cannot have a real DB, so "who runs it and records the res
 is missing, not "wire it into CI".
 
 **Solution.**
-1. ⚖ **Disposition policy (Owner approves)**: add a documented build-epoch filter to
-   gates 2 and 11 — same pattern as the existing `DECISIONS_IDENTITY_EPOCH`, with the
-   epoch = the restart into the identity-complete build (2026-11-19T06:09:30Z on this
-   instance). The 28 historical rows are enumerated in a dated record
+1. **Disposition policy (Owner-approved 2026-11-19)**: add a documented build-epoch
+   filter to gates 2 and 11 — same pattern as the existing `DECISIONS_IDENTITY_EPOCH`:
+   a **fixed product-wide epoch constant in code** (value 2026-11-19T06:09:30Z, the
+   first restart into the identity-complete build), identical on every instance —
+   never read from instance state (a per-instance restart reading is a second writer
+   and drifts per install). The 28 historical rows are enumerated in a dated record
    (`docs/records/identity-backlog-disposition-2026-11-1x.md`) with their refs and why
    they are pre-fix. Gate 1's 328+6 historical rows age out of the rolling window
    naturally (by 11-22 / 11-26); the 6 are listed in the same record. No backfill,
@@ -130,7 +155,7 @@ violation on a test instance produces a visible alert; `--self-test` unchanged a
 green; the disposition record enumerates exactly 34 rows (5+23+6) plus the 3 gate-5
 rows with their aging-out dates.
 
-### C10-0C · Orphan marketplace rows (P5, master-plan G7) ⚖
+### C10-0C · Orphan marketplace rows (P5, master-plan G7) — adjudicated: freeze, no DROP
 
 **Problem.** `marketplace_templates` (2 rows) and `marketplace_skills` (1 row) still
 hold data, but #462 (A3, Owner-merged) deleted their CREATE statements and repos;
@@ -138,22 +163,28 @@ grep confirms **zero read paths**. New databases no longer create these tables, 
 ones still have them — the schema has forked, and three rows are unreachable.
 "Table exists, data exists, nobody can read it" is not a safe state.
 
-**Options.**
-- (a) **Archive (recommended)**: export the 3 rows verbatim into a dated record
-  (`docs/records/marketplace-orphan-archive-2026-11-1x.md`), then one migration drops
-  the two tables. Data preserved in git, schema fork closed, single rollback-able
-  commit. The marketplace lives in markus-hub; these are legacy local rows.
-- (b) Restore a read path (repo + API) for 3 rows no consumer has asked for —
-  re-creates a tombstone with a reader, against the A3 rationale.
+**Decision (Owner 2026-11-19): no migration, no DROP — old-user compatibility wins.**
+The earlier recommended option (export then drop) is rejected: dropping tables on
+existing installs is a data migration, and the 3 rows are harmless where they sit.
+What is not safe is *ambiguity* — "table exists, data exists, nobody can read it"
+without a recorded verdict. So freeze, don't delete:
+1. Export the 3 rows verbatim into a dated record
+   (`docs/records/marketplace-orphan-freeze-2026-11-1x.md`) — git becomes the readable
+   archive; the DB rows stay untouched.
+2. An architecture-guard invariant forbids any new reader/writer of
+   `marketplace_templates` / `marketplace_skills` in source (resurrection guard) —
+   the tombstone cannot grow a second life.
+3. The schema fork is documented as intentional: fresh DBs never create the tables;
+   existing DBs keep them frozen. No migration closes the fork by deletion.
 
-⚖ Owner decides; (a) involves data deletion and is not executed without approval.
-The master plan's §M6 / §8.4 wording is aligned this round to the adjudicated reality:
-"delete CREATE statements + unreachable repos; keep data rows until explicitly
-archived; no DROP without Owner approval" (G6 is settled by the Owner's #462 merge).
+The master plan's §M6 / §8.4 / G7 wording is aligned this round to the adjudicated
+reality: "delete CREATE statements + unreachable repos; data rows frozen in place;
+no DROP, no migration" (G6 was settled by the Owner's #462 merge).
 
-**Acceptance (if a).** Record contains all 3 rows byte-faithful; migration drops
-exactly 2 tables; fresh DB and migrated DB have identical table sets; rollback
-re-creates tables and re-inserts the archived rows.
+**Acceptance.** Record contains all 3 rows byte-faithful; the guard invariant is
+present and biting (a seeded reader fails the guard); zero code paths read or write
+the two tables; no migration entry added; existing rows untouched (before/after row
+counts identical).
 
 ### C10-0D · C9 runtime close-out (P7)
 
@@ -216,7 +247,7 @@ change landed in both SSOTs; no doc contradicts the measured table count (53).
 
 ```
 0A (identity enforcement) ──> 0B (disposition + audit point; needs 0A verified first)
-0C (orphan archive)            independent, ⚖ Owner decision first
+0C (orphan freeze + guard)     independent (Owner decision rendered: no DROP)
 0D (C9 runtime probe)          independent (trigger already true)
 0E (append-only)               independent
 0F (baseline + wording)        independent
@@ -343,16 +374,17 @@ the next step — no human UI clicks — with corresponding rows in `work_units`
   full regression in CI order; one rollback-able commit per slice.
 - Evidence: every reading carries a timestamp; live counts written as "≥N + read
   time"; gates must be seen red before green (`--self-test`); no fixture-only proof.
-- Owner gates: backlog disposition (0B), orphan archive (0C), each DNS/policy change
-  (C10-D), and the final `main` merge after all cuts are accepted.
+- Owner gates: backlog disposition (0B) and orphan disposition (0C) **adjudicated
+  2026-11-19** (no migration / no DROP; fixed epoch constant). Remaining: each
+  DNS/policy change (C10-D), and the final `main` merge after all cuts are accepted.
 
 ## 4. Card summary
 
 | Card | Seam | Depends on | Owner gate |
 |---|---|---|---|
-| C10-0A | identity enforcement at mailbox assembly + 3 enqueue fixes + probes | — | — |
-| C10-0B | audit epochs + disposition record + daily audit clock source | 0A | ⚖ policy |
-| C10-0C | orphan export + 2-table drop migration | — | ⚖ archive |
+| C10-0A | identity enforcement at mailbox assembly + 3 enqueue fixes + probes | — | done (#467) |
+| C10-0B | audit epochs + disposition record + daily audit clock source | 0A | policy adjudicated |
+| C10-0C | orphan freeze record + resurrection guard (no DROP) | — | adjudicated: freeze |
 | C10-0D | C9-E runtime probe 0–5 + requirement close-out | — | — |
 | C10-0E | agent_activities append-only + guard | — | — |
 | C10-0F | L4 baseline script/record + L1 wording | — | — |
