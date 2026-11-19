@@ -13,7 +13,7 @@
  *   2. **`ref` 只能有一个生成器。** C6 给了 `mailbox_items.work_unit_ref` 列却
  *      写 0 行，理由就是「先建实体再建引用，别造悬空引用」。`ref` 是实体的幂等键：
  *      两套命名生成器 = 同一个执行纪元可以长出两个 WU，之后谁也说不清哪条是它。
- *      所以三个生产者（chat / task / a2a）**只许**调这里的 `WORK_UNIT_REF`，
+ *      所以四个生产者（chat / task / a2a / requirement 通知）**只许**调这里的 `WORK_UNIT_REF`，
  *      task 的 `task_<id>_r<round>` 沿用既有格式（零迁移），不新造。
  *
  * 纯声明模块：无 import、无副作用，storage / org-manager / core 都能安全引用。
@@ -146,6 +146,14 @@ export const WORK_UNIT_REF = {
     return `task_${taskId}_r${round}`;
   },
   /**
+   * C10-0A —— 需求实体身份。人 UI 审批/驳回/评论需求时 agent 没有回合，
+   * 旧 `turnWorkUnitRef?.() ?? null` 在回合外落 NULL → 守卫拒掉合法操作。
+   * 身份是**需求实体**，不是回合；存在性由 mailbox 装配点 ensure 保证。
+   */
+  requirement(requirementId: string): string {
+    return `requirement:${requirementId}`;
+  },
+  /**
    * @param entityKey `task:<taskId>` 或 `channel:<channelKey>` —— 这件事本身，
    *   不是这次投递。调用方必须给出实体；给不出实体才退到频道（对话本身即实体）。
    */
@@ -218,6 +226,8 @@ export function entityKeysOfWorkUnitRef(ref: string): string[] {
 
   const chat = /^session:(.+):r\d+$/.exec(ref);
   if (chat) return [`conv:${chat[1]}`];
+
+  if (ref.startsWith('requirement:')) return [ref];
 
   return [`wu:${ref}`];
 }

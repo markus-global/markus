@@ -1,5 +1,6 @@
 import {
   createLogger,
+  WORK_UNIT_REF,
   requirementId as genRequirementId,
   isValidRequirementTransition,
   type Requirement,
@@ -701,9 +702,11 @@ export class RequirementService implements ApprovalTargetPort {
             requirementId: id,
           }, {
             metadata: { senderName: 'System', senderRole: 'manager' },
-            // 事实必须带**当前回合身份**：`turn-delta` 按 ref 把事实归到正在执行的回合，
-            // ref 为 NULL 的事实永远匹配不到（真机：`requirement_update` 1007 条全 NULL）。
-            workUnitRef: agent.turnWorkUnitRef?.() ?? null,
+            // C10-0A：身份永不为 NULL —— 有回合挂回合（矛盾事实当轮生效，C8-B），
+            // 没回合挂**需求实体**（人 UI 审批/驳回时 agent 无回合；旧 ?? null 在此
+            // 落 NULL → 守卫拒掉合法操作，Owner 2026-11-19 前端报错）。实体 ref 由
+            // 唯一构造器建造，存在性由 mailbox 装配点 ensure 保证。
+            workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(id),
           });
         }
       } catch { /* agent not found — skip */ }
@@ -804,8 +807,8 @@ export class RequirementService implements ApprovalTargetPort {
             requirementId,
           }, {
             priority: 2,
-            // 身份：这条「需求已可验收」的事实也要能落到正在执行的回合里。
-            workUnitRef: agent.turnWorkUnitRef?.() ?? null,
+            // C10-0A：有回合挂回合，没回合挂需求实体（永不为 NULL；见状态变更处同注）。
+            workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(requirementId),
             // 第六刀 C2：意图是结构字段（不再写 payload.extra.actionRequired）。
             intent: 'action_required',
             metadata: { senderName: 'System', senderRole: 'manager' },
@@ -1015,7 +1018,8 @@ export class RequirementService implements ApprovalTargetPort {
         intent: 'action_required',
         // 身份 + 「前提失效」：「要求返工」推翻了执行方正在做的那件事的前提，
         // 必须能在**当前回合**内生效，而不是等回合结束。
-        workUnitRef: agent.turnWorkUnitRef?.() ?? null,
+        // C10-0A：回合外不再落 NULL —— 挂需求实体，入队照常（见状态变更处同注）。
+        workUnitRef: agent.turnWorkUnitRef?.() ?? WORK_UNIT_REF.requirement(req.id),
         ...(decision === 'changes_requested' ? { invalidatesPremise: true } : {}),
         metadata: { senderName: 'System', senderRole: 'manager' },
       });

@@ -443,6 +443,32 @@ export function takeUnclaimedIdentityCount(): number {
   return n;
 }
 
+/** C10-0A：累计「声明了 ref 但 ensure 失败」次数（业务不被打断，但失败可计数）。 */
+let identityEnsureFailedCount = 0;
+
+/** 读取并重置计数（诊断 / CI 门禁用）。 */
+export function takeIdentityEnsureFailedCount(): number {
+  const n = identityEnsureFailedCount;
+  identityEnsureFailedCount = 0;
+  return n;
+}
+
+/**
+ * C10-0A —— 身份 ensure 端口：声明了的 `workUnitRef` 在装配点必须存在。
+ *
+ * 实现归 org-manager（WorkUnitService.ensure 适配器）：core 不反向依赖实体语义。
+ * 所有者解析（task → assignee / requirement → creator）也在实现侧，不在这里猜。
+ * 返回 false = ensure 失败：入队照常（观测设施不成为业务故障点），但计数可告警。
+ */
+export interface MailboxIdentityPort {
+  ensureIdentity(seed: {
+    ref: string;
+    agentId: string;
+    taskId?: string | null;
+    requirementId?: string | null;
+  }): boolean;
+}
+
 export class AgentMailbox {
   private queue: MailboxItem[] = [];
   /**
@@ -526,6 +552,13 @@ export class AgentMailbox {
 
   setAddressLookup(lookup: SignalAddressLookup): void {
     this.addressLookup = lookup;
+  }
+
+  /** C10-0A：身份 ensure 端口（装配唯一入口 wireWorkUnits 接线；未接则声明 ref 照常放行）。 */
+  private identityPort?: MailboxIdentityPort;
+
+  setIdentityPort(port: MailboxIdentityPort | undefined): void {
+    this.identityPort = port;
   }
 
   /**
@@ -1173,6 +1206,9 @@ export class AgentMailbox {
         metadata: options?.metadata,
         envelope,
         round: options?.round,
+        // C10-0A：退信行保留原投递声明的身份（否则非平台类型的退信行落 NULL，
+        // 门禁把「投不进去的回声」误判成「忘了传身份」）。
+        workUnitRef: options?.workUnitRef ?? null,
         queuedAt: new Date().toISOString(),
         runtime: options?.runtime,
       };
@@ -1200,15 +1236,42 @@ export class AgentMailbox {
       runtime: options?.runtime,
     };
 
+    // ── C10-0A：声明了的身份必须存在（唯一装配点保证 ref ⇒ WorkUnit）─────
+    // 根因：声明 ref 的路径没人保证实体存在 → 悬空 ref（11-16 实测 5 条）。
+    // ensure 幂等（insert-or-nothing）；失败不打断业务，但计数可告警。
+    if (item.workUnitRef && this.identityPort) {
+      try {
+        const ok = this.identityPort.ensureIdentity({
+          ref: item.workUnitRef,
+          agentId: this.agentId,
+          taskId: payload.taskId ?? null,
+          requirementId: payload.requirementId ?? null,
+        });
+        if (!ok) {
+          identityEnsureFailedCount += 1;
+          log.error('Mailbox identity ensure failed — ref declared but WorkUnit not created', {
+            agentId: this.agentId, sourceType, itemId: item.id, workUnitRef: item.workUnitRef,
+          });
+        }
+      } catch (err) {
+        identityEnsureFailedCount += 1;
+        log.error('Mailbox identity ensure threw', {
+          agentId: this.agentId, sourceType, itemId: item.id, error: String(err),
+        });
+      }
+    }
+
     // ── C8-P0：缺失不再静默 ───────────────────────────────────────────
     // 判据：`workUnitRef` 为空时，调用方必须**表态**（pending-link 或
     // platform-internal）。没表态 = 忘了传 —— 这正是今晚六层缺陷的共同句式。
-    // 测试环境直接抛错（让新代码在 CI 就变红），生产只报错+计数（不把业务打死）。
+    // C10-0A：提示升级为两条出路——实体信号用唯一构造器 WORK_UNIT_REF 声明 ref
+    // （人触发的通知路径结构上拿不到回合身份，旧提示对它们不可行动）。
     if (!item.workUnitRef && !options?.refOrigin && !PLATFORM_INTERNAL_SOURCES.has(sourceType)) {
       unclaimedIdentityCount += 1;
       const msg =
         `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
-        'identity would be silently NULL (declare refOrigin: "pending-link" | "platform-internal")';
+        'identity would be silently NULL. Pass workUnitRef built by WORK_UNIT_REF ' +
+        '(entity identity), or declare refOrigin: "pending-link" | "platform-internal"';
       // 默认**拒绝**：可选的严格性不守任何东西。旧实现只在 CI 环境变量下抛错，
       // 生产走「记日志 + 放行」，于是 242,496 条输入里只有 0.18% 带身份
       //（2026-11-18 实测）—— 校验存在，但它不拦任何人。

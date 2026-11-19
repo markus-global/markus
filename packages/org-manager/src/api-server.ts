@@ -2120,6 +2120,28 @@ export class APIServer {
       },
       settle: (ref, opts) => units.settle(ref, opts),
     });
+    // C10-0A：身份 ensure 端口 —— 声明了的 ref 在 mailbox 装配点必须存在。
+    // 所有者解析归 org-manager（core 不猜实体语义）：task → assignee，
+    // requirement → creator；解析不到合法 agent 时落接收方。
+    manager.setMailboxIdentityPort({
+      ensureIdentity: ({ ref, agentId, taskId, requirementId }) => {
+        let owner = agentId;
+        const task = taskId ? this.taskService.getTask(taskId) : undefined;
+        if (task?.assignedAgentId && manager.hasAgent(task.assignedAgentId)) {
+          owner = task.assignedAgentId;
+        } else if (requirementId) {
+          const req = this.requirementService?.getRequirement(requirementId);
+          if (req?.createdBy && manager.hasAgent(req.createdBy)) owner = req.createdBy;
+        }
+        return units.ensure({
+          ref,
+          agentId: owner,
+          taskId: taskId ?? null,
+          status: 'idle',
+          contextRef: taskId ? ref : null,
+        }) !== null;
+      },
+    });
   }
 
   /**

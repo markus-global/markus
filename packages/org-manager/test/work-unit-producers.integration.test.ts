@@ -463,4 +463,124 @@ describe('C7 尾巴：task 链路每个执行纪元都必须有实体（round �
       .get() as { n: number };
     expect(dangling.n).toBe(0);
   });
+
+  describe('C10-0A：通知预建 idle ⇒ 执行开始必须把同一条 WU 迁到 running', () => {
+    it('createTask 预建（pending→idle）：linkEpoch 复用同一行并迁 running，且留痕', () => {
+      const units = service();
+      const svc = new TaskService();
+      svc.setWorkUnitService(units);
+      const task = makeTask(svc); // createTask 预建 round-1 实体：pending → idle
+      const ref = `task_${task.id}_r1`;
+      const repo = new SqliteWorkUnitRepo(db);
+      const before = repo.getByRef(ref)!;
+      expect(before.status).toBe('idle'); // 预建不是 running
+
+      seedMailboxItem('mbx_prebuilt_r1', 'agt_a');
+      linkEpoch(svc, 'mbx_prebuilt_r1', task.id, 1);
+
+      const after = repo.getByRef(ref)!;
+      // 复用同一行而不是删旧建新：ensure 是 insert-or-nothing。
+      expect(after.id).toBe(before.id);
+      // 这条断言就是 C10-0A 的判据：删掉 transition 块 → 停在 idle → 红。
+      expect(after.status).toBe('running');
+      expect(repo.listByAgent('agt_a')).toHaveLength(1); // 不产生重复实体
+      expect(refOfMailboxRow('mbx_prebuilt_r1')).toBe(ref);
+      // 迁移必须留痕（与 chat 链路 chat_turn_settled 同一口径）。
+      const transitions = db.prepare(
+        "SELECT reason FROM status_transitions WHERE entity_type='work_unit' AND entity_id=? ORDER BY id DESC LIMIT 1",
+      ).all(String(after.id)) as Array<{ reason: string | null }>;
+      expect(transitions[0]?.reason).toBe('execution_started');
+    });
+  });
+});
+
+describe('C10-0A：身份端口接线 —— 声明的 ref 在装配点必须有实体（真实 DB 探针）', () => {
+  type IdentityPort = {
+    ensureIdentity: (seed: {
+      ref: string;
+      agentId: string;
+      taskId?: string | null;
+      requirementId?: string | null;
+    }) => boolean;
+  };
+
+  /** 驱动真实 wireWorkUnits：只有外围 manager 是桩，持久化零 mock。 */
+  function wireIdentityPort(
+    units: WorkUnitService,
+    taskSvc: TaskService,
+    requirementCreator: string | null,
+  ): IdentityPort {
+    let port: IdentityPort | undefined;
+    const manager = {
+      setFactService: () => {},
+      setWorkUnitStatusProvider: () => {},
+      setWorkUnitPort: () => {},
+      setMailboxIdentityPort: (p: IdentityPort) => {
+        port = p;
+      },
+      hasAgent: (id: string) =>
+        ['agt_a', 'agt_b', 'agt_x', 'agt_y', 'agt_p', 'agt_q'].includes(id),
+    };
+    const server = Object.create(APIServer.prototype) as APIServer;
+    const s = server as unknown as Record<string, unknown>;
+    s['storage'] = { workUnitRepo: new SqliteWorkUnitRepo(db), factService: null };
+    s['_workUnits'] = units;
+    s['taskService'] = taskSvc;
+    s['orgService'] = { getAgentManager: () => manager };
+    s['requirementService'] = requirementCreator
+      ? {
+          getRequirement: (id: string) =>
+            id === 'req_probe' ? { createdBy: requirementCreator } : undefined,
+        }
+      : undefined;
+    (server as unknown as { wireWorkUnits: () => void }).wireWorkUnits();
+    if (!port) throw new Error('wireWorkUnits did not attach the identity port');
+    return port;
+  }
+
+  it('requirement 实体 ref：装配点落实体，所有者解析到需求创建者（不是接收方）', () => {
+    const port = wireIdentityPort(service(), new TaskService(), 'agt_b');
+    const ok = port.ensureIdentity({
+      ref: 'requirement:req_probe',
+      agentId: 'agt_a',
+      requirementId: 'req_probe',
+    });
+    expect(ok).toBe(true);
+    const wu = new SqliteWorkUnitRepo(db).getByRef('requirement:req_probe')!;
+    expect(wu.agentId).toBe('agt_b');
+    expect(wu.status).toBe('idle');
+  });
+
+  it('task 纪元 ref（round≥2 预建）：所有者解析到 assignee，不是接收方', () => {
+    const units = service();
+    const taskSvc = new TaskService();
+    const port = wireIdentityPort(units, taskSvc, null);
+    const task = taskSvc.createTask({
+      orgId: 'org_1',
+      title: 'identity probe',
+      description: 'probe',
+      priority: 'medium',
+      assignedAgentId: 'agt_a',
+      reviewerId: 'agt_b',
+      createdBy: 'agt_b',
+      creatorRole: 'manager',
+      requirementId: 'req_probe',
+    } as never);
+    const ref = `task_${task.id}_r2`;
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)).toBeFalsy(); // round2 尚未预建
+    const ok = port.ensureIdentity({ ref, agentId: 'agt_x', taskId: task.id });
+    expect(ok).toBe(true);
+    expect(new SqliteWorkUnitRepo(db).getByRef(ref)!.agentId).toBe('agt_a');
+  });
+
+  it('所有者解析不到（创建者不是合法 agent）→ 落接收方，绝不静默丢', () => {
+    const port = wireIdentityPort(service(), new TaskService(), 'agt_ghost');
+    const ok = port.ensureIdentity({
+      ref: 'requirement:req_probe',
+      agentId: 'agt_a',
+      requirementId: 'req_probe',
+    });
+    expect(ok).toBe(true);
+    expect(new SqliteWorkUnitRepo(db).getByRef('requirement:req_probe')!.agentId).toBe('agt_a');
+  });
 });
