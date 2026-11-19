@@ -312,7 +312,11 @@ subject is this card:
 | the session's own `[FACTS:task_tsk_df3169…]` block, same turns | **`(no facts yet)`** |
 
 So the subject was resolved (the header names this task) while its fact set rendered empty,
-twelve minutes after the fact was committed, through eleven turns.
+twelve minutes after the fact was committed, through eleven turns. Re-checked at 19:33 CST
+with **two** active facts on the same subject (`work.defect_class` at 19:20:20 and
+`task.completion_evidence` at 19:32:28, both returned by `fact_query`): the block still read
+`(no facts yet)`. The empty render is therefore stable for the life of the session, not a
+lag of one turn.
 
 Two candidate causes, neither verified — this record does not pick one:
 
