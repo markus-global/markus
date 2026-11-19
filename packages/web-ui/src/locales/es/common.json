@@ -722,7 +722,7 @@
     "since": "Desde",
     "until": "Hasta",
     "includeSuperseded": "Incluir historial reemplazado",
-    "disabled": "La capa de hechos está desactivada (FACTS_ENABLED=0), así que no hay nada que mostrar aquí; no es lo mismo que \"no hay hechos\".",
+    "disabled": "La capa de hechos no está conectada en este despliegue, así que no hay nada que mostrar aquí; no es lo mismo que \"no hay hechos\".",
     "empty": "Ningún hecho coincide con estos filtros.",
     "truncated": "Se alcanzó el límite de resultados: acota los filtros.",
     "unverified": "Sin verificación independiente",

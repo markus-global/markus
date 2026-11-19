@@ -723,7 +723,7 @@
     "since": "Since",
     "until": "Until",
     "includeSuperseded": "Include superseded history",
-    "disabled": "The facts layer is disabled (FACTS_ENABLED=0), so there is nothing to show here — this is not the same as \"no facts\".",
+    "disabled": "The facts layer is not wired in this deployment, so there is nothing to show here — this is not the same as \"no facts\".",
     "empty": "No facts match these filters.",
     "truncated": "Result limit reached — narrow the filters.",
     "unverified": "Not independently verified",

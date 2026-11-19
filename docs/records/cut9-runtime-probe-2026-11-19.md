@@ -343,15 +343,18 @@ own data dirs; nothing wrote to the serving `~/.markus/data.db` except the inten
 
 ### 10.1 `docs/architecture/facts.md` still documents a deleted switch
 
-The architecture doc still presents `FACTS_ENABLED=0` as the rollback path
+The architecture doc still presented `FACTS_ENABLED=0` as the rollback path
 (`:130`, `:243`, `:354`), while the code says the switch was removed on 2026-11-15. Filed
-as an R2 fact (`fact_51218253447b6d8020d25a47`) rather than fixed here — C10-0D is a probe,
-and a doc fix rides with the doc owner.
+as an R2 fact (`fact_51218253447b6d8020d25a47`) when the probe was written; the CTO then
+ruled (2026-11-19) that the fix rides on this same card and this same PR, so it was paid
+off here rather than deferred — see §13.
 
 ### 10.2 Step-5 wording is stale in two places
 
-Both the plan (#466) and this card specify a switch that no longer exists. The measured
-substitute is §7; the CTO was asked for a ruling on the substitution before it was recorded.
+Both the plan (#466) and this card originally specified a switch that no longer exists. The
+CTO ruled (2026-11-19 19:30 DM) that the switch was deleted on 2026-11-15 and that the
+correct substitute is the code's own lazy form — a deployment whose facts dependency is
+never wired. That is what §7 measures; no ruling is left open here.
 
 ### 10.4 A probe process cannot assert a fact
 
@@ -426,13 +429,13 @@ instance self-initialises a database on first boot.
 
 ## 12. Conclusion — three-way, per the card discipline
 
-**PASS on steps 0–5, with one substituted criterion (§7.1) and one platform limitation
-(§8) named explicitly.**
+**PASS on steps 0–6, with one substituted criterion (§7.1) and one platform limitation
+(§8) named explicitly; step 7 (copy-only locale fix, §14) is included in this PR.**
 
 - The running build is the C9 build (§2).
 - The four fact tools are callable, not merely registered (§3).
-- The terminal hook is red without evidence and green with it, on the same code path, 2 ms
-  apart (§4, §5).
+- The terminal hook is red without evidence and green with it, on **one card in one
+  instance**, 2 ms apart (§5.2; the earlier cross-instance pairing is retracted in §5.1).
 - The verifier refuses to confirm its own producer's claim (§6).
 - With the facts port unwired, the four tools disappear and both hooks are inert; every
   other tool and code path is unchanged (§7).
@@ -443,8 +446,8 @@ instance self-initialises a database on first boot.
 - The probe card ending `rejected` rather than `cancelled` (§8): the approval gate is human-only by
   design; this is a recorded platform property, not unfinished work.
 - Fact rows remaining in `facts` (§8): append-only is the design.
-- `docs/architecture/facts.md` still naming `FACTS_ENABLED` (§10.1): filed as a fact for
-  the doc owner; it does not affect this probe's conclusion.
+- `docs/architecture/facts.md` naming `FACTS_ENABLED` (§10.1) and the three web-ui locale
+  strings naming the dead flag: both are paid off inside this PR (§13, §14).
 - Requirement `req_dcbf7ddf997c6346e0ee1ba2` status: the reviewer closes it. The worker
   asserting acceptance would be self-verification wearing a different hat.
 
@@ -477,9 +480,41 @@ Three hits remain, all explainable and none of them a live-mechanism claim:
 | 389 | the gate command itself, inside the §12 code fence |
 
 Reported rather than "cleaned": deleting the literal from the gate command would make the
-check look greener while checking less. One related item is **not** fixed here because it is
-product copy, not documentation: three UI locale strings
-(`packages/web-ui/src/locales/{zh-CN,es,en}/common.json`) still say the facts page is disabled
-"(FACTS_ENABLED=0)". The state they describe still exists (an unwired deployment), but they
-name a dead flag as the cause; that is a product-text change and belongs to whoever owns the
-copy.
+check look greener while checking less. The one related item that is product copy rather
+than documentation — three UI locale strings that still named the dead flag — was authorized
+by the CTO as a copy-only exception on this same card and is closed in §14.
+
+---
+
+## 14. Step 7 — locale copy (CTO-authorized copy-only exception, same card, same PR)
+
+The three facts-page `disabled` strings named `FACTS_ENABLED=0` as the cause. That cause no
+longer exists (the switch was deleted on 2026-11-15); the state the copy describes does
+exist and is the one this record measures — **a deployment whose facts dependency is never
+wired** (`§7`). So the copy is corrected in place: same key, same meaning ("unavailable is
+not the same as no facts"), attribution moved from the dead flag to the unwired deployment.
+
+| file | before | after |
+|---|---|---|
+| `locales/zh-CN/common.json` | 事实层当前已关闭（FACTS_ENABLED=0），因此这里没有可展示的数据；这不是“没有事实”。 | 事实层在当前部署中未接线，因此这里没有可展示的数据；这不是“没有事实”。 |
+| `locales/en/common.json` | The facts layer is disabled (FACTS_ENABLED=0), so there is nothing to show here — this is not the same as "no facts". | The facts layer is not wired in this deployment, so there is nothing to show here — this is not the same as "no facts". |
+| `locales/es/common.json` | La capa de hechos está desactivada (FACTS_ENABLED=0), así que no hay nada que mostrar aquí; no es lo mismo que "no hay hechos". | La capa de hechos no está conectada en este despliegue, así que no hay nada que mostrar aquí; no es lo mismo que "no hay hechos". |
+
+Key names unchanged (`factsAudit.disabled`, consumed at `packages/web-ui/src/pages/AuditFacts.tsx:465`);
+three locales changed together so parity is preserved by construction, not by a later patch.
+
+Gate readings (below, §14.1) are the acceptance criterion, not the diff:
+
+### 14.1 Gate readings
+
+```bash
+git grep -n "FACTS_ENABLED" -- packages/web-ui        # → 0 hits (both index and worktree)
+node -e "JSON.parse(...)" xs 3                        # → zh-CN/en/es parse
+npx vitest run test/localeParity.test.ts test/integrationLocaleKeys.test.ts
+#  → 2 files passed, 20 tests passed (2026-11-19 19:50:12 CST)
+```
+
+No test was added for this: the strings are prose, and the parity suite already fails if one
+locale drifts from the others or loses a key — it is the right gate for a copy-only change.
+`grep FACTS_ENABLED -- packages/web-ui` returning 0 is the direct criterion: the dead flag is
+no longer named anywhere the product can render.
