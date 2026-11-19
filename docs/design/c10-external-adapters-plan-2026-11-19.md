@@ -378,9 +378,64 @@ the next step — no human UI clicks — with corresponding rows in `work_units`
   and PR #470's CI is the final gate. The main checkout stays on
   `build/c10-integration` for this phase; never branch from its HEAD.
 - Per slice: red test first → implement → real-data probe on the running build →
-  full regression in CI order; one rollback-able commit per slice.
+  both gate layers in §3.1; one rollback-able commit per slice.
 - Evidence: every reading carries a timestamp; live counts written as "≥N + read
   time"; gates must be seen red before green (`--self-test`); no fixture-only proof.
+
+### 3.1 Verification gates — two layers, one convergence point
+
+The convergence point is the `--no-ff` merge into `build/c10-integration`, not the
+per-card review. Merges are serial, so a red gate is attributable to the card that just
+merged; nothing may accumulate to PR #470 unattributed.
+
+**Layer 1 — every card, at review (seconds, mandatory):**
+
+```
+pnpm typecheck          # tsc -b && tsc --noEmit -p packages/web-ui
+pnpm lint
+node scripts/architecture-guard.mjs
+node scripts/identity-audit.mjs --self-test
+```
+
+These four stop the defect class that review has missed before: the only CI red on the
+C9 integration branch was `packages/core/src/agent.ts:60  '@markus/shared' import is
+  duplicated (no-duplicate-imports)` — it passed review (tsc + vitest + guards) and was
+caught by the CI `lint` step alone.
+
+**Layer 2 — before every merge into `build/c10-integration` (CTO runs the full set, in
+this order; the order is load-bearing):**
+
+```
+pnpm typecheck
+pnpm lint
+node scripts/architecture-guard.mjs
+node scripts/identity-audit.mjs --self-test
+pnpm test:json
+pnpm test:web-ui
+pnpm test:skipped-audit
+```
+
+1. `test:skipped-audit` reads `coverage/vitest-report.json`, which `test:json` writes —
+   it must run after it. It is the guard against `.skip` tests rotting silently, and it
+   is a blocking step, not a report.
+2. `pnpm typecheck` runs `tsc -b`, which also emits `dist`. **Never run vitest
+   concurrently with it**: a half-written `dist` produces false reds (14 in one
+   measured case). This is also why the `quality` job needs no separate build while
+   `backend-coverage` and `storage-cross-platform` call `pnpm build:ts` explicitly.
+3. `pnpm test` (`vitest run`, both projects) is **not** the CI command; use `test:json`
+   + `test:web-ui` to match CI step for step.
+4. `security:guard` exists in `package.json`, but **no CI job calls it**
+   (`.github/workflows/ci.yml` is the authority). It is a local extra, not part of the
+   CI set — label it as such, or wire it into CI on its own card. Writing it as
+   "CI-equivalent" would claim a gate that does not exist.
+5. The `backend-coverage` job additionally runs `test:coverage:web-ui` +
+   `coverage:ratchet`, and `coverage:node` + `coverage:ratchet:node`. Those ratchets
+   only run on PRs.
+
+**What local cannot cover:** `storage-cross-platform` runs on ubuntu *and* windows; the
+Windows half is unreachable on a Mac. Local green therefore means
+"`quality`-equivalent", and a delivery must mark the Windows storage matrix as **not
+covered locally** — never as "all green".
 - Owner gates: backlog disposition (0B) and orphan disposition (0C) **adjudicated
   2026-11-19** (no migration / no DROP; fixed epoch constant). Remaining: each
   DNS/policy change (C10-D), and the final `main` merge after all cuts are accepted.
