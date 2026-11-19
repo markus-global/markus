@@ -776,9 +776,14 @@ const PRIORITY_BADGE_CLS: Record<string, string> = {
   high:   'bg-surface-overlay text-fg-secondary font-semibold',
   urgent: TONE.danger.chip,
 };
+// 需求徽章的显示集 = 状态机里**可作为流转目标**的全部状态，唯一来源 REQ_ALLOWED_TRANSITIONS
+// （镜像自 shared，契约测试锁死）。不再手维护第二份清单：旧的手写列表漏了 `blocked`，
+// 而流转菜单能切到 blocked → 菜单/徽章退回英文原值（Owner 2026-11-19 报）。
+const REQ_DISPLAY_STATUSES: readonly string[] = [...new Set(
+  Object.values(REQ_ALLOWED_TRANSITIONS).flatMap(set => [...set]),
+)];
 const REQ_STATUS_BADGE_CLS: Record<string, string> = Object.fromEntries(
-  ['pending', 'in_progress', 'completed', 'rejected', 'cancelled', 'archived']
-    .map(s => [s, TONE[requirementTone(s)].chip]),
+  REQ_DISPLAY_STATUSES.map(s => [s, TONE[requirementTone(s)].chip]),
 );
 
 function buildTaskStatusBadges(t: (key: string, opts?: Record<string, unknown>) => string): Record<string, { label: string; cls: string }> {
@@ -2811,7 +2816,7 @@ function TaskDetailPanel({
 
           {/* Deliverables tab — full paginated list (newest first) */}
           <div className={activeTab === 'history' ? '' : 'hidden'}>
-            <StatusHistoryTimeline entityType="task" entityId={task.id} />
+            <StatusHistoryTimeline entityType="task" entityId={task.id} statusLabel={(s) => taskStatusBadges[s]?.label ?? s} />
           </div>
 
 
@@ -8233,7 +8238,7 @@ function RequirementDetailPanel({
           {!previewMode && <RequirementCommentThread requirementId={req.id} createdBy={req.createdBy} agents={agents} users={users} authUser={authUser} />}
 
           {/* Status History */}
-          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} />}
+          {!previewMode && <StatusHistoryTimeline entityType="requirement" entityId={req.id} statusLabel={(s) => reqBadges[s]?.label ?? s} />}
         </div>
         {scrollState !== 'none' && scrollState !== 'top' && (
           <button
@@ -8477,8 +8482,8 @@ function RequirementDetailPanel({
 
 // ─── Shared mini-components ─────────────────────────────────────────────────────
 
-function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 'requirement'; entityId: string }) {
-  const { t } = useTranslation(['work']);
+function StatusHistoryTimeline({ entityType, entityId, statusLabel }: { entityType: 'task' | 'requirement'; entityId: string; statusLabel: (status: string) => string }) {
+  const { t } = useTranslation(['work', 'common']);
   const [history, setHistory] = useState<StatusTransitionInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState(false);
@@ -8496,7 +8501,7 @@ function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 
   const hasMore = history.length > 5 && !expanded;
 
   const actorBadge = (h: StatusTransitionInfo) => {
-    const label = h.changedByName || h.changedById || (h.changedByType === 'human' ? 'User' : h.changedByType === 'agent' ? 'Agent' : 'System');
+    const label = h.changedByName || h.changedById || (h.changedByType === 'human' ? t('common:actor.user') : h.changedByType === 'agent' ? t('common:actor.agent') : t('common:actor.system'));
     const cls = h.changedByType === 'human' ? 'bg-blue-500/20 text-blue-500' : h.changedByType === 'agent' ? 'bg-brand-500/20 text-brand-500' : 'bg-gray-500/20 text-fg-tertiary';
     return <span className={`text-[10px] px-1.5 py-0.5 rounded-full font-medium shrink-0 ${cls}`}>{label}</span>;
   };
@@ -8518,9 +8523,9 @@ function StatusHistoryTimeline({ entityType, entityId }: { entityType: 'task' | 
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-1.5 flex-wrap">
                   {actorBadge(h)}
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary line-through">{h.fromStatus}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-surface-elevated text-fg-tertiary line-through">{statusLabel(h.fromStatus)}</span>
                   <span className="text-[10px] text-fg-tertiary">→</span>
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500 font-medium">{h.toStatus}</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand-500/15 text-brand-500 font-medium">{statusLabel(h.toStatus)}</span>
                 </div>
                 {h.reason && <p className="text-[10px] text-fg-secondary mt-0.5 leading-snug">{h.reason}</p>}
                 <p className="text-[9px] text-fg-tertiary mt-0.5">{new Date(h.createdAt).toLocaleString()}</p>

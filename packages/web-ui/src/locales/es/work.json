@@ -603,6 +603,7 @@
     "requirement": {
       "pending": "Pendiente",
       "in_progress": "Activo",
+      "blocked": "Bloqueado",
       "completed": "Hecho",
       "rejected": "Rechazado",
       "cancelled": "Cancelado",

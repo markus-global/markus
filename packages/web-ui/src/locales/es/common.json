@@ -190,6 +190,11 @@
     "member": "Miembro",
     "guest": "Invitado"
   },
+  "actor": {
+    "user": "Usuario",
+    "agent": "Agente",
+    "system": "Sistema"
+  },
   "units": {
     "members": "{{count}} miembros",
     "agents": "{{count}} agentes",
