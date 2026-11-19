@@ -150,19 +150,50 @@ it is to supply the real ref (`task_<taskId>_r<round>`), which the positive case
 
 ## 5. Step 3 — positive: assert per the error text, submit clean
 
-Same instance, same task, same method:
+### 5.1 A first draft claimed "same task" without measuring it
+
+The first version of this section paired §4's rejection on `tsk_bc526c29…` (`/tmp/mpw4`)
+with a fact asserted on `tsk_fcd5661a…` (`/tmp/mpw5`) and described the result as "same
+task". Review rejected that reading and was right: two cards in two data directories prove
+"the gate *can* be satisfied", not "the same call flips on the same card". Re-measured on
+one instance, one card.
+
+### 5.2 Same instance, same card, one variable
 
 ```
-2026-11-19T11:27:50.752Z  fact_assert  status=asserted
-                          fact_10f62ba70b27b032294c6f63
-                          workUnitRef=task_tsk_fcd5661acfeeb86faaa18bb2_r1
-2026-11-19T11:27:50.754Z  submit_without_fact → (previous attempt) REJECTED
-                          submit_after_fact    → ACCEPTED  status=review
+instance : port 8068, data dir /tmp/mpw9 (fresh copy; ~/.markus never written)
+harness  : probe-samecard.mjs — drives that process's real TaskService/FactService
 ```
 
-Red → green on the same path, 2 ms apart, with nothing changed except the presence of the
-fact. That is what "the gate bites" means operationally: the same call flips because the
-evidence exists, not because anything was relaxed.
+```
+2026-11-19T11:47:48.270Z  create   tsk_bac93960ba5b152c3cd42693  status=pending
+2026-11-19T11:47:48.271Z  approve  status=in_progress  executionRound=1
+2026-11-19T11:47:48.284Z  submitForReview (no fact)              → REJECTED
+                          (task stays in_progress)
+2026-11-19T11:47:48.284Z  factService.assert  status=asserted
+                          fact_cf1a57834f6927bace1abd76
+                          workUnitRef=task_tsk_bac93960ba5b152c3cd42693_r1
+2026-11-19T11:47:48.286Z  submitForReview (same id, same method)  → ACCEPTED
+                          status=review
+```
+
+Exact rejection text on that card:
+
+```
+Cannot submit for review: task tsk_bac93960ba5b152c3cd42693 has no active
+"task.completion_evidence" fact. Submission must point at evidence, not only prose.
+Assert it first: …
+```
+
+Red → green on the **same card, same instance, same method**, 2 ms apart, with nothing
+changed except the presence of the fact. That is what "the gate bites" means operationally:
+the same call flips because the evidence exists, not because anything was relaxed.
+
+Stated limitation, not hidden: a fresh instance seeds **one** agent, so executor and
+reviewer are the same `agt_…` here. `assertCompletionEvidence`
+(`task-service.ts:1079-1098`) queries facts by task subject only and never reads the
+reviewer, so the reading holds — but this is not a two-agent run and is not presented as
+one.
 
 ---
 
@@ -266,19 +297,29 @@ task_update(tsk_fdf…, status="in_progress")
 task and is reached from the human-authenticated REST route
 (`packages/org-manager/src/routes/tasks.ts:435`). An agent therefore **cannot start a card
 it created itself** — the probe recipe "create a disposable card, submit it" has no
-self-service execution path. The card was cancelled instead of being left on the board
-asking a human for a decision nobody needed; the negative/positive probes ran on the second
-instance (§4, §5) and on the serving instance's own tool path (§3, §6).
+self-service execution path. The card was taken off the board instead of being left asking a human for a decision nobody
+needed; the negative/positive probes ran on a second instance (§4, §5) and on the serving
+instance's own tool path (§3, §6).
+
+**Its terminal status is `rejected`, not `cancelled`** — the first draft of this section said
+"cancelled" and review caught it. Why the two words differ is a code fact, not a guess: the
+task tool routes "cancel" on a **pending** card owned by its creator to
+`ctx.cancelPendingTask` (`packages/core/src/tools/task-tools.ts:740-749`), and that port is
+bound to `ts.rejectTask(taskId, id)` (`packages/core/src/agent-manager.ts:2047-2049`).
+Cancelling a pending card therefore *is* rejecting it at the approval gate.
 
 Board state after cleanup — read directly from `~/.markus/data.db`:
 
-| object | status |
-|---|---|
-| `tsk_fdf3828fbc7ebf40395e1092` (disposable probe card) | **cancelled** |
-| `tsk_df3169e699273f3d3ce31f31` (this card) | in_progress → review on submission |
+| object | status | authoritative timestamps |
+|---|---|---|
+| `tsk_fdf3828fbc7ebf40395e1092` (disposable probe card) | **rejected** | `status_changed_at` / `updated_at` = 2026-11-19T11:30:58.698Z / .700Z, `updated_by` = this agent |
+| `tsk_df3169e699273f3d3ce31f31` (this card) | in_progress → review on submission | — |
+
+The card note written at that moment says the card was cancelled, which is the **intent**; the
+lifecycle row says `rejected`, which is the **state**. This record follows the row.
 
 Facts are append-only by design (`docs/architecture/facts.md`), so the probe facts stay in
-`facts` as history. They are attached to a cancelled card and to this card, and none of
+`facts` as history. They are attached to a rejected card and to this card, and none of
 them pretends to be evidence for the requirement's acceptance.
 
 ---
@@ -399,7 +440,7 @@ instance self-initialises a database on first boot.
 
 ### What is NOT residual
 
-- The probe card staying `pending` → cancelled (§8): the approval gate is human-only by
+- The probe card ending `rejected` rather than `cancelled` (§8): the approval gate is human-only by
   design; this is a recorded platform property, not unfinished work.
 - Fact rows remaining in `facts` (§8): append-only is the design.
 - `docs/architecture/facts.md` still naming `FACTS_ENABLED` (§10.1): filed as a fact for
