@@ -191,6 +191,11 @@
     "member": "Member",
     "guest": "Guest"
   },
+  "actor": {
+    "user": "User",
+    "agent": "Agent",
+    "system": "System"
+  },
   "units": {
     "members": "{{count}} members",
     "agents": "{{count}} agents",

@@ -605,6 +605,7 @@
     "requirement": {
       "pending": "待处理",
       "in_progress": "进行中",
+      "blocked": "已阻塞",
       "completed": "完成",
       "rejected": "已拒绝",
       "cancelled": "已取消",

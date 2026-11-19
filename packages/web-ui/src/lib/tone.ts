@@ -167,6 +167,7 @@ const TASK_TONE: Readonly<Record<string, Tone>> = {
 const REQUIREMENT_TONE: Readonly<Record<string, Tone>> = {
   pending: 'attention',
   in_progress: 'active',
+  blocked: 'blocked',
   completed: 'success',
   rejected: 'danger',
   cancelled: 'neutral',

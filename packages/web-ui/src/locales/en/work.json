@@ -607,6 +607,7 @@
     "requirement": {
       "pending": "Pending",
       "in_progress": "Active",
+      "blocked": "Blocked",
       "completed": "Done",
       "rejected": "Rejected",
       "cancelled": "Cancelled",
