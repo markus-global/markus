@@ -2,10 +2,7 @@ import { readFileSync } from 'node:fs';
 import { ToolSelector } from '../src/tool-selector.js';
 import {
   SCHEMA_INJECTED_TOOLS,
-  TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
-  evictToolsToBudget,
-  toolEvictionTier,
 } from '../src/capability-packs.js';
 
 function makeToolMap(names: string[]): Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }> {
@@ -475,7 +472,7 @@ describe('ToolSelector', () => {
     );
     expect(
       unsafe,
-      `injected but neither protected nor discover-tools-activatable → unreachable once evicted: ${unsafe.join(', ')}`,
+      `injected but neither protected nor discover-tools-activatable → unreachable if ever omitted: ${unsafe.join(', ')}`,
     ).toEqual([]);
   });
 
@@ -484,46 +481,10 @@ describe('ToolSelector', () => {
     expect(SCHEMA_INJECTED_TOOLS.has('collapse_right_panel')).toBe(true);
   });
 
-  it('eviction is tiered: only external skill/MCP is evictable; all first-party stay', () => {
-    expect(toolEvictionTier('end_turn')).toBe(0);            // protected → never
-    expect(toolEvictionTier('notify_user')).toBe(0);
-    expect(toolEvictionTier('shell_execute')).toBe(0);       // first-party → never
-    expect(toolEvictionTier('kb_search')).toBe(0);
-    expect(toolEvictionTier('some_unknown_builtin')).toBe(0);
-    expect(toolEvictionTier('package_install')).toBe(0);     // first-party → never (was situational)
-    expect(toolEvictionTier('feishu_tool_x')).toBe(3);       // external skill/MCP → evictable
-    expect(toolEvictionTier('chrome-devtools__x')).toBe(3);
-  });
-
-  it('eviction only ever drops external skill/MCP; all first-party tools survive budget pressure', () => {
-    // Equal-size schemas, so ONLY the tier can decide the order.
-    const mk = (name: string) => ({ name, description: 'd', inputSchema: { type: 'object', properties: {} } });
-    const tools = [
-      mk('feishu_tool_a'),        // tier 3 (external)
-      mk('chrome-devtools__b'),   // tier 3 (external)
-      mk('package_install'),      // tier 0 (first-party — was situational, now immutable)
-      mk('team_status'),          // tier 0 (first-party)
-      mk('shell_execute'),        // tier 0 (first-party)
-      mk('notify_user'),          // tier 0 (protected)
-    ];
-    const { tools: kept, evicted } = evictToolsToBudget(tools, 1, TOOL_DEF_PROTECTED, TOOL_DEF_CORE_KEEP);
-    const evictedNames = evicted.map((e) => e.name);
-    const keptNames = kept.map((t) => t.name);
-
-    // Only the external tools are evicted (even at budget 1).
-    expect(evictedNames).toContain('feishu_tool_a');
-    expect(evictedNames).toContain('chrome-devtools__b');
-    // Every first-party tool survives, no matter the budget.
-    expect(keptNames).toContain('notify_user');
-    expect(keptNames).toContain('package_install');
-    expect(keptNames).toContain('team_status');
-    expect(keptNames).toContain('shell_execute');
-  });
-
   it('P0-3: activated skill/MCP stay LIVE under budget pressure (no silent eviction)', () => {
     // 回归审计 P0-3：旧实现允许已激活的 skill/MCP 被预算驱逐，agent 随即静默删除其激活态，
-    // 导致该工具之后永久不可见 → 模型反复 discover_tools 空烧 token。现在已激活工具一律
-    // 豁免驱逐，且在 schema 中稳定可见；consumeEvictedActivated() 必须为空。
+    // 导致该工具之后永久不可见 → 模型反复 discover_tools 空烧 token。驱逐机制已整体删除
+    // （PR #471）：已激活工具在 schema 中稳定可见。
     const selector = new ToolSelector();
     const bigSchema = {
       type: 'object',
@@ -551,7 +512,6 @@ describe('ToolSelector', () => {
     expect(names).toContain('shell_execute');
     expect(names).toContain('discover_tools');
     for (const n of activatedMcp) expect(names).toContain(n);
-    expect(selector.consumeEvictedActivated()).toEqual([]);
   });
 
   it('CACHE: identical tool set emits byte-identical schema regardless of activation order (stable registry order)', () => {

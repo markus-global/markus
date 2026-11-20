@@ -1,13 +1,11 @@
 /**
- * Scenario Capability Packs — Context Surface tool/prompt budgets.
+ * Scenario Capability Packs — Context Surface tool selection.
  * Spec: docs/architecture/agent-runtime.md §2–§5
+ *
+ * No tool-definition budget eviction exists (Owner 2026-11-20, PR #471): the
+ * tool face is a FIXED segment — context pressure compresses HISTORY, never
+ * the face. External skill/MCP tools enter only via discover_tools activation.
  */
-import {
-  TOOL_DEF_BUDGET_REFLEX,
-  TOOL_DEF_BUDGET_CONVERSE,
-  TOOL_DEF_BUDGET_EXECUTE,
-  TOOL_DEF_BUDGET_GOVERN,
-} from '@markus/shared';
 
 export type CapabilityPack = 'reflex' | 'converse' | 'execute' | 'govern';
 export type PromptProfile = CapabilityPack;
@@ -49,7 +47,7 @@ export const CONVERSE_FORBIDDEN_DEFAULT = new Set([
  * an unrelated schema.
  *
  * **SINGLE SOURCE** — the lifecycle tools are declared exactly once, here:
- *   • {@link TOOL_DEF_PROTECTED} spreads this set → eviction-immune (tier 0).
+ *   • {@link TOOL_DEF_PROTECTED} spreads this set → always-live guard.
  *   • {@link EXECUTE_SESSION_ONLY_TOOLS} aliases it → session-gated.
  *
  * **Why they must be protected (2026-10-13 incident).** The task-execution
@@ -234,7 +232,7 @@ export const ACTION_TOOL_GROUPS = {
   /** Self-inspection + queue: always registered (unwired ports answer honestly). */
   ledger: ['work_status', 'check_mailbox'],
   /**
-   * Human channel. Both are schema-injected (pushUnique) and eviction-protected,
+   * Human channel. Both are schema-injected (pushUnique) and always live,
    * with no registerTool handler. `request_user_input` is the BLOCKING one:
    * without it a compressed face leaves the agent unable to ask for
    * authorisation — the defect this whitelist exists to prevent.
@@ -304,7 +302,7 @@ export function actionToolGuardEnabled(): boolean {
 
 /**
  * Every name the model can actually call: registered handlers PLUS the schemas
- * ToolSelector injects itself (pushUnique) and the eviction-immune set. The
+ * ToolSelector injects itself (pushUnique) and the always-live set. The
  * registry alone under-reports the face — `notify_user` has a dispatch branch and
  * a schema but no `registerTool` handler.
  */
@@ -358,39 +356,6 @@ export function isSkillOrMcpToolName(name: string): boolean {
 }
 
 /**
- * Eviction priority. **Higher = evicted sooner.**
- *
- *   0  never evicted   (EVERY first-party platform tool — incl. packaging/hub/
- *      generation/team-admin; the old "situational extras may defer" bucket
- *      `TOOL_DEF_EVICT_FIRST` was removed because deferring them IS the defect)
- *   3  optional EXTERNAL skill/MCP only — evicted first, recoverable via
- *      `discover_tools` (the "Deferred Tools" catalog lists a recover command)
- *
- * Within one tier the largest schema is still chosen first, but tier ordering
- * is now the primary key — so size can no longer decide whether something an
- * agent fundamentally needs survives.
- */
-export function toolEvictionTier(
-  name: string,
-  protectedNames: Set<string> = TOOL_DEF_PROTECTED,
-  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
-): number {
-  if (protectedNames.has(name)) return 0;
-  // ONLY optional EXTERNAL skill/MCP tools may defer (and they are recoverable
-  // via discover_tools). Every first-party platform tool is eviction-immune.
-  if (isSkillOrMcpToolName(name)) return 3;
-  // FIRST-PARTY PLATFORM TOOLS ARE EVICTION-IMMUNE (Owner 2026-11-20).
-  // A tool the agent needs but cannot see is a turn that fails — availability is a
-  // HARD invariant, not a budget line. When the prompt is too big, the VARIABLE
-  // segment (conversation history) is compacted downstream by ContextOS; the tool
-  // face is a fixed segment and is never the thing we shrink. `coreKeep` no longer
-  // changes the verdict (kept in the signature for call-site compatibility), which
-  // is why its tier-1 branch is gone: there is nothing left for it to rescue.
-  void coreKeep;
-  return 0;
-}
-
-/**
  * Tools that require a **work-entity session** (task / requirement / workflow /
  * review), not free-floating Team Chat.
  *
@@ -400,8 +365,8 @@ export function toolEvictionTier(
  * caused "No active task" when `task_submit_review` leaked without ALS.
  *
  * Same members as {@link WORK_ENTITY_LIFECYCLE_TOOLS} (declared once there) —
- * this alias keeps the two concerns (session-gating here, eviction- immunity
- * there) reading from a single source.
+ * this alias keeps the two concerns (session-gating here, reachability
+ * guards there) reading from a single source.
  */
 export const EXECUTE_SESSION_ONLY_TOOLS = WORK_ENTITY_LIFECYCLE_TOOLS;
 
@@ -455,19 +420,6 @@ export function scenarioToPack(scenario: string | undefined): CapabilityPack {
     case 'workflow_action':
     default:
       return 'converse';
-  }
-}
-
-export function packToolDefBudget(pack: CapabilityPack): number {
-  switch (pack) {
-    case 'reflex':
-      return TOOL_DEF_BUDGET_REFLEX;
-    case 'converse':
-      return TOOL_DEF_BUDGET_CONVERSE;
-    case 'execute':
-      return TOOL_DEF_BUDGET_EXECUTE;
-    case 'govern':
-      return TOOL_DEF_BUDGET_GOVERN;
   }
 }
 
@@ -591,109 +543,4 @@ export const SCENARIO_ALLOWED_TOOLS: Readonly<Record<string, readonly string[]>>
   workflow_action: WORKFLOW_ACTION_ALLOWED_TOOLS,
 };
 
-export type ToolDefLike = {
-  name: string;
-  description: string;
-  inputSchema: Record<string, unknown>;
-};
 
-/** Rough token estimate for tool JSON (chars / 3.5). */
-export function estimateToolDefTokens(tools: ToolDefLike[]): number {
-  if (!tools.length) return 0;
-  return Math.ceil(JSON.stringify(tools).length / 3.5);
-}
-
-/**
- * Evict tools until under budget.
- *
- * Primary key is {@link toolEvictionTier} — higher tier is evicted first:
- * situational + skill/MCP (3) → ordinary builtins (2) → core (1) → never (0).
- * Within a tier the largest schema goes first.
- *
- * This replaces the old three-predicate ladder, whose middle bucket mixed
- * genuine extras with ordinary working tools — so under pressure *schema size*
- * decided what survived, and prompt-referenced signals could be dropped.
- */
-export function evictToolsToBudget(
-  tools: ToolDefLike[],
-  budget: number,
-  protectedNames: Set<string> = TOOL_DEF_PROTECTED,
-  coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
-): { tools: ToolDefLike[]; evicted: Array<{ name: string; description: string }> } {
-  const current = [...tools];
-  const evicted: Array<{ name: string; description: string }> = [];
-
-  const sizeOf = (t: ToolDefLike) => JSON.stringify(t).length;
-
-  /** Largest tool in the highest evictable tier currently present. */
-  const pickVictim = (): number => {
-    let victimIdx = -1;
-    let bestTier = 0;
-    let victimSize = -1;
-    for (let i = 0; i < current.length; i++) {
-      const t = current[i]!;
-      const tier = toolEvictionTier(t.name, protectedNames, coreKeep);
-      if (tier === 0) continue; // protected — never a victim
-      const sz = sizeOf(t);
-      if (tier > bestTier || (tier === bestTier && sz > victimSize)) {
-        bestTier = tier;
-        victimSize = sz;
-        victimIdx = i;
-      }
-    }
-    return victimIdx;
-  };
-
-  while (estimateToolDefTokens(current) > budget && current.length > 0) {
-    const victimIdx = pickVictim();
-    if (victimIdx < 0) break; // only protected left
-    const [victim] = current.splice(victimIdx, 1);
-    if (victim) {
-      evicted.push({
-        name: victim.name,
-        description: (victim.description || '').slice(0, 60),
-      });
-    }
-  }
-
-  return { tools: current, evicted };
-}
-
-/**
- * Format evicted tools as a short Tier-3 catalog (Afford.S2).
- * Name-only preferred; optional ≤40 char blurb. Hard-capped by DEFERRED_CATALOG_MAX_CHARS.
- */
-export function formatEvictedToolCatalog(
-  evicted: Array<{ name: string; description: string }>,
-  maxChars?: number,
-): string {
-  const cap = maxChars ?? 1_500;
-  if (!evicted.length) return '';
-  const names = evicted.map((e) => e.name);
-  const sample = names.slice(0, 2).map((n) => `"${n}"`).join(', ');
-  const header = [
-    '\n## Deferred Tools (schemas omitted for budget)',
-    // Derived, not re-typed: this list used to restate the action tools by hand
-    // and would silently go stale the day a member is added.
-    `Core platform tools (shell/files/tasks/memory) and the action tools (${ACTION_TOOL_IDS.join(' / ')}) `
-    + 'stay LIVE above.',
-    `These ${names.length} tool(s) were moved OUT of this turn's schema to stay inside the tool-definition budget. `
-    + 'They are not gone — each one is re-discoverable:',
-    `  recover: discover_tools({ name: [${sample}${names.length > 2 ? ', …' : ''}] })`,
-    'Activation is sticky: the schema is back from your next turn. Do not guess a tool you cannot see.',
-  ].join('\n');
-  const lines: string[] = [];
-  let used = header.length;
-  for (const e of evicted) {
-    const blurb = (e.description || '').trim().slice(0, 40);
-    const line = blurb ? `- \`${e.name}\`: ${blurb}` : `- \`${e.name}\``;
-    if (used + 1 + line.length > cap) break;
-    lines.push(line);
-    used += 1 + line.length;
-  }
-  if (!lines.length) {
-    // At least list names comma-separated under the header budget
-    return `${header}\n${names.join(', ')}`.slice(0, cap);
-  }
-  return [header, ...lines].join('\n');
-}

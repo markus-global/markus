@@ -39,7 +39,7 @@ MUST: Skill full bodies and deferred tool schemas MUST enter context only via `d
 
 MUST NOT: Inject full SKILL.md bodies at spawn into the system prompt.
 
-Test IDs: `A-skill-l0-only`, `A-tooldef-budget`.
+Test IDs: `A-skill-l0-only`.
 
 ### §1.3 Execute ≠ learn
 
@@ -106,9 +106,9 @@ MUST: Default `converse` MUST NOT include `spawn_subagents` or `deliverable_crea
 
 MUST: `execute` MUST include code/shell/coding groups (or equivalent) needed for task work.
 
-MUST: Keyword matching and `recentToolNames` MAY accelerate loading but MUST NOT exceed the pack `toolDefTokens` budget.
+MUST: Keyword matching and `recentToolNames` MAY accelerate loading; selection only ever adds to the face — no budget eviction exists (§5).
 
-Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-sticky-capped`.
+Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`.
 
 ---
 
@@ -116,10 +116,6 @@ Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-stic
 
 | Constant | Value | Purpose |
 |----------|-------|---------|
-| `TOOL_DEF_BUDGET_REFLEX` | 3_000 | Max tool schema tokens |
-| `TOOL_DEF_BUDGET_CONVERSE` | 8_000 | Max tool schema tokens |
-| `TOOL_DEF_BUDGET_EXECUTE` | 10_000 | Max tool schema tokens |
-| `TOOL_DEF_BUDGET_GOVERN` | 8_000 | Max tool schema tokens |
 | `ROLE_PROMPT_MAX_TOKENS` | 6_000 | ROLE soft size metric (warn only; never truncate) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS` | 1_500 | knowledge.md injection (`execute`/`govern`) |
 | `KNOWLEDGE_PROMPT_MAX_TOKENS_CONVERSE` | 1_200 | knowledge.md injection (`converse`) |
@@ -135,7 +131,6 @@ Test IDs: `A-pack-converse-no-spawn`, `A-pack-execute-has-code`, `A-tooldef-stic
 | `SYSTEM_NORMS_CHARS` | 2_000 | Team norms body cap (execute/govern) |
 | `SYSTEM_WORKFLOWS_MAX_CONVERSE` | 3 | Available-workflow lines in converse |
 | `SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE` | 800 | Caller `dynamicContext` blob cap (converse) |
-| `DEFERRED_CATALOG_MAX_CHARS` | 1_500 | Tier-3 rediscovery catalog hard cap |
 | `DEEP_SLEEP_IDLE_HEARTBEATS` | 3 | Consecutive idle before skip LLM |
 | `SUBTASK_SOFT_CAP` | 8 | Warn at/above this count |
 
@@ -210,29 +205,22 @@ MUST: Skill/MCP tool schemas (`feishu_*`, `*__*`, `chrome-devtools*`) MUST NOT e
 the LIVE tool list except via explicit `discover_tools` activation.
 MUST: Markus core tools (`TOOL_DEF_CORE_KEEP`: shell/file/task/memory/…) +
 `discover_tools` + HITL MUST stay LIVE for converse/execute/govern.
-MUST: When estimated tool-definition tokens still exceed the pack budget, evict
-optional extras / activated skill-MCP (LRU) only — never CORE_KEEP or HITL/discover.
-Prefer catalog (Tier 3 / inactive namespace list) over schema dump.
+MUST NOT: Shrink the tool face to fit a token budget — no eviction mechanism exists
+(Owner 2026-11-20, PR #471). External skill/MCP schemas enter only via `discover_tools`
+activation (progressive disclosure); activation is sticky for the session. Context
+pressure compresses history, never the face.
 
-Test IDs: `S-tool-mcp-progressive`, `S-tooldef-evict-mcp-before-core`, `S-activated-mcp-lru`.
-
-MUST (§Afford.S2): Evicted tool rediscovery catalog MUST be injected into the volatile
-`[Live context]` tail (never a system segment — byte-stable prefix must be preserved), as a
-short name-only (or name + ≤40 chars) list, total ≤ `DEFERRED_CATALOG_MAX_CHARS`.
-
-MUST NOT: Append the eviction catalog to `discover_tools.description` (that re-inflates
-`toolDefTokens` and defeats the budget).
+Test IDs: `S-tool-mcp-progressive`, `S-discover-activated-protected`.
 
 MUST: After `discover_tools` activates tool names, the runtime MUST rebuild the LLM
 `tools` schema list before the next provider call (stream / chat / task / session
-continuations). Core + HITL stay immune; skill/MCP activations may later LRU-defer.
+continuations). Activations are sticky for the session; nothing is evicted.
 MUST NOT: Reuse a stale pre-discover `llmTools` array across tool-loop iterations —
 that makes activation a no-op and causes discover_tools death spirals.
 MUST: Consecutive `discover_tools` calls (any args) ≥ 5 MUST be treated as a
 critical loop and break the tool loop.
 
-Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`,
-`S-discover-activated-protected`, `S-discover-tools-spin`.
+Test IDs: `S-discover-activated-protected`, `S-discover-tools-spin`.
 
 ### §5.1 max_tokens reservation clamp (§Afford.S4)
 

@@ -13,15 +13,13 @@
  * 修复：
  *  1. capability-packs 导出 SCHEMA_INJECTED_TOOLS（与 pushUnique 清单同源）
  *  2. agent.ts handleDiscoverTools 对命中该集合的工具走「激活」路径
- *  3. tool-selector.ts 预算驱逐时，已激活的 schema-injected 工具同样豁免
+ *  3. （历史）预算驱逐豁免——驱逐机制已于 PR #471 整体删除，schema-injected 平台工具恒在工具面
  */
 import { describe, it, expect } from 'vitest';
 import { ToolSelector } from '../src/tool-selector.js';
 import {
   SCHEMA_INJECTED_TOOLS,
-  TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
-  evictToolsToBudget,
   type CapabilityPack,
 } from '../src/capability-packs.js';
 
@@ -93,7 +91,7 @@ describe('P0-1 · SCHEMA_INJECTED_TOOLS 集合', () => {
   });
 });
 
-describe('P0-1 · 预算驱逐下的激活豁免', () => {
+describe('P0-1 · schema-injected 工具的激活与恒在', () => {
   it('激活的 schema-injected 工具不因预算压力被驱逐', () => {
     const names = selectNames({ activated: ['schedule_wakeup'] });
     expect(names).toContain('schedule_wakeup');
@@ -105,13 +103,4 @@ describe('P0-1 · 预算驱逐下的激活豁免', () => {
     expect(names).toContain('schedule_wakeup');
   });
 
-  it('protectedNames 扩展后 evictToolsToBudget 保留激活的 schema-injected 工具', () => {
-    const defs = [
-      { name: 'schedule_wakeup', description: 'wake me', inputSchema: { type: 'object', properties: {} } },
-      { name: 'big_tool', description: 'x'.repeat(400), inputSchema: { type: 'object', properties: {} } },
-    ];
-    const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP, 'schedule_wakeup']);
-    const { tools } = evictToolsToBudget(defs, 120, protectedNames, TOOL_DEF_CORE_KEEP);
-    expect(tools.map((t) => t.name)).toContain('schedule_wakeup');
-  });
 });

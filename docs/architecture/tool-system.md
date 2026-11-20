@@ -51,23 +51,20 @@ MUST: `execute` MUST include code/shell/coding capability groups.
 
 Test IDs: `A-pack-reflex-tools`, `A-pack-converse-no-spawn`, `A-pack-execute-has-code`.
 
-### 1.0.1 Spec: ToolDef budget eviction
+### 1.0.1 Spec: progressive disclosure — no budget eviction
 
 MUST: Boot/create/restore MUST **register** skill/MCP/Feishu tools without `activateTools`.
 LIVE schemas enter only via `discover_tools`. Sticky `recentToolNames` MUST NOT re-activate
 skill/MCP namespaces.
 
-MUST: After selection, if estimated tool-definition tokens exceed the pack budget, keep
-`TOOL_DEF_CORE_KEEP` + `discover_tools` + HITL, then evict skill/MCP (LRU among activated)
-and other extras until under budget.
+MUST NOT: Shrink the tool face to fit a token budget. The eviction mechanism
+(`evictToolsToBudget` / `toolEvictionTier` / `packToolDefBudget` / `TOOL_DEF_BUDGET_*` /
+the deferred-tool catalog) was **removed** (Owner 2026-11-20, PR #471): every first-party
+tool is immune and external tools enter only via sticky activation, so no legal eviction
+victim existed. The tool face is a FIXED segment — when the prompt is too big, ContextOS
+compresses the VARIABLE segment (history). Availability is a hard invariant, not a budget line.
 
-MUST (§Afford.S2): Evicted names MUST appear in a compact catalog (in the volatile `[Live
-context]` tail, keyed for rediscovery via `discover_tools`; name-only or name + ≤40 chars, total ≤
-`DEFERRED_CATALOG_MAX_CHARS` ≈ 1500 chars).
-
-MUST NOT: Append the eviction catalog into `discover_tools.description` (inflates
-`toolDefTokens` and defeats the pack budget). This is enforced as a *cache*
-invariant too: the description MUST be a pure function of the tool registry and
+MUST: `discover_tools.description` is a pure function of the tool registry and
 the skill catalog — never of the per-turn selection — because `tools` serialises
 ahead of `system` + `messages`, so any per-turn drift there invalidates the whole
 cached prefix. Regression guard:
@@ -77,23 +74,26 @@ byte-stable regardless of per-turn recentToolNames`.
 MUST: Activated skill bodies inject as `## Activated Skills` (not under the converse
 `dynamicContext` 800-char cap).
 
-Test IDs: `A-tooldef-budget`, `A-tooldef-sticky-capped`, `S-catalog-not-in-tooldef`.
+Test IDs: `A-pack-execute-has-code`; tool-face survival suites `action-tool-reachability`,
+`task-lifecycle-tool-reachability`, `capability-packs` (face far beyond any former budget,
+nothing dropped).
 
-### 1.0.2 Spec: action tools are always present, and eviction is reversible
+### 1.0.2 Spec: action tools are always present
 
-Tool definitions are capped by a token budget (§1.0.1). Eviction ranks by tier and then by
-schema size, so without an explicit rule an agent under pressure loses the tools that let it
-**act** — create / update / submit work, read its own ledger, look at its queue, answer a
-human — and is never told.
+History (2026-10-13 → 2026-11-20): the face used to be capped by a token budget and evicted
+by tier + schema size, so an agent under pressure could silently lose the tools that let it
+**act** — create / update / submit work, read its ledger, look at its queue, answer a human.
+The fix went through two stages: action tools made eviction-immune, then the eviction
+mechanism removed outright (§1.0.1). The face is never shrunk for size; the whitelist below
+is now a reachability assertion, not an eviction exemption.
 
 | Rule | Statement |
 |---|---|
 | Whitelist is derived | `ACTION_TOOL_GROUPS` in `packages/core/src/capability-packs.ts` groups action tools by need (`task`, `ledger`, `human`); `ACTION_TOOL_IDS` is derived from those groups, never hand-listed. |
 | Fail closed on a ghost id | A name in the whitelist that is absent from the tool registry is a startup/test error, not silently filtered. The live sample: `request_user_input` was copied out of prose into an intended whitelist and did not exist in the registry. |
 | Action tools are not situational extras | They are selected unconditionally for the active pack, never treated as optional keyword additions. |
-| Eviction may only take what can come back | A tool the runtime tells the model to call is protected (§1.0.1 tier 0). Eviction is restricted to tools that can be re-discovered. |
-| The eviction hint is actionable | When a tool leaves the schema the model is told what left and how to get it back, instead of silently losing a capability. |
-| Single switch | One derived set answers "is this tool required", and selection, the assertion and the evictor all read it. |
+| The face is never shrunk for size | No budget eviction exists (§1.0.1). Context pressure compresses history, never the tool face. |
+| Single switch | One derived set answers "is this tool required", and selection and the reachability assertion both read it. |
 
 ### 1.1 Selection inputs
 
