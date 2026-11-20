@@ -320,13 +320,9 @@ export { getAdapter, getAllAdapters } from './coding-tools/index.js';
 // Agent Runtime — Context Economics + Learning Loop
 export {
   scenarioToPack,
-  packToolDefBudget,
   getReflexAllowlist,
   getDistillationAllowlist,
   DISTILLATION_EXTRA_TOOLS,
-  estimateToolDefTokens,
-  evictToolsToBudget,
-  formatEvictedToolCatalog,
   TASK_EXECUTION_EXTRA_TOOLS,
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,

@@ -2,11 +2,7 @@ import { readFileSync } from 'node:fs';
 import { ToolSelector } from '../src/tool-selector.js';
 import {
   SCHEMA_INJECTED_TOOLS,
-  TOOL_DEF_CORE_KEEP,
-  TOOL_DEF_EVICT_FIRST,
   TOOL_DEF_PROTECTED,
-  evictToolsToBudget,
-  toolEvictionTier,
 } from '../src/capability-packs.js';
 
 function makeToolMap(names: string[]): Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }> {
@@ -448,8 +444,9 @@ describe('ToolSelector', () => {
       });
     }
     const selected = selector.selectTools({ allTools: map, userMessage: 'hello', pack: 'converse' }).map((t) => t.name);
-    expect(selected.length).toBeLessThan(ALL_BUILTIN.length); // eviction actually happened
-    expect(selected).toContain('end_turn');                   // …but not to the stop signal
+    // Under the eviction-immune policy, first-party tools (incl. end_turn) are never
+    // dropped for budget, so the stop signal is ALWAYS in the schema regardless of size.
+    expect(selected).toContain('end_turn');
   });
 
   it('end_turn is offered in the reflex pack too (propagates via TOOL_DEF_PROTECTED)', () => {
@@ -475,7 +472,7 @@ describe('ToolSelector', () => {
     );
     expect(
       unsafe,
-      `injected but neither protected nor discover-tools-activatable → unreachable once evicted: ${unsafe.join(', ')}`,
+      `injected but neither protected nor discover-tools-activatable → unreachable if ever omitted: ${unsafe.join(', ')}`,
     ).toEqual([]);
   });
 
@@ -484,44 +481,10 @@ describe('ToolSelector', () => {
     expect(SCHEMA_INJECTED_TOOLS.has('collapse_right_panel')).toBe(true);
   });
 
-  it('eviction is tiered: situational tools go before core, core before protected', () => {
-    expect(toolEvictionTier('end_turn')).toBe(0);          // protected → never
-    expect(toolEvictionTier('notify_user')).toBe(0);
-    expect(toolEvictionTier('shell_execute')).toBe(1);     // core → last
-    expect(toolEvictionTier('kb_search')).toBe(1);         // knowledge base is core
-    expect(toolEvictionTier('some_unknown_builtin')).toBe(2);
-    expect(toolEvictionTier('package_install')).toBe(3);   // situational → first
-    expect(toolEvictionTier('feishu_tool_x')).toBe(3);     // skill/MCP → first
-  });
-
-  it('tiered eviction keeps core tools while situational tools are dropped', () => {
-    // Equal-size schemas, so ONLY the tier can decide the order.
-    const mk = (name: string) => ({ name, description: 'd', inputSchema: { type: 'object', properties: {} } });
-    const tools = [
-      mk('package_install'), // tier 3
-      mk('team_status'),     // tier 3
-      mk('shell_execute'),   // tier 1 (core)
-      mk('file_read'),       // tier 1 (core)
-      mk('some_builtin'),    // tier 2
-      mk('notify_user'),     // tier 0 (protected)
-    ];
-    const { tools: kept, evicted } = evictToolsToBudget(tools, 1, TOOL_DEF_PROTECTED, TOOL_DEF_CORE_KEEP);
-    const evictedNames = evicted.map((e) => e.name);
-    const keptNames = kept.map((t) => t.name);
-
-    expect(evictedNames).toContain('package_install');
-    expect(evictedNames).toContain('team_status');
-    expect(keptNames).toContain('notify_user'); // protected survives even at budget 1
-    // Tier-3 extras must be gone before any tier-1 core tool is touched.
-    if (evictedNames.includes('shell_execute')) {
-      expect(evictedNames).toContain('some_builtin');
-    }
-  });
-
   it('P0-3: activated skill/MCP stay LIVE under budget pressure (no silent eviction)', () => {
     // 回归审计 P0-3：旧实现允许已激活的 skill/MCP 被预算驱逐，agent 随即静默删除其激活态，
-    // 导致该工具之后永久不可见 → 模型反复 discover_tools 空烧 token。现在已激活工具一律
-    // 豁免驱逐，且在 schema 中稳定可见；consumeEvictedActivated() 必须为空。
+    // 导致该工具之后永久不可见 → 模型反复 discover_tools 空烧 token。驱逐机制已整体删除
+    // （PR #471）：已激活工具在 schema 中稳定可见。
     const selector = new ToolSelector();
     const bigSchema = {
       type: 'object',
@@ -549,7 +512,6 @@ describe('ToolSelector', () => {
     expect(names).toContain('shell_execute');
     expect(names).toContain('discover_tools');
     for (const n of activatedMcp) expect(names).toContain(n);
-    expect(selector.consumeEvictedActivated()).toEqual([]);
   });
 
   it('CACHE: identical tool set emits byte-identical schema regardless of activation order (stable registry order)', () => {

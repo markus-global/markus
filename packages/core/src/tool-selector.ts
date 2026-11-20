@@ -8,12 +8,9 @@ import {
   allowsLoopOnlyTools,
   isLoopOnlyTool,
   CONVERSE_FORBIDDEN_DEFAULT,
-  evictToolsToBudget,
   getReflexAllowlist,
   isSkillOrMcpToolName,
   isWorkContextBoundTool,
-  packToolDefBudget,
-  SCHEMA_INJECTED_TOOLS,
   TASK_EXECUTION_EXTRA_TOOLS,
   TOOL_DEF_CORE_KEEP,
   TOOL_DEF_PROTECTED,
@@ -29,9 +26,6 @@ const log = createLogger('tool-selector');
  * Tool names must correspond to actual tools from createBuiltinTools() or
  * other tool providers (A2A, task, memory, etc.).
  */
-
-/** Evicted-tool catalog from the last selectTools call (Afford.S2 side channel). */
-type DeferredCatalogEntry = { name: string; description: string };
 
 export interface ToolGroup {
   name: string;
@@ -173,28 +167,9 @@ const BASE_TOOL_NAMES = new Set([
 export class ToolSelector {
   private groups: ToolGroup[];
   private baseToolNames: Set<string>;
-  /** Side channel: tools evicted in the last selectTools (inject into system Tier 3). */
-  private lastDeferredCatalog: DeferredCatalogEntry[] = [];
-  /** Activated skill/MCP names deferred under budget (caller should prune sticky set). */
-  private lastEvictedActivated: string[] = [];
-
   constructor(customGroups?: ToolGroup[]) {
     this.groups = customGroups ?? TOOL_GROUPS;
     this.baseToolNames = new Set(BASE_TOOL_NAMES);
-  }
-
-  /** Consume deferred catalog from the last selectTools (clears after read). */
-  consumeDeferredCatalog(): DeferredCatalogEntry[] {
-    const catalog = this.lastDeferredCatalog;
-    this.lastDeferredCatalog = [];
-    return catalog;
-  }
-
-  /** Consume activated names that were LRU-deferred (clears after read). */
-  consumeEvictedActivated(): string[] {
-    const names = this.lastEvictedActivated;
-    this.lastEvictedActivated = [];
-    return names;
   }
 
   selectTools(opts: {
@@ -689,83 +664,22 @@ export class ToolSelector {
       }
     }
 
-    const budget = packToolDefBudget(pack);
-    // HITL/discover + Markus core are eviction-immune.
-    // 审计 P0-3：**已激活工具一律晋升 protected（豁免驱逐）**。
-    // 旧实现只豁免「非 skill/MCP」的激活工具，导致 skill/MCP 被 discover_tools 激活后
-    // 可能在同一轮就被预算驱逐 → agent.ts 静默删除激活态 → 工具彻底不可见 → 模型反复
-    // discover_tools 空烧 token。未激活的 skill/MCP 仍按渐进披露（catalog）延迟。
-    const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
-    if (actionGuard) {
-      // C8-D, two clauses of the same contract:
-      //   (a) action tools are eviction-immune — losing them silently IS the defect;
-      //   (b) eviction may only ever take a tool `discover_tools` can bring back.
-      //       A tool with no registered handler and no schema-injection entry is
-      //       unreachable for the rest of the turn once evicted (that is how
-      //       end_turn / open_right_panel died), so it is never a legal victim.
-      for (const name of ACTION_TOOL_IDS) protectedNames.add(name);
-      for (const t of result) {
-        if (!opts.allTools.has(t.name) && !SCHEMA_INJECTED_TOOLS.has(t.name)) protectedNames.add(t.name);
-      }
-    }
-    for (const name of activated) {
-      // registered handler OR schema-injected (pushUnique) tool — both must be
-      // eviction-immune once explicitly activated via discover_tools, otherwise
-      // activation is a no-op after budget eviction (P0-1 self-management fix).
-      if (opts.allTools.has(name) || SCHEMA_INJECTED_TOOLS.has(name)) protectedNames.add(name);
-    }
-    const { tools: capped, evicted } = evictToolsToBudget(
-      result,
-      budget,
-      protectedNames,
-      TOOL_DEF_CORE_KEEP,
-    );
-    // Afford.S2: catalog goes to system Tier 3 via consumeDeferredCatalog — NOT tool schema.
-    this.lastDeferredCatalog = evicted.map((e) => ({
-      name: e.name,
-      description: (e.description || '').slice(0, 40),
-    }));
-    this.lastEvictedActivated = evicted
-      .map((e) => e.name)
-      .filter((n) => activated.has(n) && isSkillOrMcpToolName(n));
-    if (evicted.length) {
-      log.info('Tool defs capped to pack budget', {
-        pack,
-        budget,
-        kept: capped.length,
-        evicted: evicted.map((e) => e.name),
-        evictedActivated: this.lastEvictedActivated,
-      });
-    }
-
-    // D-guard: an evicted tool must still be recoverable. If it has neither a
-    // registered handler (`allTools`) nor a schema-injection entry, then it is
-    // gone from the schema AND `discover_tools` will answer "unknown" → the tool
-    // is unreachable for the rest of the turn. That is a should-never-happen
-    // event (it is how `end_turn` and open/collapse_right_panel silently died),
-    // so make it loud instead of burying it in the info-level cap log.
-    const unreachable = evicted
-      .map((e) => e.name)
-      .filter((n) => !opts.allTools.has(n) && !SCHEMA_INJECTED_TOOLS.has(n));
-    if (unreachable.length) {
-      log.warn('Evicted tool is not re-activatable — unreachable for this turn', {
-        pack,
-        budget,
-        unreachable,
-        hint: 'Add to TOOL_DEF_PROTECTED (must never evict) or SCHEMA_INJECTED_TOOLS (discover_tools can restore it).',
-      });
-    }
-
+    // No budget eviction (Owner 2026-11-20; mechanism removed in PR #471).
+    // The tool face is a FIXED segment: availability is a hard invariant, not a
+    // budget line. Context pressure compresses the VARIABLE segment (history)
+    // downstream; the face is never shrunk. External skill/MCP tools stay out
+    // until discover_tools activation (progressive disclosure above), and
+    // activation is sticky for the session.
     log.debug('Tool selection complete', {
       total: opts.allTools.size,
-      selected: capped.length,
+      selected: result.length,
       pack,
       groups: this.groups.filter(g => g.toolNames.some(n => selected.has(n))).map(g => g.name),
     });
 
     // 人类对话的唯一排除点：静默收尾 = 用户看到空白，所以 human_chat 回合的工具面里
     // 不允许出现 end_turn（执行侧还有第二道闸，见 Agent.runTool 的 humanFacing 分支）。
-    const face = opts.humanFacing ? capped.filter((t) => t.name !== 'end_turn') : capped;
+    const face = opts.humanFacing ? result.filter((t) => t.name !== 'end_turn') : result;
     return applyContextGateToTools(face, opts.contextPct);
   }
 

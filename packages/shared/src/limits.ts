@@ -142,7 +142,7 @@ export const MAILBOX_ITEM_MAX_RETRIES = 2;
  * (8 in one day, 2026-10-04). Deleted in docs/records/platform-hardening-2026-10.md §6.
  *
  * The typed signal replaced it: an agent ends a turn by CALLING the `end_turn` tool
- * (unconditionally injected, budget-protected — see capability-packs.ts
+ * (unconditionally injected — see capability-packs.ts
  * `TOOL_DEF_PROTECTED`). A tool call cannot be paraphrased into prose, cannot leak
  * into a reply, and needs no detection heuristic or cleanup. This sentinel is how the
  * agent reports that typed fact to the mailbox/attention layer.
@@ -1022,15 +1022,6 @@ export const PROMPT_AFFORD_OUTPUT_RESERVE = 4_096;
 
 // ─── Agent Runtime: Context Economics (see docs/architecture/agent-runtime.md §3) ─────────
 
-/** Max tool-definition tokens for reflex pack (heartbeat / dream / flush). */
-export const TOOL_DEF_BUDGET_REFLEX = 3_000;
-/** Max tool-definition tokens for converse pack (chat / a2a / comments). */
-export const TOOL_DEF_BUDGET_CONVERSE = 8_000;
-/** Max tool-definition tokens for execute pack (task_execution). */
-export const TOOL_DEF_BUDGET_EXECUTE = 10_000;
-/** Max tool-definition tokens for govern pack (review / deliberation). */
-export const TOOL_DEF_BUDGET_GOVERN = 8_000;
-
 /**
  * Soft size metric for ROLE.md (observe/warn only). ROLE is never truncated —
  * oversized ROLE is an authoring issue (move long-tail refs into skills).
@@ -1098,8 +1089,6 @@ export const SYSTEM_WORKFLOWS_MAX_CONVERSE = 3;
 export const SYSTEM_WORKFLOW_DESC_CHARS_CONVERSE = 80;
 /** Max chars for caller-supplied `dynamicContext` blob in converse. */
 export const SYSTEM_DYNAMIC_CONTEXT_CHARS_CONVERSE = 800;
-/** Tier-3 rediscovery catalog hard cap in chars (Afford.S2). */
-export const DEFERRED_CATALOG_MAX_CHARS = 1_500;
 /** Safety tokens subtracted from OR reservation afford when clamping max_tokens. */
 export const MAX_TOKENS_AFFORD_SAFETY = 64;
 /** Margin when computing max_tokens from promptAfford − estimatedPrompt. */

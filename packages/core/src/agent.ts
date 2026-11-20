@@ -37,7 +37,6 @@ import {
   type GoalConfig,
   type UserInputQuestion,
   type UserInputAnswer,
-  DEFERRED_CATALOG_MAX_CHARS,
   SESSION_REQUEST_HISTORY_MIN,
   SESSION_REQUEST_HISTORY_BLOCK,
   isStrictStateItem,
@@ -91,7 +90,6 @@ import { detectEnvironment, type EnvironmentProfile } from './environment-profil
 import { ToolSelector } from './tool-selector.js';
 import {
   scenarioToPack,
-  formatEvictedToolCatalog,
   COMMENT_RESPONSE_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_ALLOWED_TOOLS,
   REQUIREMENT_ACTION_EVIDENCE_TOOLS,
@@ -5989,10 +5987,6 @@ export class Agent {
       scenario,
     };
     let llmTools = this.buildToolDefinitions(toolSelectOpts);
-    // Afford.S2 catalog: rides the per-turn volatile TAIL block, never the system
-    // prompt (it changes with the per-turn tool selection and would invalidate
-    // the whole cached prefix). See consumeDeferredToolCatalog().
-    const deferredToolCatalog = this.consumeDeferredToolCatalog();
     if (options?.allowedTools) {
       const allowed = options.allowedTools;
       // Restrict to the scenario's allow-list...
@@ -6030,7 +6024,7 @@ export class Agent {
     await this.llmRouter.ensureMarkusCatalogLoaded?.({ timeoutMs: 3000 });
 
     const sessionMessages = this.requestHistory(sessionId);
-    this.volatileState = this.mergeVolatile(volatile, deferredToolCatalog);
+    this.volatileState = this.normalizeVolatile(volatile);
     const prepared = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -6746,14 +6740,12 @@ export class Agent {
     this.activeScenario = 'chat';
     const streamToolSelectOpts = { userMessage: effectiveMessage, isChat: true as const, humanFacing: true as const, scenario: 'chat' as const };
     let llmTools = this.buildToolDefinitions(streamToolSelectOpts);
-    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
-    const streamDeferredCatalog = this.consumeDeferredToolCatalog();
 
     // A2: flush important memory to disk before context fills (turn-level preflight).
     await this.maybeMemoryFlushPreflight(this.currentSessionId);
 
     const sessionMessages = this.requestHistory(this.currentSessionId);
-    this.volatileState = this.mergeVolatile(volatileState, streamDeferredCatalog);
+    this.volatileState = this.normalizeVolatile(volatileState);
     const preparedStream = await this.contextEngine.prepareMessages({
       systemPrompt,
       sessionMessages,
@@ -8786,23 +8778,6 @@ export class Agent {
   }
 
   /**
-   * 审计 P0-3：已激活工具**绝不静默删除**。
-   *
-   * 旧实现把本轮被预算驱逐的激活工具从 `activatedExtraTools` 里 `delete`，于是该工具
-   * 在之后所有轮次都不可见 → 模型只能反复 discover_tools（空烧 token、永不成功）。
-   * 现在 tool-selector 已把「已激活工具」全部晋升 protected（不再会被驱逐）；此处再做
-   * 一层兜底：即使收到驱逐名单，也**保留激活态（sticky）并显式告警**，而不是静默移除，
-   * 让「激活了却拿不到」在日志里可见、可查。
-   */
-  private pruneEvictedActivatedTools(names: string[]): void {
-    if (names.length === 0) return;
-    log.warn('Activated tools reported evicted — keeping them sticky (no silent drop)', {
-      agentId: this.id,
-      evictedActivated: names,
-    });
-  }
-
-  /**
    * OB-3 兜底：清除「无存活任务支撑的残留活动痕迹」并回收至 idle。
    * - 仅当没有正在执行的任务时生效（scan 与 recover 之间有竞态保护）。
    * - 只清当前活动标记（leftover marker），不走 endActivity 的统计与事件流回调
@@ -9135,32 +9110,10 @@ export class Agent {
       + `\n\n[NOTE] Your current model does not support vision. To understand the IMAGE file(s) above, call the describe_image tool with their paths (e.g. describe_image with images: [...paths]). You may also switch to a vision-capable model via llm_switch_model, or ask the user which you prefer.`;
   }
 
-  /**
-   * Afford.S2: deferred-tool catalog (tools the per-turn pack budget evicted).
-   *
-   * Returns the catalog TEXT for the caller to merge into the per-turn volatile
-   * tail (`mergeVolatile`), and consumes it from the selector.
-   *
-   * It deliberately does NOT go into the system prompt any more: the evicted set
-   * follows the keyword-selected tool set, so it changes between turns — and any
-   * change inside the single system message invalidates the cached prefix for the
-   * ENTIRE request (system + history). Same content, zero cache cost, when it
-   * rides the volatile block at the history tail.
-   */
-  private consumeDeferredToolCatalog(): string {
-    const deferred = this.toolSelector.consumeDeferredCatalog();
-    if (!deferred.length) return '';
-    return formatEvictedToolCatalog(deferred, DEFERRED_CATALOG_MAX_CHARS);
-  }
-
-  /**
-   * Merge per-turn volatile bits into ONE tail block. Keeps the block byte-stable
-   * when a bit is empty, and keeps ordering deterministic (system snapshot first,
-   * then the deferred-tool catalog).
-   */
-  private mergeVolatile(base: string | undefined, ...extra: Array<string | undefined>): string | undefined {
-    const parts = [base, ...extra].map(p => (p ?? '').trim()).filter(Boolean);
-    return parts.length ? parts.join('\n\n') : undefined;
+  /** Normalize the per-turn volatile tail: trimmed, undefined when empty. */
+  private normalizeVolatile(base: string | undefined): string | undefined {
+    const trimmed = (base ?? '').trim();
+    return trimmed || undefined;
   }
 
   /**
@@ -9241,11 +9194,7 @@ export class Agent {
     };
   }
 
-  /**
-   * Deferred-tool catalog + prepareMessages + Afford.S1 for any scenario
-   * (chat/task/review/session). The catalog goes to the volatile tail, not the
-   * system prompt (see `consumeDeferredToolCatalog`).
-   */
+  /** prepareMessages + Afford.S1 for any scenario (chat/task/review/session). */
   private async prepareWithAffordGuard(opts: {
     systemPrompt: string;
     systemCacheSegments: SystemPromptSegment[];
@@ -9261,11 +9210,6 @@ export class Agent {
     systemCacheSegments: SystemPromptSegment[];
   }> {
     const { systemPrompt, systemCacheSegments } = opts;
-    // Afford.S2 catalog rides the per-turn volatile tail (see consumeDeferredToolCatalog).
-    // Stored on the workspace so the afford-guard downgrade re-prepare below keeps it.
-    const gapDeferredCatalog = this.consumeDeferredToolCatalog();
-    const volatileForPrepare = this.mergeVolatile(this.volatileState, gapDeferredCatalog);
-    this.volatileState = volatileForPrepare;
     const sessionMessages = this.requestHistory(
       opts.sessionId,
       opts.sessionMessageLimit ?? SESSION_REQUEST_HISTORY_MIN,
@@ -9343,10 +9287,9 @@ export class Agent {
       skillCatalog: this.skillRegistry?.list(),
       pack,
       scenario: context?.scenario,
-      // discover_tools activations — skill/MCP may LRU-defer under toolDef budget
+      // discover_tools activations (sticky for the session)
       activatedToolNames: context?.ignoreSticky ? undefined : sticky.activated,
     });
-    this.pruneEvictedActivatedTools(this.toolSelector.consumeEvictedActivated());
 
     // Deadlock protection (structural, single execution point): a turn that is
     // answering a peer query cannot ask another agent. Chains therefore never

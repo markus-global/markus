@@ -287,7 +287,7 @@ and the scenario silently fails.
 
 **The selection path.** `ToolSelector.selectTools` builds the schema from
 `BASE_TOOL_NAMES` ∪ keyword-matched `ToolGroup`s ∪ `recentToolNames` ∪ `discover_tools`
-activations, with `TOOL_DEF_CORE_KEEP` protected from eviction. A tool name that appears in **no**
+activations. No budget eviction exists (PR #471) — selection only ever adds. A tool name that appears in **no**
 group and is not in the keep-set can therefore never reach the model by default — even when it is
 fully registered and the scenario's prompt demands it.
 

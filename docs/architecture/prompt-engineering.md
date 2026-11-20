@@ -207,7 +207,6 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 ║   Channel History (recent msgs) · Date/locale · Mailbox  ║
 ║   & attention · Team Status · Working Memory ·           ║
 ║   Cognitive/Notebook context · task board · deliverables ║
-║   · deferred-tool catalog (Afford.S2)                    ║
 ║   · Your Knowledge (knowledge.md) · Working State        ║
 ║     (notebook)  ← agent-written, see §2.1.1 inv. 5       ║
 ╚══════════════════════════════════════════════════════════╝
@@ -221,7 +220,7 @@ dynamic content is moved **out of the system prompt entirely** into a volatile t
 
 2. **Tier 2 (Semi-stable)**: Identity, org context, workspace paths, scenario instructions last. Change on org/config events (days–weeks), but stay stable within a session. Scenario placed last keeps the identity/org prefix stable across mode switches (OpenAI benefit). A breakpoint here caches the combined Tier 1+2 prefix. These two tiers together form the byte-stable system `text`. **Agent-written memory (knowledge.md, NOTEBOOK.md) is deliberately NOT in this tier** — see §2.1.1 invariant 5.
 
-3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps, deferred-tool catalog. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
+3. **Volatile tail (Scheme A)** — replaces the old Tier 3: Project/task board, system announcements, feedback, available skills (query-filtered), `## Notebook` (cognitive), relevant memories, team status, channel history, mailbox state, working memory, timestamps. These change per call and live **outside the system**: `prepareMessages()` assembles them (plus `contextHint`) into one `[SYSTEM] [Live context]` message appended as the **LAST message of the request**. Values are quantized where possible (timestamps to 5-min buckets, mailbox elapsed time to coarse labels, notebook ages to buckets) to reduce churn. Sitting in the **history tail** rather than in the system message means changing it never invalidates the byte-stable system + history prefix (implicit prefix-cache on OpenAI-compatible providers).
 
    > **Placement is load-bearing — it must be the LAST message.** Do NOT "insert it just before the current query": inside an agent tool loop the last user message is the ORIGINAL task instruction (index 1) — every later turn is assistant/tool — so that insertion point is actually the *front* of the history. Rewriting `messages[1]` every turn broke the byte-identical prefix right after `system` and re-billed the entire replayed history on every LLM call (measured on real logs: 46% prefix reuse instead of 79%, ~90k tokens re-sent per call).
 
@@ -253,7 +252,7 @@ guard test; break one and long sessions silently re-bill their whole history on 
 |---|-----------|-------|-----------|
 | 1 | The volatile `[Live context]` block is the **last message** — never inserted at `messages[1]` | `context-engine.prepareMessages` | `context-engine.test.ts` → `C-cache-volatile-tail`, `C-cache-volatile-stable-head` |
 | 2 | The request-history window **slides in blocks**, not per message | `history-window.ts` (`requestHistoryStart`), used by every `Agent.requestHistory()` call | `history-window.test.ts` |
-| 3 | The deferred-tool catalog (Afford.S2) rides the **volatile tail**, never the system prompt | `Agent.consumeDeferredToolCatalog()` + `mergeVolatile()` | `agent-deep.test.ts` → `deferred-tool catalog placement` |
+| 3 | The tool face is never shrunk for size — no budget eviction exists (PR #471); context pressure compresses history, never the face | `ToolSelector.selectTools` (no evictor) | `action-tool-reachability.test.ts`, `capability-packs.test.ts` |
 | 4 | ContextOS `[SLOTS]` + `[CONTEXT SUMMARY]` are **derived in the engine**, so every prepare path carries them | `context-engine.prepareMessages` defaults from `(memory, sessionId)` | `context-engine.test.ts` → `ContextOS slots + summary ride EVERY prepare path` |
 | 5 | Agent-written knowledge / state (`## Your Knowledge`, `## Notebook`) ride the **volatile tail**, never Tier 2 | write-frequency tier boundary, below | `cache-optimization.test.ts` → `C-cache-knowledge-body`, `C-cache-knowledge-write` |
 | 6 | The `tools` array is **byte-stable per session** — no per-turn counts, dynamic lists, or selection-derived content in any tool `description` / `inputSchema` | `tool-selector.ts` `buildDiscoverTool` (registry-derived, sorted) | `tool-selector.test.ts` → `CACHE: discover_tools description is byte-stable …` |
