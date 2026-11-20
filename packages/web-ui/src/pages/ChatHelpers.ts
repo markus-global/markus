@@ -453,6 +453,36 @@ export function shouldSettleDetachedSession(input: {
 }
 
 /**
+ * 页面从隐藏恢复可见（移动端浏览器休眠 / 切应用 / bfcache 返回）时，应当对哪个
+ * 会话做一次「DB 软刷新 + 权威重连」恢复。返回该会话 id；无可恢复对象时返回 null。
+ *
+ * 为什么需要这条独立的恢复边：存活性权威供给（`reconcileOpenSessions`）只更新
+ * 「在不在输出」，从不搬运消息内容；而重连 effect 只在会话**仍在输出**时才接管。
+ * 于是当浏览器休眠期间 agent **已经把这一回合跑完**，恢复可见时权威翻成
+ * `streaming:false`，重连闸门直接跳过 —— 没有任何路径把此刻已落库的最终回复从 DB
+ * 拉进显示缓冲（流式进行中 DB 加载只写缓存、不写显示）。用户就只看到自己发的那条
+ * 消息，直到手动退出再进对话（`switchSession → loadSessionMessages`）才看见回复。
+ * 本闸门点名的正是「恢复可见时需要补这条 DB 软刷新」的会话。
+ *
+ * 判据与重连 effect 同源：必须是当前激活页、非预览、direct 模式、选中了 agent、
+ * 且会话是真实 id（非新建占位）。任一不满足 ⇒ 无可恢复对象（返回 null）。
+ */
+export function resumeRecoveryTarget(input: {
+  isActive: boolean;
+  previewMode?: boolean;
+  chatMode: ChatMode;
+  selectedAgent?: string | null;
+  activeSessionId: string | null | undefined;
+  placeholderId: string;
+}): string | null {
+  if (!input.isActive || input.previewMode) return null;
+  if (input.chatMode !== 'direct' || !input.selectedAgent) return null;
+  const sid = input.activeSessionId;
+  if (!sid || sid === input.placeholderId) return null;
+  return sid;
+}
+
+/**
  * Finalize the last in-flight agent bubble (agent && isStreaming && !isStopped)
  * — used when a reattach stream dies/aborts while feeding an existing bubble.
  * Unlike finalizeLastInterruptedAgent this never touches a completed reply:

@@ -126,6 +126,7 @@ import {
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
   resolveMobileTeamLayerState,
+  resumeRecoveryTarget,
 } from './ChatHelpers.ts';
 import { timeAgo, formatExactTime } from '../lib/timeAgo.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
@@ -2896,6 +2897,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!sessionStreamState.isStreaming(sid)) return;
     void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, streamRevision]);
+
+  // ── Content recovery on visibility resume (P1: mobile sleep / app switch) ──
+  // The reattach effect above only takes over while the session is STILL
+  // streaming. When the browser sleeps mid-turn and the agent FINISHES while
+  // away, the authority flips to streaming:false on wake — reattach's gate
+  // skips, and nothing pulls the now-persisted reply from the DB into the
+  // display (during streaming, DB loads write to cache only). The user then
+  // sees only their own sent message until they manually leave and re-enter
+  // the conversation (switchSession → loadSessionMessages). Close that gap
+  // with the same phase-aware recovery a session switch uses: a DB soft-refresh
+  // (never clobbers a live bubble — cache-only while streaming) then an
+  // authoritative reattach (cooldown-throttled, idempotent). The listener is
+  // registered once; the ref carries the freshest closure so resume always
+  // reads the current session/agent, not a stale render snapshot.
+  const resumeRecoveryRef = useRef<() => void>(() => {});
+  resumeRecoveryRef.current = () => {
+    const sid = resumeRecoveryTarget({
+      isActive, previewMode, chatMode, selectedAgent, activeSessionId,
+      placeholderId: NEW_CHAT_PLACEHOLDER_ID,
+    });
+    if (!sid || !selectedAgent) return;
+    const key = currentConvKeyRef.current;
+    void loadSessionMessages(sid, key).then(() => {
+      void tryReattachActiveStream(selectedAgent, sid, key);
+    });
+  };
+  useEffect(() => {
+    const onResume = () => {
+      if (document.visibilityState === 'visible') resumeRecoveryRef.current();
+    };
+    document.addEventListener('visibilitychange', onResume);
+    // pageshow also covers bfcache restoration (mobile Safari back/forward
+    // cache), where visibilitychange alone may not fire.
+    window.addEventListener('pageshow', onResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('pageshow', onResume);
+    };
+  }, []);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
