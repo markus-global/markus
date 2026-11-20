@@ -10,8 +10,8 @@ import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
-import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
-import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
+import { readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
+import { buildAttentionQueue, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
 import { notifTitle } from '../lib/notifyText.ts';
 import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
@@ -550,7 +550,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     notifyTitle: n => notifTitle(n, t),
   }), [allTasksFlat, allRequirements, approvals, unreadNotices, allTasksMap, attentionLastSeen, t]);
 
-  const actionables = useMemo(() => actionableCount(attentionQueue), [attentionQueue]);
   const newCount = useMemo(() => attentionQueue.filter(i => i.isNew).length, [attentionQueue]);
   /** 等待时长每分钟刷一次（不是每帧）——「等了 3 小时」不需要秒级精度。 */
   const [waitTick, setWaitTick] = useState(() => Date.now());
@@ -559,15 +558,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return () => window.clearInterval(timer);
   }, []);
 
-  /**
-   * 待办数的**唯一计算点**仍在这里：概览算完就发布，侧栏/底栏只订阅（`lib/attentionCount`）。
-   * 口径（Owner 2026-11-08）：数字 = 要你动手的 + 未读消息。未读由 `publishUnreadCount`
-   * 单独发布、读取时合并，所以这里只发布 actionables，避免同一件事计两次。
-   */
-  useEffect(() => {
-    if (previewMode) return;
-    publishAttentionCount(actionables);
-  }, [actionables, previewMode]);
+  // 徽标数字不在本页发布：改由 App 根部常驻的 `useAttentionBadge` 全局计算并发布
+  // （lib/useAttentionBadge.ts），与当前停在哪个页面无关。本页只负责渲染队列。
+  // 口径（Owner 2026-11-08）：数字 = 要你动手的 + 未读消息，两者在读取时合并。
 
   // 停留 3 秒后才写回 last-seen：一进页面就写，等于把「新」全吃掉，标记就失去意义。
   useEffect(() => {
@@ -585,23 +578,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     navBus.navigate(item.target.page === 'WORK' ? PAGE.WORK : PAGE.TEAM, item.target.params);
   }, [unreadNotices]);
 
-  // 未读数单独取、合并发布：用户看到的徒标就一个数字，但两个来源得各自更新。
-  useEffect(() => {
-    if (previewMode || !isActive) return;
-    let alive = true;
-    const refresh = () => {
-      api.notifications.list(authUser?.id, true, { limit: 1 })
-        .then(r => { if (alive) publishUnreadCount(r.unreadCount ?? 0); })
-        // 读失败不改写徒标：宁可显示上一次已知的数字，也不谎报 0。
-        .catch(() => undefined);
-    };
-    refresh();
-    window.addEventListener('markus:notifications-changed', refresh);
-    return () => {
-      alive = false;
-      window.removeEventListener('markus:notifications-changed', refresh);
-    };
-  }, [previewMode, isActive, authUser?.id]);
 
   const taskPriorityMap = useMemo(() => {
     const m = new Map<string, string>();
