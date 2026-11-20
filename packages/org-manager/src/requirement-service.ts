@@ -120,6 +120,10 @@ export class RequirementService implements ApprovalTargetPort {
     return actorId;
   }
 
+  // `reason` is free-text only (e.g. a human's rejection note). Never pass a canned
+  // system annotation ('Approved'/'Cancelled'/...): the fromStatus→toStatus transition
+  // plus actor already convey the action, and a hardcoded English string leaks into the
+  // localized status history (Owner 2026-11-19). System actions leave reason null.
   private recordTransition(
     reqId: string, from: string, to: string,
     changedById?: string | null, changedByType: 'human' | 'agent' | 'system' = 'system',
@@ -458,7 +462,7 @@ export class RequirementService implements ApprovalTargetPort {
         );
     }
 
-    this.recordTransition(id, oldStatus, 'in_progress', userId, 'human', 'Approved');
+    this.recordTransition(id, oldStatus, 'in_progress', userId, 'human');
     this.broadcast('requirement:approved', req);
     log.info('Requirement approved', { id, approvedBy: userId });
 
@@ -596,7 +600,7 @@ export class RequirementService implements ApprovalTargetPort {
     req.approvedAt = undefined;
     req.updatedAt = now;
 
-    this.recordTransition(id, oldStatus, 'pending', req.createdBy, 'agent', 'Resubmitted');
+    this.recordTransition(id, oldStatus, 'pending', req.createdBy, 'agent');
 
     if (this.requirementRepo) {
       const persistErr = (e: unknown) =>
@@ -843,7 +847,7 @@ export class RequirementService implements ApprovalTargetPort {
       );
     }
 
-    this.recordTransition(id, oldStatus, 'cancelled', cancelledBy, cancelledByType ?? 'system', 'Cancelled');
+    this.recordTransition(id, oldStatus, 'cancelled', cancelledBy, cancelledByType ?? 'system');
     this.broadcast('requirement:cancelled', req);
     log.info('Requirement cancelled', { id });
 

@@ -104,8 +104,7 @@
     "projectLabel": "Project",
     "removeDependency": "Remove dependency",
     "noDependencies": "No dependencies",
-    "abnormalBlock": "Abnormal",
-    "abnormalBlockHint": "This task is blocked but has no unfinished dependencies — it may need manual intervention.",
+    "holdHint": "This task was deliberately put on hold — it resumes only after your decision.",
     "addDependency": "+ Add dependency…",
     "addDescription": "Add a description…",
     "noDescription": "No description",
@@ -607,6 +606,7 @@
     "requirement": {
       "pending": "Pending",
       "in_progress": "Active",
+      "blocked": "Blocked",
       "completed": "Done",
       "rejected": "Rejected",
       "cancelled": "Cancelled",

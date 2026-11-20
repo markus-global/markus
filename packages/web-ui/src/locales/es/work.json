@@ -103,8 +103,7 @@
     "projectLabel": "Proyecto",
     "removeDependency": "Eliminar la dependencia",
     "noDependencies": "No hay dependencias",
-    "abnormalBlock": "Anormal",
-    "abnormalBlockHint": "Esta tarea está bloqueada pero no tiene dependencias inacabadas, es posible que necesite intervención manual.",
+    "holdHint": "Esta tarea se pausó deliberadamente: solo se reanuda tras tu decisión.",
     "addDependency": "+ Agregar dependencia…",
     "addDescription": "Añadir una descripción…",
     "noDescription": "No hay descripción",
@@ -604,6 +603,7 @@
     "requirement": {
       "pending": "Pendiente",
       "in_progress": "Activo",
+      "blocked": "Bloqueado",
       "completed": "Hecho",
       "rejected": "Rechazado",
       "cancelled": "Cancelado",

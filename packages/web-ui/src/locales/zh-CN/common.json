@@ -191,6 +191,11 @@
     "member": "成员",
     "guest": "访客"
   },
+  "actor": {
+    "user": "用户",
+    "agent": "智能体",
+    "system": "系统"
+  },
   "units": {
     "members": "{{count}} 名成员",
     "agents": "{{count}} 个智能体",
