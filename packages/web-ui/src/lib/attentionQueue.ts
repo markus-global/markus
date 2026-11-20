@@ -106,7 +106,30 @@ function asStr(v: unknown): string | undefined {
  * 「发送者会话」。回退也定不出实体 ⇒ `null`：这条没有可执行去处，派生层会丢弃它，
  * 而不是渲染一行点了没反应的待办。
  */
-function notificationAction(n: InboxSnapshot['notifications'][number]): AttentionTarget | null {
+function notificationAction(
+  n: InboxSnapshot['notifications'][number],
+  approvals?: readonly ApprovalInfo[],
+): AttentionTarget | null {
+  // An approval_request notification is the bell/channel mirror of an approval
+  // entity that deriveInbox ① already renders as the actionable reminder.
+  // Reverse-resolve it to that entity (metadata.approvalId → details.taskId /
+  // requirementId) so it FOLDS into the approval row by subject and only
+  // contributes its unreadness. Without this, notificationTarget returns null
+  // for approval_request (it needs the approvals context) and the fallback
+  // below sends it to "the sender's main chat" — a SECOND inbox row for the
+  // same creation event that clicks into an empty conversation (the duplicate
+  // 审批 + 消息 reminder). The entity params must match ①'s subject derivation
+  // (openTask / openRequirement) so noticeSubject folds the two together.
+  if (n.type === 'approval_request') {
+    const meta = (n.metadata ?? {}) as Record<string, unknown>;
+    const approvalId = asStr(meta['approvalId']);
+    const a = approvalId ? approvals?.find(x => x.id === approvalId) : undefined;
+    const details = (a?.details ?? {}) as Record<string, unknown>;
+    const taskId = asStr(details['taskId']);
+    if (taskId) return { page: 'WORK', params: { openTask: taskId } };
+    const reqId = asStr(details['requirementId']);
+    if (reqId) return { page: 'WORK', params: { openRequirement: reqId } };
+  }
   const resolved = notificationTarget(n as unknown as NotificationInfo);
   if (resolved) return resolved;
   const meta = (n.metadata ?? {}) as Record<string, unknown>;
@@ -175,7 +198,7 @@ export function buildAttentionQueue(input: AttentionInput): AttentionItem[] {
   };
 
   const ports: InboxPorts = {
-    resolveNotificationTarget: notificationAction,
+    resolveNotificationTarget: n => notificationAction(n, approvals),
     resolveBlockedReason: t => blockedReasonOf(t, id => taskById?.(id)),
     ...(notifyTitle
       ? { renderNotificationTitle: (n: InboxSnapshot['notifications'][number]) => notifyTitle(n as unknown as NotificationInfo) }

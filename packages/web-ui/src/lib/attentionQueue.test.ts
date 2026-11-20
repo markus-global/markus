@@ -97,6 +97,37 @@ describe('buildAttentionQueue — 一条一条，而不是一堆计数', () => {
     const items = buildAttentionQueue(base({ approvals: [approval({ id: 'q1', details: {} })] }));
     expect(items[0]!.target).toEqual({ page: 'TEAM', params: { agentId: 'ag1', preferMain: '1' } });
   });
+
+  it('创建闸审批的通知镜像折进审批行 —— 同一创建事实不再多发一条「主会话消息」', () => {
+    // 建卡闸开审批时，requestApproval 同时发一条 approval_request 通知（铃铛/渠道镜像）。
+    // 它必须反解到审批实体并按 subject 折进 ① 的审批行，只贡献未读；否则回退到
+    // 「发送者主会话」会另起一条 unread_message —— 点进去是没有真实消息的空会话。
+    const items = buildAttentionQueue(base({
+      approvals: [approval({ id: 'a-gate', title: 'Create task X', details: { taskId: 't-gate' } })],
+      notifications: [notice({
+        id: 'n-gate', type: 'approval_request', title: 'Create task X',
+        metadata: { approvalId: 'a-gate', agentId: 'ag1' },
+      })],
+    }));
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe('approval_request');
+    expect(items[0]!.target).toEqual({ page: 'WORK', params: { openTask: 't-gate', agentId: 'ag1' } });
+    // 通知折进行内（点击一并标已读），而不是独立成行。
+    expect(items[0]!.notices?.map(n => n.id)).toEqual(['n-gate']);
+  });
+
+  it('需求创建闸的通知镜像同样折进需求审批行', () => {
+    const items = buildAttentionQueue(base({
+      approvals: [approval({ id: 'a-req', title: 'Propose req Y', details: { requirementId: 'r-gate' } })],
+      notifications: [notice({
+        id: 'n-req', type: 'approval_request', title: 'Propose req Y',
+        metadata: { approvalId: 'a-req', agentId: 'ag1' },
+      })],
+    }));
+    expect(items).toHaveLength(1);
+    expect(items[0]!.kind).toBe('requirement_approval');
+    expect(items[0]!.notices?.map(n => n.id)).toEqual(['n-req']);
+  });
 });
 
 describe('「新」标记：比上次访问新，且首次使用不谎报', () => {
