@@ -3,7 +3,6 @@ import { ToolSelector } from '../src/tool-selector.js';
 import {
   SCHEMA_INJECTED_TOOLS,
   TOOL_DEF_CORE_KEEP,
-  TOOL_DEF_EVICT_FIRST,
   TOOL_DEF_PROTECTED,
   evictToolsToBudget,
   toolEvictionTier,
@@ -448,8 +447,9 @@ describe('ToolSelector', () => {
       });
     }
     const selected = selector.selectTools({ allTools: map, userMessage: 'hello', pack: 'converse' }).map((t) => t.name);
-    expect(selected.length).toBeLessThan(ALL_BUILTIN.length); // eviction actually happened
-    expect(selected).toContain('end_turn');                   // …but not to the stop signal
+    // Under the eviction-immune policy, first-party tools (incl. end_turn) are never
+    // dropped for budget, so the stop signal is ALWAYS in the schema regardless of size.
+    expect(selected).toContain('end_turn');
   });
 
   it('end_turn is offered in the reflex pack too (propagates via TOOL_DEF_PROTECTED)', () => {
@@ -484,38 +484,40 @@ describe('ToolSelector', () => {
     expect(SCHEMA_INJECTED_TOOLS.has('collapse_right_panel')).toBe(true);
   });
 
-  it('eviction is tiered: situational tools go before core, core before protected', () => {
-    expect(toolEvictionTier('end_turn')).toBe(0);          // protected → never
+  it('eviction is tiered: only external skill/MCP is evictable; all first-party stay', () => {
+    expect(toolEvictionTier('end_turn')).toBe(0);            // protected → never
     expect(toolEvictionTier('notify_user')).toBe(0);
-    expect(toolEvictionTier('shell_execute')).toBe(1);     // core → last
-    expect(toolEvictionTier('kb_search')).toBe(1);         // knowledge base is core
-    expect(toolEvictionTier('some_unknown_builtin')).toBe(2);
-    expect(toolEvictionTier('package_install')).toBe(3);   // situational → first
-    expect(toolEvictionTier('feishu_tool_x')).toBe(3);     // skill/MCP → first
+    expect(toolEvictionTier('shell_execute')).toBe(0);       // first-party → never
+    expect(toolEvictionTier('kb_search')).toBe(0);
+    expect(toolEvictionTier('some_unknown_builtin')).toBe(0);
+    expect(toolEvictionTier('package_install')).toBe(0);     // first-party → never (was situational)
+    expect(toolEvictionTier('feishu_tool_x')).toBe(3);       // external skill/MCP → evictable
+    expect(toolEvictionTier('chrome-devtools__x')).toBe(3);
   });
 
-  it('tiered eviction keeps core tools while situational tools are dropped', () => {
+  it('eviction only ever drops external skill/MCP; all first-party tools survive budget pressure', () => {
     // Equal-size schemas, so ONLY the tier can decide the order.
     const mk = (name: string) => ({ name, description: 'd', inputSchema: { type: 'object', properties: {} } });
     const tools = [
-      mk('package_install'), // tier 3
-      mk('team_status'),     // tier 3
-      mk('shell_execute'),   // tier 1 (core)
-      mk('file_read'),       // tier 1 (core)
-      mk('some_builtin'),    // tier 2
-      mk('notify_user'),     // tier 0 (protected)
+      mk('feishu_tool_a'),        // tier 3 (external)
+      mk('chrome-devtools__b'),   // tier 3 (external)
+      mk('package_install'),      // tier 0 (first-party — was situational, now immutable)
+      mk('team_status'),          // tier 0 (first-party)
+      mk('shell_execute'),        // tier 0 (first-party)
+      mk('notify_user'),          // tier 0 (protected)
     ];
     const { tools: kept, evicted } = evictToolsToBudget(tools, 1, TOOL_DEF_PROTECTED, TOOL_DEF_CORE_KEEP);
     const evictedNames = evicted.map((e) => e.name);
     const keptNames = kept.map((t) => t.name);
 
-    expect(evictedNames).toContain('package_install');
-    expect(evictedNames).toContain('team_status');
-    expect(keptNames).toContain('notify_user'); // protected survives even at budget 1
-    // Tier-3 extras must be gone before any tier-1 core tool is touched.
-    if (evictedNames.includes('shell_execute')) {
-      expect(evictedNames).toContain('some_builtin');
-    }
+    // Only the external tools are evicted (even at budget 1).
+    expect(evictedNames).toContain('feishu_tool_a');
+    expect(evictedNames).toContain('chrome-devtools__b');
+    // Every first-party tool survives, no matter the budget.
+    expect(keptNames).toContain('notify_user');
+    expect(keptNames).toContain('package_install');
+    expect(keptNames).toContain('team_status');
+    expect(keptNames).toContain('shell_execute');
   });
 
   it('P0-3: activated skill/MCP stay LIVE under budget pressure (no silent eviction)', () => {

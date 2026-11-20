@@ -358,35 +358,13 @@ export function isSkillOrMcpToolName(name: string): boolean {
 }
 
 /**
- * Situational builtins — safe to defer behind `discover_tools`, and evicted
- * *before* other builtins so they stop crowding out the tools an agent needs
- * every turn.
- *
- * Rationale (2026-10-03): the old evictor had a single "non-core" bucket that
- * mixed genuine extras (packaging, hub, team administration) with ordinary
- * working tools. Under budget pressure it evicted everything in that bucket,
- * so which tools survived came down to schema size. Splitting the extras out
- * makes the ladder intentional: extras go first, then ordinary builtins, then
- * core, and prompt-required signals are never touched.
- */
-export const TOOL_DEF_EVICT_FIRST = new Set([
-  // packaging / hub / generation
-  'package_install', 'package_list', 'hub_search', 'hub_install', 'office_generate',
-  // misc situational
-  'decide', 'recall_context',
-  // team / org administration
-  'agent_broadcast_status', 'agent_delegate_task', 'agent_send_group_message',
-  'agent_create_group_chat', 'agent_list_group_chats', 'delegate_message',
-  'agent_start', 'agent_stop', 'team_status', 'team_list',
-]);
-
-/**
  * Eviction priority. **Higher = evicted sooner.**
  *
- *   0  never evicted   (TOOL_DEF_PROTECTED — HITL + turn-termination)
- *   1  core Markus     (shell/file/task/memory/knowledge — evicted last)
- *   2  ordinary builtin
- *   3  situational + skill/MCP (evicted first)
+ *   0  never evicted   (EVERY first-party platform tool — incl. packaging/hub/
+ *      generation/team-admin; the old "situational extras may defer" bucket
+ *      `TOOL_DEF_EVICT_FIRST` was removed because deferring them IS the defect)
+ *   3  optional EXTERNAL skill/MCP only — evicted first, recoverable via
+ *      `discover_tools` (the "Deferred Tools" catalog lists a recover command)
  *
  * Within one tier the largest schema is still chosen first, but tier ordering
  * is now the primary key — so size can no longer decide whether something an
@@ -398,9 +376,18 @@ export function toolEvictionTier(
   coreKeep: Set<string> = TOOL_DEF_CORE_KEEP,
 ): number {
   if (protectedNames.has(name)) return 0;
-  if (TOOL_DEF_EVICT_FIRST.has(name) || isSkillOrMcpToolName(name)) return 3;
-  if (coreKeep.has(name)) return 1;
-  return 2;
+  // ONLY optional EXTERNAL skill/MCP tools may defer (and they are recoverable
+  // via discover_tools). Every first-party platform tool is eviction-immune.
+  if (isSkillOrMcpToolName(name)) return 3;
+  // FIRST-PARTY PLATFORM TOOLS ARE EVICTION-IMMUNE (Owner 2026-11-20).
+  // A tool the agent needs but cannot see is a turn that fails — availability is a
+  // HARD invariant, not a budget line. When the prompt is too big, the VARIABLE
+  // segment (conversation history) is compacted downstream by ContextOS; the tool
+  // face is a fixed segment and is never the thing we shrink. `coreKeep` no longer
+  // changes the verdict (kept in the signature for call-site compatibility), which
+  // is why its tier-1 branch is gone: there is nothing left for it to rescue.
+  void coreKeep;
+  return 0;
 }
 
 /**

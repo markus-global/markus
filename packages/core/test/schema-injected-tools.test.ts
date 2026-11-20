@@ -99,10 +99,10 @@ describe('P0-1 · 预算驱逐下的激活豁免', () => {
     expect(names).toContain('schedule_wakeup');
   });
 
-  it('未激活的 schema-injected 工具在预算压力下可被驱逐（保持渐进披露）', () => {
+  it('未激活的 schema-injected 平台工具也始终在场（平台工具永不淘汰，Owner 2026-11-20）', () => {
     const names = selectNames({ activated: [] });
-    // 结果不含 schedule_wakeup —— 说明驱逐路径真实存在（60 个填充工具撑爆预算）
-    expect(names).not.toContain('schedule_wakeup');
+    // schedule_wakeup 是一方平台工具 → 永不被预算驱逐：可用性是硬不变量。
+    expect(names).toContain('schedule_wakeup');
   });
 
   it('protectedNames 扩展后 evictToolsToBudget 保留激活的 schema-injected 工具', () => {

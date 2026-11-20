@@ -73,7 +73,7 @@ describe('任务生命周期工具必须免驱逐（任务反复中断根因回�
       { name: 'notify_user', description: 'notify', inputSchema: { type: 'object', properties: {} } },
       // 生命周期工具本身也是「大 schema」——制造与生产一致的驱逐压力
       ...LIFECYCLE.map(big),
-      ...Array.from({ length: 20 }, (_, i) => big(`huge_${i}`)),
+      ...Array.from({ length: 20 }, (_, i) => big(`feishu_huge_${i}`)),
     ];
     const protectedNames = new Set<string>([...TOOL_DEF_PROTECTED, ...TOOL_DEF_CORE_KEEP]);
     const { tools: kept, evicted } = evictToolsToBudget(
@@ -85,7 +85,7 @@ describe('任务生命周期工具必须免驱逐（任务反复中断根因回�
     const keptNames = kept.map((t) => t.name);
     for (const n of LIFECYCLE) expect(keptNames, n).toContain(n);
     // 测试有效性自证：确实发生了驱逐（否则没测到驱逐路径）
-    expect(evicted.some((e) => e.name.startsWith('huge_'))).toBe(true);
+    expect(evicted.some((e) => e.name.startsWith('feishu_huge_'))).toBe(true);
   });
 
   it('execute 包经 ToolSelector 全链路：预算压力下 task_submit_review 仍在 schema 里', () => {

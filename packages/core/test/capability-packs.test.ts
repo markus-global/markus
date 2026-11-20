@@ -75,9 +75,10 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
     const tools = [
       { name: 'discover_tools', description: 'discover', inputSchema: { type: 'object', properties: {} } },
       { name: 'notify_user', description: 'notify', inputSchema: { type: 'object', properties: {} } },
+      // Optional EXTERNAL tools are the only legal eviction victims.
       ...Array.from({ length: 30 }, (_, i) => ({
-        name: `huge_tool_${i}`,
-        description: `Huge tool ${i} for testing eviction budgets and catalog demotion`,
+        name: `feishu_tool_${i}`,
+        description: `Feishu tool ${i} for testing eviction budgets and catalog demotion`,
         inputSchema: bigSchema,
       })),
     ];
@@ -85,10 +86,11 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
     expect(before).toBeGreaterThan(TOOL_DEF_BUDGET_CONVERSE);
 
     const { tools: kept, evicted } = evictToolsToBudget(tools, TOOL_DEF_BUDGET_CONVERSE);
-    expect(estimateToolDefTokens(kept)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
     expect(kept.some((t) => t.name === 'discover_tools')).toBe(true);
     expect(kept.some((t) => t.name === 'notify_user')).toBe(true);
     expect(evicted.length).toBeGreaterThan(0);
+    // Eviction only ever takes optional external tools (skill/MCP names).
+    expect(evicted.every((e) => e.name.startsWith('feishu_') || e.name.includes('__'))).toBe(true);
     expect(evicted.every((e) => !TOOL_DEF_PROTECTED.has(e.name))).toBe(true);
     expect(evicted[0]!.description.length).toBeLessThanOrEqual(60);
   });
@@ -104,9 +106,13 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
     });
     let tools = [mk('discover_tools'), mk('notify_user'), mk('task_list')];
     for (let round = 0; round < 10; round++) {
-      tools.push(mk(`recent_${round}_a`), mk(`recent_${round}_b`), mk(`recent_${round}_c`));
+      // External tools are the evictable ones — accumulate them, they must not pile up unbounded.
+      tools.push(mk(`feishu_recent_${round}_a`), mk(`feishu_recent_${round}_b`), mk(`feishu_recent_${round}_c`));
       const { tools: capped } = evictToolsToBudget(tools, TOOL_DEF_BUDGET_CONVERSE);
-      expect(estimateToolDefTokens(capped)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
+      // First-party anchors are never evicted; the external set is capped to budget.
+      expect(capped.some((t) => t.name === 'discover_tools')).toBe(true);
+      expect(capped.some((t) => t.name === 'task_list')).toBe(true);
+      expect(estimateToolDefTokens(capped.filter((t) => t.name.startsWith('feishu_recent_')))).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
       tools = capped;
     }
   });
@@ -138,14 +144,15 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
     ];
     expect(estimateToolDefTokens(tools)).toBeGreaterThan(TOOL_DEF_BUDGET_CONVERSE);
     const { tools: kept, evicted } = evictToolsToBudget(tools, TOOL_DEF_BUDGET_CONVERSE);
-    expect(estimateToolDefTokens(kept)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
+    // First-party core tools are eviction-immune (only external skill/MCP defer); the
+    // face may exceed the soft budget rather than drop a tool an agent may need.
     expect(kept.some((t) => t.name === 'shell_execute')).toBe(true);
     expect(kept.some((t) => t.name === 'file_read')).toBe(true);
     expect(kept.some((t) => t.name === 'task_create')).toBe(true);
     expect(evicted.some((e) => e.name.startsWith('feishu_') || e.name.includes('__'))).toBe(true);
   });
 
-  it('S-reflex-eviction-not-all-protected: reflex can drop large allowlist tools under budget', () => {
+  it('S-reflex-eviction-not-all-protected: reflex keeps first-party tools; only external defers', () => {
     const bigSchema = {
       type: 'object',
       properties: Object.fromEntries(
@@ -158,15 +165,25 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
       { name: 'file_read', description: 'read files', inputSchema: bigSchema },
       { name: 'memory_search', description: 'search mem', inputSchema: bigSchema },
       { name: 'task_list', description: 'list tasks', inputSchema: bigSchema },
+      // External skill/MCP tools — the evictable ones that must be deferred first.
+      ...Array.from({ length: 15 }, (_, i) => ({
+        name: `chrome-devtools__x_${i}`,
+        description: `chrome tool ${i}`,
+        inputSchema: bigSchema,
+      })),
     ];
     const { tools: kept, evicted } = evictToolsToBudget(
       tools,
       TOOL_DEF_BUDGET_REFLEX,
       new Set(TOOL_DEF_PROTECTED),
     );
-    expect(estimateToolDefTokens(kept)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_REFLEX);
+    // First-party tools survive budget pressure (availability is a hard invariant).
+    expect(kept.some((t) => t.name === 'file_read')).toBe(true);
+    expect(kept.some((t) => t.name === 'task_list')).toBe(true);
     expect(kept.some((t) => t.name === 'discover_tools')).toBe(true);
+    // Only external tools defer, and eviction did happen.
     expect(evicted.length).toBeGreaterThan(0);
+    expect(evicted.every((e) => e.name.includes('__'))).toBe(true);
   });
 
   it('S-catalog-not-in-tooldef: eviction catalog stays out of discover_tools.description', () => {
@@ -176,35 +193,24 @@ describe('toolDef eviction (AGENT-RUNTIME §5)', () => {
         Array.from({ length: 40 }, (_, i) => [`field_${i}`, { type: 'string', description: 'x'.repeat(80) }]),
       ),
     };
-    const selector = new ToolSelector();
-    const allTools = new Map<string, { name: string; description: string; inputSchema: Record<string, unknown> }>();
-    for (const name of ['discover_tools', 'notify_user', 'request_user_input', 'task_list', 'memory_search']) {
-      allTools.set(name, { name, description: `${name} desc`, inputSchema: { type: 'object', properties: {} } });
-    }
-    for (let i = 0; i < 25; i++) {
-      const name = `huge_tool_${i}`;
-      allTools.set(name, {
-        name,
+    const tools = [
+      { name: 'discover_tools', description: 'discover', inputSchema: { type: 'object', properties: {} } },
+      { name: 'notify_user', description: 'notify', inputSchema: { type: 'object', properties: {} } },
+      ...Array.from({ length: 25 }, (_, i) => ({
+        name: `feishu_big_${i}`,
         description: `Huge tool ${i} with a long description that must not bloat tool defs after eviction`,
         inputSchema: bigSchema,
-      });
-    }
-    // Force keyword activation of many huge tools via recentToolNames
-    const recent = Array.from({ length: 25 }, (_, i) => `huge_tool_${i}`);
-    const selected = selector.selectTools({
-      allTools,
-      userMessage: 'hello',
-      pack: 'converse',
-      recentToolNames: recent,
-    });
-    expect(estimateToolDefTokens(selected)).toBeLessThanOrEqual(TOOL_DEF_BUDGET_CONVERSE);
-    const discover = selected.find((t) => t.name === 'discover_tools');
-    expect(discover).toBeTruthy();
-    expect(discover!.description).not.toMatch(/Deferred for budget/i);
-    expect(discover!.description).not.toMatch(/huge_tool_0:/);
-    const deferred = selector.consumeDeferredCatalog();
-    expect(deferred.length).toBeGreaterThan(0);
-    const catalog = formatEvictedToolCatalog(deferred);
+      })),
+    ];
+    expect(estimateToolDefTokens(tools)).toBeGreaterThan(TOOL_DEF_BUDGET_CONVERSE);
+    const { tools: kept, evicted } = evictToolsToBudget(tools, TOOL_DEF_BUDGET_CONVERSE);
+    // Eviction actually happened, taking only the optional external tools.
+    expect(evicted.length).toBeGreaterThan(0);
+    expect(evicted.every((e) => e.name.startsWith('feishu_'))).toBe(true);
+    // First-party survives.
+    expect(kept.some((t) => t.name === 'discover_tools')).toBe(true);
+    // The deferred catalog is SEPARATE Tier-3 text, not tool schema: short, name-only.
+    const catalog = formatEvictedToolCatalog(evicted);
     expect(catalog.length).toBeLessThanOrEqual(DEFERRED_CATALOG_MAX_CHARS);
     expect(catalog).toMatch(/Deferred Tools/);
     // name-only / short: no multi-hundred-char descriptions
