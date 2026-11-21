@@ -1,4 +1,8 @@
-import { createLogger } from '@markus/shared';
+// Relative, not `@markus/shared`: this module now lives INSIDE shared, and a
+// self-import resolves to the package's own dist, dragging every emitted .d.ts
+// into the program as an input (tsc then fails with TS5055 "would overwrite
+// input file" for the whole package).
+import { createLogger } from '../utils/logger.js';
 
 const log = createLogger('feishu-http');
 
@@ -24,6 +28,15 @@ const log = createLogger('feishu-http');
  * configured. It also surfaces the gateway's real error instead of letting the
  * SDK's `catch(e => logger.error(e))` swallow it into a misleading
  * `Cannot destructure property 'tenant_access_token'` TypeError.
+ *
+ * BOTH SDK clients need it, not just `Client`. `WSClient` opens with an HTTP
+ * POST to `<domain>/callback/ws/endpoint` (`pullConnectConfig`) through the same
+ * `httpInstance`, so leaving it unset there breaks the handshake too: no socket
+ * is ever opened, yet `start()` still resolves and the adapter logs "long
+ * connection established". Feishu then answers every card button with "target
+ * callback service is offline". An earlier version of this note claimed the
+ * WebSocket side already took the correct path — it did not, and that claim is
+ * what let the bug survive a first fix.
  *
  * Contract notes (verified against the installed SDK, see its generated methods):
  * - The SDK calls `httpInstance.request({ url, method, data, params, headers,

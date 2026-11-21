@@ -174,17 +174,4 @@ describe('createFeishuHttpInstance', () => {
   });
 });
 
-describe('FeishuApiClient egress wiring', () => {
-  it('gives the SDK a fetch-backed instance (no axios defaults) for REST and WS', async () => {
-    const { FeishuApiClient } = await import('./feishu-api-client.js');
-    const client = new FeishuApiClient({ appId: 'cli_x', appSecret: 's' });
 
-    // TS `private` is not a runtime boundary; the SDK stores what we passed.
-    const wired = (client as unknown as { client: { httpInstance: { request?: unknown; defaults?: unknown } } }).client
-      .httpInstance;
-    expect(typeof wired.request).toBe('function');
-    // axios instances always carry `defaults`; our fetch instance never does.
-    // If someone reverts to the SDK default this assertion fails.
-    expect(wired.defaults).toBeUndefined();
-  });
-});

@@ -21,6 +21,7 @@ export * from './mail.js';
 export * from './types/workflow-template.js';
 export * from './types/model-catalog.js';
 export * from './net/egress.js';
+export * from './net/feishu-http.js';
 export * from './net/system-proxy.js';
 export * from './types/license.js';
 export * from './types/coding-tool.js';

@@ -1,6 +1,6 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { createLogger, msgId, type Message } from '@markus/shared';
+import { createFeishuHttpInstance, createLogger, msgId, type Message } from '@markus/shared';
 import type {
   CommAdapter,
   CommAdapterConfig,
@@ -359,6 +359,17 @@ export class FeishuAdapter implements CommAdapter {
       appId: this.config.appId,
       appSecret: this.config.appSecret,
       domain: this.config.domain,
+      // The handshake is an HTTP POST to `<domain>/callback/ws/endpoint`
+      // (SDK `pullConnectConfig`), and it goes through `httpInstance`. Left
+      // unset, the SDK uses `axios.create()`, which reads the HTTP(S)_PROXY
+      // env vars that our own egress layer exports for child processes and
+      // then mis-tunnels HTTPS to Feishu's gateway. The handshake fails, no
+      // socket is ever opened, and Feishu answers every card button with
+      // "target callback service is offline" — while the log still prints
+      // "long connection established", because `start()` resolves before the
+      // pull succeeds. Ride the platform's single egress path instead, so
+      // this works with or without a proxy and needs no NO_PROXY bypass.
+      httpInstance: createFeishuHttpInstance() as unknown as Lark.HttpInstance,
       loggerLevel: Lark.LoggerLevel.info,
       onError: (err: Error) => log.error('Feishu long connection error', { error: err.message }),
     });

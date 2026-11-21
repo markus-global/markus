@@ -1,16 +1,19 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
-import { createLogger } from '@markus/shared';
-import { createFeishuHttpInstance } from './feishu-http.js';
+import { createFeishuHttpInstance, createLogger } from '@markus/shared';
 
 const log = createLogger('feishu-api-client');
 
 /**
  * Feishu API client backed by the official @larksuiteoapi/node-sdk.
- * Uses the SDK's Client for REST API calls and WSClient for long-connection event receiving.
+ *
+ * REST only. The long connection is owned exclusively by the comms Feishu
+ * adapter (`packages/comms/src/feishu/adapter.ts`); this class used to carry a
+ * second `WSClient` construction site that no production caller ever reached.
+ * Two builders for one connection meant the egress fix had to be applied twice
+ * — and it wasn't, which is exactly how the live socket kept using axios.
  */
 export class FeishuApiClient {
   private client: Lark.Client;
-  private wsClient: Lark.WSClient | null = null;
   private appId: string;
   private appSecret: string;
   private domain: string;
@@ -38,42 +41,6 @@ export class FeishuApiClient {
   /** Get the underlying Lark Client instance. */
   getClient(): Lark.Client {
     return this.client;
-  }
-
-  /**
-   * Start the long-connection WebSocket client to receive events.
-   * Returns the WSClient instance so the caller can stop it later.
-   */
-  async startWSClient(eventDispatcher: Lark.EventDispatcher): Promise<Lark.WSClient> {
-    if (this.wsClient) {
-      log.warn('WSClient already running, stopping existing one');
-      this.stopWSClient();
-    }
-    this.wsClient = new Lark.WSClient({
-      appId: this.appId,
-      appSecret: this.appSecret,
-      domain: this.domain,
-      // Same egress path as the REST client (WS endpoint handshake included).
-      httpInstance: createFeishuHttpInstance() as unknown as Lark.HttpInstance,
-      loggerLevel: Lark.LoggerLevel.debug,
-      onReady: () => {
-        log.info('Feishu WSClient onReady callback fired — connection is live');
-      },
-      onError: (err: Error) => {
-        log.error('Feishu WSClient onError callback', { error: err.message });
-      },
-    });
-    await this.wsClient.start({ eventDispatcher });
-    log.info('Feishu WSClient started (long connection mode)');
-    return this.wsClient;
-  }
-
-  /** Stop the WebSocket client. */
-  stopWSClient(): void {
-    // The SDK's WSClient doesn't expose a clean stop(), but we null it out
-    // so we can recreate on next start. The GC will close the socket.
-    this.wsClient = null;
-    log.info('Feishu WSClient stopped');
   }
 
   /** Send a text message to a Feishu chat by chat_id. */

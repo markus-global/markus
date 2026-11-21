@@ -15,13 +15,16 @@ const sdkState = vi.hoisted(() => ({
   wsStarts: 0,
   /** Every WSClient ever constructed, in order, with its own close record. */
   sockets: [] as Array<{ started: boolean; closes: Array<{ force?: boolean } | undefined> }>,
+  /** The `httpInstance` each WSClient was handed (undefined = SDK default axios). */
+  httpInstances: [] as Array<{ request?: (c: unknown) => Promise<unknown> } | undefined>,
 }));
 
 vi.mock('@larksuiteoapi/node-sdk', () => ({
   WSClient: class {
     private state = { started: false, closes: [] as Array<{ force?: boolean } | undefined> };
-    constructor(_opts: unknown) {
+    constructor(opts: { httpInstance?: { request?: (c: unknown) => Promise<unknown> } }) {
       sdkState.sockets.push(this.state);
+      sdkState.httpInstances.push(opts.httpInstance);
     }
     async start(): Promise<void> {
       sdkState.wsStarts += 1;
@@ -308,6 +311,42 @@ describe('FeishuAdapter', () => {
         webhookPort: 0,
       });
       expect(fresh.isConnected()).toBe(true);
+      await fresh.disconnect();
+      vi.unstubAllGlobals();
+    });
+
+    /**
+     * The long connection's handshake is an HTTP POST through `httpInstance`.
+     * Without an explicit instance the SDK falls back to `axios.create()`, which
+     * honours the HTTP(S)_PROXY env vars our own egress layer exports and then
+     * mis-tunnels to Feishu — the socket never opens and card buttons report
+     * "callback service offline". Asserting only "an instance was passed" would
+     * not bite (any object satisfies it), so drive the instance and require that
+     * the request actually reaches `fetch`, i.e. the platform's single egress.
+     */
+    it('hands the long connection a fetch-backed httpInstance (no proxy bypass needed)', async () => {
+      const fresh = new FeishuAdapter();
+      const fetchMock = vi.fn().mockResolvedValue({
+        ok: true,
+        headers: new Headers(),
+        json: async () => ({ code: 0, tenant_access_token: 'tok', expire: 7200 }),
+        text: async () => JSON.stringify({ code: 0, data: { URL: 'wss://example', ClientConfig: {} } }),
+      });
+      vi.stubGlobal('fetch', fetchMock);
+      sdkState.httpInstances.length = 0;
+
+      // No wsMode/webhookPort: the default inbound transport is the socket.
+      await fresh.connect({ platform: 'feishu', appId: 'cli_test', appSecret: 'secret' });
+
+      expect(sdkState.httpInstances).toHaveLength(1);
+      const instance = sdkState.httpInstances[0];
+      expect(instance?.request).toBeTypeOf('function');
+
+      fetchMock.mockClear();
+      await instance!.request!({ method: 'post', url: 'https://open.feishu.cn/callback/ws/endpoint' });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(String(fetchMock.mock.calls[0]![0])).toContain('/callback/ws/endpoint');
+
       await fresh.disconnect();
       vi.unstubAllGlobals();
     });
