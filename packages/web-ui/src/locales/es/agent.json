@@ -275,7 +275,10 @@
       },
       "a2aRuns_one": "{{count}} intercambio A2A",
       "a2aRuns_other": "{{count}} intercambios A2A",
-      "recentWindow": "las {{count}} actividades más recientes"
+      "recentWindow": "las {{count}} actividades más recientes",
+      "heartbeatRuns": "{{count}} latidos",
+      "a2aRuns": "{{count}} ejecuciones A2A",
+      "capabilityCollapsed": "Capacidades (herramientas y habilidades): clic para abrir"
     },
     "syncContext": {
       "assignedTasks": "Tareas con requisitos y trazabilidad de proyectos",
@@ -326,7 +329,8 @@
         "heartbeatMd": "Tareas de latido cardíaco",
         "policiesMd": "Políticas y Guardias",
         "contextMd": "Contexto e instrucciones"
-      }
+      },
+      "filesDiffer": "{{count}} archivos difieren de {{templateId}}"
     },
     "diff": {
       "title": "Diff: Actual vs Plantilla ({{templateId}})",
@@ -337,7 +341,8 @@
     },
     "toolsTab": {
       "registeredCount": "{{count}} Herramientas registradas",
-      "noToolsRegistered": "No hay herramientas registradas"
+      "noToolsRegistered": "No hay herramientas registradas",
+      "title": "Herramientas"
     },
     "skillsTab": {
       "alwaysOn": "siempre.",
@@ -384,7 +389,12 @@
         "system": "sistema",
         "assistant": "asistente"
       },
-      "userEditedSource": "Certificado de usuario"
+      "userEditedSource": "Certificado de usuario",
+      "healthTitle": "Salud de la memoria (knowledge.md)",
+      "observationsCount": "Observaciones",
+      "curatedCount": "Secciones de conocimiento",
+      "archivedChars": "Archivado",
+      "lastConsolidated": "Última consolidación"
     },
     "heartbeatTab": {
       "loading": "Carga de datos...",
@@ -440,7 +450,13 @@
       "soon": "pronto",
       "cancelWakeupOk": "Despertador cancelado.",
       "cancelWakeupFailed": "Error al cancelar el despertador",
-      "cancelWakeupGone": "Ese despertador ya no existe (ya se disparó o se canceló en otro lugar). La lista se ha actualizado."
+      "cancelWakeupGone": "Ese despertador ya no existe (ya se disparó o se canceló en otro lugar). La lista se ha actualizado.",
+      "wakeupsCount": "{{count}} activaciones",
+      "pendingOpsCount": "{{count}} pendientes",
+      "runsThisSession": "{{count}} en esta sesión",
+      "actionsCount": "{{count}} acciones",
+      "intervalHours": "cada {{count}} horas",
+      "intervalMinutes": "cada {{count}} minutos"
     },
     "relative": {
       "inSeconds": "dentro {{count}}s",
@@ -562,7 +578,15 @@
       "notebook": "Cuaderno",
       "notebookEntries": "{{count}} entradas",
       "notebookHint": "El espacio de trabajo cognitivo persistente del agente. Mostrando las {{count}} más recientes; el resto vive en NOTEBOOK.md. Las entradas expiran automáticamente.",
-      "expandNotebook": "Mostrar {{count}} más…"
+      "expandNotebook": "Mostrar {{count}} más…",
+      "noMatch": "No hay registros con este filtro",
+      "unitOrphan": "Historial",
+      "scrollForMore": "Desliza para cargar más",
+      "roundDecisions": "Decisiones de esta ronda",
+      "loopIdle": "No hubo señales que requirieran decisión en este periodo: está dormido o ya las gestionó",
+      "unitEmpty": "Esta entidad aún no tiene registros",
+      "loadingContent": "Cargando el contenido completo…",
+      "showMore": "Mostrar más"
     }
   },
   "deliverables": {

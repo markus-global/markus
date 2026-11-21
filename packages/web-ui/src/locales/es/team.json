@@ -53,7 +53,9 @@
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agentes",
     "teams": "Equipos",
-    "agentDMs": "Agente DMs"
+    "agentDMs": "Agente DMs",
+    "you": "Tú",
+    "noMembers": "Este equipo aún no tiene miembros."
   },
   "teamProfile": {
     "overview": "Resumen",
@@ -270,7 +272,8 @@
     "previous": "Anterior",
     "questionProgress": "Pregunta {{current}} de {{total}}",
     "textPlaceholder": "Introduzca su respuesta…",
-    "freeformPlaceholder": "O escriba su propia respuesta…"
+    "freeformPlaceholder": "O escriba su propia respuesta…",
+    "requiresFreeform": "Esta opción requiere el texto de abajo: elegirla sola no es una respuesta."
   },
   "intro": {
     "secretary": "Acabo de configurar a Markus. Ayúdame a empezar, qué puedo hacer aquí?",
@@ -490,6 +493,7 @@
     "applyGlobal": "Aplicar a nivel mundial",
     "applyAgent": "Aplicar al agente actual",
     "noAgent": "Seleccione un agente para aplicar por agente",
-    "empty": "No hay proveedores / modelos habilitados"
+    "empty": "No hay proveedores / modelos habilitados",
+    "chatOnlyHint": "Solo se listan modelos con interfaz de chat"
   }
 }

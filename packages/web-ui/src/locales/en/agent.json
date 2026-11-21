@@ -275,7 +275,10 @@
       "runningUnavailable": "running state is unavailable right now",
       "startAgent": "▶ Start",
       "stopAgent": "⏹ Stop",
-      "openClaw": "OpenClaw"
+      "openClaw": "OpenClaw",
+      "heartbeatRuns": "{{count}} heartbeats",
+      "a2aRuns": "{{count}} A2A runs",
+      "capabilityCollapsed": "Capabilities (tools & skills) — click to expand"
     },
     "syncContext": {
       "assignedTasks": "Tasks with requirement & project traceability",
@@ -326,7 +329,8 @@
         "heartbeatMd": "Heartbeat Tasks",
         "policiesMd": "Policies & Guardrails",
         "contextMd": "Context & Instructions"
-      }
+      },
+      "filesDiffer": "{{count}} files differ from {{templateId}}"
     },
     "diff": {
       "title": "Diff: Current vs Template ({{templateId}})",
@@ -337,7 +341,8 @@
     },
     "toolsTab": {
       "registeredCount": "{{count}} tools registered",
-      "noToolsRegistered": "No tools registered"
+      "noToolsRegistered": "No tools registered",
+      "title": "Tools"
     },
     "skillsTab": {
       "alwaysOn": "always-on",
@@ -384,7 +389,12 @@
         "system": "system",
         "assistant": "assistant"
       },
-      "userEditedSource": "User-edited"
+      "userEditedSource": "User-edited",
+      "healthTitle": "Memory health (knowledge.md)",
+      "observationsCount": "Observations",
+      "curatedCount": "Knowledge sections",
+      "archivedChars": "Archived",
+      "lastConsolidated": "Last consolidated"
     },
     "heartbeatTab": {
       "loading": "Loading heartbeat data...",
@@ -440,7 +450,13 @@
       "firstHeartbeatSoon": "First heartbeat will trigger in ~{{when}}.",
       "schedulerStopped": "Heartbeat scheduler is stopped.",
       "runFirstNow": "Run First Heartbeat Now",
-      "soon": "soon"
+      "soon": "soon",
+      "wakeupsCount": "{{count}} wakeups",
+      "pendingOpsCount": "{{count}} pending",
+      "runsThisSession": "{{count}} this session",
+      "actionsCount": "{{count}} actions",
+      "intervalHours": "every {{count}} hours",
+      "intervalMinutes": "every {{count}} minutes"
     },
     "relative": {
       "inSeconds": "in {{count}}s",
@@ -562,7 +578,15 @@
         "systemAnnouncement": "System Announcement",
         "systemEvent": "System Event",
         "statusArrow": "{{from}} → {{to}}"
-      }
+      },
+      "noMatch": "No records under this filter",
+      "unitOrphan": "History",
+      "scrollForMore": "Scroll down to load more",
+      "roundDecisions": "Decisions this round",
+      "loopIdle": "No signals needed a decision in this period — it is asleep or already handled them",
+      "unitEmpty": "This entity has no records yet",
+      "loadingContent": "Loading full content…",
+      "showMore": "Show more"
     }
   },
   "deliverables": {

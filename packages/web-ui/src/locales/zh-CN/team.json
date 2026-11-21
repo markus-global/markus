@@ -53,7 +53,9 @@
     "failedToCreateTeam": "创建团队失败：{{message}}",
     "agents": "智能体",
     "teams": "团队",
-    "agentDMs": "智能体私聊"
+    "agentDMs": "智能体私聊",
+    "you": "你",
+    "noMembers": "这个团队还没有成员。"
   },
   "teamProfile": {
     "overview": "概览",
@@ -270,7 +272,8 @@
     "previous": "上一题",
     "questionProgress": "第 {{current}} / {{total}} 题",
     "textPlaceholder": "输入你的回答…",
-    "freeformPlaceholder": "或自行填写答案…"
+    "freeformPlaceholder": "或自行填写答案…",
+    "requiresFreeform": "这个选项需要同时填写下方文本——只选它不算回答。"
   },
   "intro": {
     "secretary": "我刚装好 Markus，帮我上手吧——这里能做什么？",
@@ -498,6 +501,7 @@
     "applyGlobal": "应用到全局",
     "applyAgent": "应用到当前智能体",
     "noAgent": "请选择智能体以应用智能体级模型",
-    "empty": "没有已启用的 Provider / 模型"
+    "empty": "没有已启用的 Provider / 模型",
+    "chatOnlyHint": "仅列出支持对话的模型"
   }
 }

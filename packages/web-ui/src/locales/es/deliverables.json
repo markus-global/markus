@@ -152,7 +152,8 @@
     "closeChat": "Cerrar chat",
     "placeholder": "Agente del mensaje...",
     "currentDeliverable": "Entrega actual",
-    "selectedFrom": "Seleccionado"
+    "selectedFrom": "Seleccionado",
+    "sendToChat": "Enviar a la conversación"
   },
   "contextMenu": {
     "addToConversation": "Añadir a la conversación"

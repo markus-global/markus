@@ -8,7 +8,7 @@
   "newTab": "New Tab",
   "confirm": "Confirm",
   "ok": "OK",
-  "error": "Error",
+  "error": "Error: {{message}}",
   "pageErrorTitle": "This page failed to render",
   "pageErrorHint": "The rest of the app still works. Try again first; if it keeps happening, report the message below.",
   "pageErrorRetry": "Try again",
@@ -68,7 +68,6 @@
   "removing": "Removing...",
   "networkError": "Network error",
   "failed": "Failed",
-  "error": "Error: {{message}}",
   "noResults": "No results",
   "selectAll": "Select all",
   "selected": "{{count}} selected",
@@ -183,7 +182,8 @@
     "urgent": "Urgent",
     "high": "High",
     "normal": "Normal",
-    "low": "Low"
+    "low": "Low",
+    "medium": "Medium"
   },
   "role": {
     "owner": "Owner",
@@ -277,7 +277,10 @@
       "state": {
         "running": "In progress",
         "done": "Completed"
-      }
+      },
+      "tools": "{{count}} tools",
+      "subagents": "{{count}} subagents",
+      "errors": "{{count}} errors"
     },
     "tools": {
       "shell_execute": "Running command",
@@ -475,7 +478,9 @@
       "text": "text",
       "thinkingTag": "thinking",
       "round": "Round #{{n}}",
-      "rounds": "{{count}} rounds"
+      "rounds": "{{count}} rounds",
+      "toolsExecuted": "{{count}} tools executed",
+      "toolsLine": "{{count}} tools"
     },
     "fullLog": {
       "title": "Execution Log",
@@ -575,7 +580,8 @@
     "step_other": "{{count}} steps",
     "failed": "{{count}} failed",
     "thinking": "Thinking",
-    "writingResponse": "Writing response…"
+    "writingResponse": "Writing response…",
+    "step": "Step {{count}}"
   },
   "copyFailed": "Failed",
   "aiDisclaimer": "Content is AI-generated; please verify before relying on it.",
@@ -796,5 +802,22 @@
       "task": "Task",
       "deliverable": "Deliverable"
     }
-  }
+  },
+  "retry": "Retry",
+  "copyPath": "Copy path",
+  "exitFullscreen": "Exit fullscreen",
+  "fullscreen": "Fullscreen",
+  "collapsePanel": "Hide panel",
+  "agents": "Agents",
+  "tasks": "Tasks",
+  "requirements": "Requirements",
+  "projects": "Projects",
+  "deliverables": "Deliverables",
+  "workflows": "Workflows",
+  "showAll": "Show all",
+  "searchHint": "Type a keyword to search",
+  "toggle": "Toggle",
+  "switchTab": "Switch tab",
+  "navigate": "Navigate",
+  "justNow": "just now"
 }

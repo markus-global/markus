@@ -63,7 +63,7 @@
   },
   "detail": {
     "selectToView": "Select a deliverable to view details",
-    "keyboardHint": "Use \u2191\u2193 arrow keys to navigate, \u2318F to search",
+    "keyboardHint": "Use ↑↓ arrow keys to navigate, ⌘F to search",
     "details": "Details",
     "verify": "Verify",
     "flagOutdated": "Flag Outdated",
@@ -152,7 +152,8 @@
     "closeChat": "Close chat",
     "placeholder": "Message agent...",
     "currentDeliverable": "Current deliverable",
-    "selectedFrom": "Selected from"
+    "selectedFrom": "Selected from",
+    "sendToChat": "Send to conversation"
   },
   "contextMenu": {
     "addToConversation": "Add to conversation"

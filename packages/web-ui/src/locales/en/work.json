@@ -40,7 +40,6 @@
     "removeRepo": "Remove repository",
     "repoPathPlaceholder": "Local path (e.g. /Users/me/project)",
     "repoBranchPlaceholder": "Branch (default: main)",
-    "editProject": "Edit project",
     "kbHeading": "Knowledge Base",
     "kbOpenInDeliverables": "View in deliverable",
     "kbSync": "Re-sync",
@@ -246,7 +245,15 @@
     "scheduleNoDays": "Pick at least one day",
     "schedulePreview": "Will run on: {{desc}}",
     "scheduleTimezoneNote": "Timezone: {{tz}}",
-    "weekdayShort": { "0": "Sun", "1": "Mon", "2": "Tue", "3": "Wed", "4": "Thu", "5": "Fri", "6": "Sat" },
+    "weekdayShort": {
+      "0": "Sun",
+      "1": "Mon",
+      "2": "Tue",
+      "3": "Wed",
+      "4": "Thu",
+      "5": "Fri",
+      "6": "Sat"
+    },
     "frequency": "Frequency",
     "freq30m": "Every 30 min",
     "freq1h": "Every 1 hour",
@@ -538,10 +545,20 @@
     "projectsCountLabel_other": "{{count}} Projects",
     "noMatches": "No matches",
     "searchPlaceholder": "Type to search…",
-    "clickToEdit": "Click to edit",
     "tagsLabel": "Tags",
     "tagsPlaceholder": "Comma-separated",
-    "noTags": "No tags"
+    "noTags": "No tags",
+    "workflowUnmatchedTitle": "Tasks in this run (no step mapping)",
+    "workflowUnmatchedHint": "This run predates 2026-10-27: tasks recorded no step identity, so the history cannot be reconstructed. The tasks below can still be opened.",
+    "workflowClickToEdit": "Click to edit",
+    "toolCount": "{{count}} tools",
+    "cannotPreviewFile": "This file type cannot be previewed.",
+    "cancelTaskDependent": "{{count}} dependent tasks will be cancelled",
+    "loadingMore": "Loading more…",
+    "scrollForMore": "Scroll to the bottom to load more",
+    "workflowCancelScope": "Will cancel {{count}} unfinished tasks ({{total}} in this run)",
+    "workflowCancelScopeUnknown": "This run has {{total}} tasks (counting the unfinished ones)",
+    "toWorkflows": "Workflows"
   },
   "requirement": {
     "requirements": "Requirements",
@@ -561,7 +578,22 @@
     "goalMaxReached": "Max Reached",
     "goalIteration": "Iteration {{current}}/{{max}}",
     "goalLastChecked": "Last checked: {{time}}",
-    "goalAutoResume": "Auto-resume"
+    "goalAutoResume": "Auto-resume",
+    "bulkApprove": "Approve pending tasks in bulk ({{count}})",
+    "bulkApproveTitle": "Approve pending tasks in bulk",
+    "bulkApproveDone": "Bulk approval result",
+    "bulkApproveWarning": "Execution starts immediately: {{count}} tasks will start at once, each occupying its agent.",
+    "bulkApproveSummary": "Succeeded {{ok}} · skipped {{skip}} · failed {{fail}}",
+    "bulkApproveWillApprove": "Will approve",
+    "bulkApproveApproved": "Approved",
+    "bulkApproveSkipped": "Skipped (approval conditions not met)",
+    "bulkApproveFailed": "Failed",
+    "bulkApproveNothing": "No pending tasks to approve.",
+    "bulkApproving": "Approving…",
+    "bulkApproveConfirm": "Confirm and start",
+    "changeStatus": "Change status",
+    "noStatusChange": "No status change available",
+    "terminalHint": "Terminal state"
   },
   "filters": {
     "all": "All",
@@ -669,6 +701,9 @@
       "dependencyAdded": "Dependency added",
       "dependencyRemoved": "Dependency removed",
       "failed": "Failed: {{message}}"
-    }
-  }
+    },
+    "depCount": "{{count}} dependencies",
+    "taskCount": "{{count}} tasks"
+  },
+  "allProjects": "All projects"
 }

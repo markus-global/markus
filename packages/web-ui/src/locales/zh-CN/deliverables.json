@@ -63,7 +63,7 @@
   },
   "detail": {
     "selectToView": "请选择交付物以查看详情",
-    "keyboardHint": "使用 \u2191\u2193 方向键导航，\u2318F 搜索",
+    "keyboardHint": "使用 ↑↓ 方向键导航，⌘F 搜索",
     "details": "详情",
     "builderWithType": "构建器 {{type}}",
     "verify": "验证",
@@ -152,7 +152,8 @@
     "closeChat": "关闭对话",
     "placeholder": "给智能体发消息…",
     "currentDeliverable": "当前交付物",
-    "selectedFrom": "选自"
+    "selectedFrom": "选自",
+    "sendToChat": "发送到对话"
   },
   "contextMenu": {
     "addToConversation": "添加到对话"

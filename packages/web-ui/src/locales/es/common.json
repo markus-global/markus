@@ -182,7 +182,8 @@
     "urgent": "Urgente",
     "high": "Alta",
     "normal": "Normal",
-    "low": "Baja"
+    "low": "Baja",
+    "medium": "Media"
   },
   "role": {
     "owner": "Propietario",
@@ -447,7 +448,9 @@
       "text": "texto",
       "thinkingTag": "pensando",
       "round": "Ronda #{{n}}",
-      "rounds": "{{count}} rondas"
+      "rounds": "{{count}} rondas",
+      "toolsExecuted": "{{count}} herramientas ejecutadas",
+      "toolsLine": "{{count}} herramientas"
     },
     "fullLog": {
       "title": "Registro de ejecución",
@@ -477,7 +480,10 @@
       "state": {
         "running": "En curso",
         "done": "Completado"
-      }
+      },
+      "tools": "{{count}} herramientas",
+      "subagents": "{{count}} subagentes",
+      "errors": "{{count}} errores"
     }
   },
   "taskDag": {
@@ -566,7 +572,8 @@
     "step_other": "{{count}} Medidas adoptadas",
     "failed": "{{count}} fallado",
     "thinking": "Pensando",
-    "writingResponse": "Respuesta por escrito…"
+    "writingResponse": "Respuesta por escrito…",
+    "step": "Paso {{count}}"
   },
   "copyFailed": "Fallido",
   "aiDisclaimer": "El contenido es generado por AI; por favor verifique antes de confiar en él.",
@@ -795,5 +802,22 @@
       "task": "Tarea",
       "deliverable": "Entregable"
     }
-  }
+  },
+  "retry": "Reintentar",
+  "copyPath": "Copiar ruta",
+  "exitFullscreen": "Salir de pantalla completa",
+  "fullscreen": "Pantalla completa",
+  "collapsePanel": "Ocultar panel",
+  "agents": "Agentes",
+  "tasks": "Tareas",
+  "requirements": "Requisitos",
+  "projects": "Proyectos",
+  "deliverables": "Entregables",
+  "workflows": "Flujos",
+  "showAll": "Ver todo",
+  "searchHint": "Escribe una palabra clave",
+  "toggle": "Mostrar/ocultar",
+  "switchTab": "Cambiar pestaña",
+  "navigate": "Navegar",
+  "justNow": "ahora mismo"
 }

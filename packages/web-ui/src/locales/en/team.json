@@ -53,7 +53,9 @@
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agents",
     "teams": "Teams",
-    "agentDMs": "Agent DMs"
+    "agentDMs": "Agent DMs",
+    "you": "You",
+    "noMembers": "No members in this team yet."
   },
   "teamProfile": {
     "overview": "Overview",
@@ -270,7 +272,8 @@
     "previous": "Previous",
     "questionProgress": "Question {{current}} of {{total}}",
     "textPlaceholder": "Type your answer…",
-    "freeformPlaceholder": "Or write your own answer…"
+    "freeformPlaceholder": "Or write your own answer…",
+    "requiresFreeform": "This choice needs the text below — picking it alone is not an answer."
   },
   "intro": {
     "secretary": "I just set up Markus. Help me get started — what can I do here?",
@@ -498,6 +501,7 @@
     "applyGlobal": "Apply to global",
     "applyAgent": "Apply to current agent",
     "noAgent": "Select an agent to apply per-agent",
-    "empty": "No enabled providers / models"
+    "empty": "No enabled providers / models",
+    "chatOnlyHint": "Only models with a chat interface are listed"
   }
 }

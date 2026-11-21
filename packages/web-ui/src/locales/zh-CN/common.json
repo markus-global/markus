@@ -8,7 +8,7 @@
   "newTab": "新建标签页",
   "confirm": "确认",
   "ok": "确定",
-  "error": "错误",
+  "error": "错误：{{message}}",
   "pageErrorTitle": "这个页面渲染出错了",
   "pageErrorHint": "其余页面仍可正常使用。可以先重试；如果反复出现，把下面的报错信息提供给开发。",
   "pageErrorRetry": "重试",
@@ -68,7 +68,6 @@
   "removing": "正在移除...",
   "networkError": "网络错误",
   "failed": "失败",
-  "error": "错误：{{message}}",
   "noResults": "无结果",
   "selectAll": "全选",
   "selected": "已选 {{count}} 项",
@@ -183,7 +182,8 @@
     "urgent": "紧急",
     "high": "高",
     "normal": "普通",
-    "low": "低"
+    "low": "低",
+    "medium": "中"
   },
   "role": {
     "owner": "所有者",
@@ -277,7 +277,10 @@
       "state": {
         "running": "执行中",
         "done": "已完成"
-      }
+      },
+      "tools": "{{count}} 个工具",
+      "subagents": "{{count}} 个子智能体",
+      "errors": "{{count}} 个错误"
     },
     "tools": {
       "shell_execute": "执行命令",
@@ -475,7 +478,9 @@
       "text": "文本",
       "thinkingTag": "思考",
       "round": "第 {{n}} 轮",
-      "rounds": "共 {{count}} 轮"
+      "rounds": "共 {{count}} 轮",
+      "toolsExecuted": "执行了 {{count}} 个工具",
+      "toolsLine": "{{count}} 个工具"
     },
     "fullLog": {
       "title": "执行日志",
@@ -575,7 +580,8 @@
     "step_other": "{{count}} 步",
     "failed": "{{count}} 失败",
     "thinking": "思考中",
-    "writingResponse": "正在生成回复…"
+    "writingResponse": "正在生成回复…",
+    "step": "第 {{count}} 步"
   },
   "copyFailed": "失败",
   "aiDisclaimer": "内容由 AI 生成，请注意辨别后再使用。",
@@ -796,5 +802,22 @@
       "task": "任务",
       "deliverable": "产出物"
     }
-  }
+  },
+  "retry": "重试",
+  "copyPath": "复制路径",
+  "exitFullscreen": "退出全屏",
+  "fullscreen": "全屏",
+  "collapsePanel": "收起面板",
+  "agents": "智能体",
+  "tasks": "任务",
+  "requirements": "需求",
+  "projects": "项目",
+  "deliverables": "交付物",
+  "workflows": "工作流",
+  "showAll": "查看全部",
+  "searchHint": "输入关键词搜索",
+  "toggle": "唤起/关闭",
+  "switchTab": "切换分类",
+  "navigate": "导航",
+  "justNow": "刚刚"
 }

@@ -275,7 +275,10 @@
       "runningUnavailable": "暂时读不到运行状态",
       "startAgent": "▶ 启动",
       "stopAgent": "⏹ 停止",
-      "openClaw": "OpenClaw"
+      "openClaw": "OpenClaw",
+      "heartbeatRuns": "{{count}} 次心跳",
+      "a2aRuns": "{{count}} 次 A2A",
+      "capabilityCollapsed": "能力（工具与技能）— 点开查看"
     },
     "syncContext": {
       "assignedTasks": "带需求与项目可追溯性的任务",
@@ -325,7 +328,8 @@
         "heartbeatMd": "心跳任务",
         "policiesMd": "策略与护栏",
         "contextMd": "上下文与说明"
-      }
+      },
+      "filesDiffer": "{{count}} 个文件与 {{templateId}} 不一致"
     },
     "diff": {
       "title": "差异：当前 vs 模板（{{templateId}}）",
@@ -336,7 +340,8 @@
     },
     "toolsTab": {
       "registeredCount": "已注册 {{count}} 个工具",
-      "noToolsRegistered": "未注册任何工具"
+      "noToolsRegistered": "未注册任何工具",
+      "title": "工具"
     },
     "skillsTab": {
       "alwaysOn": "常驻",
@@ -383,7 +388,12 @@
         "system": "系统",
         "assistant": "助手"
       },
-      "userEditedSource": "用户编辑"
+      "userEditedSource": "用户编辑",
+      "healthTitle": "记忆健康（knowledge.md）",
+      "observationsCount": "观察",
+      "curatedCount": "知识段",
+      "archivedChars": "已归档",
+      "lastConsolidated": "上次整理"
     },
     "heartbeatTab": {
       "loading": "正在加载心跳数据…",
@@ -439,7 +449,13 @@
       "firstHeartbeatSoon": "首次心跳约在 {{when}} 后触发。",
       "schedulerStopped": "心跳调度已停止。",
       "runFirstNow": "立即运行首次心跳",
-      "soon": "很快"
+      "soon": "很快",
+      "wakeupsCount": "{{count}} 个唤醒",
+      "pendingOpsCount": "{{count}} 个待处理",
+      "runsThisSession": "本会话 {{count}} 次",
+      "actionsCount": "{{count}} 个动作",
+      "intervalHours": "每 {{count}} 小时",
+      "intervalMinutes": "每 {{count}} 分钟"
     },
     "relative": {
       "inSeconds": "{{count}} 秒后",
@@ -561,7 +577,15 @@
         "systemAnnouncement": "系统公告",
         "systemEvent": "系统事件",
         "statusArrow": "{{from}} → {{to}}"
-      }
+      },
+      "noMatch": "这个筛选下没有记录",
+      "unitOrphan": "历史记录",
+      "scrollForMore": "下滑加载更多",
+      "roundDecisions": "本轮决策",
+      "loopIdle": "这段时间没有需要它判断的信号 —— 它在睡或已完成处置",
+      "unitEmpty": "这个实体目前没有记录",
+      "loadingContent": "正在载入完整正文…",
+      "showMore": "显示更多"
     }
   },
   "deliverables": {
