@@ -330,7 +330,8 @@
     "applying": "Aplicando…",
     "applied": "Aplicado: el listener se ha movido",
     "applyFailed": "No se pudo mover el listener",
-    "remoteNote": "El túnel de acceso remoto conecta a 127.0.0.1, así que habilitar el acceso remoto no requiere abrir la red local."
+    "remoteNote": "El túnel de acceso remoto conecta a 127.0.0.1, así que habilitar el acceso remoto no requiere abrir la red local.",
+    "restarting": "⏳ Markus se está reiniciando; la página se actualizará automáticamente…"
   },
   "networkProxy": {
     "title": "Proxy de red",
@@ -1000,118 +1001,348 @@
             "title": "Crea una app de agente de Feishu",
             "desc": "Para un bot nuevo: haz clic en «Escanear código QR para crear la aplicación» para generar el código: al escanearlo se configura todo en un paso (incluye bot, permisos y suscripción a eventos). O crea una «app de agente» en la plataforma abierta de Feishu e introduce las credenciales manualmente."
           },
-          "step2": { "title": "Activa el bot", "desc": "App → Funciones → Bot: activa la capacidad de bot." },
-          "step3": { "title": "Añade permisos", "desc": "App → Permisos: habilita im:message e im:message.receive_v1." },
-          "step4": { "title": "Suscríbete a eventos", "desc": "App → Eventos y callbacks: usa el modo de conexión larga y suscríbete a im.message.receive_v1." },
-          "step5": { "title": "Copia las credenciales", "desc": "App → Credenciales: copia el App ID y el App Secret, pégalos abajo y prueba la conexión." }
+          "step2": {
+            "title": "Activa el bot",
+            "desc": "App → Funciones → Bot: activa la capacidad de bot."
+          },
+          "step3": {
+            "title": "Añade permisos",
+            "desc": "App → Permisos: habilita im:message e im:message.receive_v1."
+          },
+          "step4": {
+            "title": "Suscríbete a eventos",
+            "desc": "App → Eventos y callbacks: usa el modo de conexión larga y suscríbete a im.message.receive_v1."
+          },
+          "step5": {
+            "title": "Copia las credenciales",
+            "desc": "App → Credenciales: copia el App ID y el App Secret, pégalos abajo y prueba la conexión."
+          }
         },
         "fields": {
-          "appId": { "label": "App ID", "placeholder": "cli_xxxxxxxxxxxxxxxx" },
-          "appSecret": { "label": "App Secret" },
-          "domain": { "label": "Dominio de API", "help": "Anulación para Lark (internacional), p. ej. https://open.larksuite.com." },
-          "wsMode": { "label": "Modo WebSocket", "help": "Recibe eventos por suscripción WebSocket en lugar de un servidor webhook." },
-          "webhookPort": { "label": "Puerto de webhook", "help": "Puerto del servidor webhook cuando el modo WebSocket está desactivado." },
-          "encryptKey": { "label": "Encrypt Key", "help": "Clave AES para descifrar cargas útiles de webhook cifradas." },
-          "verificationToken": { "label": "Verification Token", "help": "Token de verificación de la suscripción a eventos." },
-          "notifyEnabled": { "label": "Notificaciones", "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo." },
-          "notifyChatId": { "label": "Chat predeterminado", "help": "Chat de grupo que recibe las notificaciones. Déjalo vacío para usar mensajes directos." },
-          "notifyOpenId": { "label": "Usuario predeterminado", "help": "open_id del usuario para mensajes directos («enviar a mi Feishu»)." },
-          "notifyOnApproval": { "label": "Notificar aprobaciones", "help": "Reenvía las solicitudes de aprobación al chat / usuario de arriba." },
-          "notifyOnNotification": { "label": "Notificar eventos", "help": "Reenvía eventos de agentes y tareas al chat / usuario de arriba." },
+          "appId": {
+            "label": "App ID",
+            "placeholder": "cli_xxxxxxxxxxxxxxxx"
+          },
+          "appSecret": {
+            "label": "App Secret"
+          },
+          "domain": {
+            "label": "Dominio de API",
+            "help": "Anulación para Lark (internacional), p. ej. https://open.larksuite.com."
+          },
+          "wsMode": {
+            "label": "Modo WebSocket",
+            "help": "Recibe eventos por suscripción WebSocket en lugar de un servidor webhook."
+          },
+          "webhookPort": {
+            "label": "Puerto de webhook",
+            "help": "Puerto del servidor webhook cuando el modo WebSocket está desactivado."
+          },
+          "encryptKey": {
+            "label": "Encrypt Key",
+            "help": "Clave AES para descifrar cargas útiles de webhook cifradas."
+          },
+          "verificationToken": {
+            "label": "Verification Token",
+            "help": "Token de verificación de la suscripción a eventos."
+          },
+          "notifyEnabled": {
+            "label": "Notificaciones",
+            "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo."
+          },
+          "notifyChatId": {
+            "label": "Chat predeterminado",
+            "help": "Chat de grupo que recibe las notificaciones. Déjalo vacío para usar mensajes directos."
+          },
+          "notifyOpenId": {
+            "label": "Usuario predeterminado",
+            "help": "open_id del usuario para mensajes directos («enviar a mi Feishu»)."
+          },
+          "notifyOnApproval": {
+            "label": "Notificar aprobaciones",
+            "help": "Reenvía las solicitudes de aprobación al chat / usuario de arriba."
+          },
+          "notifyOnNotification": {
+            "label": "Notificar eventos",
+            "help": "Reenvía eventos de agentes y tareas al chat / usuario de arriba."
+          },
           "notifyPriority": {
             "label": "Prioridad de notificación",
             "help": "Solo reenvía eventos con estas prioridades.",
-            "options": { "normal": "Normal", "low": "Baja", "medium": "Media", "high": "Alta", "urgent": "Urgente" }
+            "options": {
+              "normal": "Normal",
+              "low": "Baja",
+              "medium": "Media",
+              "high": "Alta",
+              "urgent": "Urgente"
+            }
           },
-          "agentId": { "label": "Agente vinculado", "help": "Agente que responde a los mensajes entrantes de esta plataforma. Déjalo vacío para exigir un vínculo explícito por canal.", "placeholder": "agt_…" }
+          "agentId": {
+            "label": "Agente vinculado",
+            "help": "Agente que responde a los mensajes entrantes de esta plataforma. Déjalo vacío para exigir un vínculo explícito por canal.",
+            "placeholder": "agt_…"
+          }
         }
       },
       "telegram": {
         "label": "Telegram",
         "description": "Conecta un bot de Telegram para enviar y recibir mensajes.",
         "guide": {
-          "step1": { "title": "Abre @BotFather", "desc": "En Telegram, inicia un chat con @BotFather y envía /newbot." },
-          "step2": { "title": "Crea el bot", "desc": "Sigue las indicaciones; BotFather devuelve un token de bot." },
-          "step3": { "title": "Pega el token", "desc": "Pega el token abajo y prueba la conexión." },
-          "step4": { "title": "Recibe mensajes", "desc": "Activa la encuesta larga (long polling): no hace falta URL pública." }
+          "step1": {
+            "title": "Abre @BotFather",
+            "desc": "En Telegram, inicia un chat con @BotFather y envía /newbot."
+          },
+          "step2": {
+            "title": "Crea el bot",
+            "desc": "Sigue las indicaciones; BotFather devuelve un token de bot."
+          },
+          "step3": {
+            "title": "Pega el token",
+            "desc": "Pega el token abajo y prueba la conexión."
+          },
+          "step4": {
+            "title": "Recibe mensajes",
+            "desc": "Activa la encuesta larga (long polling): no hace falta URL pública."
+          }
         },
         "fields": {
-          "botToken": { "label": "Token del bot", "placeholder": "123456:ABC-DEF…", "help": "Token de @BotFather. Se verifica con getMe al conectar el adaptador." },
-          "agentId": { "label": "Agente vinculado", "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.", "placeholder": "agt_…" },
-          "apiUrl": { "label": "URL de API", "help": "Anulación para un servidor Bot API autoalojado.", "placeholder": "https://api.telegram.org" },
-          "notifyEnabled": { "label": "Notificaciones", "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo." },
-          "notifyChatId": { "label": "Chat de notificaciones", "help": "Chat o canal de Telegram al que se envían aprobaciones y notificaciones." },
-          "pollingEnabled": { "label": "Long polling", "help": "Recibe actualizaciones por sondeo en lugar de webhook (sin URL pública)." },
-          "webhookPort": { "label": "Puerto de webhook", "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes." },
-          "webhookSecret": { "label": "Secreto de webhook", "help": "Se envía a Telegram como token secreto del webhook y se comprueba en cada actualización." },
-          "webhookPath": { "label": "Ruta de webhook" },
-          "webhookUrl": { "label": "URL de webhook pública", "help": "Telegram necesita una URL HTTPS accesible públicamente para llamar. Solo se necesita cuando el long polling está desactivado.", "placeholder": "https://example.com/webhook/telegram" }
+          "botToken": {
+            "label": "Token del bot",
+            "placeholder": "123456:ABC-DEF…",
+            "help": "Token de @BotFather. Se verifica con getMe al conectar el adaptador."
+          },
+          "agentId": {
+            "label": "Agente vinculado",
+            "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.",
+            "placeholder": "agt_…"
+          },
+          "apiUrl": {
+            "label": "URL de API",
+            "help": "Anulación para un servidor Bot API autoalojado.",
+            "placeholder": "https://api.telegram.org"
+          },
+          "notifyEnabled": {
+            "label": "Notificaciones",
+            "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo."
+          },
+          "notifyChatId": {
+            "label": "Chat de notificaciones",
+            "help": "Chat o canal de Telegram al que se envían aprobaciones y notificaciones."
+          },
+          "pollingEnabled": {
+            "label": "Long polling",
+            "help": "Recibe actualizaciones por sondeo en lugar de webhook (sin URL pública)."
+          },
+          "webhookPort": {
+            "label": "Puerto de webhook",
+            "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes."
+          },
+          "webhookSecret": {
+            "label": "Secreto de webhook",
+            "help": "Se envía a Telegram como token secreto del webhook y se comprueba en cada actualización."
+          },
+          "webhookPath": {
+            "label": "Ruta de webhook"
+          },
+          "webhookUrl": {
+            "label": "URL de webhook pública",
+            "help": "Telegram necesita una URL HTTPS accesible públicamente para llamar. Solo se necesita cuando el long polling está desactivado.",
+            "placeholder": "https://example.com/webhook/telegram"
+          }
         }
       },
       "slack": {
         "label": "Slack",
         "description": "Conecta una app de Slack para enviar y recibir mensajes.",
         "guide": {
-          "step1": { "title": "Crea una app de Slack", "desc": "Abre api.slack.com/apps → Create New App → «From scratch»." },
-          "step2": { "title": "Añade permisos de bot", "desc": "OAuth & Permissions → Bot Token Scopes: añade chat:write (y im:history, channels:history para leer), luego Install to Workspace." },
-          "step3": { "title": "Activa Socket Mode", "desc": "Settings → Socket Mode: actívalo y genera un token de app (xapp-…) con el scope connections:write." },
-          "step4": { "title": "Suscríbete a eventos", "desc": "Event Subscriptions → Subscribe to bot events: añade message.im y message.channels. Con Socket Mode no se necesita URL pública." },
-          "step5": { "title": "Rellena las credenciales", "desc": "Pega el Bot Token (xoxb-…) y el App Token (xapp-…), activa Socket Mode y pulsa Guardar y probar." }
+          "step1": {
+            "title": "Crea una app de Slack",
+            "desc": "Abre api.slack.com/apps → Create New App → «From scratch»."
+          },
+          "step2": {
+            "title": "Añade permisos de bot",
+            "desc": "OAuth & Permissions → Bot Token Scopes: añade chat:write (y im:history, channels:history para leer), luego Install to Workspace."
+          },
+          "step3": {
+            "title": "Activa Socket Mode",
+            "desc": "Settings → Socket Mode: actívalo y genera un token de app (xapp-…) con el scope connections:write."
+          },
+          "step4": {
+            "title": "Suscríbete a eventos",
+            "desc": "Event Subscriptions → Subscribe to bot events: añade message.im y message.channels. Con Socket Mode no se necesita URL pública."
+          },
+          "step5": {
+            "title": "Rellena las credenciales",
+            "desc": "Pega el Bot Token (xoxb-…) y el App Token (xapp-…), activa Socket Mode y pulsa Guardar y probar."
+          }
         },
         "fields": {
-          "botToken": { "label": "Token del bot", "placeholder": "xoxb-…", "help": "Se verifica con auth.test al conectar el adaptador." },
-          "agentId": { "label": "Agente vinculado", "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.", "placeholder": "agt_…" },
-          "signingSecret": { "label": "Signing Secret", "help": "Verifica las solicitudes de webhook entrantes. Necesario para la vía de webhook." },
-          "appToken": { "label": "App Token", "placeholder": "xapp-…", "help": "Token de app (xapp-…) para Socket Mode. Requiere el scope connections:write; no necesita URL pública." },
-          "socketMode": { "label": "Socket Mode" },
-          "webhookPort": { "label": "Puerto de webhook", "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes." },
-          "webhookPath": { "label": "Ruta de webhook" },
-          "apiUrl": { "label": "URL de API", "placeholder": "https://slack.com/api" },
-          "notifyEnabled": { "label": "Notificaciones", "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo." },
-          "notifyChannelId": { "label": "Canal de notificaciones", "help": "ID del canal de Slack (p. ej. C0123456789) al que se envían aprobaciones y notificaciones." }
+          "botToken": {
+            "label": "Token del bot",
+            "placeholder": "xoxb-…",
+            "help": "Se verifica con auth.test al conectar el adaptador."
+          },
+          "agentId": {
+            "label": "Agente vinculado",
+            "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.",
+            "placeholder": "agt_…"
+          },
+          "signingSecret": {
+            "label": "Signing Secret",
+            "help": "Verifica las solicitudes de webhook entrantes. Necesario para la vía de webhook."
+          },
+          "appToken": {
+            "label": "App Token",
+            "placeholder": "xapp-…",
+            "help": "Token de app (xapp-…) para Socket Mode. Requiere el scope connections:write; no necesita URL pública."
+          },
+          "socketMode": {
+            "label": "Socket Mode"
+          },
+          "webhookPort": {
+            "label": "Puerto de webhook",
+            "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes."
+          },
+          "webhookPath": {
+            "label": "Ruta de webhook"
+          },
+          "apiUrl": {
+            "label": "URL de API",
+            "placeholder": "https://slack.com/api"
+          },
+          "notifyEnabled": {
+            "label": "Notificaciones",
+            "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo."
+          },
+          "notifyChannelId": {
+            "label": "Canal de notificaciones",
+            "help": "ID del canal de Slack (p. ej. C0123456789) al que se envían aprobaciones y notificaciones."
+          }
         }
       },
       "whatsapp": {
         "label": "WhatsApp",
         "description": "Conecta WhatsApp a través de la Meta Cloud API.",
         "guide": {
-          "step1": { "title": "Crea una app de Meta", "desc": "Abre developers.facebook.com/apps → Crear app (Business) y añade el producto WhatsApp. Completar Get Started crea un número de prueba gratis." },
-          "step2": { "title": "Obtén el Phone Number ID", "desc": "WhatsApp → API Setup: copia el Phone number ID (no el número de teléfono)." },
-          "step3": { "title": "Crea un token de acceso", "desc": "El token de API Setup caduca en ~24 h: sirve para probar. Para producción crea un token permanente de usuario de sistema en Business Settings." },
-          "step4": { "title": "Configura el webhook (obligatorio)", "desc": "WhatsApp no admite polling: apunta la URL de callback de Meta a un endpoint HTTPS accesible públicamente, indica el token de verificación y suscríbete al campo messages. Se requiere verificación de empresa de Meta para escribir a usuarios reales." }
+          "step1": {
+            "title": "Crea una app de Meta",
+            "desc": "Abre developers.facebook.com/apps → Crear app (Business) y añade el producto WhatsApp. Completar Get Started crea un número de prueba gratis."
+          },
+          "step2": {
+            "title": "Obtén el Phone Number ID",
+            "desc": "WhatsApp → API Setup: copia el Phone number ID (no el número de teléfono)."
+          },
+          "step3": {
+            "title": "Crea un token de acceso",
+            "desc": "El token de API Setup caduca en ~24 h: sirve para probar. Para producción crea un token permanente de usuario de sistema en Business Settings."
+          },
+          "step4": {
+            "title": "Configura el webhook (obligatorio)",
+            "desc": "WhatsApp no admite polling: apunta la URL de callback de Meta a un endpoint HTTPS accesible públicamente, indica el token de verificación y suscríbete al campo messages. Se requiere verificación de empresa de Meta para escribir a usuarios reales."
+          }
         },
         "fields": {
-          "phoneNumberId": { "label": "Phone Number ID", "help": "Id de número de teléfono de Meta Cloud API usado como remitente.", "placeholder": "123456789012345" },
-          "notifyEnabled": { "label": "Notificaciones", "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo." },
-          "notifyWaId": { "label": "ID de WhatsApp para notificaciones", "help": "wa_id del destinatario (número en formato internacional) para aprobaciones y notificaciones." },
-          "accessToken": { "label": "Token de acceso", "help": "Token para llamar a la Cloud API. Para pruebas sirve el token temporal de API Setup (~24 h); en producción usa un token permanente de usuario de sistema." },
-          "agentId": { "label": "Agente vinculado", "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.", "placeholder": "agt_…" },
-          "businessAccountId": { "label": "Business Account ID" },
-          "apiVersion": { "label": "Versión de API", "help": "Segmento de versión de Graph API anexado a la URL base." },
-          "baseUrl": { "label": "URL base", "placeholder": "https://graph.facebook.com" },
-          "webhookPort": { "label": "Puerto de webhook", "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes." },
-          "webhookPath": { "label": "Ruta de webhook" },
-          "webhookVerifyToken": { "label": "Token de verificación", "help": "Se devuelve durante el handshake de verificación GET de Meta." },
-          "appSecret": { "label": "App Secret", "help": "Verifica la cabecera X-Hub-Signature-256 de los webhooks entrantes." }
+          "phoneNumberId": {
+            "label": "Phone Number ID",
+            "help": "Id de número de teléfono de Meta Cloud API usado como remitente.",
+            "placeholder": "123456789012345"
+          },
+          "notifyEnabled": {
+            "label": "Notificaciones",
+            "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo."
+          },
+          "notifyWaId": {
+            "label": "ID de WhatsApp para notificaciones",
+            "help": "wa_id del destinatario (número en formato internacional) para aprobaciones y notificaciones."
+          },
+          "accessToken": {
+            "label": "Token de acceso",
+            "help": "Token para llamar a la Cloud API. Para pruebas sirve el token temporal de API Setup (~24 h); en producción usa un token permanente de usuario de sistema."
+          },
+          "agentId": {
+            "label": "Agente vinculado",
+            "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.",
+            "placeholder": "agt_…"
+          },
+          "businessAccountId": {
+            "label": "Business Account ID"
+          },
+          "apiVersion": {
+            "label": "Versión de API",
+            "help": "Segmento de versión de Graph API anexado a la URL base."
+          },
+          "baseUrl": {
+            "label": "URL base",
+            "placeholder": "https://graph.facebook.com"
+          },
+          "webhookPort": {
+            "label": "Puerto de webhook",
+            "help": "Puerto local del servidor webhook. Déjalo vacío para desactivar los webhooks entrantes."
+          },
+          "webhookPath": {
+            "label": "Ruta de webhook"
+          },
+          "webhookVerifyToken": {
+            "label": "Token de verificación",
+            "help": "Se devuelve durante el handshake de verificación GET de Meta."
+          },
+          "appSecret": {
+            "label": "App Secret",
+            "help": "Verifica la cabecera X-Hub-Signature-256 de los webhooks entrantes."
+          }
         }
       },
       "discord": {
         "label": "Discord",
         "description": "Conecta un bot de Discord para enviar y recibir mensajes.",
         "guide": {
-          "step1": { "title": "Crea una aplicación", "desc": "Abre discord.com/developers/applications y crea una aplicación nueva." },
-          "step2": { "title": "Añade un bot", "desc": "Bot → Add Bot y copia el token del bot." },
-          "step3": { "title": "Activa los intents", "desc": "Bot → Privileged Gateway Intents: activa MESSAGE CONTENT para que el bot pueda leer mensajes." },
-          "step4": { "title": "Invita al bot", "desc": "OAuth2 → URL Generator: elige el scope bot e invítalo a tu servidor." },
-          "step5": { "title": "Pega el token", "desc": "Pega el token del bot abajo y prueba la conexión." }
+          "step1": {
+            "title": "Crea una aplicación",
+            "desc": "Abre discord.com/developers/applications y crea una aplicación nueva."
+          },
+          "step2": {
+            "title": "Añade un bot",
+            "desc": "Bot → Add Bot y copia el token del bot."
+          },
+          "step3": {
+            "title": "Activa los intents",
+            "desc": "Bot → Privileged Gateway Intents: activa MESSAGE CONTENT para que el bot pueda leer mensajes."
+          },
+          "step4": {
+            "title": "Invita al bot",
+            "desc": "OAuth2 → URL Generator: elige el scope bot e invítalo a tu servidor."
+          },
+          "step5": {
+            "title": "Pega el token",
+            "desc": "Pega el token del bot abajo y prueba la conexión."
+          }
         },
         "fields": {
-          "botToken": { "label": "Token del bot", "help": "Token del bot desde el portal de desarrolladores de Discord." },
-          "agentId": { "label": "Agente vinculado", "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.", "placeholder": "agt_…" },
-          "apiUrl": { "label": "URL de API", "placeholder": "https://discord.com/api/v10" },
-          "gatewayUrl": { "label": "URL de Gateway", "placeholder": "wss://gateway.discord.gg" },
-          "notifyEnabled": { "label": "Notificaciones", "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo." },
-          "notifyChannelId": { "label": "Canal de notificaciones", "help": "ID del canal de Discord al que se envían aprobaciones y notificaciones." }
+          "botToken": {
+            "label": "Token del bot",
+            "help": "Token del bot desde el portal de desarrolladores de Discord."
+          },
+          "agentId": {
+            "label": "Agente vinculado",
+            "help": "Agente que responde a los mensajes entrantes. Déjalo vacío para exigir un vínculo explícito por canal.",
+            "placeholder": "agt_…"
+          },
+          "apiUrl": {
+            "label": "URL de API",
+            "placeholder": "https://discord.com/api/v10"
+          },
+          "gatewayUrl": {
+            "label": "URL de Gateway",
+            "placeholder": "wss://gateway.discord.gg"
+          },
+          "notifyEnabled": {
+            "label": "Notificaciones",
+            "help": "Entrega las aprobaciones y notificaciones de este bot al destino de abajo."
+          },
+          "notifyChannelId": {
+            "label": "Canal de notificaciones",
+            "help": "ID del canal de Discord al que se envían aprobaciones y notificaciones."
+          }
         }
       }
     }
@@ -1180,7 +1411,8 @@
     "testSuccess": "Conexión exitosa",
     "testFailed": "La conexión falló",
     "disconnected": "Desconectado de Feishu",
-    "disconnect": "Desconexión"
+    "disconnect": "Desconexión",
+    "qrAlt": "Código QR de Feishu"
   },
   "codingTools": {
     "title": "Herramientas de codificación",
@@ -1344,5 +1576,10 @@
     "policyReport": "Reportar al superior (escalar)",
     "saved": "Guardado",
     "failedToSave": "Error al guardar"
+  },
+  "modelCatalog": {
+    "subject": "Catálogo de modelos",
+    "noModels": "Este proveedor no tiene modelos",
+    "retryHint": "Vuelve a seleccionar el proveedor más tarde para reintentar"
   }
 }

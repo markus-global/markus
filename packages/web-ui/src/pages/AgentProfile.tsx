@@ -1172,6 +1172,7 @@ function FileMarkdownEditor({ content, editContent, setEditContent, dirty, onSav
 }) {
   const [editing, setEditing] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const { t } = useTranslation(['agent', 'common', 'work']);
 
   useEffect(() => { if (editing) textareaRef.current?.focus(); }, [editing]);
 
@@ -1202,14 +1203,14 @@ function FileMarkdownEditor({ content, editContent, setEditContent, dirty, onSav
       onKeyDown={e => { if (e.key === 'Enter') setEditing(true); }}
     >
       <div className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity text-[10px] text-fg-tertiary bg-surface-secondary/80 px-2 py-0.5 rounded">
-        Click to edit
+        {t('work:task.clickToEdit')}
       </div>
       {editContent.trim() ? (
-        <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+        <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}>
           <LazyMarkdownMessage content={editContent} className="text-sm text-fg-secondary leading-relaxed" />
         </Suspense>
       ) : (
-        <div className="text-sm text-fg-tertiary italic py-4 text-center">Empty</div>
+        <div className="text-sm text-fg-tertiary italic py-4 text-center">{t('agent:profilePage.filesTab.emptyFile')}</div>
       )}
     </div>
   );
@@ -1574,7 +1575,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                 <div className="flex items-center justify-between text-xs">
                   <span className="text-fg-secondary">
                     {t('agent:profilePage.memoryTab.injectionLine', '本轮注入（prompt 预算）')}
-                    <span className="text-fg-tertiary"> {data.injectedChars ?? 0} / {data.injectionCapChars ?? 0} 字符</span>
+                    <span className="text-fg-tertiary"> {t('agent:profilePage.memoryTab.charsOfCap', { used: data.injectedChars ?? 0, cap: data.injectionCapChars ?? 0 })}</span>
                   </span>
                   <span className={pctText(injectionPct)}>{Math.round(injectionPct)}%</span>
                 </div>
@@ -1605,7 +1606,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                   <div className="flex items-center justify-between">
                     <span className="text-fg-tertiary">
                       {t('agent:profilePage.memoryTab.curatedLine', '磁盘策展区（超预算会无损归档）')}
-                      <span className="text-fg-secondary"> {data.curatedChars ?? 0} / {data.curatedCap ?? 0} 字符</span>
+                      <span className="text-fg-secondary"> {t('agent:profilePage.memoryTab.charsOfCap', { used: data.curatedChars ?? 0, cap: data.curatedCap ?? 0 })}</span>
                     </span>
                     <span className={pctText(curatedPct)}>{Math.round(curatedPct)}%</span>
                   </div>
@@ -1614,7 +1615,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                   <div className="flex items-center justify-between">
                     <span className="text-fg-tertiary">
                       {t('agent:profilePage.memoryTab.observationLine', '观察缓冲（不注入）')}
-                      <span className="text-fg-secondary"> {data.observationChars ?? 0} / {data.observationLimit ?? 0} 字符</span>
+                      <span className="text-fg-secondary"> {t('agent:profilePage.memoryTab.charsOfCap', { used: data.observationChars ?? 0, cap: data.observationLimit ?? 0 })}</span>
                     </span>
                     <span className={pctText(data.observationPercent ?? 0)}>{Math.round(data.observationPercent ?? 0)}%</span>
                   </div>
@@ -1622,7 +1623,7 @@ function MemoryTab({ agentId }: { agentId: string }) {
                 <div className="flex flex-wrap gap-x-4 gap-y-1">
                   <span>{t('agent:profilePage.memoryTab.observationsCount', '观察')} {data.observationCount ?? 0}</span>
                   <span>{t('agent:profilePage.memoryTab.curatedCount', '知识段')} {data.curatedCount ?? 0}</span>
-                  {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {data.archivedChars} 字符（可检索）</span>}
+                  {(data.archivedChars ?? 0) > 0 && <span>{t('agent:profilePage.memoryTab.archivedChars', '已归档')} {t('agent:profilePage.memoryTab.archivedCharsSearchable', { count: data.archivedChars })}</span>}
                   {data.lastConsolidatedAt && <span>{t('agent:profilePage.memoryTab.lastConsolidated', '上次整理')} {new Date(data.lastConsolidatedAt).toLocaleDateString()}</span>}
                 </div>
               </div>
@@ -1735,9 +1736,9 @@ function MemoryTab({ agentId }: { agentId: string }) {
                         ) : sessionRead.view.error ? (
                           <ReadErrorNotice
                             variant="inline"
-                            subject="会话消息"
-                            error={sessionRead.resource.error ?? '读取失败'}
-                            notEquals="这个会话没有消息"
+                            subject={t('agent:profilePage.sessionMessagesSubject')}
+                            error={sessionRead.resource.error ?? t('common:readFailed')}
+                            notEquals={t('agent:profilePage.noSessionMessages')}
                             onRetry={sessionRead.reload}
                           />
                         ) : sessionRead.view.empty ? (
@@ -3088,7 +3089,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
                     </span>
                   </div>
                   <div className="text-[10px] text-fg-tertiary tabular-nums">
-                    {g.count} 条 · {g.latestAt ? new Date(g.latestAt).toLocaleTimeString() : '—'}
+                    {t('agent:profilePage.mind.itemCount', { count: g.count })} · {g.latestAt ? new Date(g.latestAt).toLocaleTimeString() : '—'}
                   </div>
                 </button>
               );
@@ -3122,7 +3123,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <span className="text-[11px] font-medium text-fg-secondary truncate flex-1">
                 {activeGroup?.name || (activeGroup?.key ? workUnitEntityLabel(activeGroup.key) : '')}
               </span>
-              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label="close">✕</button>
+              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label={t('common:close')}>✕</button>
             </div>
           {/* 「本轮决策」——把这条实体下所有记录的决策聚合成一行一条。
               数据来源是邮箱响应里已经带的 `decisions`（
@@ -3322,7 +3323,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
           {items.length > groupCap && (
             <button onClick={() => setGroupCap(c => c + GROUP_RENDER_CAP)}
               className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 py-2">
-              {t('agent:profilePage.mind.showMore', '显示更多')}（还有 {items.length - groupCap} 条）
+              {t('agent:profilePage.mind.showMoreCount', { count: items.length - groupCap })}
             </button>
           )}
           </div>
@@ -3430,9 +3431,9 @@ function DeliverablesTab({ agentId }: { agentId: string }) {
     return (
       <ReadErrorNotice
         variant="inline"
-        subject="交付物"
-        error={deliverablesRead.resource.error ?? '读取失败'}
-        notEquals="这个 agent 没有任何交付物"
+        subject={t('common:deliverables')}
+        error={deliverablesRead.resource.error ?? t('common:readFailed')}
+        notEquals={t('agent:profilePage.noDeliverables')}
         onRetry={refresh}
       />
     );

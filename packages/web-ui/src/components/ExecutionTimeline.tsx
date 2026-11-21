@@ -164,7 +164,7 @@ function ToolDetailContent({ info, time }: { info: ToolCallInfo; time?: string }
           <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-1">{t('execution.subagentExecution')}</h4>
           <div ref={subagentScrollRef} className="bg-surface-elevated/50 rounded-lg px-3 py-2 space-y-1">
             {logCount > SUBAGENT_LOG_RENDER_LIMIT && (
-              <div className="text-[10px] text-fg-tertiary pb-1">… {logCount - SUBAGENT_LOG_RENDER_LIMIT} earlier steps omitted</div>
+              <div className="text-[10px] text-fg-tertiary pb-1">… {t('execution.earlierStepsOmitted', { n: logCount - SUBAGENT_LOG_RENDER_LIMIT })}</div>
             )}
             {visibleSubagentLogs.map((log, idx) => {
               const icon = log.eventType === 'started' ? '▶' : log.eventType === 'completed' ? '✓' : log.eventType === 'error' ? '✗' : log.eventType === 'tool_start' ? '◎' : log.eventType === 'tool_end' ? '●' : log.eventType === 'thinking' ? '·' : '→';
@@ -598,6 +598,7 @@ const CODING_TOOL_META: Record<string, { label: string; badgeClass: string }> = 
 };
 
 function CodingToolDetailModal({ session, info, onClose }: { session: CodingToolSession; info: ToolCallInfo; onClose: () => void }) {
+  const { t } = useTranslation('common');
   const args = (info.args && typeof info.args === 'object' && !Array.isArray(info.args))
     ? info.args as Record<string, unknown>
     : {};
@@ -639,7 +640,7 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
         <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
           {/* Prompt */}
           <div>
-            <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Prompt</h4>
+            <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.prompt')}</h4>
             <pre className="text-xs text-fg-secondary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-40 overflow-y-auto whitespace-pre-wrap break-all font-mono">
               {session.prompt}
             </pre>
@@ -648,7 +649,7 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
           {/* Input arguments */}
           {Object.keys(args).length > 0 && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Input Arguments</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.inputArguments')}</h4>
               <div className="space-y-1.5">
                 {Object.entries(args).filter(([k]) => k !== 'prompt').map(([key, value]) => (
                   <div key={key} className="flex items-start gap-2 text-xs">
@@ -663,21 +664,21 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
           {/* Result */}
           {session.result && !isRunning && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Result</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.result')}</h4>
               <div className="space-y-2">
                 {session.result.summary && (
                   <div className="text-xs text-fg-secondary">{session.result.summary}</div>
                 )}
                 {session.result.diffStats && (
                   <div className="flex items-center gap-3 text-xs font-mono">
-                    <span className="text-fg-tertiary">{session.result.diffStats.filesChanged} files changed</span>
+                    <span className="text-fg-tertiary">{t('execution.filesChanged', { n: session.result.diffStats.filesChanged })}</span>
                     <span className="text-green-500">+{session.result.diffStats.additions}</span>
                     <span className="text-red-500">-{session.result.diffStats.deletions}</span>
                   </div>
                 )}
                 {session.result.modifiedFiles && session.result.modifiedFiles.length > 0 && (
                   <div>
-                    <div className="text-[10px] text-fg-tertiary mb-1">Modified files:</div>
+                    <div className="text-[10px] text-fg-tertiary mb-1">{t('execution.modifiedFiles')}:</div>
                     <div className="bg-surface-elevated/70 rounded-lg px-3 py-2 max-h-32 overflow-y-auto">
                       {session.result.modifiedFiles.map((f, i) => (
                         <div key={i} className="text-[11px] text-fg-secondary font-mono truncate">{f}</div>
@@ -697,10 +698,10 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
           {/* Cost */}
           {session.cost && (session.cost.inputTokens != null || session.cost.outputTokens != null || session.cost.estimatedCostUsd != null) && (
             <div>
-              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">Cost</h4>
+              <h4 className="text-[10px] font-semibold text-fg-tertiary uppercase tracking-wider mb-2">{t('execution.cost')}</h4>
               <div className="flex items-center gap-4 text-xs text-fg-secondary">
-                {session.cost.inputTokens != null && <span>{session.cost.inputTokens.toLocaleString()} input tokens</span>}
-                {session.cost.outputTokens != null && <span>{session.cost.outputTokens.toLocaleString()} output tokens</span>}
+                {session.cost.inputTokens != null && <span>{t('execution.inputTokens', { n: session.cost.inputTokens.toLocaleString() })}</span>}
+                {session.cost.outputTokens != null && <span>{t('execution.outputTokens', { n: session.cost.outputTokens.toLocaleString() })}</span>}
                 {session.cost.estimatedCostUsd != null && <span className="font-medium">${session.cost.estimatedCostUsd.toFixed(4)}</span>}
                 {durationMs != null && <span className="text-fg-tertiary">{formatDuration(durationMs)}</span>}
               </div>
@@ -718,7 +719,7 @@ function CodingToolDetailModal({ session, info, onClose }: { session: CodingTool
                 <svg className={`w-3 h-3 transition-transform ${showRaw ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                   <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
                 </svg>
-                <span className="font-semibold uppercase tracking-wider">Raw Output</span>
+                <span className="font-semibold uppercase tracking-wider">{t('rawOutput')}</span>
               </button>
               {showRaw && (
                 <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto max-h-[50vh] overflow-y-auto whitespace-pre-wrap break-all font-mono">

@@ -1845,6 +1845,8 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
     })) {
       agent.registerTool(tool);
     }
@@ -2813,6 +2815,8 @@ export class AgentManager {
       agentName: config.name,
       memory: agent.getMemory(),
       semanticSearch: this.semanticSearch,
+      updateWorkingMemory: (key, content) => agent.updateWorkingMemory(key, content),
+      clearWorkingMemory: (key) => agent.clearWorkingMemory(key),
     })) {
       agent.registerTool(tool);
     }

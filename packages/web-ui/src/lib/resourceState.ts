@@ -22,6 +22,8 @@
  *    —— 与时间线视图同一个聚合实现。
  */
 
+import i18n from '../i18n/index.ts';
+
 /**
  * 来源的读取状态。'error' 与「读到 0 条」是两件不同的事，
  * 绝不允许折叠成一个空数组（这一条就是本模块存在的理由）。
@@ -55,7 +57,23 @@ export interface ListView<T> {
 }
 
 /** 异常 → 人话。集中一处，避免每处各写一遍 `e instanceof Error ? … : String(e)`。 */
-export function errorMessage(err: unknown, fallback = '读取失败'): string {
+/**
+ * 多个来源名称 → 一句并列。**分隔符随语言走**，不写死中文顿号。
+ *
+ * 旧写法是各页自己 `failures.join('、')` —— 英文/西语用户会看到「Hub assets、Local templates」。
+ * 集中在这里一份，避免同一个事实两个写者。
+ */
+export function formatSourceList(labels: readonly string[]): string {
+  const items = labels.filter(Boolean);
+  if (items.length === 0) return '';
+  try {
+    return new Intl.ListFormat(i18n.language, { style: 'short', type: 'unit' }).format(items);
+  } catch {
+    return items.join(', ');
+  }
+}
+
+export function errorMessage(err: unknown, fallback = i18n.t('common:readFailed')): string {
   if (err instanceof Error && err.message) return err.message;
   const s = typeof err === 'string' ? err : '';
   return s || fallback;

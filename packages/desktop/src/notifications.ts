@@ -1,5 +1,6 @@
-import { Notification, BrowserWindow } from 'electron';
+import { Notification, BrowserWindow, app } from 'electron';
 import WebSocket from 'ws';
+import { taskUpdateOsText, notificationOsText } from './notification-text.js';
 
 interface WSEvent {
   type: string;
@@ -69,29 +70,20 @@ function handleEvent(event: WSEvent): void {
 
   switch (event.type) {
     case 'task:update': {
-      const status = payload?.status as string;
+      const status = payload?.status as string | undefined;
       const title = payload?.title as string | undefined;
       const taskId = payload?.taskId as string | undefined;
       // A task notification must name the task. Task-service always sends the
       // title; a title-less `task:update` is an internal signal that must not be
-      // dressed up as an OS notification ("✓ Task" with no context).
-      if (!title) break;
-      if (status === 'completed') {
-        showOSNotification('Task Completed', `✓ ${title}`, {
-          openNotifications: true,
-          page: 'work', params: taskId ? { openTask: taskId } : undefined,
-        });
-      } else if (status === 'failed') {
-        showOSNotification('Task Failed', `✗ ${title}`, {
-          openNotifications: true,
-          page: 'work', params: taskId ? { openTask: taskId } : undefined,
-        });
-      } else if (status === 'review') {
-        showOSNotification('Review Required', `${title} needs review`, {
-          openNotifications: true,
-          page: 'work', params: taskId ? { openTask: taskId } : undefined,
-        });
-      }
+      // dressed up as an OS notification. The words come from the notification
+      // vocabulary in the reader's language (notification-text.ts) — the same
+      // sentence the in-app inbox and Feishu show, not baked English literals.
+      const text = taskUpdateOsText(status, title, app.getLocale());
+      if (!text) break;
+      showOSNotification(text.title, text.body, {
+        openNotifications: true,
+        page: 'work', params: taskId ? { openTask: taskId } : undefined,
+      });
       break;
     }
 
@@ -99,21 +91,10 @@ function handleEvent(event: WSEvent): void {
     // emits that event type (`broadcastTaskUpdate` emits `task:update`) — it was
     // unreachable. Task status reaches the OS through the `task:update` case
     // above, which now requires a title.
-
-    case 'approval:requested': {
-      const taskId = payload?.taskId as string | undefined;
-      const agentId = payload?.agentId as string | undefined;
-      showOSNotification(
-        '🔔 Approval Required',
-        (payload?.title as string) ?? 'An agent needs your approval',
-        {
-          openNotifications: true,
-          page: taskId ? 'work' : agentId ? 'team' : undefined,
-          params: taskId ? { openTask: taskId } : agentId ? { agentId } : undefined,
-        },
-      );
-      break;
-    }
+    //
+    // NOTE: `case 'approval:requested'` was removed for the same reason — no WS
+    // path emits it. An approval reaches the OS as an approval_request
+    // notification through the localized `notification` case below.
 
     case 'chat:message':
       if (payload?.notifyUser) {
@@ -135,10 +116,11 @@ function handleEvent(event: WSEvent): void {
       break;
 
     case 'notification': {
-      const n = payload?.notification as Record<string, unknown> | undefined;
-      const title = (n?.title as string) ?? (payload?.title as string) ?? 'Markus';
-      const body = (n?.body as string) ?? (payload?.body as string) ?? '';
-      const meta = (n?.metadata ?? payload?.metadata ?? {}) as Record<string, string>;
+      // Localize from metadata.i18n (the same path the in-app bell uses) instead
+      // of copying the producer's baked-in English title/body to the OS.
+      const n = (payload?.notification ?? payload) as Record<string, unknown> | undefined;
+      const { title, body } = notificationOsText(n, app.getLocale());
+      const meta = (n?.metadata ?? {}) as Record<string, string>;
       showOSNotification(title, body, {
         openNotifications: true,
         ...buildNavFromMeta(meta),

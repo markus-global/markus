@@ -12,8 +12,12 @@
  *      not know makes `assertActionToolReachability` throw (fail-fast, no silent
  *      filtering);
  *   3. a ghost id in the whitelist therefore turns this suite RED;
- *   4. the deferred catalog names the evicted tools AND the recovery call;
- *   5. `discover_tools` activation brings an evicted tool back on the next turn;
+ *   4. under REAL over-budget pressure NOTHING is dropped: the eviction
+ *      mechanism was removed outright (PR #471) — the tool face is a fixed
+ *      segment; the over-budget face is tolerated and the VARIABLE segment
+ *      (history) is compressed instead (Owner 2026-11-20);
+ *   5. an external skill tool enters the face once activated and survives
+ *      over-budget pressure on that turn and the next;
  *   6. one switch (`MARKUS_ACTION_TOOL_GUARD=0` / `actionToolGuard: false`)
  *      restores the legacy behaviour wholesale.
  */
@@ -21,7 +25,6 @@ import { describe, it, expect, afterEach } from 'vitest';
 import {
   ACTION_TOOL_IDS,
   assertActionToolReachability,
-  formatEvictedToolCatalog,
   SCHEMA_INJECTED_TOOLS,
 } from '../src/capability-packs.js';
 import { ToolSelector } from '../src/tool-selector.js';
@@ -30,11 +33,16 @@ import { createAgentTaskTools, type AgentTaskContext } from '../src/tools/task-t
 
 type ToolLike = { name: string; description: string; inputSchema: Record<string, unknown> };
 
+/** In-test pressure gauge (chars/3.5) — production no longer has a tool budget. */
+const faceTokens = (face: ToolLike[]): number => Math.ceil(JSON.stringify(face).length / 3.5);
+/** The former execute-pack budget; the fixture must exceed it by a wide margin. */
+const PRESSURE_FLOOR_TOKENS = 10_000;
+
 function mk(name: string): ToolLike {
   return { name, description: `d ${name}`, inputSchema: { type: 'object', properties: {} } };
 }
 
-/** Big schema on purpose: the budget evictor picks the largest victim first. */
+/** Big schema on purpose: the face must far exceed any former pack budget. */
 function bigTool(name: string): ToolLike {
   return {
     name,
@@ -85,8 +93,11 @@ function liveFace(): Set<string> {
   return new Set([...mailboxToolNames(), ...taskToolNames(), ...injectedToolNames()]);
 }
 
-/** Oversized ordinary builtins — they must be SELECTED to create real pressure. */
+/** Oversized first-party builtins — real pressure, and ALL must survive. */
 const BULK_NAMES = Array.from({ length: 60 }, (_, i) => `bulk_tool_${i}`);
+
+/** Oversized EXTERNAL decoy: enters only via activation, then never dropped. */
+const EXT_DECOY = 'feishu_bulk_0';
 
 /** A face under budget pressure: every action tool + 60 oversized builtins. */
 function pressuredFace(): Map<string, ToolLike> {
@@ -99,8 +110,10 @@ function pressuredFace(): Map<string, ToolLike> {
 
 /**
  * Selector whose `code` group carries the bulk tools. A tool that never enters
- * the selection cannot create budget pressure — skill/MCP names stay out of the
- * face until activated (activation also protects them), so they prove nothing.
+ * the selection cannot create pressure. External skill/MCP names stay out of
+ * the face until activated (progressive disclosure); once activated they are
+ * sticky. No eviction mechanism exists — the over-budget face is tolerated and
+ * history is compressed downstream instead.
  */
 function bigSelector(): ToolSelector {
   return new ToolSelector([{ name: 'code', keywords: ['code'], toolNames: [...BULK_NAMES] }]);
@@ -137,7 +150,7 @@ describe('C8-D 白名单（从注册表派生，缺一 fail-fast）', () => {
   it('request_user_input IS a member: the HITL channel must survive compression', () => {
     // The whole point of the card is "agent knows what it lacks". A compressed
     // face that cannot ask a human for authorisation is the defect, not an edge
-    // case. It is schema-injected (pushUnique) + eviction-protected, exactly like
+    // case. It is schema-injected (pushUnique) + always live, exactly like
     // `notify_user` — so excluding it while keeping notify_user would be one
     // predicate answered two ways.
     expect(ACTION_TOOL_IDS as readonly string[]).toContain('request_user_input');
@@ -158,18 +171,19 @@ describe('C8-D 白名单（从注册表派生，缺一 fail-fast）', () => {
 });
 
 describe('C8-D 超限工具面下行动类工具恒在', () => {
-  it('execute pack: all six action tools survive, and pressure really did evict', () => {
+  it('execute pack: real over-budget pressure — every tool survives, nothing evicted', () => {
     const selector = bigSelector();
-    const names = selector
-      .selectTools({ allTools: pressuredFace(), userMessage: 'code work on task', isTaskExecution: true, pack: 'execute' })
-      .map((t) => t.name);
+    const face = selector
+      .selectTools({ allTools: pressuredFace(), userMessage: 'code work on task', isTaskExecution: true, pack: 'execute' });
+    const names = face.map((t) => t.name);
+    // The fixture must REALLY exceed the former budget — otherwise "survives" proves nothing.
+    expect(faceTokens(face)).toBeGreaterThan(PRESSURE_FLOOR_TOKENS);
     for (const id of ACTION_TOOL_IDS) {
       expect(names, `action tool ${id} must stay LIVE under budget pressure`).toContain(id);
     }
-    expect(
-      selector.consumeDeferredCatalog().length,
-      'the fixture must actually exceed the budget, otherwise this test proves nothing',
-    ).toBeGreaterThan(0);
+    // New invariant: budget pressure compresses HISTORY, never the tool face.
+    // Re-introducing first-party eviction makes these two assertions red.
+    for (const n of BULK_NAMES) expect(names).toContain(n);
   });
 
   it('converse pack: the action surface stays, work-context tools stay session-gated', () => {
@@ -193,50 +207,46 @@ describe('C8-D 超限工具面下行动类工具恒在', () => {
     expect(names).not.toContain('task_submit_review');
   });
 
-  it('only re-discoverable tools are ever evicted', () => {
+  it('nothing is ever evicted — activated external tools survive pressure too', () => {
     const allTools = pressuredFace();
+    allTools.set(EXT_DECOY, bigTool(EXT_DECOY));
     const selector = bigSelector();
-    selector.selectTools({ allTools, userMessage: 'code work on task', isTaskExecution: true, pack: 'execute' });
-    const evicted = selector.consumeDeferredCatalog().map((e) => e.name);
-    expect(evicted.length).toBeGreaterThan(0);
-    for (const name of evicted) {
-      expect(
-        allTools.has(name) || SCHEMA_INJECTED_TOOLS.has(name),
-        `${name} was evicted but cannot be re-discovered — unreachable for the rest of the turn`,
-      ).toBe(true);
-    }
+    const face = selector.selectTools({
+      allTools,
+      userMessage: 'code work on task',
+      isTaskExecution: true,
+      pack: 'execute',
+      activatedToolNames: [EXT_DECOY],
+    });
+    const names = face.map((t) => t.name);
+    expect(faceTokens(face)).toBeGreaterThan(PRESSURE_FLOOR_TOKENS);
+    // P0-3 history: evicting an activated external tool in the same turn made
+    // discover_tools a token-burning no-op. Now nothing is ever dropped.
+    expect(names).toContain(EXT_DECOY);
+    for (const id of ACTION_TOOL_IDS) expect(names).toContain(id);
   });
 });
 
-describe('C8-D 淘汰提示可行动 + discover_tools 可取回', () => {
-  it('the deferred catalog names the tools and the recovery call', () => {
-    const catalog = formatEvictedToolCatalog([
-      { name: 'feishu_tool_0', description: 'a calendar tool' },
-      { name: 'office_generate', description: 'docx/xlsx' },
-    ]);
-    expect(catalog).toContain('feishu_tool_0');
-    expect(catalog).toContain('office_generate');
-    expect(catalog).toContain('discover_tools({ name:');
-  });
-
-  it('an evicted tool is back on the next turn once activated', () => {
-    const selector = bigSelector();
+describe('C8-D 渐进披露 + discover_tools 激活可行动', () => {
+  it('an external skill tool enters via activation and survives pressure across turns', () => {
     const allTools = pressuredFace();
-    selector.selectTools({ allTools, userMessage: 'code work on task', isTaskExecution: true, pack: 'execute' });
-    const evicted = selector.consumeDeferredCatalog().map((e) => e.name);
-    const target = evicted[0];
-    expect(target).toBeTruthy();
-
-    const nextTurn = selector
-      .selectTools({
-        allTools,
-        userMessage: 'code work on task',
-        isTaskExecution: true,
-        pack: 'execute',
-        activatedToolNames: [target!],
-      })
+    allTools.set(EXT_DECOY, bigTool(EXT_DECOY));
+    const selector = bigSelector();
+    // Turn 1: not activated → progressive disclosure keeps it out of the face.
+    const turn1 = selector
+      .selectTools({ allTools, userMessage: 'code work on task', isTaskExecution: true, pack: 'execute' })
       .map((t) => t.name);
-    expect(nextTurn).toContain(target!);
+    expect(turn1).not.toContain(EXT_DECOY);
+    // Turn 2: activated → live, and immune even though the face is over budget.
+    const face2 = selector.selectTools({
+      allTools,
+      userMessage: 'code work on task',
+      isTaskExecution: true,
+      pack: 'execute',
+      activatedToolNames: [EXT_DECOY],
+    });
+    expect(faceTokens(face2)).toBeGreaterThan(PRESSURE_FLOOR_TOKENS);
+    expect(face2.map((t) => t.name)).toContain(EXT_DECOY);
   });
 });
 

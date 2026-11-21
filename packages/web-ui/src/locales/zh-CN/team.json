@@ -53,7 +53,13 @@
     "failedToCreateTeam": "创建团队失败：{{message}}",
     "agents": "智能体",
     "teams": "团队",
-    "agentDMs": "智能体私聊"
+    "agentDMs": "智能体私聊",
+    "you": "你",
+    "noMembers": "这个团队还没有成员。",
+    "addTitle": "添加标题…",
+    "toggleTeamPanel": "展开/收起团队面板",
+    "clickToEditName": "点击编辑名称",
+    "clickToEditTitle": "点击编辑标题"
   },
   "teamProfile": {
     "overview": "概览",
@@ -65,7 +71,10 @@
     "noAnnouncements": "暂无公告，点击添加。",
     "noNorms": "暂未定义规范，点击添加。",
     "noMembers": "暂无成员",
-    "teamMissing": "未找到该团队"
+    "teamMissing": "未找到该团队",
+    "teamId": "团队 ID",
+    "onlineCount": "{{count}} 在线",
+    "deleteTeamConfirm": "删除团队「{{name}}」？这将从数据库中移除该团队记录。"
   },
   "contextMenu": {
     "renameTeam": "重命名团队",
@@ -270,7 +279,8 @@
     "previous": "上一题",
     "questionProgress": "第 {{current}} / {{total}} 题",
     "textPlaceholder": "输入你的回答…",
-    "freeformPlaceholder": "或自行填写答案…"
+    "freeformPlaceholder": "或自行填写答案…",
+    "requiresFreeform": "这个选项需要同时填写下方文本——只选它不算回答。"
   },
   "intro": {
     "secretary": "我刚装好 Markus，帮我上手吧——这里能做什么？",
@@ -498,6 +508,28 @@
     "applyGlobal": "应用到全局",
     "applyAgent": "应用到当前智能体",
     "noAgent": "请选择智能体以应用智能体级模型",
-    "empty": "没有已启用的 Provider / 模型"
+    "empty": "没有已启用的 Provider / 模型",
+    "chatOnlyHint": "仅列出支持对话的模型"
+  },
+  "history": {
+    "unreadUnknown": "未读数未知（读取失败）",
+    "unreadLoading": "未读…",
+    "showAll": "显示全部",
+    "onlyUnread": "只看未读",
+    "unreadCount": "{{count}} 条未读",
+    "allReadShowAll": "已全部读完·看全部",
+    "tabApprovals": "审批结果",
+    "noticesLoadFailed": "通知读取失败：{{error}}（这不等于「没有历史」）。",
+    "approvalsLoadFailed": "审批历史读取失败（不等于「没有审批」）。",
+    "empty": "还没有历史记录",
+    "emptyHint": "团队开始工作后，审批和通知会出现在这里",
+    "openTarget": "打开对应的任务 / 需求 / 会话",
+    "answered": "已答复",
+    "unanswered": "未答复",
+    "atTime": "于 {{time}}",
+    "waited": "等了 {{duration}}",
+    "noTargetHint": "这条通知没有关联的任务 / 需求 / 会话，仅作告知",
+    "infoOnly": "仅告知",
+    "noMore": "没有更早的记录了"
   }
 }

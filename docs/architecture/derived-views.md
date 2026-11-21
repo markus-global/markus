@@ -297,11 +297,13 @@ records *what happened*; it never carries state.
 They are append-mostly event logs: they answer "what happened to this agent / this
 task, and when". Before cut 9 they also silently carried a second, weaker answer to
 "is it still running" (an unfinished row), because no code could ask `work_units`.
-That second answer is now removed — see §16.
+That second answer is now removed — see §16. Since C10-0E `agent_activities` is
+**strictly append-only** (a database trigger rejects any rewrite, §15.1); the other
+three remain append-mostly.
 
 | Table | One row is | Volume at cut 9 (live DB) | `work_unit_ref` |
 |---|---|---|---|
-| `agent_activities` | one activity (a turn's execution: chat / task / review / heartbeat) with its start time, end time, token and tool totals | ~250k | nullable, indexed |
+| `agent_activities` | one activity (a turn's execution: chat / task / review / heartbeat), written once at start; end/correction data arrives as `activity_end` events in `agent_activity_logs` and is derived on read (§15.1) | ~250k | nullable, indexed |
 | `agent_activity_logs` | one log line *inside* an activity (`status` / `text` / `tool_start` / `tool_end` / `llm_request` / `error`), ordered by `seq` | ~3.8M | nullable, indexed |
 | `execution_stream_logs` | the unified execution stream: the same kind of log line, but keyed by `(source_type, source_id)` so `task` / `activity` / `chat` streams share one read face | ~4.5M | nullable, indexed |
 | `task_logs` | one persisted task log line, grouped by `execution_round` | ~0.5M | nullable, indexed |
@@ -324,7 +326,9 @@ Notes that are contracts, not trivia:
 - **The migration is additive only** (`ALTER TABLE ... ADD COLUMN` + `CREATE INDEX
   IF NOT EXISTS`), guarded by `PRAGMA table_info` in
   `packages/storage/src/sqlite-storage.ts`. Re-opening an old database adds the
-  columns once and never rebuilds the table.
+  columns once and never rebuilds the table. Since C10-0E the same idempotent,
+  additive category also carries the append-only trigger and the `activity_end`
+  partial index (§15.1) — DDL only; no data row is ever touched.
 
 ### 15. What a row does *not* mean
 
@@ -341,6 +345,43 @@ Consequently there is no "close the orphans" sweeper any more. There used to be 
 on zombie rows so that "unfinished" would become trustworthy as a liveness signal.
 It was a second writer of a fact that only exists to prop up a wrong reading. It is
 deleted — if a row has no end, the row has no end.
+
+Since C10-0E the base `ended_at` column is **never written at all** (§15.1): new
+rows keep it NULL forever, and the derived `endedAt` comes from the latest
+`activity_end` event. The reading above is unchanged — unfinished ≠ running — and
+applies to the derived value just the same.
+
+### 15.1 Append-only: a correction is a new row (C10-0E)
+
+An `agent_activities` row is written **once** (`insertActivity`) and never
+rewritten. "What happened" had a second writer — the old `updateActivity` path
+could rewrite history, and no reader could tell original from tampered. It is
+deleted. The contract now:
+
+- **The end of an activity (and any correction to it) is a new `activity_end`
+  event row** in `agent_activity_logs`, written by
+  `SqliteActivityRepo.appendActivityEnd`. The payload (`endedAt`, `totalTokens`,
+  `totalTools`, `success`, `summary`, `keywords`) lives in the event's `metadata`
+  (inline JSON — never blob-projected, because the derivation reads it with
+  `json_extract`). `seq` and `work_unit_ref` are derived by subquery, exactly like
+  every other log line: one writer per fact, no second derivation.
+- **Readers derive the current view.** `ACTIVITY_CURRENT_SELECT` — one definition
+  in `packages/storage/src/sqlite-storage.ts` — LEFT JOINs the latest
+  `activity_end` event per activity and COALESCEs each mutable field over the base
+  row. Every read face (`queryActivities` / `getActivity` / `getByMailboxItemId(s)`
+  / `searchActivities`) wraps that single derivation. Latest event wins: the same
+  last-wins semantics the old UPDATE path had, except history keeps every version.
+- **Legacy rows are untouched.** Rows written before C10-0E carry end data on the
+  row itself and have no end event; the COALESCE falls back to the base values, so
+  the derivation is the identity for them. No migration touches them (verified:
+  dual-run of every read face over a live-DB snapshot, byte-identical output).
+- **Enforcement is structural, two layers.** A `BEFORE UPDATE` trigger
+  (`agent_activities_no_update`, created idempotently on open) raises on any
+  rewrite; the architecture-guard rule `activities-append-only` forbids UPDATE /
+  OR REPLACE / OR IGNORE / ON CONFLICT DO UPDATE paths in `packages/*/src` and
+  `scripts/`. Behavior test:
+  `packages/storage/test/c10-0e-activities-append-only.test.ts` — delete the
+  trigger or the derivation and it goes red.
 
 ### 16. The single source of "running"
 
@@ -390,12 +431,20 @@ is reintroduced:
   `endedAt` (`!x.endedAt`, `x.endedAt == null`, …);
 - SQL in `packages/*/src` **or `scripts/`** that reads `agent_activities` /
   `agent_activity_logs` state from `ended_at IS NULL`, or re-introduces an
-  orphan-closing sweep.
+  orphan-closing sweep;
+- `activities-append-only` (C10-0E): any UPDATE / OR REPLACE / OR IGNORE /
+  ON CONFLICT DO UPDATE path targeting `agent_activities` (§15.1);
+- `no-orphan-marketplace` (C10-0C): any source read/write path for the frozen
+  orphan tables `marketplace_templates` / `marketplace_skills`. The Owner verdict
+  (2026-11-19: no migration, no DROP) and the verbatim 3-row archive live in
+  `docs/records/marketplace-orphan-freeze-2026-11-22.md` — a frozen snapshot, the
+  live DB is the authority.
 
 The scan covers the whole repo, not just the UI: the same mistake is just as wrong in
-a service, a CLI command, or an operations script. `scripts/` is scanned by this rule
-only (it is not a product source root), so the invariant cannot survive there by being
-outside the scan roots.
+a service, a CLI command, or an operations script. `scripts/` is not a product source
+root, but the path invariants (`no-activity-liveness`, `activities-append-only`,
+`no-orphan-marketplace`) scan it too, with no allowlist exemption — an invariant
+that can hide outside the scan roots is not an invariant.
 
 `scripts/identity-audit.mjs` used to carry a fifth gate for "trigger row terminal but
 `ended_at` still empty". It is **gone** with the sweep that kept it satisfied: a row

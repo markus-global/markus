@@ -34,6 +34,7 @@ function SectionHeader({ title, subtitle, onMore, moreLabel }: { title: string; 
 }
 
 function FeaturedHero({ item, onOpen }: { item: HubItem; onOpen: () => void }) {
+  const { t } = useTranslation(['store', 'common']);
   const type = normalizeAssetType(item.subtype === 'connector' ? 'connector' : item.itemType);
   const gradient = assetCoverGradient(type, item.slug || item.name);
   const meta = ASSET_TYPE_META[type];
@@ -49,7 +50,7 @@ function FeaturedHero({ item, onOpen }: { item: HubItem; onOpen: () => void }) {
       </svg>
       <div className="relative h-full flex flex-col justify-end p-5 md:p-6">
         <span className="inline-flex w-fit items-center gap-1 rounded-full bg-white/20 backdrop-blur px-2.5 py-0.5 text-[11px] font-semibold text-white mb-2">
-          ★ Featured · {meta.label}
+          {t('discover.featured', { type: meta.label })}
         </span>
         <h2 className="text-xl md:text-2xl font-bold text-white drop-shadow-sm">{item.name}</h2>
         <p className="text-sm text-white/85 truncate max-w-lg mt-1">{item.description}</p>
@@ -59,7 +60,7 @@ function FeaturedHero({ item, onOpen }: { item: HubItem; onOpen: () => void }) {
             {item.author?.displayName || item.author?.username}
           </span>
           <span>↓ {formatCount(item.downloadCount)}</span>
-          {(item.priceCents ?? 0) > 0 ? <span className="badge-paid">${((item.priceCents ?? 0) / 100).toFixed(0)}</span> : <span className="badge-free">Free</span>}
+          {(item.priceCents ?? 0) > 0 ? <span className="badge-paid">${((item.priceCents ?? 0) / 100).toFixed(0)}</span> : <span className="badge-free">{t('discover.free')}</span>}
         </div>
       </div>
     </button>
@@ -220,7 +221,7 @@ export function StoreDiscovery({ onOpenType }: StoreDiscoveryProps) {
                   )}
                 </div>
                 <div className="text-sm font-semibold text-fg-primary truncate w-full mt-2">{c.author?.displayName || c.author?.username}</div>
-                <div className="text-[11px] text-fg-tertiary mt-0.5">{c.count} 作品 · ↓ {formatCount(c.downloads)}</div>
+                <div className="text-[11px] text-fg-tertiary mt-0.5">{t('discover.worksCount', { count: c.count })} · ↓ {formatCount(c.downloads)}</div>
               </div>
             ))}
           </div>

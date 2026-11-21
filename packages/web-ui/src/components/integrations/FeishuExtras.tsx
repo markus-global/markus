@@ -160,7 +160,7 @@ export function FeishuExtras({ ctx }: { ctx: PlatformExtrasContext }) {
         {qrDataUrl && (
           <div className="text-center space-y-2" data-testid="feishu-qr">
             <div className="inline-block p-3 bg-white rounded-xl shadow-sm border border-gray-200">
-              <img src={qrDataUrl} alt="Feishu QR Code" className="w-48 h-48" />
+              <img src={qrDataUrl} alt={t('settings:feishu.qrAlt')} className="w-48 h-48" />
             </div>
             <p className="text-xs text-fg-tertiary">
               {t('settings:feishu.scanWithFeishu', { defaultValue: 'Scan with the Feishu app to authorize.' })}

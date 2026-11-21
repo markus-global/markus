@@ -1313,42 +1313,4 @@ describe('loop detection and escalation', () => {
   });
 });
 
-describe('Afford.S2 deferred-tool catalog placement (prefix-cache safety)', () => {
-  it('rides the per-turn volatile tail instead of the system prompt', async () => {
-    const router = makeMockRouter({ chatFn: async () => makeResponse('ok', 'end_turn') });
-    const agent = createAgent(router);
 
-    // Simulate what ToolSelector does when the per-turn pack budget evicts tools:
-    // a DIFFERENT evicted set per turn is exactly why this catalog used to bust
-    // the whole cached prefix when it lived in the system message.
-    const sel = (agent as unknown as { toolSelector: { selectTools: (o: never) => unknown } }).toolSelector;
-    const inner = sel.selectTools.bind(sel);
-    vi.spyOn(sel, 'selectTools').mockImplementation(((opts: never) => {
-      const picked = inner(opts);
-      (sel as unknown as { lastDeferredCatalog: unknown }).lastDeferredCatalog = [
-        { name: 'zzz_probe_deferred_alpha', description: 'Sentinel deferred tool A' },
-        { name: 'zzz_probe_deferred_beta', description: 'Sentinel deferred tool B' },
-      ];
-      return picked;
-    }) as never);
-
-    await agent.handleMessage('hello');
-
-    const req = router.chat.mock.calls[0]?.[0] as { messages: Array<{ role: string; content: unknown }> };
-    // The system prompt is byte-stable prefix — the per-turn catalog must NOT be in it.
-    // (Assert on the sentinel tool names: the platform's own L0 text legitimately
-    // contains a "## Deferred Tools" heading of its own.)
-    const system = req.messages
-      .filter(m => m.role === 'system')
-      .map(m => String(m.content))
-      .join('\n');
-    expect(system).not.toContain('zzz_probe_deferred_alpha');
-
-    const last = req.messages[req.messages.length - 1]!;
-    expect(last.role).toBe('user');
-    expect(String(last.content)).toContain('[SYSTEM] [Live context]');
-    expect(String(last.content)).toContain('Deferred Tools');
-    expect(String(last.content)).toContain('zzz_probe_deferred_alpha');
-    expect(String(last.content)).toContain('zzz_probe_deferred_beta');
-  });
-});

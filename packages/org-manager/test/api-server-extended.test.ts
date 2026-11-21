@@ -139,8 +139,6 @@ vi.mock('../src/feishu-api-client.js', () => ({
     updateCard = vi.fn(async () => {});
     addReaction = vi.fn(async () => 'mock-reaction-id');
     deleteReaction = vi.fn(async () => {});
-    startWSClient = vi.fn(async () => {});
-    stopWSClient = vi.fn();
   },
 }));
 

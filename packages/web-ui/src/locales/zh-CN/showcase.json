@@ -1,55 +1,210 @@
 {
   "humans": {
-    "alex": { "name": "Alex Chen" },
-    "sarah": { "name": "Sarah Liu" },
-    "james": { "name": "James Wang" },
-    "emily": { "name": "Emily Zhang" },
-    "michael": { "name": "Michael Li" }
+    "alex": {
+      "name": "Alex Chen"
+    },
+    "sarah": {
+      "name": "Sarah Liu"
+    },
+    "james": {
+      "name": "James Wang"
+    },
+    "emily": {
+      "name": "Emily Zhang"
+    },
+    "michael": {
+      "name": "Michael Li"
+    }
   },
   "agents": {
-    "secretary": { "name": "秘书", "role": "行政协调员", "activity": "协调日常运营" },
-    "chiefOfStaff": { "name": "首席幕僚", "role": "跨团队协调员", "activity": "跨团队协调" },
-    "strategyAnalyst": { "name": "战略分析师", "role": "竞争情报", "activity": "竞争情报分析" },
-    "engLead": { "name": "工程主管", "role": "工程经理", "activity": "迭代规划与代码审查" },
-    "srBackend": { "name": "高级后端开发", "role": "后端工程师", "activity": "构建支付API" },
-    "backend": { "name": "后端开发", "role": "后端工程师", "activity": "数据库迁移" },
-    "srFrontend": { "name": "高级前端开发", "role": "前端工程师", "activity": "仪表盘重构" },
-    "frontend": { "name": "前端开发", "role": "前端工程师", "activity": "组件库开发" },
-    "mobile": { "name": "移动端开发", "role": "移动端工程师", "activity": "等待API就绪" },
-    "devops": { "name": "运维工程师", "role": "基础设施工程师", "activity": "CI/CD流水线" },
-    "qaLead": { "name": "测试主管", "role": "质量保障经理", "activity": "自动化测试" },
-    "qaEng": { "name": "测试工程师", "role": "质量保障", "activity": "回归测试" },
-    "security": { "name": "安全审计员", "role": "安全工程师", "activity": "每周扫描已排期" },
-    "pm": { "name": "产品经理", "role": "产品管理", "activity": "迭代规划" },
-    "uxResearcher": { "name": "用户体验研究员", "role": "用户体验", "activity": "访谈分析" },
-    "uiDesigner": { "name": "UI设计师", "role": "视觉设计", "activity": "设计系统更新" },
-    "dataAnalyst": { "name": "数据分析师", "role": "商业智能", "activity": "漏斗分析" },
-    "researchLead": { "name": "研究主管", "role": "研究总监", "activity": "竞争格局分析" },
-    "mlEngineer": { "name": "机器学习工程师", "role": "机器学习", "activity": "模型微调" },
-    "researchAnalyst": { "name": "研究分析师", "role": "研究与分析", "activity": "专利分析" },
-    "techWriter": { "name": "技术文档工程师", "role": "技术文档", "activity": "API文档编写" },
-    "contentLead": { "name": "内容主管", "role": "内容策略", "activity": "编辑日历" },
-    "seo": { "name": "SEO专家", "role": "搜索优化", "activity": "关键词研究完成" },
-    "socialMedia": { "name": "社交媒体运营", "role": "社交与增长", "activity": "营销活动排期" },
-    "copywriter": { "name": "文案策划", "role": "内容创作", "activity": "落地页文案" },
-    "hr": { "name": "人力资源协调员", "role": "人力资源", "activity": "入职文档已就绪" },
-    "legal": { "name": "法务合规", "role": "法律事务", "activity": "隐私审查完成" },
-    "finance": { "name": "财务分析师", "role": "财务分析", "activity": "月度报告" }
+    "secretary": {
+      "name": "秘书",
+      "role": "行政协调员",
+      "activity": "协调日常运营"
+    },
+    "chiefOfStaff": {
+      "name": "首席幕僚",
+      "role": "跨团队协调员",
+      "activity": "跨团队协调"
+    },
+    "strategyAnalyst": {
+      "name": "战略分析师",
+      "role": "竞争情报",
+      "activity": "竞争情报分析"
+    },
+    "engLead": {
+      "name": "工程主管",
+      "role": "工程经理",
+      "activity": "迭代规划与代码审查"
+    },
+    "srBackend": {
+      "name": "高级后端开发",
+      "role": "后端工程师",
+      "activity": "构建支付API"
+    },
+    "backend": {
+      "name": "后端开发",
+      "role": "后端工程师",
+      "activity": "数据库迁移"
+    },
+    "srFrontend": {
+      "name": "高级前端开发",
+      "role": "前端工程师",
+      "activity": "仪表盘重构"
+    },
+    "frontend": {
+      "name": "前端开发",
+      "role": "前端工程师",
+      "activity": "组件库开发"
+    },
+    "mobile": {
+      "name": "移动端开发",
+      "role": "移动端工程师",
+      "activity": "等待API就绪"
+    },
+    "devops": {
+      "name": "运维工程师",
+      "role": "基础设施工程师",
+      "activity": "CI/CD流水线"
+    },
+    "qaLead": {
+      "name": "测试主管",
+      "role": "质量保障经理",
+      "activity": "自动化测试"
+    },
+    "qaEng": {
+      "name": "测试工程师",
+      "role": "质量保障",
+      "activity": "回归测试"
+    },
+    "security": {
+      "name": "安全审计员",
+      "role": "安全工程师",
+      "activity": "每周扫描已排期"
+    },
+    "pm": {
+      "name": "产品经理",
+      "role": "产品管理",
+      "activity": "迭代规划"
+    },
+    "uxResearcher": {
+      "name": "用户体验研究员",
+      "role": "用户体验",
+      "activity": "访谈分析"
+    },
+    "uiDesigner": {
+      "name": "UI设计师",
+      "role": "视觉设计",
+      "activity": "设计系统更新"
+    },
+    "dataAnalyst": {
+      "name": "数据分析师",
+      "role": "商业智能",
+      "activity": "漏斗分析"
+    },
+    "researchLead": {
+      "name": "研究主管",
+      "role": "研究总监",
+      "activity": "竞争格局分析"
+    },
+    "mlEngineer": {
+      "name": "机器学习工程师",
+      "role": "机器学习",
+      "activity": "模型微调"
+    },
+    "researchAnalyst": {
+      "name": "研究分析师",
+      "role": "研究与分析",
+      "activity": "专利分析"
+    },
+    "techWriter": {
+      "name": "技术文档工程师",
+      "role": "技术文档",
+      "activity": "API文档编写"
+    },
+    "contentLead": {
+      "name": "内容主管",
+      "role": "内容策略",
+      "activity": "编辑日历"
+    },
+    "seo": {
+      "name": "SEO专家",
+      "role": "搜索优化",
+      "activity": "关键词研究完成"
+    },
+    "socialMedia": {
+      "name": "社交媒体运营",
+      "role": "社交与增长",
+      "activity": "营销活动排期"
+    },
+    "copywriter": {
+      "name": "文案策划",
+      "role": "内容创作",
+      "activity": "落地页文案"
+    },
+    "hr": {
+      "name": "人力资源协调员",
+      "role": "人力资源",
+      "activity": "入职文档已就绪"
+    },
+    "legal": {
+      "name": "法务合规",
+      "role": "法律事务",
+      "activity": "隐私审查完成"
+    },
+    "finance": {
+      "name": "财务分析师",
+      "role": "财务分析",
+      "activity": "月度报告"
+    }
   },
   "teams": {
-    "engineering": { "name": "核心工程团队", "desc": "后端、前端、移动端、运维、测试和安全" },
-    "productDesign": { "name": "产品设计团队", "desc": "产品管理、用户体验研究、UI设计和数据分析" },
-    "research": { "name": "研究与AI团队", "desc": "研究、机器学习工程和技术文档" },
-    "content": { "name": "内容增长团队", "desc": "内容策略、SEO、社交媒体和文案创作" },
-    "operations": { "name": "运营团队", "desc": "人力资源、法务、合规和财务" },
-    "projectAlpha": { "name": "Alpha项目组", "desc": "支付平台发布的跨职能冲刺团队" }
+    "engineering": {
+      "name": "核心工程团队",
+      "desc": "后端、前端、移动端、运维、测试和安全"
+    },
+    "productDesign": {
+      "name": "产品设计团队",
+      "desc": "产品管理、用户体验研究、UI设计和数据分析"
+    },
+    "research": {
+      "name": "研究与AI团队",
+      "desc": "研究、机器学习工程和技术文档"
+    },
+    "content": {
+      "name": "内容增长团队",
+      "desc": "内容策略、SEO、社交媒体和文案创作"
+    },
+    "operations": {
+      "name": "运营团队",
+      "desc": "人力资源、法务、合规和财务"
+    },
+    "projectAlpha": {
+      "name": "Alpha项目组",
+      "desc": "支付平台发布的跨职能冲刺团队"
+    }
   },
   "projects": {
-    "payment": { "name": "支付平台v2", "desc": "完整的支付基础设施，支持Stripe、PayPal和加密货币" },
-    "dashboard": { "name": "仪表盘重构", "desc": "现代化分析仪表盘，实时数据可视化" },
-    "research": { "name": "Q2市场调研", "desc": "竞争格局分析和市场定位" },
-    "mobile": { "name": "移动应用MVP", "desc": "跨平台移动应用，核心功能集" },
-    "securityAudit": { "name": "Q1安全审计", "desc": "全面的安全审计和漏洞评估" }
+    "payment": {
+      "name": "支付平台v2",
+      "desc": "完整的支付基础设施，支持Stripe、PayPal和加密货币"
+    },
+    "dashboard": {
+      "name": "仪表盘重构",
+      "desc": "现代化分析仪表盘，实时数据可视化"
+    },
+    "research": {
+      "name": "Q2市场调研",
+      "desc": "竞争格局分析和市场定位"
+    },
+    "mobile": {
+      "name": "移动应用MVP",
+      "desc": "跨平台移动应用，核心功能集"
+    },
+    "securityAudit": {
+      "name": "Q1安全审计",
+      "desc": "全面的安全审计和漏洞评估"
+    }
   },
   "tasks": {
     "paymentWebhook": "实现Stripe和PayPal Webhook端点",

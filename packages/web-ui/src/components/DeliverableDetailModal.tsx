@@ -107,8 +107,8 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
           {/* Diff stats */}
           {item.diffStats && (
             <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
-              <span className="text-fg-tertiary font-medium">Diff:</span>
-              <span className="text-fg-secondary">{item.diffStats.filesChanged} file{item.diffStats.filesChanged !== 1 ? 's' : ''}</span>
+              <span className="text-fg-tertiary font-medium">{t('agent:deliverables.diff')}:</span>
+              <span className="text-fg-secondary">{t('agent:deliverables.fileCount', { count: item.diffStats.filesChanged })}</span>
               <span className="text-green-500">+{item.diffStats.additions}</span>
               <span className="text-red-500">-{item.diffStats.deletions}</span>
             </div>
@@ -117,10 +117,10 @@ export function DeliverableDetailModal({ item, onClose, onOpenInPage }: {
           {/* Test results */}
           {item.testResults && (
             <div className="flex items-center gap-3 text-xs bg-surface-elevated rounded-lg px-3 py-2">
-              <span className="text-fg-tertiary font-medium">Tests:</span>
-              <span className="text-green-500">{item.testResults.passed} passed</span>
-              {item.testResults.failed > 0 && <span className="text-red-500">{item.testResults.failed} failed</span>}
-              {item.testResults.skipped > 0 && <span className="text-fg-tertiary">{item.testResults.skipped} skipped</span>}
+              <span className="text-fg-tertiary font-medium">{t('deliverables:testResults.title')}:</span>
+              <span className="text-green-500">{t('agent:deliverables.testsPassed', { n: item.testResults.passed })}</span>
+              {item.testResults.failed > 0 && <span className="text-red-500">{t('agent:deliverables.testsFailed', { n: item.testResults.failed })}</span>}
+              {item.testResults.skipped > 0 && <span className="text-fg-tertiary">{t('agent:deliverables.testsSkipped', { n: item.testResults.skipped })}</span>}
             </div>
           )}
 

@@ -205,6 +205,9 @@ importers:
       '@markus/shared':
         specifier: workspace:*
         version: link:../shared
+      '@types/ws':
+        specifier: ^8.18.1
+        version: 8.18.1
       electron:
         specifier: ^35.0.0
         version: 35.7.5

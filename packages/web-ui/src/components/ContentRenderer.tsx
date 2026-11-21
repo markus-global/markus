@@ -1,4 +1,5 @@
 import { useRef, useEffect, useState, lazy, Suspense, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { CopyVariant } from './MarkdownMessage.tsx';
 
 const LazyMarkdownMessage = lazy(() =>
@@ -115,6 +116,7 @@ export function resolveFormat(opts: {
 }
 
 function HtmlPreview({ content, className, onSelection }: { content: string; className?: string; onSelection?: (data: HtmlSelectionData) => void }) {
+  const { t } = useTranslation('common');
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const [height, setHeight] = useState<number | null>(null);
 
@@ -252,7 +254,7 @@ function HtmlPreview({ content, className, onSelection }: { content: string; cla
         borderRadius: '8px',
         background: 'transparent',
       }}
-      title="HTML Preview"
+      title={t('htmlPreview')}
     />
   );
 }
@@ -274,6 +276,7 @@ function JsonPreview({ content, className }: { content: string; className?: stri
 }
 
 export function ContentRenderer({ content, format, className, basePath, onHtmlSelection, copyVariant }: ContentRendererProps) {
+  const { t } = useTranslation('common');
   switch (format) {
     case 'html':
       return <HtmlPreview content={content} className={className} onSelection={onHtmlSelection} />;
@@ -293,7 +296,7 @@ export function ContentRenderer({ content, format, className, basePath, onHtmlSe
     case 'markdown':
     default:
       return (
-        <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+        <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('loading')}</div>}>
           <LazyMarkdownMessage content={content} className={className ?? 'text-sm'} basePath={basePath} copyVariant={copyVariant} />
         </Suspense>
       );

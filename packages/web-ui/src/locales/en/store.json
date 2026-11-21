@@ -29,7 +29,11 @@
     "topCreators": "Top creators",
     "topCreatorsSub": "Ecosystem contribution leaderboard",
     "empty": "The ecosystem is growing",
-    "emptyHint": "Be one of the first creators — share your first asset"
+    "emptyHint": "Be one of the first creators — share your first asset",
+    "featured": "★ Featured · {{type}}",
+    "free": "Free",
+    "worksCount": "{{count}} works",
+    "worksCount_one": "{{count}} work"
   },
   "connectorStore": {
     "searchPlaceholder": "Search connectors (MCP)...",
@@ -131,7 +135,9 @@
     "integration": "Integration",
     "instructions": "Instructions",
     "permissions": "Permissions",
-    "tags": "Tags"
+    "tags": "Tags",
+    "installsCount": "{{count}} installs",
+    "installsCount_one": "{{count}} install"
   },
   "card": {
     "install": "Install",
@@ -215,5 +221,15 @@
     "cancel": "Cancel",
     "create": "Create Agent",
     "creating_progress": "Creating..."
+  },
+  "catalog": {
+    "hubAssets": "Hub assets",
+    "localTemplates": "Local templates"
+  },
+  "teamsStore": {
+    "nothingHere": "There are no team templates or Hub assets here"
+  },
+  "templates": {
+    "nothingHere": "There are no templates or Hub assets here"
   }
 }

@@ -163,3 +163,51 @@ describe('buildProgressCard', () => {
     expect(last.text.content).toBe('All complete');
   });
 });
+
+/**
+ * A tapped button must be delivered over the app's **callback subscription**
+ * (long connection), not the legacy 「消息卡片请求网址」 public URL.
+ *
+ * Defect (2026-11-21): buttons only carried `value`. Feishu picks the channel
+ * from the button shape — `value` alone means "POST to the card-request URL",
+ * which a desktop install does not have, so every tap came back as
+ * "目标回调服务当前未在线" and an approval could not be completed from the card.
+ * `behaviors: [{ type: 'callback', value }]` selects the callback subscription.
+ *
+ * These assert the behaviours field itself: a card that renders fine and whose
+ * `value` is unchanged still fails every tap without it.
+ */
+describe('card buttons report taps through the callback subscription', () => {
+  const buttonsOf = (card: { elements?: unknown }): any[] => {
+    const els = (card.elements ?? []) as any[];
+    return els.filter((e) => e.tag === 'action').flatMap((e) => e.actions ?? []);
+  };
+
+  it('notification card buttons carry a callback behaviour carrying the same value', () => {
+    const card = buildNotificationCard({
+      title: '审批请求',
+      body: '请批准部署',
+      actions: [{ id: 'approve', label: '批准', style: 'primary', ref: 'signed.ref.1' }],
+    });
+    const [btn] = buttonsOf(card);
+    expect(btn.behaviors).toEqual([{ type: 'callback', value: { ref: 'signed.ref.1', action: 'approve' } }]);
+    // One value, two carriers: the legacy field and the behaviour must agree.
+    expect(btn.behaviors[0].value).toEqual(btn.value);
+  });
+
+  it('task card buttons carry a callback behaviour too', () => {
+    const card = buildTaskCard({
+      taskId: 'tsk_1',
+      title: 'Ship it',
+      status: 'pending',
+      priority: 'high',
+      description: 'body',
+    });
+    const buttons = buttonsOf(card as { elements?: unknown });
+    expect(buttons).not.toHaveLength(0);
+    for (const btn of buttons) {
+      expect(btn.behaviors?.[0]?.type).toBe('callback');
+      expect(btn.behaviors[0].value).toEqual(btn.value);
+    }
+  });
+});

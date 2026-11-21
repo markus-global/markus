@@ -27,7 +27,14 @@ vi.mock('react-i18next', () => {
       | undefined;
     return fallback.replace(/{{(\w+)}}/g, (_m, name: string) => String(opts?.[name] ?? ''));
   };
-  return { useTranslation: () => ({ t, i18n: { language: 'zh-CN' } }) };
+  // `initReactI18next` must be present even though this file never renders the
+  // real i18n: `src/lib/*` now imports the app i18n singleton, which calls
+  // `.use(initReactI18next)` at module load. A mock that omits it makes the
+  // whole file fail to load, not just one assertion.
+  return {
+    useTranslation: () => ({ t, i18n: { language: 'zh-CN' } }),
+    initReactI18next: { type: '3rdParty', init: () => {} },
+  };
 });
 
 import { WorkflowCard } from '../src/components/WorkflowCard.tsx';

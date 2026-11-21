@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { ModelSelect, type ModelOption } from './ModelSelect';
+import { notifyAgentModelChanged } from '../lib/agentModelSignals';
 
 interface Props {
   configuredProviders: Array<{ name: string; displayName?: string; model: string; models?: Array<{ id: string; name: string }> }>;
@@ -96,21 +97,36 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
     return opts;
   }, [configuredProviders]);
 
-  const setOverride = async (agentId: string, value: string | null) => {
+  /**
+   * Bind `option`, or clear the binding when it is null.
+   *
+   * Takes the picked option rather than a "provider/model" string: model ids
+   * contain slashes, so the joined form is ambiguous and re-splitting it sent
+   * provider `markus/qwen` for `markus/qwen/qwen4-max`. The router does not know
+   * that provider, so the agent silently ran on the global default while this
+   * page still displayed the binding.
+   *
+   * Clearing sends `defaultModel: null`, not `undefined`: JSON.stringify drops
+   * undefined keys, so the server's merge kept the old model on the row and a
+   * later flip back to 'custom' resurrected it.
+   */
+  const setOverride = async (agentId: string, option: ModelOption | null) => {
     setSavingId(agentId);
     setError(null);
     try {
-      if (value) {
-        const [provider, model] = [value.slice(0, value.lastIndexOf('/')), value.slice(value.lastIndexOf('/') + 1)];
+      if (option) {
         await api.agents.updateConfig(agentId, {
-          llmConfig: { modelMode: 'custom', primary: provider, defaultModel: model },
+          llmConfig: { modelMode: 'custom', primary: option.provider, defaultModel: option.modelId },
         });
       } else {
         await api.agents.updateConfig(agentId, {
-          llmConfig: { modelMode: 'default', primary: '', defaultModel: undefined },
+          llmConfig: { modelMode: 'default', primary: '', defaultModel: null },
         });
       }
+      const value = option ? `${option.provider}/${option.modelId}` : null;
       setRows(prev => prev?.map(r => (r.id === agentId ? { ...r, override: value } : r)) ?? prev);
+      // The composer shows this same binding and is mounted at the same time.
+      notifyAgentModelChanged(agentId);
     } catch (e) {
       setError(String(e));
     } finally {
@@ -186,19 +202,20 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
               </div>
               <div className="space-y-2">
                 {g.rows.map(r => (
-                  <div key={r.id} className="flex flex-col gap-2 text-sm md:flex-row md:items-center md:justify-between md:gap-3">
-                    <div className="min-w-0 flex-1 truncate">
-                      <span className="font-medium">{r.name}</span>
-                      <span className="text-xs text-fg-tertiary ml-2 truncate">{r.id}</span>
-                    </div>
-                    <div className="flex w-full min-w-0 items-center gap-2 md:w-[320px]">
+                  // One row on every viewport: agent name on the left, its model on the
+                  // right. The agent id used to sit next to the name — it means nothing
+                  // to a human picking a model and ate the width the model picker needs
+                  // on a phone (Owner 2026-11-21). `title` keeps it reachable on hover.
+                  <div key={r.id} title={r.id} className="flex items-center gap-2 text-sm">
+                    <span className="min-w-0 flex-1 truncate font-medium">{r.name}</span>
+                    <div className="flex w-[55%] max-w-[320px] min-w-0 shrink-0 items-center gap-1.5 sm:w-[320px]">
                       {r.override ? (
                         <>
                           <ModelSelect
                             value={r.override}
                             options={modelOptions}
                             placeholder={t('perAgentModel.followGlobal', { defaultValue: 'Follow global' })}
-                            onChange={v => void setOverride(r.id, v || null)}
+                            onChange={(_v, opt) => void setOverride(r.id, opt)}
                           />
                           <button
                             type="button"
@@ -214,7 +231,7 @@ export function PerAgentModelSection({ configuredProviders }: Props) {
                           value=""
                           options={modelOptions}
                           placeholder={t('perAgentModel.followGlobal', { defaultValue: 'Follow global' })}
-                          onChange={v => void setOverride(r.id, v || null)}
+                          onChange={(_v, opt) => void setOverride(r.id, opt)}
                         />
                       )}
                       {savingId === r.id && (

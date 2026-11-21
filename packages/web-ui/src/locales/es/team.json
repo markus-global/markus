@@ -53,7 +53,13 @@
     "failedToCreateTeam": "Failed to create team: {{message}}",
     "agents": "Agentes",
     "teams": "Equipos",
-    "agentDMs": "Agente DMs"
+    "agentDMs": "Agente DMs",
+    "you": "Tú",
+    "noMembers": "Este equipo aún no tiene miembros.",
+    "addTitle": "Añadir título…",
+    "toggleTeamPanel": "Mostrar u ocultar el panel del equipo",
+    "clickToEditName": "Clic para editar el nombre",
+    "clickToEditTitle": "Clic para editar el título"
   },
   "teamProfile": {
     "overview": "Resumen",
@@ -65,7 +71,10 @@
     "noAnnouncements": "Aún no hay anuncios. Haga clic para añadir.",
     "noNorms": "Aún no se han definido normas. Haga clic para añadir.",
     "noMembers": "Sin miembros",
-    "teamMissing": "Equipo no encontrado"
+    "teamMissing": "Equipo no encontrado",
+    "teamId": "ID del equipo",
+    "onlineCount": "{{count}} en línea",
+    "deleteTeamConfirm": "¿Eliminar el equipo \"{{name}}\"? Esto elimina el registro del equipo de la base de datos."
   },
   "contextMenu": {
     "renameTeam": "Rename Team",
@@ -270,7 +279,8 @@
     "previous": "Anterior",
     "questionProgress": "Pregunta {{current}} de {{total}}",
     "textPlaceholder": "Introduzca su respuesta…",
-    "freeformPlaceholder": "O escriba su propia respuesta…"
+    "freeformPlaceholder": "O escriba su propia respuesta…",
+    "requiresFreeform": "Esta opción requiere el texto de abajo: elegirla sola no es una respuesta."
   },
   "intro": {
     "secretary": "Acabo de configurar a Markus. Ayúdame a empezar, qué puedo hacer aquí?",
@@ -490,6 +500,28 @@
     "applyGlobal": "Aplicar a nivel mundial",
     "applyAgent": "Aplicar al agente actual",
     "noAgent": "Seleccione un agente para aplicar por agente",
-    "empty": "No hay proveedores / modelos habilitados"
+    "empty": "No hay proveedores / modelos habilitados",
+    "chatOnlyHint": "Solo se listan modelos con interfaz de chat"
+  },
+  "history": {
+    "unreadUnknown": "Recuento de no leídos desconocido (error al cargar)",
+    "unreadLoading": "No leídos…",
+    "showAll": "Mostrar todo",
+    "onlyUnread": "Solo no leídos",
+    "unreadCount": "{{count}} sin leer",
+    "allReadShowAll": "Todo leído · ver todo",
+    "tabApprovals": "Resultados de aprobación",
+    "noticesLoadFailed": "No se pudieron cargar las notificaciones: {{error}} (esto no significa «no hay historial»).",
+    "approvalsLoadFailed": "No se pudo cargar el historial de aprobaciones (esto no significa «no hay aprobaciones»).",
+    "empty": "Aún no hay historial",
+    "emptyHint": "Cuando tu equipo empiece a trabajar, las aprobaciones y notificaciones aparecerán aquí",
+    "openTarget": "Abrir la tarea, el requisito o la conversación correspondiente",
+    "answered": "Respondida",
+    "unanswered": "Sin responder",
+    "atTime": "{{time}}",
+    "waited": "esperó {{duration}}",
+    "noTargetHint": "Esta notificación no está vinculada a una tarea, un requisito o una conversación; es solo informativa",
+    "infoOnly": "Solo informativa",
+    "noMore": "No hay registros anteriores"
   }
 }

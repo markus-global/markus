@@ -350,7 +350,7 @@ export function Login({ onLogin, hasOwner }: HubLoginProps) {
 }
 
 export function InviteSetup({ token, onComplete }: { token: string; onComplete: () => void }) {
-  const { t } = useTranslation('auth');
+  const { t } = useTranslation(['auth', 'common']);
   const [inviteInfo, setInviteInfo] = useState<{ name: string; email: string } | null>(null);
   const [password, setPassword] = useState('');
   const [confirm, setConfirm] = useState('');
@@ -409,7 +409,7 @@ export function InviteSetup({ token, onComplete }: { token: string; onComplete: 
               <p className="text-sm text-fg-secondary">{t('invite.setupComplete')}</p>
             </div>
           ) : !inviteInfo ? (
-            <div className="text-center text-fg-tertiary text-sm animate-pulse py-4">Loading…</div>
+            <div className="text-center text-fg-tertiary text-sm animate-pulse py-4">{t('common:loading')}</div>
           ) : (
             <form onSubmit={submit} className="space-y-5">
               <h2 className="text-lg font-semibold text-fg-primary text-center">

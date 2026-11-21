@@ -2286,7 +2286,8 @@ async function startServerCore(
       },
       onEnd: (activityId, summary) => {
         try {
-          actRepo.updateActivity(activityId, summary);
+          // C10-0E：结束不是改写活动行，而是追加一条 activity_end 事件（append-only）。
+          actRepo.appendActivityEnd(activityId, summary);
         } catch (err) {
           log.warn('Failed to persist activity end', { activityId, error: String(err) });
         }

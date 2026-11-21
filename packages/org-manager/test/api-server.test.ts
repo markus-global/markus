@@ -1114,6 +1114,60 @@ describe('APIServer route handlers', () => {
       expect(res.status).toBe(200);
     });
 
+    /**
+     * The model binding must survive a restart, which means the ROW has to be
+     * right — not just the live process. Three ways that used to fail silently:
+     * clearing sent `undefined` (dropped by JSON, old model kept on the row),
+     * an unrelated PATCH rewrote the whole column from memory, and a failed
+     * write still answered 200 so the UI claimed success.
+     */
+    it('PATCH config: defaultModel=null removes the key from the persisted row', async () => {
+      const agent = ctx.agentManager.getAgent(AGENT_A)!;
+      (agent.config as Record<string, unknown>).llmConfig = {
+        modelMode: 'custom', primary: 'markus', defaultModel: 'qwen/qwen4-max',
+      };
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockClear();
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, {
+        llmConfig: { modelMode: 'default', primary: '', defaultModel: null },
+      });
+
+      expect(res.status).toBe(200);
+      const persisted = updateConfig.mock.calls.at(-1)![1] as { llmConfig: Record<string, unknown> };
+      expect(persisted.llmConfig.modelMode).toBe('default');
+      // Absent, not null and not the old model: a leftover resurrects itself the
+      // next time the mode flips back to 'custom'.
+      expect(Object.prototype.hasOwnProperty.call(persisted.llmConfig, 'defaultModel')).toBe(false);
+    });
+
+    it('PATCH config: an unrelated field does not rewrite the model column', async () => {
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockClear();
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, { name: 'Just A Rename' });
+
+      expect(res.status).toBe(200);
+      const persisted = updateConfig.mock.calls.at(-1)![1] as { llmConfig?: unknown };
+      expect(persisted.llmConfig).toBeUndefined();
+    });
+
+    it('PATCH config: a failed persist answers 5xx and rolls the live value back', async () => {
+      const agent = ctx.agentManager.getAgent(AGENT_A)!;
+      const before = { modelMode: 'custom', primary: 'markus', defaultModel: 'qwen/qwen4-max' };
+      (agent.config as Record<string, unknown>).llmConfig = { ...before };
+      const updateConfig = ctx.storage.agentRepo.updateConfig as ReturnType<typeof vi.fn>;
+      updateConfig.mockRejectedValueOnce(new Error('db is locked'));
+
+      const res = await request(ctx.server, 'PATCH', `/api/agents/${AGENT_A}/config`, {
+        llmConfig: { modelMode: 'custom', primary: 'openai', defaultModel: 'gpt-4' },
+      });
+
+      // Reporting 200 here is what made a lost binding look saved until restart.
+      expect(res.status).toBe(500);
+      expect((agent.config as Record<string, unknown>).llmConfig).toEqual(before);
+    });
+
     it('GET /api/agents/:id/memory', async () => {
       const res = await request(ctx.server, 'GET', `/api/agents/${AGENT_A}/memory`);
       expect(res.status).toBe(200);

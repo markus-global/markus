@@ -277,7 +277,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [bindHostValue, setBindHostValue] = useState('0.0.0.0');
   const [bindHostEffective, setBindHostEffective] = useState('0.0.0.0');
   const [bindHostFromEnv, setBindHostFromEnv] = useState(false);
-  const [bindHostNotice, setBindHostNotice] = useState('');
+  /**
+   * 绑定主机操作的提示。**语气随状态一起存**，不从文案反推。
+   *
+   * 旧写法是 `bindHostNotice.includes('重启')` 来决定颜色 —— 把本地化文案当结构用：
+   * 文案一旦走 i18n（en/es 下不含「重启」二字），判断就永久失效，提示会静默变成灰色。
+   * 现在 warn 由**设置提示的那一处**声明，文案只负责给人看。
+   */
+  const [bindHostNotice, setBindHostNotice] = useState<{ text: string; warn: boolean } | null>(null);
   const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
   const [bindHostApplying, setBindHostApplying] = useState(false);
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
@@ -850,7 +857,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         // 读目录的**唯一实现**（与 AddModelWithCatalog 同一处，R14/R15）。
         const r = await readProviderCatalog(providerName);
         setAddProviderCatalogModels(r.state === 'ok' ? [...r.items] : []);
-        if (r.state === 'error') setAddProviderCatalogError(r.error ?? '读取失败');
+        if (r.state === 'error') setAddProviderCatalogError(r.error ?? t('common:readFailed'));
       }
     } catch (err) {
       // 读失败 ≠ 没有模型（R14）
@@ -1757,10 +1764,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                         {expandedProvider === name && addProviderCatalogError && (
                           <ReadErrorNotice
                             variant="inline"
-                            subject="模型目录"
+                            subject={t('settings:modelCatalog.subject')}
                             error={addProviderCatalogError}
-                            notEquals="该 provider 没有模型"
-                            hint="稍后重新选择 provider 重试"
+                            notEquals={t('settings:modelCatalog.noModels')}
+                            hint={t('settings:modelCatalog.retryHint')}
                           />
                         )}
                         {expandedProvider === name && addProviderCatalogModels.length > 0 && (
@@ -2202,20 +2209,20 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     // Optimistic UI: show applying immediately, don't wait for response
                     // (backend returns 202 then rebinds, which drops our connection)
                     setBindHostApplying(true);
-                    setBindHostNotice(t('accessScope.applying'));
+                    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
                     try {
                       const res = await fetch('/api/settings/network/apply', {
                         method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
                       });
                       // If we get here, server managed to respond — could be 200 or 202
                       if (res.status === 202 || res.ok) {
-                        setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
+                        setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
                       } else {
                         throw new Error(`HTTP ${res.status}`);
                       }
                     } catch {
                       // Expected: connection dropped during server rebind
-                      setBindHostNotice('⏳ Markus 正在重启，页面将自动刷新…');
+                      setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
                     }
                     // Poll for the server to come back after the rebind. It now
                     // resolves in well under a second (see applyBindHost), so poll
@@ -2229,7 +2236,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                           clearInterval(poll);
                           setBindHostApplying(false);
                           setBindHostPendingRestart(false);
-                          setBindHostNotice(t('accessScope.applied'));
+                          setBindHostNotice({ text: t('accessScope.applied'), warn: true });
                           loadNetworkSettings();
                           return;
                         }
@@ -2237,7 +2244,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                       if (retries > 20) { // ~8s timeout (400ms * 20)
                         clearInterval(poll);
                         setBindHostApplying(false);
-                        setBindHostNotice(t('accessScope.applyFailed'));
+                        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
                       }
                     }, 400);
                     return;
@@ -2257,13 +2264,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
 
                     setBindHostPendingRestart(shouldShowApply);
-                    setBindHostNotice(shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'));
+                    setBindHostNotice({
+                      text: shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'),
+                      warn: shouldShowApply,
+                    });
 
                     // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
                     // because server.pendingRestart is often false even when a restart IS needed.
                     // We'll refresh after the user clicks "立即生效".
                   } catch {
-                    setBindHostNotice(t('accessScope.saveFailed'));
+                    setBindHostNotice({ text: t('accessScope.saveFailed'), warn: false });
                   }
                 }}
                 className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
@@ -2281,8 +2291,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
               </button>
               {bindHostNotice && (
-                <span className={`text-[13px] ${bindHostNotice.includes('重启') || bindHostNotice.includes('切换') || bindHostNotice.includes('已生效') ? 'text-amber-500' : 'text-fg-muted'}`}>
-                  {bindHostNotice}
+                <span className={`text-[13px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-fg-muted'}`}>
+                  {bindHostNotice.text}
                 </span>
               )}
             </div>
@@ -3643,7 +3653,7 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
     // 与新增 provider 表单共用同一取数实现（R14/R15 合为一处）。
     const r = await readProviderCatalog(providerName);
     setCatalogModels(r.state === 'ok' ? [...r.items] : []);
-    if (r.state === 'error') setCatalogError(r.error ?? '读取失败');
+    if (r.state === 'error') setCatalogError(r.error ?? t('common:readFailed'));
     setShowCatalog(r.state === 'ok');
     setCatalogLoading(false);
   };
@@ -3664,9 +3674,9 @@ function AddModelWithCatalog({ providerName, addModelForm, setAddModelForm, addM
       {catalogError && (
         <ReadErrorNotice
           variant="inline"
-          subject="模型目录"
+          subject={t('settings:modelCatalog.subject')}
           error={catalogError}
-          notEquals="该 provider 没有模型"
+          notEquals={t('settings:modelCatalog.noModels')}
           onRetry={() => void loadCatalog()}
         />
       )}

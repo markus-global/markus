@@ -32,6 +32,7 @@
   "devDependencies": {
     "@markus-global/cli": "workspace:*",
     "@markus/shared": "workspace:*",
+    "@types/ws": "^8.18.1",
     "electron": "^35.0.0",
     "electron-builder": "^26.0.0",
     "esbuild": "^0.27.4",

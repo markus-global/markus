@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 
 export interface SlashCommand {
   name: string;
@@ -16,6 +17,7 @@ interface Props {
 }
 
 export function SlashCommandMenu({ commands, query, onSelect, onClose, anchorRect }: Props) {
+  const { t } = useTranslation('common');
   const [selectedIdx, setSelectedIdx] = useState(0);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -64,7 +66,7 @@ export function SlashCommandMenu({ commands, query, onSelect, onClose, anchorRec
       style={style}
     >
       <div className="px-3 py-1.5 text-[10px] text-fg-muted uppercase tracking-wider border-b border-border-subtle">
-        Commands
+        {t('slashMenu.commands')}
       </div>
       <div className="max-h-64 overflow-y-auto">
         {filtered.map((cmd, i) => (
