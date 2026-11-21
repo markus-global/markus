@@ -484,7 +484,9 @@
       "tools": "{{count}} herramientas",
       "subagents": "{{count}} subagentes",
       "errors": "{{count}} errores"
-    }
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Argumentos de entrada"
   },
   "taskDag": {
     "noTasks": "No hay tareas que mostrar",
@@ -819,5 +821,15 @@
   "toggle": "Mostrar/ocultar",
   "switchTab": "Cambiar pestaña",
   "navigate": "Navegar",
-  "justNow": "ahora mismo"
+  "justNow": "ahora mismo",
+  "rawOutput": "Salida sin procesar",
+  "filePreview": {
+    "loadFailed": "No se pudo cargar el archivo",
+    "unsupported": "Este tipo de archivo no se puede previsualizar."
+  },
+  "browserTest": {
+    "title": "Suite de pruebas de integración del navegador",
+    "subtitle": "Prueba de navegador concurrente multiagente con verificación de corrección",
+    "failuresOnly": "Solo fallos"
+  }
 }

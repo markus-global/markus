@@ -55,7 +55,8 @@
     "teams": "团队",
     "agentDMs": "智能体私聊",
     "you": "你",
-    "noMembers": "这个团队还没有成员。"
+    "noMembers": "这个团队还没有成员。",
+    "addTitle": "添加标题…"
   },
   "teamProfile": {
     "overview": "概览",

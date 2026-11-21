@@ -5236,7 +5236,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           onBlur={handleSaveHeaderDesc}
                           onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderDesc(); if (e.key === 'Escape') setEditingHeaderDesc(false); }}
                           className="text-[11px] text-fg-tertiary bg-transparent border-b border-brand-500/50 outline-none py-0 px-0 w-full max-w-[400px] mt-0.5"
-                          placeholder="Add title..."
+                          placeholder={t('chat.addTitle')}
                           autoFocus
                         />
                       ) : (

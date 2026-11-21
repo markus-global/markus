@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ const AGENT_BG: Record<string, string> = {
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 export function BrowserTestPanel({ extensionConnected }: { extensionConnected: boolean }) {
+  const { t } = useTranslation('common');
   const [mode, setMode] = useState<'quick' | 'chaos'>('quick');
   const [running, setRunning] = useState(false);
 
@@ -166,8 +168,8 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
       <div className="flex items-center gap-3 mb-4">
         <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-400 rounded">DEV</span>
         <div>
-          <div className="text-sm font-semibold text-fg-primary">Browser Integration Test Suite</div>
-          <div className="text-xs text-fg-tertiary">Concurrent multi-agent browser test with correctness verification</div>
+          <div className="text-sm font-semibold text-fg-primary">{t('browserTest.title')}</div>
+          <div className="text-xs text-fg-tertiary">{t('browserTest.subtitle')}</div>
         </div>
       </div>
 
@@ -346,7 +348,7 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
                   onChange={(e) => setShowFailuresOnly(e.target.checked)}
                   className="w-3 h-3 rounded"
                 />
-                <span className="text-[10px] text-fg-tertiary">Failures only</span>
+                <span className="text-[10px] text-fg-tertiary">{t('browserTest.failuresOnly')}</span>
               </label>
             </div>
           )}

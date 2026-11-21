@@ -55,7 +55,8 @@
     "teams": "Teams",
     "agentDMs": "Agent DMs",
     "you": "You",
-    "noMembers": "No members in this team yet."
+    "noMembers": "No members in this team yet.",
+    "addTitle": "Add title…"
   },
   "teamProfile": {
     "overview": "Overview",

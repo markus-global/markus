@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
+import { useTranslation } from 'react-i18next';
 import { formatDuration } from './execution-utils.ts';
 
 export type CodingToolName = 'claude-code' | 'codex' | 'cursor-agent';
@@ -85,6 +86,7 @@ export interface CodingToolCardProps {
 }
 
 export function CodingToolCard({ session, className }: CodingToolCardProps) {
+  const { t } = useTranslation('common');
   const meta = getToolMeta(session.tool);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
@@ -221,7 +223,7 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
             <svg className={`w-3 h-3 transition-transform ${expanded ? 'rotate-90' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
               <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
             </svg>
-            <span className="font-medium uppercase tracking-wider">Raw output</span>
+            <span className="font-medium uppercase tracking-wider">{t('rawOutput')}</span>
           </button>
           {expanded && (
             <pre className="mt-2 text-[11px] text-fg-tertiary bg-surface-elevated/70 rounded-lg px-3 py-2 overflow-x-auto whitespace-pre-wrap break-all font-mono">

@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 import type { DirectoryEntry } from '../api.ts';
@@ -149,6 +150,7 @@ function parentDir(p: string): string {
 // ─── File preview modal ──────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const { t } = useTranslation('common');
   const zIndex = useModalStack(onClose);
   // Navigation cursor — starts at the link's path; subdir/file clicks update it
   // so the modal browses inside the directory without leaving the modal.
@@ -269,7 +271,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           )}
           {error && (
             <div className="text-center py-12 text-fg-secondary text-sm">
-              <p className="text-red-400 mb-1">Failed to load file</p>
+              <p className="text-red-400 mb-1">{t('filePreview.loadFailed')}</p>
               <p className="text-xs text-fg-tertiary">{error}</p>
             </div>
           )}
@@ -312,7 +314,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           )}
           {!loading && !error && (fileType === 'binary' || (!content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'directory')) && (
             <div className="text-center py-8 space-y-3">
-              <p className="text-sm text-fg-secondary">This file type cannot be previewed.</p>
+              <p className="text-sm text-fg-secondary">{t('filePreview.unsupported')}</p>
               <button
                 className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
                 onClick={() => void api.files.reveal(activePath)}

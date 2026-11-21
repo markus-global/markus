@@ -2076,7 +2076,7 @@ function FilePreviewModal({ filePath: initialPath, onClose, onOpenExternal }: { 
               ) : data.type === 'binary' || data.content == null ? (
                 <div className="space-y-3 text-center py-6">
                   <p className="text-sm text-fg-secondary">
-                    {t('work:task.cannotPreviewFile', { defaultValue: 'This file type cannot be previewed.' })}
+                    {t('common:filePreview.unsupported')}
                   </p>
                   <p className="text-xs text-fg-tertiary font-mono">
                     {data.name}{data.extension ? ` (${data.extension})` : ''}{data.size != null ? ` · ${fmtSize(data.size)}` : ''}

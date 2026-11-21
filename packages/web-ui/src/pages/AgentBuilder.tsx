@@ -976,7 +976,7 @@ function VisibilitySelect({ onCancel, onConfirm }: {
         <div className="mb-5">
           <label className="text-xs text-fg-secondary block mb-1.5">{t('visibility.orgSelect')}</label>
           {loadingOrgs ? (
-            <div className="text-xs text-fg-tertiary py-2">Loading...</div>
+            <div className="text-xs text-fg-tertiary py-2">{t('common:loading')}</div>
           ) : orgs.length === 0 ? (
             <div className="text-xs text-fg-tertiary py-2">{t('visibility.orgNone')}</div>
           ) : (

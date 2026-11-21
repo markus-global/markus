@@ -492,7 +492,9 @@
       "completed": "Completed",
       "resumed": "Resumed",
       "execution_finished": "Completed"
-    }
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Input arguments"
   },
   "taskDag": {
     "noTasks": "No tasks to display",
@@ -819,5 +821,15 @@
   "toggle": "Toggle",
   "switchTab": "Switch tab",
   "navigate": "Navigate",
-  "justNow": "just now"
+  "justNow": "just now",
+  "rawOutput": "Raw output",
+  "filePreview": {
+    "loadFailed": "Failed to load file",
+    "unsupported": "This file type cannot be previewed."
+  },
+  "browserTest": {
+    "title": "Browser Integration Test Suite",
+    "subtitle": "Concurrent multi-agent browser test with correctness verification",
+    "failuresOnly": "Failures only"
+  }
 }

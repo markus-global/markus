@@ -4,15 +4,27 @@
   "prompts": {
     "hireAgent": "Hire an Agent",
     "hireAgentDesc": "Hire from templates, create custom agents, or find specialists on Markus Hub",
-    "hireAgentExamples": ["Hire a senior React developer", "Create a custom code reviewer", "Find a DevOps specialist on Hub"],
+    "hireAgentExamples": [
+      "Hire a senior React developer",
+      "Create a custom code reviewer",
+      "Find a DevOps specialist on Hub"
+    ],
     "hireAgentPrompt": "I need you to help me create or hire an agent: ",
     "buildTeam": "Build a Team",
     "buildTeamDesc": "Compose an optimal team for your project or deploy a team template",
-    "buildTeamExamples": ["A web dev team with PM, devs, and QA", "A data engineering squad", "A content creation team"],
+    "buildTeamExamples": [
+      "A web dev team with PM, devs, and QA",
+      "A data engineering squad",
+      "A content creation team"
+    ],
     "buildTeamPrompt": "I need you to help me create or build a team for: ",
     "createSkill": "Create a Skill",
     "createSkillDesc": "Design new capabilities that agents can learn and use",
-    "createSkillExamples": ["A Git changelog generator", "A web scraping skill", "A database migration tool"],
+    "createSkillExamples": [
+      "A Git changelog generator",
+      "A web scraping skill",
+      "A database migration tool"
+    ],
     "createSkillPrompt": "I need you to help me create a skill: "
   },
   "myCreations": {
@@ -65,7 +77,11 @@
     "requiredEnv": "Required Env",
     "skills": "Skills",
     "files": "Files ({{count}})",
-    "members": "Members ({{count}})"
+    "members": "Members ({{count}})",
+    "noFilesForMember": "No files for this member yet.",
+    "aboutThisAgent": "About this agent",
+    "integrations": "Integrations",
+    "instructions": "Instructions"
   },
   "share": {
     "imagePrompt": "Would you like to add images before sharing? Images help attract more users on the Hub.",

@@ -550,7 +550,6 @@
     "workflowUnmatchedHint": "Esta ejecución es anterior al 2026-10-27: las tareas no registraron su paso, así que el historial no se puede reconstruir. Las tareas de abajo siguen siendo accesibles.",
     "workflowClickToEdit": "Clic para editar",
     "toolCount": "{{count}} herramientas",
-    "cannotPreviewFile": "Este tipo de archivo no se puede previsualizar.",
     "cancelTaskDependent": "Se cancelarán {{count}} tareas dependientes",
     "loadingMore": "Cargando más…",
     "scrollForMore": "Desplázate al final para cargar más",

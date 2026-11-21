@@ -550,7 +550,6 @@
     "workflowUnmatchedHint": "这是 2026-10-27 之前的运行：任务没有记录步骤身份，历史无法反推。下列任务仍可直接打开。",
     "workflowClickToEdit": "点击编辑",
     "toolCount": "{{count}} 个工具",
-    "cannotPreviewFile": "该文件类型无法预览。",
     "cancelTaskDependent": "{{count}} 个依赖任务将被取消",
     "loadingMore": "正在加载更多…",
     "scrollForMore": "滚动到底部继续加载",

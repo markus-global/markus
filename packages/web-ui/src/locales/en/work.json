@@ -552,7 +552,6 @@
     "workflowUnmatchedHint": "This run predates 2026-10-27: tasks recorded no step identity, so the history cannot be reconstructed. The tasks below can still be opened.",
     "workflowClickToEdit": "Click to edit",
     "toolCount": "{{count}} tools",
-    "cannotPreviewFile": "This file type cannot be previewed.",
     "cancelTaskDependent": "{{count}} dependent tasks will be cancelled",
     "loadingMore": "Loading more…",
     "scrollForMore": "Scroll to the bottom to load more",
