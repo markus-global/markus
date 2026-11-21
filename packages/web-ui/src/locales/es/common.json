@@ -831,5 +831,11 @@
     "title": "Suite de pruebas de integración del navegador",
     "subtitle": "Prueba de navegador concurrente multiagente con verificación de corrección",
     "failuresOnly": "Solo fallos"
-  }
+  },
+  "menu": "Menú",
+  "forward": "Adelante",
+  "fileNotFound": "Archivo no encontrado",
+  "htmlPreview": "Vista previa HTML",
+  "revealInFileExplorer": "Mostrar en el explorador de archivos",
+  "publishToHub": "Publicar en Markus Hub"
 }

@@ -56,7 +56,10 @@
     "agentDMs": "Agente DMs",
     "you": "Tú",
     "noMembers": "Este equipo aún no tiene miembros.",
-    "addTitle": "Añadir título…"
+    "addTitle": "Añadir título…",
+    "toggleTeamPanel": "Mostrar u ocultar el panel del equipo",
+    "clickToEditName": "Clic para editar el nombre",
+    "clickToEditTitle": "Clic para editar el título"
   },
   "teamProfile": {
     "overview": "Resumen",

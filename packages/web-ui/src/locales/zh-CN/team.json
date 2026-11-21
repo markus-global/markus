@@ -56,7 +56,10 @@
     "agentDMs": "智能体私聊",
     "you": "你",
     "noMembers": "这个团队还没有成员。",
-    "addTitle": "添加标题…"
+    "addTitle": "添加标题…",
+    "toggleTeamPanel": "展开/收起团队面板",
+    "clickToEditName": "点击编辑名称",
+    "clickToEditTitle": "点击编辑标题"
   },
   "teamProfile": {
     "overview": "概览",

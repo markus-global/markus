@@ -56,7 +56,10 @@
     "agentDMs": "Agent DMs",
     "you": "You",
     "noMembers": "No members in this team yet.",
-    "addTitle": "Add title…"
+    "addTitle": "Add title…",
+    "toggleTeamPanel": "Toggle team panel",
+    "clickToEditName": "Click to edit name",
+    "clickToEditTitle": "Click to edit title"
   },
   "teamProfile": {
     "overview": "Overview",

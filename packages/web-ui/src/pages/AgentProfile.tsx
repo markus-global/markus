@@ -3122,7 +3122,7 @@ function MindTab({ agentId, highlightId, agentStatus, canManageAgents }: { agent
               <span className="text-[11px] font-medium text-fg-secondary truncate flex-1">
                 {activeGroup?.name || (activeGroup?.key ? workUnitEntityLabel(activeGroup.key) : '')}
               </span>
-              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label="close">✕</button>
+              <button onClick={() => setDrawerOpen(false)} className="text-fg-tertiary hover:text-fg-primary text-sm px-1" aria-label={t('close')}>✕</button>
             </div>
           {/* 「本轮决策」——把这条实体下所有记录的决策聚合成一行一条。
               数据来源是邮箱响应里已经带的 `decisions`（

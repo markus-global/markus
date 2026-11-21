@@ -831,5 +831,11 @@
     "title": "Browser Integration Test Suite",
     "subtitle": "Concurrent multi-agent browser test with correctness verification",
     "failuresOnly": "Failures only"
-  }
+  },
+  "menu": "Menu",
+  "forward": "Forward",
+  "fileNotFound": "File not found",
+  "htmlPreview": "HTML preview",
+  "revealInFileExplorer": "Reveal in file explorer",
+  "publishToHub": "Publish to Markus Hub"
 }

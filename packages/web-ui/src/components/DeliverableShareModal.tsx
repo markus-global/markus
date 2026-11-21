@@ -571,7 +571,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
                       {tags.map(tag => (
                         <span key={tag} className="inline-flex items-center gap-1 px-2 py-0.5 text-[11px] bg-surface-elevated rounded-md text-fg-secondary">
                           {tag}
-                          <button onClick={() => removeTag(tag)} className="text-fg-tertiary hover:text-red-500" aria-label="remove">
+                          <button onClick={() => removeTag(tag)} className="text-fg-tertiary hover:text-red-500" aria-label={t('remove')}>
                             <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                           </button>
                         </span>

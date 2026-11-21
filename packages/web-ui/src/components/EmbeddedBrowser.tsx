@@ -399,7 +399,7 @@ export function EmbeddedBrowser({
             disabled={!canGoBack}
             onClick={() => void api.action(browserId, 'back')}
             className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:bg-surface-overlay disabled:opacity-30"
-            title="Back"
+            title={t('back')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="15 18 9 12 15 6" /></svg>
           </button>
@@ -407,7 +407,7 @@ export function EmbeddedBrowser({
             disabled={!canGoForward}
             onClick={() => void api.action(browserId, 'forward')}
             className="w-7 h-7 flex items-center justify-center rounded-md text-fg-tertiary hover:bg-surface-overlay disabled:opacity-30"
-            title="Forward"
+            title={t('forward')}
           >
             <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="9 18 15 12 9 6" /></svg>
           </button>

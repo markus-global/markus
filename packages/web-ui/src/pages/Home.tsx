@@ -640,7 +640,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         </div>
         <div data-no-drag className="flex items-center gap-1.5">
           <button onClick={() => previewMode ? undefined : isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
-            className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Search">
+            className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label={t('search')}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
           </button>
           <CreateMenu ref={createMenuRef} show={showCreateMenu} onToggle={() => setShowCreateMenu(!showCreateMenu)} onClose={() => setShowCreateMenu(false)} t={t} isMobile={isMobile} />
@@ -825,7 +825,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
                   <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
                 </div>
-                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title={t('dismiss')}>
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
@@ -1390,7 +1390,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
 const CreateMenu = forwardRef<HTMLDivElement, { show: boolean; onToggle: () => void; onClose: () => void; t: TFunction; isMobile?: boolean }>(
   ({ show, onToggle, onClose, t, isMobile }, ref) => (
     <div ref={ref} className="relative">
-      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Create">
+      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label={t('create')}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
       </button>
       {show && (

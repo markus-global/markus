@@ -831,5 +831,11 @@
     "title": "浏览器集成测试套件",
     "subtitle": "多智能体并发浏览器测试，含正确性校验",
     "failuresOnly": "仅看失败"
-  }
+  },
+  "menu": "菜单",
+  "forward": "前进",
+  "fileNotFound": "文件不存在",
+  "htmlPreview": "HTML 预览",
+  "revealInFileExplorer": "在文件管理器中显示",
+  "publishToHub": "发布到 Markus Hub"
 }

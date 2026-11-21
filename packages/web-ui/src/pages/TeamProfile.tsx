@@ -312,7 +312,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
             } catch (e) {
               setNotice({ title: 'Hub', message: `Failed to publish: ${e}`, variant: 'danger' });
             }
-          }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title="Publish to Markus Hub"><span>↑</span> Hub</button>
+          }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('publishToHub')}><span>↑</span> Hub</button>
           {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">

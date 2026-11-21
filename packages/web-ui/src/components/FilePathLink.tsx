@@ -245,7 +245,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
               onClick={() => api.files.reveal(activePath)}
-              title="Reveal in file explorer"
+              title={t('revealInFileExplorer')}
             >
               <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                 <path d="M4.5 17a2.5 2.5 0 01-2.5-2.5v-9A2.5 2.5 0 014.5 3h3.672a1.5 1.5 0 011.06.44L10.56 4.77a.5.5 0 00.354.147H15.5A2.5 2.5 0 0118 7.417v7.083A2.5 2.5 0 0115.5 17h-11z" />
@@ -338,6 +338,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── FilePathLink component ──────────────────────────────────────────────────
 
 export function FilePathLink({ path: filePath }: { path: string }) {
+  const { t } = useTranslation('common');
   const info = useFileInfo(filePath);
   const layout = useLayout();
 
@@ -376,7 +377,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
 
   if (!exists) {
     return (
-      <code data-file-path-link="missing" className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title="File not found">
+      <code data-file-path-link="missing" className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title={t('fileNotFound')}>
         {filePath}
       </code>
     );
