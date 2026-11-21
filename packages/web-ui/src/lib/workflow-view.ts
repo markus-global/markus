@@ -18,6 +18,8 @@
  *      show nothing rather than a fabricated percentage.
  */
 
+import i18n from '../i18n/index.ts';
+
 export interface WorkflowStepLike {
   id: string;
   name: string;
@@ -326,11 +328,11 @@ export function prepareDuplicateYaml(
   stringify: (doc: unknown) => string,
 ): string {
   const doc = parse(yaml) as Record<string, unknown> | null;
-  if (!doc || typeof doc !== 'object') throw new Error('模板 YAML 无法解析');
+  if (!doc || typeof doc !== 'object') throw new Error(i18n.t('work:task.workflowYamlParseFailed'));
   doc['name'] = newName;
   const displayName = doc['displayName'];
   if (typeof displayName === 'string' && displayName.length > 0) {
-    doc['displayName'] = `${displayName}（副本）`;
+    doc['displayName'] = i18n.t('work:task.workflowDuplicateName', { name: displayName });
   }
   return stringify(doc);
 }

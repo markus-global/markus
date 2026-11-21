@@ -1,55 +1,210 @@
 {
   "humans": {
-    "alex": { "name": "Alex Chen" },
-    "sarah": { "name": "Sarah Liu" },
-    "james": { "name": "James Wang" },
-    "emily": { "name": "Emily Zhang" },
-    "michael": { "name": "Michael Li" }
+    "alex": {
+      "name": "Alex Chen"
+    },
+    "sarah": {
+      "name": "Sarah Liu"
+    },
+    "james": {
+      "name": "James Wang"
+    },
+    "emily": {
+      "name": "Emily Zhang"
+    },
+    "michael": {
+      "name": "Michael Li"
+    }
   },
   "agents": {
-    "secretary": { "name": "Secretary", "role": "Executive Coordinator", "activity": "Orchestrating daily operations" },
-    "chiefOfStaff": { "name": "Chief of Staff", "role": "Cross-team Coordinator", "activity": "Cross-team coordination" },
-    "strategyAnalyst": { "name": "Strategy Analyst", "role": "Competitive Intelligence", "activity": "Competitive intelligence" },
-    "engLead": { "name": "Engineering Lead", "role": "Engineering Manager", "activity": "Sprint planning & code review" },
-    "srBackend": { "name": "Senior Backend Dev", "role": "Backend Engineer", "activity": "Building payment API" },
-    "backend": { "name": "Backend Developer", "role": "Backend Engineer", "activity": "Database migration" },
-    "srFrontend": { "name": "Senior Frontend Dev", "role": "Frontend Engineer", "activity": "Dashboard redesign" },
-    "frontend": { "name": "Frontend Developer", "role": "Frontend Engineer", "activity": "Component library" },
-    "mobile": { "name": "Mobile Developer", "role": "Mobile Engineer", "activity": "Waiting for API" },
-    "devops": { "name": "DevOps Engineer", "role": "Infrastructure Engineer", "activity": "CI/CD pipeline" },
-    "qaLead": { "name": "QA Lead", "role": "Quality Assurance Manager", "activity": "Test automation" },
-    "qaEng": { "name": "QA Engineer", "role": "Quality Assurance", "activity": "Regression testing" },
-    "security": { "name": "Security Auditor", "role": "Security Engineer", "activity": "Weekly scan scheduled" },
-    "pm": { "name": "Product Manager", "role": "Product Management", "activity": "Sprint planning" },
-    "uxResearcher": { "name": "UX Researcher", "role": "User Experience", "activity": "Interview synthesis" },
-    "uiDesigner": { "name": "UI Designer", "role": "Visual Design", "activity": "Design system update" },
-    "dataAnalyst": { "name": "Data Analyst", "role": "Business Intelligence", "activity": "Funnel analysis" },
-    "researchLead": { "name": "Research Lead", "role": "Research Director", "activity": "Competitive landscape" },
-    "mlEngineer": { "name": "ML Engineer", "role": "Machine Learning", "activity": "Model fine-tuning" },
-    "researchAnalyst": { "name": "Research Analyst", "role": "Research & Analysis", "activity": "Patent analysis" },
-    "techWriter": { "name": "Technical Writer", "role": "Documentation", "activity": "API documentation" },
-    "contentLead": { "name": "Content Lead", "role": "Content Strategy", "activity": "Editorial calendar" },
-    "seo": { "name": "SEO Specialist", "role": "Search Optimization", "activity": "Keyword research done" },
-    "socialMedia": { "name": "Social Media Manager", "role": "Social & Growth", "activity": "Campaign scheduling" },
-    "copywriter": { "name": "Copywriter", "role": "Content Creation", "activity": "Landing page copy" },
-    "hr": { "name": "HR Coordinator", "role": "Human Resources", "activity": "Onboarding docs ready" },
-    "legal": { "name": "Legal & Compliance", "role": "Legal Affairs", "activity": "Privacy review done" },
-    "finance": { "name": "Finance Analyst", "role": "Financial Analysis", "activity": "Monthly report" }
+    "secretary": {
+      "name": "Secretary",
+      "role": "Executive Coordinator",
+      "activity": "Orchestrating daily operations"
+    },
+    "chiefOfStaff": {
+      "name": "Chief of Staff",
+      "role": "Cross-team Coordinator",
+      "activity": "Cross-team coordination"
+    },
+    "strategyAnalyst": {
+      "name": "Strategy Analyst",
+      "role": "Competitive Intelligence",
+      "activity": "Competitive intelligence"
+    },
+    "engLead": {
+      "name": "Engineering Lead",
+      "role": "Engineering Manager",
+      "activity": "Sprint planning & code review"
+    },
+    "srBackend": {
+      "name": "Senior Backend Dev",
+      "role": "Backend Engineer",
+      "activity": "Building payment API"
+    },
+    "backend": {
+      "name": "Backend Developer",
+      "role": "Backend Engineer",
+      "activity": "Database migration"
+    },
+    "srFrontend": {
+      "name": "Senior Frontend Dev",
+      "role": "Frontend Engineer",
+      "activity": "Dashboard redesign"
+    },
+    "frontend": {
+      "name": "Frontend Developer",
+      "role": "Frontend Engineer",
+      "activity": "Component library"
+    },
+    "mobile": {
+      "name": "Mobile Developer",
+      "role": "Mobile Engineer",
+      "activity": "Waiting for API"
+    },
+    "devops": {
+      "name": "DevOps Engineer",
+      "role": "Infrastructure Engineer",
+      "activity": "CI/CD pipeline"
+    },
+    "qaLead": {
+      "name": "QA Lead",
+      "role": "Quality Assurance Manager",
+      "activity": "Test automation"
+    },
+    "qaEng": {
+      "name": "QA Engineer",
+      "role": "Quality Assurance",
+      "activity": "Regression testing"
+    },
+    "security": {
+      "name": "Security Auditor",
+      "role": "Security Engineer",
+      "activity": "Weekly scan scheduled"
+    },
+    "pm": {
+      "name": "Product Manager",
+      "role": "Product Management",
+      "activity": "Sprint planning"
+    },
+    "uxResearcher": {
+      "name": "UX Researcher",
+      "role": "User Experience",
+      "activity": "Interview synthesis"
+    },
+    "uiDesigner": {
+      "name": "UI Designer",
+      "role": "Visual Design",
+      "activity": "Design system update"
+    },
+    "dataAnalyst": {
+      "name": "Data Analyst",
+      "role": "Business Intelligence",
+      "activity": "Funnel analysis"
+    },
+    "researchLead": {
+      "name": "Research Lead",
+      "role": "Research Director",
+      "activity": "Competitive landscape"
+    },
+    "mlEngineer": {
+      "name": "ML Engineer",
+      "role": "Machine Learning",
+      "activity": "Model fine-tuning"
+    },
+    "researchAnalyst": {
+      "name": "Research Analyst",
+      "role": "Research & Analysis",
+      "activity": "Patent analysis"
+    },
+    "techWriter": {
+      "name": "Technical Writer",
+      "role": "Documentation",
+      "activity": "API documentation"
+    },
+    "contentLead": {
+      "name": "Content Lead",
+      "role": "Content Strategy",
+      "activity": "Editorial calendar"
+    },
+    "seo": {
+      "name": "SEO Specialist",
+      "role": "Search Optimization",
+      "activity": "Keyword research done"
+    },
+    "socialMedia": {
+      "name": "Social Media Manager",
+      "role": "Social & Growth",
+      "activity": "Campaign scheduling"
+    },
+    "copywriter": {
+      "name": "Copywriter",
+      "role": "Content Creation",
+      "activity": "Landing page copy"
+    },
+    "hr": {
+      "name": "HR Coordinator",
+      "role": "Human Resources",
+      "activity": "Onboarding docs ready"
+    },
+    "legal": {
+      "name": "Legal & Compliance",
+      "role": "Legal Affairs",
+      "activity": "Privacy review done"
+    },
+    "finance": {
+      "name": "Finance Analyst",
+      "role": "Financial Analysis",
+      "activity": "Monthly report"
+    }
   },
   "teams": {
-    "engineering": { "name": "Core Engineering", "desc": "Backend, frontend, mobile, DevOps, QA, and security" },
-    "productDesign": { "name": "Product & Design", "desc": "Product management, UX research, UI design, and data analysis" },
-    "research": { "name": "Research & AI", "desc": "Research, ML engineering, and technical documentation" },
-    "content": { "name": "Content & Growth", "desc": "Content strategy, SEO, social media, and copywriting" },
-    "operations": { "name": "Operations", "desc": "HR, legal, compliance, and finance" },
-    "projectAlpha": { "name": "Project Alpha", "desc": "Cross-functional sprint team for payment platform launch" }
+    "engineering": {
+      "name": "Core Engineering",
+      "desc": "Backend, frontend, mobile, DevOps, QA, and security"
+    },
+    "productDesign": {
+      "name": "Product & Design",
+      "desc": "Product management, UX research, UI design, and data analysis"
+    },
+    "research": {
+      "name": "Research & AI",
+      "desc": "Research, ML engineering, and technical documentation"
+    },
+    "content": {
+      "name": "Content & Growth",
+      "desc": "Content strategy, SEO, social media, and copywriting"
+    },
+    "operations": {
+      "name": "Operations",
+      "desc": "HR, legal, compliance, and finance"
+    },
+    "projectAlpha": {
+      "name": "Project Alpha",
+      "desc": "Cross-functional sprint team for payment platform launch"
+    }
   },
   "projects": {
-    "payment": { "name": "Payment Platform v2", "desc": "Complete payment infrastructure with Stripe, PayPal, and crypto support" },
-    "dashboard": { "name": "Dashboard Redesign", "desc": "Modern analytics dashboard with real-time data visualization" },
-    "research": { "name": "Q2 Market Research", "desc": "Competitive landscape analysis and market positioning" },
-    "mobile": { "name": "Mobile App MVP", "desc": "Cross-platform mobile application with core features" },
-    "securityAudit": { "name": "Security Audit Q1", "desc": "Comprehensive security audit and vulnerability assessment" }
+    "payment": {
+      "name": "Payment Platform v2",
+      "desc": "Complete payment infrastructure with Stripe, PayPal, and crypto support"
+    },
+    "dashboard": {
+      "name": "Dashboard Redesign",
+      "desc": "Modern analytics dashboard with real-time data visualization"
+    },
+    "research": {
+      "name": "Q2 Market Research",
+      "desc": "Competitive landscape analysis and market positioning"
+    },
+    "mobile": {
+      "name": "Mobile App MVP",
+      "desc": "Cross-platform mobile application with core features"
+    },
+    "securityAudit": {
+      "name": "Security Audit Q1",
+      "desc": "Comprehensive security audit and vulnerability assessment"
+    }
   },
   "tasks": {
     "paymentWebhook": "Implement Stripe & PayPal webhook endpoints",

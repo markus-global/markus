@@ -14,6 +14,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { api, type AgentWorkUnitRow } from '../api.ts';
 import { useTranslation } from 'react-i18next';
+import i18n from '../i18n/index.ts';
 
 const REFRESH_MS = 15000;
 
@@ -34,29 +35,31 @@ export interface WorkUnitLabel {
 
 export function describeWorkUnitRef(ref: string): WorkUnitLabel {
   const round = /:r(\d+)/.exec(ref)?.[1];
-  const roundText = round ? `第 ${round} 轮` : undefined;
+  const roundText = round ? i18n.t('work:task.executionRound', { n: round }) : undefined;
   if (ref.startsWith('delegation:')) {
     const isSub = ref.includes('#sub_');
     return {
-      label: isSub ? '子任务委派' : '委派任务',
+      label: isSub
+        ? i18n.t('agent:profilePage.overview.workUnit.subDelegation')
+        : i18n.t('agent:profilePage.overview.workUnit.delegation'),
       detail: roundText,
     };
   }
   if (ref.startsWith('task:')) {
-    return { label: '任务执行', detail: roundText };
+    return { label: i18n.t('agent:profilePage.overview.workUnit.task'), detail: roundText };
   }
   if (ref.startsWith('requirement:')) {
-    return { label: '需求处理', detail: roundText };
+    return { label: i18n.t('agent:profilePage.overview.workUnit.requirement'), detail: roundText };
   }
   if (ref.startsWith('channel')) {
-    return { label: '群聊回复', detail: roundText };
+    return { label: i18n.t('agent:profilePage.overview.workUnit.channel'), detail: roundText };
   }
   if (ref.startsWith('session:')) {
-    return { label: '内部会话', detail: roundText };
+    return { label: i18n.t('agent:profilePage.overview.runningInternal'), detail: roundText };
   }
   // 未知形状：不编造标签，如实说是哪个字头。
   const head = ref.split(':')[0] ?? ref;
-  return { label: head || '未知工作单元', detail: roundText };
+  return { label: head || i18n.t('agent:profilePage.overview.workUnit.unknown'), detail: roundText };
 }
 
 export function RunningWorkUnits({ agentId }: { agentId: string }) {

@@ -276,6 +276,7 @@ function JsonPreview({ content, className }: { content: string; className?: stri
 }
 
 export function ContentRenderer({ content, format, className, basePath, onHtmlSelection, copyVariant }: ContentRendererProps) {
+  const { t } = useTranslation('common');
   switch (format) {
     case 'html':
       return <HtmlPreview content={content} className={className} onSelection={onHtmlSelection} />;
@@ -295,7 +296,7 @@ export function ContentRenderer({ content, format, className, basePath, onHtmlSe
     case 'markdown':
     default:
       return (
-        <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+        <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('loading')}</div>}>
           <LazyMarkdownMessage content={content} className={className ?? 'text-sm'} basePath={basePath} copyVariant={copyVariant} />
         </Suspense>
       );

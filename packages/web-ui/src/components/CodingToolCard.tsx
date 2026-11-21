@@ -197,16 +197,16 @@ export function CodingToolCard({ session, className }: CodingToolCardProps) {
           )}
           {session.result.diffStats && (
             <div className="flex items-center gap-3 text-[10px] font-mono">
-              <span className="text-fg-tertiary">{session.result.diffStats.filesChanged} files</span>
+              <span className="text-fg-tertiary">{t('codingTool.files', { n: session.result.diffStats.filesChanged })}</span>
               <span className="text-green-500">+{session.result.diffStats.additions}</span>
               <span className="text-red-500">−{session.result.diffStats.deletions}</span>
             </div>
           )}
           {session.cost && (session.cost.inputTokens != null || session.cost.outputTokens != null) && (
             <div className="text-[10px] text-fg-tertiary">
-              {session.cost.inputTokens != null && <span>{session.cost.inputTokens.toLocaleString()} in</span>}
+              {session.cost.inputTokens != null && <span>{t('codingTool.tokensIn', { n: session.cost.inputTokens.toLocaleString() })}</span>}
               {session.cost.inputTokens != null && session.cost.outputTokens != null && <span className="mx-1">·</span>}
-              {session.cost.outputTokens != null && <span>{session.cost.outputTokens.toLocaleString()} out</span>}
+              {session.cost.outputTokens != null && <span>{t('codingTool.tokensOut', { n: session.cost.outputTokens.toLocaleString() })}</span>}
             </div>
           )}
         </div>

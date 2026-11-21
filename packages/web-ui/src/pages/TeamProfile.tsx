@@ -5,6 +5,7 @@ import type { TeamInfo, TeamMemberInfo } from '../api.ts';
 import { Avatar } from '../components/Avatar.tsx';
 import { PageLoading, ListLoading, EmptyState } from '../components/AsyncState.tsx';
 import { ConfirmModal } from '../components/ConfirmModal.tsx';
+import { agentStatusPresentation } from '../lib/agentOverview.ts';
 
 const LazyMarkdownMessage = lazy(() =>
   import('../components/MarkdownMessage.tsx').then(m => ({ default: m.MarkdownMessage }))
@@ -34,7 +35,7 @@ const STATUS_DOT: Record<string, string> = {
 };
 
 export function TeamProfile({ teamId, onBack, inline, headless, activeTab: externalTab, onSelectAgent }: Props) {
-  const { t } = useTranslation('team');
+  const { t } = useTranslation(['team', 'common', 'work', 'agent']);
   const [team, setTeam] = useState<TeamInfo | null>(null);
   // "Not found" may only be claimed after the first fetch settled — otherwise a
   // slow load looks identical to a deleted team.
@@ -136,6 +137,11 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
 
   const managerMember = team.members.find(m => m.agentRole === 'manager');
   const onlineCount = teamStatuses.filter(s => s.status !== 'offline').length;
+  // 状态词表由 lib/agentOverview 的 STATUS_TABLE 单点提供（架构守卫 A3），这里不自己拼 key。
+  const statusLabel = (status: string | undefined) => {
+    const { labelKey } = agentStatusPresentation(status);
+    return labelKey ? t(labelKey) : (status ?? 'offline');
+  };
 
   const isEditingFullscreen = (effectiveTab === 'announcements' && editingAnn) || (effectiveTab === 'norms' && editingNorms);
 
@@ -147,16 +153,16 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
             <div className="space-y-5">
               <div className="grid grid-cols-2 gap-4">
                 <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                  <div className="text-xs text-fg-tertiary mb-1">Manager</div>
-                  <div className="text-sm font-medium">{managerMember?.name ?? team.managerName ?? 'None'}</div>
+                  <div className="text-xs text-fg-tertiary mb-1">{t('agent:profilePage.badges.manager')}</div>
+                  <div className="text-sm font-medium">{managerMember?.name ?? team.managerName ?? t('common:none')}</div>
                 </div>
                 <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                  <div className="text-xs text-fg-tertiary mb-1">Team ID</div>
+                  <div className="text-xs text-fg-tertiary mb-1">{t('team:teamProfile.teamId')}</div>
                   <div className="text-sm font-mono text-fg-secondary truncate">{team.id}</div>
                 </div>
               </div>
               <div className="space-y-3">
-                <div className="text-xs text-fg-tertiary font-medium px-1">Members</div>
+                <div className="text-xs text-fg-tertiary font-medium px-1">{t('team:page.members')}</div>
                 {team.members.map(m => {
                   const st = teamStatuses.find(s => s.id === m.id);
                   const dot = STATUS_DOT[st?.status ?? 'offline'] ?? 'bg-gray-500';
@@ -172,8 +178,8 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                         <div className="flex items-center gap-2">
                           <span className="text-sm font-medium">{m.name}</span>
                           <span className={`w-2 h-2 rounded-full ${dot}`} />
-                          <span className="text-xs text-fg-tertiary">{st?.status ?? 'offline'}</span>
-                          {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded font-medium">Manager</span>}
+                          <span className="text-xs text-fg-tertiary">{statusLabel(st?.status)}</span>
+                          {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded font-medium">{t('agent:profilePage.badges.manager')}</span>}
                         </div>
                         <div className="text-xs text-fg-tertiary">{m.role} · {m.type}</div>
                       </div>
@@ -183,7 +189,7 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                     </div>
                   );
                 })}
-                {team.members.length === 0 && <div className="text-sm text-fg-tertiary text-center py-8">No members</div>}
+                {team.members.length === 0 && <div className="text-sm text-fg-tertiary text-center py-8">{t('team:teamProfile.noMembers')}</div>}
               </div>
             </div>
           )}
@@ -223,36 +229,36 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
             <div className="space-y-5">
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default space-y-4">
                 <div>
-                  <div className="text-xs text-fg-tertiary mb-1">Team Name</div>
+                  <div className="text-xs text-fg-tertiary mb-1">{t('team:modals.createTeam.teamName')}</div>
                   {editName ? (
                     <div className="flex gap-2 items-center">
                       <input ref={nameRef} value={nameDraft} onChange={e => setNameDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRename()}
                         className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary focus:outline-none focus:border-brand-500" autoFocus />
-                      <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
-                      <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
+                      <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">{t('common:save')}</button>
+                      <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">{t('common:cancel')}</button>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <span className="text-sm">{team.name}</span>
-                      <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+                      <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
                     </div>
                   )}
                 </div>
                 <div>
-                  <div className="text-xs text-fg-tertiary mb-1">Description</div>
+                  <div className="text-xs text-fg-tertiary mb-1">{t('work:project.description')}</div>
                   {editDesc ? (
                     <div className="space-y-2">
                       <textarea value={descDraft} onChange={e => setDescDraft(e.target.value)}
                         className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
                       <div className="flex gap-2">
-                        <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
-                        <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
+                        <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">{t('common:save')}</button>
+                        <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">{t('common:cancel')}</button>
                       </div>
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
-                      <span className="text-sm text-fg-secondary">{team.description || 'No description'}</span>
-                      <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+                      <span className="text-sm text-fg-secondary">{team.description || t('work:task.noDescription')}</span>
+                      <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
                     </div>
                   )}
                 </div>
@@ -278,10 +284,10 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <h2 className="text-base font-semibold">{team.name}</h2>
-              <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{team.members.length} members</span>
-              <span className="px-1.5 py-0.5 text-[10px] bg-green-500/15 text-green-600 rounded font-medium">{onlineCount} online</span>
+              <span className="px-1.5 py-0.5 text-[10px] bg-brand-500/15 text-brand-500 rounded font-medium">{t('common:units.members', { count: team.members.length })}</span>
+              <span className="px-1.5 py-0.5 text-[10px] bg-green-500/15 text-green-600 rounded font-medium">{t('team:teamProfile.onlineCount', { count: onlineCount })}</span>
             </div>
-            <div className="text-xs text-fg-tertiary truncate">{team.description || 'No description'}</div>
+            <div className="text-xs text-fg-tertiary truncate">{team.description || t('work:task.noDescription')}</div>
           </div>
           <button onClick={async () => {
             if (!team) return;
@@ -308,11 +314,11 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                 },
               };
               await hubApi.publishViaProxy({ itemType: 'team', name: team.name, description: team.description ?? '', category: 'general', config, files });
-              setNotice({ title: 'Hub', message: `Published "${team.name}" to Markus Hub`, variant: 'primary' });
+              setNotice({ title: 'Hub', message: t('agent:profilePage.publishSuccess', { name: team.name }), variant: 'primary' });
             } catch (e) {
-              setNotice({ title: 'Hub', message: `Failed to publish: ${e}`, variant: 'danger' });
+              setNotice({ title: 'Hub', message: t('agent:profilePage.publishFailed', { error: String(e) }), variant: 'danger' });
             }
-          }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('publishToHub')}><span>↑</span> Hub</button>
+          }} className="px-3 py-1.5 text-xs bg-green-600 hover:bg-green-500 text-white rounded-lg transition-colors flex items-center gap-1" title={t('common:publishToHub')}><span>↑</span> Hub</button>
           {inline && <button onClick={onBack} className="p-1.5 text-fg-tertiary hover:text-fg-secondary text-lg leading-none">×</button>}
         </div>
         <div className="flex gap-1 mt-3 -mb-[1px] overflow-x-auto">
@@ -330,17 +336,17 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
           <div className="space-y-5">
             <div className="grid grid-cols-2 gap-4">
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                <div className="text-xs text-fg-tertiary mb-1">Manager</div>
-                <div className="text-sm font-medium">{managerMember?.name ?? team.managerName ?? 'None'}</div>
+                <div className="text-xs text-fg-tertiary mb-1">{t('agent:profilePage.badges.manager')}</div>
+                <div className="text-sm font-medium">{managerMember?.name ?? team.managerName ?? t('common:none')}</div>
               </div>
               <div className="p-4 bg-surface-secondary rounded-xl border border-border-default">
-                <div className="text-xs text-fg-tertiary mb-1">Team ID</div>
+                <div className="text-xs text-fg-tertiary mb-1">{t('team:teamProfile.teamId')}</div>
                 <div className="text-sm font-mono text-fg-secondary truncate">{team.id}</div>
               </div>
             </div>
 
             <div className="space-y-3">
-              <div className="text-xs text-fg-tertiary font-medium px-1">Members</div>
+              <div className="text-xs text-fg-tertiary font-medium px-1">{t('team:page.members')}</div>
               {team.members.map(m => {
                 const st = teamStatuses.find(s => s.id === m.id);
                 const dot = STATUS_DOT[st?.status ?? 'offline'] ?? 'bg-gray-500';
@@ -356,8 +362,8 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
                       <div className="flex items-center gap-2">
                         <span className="text-sm font-medium">{m.name}</span>
                         <span className={`w-2 h-2 rounded-full ${dot}`} />
-                        <span className="text-xs text-fg-tertiary">{st?.status ?? 'offline'}</span>
-                        {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded font-medium">Manager</span>}
+                        <span className="text-xs text-fg-tertiary">{statusLabel(st?.status)}</span>
+                        {m.agentRole === 'manager' && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/15 text-amber-600 rounded font-medium">{t('agent:profilePage.badges.manager')}</span>}
                       </div>
                       <div className="text-xs text-fg-tertiary">{m.role} · {m.type}</div>
                     </div>
@@ -413,36 +419,36 @@ export function TeamProfile({ teamId, onBack, inline, headless, activeTab: exter
           <div className="space-y-5">
             <div className="p-4 bg-surface-secondary rounded-xl border border-border-default space-y-4">
               <div>
-                <div className="text-xs text-fg-tertiary mb-1">Team Name</div>
+                <div className="text-xs text-fg-tertiary mb-1">{t('team:modals.createTeam.teamName')}</div>
                 {editName ? (
                   <div className="flex gap-2 items-center">
                     <input ref={nameRef} value={nameDraft} onChange={e => setNameDraft(e.target.value)} onKeyDown={e => e.key === 'Enter' && handleRename()}
                       className="flex-1 bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary focus:outline-none focus:border-brand-500" autoFocus />
-                    <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
-                    <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
+                    <button onClick={handleRename} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">{t('common:save')}</button>
+                    <button onClick={() => setEditName(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">{t('common:cancel')}</button>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
                     <span className="text-sm">{team.name}</span>
-                    <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+                    <button onClick={() => { setNameDraft(team.name); setEditName(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
                   </div>
                 )}
               </div>
               <div>
-                <div className="text-xs text-fg-tertiary mb-1">Description</div>
+                <div className="text-xs text-fg-tertiary mb-1">{t('work:project.description')}</div>
                 {editDesc ? (
                   <div className="space-y-2">
                     <textarea value={descDraft} onChange={e => setDescDraft(e.target.value)}
                       className="w-full bg-surface-elevated border border-border-default rounded-lg px-3 py-1.5 text-sm text-fg-primary resize-y focus:outline-none focus:border-brand-500" rows={3} autoFocus />
                     <div className="flex gap-2">
-                      <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">Save</button>
-                      <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">Cancel</button>
+                      <button onClick={handleUpdateDesc} className="px-3 py-1.5 text-xs bg-brand-600 hover:bg-brand-500 rounded-lg text-on-brand">{t('common:save')}</button>
+                      <button onClick={() => setEditDesc(false)} className="px-3 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay rounded-lg text-fg-secondary">{t('common:cancel')}</button>
                     </div>
                   </div>
                 ) : (
                   <div className="flex items-center gap-2">
-                    <span className="text-sm text-fg-secondary">{team.description || 'No description'}</span>
-                    <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">Edit</button>
+                    <span className="text-sm text-fg-secondary">{team.description || t('work:task.noDescription')}</span>
+                    <button onClick={() => { setDescDraft(team.description ?? ''); setEditDesc(true); }} className="text-xs text-fg-tertiary hover:text-fg-secondary">{t('common:edit')}</button>
                   </div>
                 )}
               </div>
@@ -483,6 +489,7 @@ function MarkdownEditorSection({
   /** True while the file is still being fetched — suppresses the "empty" text. */
   loading?: boolean;
 }) {
+  const { t } = useTranslation(['common']);
   if (editing) {
     return (
       <div className="flex flex-col h-full min-h-0">
@@ -500,7 +507,7 @@ function MarkdownEditorSection({
           className="flex-1 w-full bg-transparent border border-brand-500/30 rounded-lg text-sm text-fg-primary focus:border-brand-500 outline-none resize-none px-3 py-2 font-mono"
           placeholder={placeholder}
         />
-        {saving && <div className="text-xs text-fg-tertiary mt-1 shrink-0">Saving...</div>}
+        {saving && <div className="text-xs text-fg-tertiary mt-1 shrink-0">{t('common:saving')}</div>}
       </div>
     );
   }
@@ -516,7 +523,7 @@ function MarkdownEditorSection({
       {loading && !content.trim() ? (
         <ListLoading variant="text" className="px-1 py-2" />
       ) : content.trim() ? (
-        <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+        <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('common:loading')}</div>}>
           <LazyMarkdownMessage content={content} className="text-sm text-fg-secondary leading-relaxed" />
         </Suspense>
       ) : (
@@ -527,6 +534,7 @@ function MarkdownEditorSection({
 }
 
 function DangerZone({ teamId, teamName, onDeleted }: { teamId: string; teamName: string; onDeleted: () => void }) {
+  const { t } = useTranslation(['team', 'common', 'work']);
   const [showConfirm, setShowConfirm] = useState(false);
   const [purgeFiles, setPurgeFiles] = useState(false);
   const [deleteMembers, setDeleteMembers] = useState(false);
@@ -534,22 +542,22 @@ function DangerZone({ teamId, teamName, onDeleted }: { teamId: string; teamName:
 
   return (
     <div className="p-4 bg-surface-secondary rounded-xl border border-red-900/30 space-y-3">
-      <div className="text-sm font-medium text-red-500">Danger Zone</div>
+      <div className="text-sm font-medium text-red-500">{t('work:project.dangerZone')}</div>
       {!showConfirm ? (
         <button onClick={() => setShowConfirm(true)}
           className="px-4 py-1.5 text-xs bg-red-600/20 hover:bg-red-600/30 text-red-500 rounded-lg transition-colors border border-red-500/30">
-          Delete Team
+          {t('team:contextMenu.deleteTeam')}
         </button>
       ) : (
         <div className="space-y-3">
-          <div className="text-xs text-fg-secondary">Delete team &quot;{teamName}&quot;? This removes the team record from the database.</div>
+          <div className="text-xs text-fg-secondary">{t('team:teamProfile.deleteTeamConfirm', { name: teamName })}</div>
           <label className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer">
             <input type="checkbox" checked={deleteMembers} onChange={e => setDeleteMembers(e.target.checked)} className="rounded" />
-            Also delete all members in this team
+            {t('team:modals.deleteTeam.deleteMembers')}
           </label>
           <label className="flex items-center gap-2 text-xs text-fg-secondary cursor-pointer">
             <input type="checkbox" checked={purgeFiles} onChange={e => setPurgeFiles(e.target.checked)} className="rounded" />
-            Also delete disk files (workspace, memory, logs)
+            {t('team:modals.deleteTeam.purgeFiles')}
           </label>
           <div className="flex gap-2">
             <button disabled={deleting} onClick={async () => {
@@ -557,11 +565,11 @@ function DangerZone({ teamId, teamName, onDeleted }: { teamId: string; teamName:
               try { await api.teams.delete(teamId, deleteMembers, { purgeFiles }); window.dispatchEvent(new CustomEvent('markus:data-changed')); onDeleted(); }
               catch { setDeleting(false); }
             }} className="px-4 py-1.5 text-xs bg-red-600 hover:bg-red-700 text-white rounded-lg transition-colors disabled:opacity-50">
-              {deleting ? 'Deleting...' : 'Confirm Delete'}
+              {deleting ? t('common:deleting') : t('common:confirmDelete')}
             </button>
             <button onClick={() => setShowConfirm(false)}
               className="px-4 py-1.5 text-xs bg-surface-elevated hover:bg-surface-overlay text-fg-secondary rounded-lg transition-colors border border-border-default">
-              Cancel
+              {t('common:cancel')}
             </button>
           </div>
         </div>

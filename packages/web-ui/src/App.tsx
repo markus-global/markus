@@ -94,9 +94,10 @@ function syncLocalePreferences(user: AuthUser): void {
 }
 
 function PageFallback({ docScroll }: { docScroll?: boolean } = {}) {
+  const { t } = useTranslation('common');
   return (
     <div className={`flex-1 flex items-center justify-center text-fg-tertiary text-sm animate-pulse ${docScroll ? 'min-h-[50dvh]' : ''}`}>
-      Loading...
+      {t('loading')}
     </div>
   );
 }

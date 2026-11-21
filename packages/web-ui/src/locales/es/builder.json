@@ -161,7 +161,9 @@
     "addDescription": "Haga clic para añadir una descripción...",
     "typeTagAndEnter": "Tipo y prensa Entrar",
     "pasteEmojiOrUrl": "Pruebe emoji o URL de imagen...",
-    "upload": "Subir"
+    "upload": "Subir",
+    "files": "Archivos",
+    "shareAfterVersionBump": "Después de subir la versión, puedes compartir la nueva versión en Hub."
   },
   "sidebar": {
     "info": "Información",

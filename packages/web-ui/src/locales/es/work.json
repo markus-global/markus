@@ -555,7 +555,10 @@
     "scrollForMore": "Desplázate al final para cargar más",
     "workflowCancelScope": "Se cancelarán {{count}} tareas sin terminar ({{total}} en esta ejecución)",
     "workflowCancelScopeUnknown": "Esta ejecución tiene {{total}} tareas (contando las no terminadas)",
-    "toWorkflows": "Flujos"
+    "toWorkflows": "Flujos",
+    "workflowYamlParseFailed": "No se pudo analizar el YAML de la plantilla",
+    "workflowDuplicateName": "{{name}} (copia)",
+    "stepNotFound": "No se encontró el paso {{stepId}}"
   },
   "requirement": {
     "requirements": "Requisitos",

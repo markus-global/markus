@@ -71,7 +71,10 @@
     "noAnnouncements": "暂无公告，点击添加。",
     "noNorms": "暂未定义规范，点击添加。",
     "noMembers": "暂无成员",
-    "teamMissing": "未找到该团队"
+    "teamMissing": "未找到该团队",
+    "teamId": "团队 ID",
+    "onlineCount": "{{count}} 在线",
+    "deleteTeamConfirm": "删除团队「{{name}}」？这将从数据库中移除该团队记录。"
   },
   "contextMenu": {
     "renameTeam": "重命名团队",
@@ -507,5 +510,26 @@
     "noAgent": "请选择智能体以应用智能体级模型",
     "empty": "没有已启用的 Provider / 模型",
     "chatOnlyHint": "仅列出支持对话的模型"
+  },
+  "history": {
+    "unreadUnknown": "未读数未知（读取失败）",
+    "unreadLoading": "未读…",
+    "showAll": "显示全部",
+    "onlyUnread": "只看未读",
+    "unreadCount": "{{count}} 条未读",
+    "allReadShowAll": "已全部读完·看全部",
+    "tabApprovals": "审批结果",
+    "noticesLoadFailed": "通知读取失败：{{error}}（这不等于「没有历史」）。",
+    "approvalsLoadFailed": "审批历史读取失败（不等于「没有审批」）。",
+    "empty": "还没有历史记录",
+    "emptyHint": "团队开始工作后，审批和通知会出现在这里",
+    "openTarget": "打开对应的任务 / 需求 / 会话",
+    "answered": "已答复",
+    "unanswered": "未答复",
+    "atTime": "于 {{time}}",
+    "waited": "等了 {{duration}}",
+    "noTargetHint": "这条通知没有关联的任务 / 需求 / 会话，仅作告知",
+    "infoOnly": "仅告知",
+    "noMore": "没有更早的记录了"
   }
 }

@@ -400,6 +400,7 @@ function sortFiles(files: [string, string][]): [string, string][] {
 // TabbedFiles: show multiple files via tab switching
 // ---------------------------------------------------------------------------
 function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [string, string][]; onSave: (filename: string, content: string) => void; noHeader?: boolean; readOnly?: boolean }) {
+  const { t } = useTranslation(['builder', 'common']);
   const files = useMemo(() => sortFiles(rawFiles), [rawFiles]);
   const [activeTab, setActiveTab] = useState(0);
 
@@ -407,7 +408,7 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [
     if (noHeader) return <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />;
     return (
       <div className="mb-8">
-        <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">Files</h2>
+        <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">{t('detail.files')}</h2>
         <FileSection filename={files[0]![0]} content={files[0]![1]} onSave={c => onSave(files[0]![0], c)} readOnly={readOnly} />
       </div>
     );
@@ -431,7 +432,7 @@ function TabbedFiles({ files: rawFiles, onSave, noHeader, readOnly }: { files: [
   if (noHeader) return inner;
   return (
     <div className="mb-8">
-      <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">Files</h2>
+      <h2 className="text-sm font-semibold text-fg-primary mb-4 uppercase tracking-wider">{t('detail.files')}</h2>
       {inner}
     </div>
   );
@@ -1256,7 +1257,7 @@ export function ArtifactDetail({ type, name, onBack, authUser: _authUser, readOn
                 {t('common:cancel')}
               </button>
             </div>
-            {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">After bumping the version, you can share the new version to Hub.</p>}
+            {hubStatus.shared && <p className="text-[10px] text-fg-tertiary mt-2">{t('detail.shareAfterVersionBump')}</p>}
           </div>
         )}
 

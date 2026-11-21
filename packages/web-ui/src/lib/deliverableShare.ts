@@ -14,6 +14,8 @@
  * 纯逻辑层，不含 UI，外部依赖（getHubToken / fetch）可注入以便单测。
  */
 
+import i18n from '../i18n/index.ts';
+
 export type ShareVisibility = 'public' | 'link';
 export type ShareStatus = 'none' | 'pending_review' | 'published' | 'rejected' | 'revoked';
 
@@ -85,7 +87,7 @@ export class DeliverableShareError extends Error {
 /** 未登录 Hub 账号（强制 Hub 账号约束）。 */
 export class NotLoggedIntoHubError extends DeliverableShareError {
   constructor() {
-    super('需要登录 Markus Hub 账号后才能分享产出物。');
+    super(i18n.t('deliverables:share.notLoggedIntoHub'));
     this.name = 'NotLoggedIntoHubError';
   }
 }
@@ -95,7 +97,7 @@ export class DeliverableTooLargeError extends DeliverableShareError {
   readonly bytes: number;
   readonly limit: number;
   constructor(bytes: number, limit: number) {
-    super(`产出物文件大小 ${bytes} 字节超过上限 ${limit} 字节（50MB），请压缩或拒绝分享。`);
+    super(i18n.t('deliverables:share.tooLarge', { bytes, limit }));
     this.name = 'DeliverableTooLargeError';
     this.bytes = bytes;
     this.limit = limit;
@@ -106,7 +108,7 @@ export class DeliverableTooLargeError extends DeliverableShareError {
 export class HubApiError extends DeliverableShareError {
   readonly status: number;
   constructor(status: number, message: string) {
-    super(`Hub 请求失败 (HTTP ${status}): ${message}`);
+    super(i18n.t('deliverables:share.hubRequestFailed', { status, message }));
     this.name = 'HubApiError';
     this.status = status;
   }

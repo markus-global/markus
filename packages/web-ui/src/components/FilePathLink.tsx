@@ -230,17 +230,17 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
               <button
                 className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
                 onClick={backToDir}
-                title="返回上级目录"
+                title={t('backToParentDir')}
               >
-                ← 上级
+                ← {t('goUp')}
               </button>
             )}
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
               onClick={copyPath}
-              title="复制路径"
+              title={t('copyPath')}
             >
-              {copied ? '✓ 已复制' : '复制路径'}
+              {copied ? `✓ ${t('ambassador.copied')}` : t('copyPath')}
             </button>
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
@@ -319,12 +319,12 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
                 className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
                 onClick={() => void api.files.reveal(activePath)}
               >
-                Reveal in file explorer
+                {t('revealInFileExplorer')}
               </button>
             </div>
           )}
           {!loading && !error && content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'binary' && fileType !== 'directory' && (
-            <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+            <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('loading')}</div>}>
               <LazyContentRenderer content={content} format={fileType === 'text' ? 'text' : fileType} className="text-sm" />
             </Suspense>
           )}
@@ -388,7 +388,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
       data-file-path-link="ready"
         className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
-        title={isPreviewable ? 'Click to preview' : 'Click to reveal in file explorer'}
+        title={isPreviewable ? t('clickToPreview') : t('clickToRevealInExplorer')}
         role="button"
         tabIndex={0}
     ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>

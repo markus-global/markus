@@ -161,7 +161,9 @@
     "addDescription": "点击添加描述...",
     "typeTagAndEnter": "输入后按回车",
     "pasteEmojiOrUrl": "粘贴 emoji 或图片链接...",
-    "upload": "上传"
+    "upload": "上传",
+    "files": "文件",
+    "shareAfterVersionBump": "升级版本后，即可将新版本分享到 Hub。"
   },
   "sidebar": {
     "info": "基本信息",

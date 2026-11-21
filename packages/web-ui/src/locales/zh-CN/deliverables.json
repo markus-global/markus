@@ -93,7 +93,8 @@
     "unsavedTitle": "未保存的更改",
     "unsavedMessage": "你有未保存的更改。离开前是否需要保存？",
     "discard": "放弃",
-    "saveAndLeave": "保存"
+    "saveAndLeave": "保存",
+    "backToParentFolder": "返回上级目录"
   },
   "diffStats": {
     "title": "差异统计",
@@ -187,7 +188,12 @@
     "resubmit": "重新提交",
     "shareAgain": "重新分享",
     "revoke": "取消分享",
-    "urlPending": "链接生成中，稍后刷新查看…"
+    "urlPending": "链接生成中，稍后刷新查看…",
+    "tooLarge": "产出物文件大小 {{bytes}} 字节超过上限 {{limit}} 字节（50MB），请压缩或拒绝分享。",
+    "hubRequestFailed": "Hub 请求失败 (HTTP {{status}}): {{message}}",
+    "formatUnsupported": "分享仅支持 {{formats}} 格式",
+    "rejectedFallback": "分享被拒绝",
+    "notLoggedIntoHub": "需要登录 Markus Hub 账号后才能分享产出物。"
   },
   "time": {
     "justNow": "刚刚",

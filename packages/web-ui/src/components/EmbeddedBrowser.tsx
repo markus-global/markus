@@ -385,7 +385,7 @@ export function EmbeddedBrowser({
           onClick={() => window.open(url, '_blank', 'noopener,noreferrer')}
           className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
         >
-          Open in browser
+          {t('openInBrowser')}
         </button>
       </div>
     );

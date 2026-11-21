@@ -93,7 +93,8 @@
     "unsavedTitle": "Cambios no salvos",
     "unsavedMessage": "Tienes cambios sin salvar. ¿Quieres salvarte antes de irte??",
     "discard": "Disco",
-    "saveAndLeave": "Guardar"
+    "saveAndLeave": "Guardar",
+    "backToParentFolder": "Volver a la carpeta superior"
   },
   "diffStats": {
     "title": "Estadísticas del diff",
@@ -187,7 +188,12 @@
     "resubmit": "Volver a enviar",
     "shareAgain": "Compartir de nuevo",
     "revoke": "Compartir",
-    "urlPending": "Generar enlace... refrescarse en breve para ver"
+    "urlPending": "Generar enlace... refrescarse en breve para ver",
+    "tooLarge": "El archivo del entregable ocupa {{bytes}} bytes y supera el límite de {{limit}} bytes (50 MB). Comprímelo o rechaza compartirlo.",
+    "hubRequestFailed": "La solicitud al Hub falló (HTTP {{status}}): {{message}}",
+    "formatUnsupported": "Solo se puede compartir en formato {{formats}}",
+    "rejectedFallback": "Se rechazó la publicación",
+    "notLoggedIntoHub": "Inicia sesión en tu cuenta de Markus Hub para compartir entregables."
   },
   "time": {
     "justNow": "ahora",

@@ -557,7 +557,10 @@
     "scrollForMore": "Scroll to the bottom to load more",
     "workflowCancelScope": "Will cancel {{count}} unfinished tasks ({{total}} in this run)",
     "workflowCancelScopeUnknown": "This run has {{total}} tasks (counting the unfinished ones)",
-    "toWorkflows": "Workflows"
+    "toWorkflows": "Workflows",
+    "workflowYamlParseFailed": "Could not parse the template YAML",
+    "workflowDuplicateName": "{{name}} (copy)",
+    "stepNotFound": "Step {{stepId}} not found"
   },
   "requirement": {
     "requirements": "Requirements",

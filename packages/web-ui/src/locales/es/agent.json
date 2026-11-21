@@ -278,7 +278,15 @@
       "recentWindow": "las {{count}} actividades más recientes",
       "heartbeatRuns": "{{count}} latidos",
       "a2aRuns": "{{count}} ejecuciones A2A",
-      "capabilityCollapsed": "Capacidades (herramientas y habilidades): clic para abrir"
+      "capabilityCollapsed": "Capacidades (herramientas y habilidades): clic para abrir",
+      "workUnit": {
+        "subDelegation": "Delegación de subtarea",
+        "delegation": "Delegación de tarea",
+        "task": "Ejecución de tarea",
+        "requirement": "Trabajo de requisito",
+        "channel": "Respuesta de grupo",
+        "unknown": "Unidad de trabajo desconocida"
+      }
     },
     "syncContext": {
       "assignedTasks": "Tareas con requisitos y trazabilidad de proyectos",
@@ -330,7 +338,8 @@
         "policiesMd": "Políticas y Guardias",
         "contextMd": "Contexto e instrucciones"
       },
-      "filesDiffer": "{{count}} archivos difieren de {{templateId}}"
+      "filesDiffer": "{{count}} archivos difieren de {{templateId}}",
+      "emptyFile": "Sin contenido"
     },
     "diff": {
       "title": "Diff: Actual vs Plantilla ({{templateId}})",
@@ -394,7 +403,9 @@
       "observationsCount": "Observaciones",
       "curatedCount": "Secciones de conocimiento",
       "archivedChars": "Archivado",
-      "lastConsolidated": "Última consolidación"
+      "lastConsolidated": "Última consolidación",
+      "charsOfCap": "{{used}} / {{cap}} caracteres",
+      "archivedCharsSearchable": "{{count}} caracteres (buscables)"
     },
     "heartbeatTab": {
       "loading": "Carga de datos...",
@@ -586,8 +597,17 @@
       "loopIdle": "No hubo señales que requirieran decisión en este periodo: está dormido o ya las gestionó",
       "unitEmpty": "Esta entidad aún no tiene registros",
       "loadingContent": "Cargando el contenido completo…",
-      "showMore": "Mostrar más"
-    }
+      "showMore": "Mostrar más",
+      "unitTask": "Tarea {{id}}",
+      "unitRequirement": "Requisito {{id}}",
+      "unitConversation": "Conversación {{id}}",
+      "unitLoop": "Bucle de decisión",
+      "itemCount": "{{count}} elementos",
+      "showMoreCount": "Mostrar más (quedan {{count}})"
+    },
+    "sessionMessagesSubject": "Mensajes de la sesión",
+    "noSessionMessages": "Esta sesión no tiene mensajes",
+    "noDeliverables": "Este agente no tiene entregables"
   },
   "deliverables": {
     "empty": "No hay entregables todavía",
@@ -599,6 +619,13 @@
     "created": "Creado",
     "updated": "Actualizado",
     "accessed": "Acceso {{count}} tiempo(s))",
-    "openInPage": "Abrir entrada"
+    "openInPage": "Abrir entrada",
+    "diff": "Diff",
+    "testsPassed": "{{n}} aprobadas",
+    "testsFailed": "{{n}} fallidas",
+    "testsSkipped": "{{n}} omitidas",
+    "fileCount": "{{count}} archivos",
+    "fileCount_one": "{{count}} archivo",
+    "fileCount_other": "{{count}} archivos"
   }
 }

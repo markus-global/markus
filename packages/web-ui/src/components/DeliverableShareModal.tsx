@@ -246,7 +246,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
     // 这是最后一道防线——即使上游入口（RightPanel / Deliverables 分享按钮）漏放行了
     // 非文本格式，这里也会拒绝提交，避免把 text/json/二进制等推给 Hub 得到 400。
     if (!canShareDeliverableFormat(item.format)) {
-      setError(`分享仅支持 ${[...DELIVERABLE_SHARE_FORMATS].join(' / ')} 格式`);
+      setError(t('deliverables:share.formatUnsupported', { formats: [...DELIVERABLE_SHARE_FORMATS].join(' / ') }));
       return;
     }
     setError(null);
@@ -287,7 +287,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
       });
       sync(r);
       if (r.status === 'rejected') {
-        setError(typeof r.reason === 'string' && r.reason ? r.reason : '分享被拒绝');
+        setError(typeof r.reason === 'string' && r.reason ? r.reason : t('deliverables:share.rejectedFallback'));
       } else {
         // 发布成功：关闭弹窗，宿主侧通过 onShared 回显状态徽标（审核中/已发布）
         onClose();
@@ -302,7 +302,7 @@ export function DeliverableShareModal({ item, onClose, onShared, service }: Deli
         ? err.message
         : (err instanceof Error ? err.message : String(err)));
     }
-  }, [share, item, title, summary, tags, visibility, sync]);
+  }, [share, item, title, summary, tags, visibility, sync, t]);
 
   const doRevoke = useCallback(async () => {
     setError(null);

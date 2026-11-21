@@ -278,7 +278,15 @@
       "openClaw": "OpenClaw",
       "heartbeatRuns": "{{count}} 次心跳",
       "a2aRuns": "{{count}} 次 A2A",
-      "capabilityCollapsed": "能力（工具与技能）— 点开查看"
+      "capabilityCollapsed": "能力（工具与技能）— 点开查看",
+      "workUnit": {
+        "subDelegation": "子任务委派",
+        "delegation": "委派任务",
+        "task": "任务执行",
+        "requirement": "需求处理",
+        "channel": "群聊回复",
+        "unknown": "未知工作单元"
+      }
     },
     "syncContext": {
       "assignedTasks": "带需求与项目可追溯性的任务",
@@ -329,7 +337,8 @@
         "policiesMd": "策略与护栏",
         "contextMd": "上下文与说明"
       },
-      "filesDiffer": "{{count}} 个文件与 {{templateId}} 不一致"
+      "filesDiffer": "{{count}} 个文件与 {{templateId}} 不一致",
+      "emptyFile": "暂无内容"
     },
     "diff": {
       "title": "差异：当前 vs 模板（{{templateId}}）",
@@ -393,7 +402,9 @@
       "observationsCount": "观察",
       "curatedCount": "知识段",
       "archivedChars": "已归档",
-      "lastConsolidated": "上次整理"
+      "lastConsolidated": "上次整理",
+      "charsOfCap": "{{used}} / {{cap}} 字符",
+      "archivedCharsSearchable": "{{count}} 字符（可检索）"
     },
     "heartbeatTab": {
       "loading": "正在加载心跳数据…",
@@ -585,8 +596,17 @@
       "loopIdle": "这段时间没有需要它判断的信号 —— 它在睡或已完成处置",
       "unitEmpty": "这个实体目前没有记录",
       "loadingContent": "正在载入完整正文…",
-      "showMore": "显示更多"
-    }
+      "showMore": "显示更多",
+      "unitTask": "任务 {{id}}",
+      "unitRequirement": "需求 {{id}}",
+      "unitConversation": "会话 {{id}}",
+      "unitLoop": "决策循环（Loop）",
+      "itemCount": "{{count}} 条",
+      "showMoreCount": "显示更多（还有 {{count}} 条）"
+    },
+    "sessionMessagesSubject": "会话消息",
+    "noSessionMessages": "这个会话没有消息",
+    "noDeliverables": "这个 agent 没有任何交付物"
   },
   "deliverables": {
     "empty": "暂无交付物",
@@ -598,6 +618,13 @@
     "created": "创建于",
     "updated": "更新于",
     "accessed": "访问 {{count}} 次",
-    "openInPage": "在产出页面中打开"
+    "openInPage": "在产出页面中打开",
+    "diff": "差异",
+    "testsPassed": "{{n}} 通过",
+    "testsFailed": "{{n}} 失败",
+    "testsSkipped": "{{n}} 跳过",
+    "fileCount": "{{count}} 个文件",
+    "fileCount_one": "{{count}} 个文件",
+    "fileCount_other": "{{count}} 个文件"
   }
 }

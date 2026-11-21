@@ -34,6 +34,9 @@ vi.mock('../src/api.ts', () => ({
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (k: string, o?: { defaultValue?: string }) => o?.defaultValue ?? k }),
+  // See workflowCard.test.tsx: the lib layer imports the i18n singleton, which
+  // needs this export at module load.
+  initReactI18next: { type: '3rdParty', init: () => {} },
 }));
 
 import { TaskApprovalCard } from '../src/components/ExecutionTimeline.tsx';

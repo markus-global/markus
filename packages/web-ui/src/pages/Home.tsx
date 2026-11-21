@@ -374,13 +374,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
 
   const exploreSteps = [
-    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary(t('checklist.explore.greetPrompt')) },
     // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
     // uid 缺失（预览等）时回退到全局存在性。
-    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
-    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary(t('checklist.explore.projectPrompt')) },
+    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary(t('checklist.explore.requirementsPrompt')) },
     // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
-    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
+    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary(t('checklist.explore.teamPrompt')) },
     // 快捷键教学（需求 2）：done = 用户已全部勾选教学清单（per-user localStorage）。
     { id: 'shortcuts', done: shortcutLessonDone, label: t('checklist.explore.shortcuts'), desc: t('checklist.explore.shortcutsDesc'), action: t('checklist.explore.shortcutsAction'), onClick: () => setShowShortcutLesson(true) },
   ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
@@ -764,7 +764,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         )}
                         <span className="text-[10px] text-fg-muted">{formatRelativeTime(d.updatedAt, t)}</span>
                         {d.status === 'verified' && (
-                          <span className="text-[10px] text-blue-500 font-medium">Verified</span>
+                          <span className="text-[10px] text-blue-500 font-medium">{t('common:verified')}</span>
                         )}
                       </div>
                     </div>
@@ -1024,7 +1024,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                     {teamsLimit < teamSummaries.length && (
                       <button onClick={() => navBus.navigate(PAGE.TEAM)}
                         className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
-                        +{teamSummaries.length - teamsLimit} more
+                        {t('common:units.more', { count: teamSummaries.length - teamsLimit })}
                       </button>
                     )}
                   </div>
@@ -1281,7 +1281,7 @@ function WorkingModal({ workingAgents, onClose, t }: {
                     <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
                     <div className="text-[10px] text-fg-tertiary truncate">{(a as any).currentActivity?.label ?? '—'}</div>
                   </div>
-                  <span className="text-[10px] text-green-500 font-medium shrink-0">Working</span>
+                  <span className="text-[10px] text-green-500 font-medium shrink-0">{t('common:processStatus.working')}</span>
                 </div>
               ))}
             </div>
@@ -1349,7 +1349,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
             return (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-fg-secondary">CU Quota</span>
+                  <span className="text-xs text-fg-secondary">{t('systemHealth.cuQuota')}</span>
                   <span className={`text-xs font-semibold ${textColor}`}>
                     {formatTokenCount(used)} / {formatTokenCount(cuQuota.cuLimit)} ({pct}%)
                   </span>
@@ -1360,7 +1360,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
                 </div>
                 {cuQuota.cuUsedToday != null && cuQuota.cuUsedToday > 0 && (
                   <div className="flex items-center justify-between mt-1.5">
-                    <span className="text-xs text-fg-tertiary">Today&apos;s CU Used</span>
+                    <span className="text-xs text-fg-tertiary">{t('systemHealth.cuUsedToday')}</span>
                     <span className="text-xs font-semibold text-fg-secondary">{formatTokenCount(cuQuota.cuUsedToday)}</span>
                   </div>
                 )}

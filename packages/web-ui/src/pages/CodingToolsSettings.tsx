@@ -419,7 +419,7 @@ function ModelCombobox({ name, value, onChange }: { name: CodingToolName; value:
                 >
                   <span className="font-mono">{m.id}</span>
                   {m.name !== m.id && <span className="text-fg-tertiary ml-2">{m.name}</span>}
-                  {m.isDefault && <span className="text-[9px] text-fg-tertiary ml-1.5 bg-surface-primary px-1.5 py-0.5 rounded">default</span>}
+                  {m.isDefault && <span className="text-[9px] text-fg-tertiary ml-1.5 bg-surface-primary px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
                 </button>
               ))}
             </>

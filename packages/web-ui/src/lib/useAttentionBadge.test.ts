@@ -16,10 +16,11 @@ import { renderHook, waitFor, act, cleanup } from '@testing-library/react';
 import { api, type ApprovalInfo } from '../api.ts';
 import { useAttentionBadge } from './useAttentionBadge.ts';
 import { publishAttentionCount, publishUnreadCount } from './attentionCount.ts';
+import type * as AttentionCountModule from './attentionCount.ts';
 
 // 发布通道换成 spies：断言「谁发布了什么数字」，不真的写 localStorage。
 vi.mock('./attentionCount.ts', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./attentionCount.ts')>();
+  const actual = await importOriginal<typeof AttentionCountModule>();
   return { ...actual, publishAttentionCount: vi.fn(), publishUnreadCount: vi.fn() };
 });
 

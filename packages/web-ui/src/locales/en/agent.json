@@ -278,7 +278,15 @@
       "openClaw": "OpenClaw",
       "heartbeatRuns": "{{count}} heartbeats",
       "a2aRuns": "{{count}} A2A runs",
-      "capabilityCollapsed": "Capabilities (tools & skills) — click to expand"
+      "capabilityCollapsed": "Capabilities (tools & skills) — click to expand",
+      "workUnit": {
+        "subDelegation": "Subtask delegation",
+        "delegation": "Task delegation",
+        "task": "Task run",
+        "requirement": "Requirement work",
+        "channel": "Group reply",
+        "unknown": "Unknown work unit"
+      }
     },
     "syncContext": {
       "assignedTasks": "Tasks with requirement & project traceability",
@@ -330,7 +338,8 @@
         "policiesMd": "Policies & Guardrails",
         "contextMd": "Context & Instructions"
       },
-      "filesDiffer": "{{count}} files differ from {{templateId}}"
+      "filesDiffer": "{{count}} files differ from {{templateId}}",
+      "emptyFile": "Empty"
     },
     "diff": {
       "title": "Diff: Current vs Template ({{templateId}})",
@@ -394,7 +403,9 @@
       "observationsCount": "Observations",
       "curatedCount": "Knowledge sections",
       "archivedChars": "Archived",
-      "lastConsolidated": "Last consolidated"
+      "lastConsolidated": "Last consolidated",
+      "charsOfCap": "{{used}} / {{cap}} chars",
+      "archivedCharsSearchable": "{{count}} chars (searchable)"
     },
     "heartbeatTab": {
       "loading": "Loading heartbeat data...",
@@ -586,8 +597,17 @@
       "loopIdle": "No signals needed a decision in this period — it is asleep or already handled them",
       "unitEmpty": "This entity has no records yet",
       "loadingContent": "Loading full content…",
-      "showMore": "Show more"
-    }
+      "showMore": "Show more",
+      "unitTask": "Task {{id}}",
+      "unitRequirement": "Requirement {{id}}",
+      "unitConversation": "Conversation {{id}}",
+      "unitLoop": "Decision loop",
+      "itemCount": "{{count}} items",
+      "showMoreCount": "Show more ({{count}} remaining)"
+    },
+    "sessionMessagesSubject": "Session messages",
+    "noSessionMessages": "This session has no messages",
+    "noDeliverables": "This agent has no deliverables"
   },
   "deliverables": {
     "empty": "No deliverables yet",
@@ -599,6 +619,13 @@
     "created": "Created",
     "updated": "Updated",
     "accessed": "Accessed {{count}} time(s)",
-    "openInPage": "Open in Output"
+    "openInPage": "Open in Output",
+    "diff": "Diff",
+    "testsPassed": "{{n}} passed",
+    "testsFailed": "{{n}} failed",
+    "testsSkipped": "{{n}} skipped",
+    "fileCount": "{{count}} files",
+    "fileCount_one": "{{count}} file",
+    "fileCount_other": "{{count}} files"
   }
 }

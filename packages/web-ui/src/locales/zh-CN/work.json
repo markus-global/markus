@@ -555,7 +555,10 @@
     "scrollForMore": "滚动到底部继续加载",
     "workflowCancelScope": "将取消 {{count}} 个未完成任务（该运行共 {{total}} 个）",
     "workflowCancelScopeUnknown": "该运行共有 {{total}} 个任务（正在统计其中未完成的数量）",
-    "toWorkflows": "工作流"
+    "toWorkflows": "工作流",
+    "workflowYamlParseFailed": "模板 YAML 无法解析",
+    "workflowDuplicateName": "{{name}}（副本）",
+    "stepNotFound": "找不到步骤 {{stepId}}"
   },
   "requirement": {
     "requirements": "需求",

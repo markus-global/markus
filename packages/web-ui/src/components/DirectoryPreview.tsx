@@ -1,5 +1,7 @@
 import { useMemo, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import type { DirectoryEntry } from '../api.ts';
+import i18n from '../i18n/index.ts';
 
 function formatBytes(n?: number): string {
   if (n == null || !Number.isFinite(n)) return '';
@@ -44,12 +46,12 @@ const MEDIA_EXT: Record<string, string> = {
 };
 
 export function prettyTypeLabel(ext?: string, isDirectory = false): string {
-  if (isDirectory) return '目录';
-  if (!ext) return '文件';
+  if (isDirectory) return i18n.t('home:recentDeliverables.directory');
+  if (!ext) return i18n.t('home:recentDeliverables.file');
   const e = ext.replace(/^\./, '').toLowerCase();
   if (MEDIA_EXT[e]) return MEDIA_EXT[e];
   if (FILE_EXT_BADGE[e]) return FILE_EXT_BADGE[e];
-  return e.slice(0, 6).toUpperCase() || '文件';
+  return e.slice(0, 6).toUpperCase() || i18n.t('home:recentDeliverables.file');
 }
 
 interface DirectoryPreviewProps {
@@ -65,6 +67,7 @@ interface DirectoryPreviewProps {
 export function DirectoryPreview({
   path, entries, onNavigate, onOpenFile, onReveal, onCopyPath, emptyText,
 }: DirectoryPreviewProps) {
+  const { t } = useTranslation(['common']);
   const { segments, root } = useMemo(() => splitPath(path), [path]);
   const sep = path.includes('\\') ? '\\' : '/';
   const [copied, setCopied] = useState(false);
@@ -105,9 +108,9 @@ export function DirectoryPreview({
             <button
               className={`shrink-0 text-[11px] cursor-pointer transition-colors ${copied ? 'text-green-500 font-medium' : 'text-fg-secondary hover:text-fg-primary hover:underline'}`}
               onClick={() => void handleCopyPath()}
-              title={copied ? '已复制' : '复制路径'}
+              title={copied ? t('common:ambassador.copied') : t('common:copyPath')}
             >
-              {copied ? '✓ 已复制' : '复制路径'}
+              {copied ? `✓ ${t('common:ambassador.copied')}` : t('common:copyPath')}
             </button>
           )}
           {onReveal && (
@@ -115,7 +118,7 @@ export function DirectoryPreview({
               className="shrink-0 text-[11px] text-fg-secondary hover:text-fg-primary hover:underline cursor-pointer"
               onClick={() => onReveal(path)}
             >
-              在文件浏览器中显示
+              {t('common:revealInFileBrowser')}
             </button>
           )}
         </div>
@@ -147,7 +150,7 @@ export function DirectoryPreview({
       {/* Entry list */}
       <div className="flex-1 overflow-y-auto py-1">
         {entries.length === 0 ? (
-          <p className="px-4 py-8 text-center text-xs text-fg-tertiary">{emptyText ?? '此目录为空'}</p>
+          <p className="px-4 py-8 text-center text-xs text-fg-tertiary">{emptyText ?? t('common:emptyDirectory')}</p>
         ) : (
           entries.map((e) => {
             const badge = e.isDirectory ? undefined : prettyTypeLabel(e.ext);

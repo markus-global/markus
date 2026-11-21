@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import i18n from '../i18n/index.ts';
 import { buildAttentionQueue, actionableCount, formatWaiting, isAgentQuestion, type AttentionInput } from './attentionQueue.ts';
+
+// formatWaiting 的时长文案走 i18n。jsdom 里 LanguageDetector 探到 en，断言
+// '2 小时' 就会因为语言而不是因为分档逻辑变红 —— 钉住语言，让它继续测分档。
+beforeAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
+afterAll(async () => {
+  await i18n.changeLanguage('zh-CN');
+});
 import type { ApprovalInfo, NotificationInfo, RequirementInfo, TaskInfo } from '../api.ts';
 
 const task = (over: Partial<TaskInfo>): TaskInfo => ({

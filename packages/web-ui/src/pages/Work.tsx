@@ -4818,7 +4818,7 @@ export function WorkflowsPanel({ teamId: propTeamId, defaultTeamId, projectId: p
 
     const doc = parseYaml(yamlText) as { steps?: Array<Record<string, unknown>> } | null;
     const step = doc?.steps?.find((entry) => entry?.['id'] === stepId);
-    if (!doc || !step) throw new Error(`找不到步骤 ${stepId}`);
+    if (!doc || !step) throw new Error(t('work:task.stepNotFound', { stepId }));
 
     if (patch.name !== undefined) step['name'] = patch.name;
     if (patch.role !== undefined) step['role'] = patch.role;
@@ -7053,7 +7053,7 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex items-center gap-1.5">
                                     {reqProject && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded truncate max-w-[90px]" title={reqProject.name}>{reqProject.name}</span>}
                                     <span className="text-[10px] text-fg-tertiary">{req.priority}</span>
-                                    <span className="text-[10px] text-fg-muted">by {creatorName}</span>
+                                    <span className="text-[10px] text-fg-muted">{t('work:task.byCreator', { name: creatorName })}</span>
                                   </div>
                                   <div className="flex items-center gap-1">
                                     {req.goalConfig?.loopEnabled && <span className="text-[10px] text-brand-500/70 bg-brand-500/8 px-1.5 py-0.5 rounded-md" title={req.goalConfig.completionCriteria}>🎯 {req.goalConfig.currentIteration}/{req.goalConfig.maxIterations}</span>}
@@ -7114,12 +7114,12 @@ export function WorkPage({ authUser, previewMode, previewData }: { authUser?: Au
                                   <div className="flex flex-wrap gap-1 mb-1.5">
                                     {taskProjName && <span className="text-[10px] px-1.5 py-0.5 bg-surface-overlay/60 text-fg-secondary rounded-md truncate max-w-[100px]" title={taskProjName}>{taskProjName}</span>}
                                     {taskReqTitle && <span className="text-[10px] px-1.5 py-0.5 bg-brand-500/8 text-brand-500 rounded-md truncate max-w-[110px]" title={taskReqTitle}># {taskReqTitle}</span>}
-                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {task.blockedBy.length} dep{task.blockedBy.length > 1 ? 's' : ''}</span>}
+                                    {task.blockedBy && task.blockedBy.length > 0 && <span className="text-[10px] px-1.5 py-0.5 bg-amber-500/10 text-amber-600 rounded-md">⏳ {t('work:dag.depCount', { count: task.blockedBy.length })}</span>}
                                   </div>
                                 )}
                                 <div className="flex items-center justify-between mt-auto pt-1.5 border-t border-border-default/20">
                                   <div className="flex items-center gap-1.5">
-                                    {taskCreatorName && <span className="text-[10px] text-fg-muted" title={`by ${taskCreatorName}`}>by {taskCreatorName}</span>}
+                                    {taskCreatorName && <span className="text-[10px] text-fg-muted" title={t('work:task.byCreator', { name: taskCreatorName })}>{t('work:task.byCreator', { name: taskCreatorName })}</span>}
                                   </div>
                                   <div className="flex items-center gap-1.5">
                                     {subCount > 0 && <span className="text-[10px] text-fg-tertiary">⋮ {subCount}</span>}

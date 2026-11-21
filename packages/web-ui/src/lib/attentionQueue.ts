@@ -26,6 +26,7 @@
  * `requestedAt`, a requirement `createdAt`, a task `statusChangedAt`; only rows
  * with no exact field fall back to `approximate`, and the UI then says "约".
  */
+import i18n from '../i18n/index.ts';
 import type { ApprovalInfo, NotificationInfo, RequirementInfo, TaskInfo } from '../api.ts';
 import { blockedReasonOf } from './blockedReason.ts';
 import { notificationTarget } from './notifyNavigate.ts';
@@ -242,11 +243,16 @@ export function formatWaiting(item: Pick<AttentionItem, 'waitingSince' | 'waitin
   const hours = Math.floor(min / 60);
   const days = Math.floor(hours / 24);
   let core: string;
-  if (min < 1) core = '<1 分钟';
-  else if (min < 60) core = `${min} 分钟`;
-  else if (hours < 24) core = `${hours} 小时`;
-  else if (days < 30) core = hours % 24 > 0 ? `${days} 天 ${hours % 24} 小时` : `${days} 天`;
-  else core = '>30 天';
-  return item.waitingBasis === 'approximate' ? `约 ${core}` : core;
+  if (min < 1) core = i18n.t('common:duration.lessThan1Minute');
+  else if (min < 60) core = i18n.t('common:duration.minutes', { count: min });
+  else if (hours < 24) core = i18n.t('common:duration.hours', { count: hours });
+  else if (days < 30) {
+    core = hours % 24 > 0
+      ? i18n.t('common:duration.daysHours', { days, hours: hours % 24 })
+      : i18n.t('common:duration.days', { count: days });
+  } else core = i18n.t('common:duration.moreThan30Days');
+  return item.waitingBasis === 'approximate'
+    ? i18n.t('common:duration.approximate', { duration: core })
+    : core;
 }
 

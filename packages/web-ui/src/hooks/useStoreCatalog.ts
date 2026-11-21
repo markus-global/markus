@@ -13,6 +13,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { api, hubApi, type HubItem } from '../api.ts';
 import { readList, combineSources, loadingResource, type Resource, type CombinedSources } from '../lib/resourceState.ts';
+import i18n from '../i18n/index.ts';
 import { mergeHighlightedHubItem } from '../lib/hubDeepLink.ts';
 
 export interface StoreCatalog<T> {
@@ -91,8 +92,8 @@ export function useStoreCatalog<T>(options: {
   const reload = useCallback(() => setNonce(n => n + 1), []);
 
   const sources = combineSources([
-    { label: 'Hub 资产', state: hub.state },
-    { label: '本地模板', state: templates.state },
+    { label: i18n.t('store:catalog.hubAssets'), state: hub.state },
+    { label: i18n.t('store:catalog.localTemplates'), state: templates.state },
   ]);
 
   return { hub, templates, sources, reload };

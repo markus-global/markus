@@ -207,7 +207,8 @@
     "now": "刚刚",
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
-    "daysAgo": "{{count}} 天前"
+    "daysAgo": "{{count}} 天前",
+    "yesterday": "昨天"
   },
   "signOut": "登出",
   "openInBrowser": "在浏览器中打开",
@@ -494,7 +495,13 @@
       "execution_finished": "已完成"
     },
     "prompt": "提示词",
-    "inputArguments": "输入参数"
+    "inputArguments": "输入参数",
+    "earlierStepsOmitted": "已省略前 {{n}} 个步骤",
+    "filesChanged": "{{n}} 个文件变更",
+    "modifiedFiles": "修改的文件",
+    "cost": "费用",
+    "inputTokens": "输入 Token {{n}}",
+    "outputTokens": "输出 Token {{n}}"
   },
   "taskDag": {
     "noTasks": "没有可显示的任务",
@@ -575,7 +582,9 @@
     "scaleStandard": "标准",
     "scaleLarge": "大号",
     "typographySettings": "字体排版设置",
-    "typographyDesc": "调整复制 HTML 时的字体和字号"
+    "typographyDesc": "调整复制 HTML 时的字体和字号",
+    "imageLoadFailed": "图片加载失败 — 点击重试",
+    "clickToRetry": "点击重试"
   },
   "activity": {
     "step_one": "{{count}} 步",
@@ -830,12 +839,54 @@
   "browserTest": {
     "title": "浏览器集成测试套件",
     "subtitle": "多智能体并发浏览器测试，含正确性校验",
-    "failuresOnly": "仅看失败"
+    "failuresOnly": "仅看失败",
+    "extensionNotConnected": "未连接 Chrome 扩展，请先连接扩展再运行测试。",
+    "quickTab": "快速测试（约 15 秒）",
+    "chaosTab": "混沌测试",
+    "runQuick": "运行快速测试",
+    "duration": "时长",
+    "startChaos": "开始混沌测试",
+    "passedCount": "{{n}} 通过",
+    "failedCount": "{{n}} 失败",
+    "completeSummary": "完成：{{passed}}/{{total}} 通过，用时 {{seconds}} 秒",
+    "liveLogFailures": "实时日志（{{n}} 条失败）",
+    "liveLogOps": "实时日志（{{n}} 条操作）"
   },
   "menu": "菜单",
   "forward": "前进",
   "fileNotFound": "文件不存在",
   "htmlPreview": "HTML 预览",
   "revealInFileExplorer": "在文件管理器中显示",
-  "publishToHub": "发布到 Markus Hub"
+  "publishToHub": "发布到 Markus Hub",
+  "duration": {
+    "unknown": "时长未知",
+    "lessThanAMinute": "不到 1 分钟",
+    "lessThan1Minute": "<1 分钟",
+    "minutes": "{{count}} 分钟",
+    "hours": "{{count}} 小时",
+    "days": "{{count}} 天",
+    "daysHours": "{{days}} 天 {{hours}} 小时",
+    "moreThan30Days": ">30 天",
+    "approximate": "约 {{duration}}"
+  },
+  "loadFailed": "读取失败",
+  "readErrorNotice": "{{subject}}读取失败：{{error}}（这不等于「{{notEquals}}」）",
+  "emptyDirectory": "此目录为空",
+  "revealInFileBrowser": "在文件浏览器中显示",
+  "backToParentDir": "返回上级目录",
+  "goUp": "上级",
+  "clickToPreview": "点击预览",
+  "clickToRevealInExplorer": "点击在文件管理器中显示",
+  "codingTool": {
+    "files": "{{n}} 个文件",
+    "tokensIn": "输入 {{n}}",
+    "tokensOut": "输出 {{n}}"
+  },
+  "slashMenu": {
+    "commands": "命令"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} 个步骤 · v{{version}}"
+  },
+  "readFailed": "读取失败"
 }

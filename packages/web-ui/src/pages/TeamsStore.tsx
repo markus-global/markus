@@ -5,6 +5,7 @@ import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { installHubItem, purchaseAndInstall, hubItemSlug } from './TemplateMarketplace.tsx';
 import { useStoreCatalog } from '../hooks/useStoreCatalog.ts';
 import { ReadErrorNotice } from '../components/ListState.tsx';
+import { formatSourceList } from '../lib/resourceState.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
@@ -302,9 +303,9 @@ export function TeamsStore({ highlightItemId, onHighlightDone }: { highlightItem
       <div className="flex-1 overflow-y-auto p-7 space-y-8">
         {catalog.sources.failures.length > 0 && (
           <ReadErrorNotice
-            subject={catalog.sources.failures.join('、')}
-            error={catalog.hub.error ?? catalog.templates.error ?? '读取失败'}
-            notEquals="这里没有任何团队模板或 Hub 资产"
+            subject={formatSourceList(catalog.sources.failures)}
+            error={catalog.hub.error ?? catalog.templates.error ?? t('common:readFailed')}
+            notEquals={t('store:teamsStore.nothingHere')}
             onRetry={catalog.reload}
           />
         )}
