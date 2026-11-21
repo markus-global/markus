@@ -40,7 +40,6 @@ export interface WorkUnitPort {
     opts?: { statuses?: WorkUnitStatus[]; includeArchived?: boolean; limit?: number },
   ): WorkUnitRecord[];
   listChildren(parentId: string): WorkUnitRecord[];
-  linkMailboxItem(itemId: string, ref: string): boolean;
 }
 
 export interface WorkUnitSeedLike {
@@ -192,28 +191,6 @@ export class WorkUnitService {
       if (code === 'invalid_work_unit_transition') throw err;
       this.fail('work_unit.transition_failed', ref, undefined, String(err));
       return null;
-    }
-  }
-
-  /**
-   * 让 C6 墓碑变活：把本次执行的 WU ref 写到触发它的 mailbox 行上。
-   *
-   * 调用纪律：**WU 已存在之后**才写（先实体后引用）。itemId 或 ref 未知就直接跳过 ——
-   * 宁可这一行留 NULL，也不猜「大概是最近那条」、更不为了凑一个 ref 临时造一行 WU。
-   * `ref === null` 是调用方的显式表态（这条活此刻没有 WU），静默 no-op 不抛。
-   */
-  linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean {
-    if (!itemId || !ref) return false;
-    try {
-      const ok = this.deps.repo.linkMailboxItem(itemId, ref);
-      if (!ok) {
-        // 0 行被改 = 这一行不存在或已被收口清理。不是错误，但必须可见。
-        this.emit({ type: 'work_unit.link_failed', ref, itemId, error: 'mailbox item not found' });
-      }
-      return ok;
-    } catch (err) {
-      this.fail('work_unit.link_failed', ref, undefined, String(err), itemId);
-      return false;
     }
   }
 

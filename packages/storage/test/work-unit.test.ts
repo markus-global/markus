@@ -5,7 +5,7 @@
  *   · 并发 `ensure` 同一 ref ⇒ 恰一行（唯一索引兜底，不靠调用方自觉）；
  *   · 非法迁移被矩阵判红，且**状态未被改动**（不是「先写后报错」）；
  *   · 每次合法迁移都在 `status_transitions` 留下 `entity_type='work_unit'` 的行；
- *   · `mailbox_items.work_unit_ref` 能从 NULL 被写成真实 ref（C6 的墓碑变活）。
+ *   · `mailbox_items.work_unit_ref` 的唯一写者是入队 INSERT（C10-0B 删除了“事后补列”的写者）。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -15,7 +15,6 @@ import {
   openSqlite,
   closeSqlite,
   SqliteWorkUnitRepo,
-  SqliteMailboxRepo,
   SqliteStatusTransitionRepo,
 } from '../src/sqlite-storage.js';
 import { DatabaseSync } from 'node:sqlite';
@@ -129,35 +128,6 @@ describe('transition（矩阵的唯一执行点）', () => {
     r.transition(row.ref, 'terminated');
     r.transition(row.ref, 'archived');
     expect(r.getByRef(row.ref)!.archivedAt).toBeTruthy();
-  });
-});
-
-describe('linkMailboxItem（让 C6 的墓碑变活）', () => {
-  it('把 NULL 的 work_unit_ref 写成真实 ref；返回 true', () => {
-    const db = openDb();
-    const mailbox = new SqliteMailboxRepo(db);
-    mailbox.save({
-      id: 'mbx_1',
-      agentId: 'agt_a',
-      sourceType: 'human_chat',
-      priority: 0,
-      status: 'queued',
-      payload: { summary: 'hi', content: 'hello' },
-      metadata: {},
-      queuedAt: '2026-11-13T00:00:00.000Z',
-    } as never);
-
-    const r = new SqliteWorkUnitRepo(db);
-    const { row } = r.ensure({ ref: 'session:cs_5:r1', agentId: 'agt_a' });
-    expect(r.linkMailboxItem('mbx_1', row.ref)).toBe(true);
-    const after = mailbox.getById?.('mbx_1') ?? mailbox.findById('mbx_1');
-    expect(after?.workUnitRef).toBe(row.ref);
-  });
-
-  it('行不存在 ⇒ 返回 false（不静默成功）', () => {
-    const r = repo();
-    r.ensure({ ref: 'session:cs_6:r1', agentId: 'agt_a' });
-    expect(r.linkMailboxItem('mbx_missing', 'session:cs_6:r1')).toBe(false);
   });
 });
 

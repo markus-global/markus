@@ -4562,18 +4562,25 @@ export class SqliteMailboxRepo {
     dropReason?: string | null;
     /** C3：catch-all 概览桶 id（退信行归集目标）。 */
     bounceTarget?: string | null;
-    /** C8：入队即已知的回合身份（与行同时写入；后补身份仍走 `linkMailboxItem`）。 */
+    /**
+     * C8：入队即已知的身份（与行同时写入）。
+     *
+     * C10-0B：**入队是这一列的唯一写者**。曾经存在一条「后补身份」的 UPDATE
+     * 路径（先入队、再改写这列），它不碰内存里的 item —— 而决策台账读的是内存，
+     * 于是同一行在库里带身份、在台账里永远 NULL。那条路径已删除。
+     */
     workUnitRef?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
         // `work_unit_ref` 在这里**也要写**：C8 之后它是入队参数，入队那一刻就已知。
         // 2026-11-14 真机证据：生产者（task/requirement/mention/review_request）
-        // 都传了 `workUnitRef`，但 INSERT 不写这一列、又没有一处调 `linkMailboxItem`，
-        // 于是取消投递带上了 `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、
-        // 没身份，`turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
+        // 都传了 `workUnitRef`，但 INSERT 不写这一列，于是取消投递带上了
+        // `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、没身份，
+        // `turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
         //
-        // 后补身份仍走 `linkMailboxItem()`（活开始后才拿到身份的路径）。
+        // C10-0B：INSERT 是这一列的**唯一**写点；任何“入队后再 UPDATE 这一列”的
+        // 路径都是第二个建适点（已全部删除）。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
                                     envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -6044,18 +6051,6 @@ export class SqliteWorkUnitRepo {
     return typeof n === 'bigint' ? Number(n) : n;
   }
 
-  /**
-   * 让 C6 的墓碑变活：把 `mailbox_items.work_unit_ref` 写成本 WU 的 ref。
-   *
-   * 只有这一处写这列（本文件 + 本方法），而且只在**实体已存在之后**写：
-   * 顺序反过来就是 C6 刻意避免的「先建引用后建实体」。
-   */
-  linkMailboxItem(itemId: string, ref: string): boolean {
-    const res = this.db
-      .prepare('UPDATE mailbox_items SET work_unit_ref = ? WHERE id = ?')
-      .run(ref, itemId);
-    return ((res as { changes?: number }).changes ?? 0) === 1;
-  }
 }
 
 // ─── Integration ─────────────────────────────────────────────────────────────

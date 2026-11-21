@@ -2304,6 +2304,11 @@ export class TaskService implements ApprovalTargetPort {
       }
     }
 
+    // C10-0B §3.1：身份在**入队前**确定（先建实体、再建引用）。
+    // 与 A2A 投递同一个纪律（agent-delivery.ts）：顺序反过来就只能“先入队、
+    // 事后补 DB 列”，而补写不碰内存 —— 台账（读内存）与库分成两套真相。
+    const executionWorkUnitRef = this.ensureExecutionEpoch(taskId, executionRound);
+
     // Fire and forget — routed through agent mailbox for single-threaded attention
     void agent
       .sendTaskExecution(
@@ -2549,12 +2554,9 @@ export class TaskService implements ApprovalTargetPort {
         task.title,
         task.requirementId,
         retryNotice,
-        // C7-B：task 链路的 mailbox item 由 `sendTaskExecution` 内部的 enqueue 产生，
-        // 这是拿到它 id 的唯一时机（猜「最近一条」= 从时序推断结构）。
-        // C7 尾巴：走 linkExecutionEpoch —— 先 ensure 本 round 的实体，再写引用。
-        (item) => {
-          this.linkExecutionEpoch(item.id, taskId, executionRound);
-        },
+        // C10-0B §3.1：本纪元的身份（已 ensure 到 running），由 mailbox 在入队时写进
+        // 内存 item 与 DB 行 —— 同一个值、同一个时刻、同一个写者。
+        executionWorkUnitRef,
       )
       .catch(err => {
         log.error('Task execution promise rejected', { taskId, error: String(err) });
@@ -2754,13 +2756,20 @@ export class TaskService implements ApprovalTargetPort {
    * 所以 round ≥2（打回返工 / fresh retry）的 mailbox 行指向不存在的实体也没人报错 ——
    * `resolve(ref)` 返 null → 锁键退化、该回合发起的委派 `parent_id` 落 NULL。
    *
-   * 规则只在这里实现一次：**先 ensure 实体，再写引用**。两个调用点共用它，
+   * 规则只在这里实现一次：**先 ensure 实体，再交出引用**。两个调用点共用它，
    * 不各补一次（同一事实两个执行点 = 必然漂移）。
+   *
+   * C10-0B §3.1：本方法只**回答**「这一纪元的身份是什么」，不再碰 mailbox 行。
+   * 旧实现末尾会再调一次“只写 DB 列”的补写方法 —— 内存里的 item 仍是 null，
+   * 而决策台账读的是内存。现在 ref 由调用方在
+   * `sendTaskExecution` **之前**拿到并作为必填参数传入，入队即带身份（内存 + DB 同源）。
    */
-  private linkExecutionEpoch(itemId: string, taskId: string, round: number): void {
-    const units = this.workUnitService;
-    if (!units) return;
+  private ensureExecutionEpoch(taskId: string, round: number): string {
     const ref = WORK_UNIT_REF.task(taskId, round);
+    const units = this.workUnitService;
+    // 没装配 WU 服务 = 本实例不记账，但**身份本身仍然存在**（它是任务的执行纪元，
+    // 不是台账的产物）。返回它，让 mailbox 行照常带身份（观测设施不能成为业务故障点）。
+    if (!units) return ref;
     // 取不到 assignee 时传空串：`ensure()` 会把它记成结构化的 ensure_failed 事件，
     // 而不是静默跳过 —— 静默跳过就是下一个“引用悬空”。
     const agentId = this.tasks.get(taskId)?.assignedAgentId ?? '';
@@ -2770,7 +2779,7 @@ export class TaskService implements ApprovalTargetPort {
     if (row && row.status !== 'running') {
       units.transition(ref, 'running', { changedByType: 'system', reason: 'execution_started' });
     }
-    units.linkMailboxItem(itemId, ref);
+    return ref;
   }
 
   createTask(request: CreateTaskRequest): Task {
@@ -6405,6 +6414,9 @@ export class TaskService implements ApprovalTargetPort {
       } catch { /* start from 0 */ }
     }
 
+    // C10-0B §3.1：fresh retry 是**新纪元**，身份同样在入队前确定（自己那条实体）。
+    const freshRetryWorkUnitRef = this.ensureExecutionEpoch(taskId, executionRound);
+
     void agent
       .sendTaskExecution(
         taskId,
@@ -6493,11 +6505,8 @@ export class TaskService implements ApprovalTargetPort {
         task.title,
         task.requirementId,
         undefined,
-        // C7-B：同主执行路径 —— item id 只能来自 sendTaskExecution 的入队回调。
-        // C7 尾巴：同一执行点（fresh retry 也是新纪元，必须自己那条实体）。
-        (item) => {
-          this.linkExecutionEpoch(item.id, taskId, executionRound);
-        },
+        // C10-0B §3.1：同主执行路径 —— 身份在入队前确定，入队即带身份。
+        freshRetryWorkUnitRef,
       )
       .catch(err => {
         log.error('Fresh retry execution rejected', { taskId, error: String(err) });

@@ -253,20 +253,15 @@ describe('C8-A — A2A 的身份由实体回答', () => {
   /** 只关心「ref / 会话 key 怎么算」的端口替身。 */
   function makeWuDeps(turnRef: string | null) {
     const ensured: Array<{ ref: string; parentRef?: string | null }> = [];
-    const linked: Array<{ itemId?: string | null; ref: string | null }> = [];
     const workUnits: DeliveryDeps['workUnits'] = {
       ensure: vi.fn((seed: { ref: string; parentRef?: string | null }) => {
         ensured.push({ ref: seed.ref, parentRef: seed.parentRef });
         return { status: 'running' };
       }),
       turnWorkUnitRef: vi.fn(() => turnRef),
-      linkMailboxItem: vi.fn((itemId: string | null | undefined, ref: string | null) => {
-        linked.push({ itemId, ref });
-        return true;
-      }),
       transition: vi.fn(),
     };
-    return { workUnits, ensured, linked };
+    return { workUnits, ensured };
   }
 
   it('同一任务连发三条 → 三个 item 共享同一个 ref（旧实现是三个）', () => {
@@ -327,11 +322,21 @@ describe('C8-A — A2A 的身份由实体回答', () => {
     expect(refs[0]).not.toBe(refs[1]);
   });
 
-  it('DB 引用仍由 linkMailboxItem 写（该列的唯一写者不变）', () => {
-    const { workUnits, linked } = makeWuDeps('task_tsk_1_r2');
-    const { deps } = makeDeps({ workUnits });
+  it('DB 引用在入队那一刻就带上 entityRef（唯一写者是 INSERT；入队后不再有 link）', () => {
+    const { workUnits } = makeWuDeps('task_tsk_1_r2');
+    const { deps, enqueued } = makeDeps({ workUnits });
     new AgentDelivery(deps).deliver(req());
-    expect(linked).toHaveLength(1);
-    expect(linked[0]!.ref).toBe('a2a:task:tsk_1');
+
+    // 入队参数就是 mailbox INSERT 写进 `mailbox_items.work_unit_ref` 的那个值 ——
+    // 内存与 DB 同源，身份不需要事后再补。
+    expect(enqueued).toHaveLength(1);
+    expect(enqueued[0]!.options?.['workUnitRef']).toBe('a2a:task:tsk_1');
+
+    // 事后补列的写者已删除：端口不再宣告 `linkMailboxItem`，因此 deliver() 之后
+    // 没有任何第二次写这一列的机会（零回填是结构事实，不是“恰好没调”）。
+    expect('linkMailboxItem' in workUnits).toBe(false);
+    expect(Object.keys(workUnits).sort()).toEqual(['ensure', 'transition', 'turnWorkUnitRef']);
+    // NULL_WORK_UNITS 的形状同步收缩（它是“没有 WU 服务”时的显式替身）。
+    expect(Object.keys(NULL_WORK_UNITS).sort()).toEqual(['ensure', 'transition', 'turnWorkUnitRef']);
   });
 });
