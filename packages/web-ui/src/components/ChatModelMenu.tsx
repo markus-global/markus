@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api } from '../api';
 import { fetchLlmSettings, invalidateLlmSettings } from '../lib/llmSettingsCache';
+import { notifyAgentModelChanged } from '../lib/agentModelSignals';
 import { isChatCapableModel } from '../lib/modelCapabilities';
 import { Switch } from './Switch';
 
@@ -375,6 +376,7 @@ export async function applyChatModelSelection(
         defaultModel: sel.model,
       },
     });
+    notifyAgentModelChanged(agentId);
     return;
   }
   // global scope
@@ -382,9 +384,11 @@ export async function applyChatModelSelection(
   // that agent to "follow global" — otherwise the composer shows the global
   // pick but the agent still uses its own bound model (ambiguous).
   if (agentId && opts?.resetCurrentAgent !== false) {
+    // `null` clears the key server-side; `undefined` would be dropped by
+    // JSON.stringify and leave the old model on the row.
     await api.agents.updateConfig(agentId, {
-      llmConfig: { modelMode: 'default', primary: '', defaultModel: undefined },
-    }).catch(() => { /* best-effort; per-agent cache refreshes on next agent switch */ });
+      llmConfig: { modelMode: 'default', primary: '', defaultModel: null },
+    }).then(() => notifyAgentModelChanged(agentId)).catch(() => { /* best-effort */ });
   }
   await api.settings.updateRouting({
     defaultProvider: sel.provider,

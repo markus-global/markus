@@ -16,7 +16,18 @@ interface Props {
   value: string;
   options: ModelOption[];
   placeholder?: string;
-  onChange: (value: string) => void;
+  /**
+   * `value` is the display key (`provider/modelId`); `option` is the picked
+   * entry, or null when the selection is cleared.
+   *
+   * Callers MUST take provider/modelId from `option`, never re-split `value`.
+   * Model ids legitimately contain slashes (`qwen/qwen4-max`), so a joined
+   * `markus/qwen/qwen4-max` cannot be pulled apart again — splitting on the last
+   * slash yielded provider `markus/qwen`, which no router knows, and the agent
+   * silently fell back to the global default while the UI still looked bound.
+   * Handing back the option makes that class of bug unrepresentable.
+   */
+  onChange: (value: string, option: ModelOption | null) => void;
 }
 
 export function ModelSelect({ value, options, placeholder, onChange }: Props) {
@@ -103,9 +114,10 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
       case 'Enter':
         e.preventDefault();
         if (focusIndex === -1) {
-          onChange('');
+          onChange('', null);
         } else if (flatList[focusIndex]) {
-          onChange(`${flatList[focusIndex].provider}/${flatList[focusIndex].modelId}`);
+          const picked = flatList[focusIndex];
+          onChange(`${picked.provider}/${picked.modelId}`, picked);
         }
         setOpen(false);
         setSearch('');
@@ -148,7 +160,7 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
           <div ref={listRef} className="overflow-y-auto flex-1">
             <div
               className={`px-3 py-1.5 text-xs cursor-pointer ${focusIndex === -1 ? 'bg-brand-500/20 text-brand-500' : 'text-fg-secondary hover:bg-surface-overlay'}`}
-              onClick={() => { onChange(''); setOpen(false); setSearch(''); }}
+              onClick={() => { onChange('', null); setOpen(false); setSearch(''); }}
             >
               {placeholder ?? t('modelRouting.auto')}
             </div>
@@ -167,7 +179,7 @@ export function ModelSelect({ value, options, placeholder, onChange }: Props) {
                       className={`px-3 py-1.5 text-xs cursor-pointer flex items-center gap-2 ${
                         idx === focusIndex ? 'bg-brand-500/20' : isActive ? 'bg-surface-overlay' : 'hover:bg-surface-overlay/50'
                       }`}
-                      onClick={() => { onChange(`${m.provider}/${m.modelId}`); setOpen(false); setSearch(''); }}
+                      onClick={() => { onChange(`${m.provider}/${m.modelId}`, m); setOpen(false); setSearch(''); }}
                     >
                       <span className="flex-1 truncate text-fg-primary">{m.modelName}</span>
                       {m.tier && <TierMicroBadge tier={m.tier} />}

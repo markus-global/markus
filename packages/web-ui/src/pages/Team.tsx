@@ -67,6 +67,7 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
+import { onAgentModelChanged } from '../lib/agentModelSignals.ts';
 import { shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
   sessionStreamState,
@@ -852,13 +853,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * stale model name.
    */
   const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
+  /**
+   * Bumped whenever the binding may have changed under us, so the hydration
+   * effect below re-reads it. Switching agents is not the only way the value
+   * changes: Settings > 模型配置 writes the same field while this page stays
+   * mounted, and an agent can rebind its own model with a tool.
+   */
+  const [modelRevision, setModelRevision] = useState(0);
+
+  // Another surface (settings section, composer menu) announced a write.
+  useEffect(() => onAgentModelChanged(id => {
+    if (id === selectedAgent) setModelRevision(n => n + 1);
+  }), [selectedAgent]);
+
+  // Writes made outside the renderer cannot announce themselves, so re-read the
+  // authority when the user comes back to the window.
+  useEffect(() => {
+    const onFocus = () => setModelRevision(n => n + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   // Hydrate the composer's model label from the backend's authoritative
-  // `effectiveModel`. This is the ONLY writer besides the composer's own
-  // onSelect — no per-session/per-turn state is involved, so the label cannot
-  // lag behind the agent it belongs to (the old code re-read a per-session
-  // override *after* an awaited history fetch, which is why the name only
-  // refreshed on a second visit / full reload).
+  // `effectiveModel`. No per-session/per-turn state is involved, so the label
+  // cannot lag behind the agent it belongs to (the old code re-read a
+  // per-session override *after* an awaited history fetch, which is why the name
+  // only refreshed on a second visit / full reload).
   useEffect(() => {
     if (!selectedAgent) { setAgentBoundModel(null); return; }
     let cancelled = false;
@@ -872,7 +892,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       })
       .catch(() => { if (!cancelled) setAgentBoundModel(null); });
     return () => { cancelled = true; };
-  }, [selectedAgent]);
+  }, [selectedAgent, modelRevision]);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
   const compactComposerRef = useRef(false);
