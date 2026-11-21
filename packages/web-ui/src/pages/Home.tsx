@@ -10,8 +10,8 @@ import { MobileMenuButton } from '../components/MobileMenuButton.tsx';
 import { ClaimFreeCreditsModal } from '../components/ClaimFreeCreditsModal.tsx';
 import { ShortcutLessonModal } from '../components/ShortcutLessonModal.tsx';
 import { HistoryModal } from '../components/HistoryModal.tsx';
-import { publishAttentionCount, publishUnreadCount, readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
-import { buildAttentionQueue, actionableCount, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
+import { readAttentionLastSeen, writeAttentionLastSeen } from '../lib/attentionCount.ts';
+import { buildAttentionQueue, formatWaiting, type AttentionItem, type AttentionKind } from '../lib/attentionQueue.ts';
 import { notifTitle } from '../lib/notifyText.ts';
 import { markNotificationThreadRead } from '../lib/notifyRead.ts';
 import { NamedIcon } from '../lib/namedIcons.tsx';
@@ -374,13 +374,13 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
   ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
 
   const exploreSteps = [
-    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary('你好！我是新用户，请简单介绍一下你能帮我做什么？') },
+    { id: 'greet', done: secretaryHasChat, label: t('checklist.explore.greet'), desc: t('checklist.explore.greetDesc'), action: t('checklist.explore.greetAction'), onClick: () => navigateToSecretary(t('checklist.explore.greetPrompt')) },
     // Per-user ownership: 存量组织里的老数据不应让新用户误以为已完成。
     // uid 缺失（预览等）时回退到全局存在性。
-    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary('帮我创建一个名为「Markus探索」的项目，用于了解和体验Markus的各项能力') },
-    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary('在「Markus探索」项目中创建两个需求：1. 了解Markus开源项目的架构和设计理念 2. 探索Markus智能体的能力和使用方式') },
+    { id: 'project', done: uid ? projects.some(p => p.createdBy === uid) : projects.length > 0, label: t('checklist.explore.project'), desc: t('checklist.explore.projectDesc'), action: t('checklist.explore.projectAction'), onClick: () => navigateToSecretary(t('checklist.explore.projectPrompt')) },
+    { id: 'requirements', done: uid ? allRequirements.some(r => r.createdBy === uid) : allRequirements.length > 0, label: t('checklist.explore.requirements'), desc: t('checklist.explore.requirementsDesc'), action: t('checklist.explore.requirementsAction'), onClick: () => navigateToSecretary(t('checklist.explore.requirementsPrompt')) },
     // TeamInfo 无 createdBy 归属字段，保持全局存在性判定。
-    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary('帮我组建一个名为「科技前沿智库」的团队，成员包括4位科技领袖角色的智能体：埃隆·马斯克（关注太空、电动车、AI安全）、史蒂夫·乔布斯（关注产品设计与用户体验）、山姆·奥特曼（关注AGI与AI创业生态）、黄仁勋（关注GPU、AI算力与数据中心）。团队目标是从不同视角分析科技前沿趋势。') },
+    { id: 'team', done: teams.length > 0, label: t('checklist.explore.team'), desc: t('checklist.explore.teamDesc'), action: t('checklist.explore.teamAction'), onClick: () => navigateToSecretary(t('checklist.explore.teamPrompt')) },
     // 快捷键教学（需求 2）：done = 用户已全部勾选教学清单（per-user localStorage）。
     { id: 'shortcuts', done: shortcutLessonDone, label: t('checklist.explore.shortcuts'), desc: t('checklist.explore.shortcutsDesc'), action: t('checklist.explore.shortcutsAction'), onClick: () => setShowShortcutLesson(true) },
   ] as Array<{ id: string; done: boolean; isSetup?: boolean; optional?: boolean; label: string; desc: string; action: string; onClick: () => void }>;
@@ -550,7 +550,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     notifyTitle: n => notifTitle(n, t),
   }), [allTasksFlat, allRequirements, approvals, unreadNotices, allTasksMap, attentionLastSeen, t]);
 
-  const actionables = useMemo(() => actionableCount(attentionQueue), [attentionQueue]);
   const newCount = useMemo(() => attentionQueue.filter(i => i.isNew).length, [attentionQueue]);
   /** 等待时长每分钟刷一次（不是每帧）——「等了 3 小时」不需要秒级精度。 */
   const [waitTick, setWaitTick] = useState(() => Date.now());
@@ -559,15 +558,9 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     return () => window.clearInterval(timer);
   }, []);
 
-  /**
-   * 待办数的**唯一计算点**仍在这里：概览算完就发布，侧栏/底栏只订阅（`lib/attentionCount`）。
-   * 口径（Owner 2026-11-08）：数字 = 要你动手的 + 未读消息。未读由 `publishUnreadCount`
-   * 单独发布、读取时合并，所以这里只发布 actionables，避免同一件事计两次。
-   */
-  useEffect(() => {
-    if (previewMode) return;
-    publishAttentionCount(actionables);
-  }, [actionables, previewMode]);
+  // 徽标数字不在本页发布：改由 App 根部常驻的 `useAttentionBadge` 全局计算并发布
+  // （lib/useAttentionBadge.ts），与当前停在哪个页面无关。本页只负责渲染队列。
+  // 口径（Owner 2026-11-08）：数字 = 要你动手的 + 未读消息，两者在读取时合并。
 
   // 停留 3 秒后才写回 last-seen：一进页面就写，等于把「新」全吃掉，标记就失去意义。
   useEffect(() => {
@@ -585,23 +578,6 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
     navBus.navigate(item.target.page === 'WORK' ? PAGE.WORK : PAGE.TEAM, item.target.params);
   }, [unreadNotices]);
 
-  // 未读数单独取、合并发布：用户看到的徒标就一个数字，但两个来源得各自更新。
-  useEffect(() => {
-    if (previewMode || !isActive) return;
-    let alive = true;
-    const refresh = () => {
-      api.notifications.list(authUser?.id, true, { limit: 1 })
-        .then(r => { if (alive) publishUnreadCount(r.unreadCount ?? 0); })
-        // 读失败不改写徒标：宁可显示上一次已知的数字，也不谎报 0。
-        .catch(() => undefined);
-    };
-    refresh();
-    window.addEventListener('markus:notifications-changed', refresh);
-    return () => {
-      alive = false;
-      window.removeEventListener('markus:notifications-changed', refresh);
-    };
-  }, [previewMode, isActive, authUser?.id]);
 
   const taskPriorityMap = useMemo(() => {
     const m = new Map<string, string>();
@@ -664,7 +640,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
         </div>
         <div data-no-drag className="flex items-center gap-1.5">
           <button onClick={() => previewMode ? undefined : isMobile ? navBus.navigate(PAGE.SEARCH) : window.dispatchEvent(new CustomEvent('markus:open-search'))}
-            className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Search">
+            className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label={t('search')}>
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" /></svg>
           </button>
           <CreateMenu ref={createMenuRef} show={showCreateMenu} onToggle={() => setShowCreateMenu(!showCreateMenu)} onClose={() => setShowCreateMenu(false)} t={t} isMobile={isMobile} />
@@ -788,7 +764,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                         )}
                         <span className="text-[10px] text-fg-muted">{formatRelativeTime(d.updatedAt, t)}</span>
                         {d.status === 'verified' && (
-                          <span className="text-[10px] text-blue-500 font-medium">Verified</span>
+                          <span className="text-[10px] text-blue-500 font-medium">{t('common:verified')}</span>
                         )}
                       </div>
                     </div>
@@ -849,7 +825,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                   <h3 className="text-sm font-semibold text-fg-primary mb-1">{t('checklist.title')}</h3>
                   <p className="text-xs text-fg-secondary">{t('checklist.subtitle')}</p>
                 </div>
-                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title="Dismiss">
+                <button onClick={handleChecklistDismiss} className="text-fg-muted hover:text-fg-secondary transition-colors p-1 -mr-1 -mt-1" title={t('dismiss')}>
                   <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}><path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" /></svg>
                 </button>
               </div>
@@ -1048,7 +1024,7 @@ export function HomePage({ authUser, previewMode, previewData }: { authUser?: { 
                     {teamsLimit < teamSummaries.length && (
                       <button onClick={() => navBus.navigate(PAGE.TEAM)}
                         className="w-full text-center text-[11px] text-brand-400 hover:text-brand-300 font-medium py-1.5">
-                        +{teamSummaries.length - teamsLimit} more
+                        {t('common:units.more', { count: teamSummaries.length - teamsLimit })}
                       </button>
                     )}
                   </div>
@@ -1305,7 +1281,7 @@ function WorkingModal({ workingAgents, onClose, t }: {
                     <div className="text-xs font-medium text-fg-primary truncate">{a.name}</div>
                     <div className="text-[10px] text-fg-tertiary truncate">{(a as any).currentActivity?.label ?? '—'}</div>
                   </div>
-                  <span className="text-[10px] text-green-500 font-medium shrink-0">Working</span>
+                  <span className="text-[10px] text-green-500 font-medium shrink-0">{t('common:processStatus.working')}</span>
                 </div>
               ))}
             </div>
@@ -1373,7 +1349,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
             return (
               <div>
                 <div className="flex items-center justify-between mb-1.5">
-                  <span className="text-xs text-fg-secondary">CU Quota</span>
+                  <span className="text-xs text-fg-secondary">{t('systemHealth.cuQuota')}</span>
                   <span className={`text-xs font-semibold ${textColor}`}>
                     {formatTokenCount(used)} / {formatTokenCount(cuQuota.cuLimit)} ({pct}%)
                   </span>
@@ -1384,7 +1360,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
                 </div>
                 {cuQuota.cuUsedToday != null && cuQuota.cuUsedToday > 0 && (
                   <div className="flex items-center justify-between mt-1.5">
-                    <span className="text-xs text-fg-tertiary">Today&apos;s CU Used</span>
+                    <span className="text-xs text-fg-tertiary">{t('systemHealth.cuUsedToday')}</span>
                     <span className="text-xs font-semibold text-fg-secondary">{formatTokenCount(cuQuota.cuUsedToday)}</span>
                   </div>
                 )}
@@ -1414,7 +1390,7 @@ function HealthModal({ ops, completed, totalRootTasks, workingAgents, totalAgent
 const CreateMenu = forwardRef<HTMLDivElement, { show: boolean; onToggle: () => void; onClose: () => void; t: TFunction; isMobile?: boolean }>(
   ({ show, onToggle, onClose, t, isMobile }, ref) => (
     <div ref={ref} className="relative">
-      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label="Create">
+      <button onClick={onToggle} className="p-2 rounded-lg hover:bg-surface-overlay transition-colors text-fg-tertiary" aria-label={t('create')}>
         <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19" /><line x1="5" y1="12" x2="19" y2="12" /></svg>
       </button>
       {show && (

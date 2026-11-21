@@ -8,7 +8,7 @@
   "newTab": "新建标签页",
   "confirm": "确认",
   "ok": "确定",
-  "error": "错误",
+  "error": "错误：{{message}}",
   "pageErrorTitle": "这个页面渲染出错了",
   "pageErrorHint": "其余页面仍可正常使用。可以先重试；如果反复出现，把下面的报错信息提供给开发。",
   "pageErrorRetry": "重试",
@@ -68,7 +68,6 @@
   "removing": "正在移除...",
   "networkError": "网络错误",
   "failed": "失败",
-  "error": "错误：{{message}}",
   "noResults": "无结果",
   "selectAll": "全选",
   "selected": "已选 {{count}} 项",
@@ -183,7 +182,8 @@
     "urgent": "紧急",
     "high": "高",
     "normal": "普通",
-    "low": "低"
+    "low": "低",
+    "medium": "中"
   },
   "role": {
     "owner": "所有者",
@@ -207,7 +207,8 @@
     "now": "刚刚",
     "minutesAgo": "{{count}} 分钟前",
     "hoursAgo": "{{count}} 小时前",
-    "daysAgo": "{{count}} 天前"
+    "daysAgo": "{{count}} 天前",
+    "yesterday": "昨天"
   },
   "signOut": "登出",
   "openInBrowser": "在浏览器中打开",
@@ -277,7 +278,10 @@
       "state": {
         "running": "执行中",
         "done": "已完成"
-      }
+      },
+      "tools": "{{count}} 个工具",
+      "subagents": "{{count}} 个子智能体",
+      "errors": "{{count}} 个错误"
     },
     "tools": {
       "shell_execute": "执行命令",
@@ -475,7 +479,9 @@
       "text": "文本",
       "thinkingTag": "思考",
       "round": "第 {{n}} 轮",
-      "rounds": "共 {{count}} 轮"
+      "rounds": "共 {{count}} 轮",
+      "toolsExecuted": "执行了 {{count}} 个工具",
+      "toolsLine": "{{count}} 个工具"
     },
     "fullLog": {
       "title": "执行日志",
@@ -487,7 +493,15 @@
       "completed": "已完成",
       "resumed": "已恢复",
       "execution_finished": "已完成"
-    }
+    },
+    "prompt": "提示词",
+    "inputArguments": "输入参数",
+    "earlierStepsOmitted": "已省略前 {{n}} 个步骤",
+    "filesChanged": "{{n}} 个文件变更",
+    "modifiedFiles": "修改的文件",
+    "cost": "费用",
+    "inputTokens": "输入 Token {{n}}",
+    "outputTokens": "输出 Token {{n}}"
   },
   "taskDag": {
     "noTasks": "没有可显示的任务",
@@ -568,14 +582,17 @@
     "scaleStandard": "标准",
     "scaleLarge": "大号",
     "typographySettings": "字体排版设置",
-    "typographyDesc": "调整复制 HTML 时的字体和字号"
+    "typographyDesc": "调整复制 HTML 时的字体和字号",
+    "imageLoadFailed": "图片加载失败 — 点击重试",
+    "clickToRetry": "点击重试"
   },
   "activity": {
     "step_one": "{{count}} 步",
     "step_other": "{{count}} 步",
     "failed": "{{count}} 失败",
     "thinking": "思考中",
-    "writingResponse": "正在生成回复…"
+    "writingResponse": "正在生成回复…",
+    "step": "第 {{count}} 步"
   },
   "copyFailed": "失败",
   "aiDisclaimer": "内容由 AI 生成，请注意辨别后再使用。",
@@ -796,5 +813,80 @@
       "task": "任务",
       "deliverable": "产出物"
     }
-  }
+  },
+  "retry": "重试",
+  "copyPath": "复制路径",
+  "exitFullscreen": "退出全屏",
+  "fullscreen": "全屏",
+  "collapsePanel": "收起面板",
+  "agents": "智能体",
+  "tasks": "任务",
+  "requirements": "需求",
+  "projects": "项目",
+  "deliverables": "交付物",
+  "workflows": "工作流",
+  "showAll": "查看全部",
+  "searchHint": "输入关键词搜索",
+  "toggle": "唤起/关闭",
+  "switchTab": "切换分类",
+  "navigate": "导航",
+  "justNow": "刚刚",
+  "rawOutput": "原始输出",
+  "filePreview": {
+    "loadFailed": "文件加载失败",
+    "unsupported": "该文件类型无法预览。"
+  },
+  "browserTest": {
+    "title": "浏览器集成测试套件",
+    "subtitle": "多智能体并发浏览器测试，含正确性校验",
+    "failuresOnly": "仅看失败",
+    "extensionNotConnected": "未连接 Chrome 扩展，请先连接扩展再运行测试。",
+    "quickTab": "快速测试（约 15 秒）",
+    "chaosTab": "混沌测试",
+    "runQuick": "运行快速测试",
+    "duration": "时长",
+    "startChaos": "开始混沌测试",
+    "passedCount": "{{n}} 通过",
+    "failedCount": "{{n}} 失败",
+    "completeSummary": "完成：{{passed}}/{{total}} 通过，用时 {{seconds}} 秒",
+    "liveLogFailures": "实时日志（{{n}} 条失败）",
+    "liveLogOps": "实时日志（{{n}} 条操作）"
+  },
+  "menu": "菜单",
+  "forward": "前进",
+  "fileNotFound": "文件不存在",
+  "htmlPreview": "HTML 预览",
+  "revealInFileExplorer": "在文件管理器中显示",
+  "publishToHub": "发布到 Markus Hub",
+  "duration": {
+    "unknown": "时长未知",
+    "lessThanAMinute": "不到 1 分钟",
+    "lessThan1Minute": "<1 分钟",
+    "minutes": "{{count}} 分钟",
+    "hours": "{{count}} 小时",
+    "days": "{{count}} 天",
+    "daysHours": "{{days}} 天 {{hours}} 小时",
+    "moreThan30Days": ">30 天",
+    "approximate": "约 {{duration}}"
+  },
+  "loadFailed": "读取失败",
+  "readErrorNotice": "{{subject}}读取失败：{{error}}（这不等于「{{notEquals}}」）",
+  "emptyDirectory": "此目录为空",
+  "revealInFileBrowser": "在文件浏览器中显示",
+  "backToParentDir": "返回上级目录",
+  "goUp": "上级",
+  "clickToPreview": "点击预览",
+  "clickToRevealInExplorer": "点击在文件管理器中显示",
+  "codingTool": {
+    "files": "{{n}} 个文件",
+    "tokensIn": "输入 {{n}}",
+    "tokensOut": "输出 {{n}}"
+  },
+  "slashMenu": {
+    "commands": "命令"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} 个步骤 · v{{version}}"
+  },
+  "readFailed": "读取失败"
 }

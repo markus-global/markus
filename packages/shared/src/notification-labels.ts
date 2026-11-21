@@ -257,6 +257,34 @@ export function statusLabel(value: string | undefined, locale?: string): string 
     ?? (camel !== value ? notificationLabel(`common.status.${camel}`, locale) : undefined);
 }
 
+/**
+ * Resolve the params that are themselves enum keys the reader needs translated
+ * (`状态已变为 in_progress`, `（优先级：normal）`). The producer cannot do this — it
+ * does not know the reader — and the renderer owns the language, so it happens
+ * here. Content params (a task title, a preview, the review tail) pass through
+ * untouched.
+ *
+ * One writer for every Node-side renderer: the outbound dispatcher and the
+ * desktop OS-notification bridge both call this. The browser bundle cannot import
+ * this package, so `web-ui/src/lib/notifyText.ts` keeps a guarded mirror.
+ */
+export function resolveNotificationEnumParams(
+  params: Record<string, unknown> | undefined,
+  locale?: string,
+): Record<string, unknown> | undefined {
+  if (!params) return undefined;
+  const out: Record<string, unknown> = { ...params };
+  if (typeof out['priority'] === 'string') {
+    out['priority'] = priorityLabel(out['priority'] as string, locale) ?? out['priority'];
+  }
+  for (const key of ['status', 'statusKey'] as const) {
+    if (typeof out[key] === 'string') {
+      out[key] = statusLabel(out[key] as string, locale) ?? out[key];
+    }
+  }
+  return out;
+}
+
 /** Every key this module can write. Exposed so a test can prove coverage. */
 export function notificationVocabularyKeys(): string[] {
   return Object.keys(VOCABULARY);

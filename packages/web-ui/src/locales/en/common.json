@@ -8,7 +8,7 @@
   "newTab": "New Tab",
   "confirm": "Confirm",
   "ok": "OK",
-  "error": "Error",
+  "error": "Error: {{message}}",
   "pageErrorTitle": "This page failed to render",
   "pageErrorHint": "The rest of the app still works. Try again first; if it keeps happening, report the message below.",
   "pageErrorRetry": "Try again",
@@ -68,7 +68,6 @@
   "removing": "Removing...",
   "networkError": "Network error",
   "failed": "Failed",
-  "error": "Error: {{message}}",
   "noResults": "No results",
   "selectAll": "Select all",
   "selected": "{{count}} selected",
@@ -183,7 +182,8 @@
     "urgent": "Urgent",
     "high": "High",
     "normal": "Normal",
-    "low": "Low"
+    "low": "Low",
+    "medium": "Medium"
   },
   "role": {
     "owner": "Owner",
@@ -207,7 +207,8 @@
     "now": "now",
     "minutesAgo": "{{count}}m",
     "hoursAgo": "{{count}}h",
-    "daysAgo": "{{count}}d"
+    "daysAgo": "{{count}}d",
+    "yesterday": "yesterday"
   },
   "signOut": "Log out",
   "openInBrowser": "Open in Browser",
@@ -277,7 +278,10 @@
       "state": {
         "running": "In progress",
         "done": "Completed"
-      }
+      },
+      "tools": "{{count}} tools",
+      "subagents": "{{count}} subagents",
+      "errors": "{{count}} errors"
     },
     "tools": {
       "shell_execute": "Running command",
@@ -475,7 +479,9 @@
       "text": "text",
       "thinkingTag": "thinking",
       "round": "Round #{{n}}",
-      "rounds": "{{count}} rounds"
+      "rounds": "{{count}} rounds",
+      "toolsExecuted": "{{count}} tools executed",
+      "toolsLine": "{{count}} tools"
     },
     "fullLog": {
       "title": "Execution Log",
@@ -487,7 +493,15 @@
       "completed": "Completed",
       "resumed": "Resumed",
       "execution_finished": "Completed"
-    }
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Input arguments",
+    "earlierStepsOmitted": "{{n}} earlier steps omitted",
+    "filesChanged": "{{n}} files changed",
+    "modifiedFiles": "Modified files",
+    "cost": "Cost",
+    "inputTokens": "{{n}} input tokens",
+    "outputTokens": "{{n}} output tokens"
   },
   "taskDag": {
     "noTasks": "No tasks to display",
@@ -568,14 +582,17 @@
     "scaleStandard": "Standard",
     "scaleLarge": "Large",
     "typographySettings": "Typography Settings",
-    "typographyDesc": "Adjust font and size for copied HTML output"
+    "typographyDesc": "Adjust font and size for copied HTML output",
+    "imageLoadFailed": "Failed to load image — click to retry",
+    "clickToRetry": "Click to retry"
   },
   "activity": {
     "step_one": "{{count}} step",
     "step_other": "{{count}} steps",
     "failed": "{{count}} failed",
     "thinking": "Thinking",
-    "writingResponse": "Writing response…"
+    "writingResponse": "Writing response…",
+    "step": "Step {{count}}"
   },
   "copyFailed": "Failed",
   "aiDisclaimer": "Content is AI-generated; please verify before relying on it.",
@@ -796,5 +813,80 @@
       "task": "Task",
       "deliverable": "Deliverable"
     }
-  }
+  },
+  "retry": "Retry",
+  "copyPath": "Copy path",
+  "exitFullscreen": "Exit fullscreen",
+  "fullscreen": "Fullscreen",
+  "collapsePanel": "Hide panel",
+  "agents": "Agents",
+  "tasks": "Tasks",
+  "requirements": "Requirements",
+  "projects": "Projects",
+  "deliverables": "Deliverables",
+  "workflows": "Workflows",
+  "showAll": "Show all",
+  "searchHint": "Type a keyword to search",
+  "toggle": "Toggle",
+  "switchTab": "Switch tab",
+  "navigate": "Navigate",
+  "justNow": "just now",
+  "rawOutput": "Raw output",
+  "filePreview": {
+    "loadFailed": "Failed to load file",
+    "unsupported": "This file type cannot be previewed."
+  },
+  "browserTest": {
+    "title": "Browser Integration Test Suite",
+    "subtitle": "Concurrent multi-agent browser test with correctness verification",
+    "failuresOnly": "Failures only",
+    "extensionNotConnected": "Chrome extension not connected. Connect the extension first to run tests.",
+    "quickTab": "Quick Test (~15s)",
+    "chaosTab": "Chaos Test",
+    "runQuick": "Run Quick Test",
+    "duration": "Duration",
+    "startChaos": "Start Chaos",
+    "passedCount": "{{n}} passed",
+    "failedCount": "{{n}} failed",
+    "completeSummary": "Complete: {{passed}}/{{total}} passed in {{seconds}}s",
+    "liveLogFailures": "Live Log ({{n}} failures)",
+    "liveLogOps": "Live Log ({{n}} ops)"
+  },
+  "menu": "Menu",
+  "forward": "Forward",
+  "fileNotFound": "File not found",
+  "htmlPreview": "HTML preview",
+  "revealInFileExplorer": "Reveal in file explorer",
+  "publishToHub": "Publish to Markus Hub",
+  "duration": {
+    "unknown": "Unknown duration",
+    "lessThanAMinute": "Less than a minute",
+    "lessThan1Minute": "<1 min",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} hr",
+    "days": "{{count}} d",
+    "daysHours": "{{days}} d {{hours}} hr",
+    "moreThan30Days": ">30 d",
+    "approximate": "~{{duration}}"
+  },
+  "loadFailed": "Load failed",
+  "readErrorNotice": "Could not load {{subject}}: {{error}} (this does not mean \"{{notEquals}}\")",
+  "emptyDirectory": "This folder is empty",
+  "revealInFileBrowser": "Reveal in file browser",
+  "backToParentDir": "Back to parent folder",
+  "goUp": "Up",
+  "clickToPreview": "Click to preview",
+  "clickToRevealInExplorer": "Click to reveal in file explorer",
+  "codingTool": {
+    "files": "{{n}} files",
+    "tokensIn": "{{n}} in",
+    "tokensOut": "{{n}} out"
+  },
+  "slashMenu": {
+    "commands": "Commands"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} steps · v{{version}}"
+  },
+  "readFailed": "Read failed"
 }

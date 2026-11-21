@@ -40,7 +40,6 @@
     "removeRepo": "移除仓库",
     "repoPathPlaceholder": "本地路径（例如 /Users/me/project）",
     "repoBranchPlaceholder": "分支（默认：main）",
-    "editProject": "编辑项目",
     "kbHeading": "知识库",
     "kbOpenInDeliverables": "在产出物中查看",
     "kbSync": "重新同步",
@@ -245,7 +244,15 @@
     "scheduleNoDays": "请选择星期几",
     "schedulePreview": "将按「{{desc}}」重复执行",
     "scheduleTimezoneNote": "时区：{{tz}}",
-    "weekdayShort": { "0": "日", "1": "一", "2": "二", "3": "三", "4": "四", "5": "五", "6": "六" },
+    "weekdayShort": {
+      "0": "日",
+      "1": "一",
+      "2": "二",
+      "3": "三",
+      "4": "四",
+      "5": "五",
+      "6": "六"
+    },
     "frequency": "频率",
     "freq30m": "每 30 分钟",
     "freq1h": "每 1 小时",
@@ -536,10 +543,22 @@
     "projectsCountLabel_other": "{{count}} 个项目",
     "noMatches": "无匹配项",
     "searchPlaceholder": "输入以搜索…",
-    "clickToEdit": "点击编辑",
     "tagsLabel": "标签",
     "tagsPlaceholder": "用逗号分隔",
-    "noTags": "无标签"
+    "noTags": "无标签",
+    "workflowUnmatchedTitle": "该运行的任务（未能对应到步骤）",
+    "workflowUnmatchedHint": "这是 2026-10-27 之前的运行：任务没有记录步骤身份，历史无法反推。下列任务仍可直接打开。",
+    "workflowClickToEdit": "点击编辑",
+    "toolCount": "{{count}} 个工具",
+    "cancelTaskDependent": "{{count}} 个依赖任务将被取消",
+    "loadingMore": "正在加载更多…",
+    "scrollForMore": "滚动到底部继续加载",
+    "workflowCancelScope": "将取消 {{count}} 个未完成任务（该运行共 {{total}} 个）",
+    "workflowCancelScopeUnknown": "该运行共有 {{total}} 个任务（正在统计其中未完成的数量）",
+    "toWorkflows": "工作流",
+    "workflowYamlParseFailed": "模板 YAML 无法解析",
+    "workflowDuplicateName": "{{name}}（副本）",
+    "stepNotFound": "找不到步骤 {{stepId}}"
   },
   "requirement": {
     "requirements": "需求",
@@ -559,7 +578,22 @@
     "goalMaxReached": "已达上限",
     "goalIteration": "迭代 {{current}}/{{max}}",
     "goalLastChecked": "上次检查：{{time}}",
-    "goalAutoResume": "自动恢复"
+    "goalAutoResume": "自动恢复",
+    "bulkApprove": "批量批准待批任务 ({{count}})",
+    "bulkApproveTitle": "批量批准待批任务",
+    "bulkApproveDone": "批量批准结果",
+    "bulkApproveWarning": "批准后立即开始执行：将同时启动 {{count}} 个任务，各自占用对应 agent。",
+    "bulkApproveSummary": "成功 {{ok}} · 跳过 {{skip}} · 失败 {{fail}}",
+    "bulkApproveWillApprove": "将批准",
+    "bulkApproveApproved": "已批准",
+    "bulkApproveSkipped": "跳过（不满足批准条件）",
+    "bulkApproveFailed": "失败",
+    "bulkApproveNothing": "没有可批准的待批任务。",
+    "bulkApproving": "批准中…",
+    "bulkApproveConfirm": "确认批准并开始",
+    "changeStatus": "切换状态",
+    "noStatusChange": "暂无可用状态变更",
+    "terminalHint": "终态"
   },
   "filters": {
     "all": "全部",
@@ -667,6 +701,9 @@
       "dependencyAdded": "已添加依赖",
       "dependencyRemoved": "已移除依赖",
       "failed": "失败：{{message}}"
-    }
-  }
+    },
+    "depCount": "{{count}} 个前置依赖",
+    "taskCount": "{{count}} 个任务"
+  },
+  "allProjects": "全部项目"
 }

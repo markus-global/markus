@@ -16,6 +16,8 @@
  * instead of inline in JSX.
  */
 
+import i18n from '../i18n/index.ts';
+
 /** The subset of {@link AgentUsageInfo} this panel needs. */
 export interface OverviewUsageCounters {
   tokensUsedToday?: number;
@@ -392,7 +394,7 @@ export function withResidentLoopGroup<T>(
   const existing = groups.find(g => g.key === key);
   const loopGroup: EntityGroup<T> = existing ?? {
     key,
-    name: '决策循环（Loop）',
+    name: i18n.t('agent:profilePage.mind.unitLoop'),
     count: 0,
     latestAt: '',
     units: 0,
@@ -407,12 +409,12 @@ export function workUnitEntityLabel(key: string): string {
   const [kind, ...rest] = key.split(':');
   const id = rest.join(':');
   const short = id.length > 14 ? `${id.slice(0, 12)}…` : id;
-  if (kind === 'task') return `任务 ${short}`;
-  if (kind === 'requirement') return `需求 ${short}`;
+  if (kind === 'task') return i18n.t('agent:profilePage.mind.unitTask', { id: short });
+  if (kind === 'requirement') return i18n.t('agent:profilePage.mind.unitRequirement', { id: short });
   // 主动 Agent 的决策循环有自己唯一的会话（`loop_<agentId>`）：它不是「某个会话」，
   // 它是这个 agent 的决策面，所以在工作记录左栏单独标出来。
-  if (kind === 'channel' && id.startsWith('loop_')) return '决策循环（Loop）';
-  if (kind === 'channel') return `会话 ${short}`;
+  if (kind === 'channel' && id.startsWith('loop_')) return i18n.t('agent:profilePage.mind.unitLoop');
+  if (kind === 'channel') return i18n.t('agent:profilePage.mind.unitConversation', { id: short });
   return `${kind} ${short}`;
 }
 

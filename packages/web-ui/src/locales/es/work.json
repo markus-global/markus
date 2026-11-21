@@ -244,7 +244,15 @@
     "scheduleNoDays": "Elige al menos un día",
     "schedulePreview": "Se ejecutará: {{desc}}",
     "scheduleTimezoneNote": "Zona horaria: {{tz}}",
-    "weekdayShort": { "0": "Dom", "1": "Lun", "2": "Mar", "3": "Mié", "4": "Jue", "5": "Vie", "6": "Sáb" },
+    "weekdayShort": {
+      "0": "Dom",
+      "1": "Lun",
+      "2": "Mar",
+      "3": "Mié",
+      "4": "Jue",
+      "5": "Vie",
+      "6": "Sáb"
+    },
     "frequency": "Frecuencia",
     "freq30m": "Cada 30 minutos",
     "freq1h": "Cada 1 hora",
@@ -477,7 +485,7 @@
     "viewProfile": "Ver perfil →",
     "agentNotFound": "Agente no encontrado: {{id}}…",
     "workerRole": "trabajador",
-    "clickToEdit": "Haga clic para editar",
+    "clickToEdit": "Clic para editar",
     "systemAuthor": "Sistema",
     "noteTimeJustNow": "ahora",
     "noteTimeMinutes": "{{count}}hace mucho tiempo",
@@ -518,7 +526,6 @@
     "projectsCountLabel_other": "{{count}} Proyectos",
     "noMatches": "No hay coincidencias",
     "searchPlaceholder": "Tipo de búsqueda…",
-    "clickToEdit": "Clic para editar",
     "tagsLabel": "Etiquetas",
     "tagsPlaceholder": "Separadas por comas",
     "noTags": "Sin etiquetas",
@@ -538,7 +545,20 @@
     "sendToChatSessionEmpty": "Aún no hay conversaciones: se enviará a una nueva.",
     "sendToChatSessionError": "No se pudieron cargar las conversaciones: se enviará a la conversación predeterminada.",
     "sendToChatSessionNoSummary": "Sin mensajes todavía",
-    "sendToChatSessionRetry": "Reintentar"
+    "sendToChatSessionRetry": "Reintentar",
+    "workflowUnmatchedTitle": "Tareas de esta ejecución (sin pasos asignados)",
+    "workflowUnmatchedHint": "Esta ejecución es anterior al 2026-10-27: las tareas no registraron su paso, así que el historial no se puede reconstruir. Las tareas de abajo siguen siendo accesibles.",
+    "workflowClickToEdit": "Clic para editar",
+    "toolCount": "{{count}} herramientas",
+    "cancelTaskDependent": "Se cancelarán {{count}} tareas dependientes",
+    "loadingMore": "Cargando más…",
+    "scrollForMore": "Desplázate al final para cargar más",
+    "workflowCancelScope": "Se cancelarán {{count}} tareas sin terminar ({{total}} en esta ejecución)",
+    "workflowCancelScopeUnknown": "Esta ejecución tiene {{total}} tareas (contando las no terminadas)",
+    "toWorkflows": "Flujos",
+    "workflowYamlParseFailed": "No se pudo analizar el YAML de la plantilla",
+    "workflowDuplicateName": "{{name}} (copia)",
+    "stepNotFound": "No se encontró el paso {{stepId}}"
   },
   "requirement": {
     "requirements": "Requisitos",
@@ -558,7 +578,22 @@
     "goalMaxReached": "Max Alcanzó",
     "goalIteration": "Iteración {{current}}/{{max}}",
     "goalLastChecked": "Última comprobación: {{time}}",
-    "goalAutoResume": "Rehabilitación automática"
+    "goalAutoResume": "Rehabilitación automática",
+    "bulkApprove": "Aprobar tareas pendientes en lote ({{count}})",
+    "bulkApproveTitle": "Aprobar tareas pendientes en lote",
+    "bulkApproveDone": "Resultado de la aprobación en lote",
+    "bulkApproveWarning": "La ejecución empieza de inmediato: se iniciarán {{count}} tareas a la vez, cada una ocupando su agente.",
+    "bulkApproveSummary": "Correctas {{ok}} · omitidas {{skip}} · fallidas {{fail}}",
+    "bulkApproveWillApprove": "Se aprobarán",
+    "bulkApproveApproved": "Aprobadas",
+    "bulkApproveSkipped": "Omitidas (no cumplen las condiciones)",
+    "bulkApproveFailed": "Fallidas",
+    "bulkApproveNothing": "No hay tareas pendientes que aprobar.",
+    "bulkApproving": "Aprobando…",
+    "bulkApproveConfirm": "Confirmar y empezar",
+    "changeStatus": "Cambiar estado",
+    "noStatusChange": "No hay cambios de estado disponibles",
+    "terminalHint": "Estado final"
   },
   "filters": {
     "all": "Todos",
@@ -666,6 +701,9 @@
       "dependencyAdded": "Dependencia adicional",
       "dependencyRemoved": "Supresión de la dependencia",
       "failed": "Failed: {{message}}"
-    }
-  }
+    },
+    "depCount": "{{count}} dependencias",
+    "taskCount": "{{count}} tareas"
+  },
+  "allProjects": "Todos los proyectos"
 }

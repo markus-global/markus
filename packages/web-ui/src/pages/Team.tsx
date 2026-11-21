@@ -67,6 +67,7 @@ import {
   type ScrollIntentPriority,
 } from '../lib/chatScrollRestore.ts';
 import { chatDraftMemory } from '../lib/chatDraftMemory.ts';
+import { onAgentModelChanged } from '../lib/agentModelSignals.ts';
 import { shouldPaintStreamingBubble } from '../lib/streamLiveness.ts';
 import {
   sessionStreamState,
@@ -126,6 +127,7 @@ import {
   resolveTeamChatShortcut, cycleSessionTabId,
   composerMaxHeightPx, composerStacked, composerToolbarAlign,
   resolveMobileTeamLayerState,
+  resumeRecoveryTarget,
 } from './ChatHelpers.ts';
 import { timeAgo, formatExactTime } from '../lib/timeAgo.ts';
 import { isXtermTarget, formatShortcutKeys } from '../lib/keyboard-shortcuts.ts';
@@ -851,13 +853,32 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
    * stale model name.
    */
   const [agentBoundModel, setAgentBoundModel] = useState<ChatModelSelection | null>(null);
+  /**
+   * Bumped whenever the binding may have changed under us, so the hydration
+   * effect below re-reads it. Switching agents is not the only way the value
+   * changes: Settings > 模型配置 writes the same field while this page stays
+   * mounted, and an agent can rebind its own model with a tool.
+   */
+  const [modelRevision, setModelRevision] = useState(0);
+
+  // Another surface (settings section, composer menu) announced a write.
+  useEffect(() => onAgentModelChanged(id => {
+    if (id === selectedAgent) setModelRevision(n => n + 1);
+  }), [selectedAgent]);
+
+  // Writes made outside the renderer cannot announce themselves, so re-read the
+  // authority when the user comes back to the window.
+  useEffect(() => {
+    const onFocus = () => setModelRevision(n => n + 1);
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+  }, []);
 
   // Hydrate the composer's model label from the backend's authoritative
-  // `effectiveModel`. This is the ONLY writer besides the composer's own
-  // onSelect — no per-session/per-turn state is involved, so the label cannot
-  // lag behind the agent it belongs to (the old code re-read a per-session
-  // override *after* an awaited history fetch, which is why the name only
-  // refreshed on a second visit / full reload).
+  // `effectiveModel`. No per-session/per-turn state is involved, so the label
+  // cannot lag behind the agent it belongs to (the old code re-read a
+  // per-session override *after* an awaited history fetch, which is why the name
+  // only refreshed on a second visit / full reload).
   useEffect(() => {
     if (!selectedAgent) { setAgentBoundModel(null); return; }
     let cancelled = false;
@@ -871,7 +892,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       })
       .catch(() => { if (!cancelled) setAgentBoundModel(null); });
     return () => { cancelled = true; };
-  }, [selectedAgent]);
+  }, [selectedAgent, modelRevision]);
 
   /** Compact (1-line) composer vs taller empty-chat starter. Synced before render. */
   const compactComposerRef = useRef(false);
@@ -2896,6 +2917,45 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     if (!sessionStreamState.isStreaming(sid)) return;
     void reattachRef.current(selectedAgent, sid, currentConvKeyRef.current);
   }, [isActive, previewMode, chatMode, selectedAgent, activeSessionId, streamRevision]);
+
+  // ── Content recovery on visibility resume (P1: mobile sleep / app switch) ──
+  // The reattach effect above only takes over while the session is STILL
+  // streaming. When the browser sleeps mid-turn and the agent FINISHES while
+  // away, the authority flips to streaming:false on wake — reattach's gate
+  // skips, and nothing pulls the now-persisted reply from the DB into the
+  // display (during streaming, DB loads write to cache only). The user then
+  // sees only their own sent message until they manually leave and re-enter
+  // the conversation (switchSession → loadSessionMessages). Close that gap
+  // with the same phase-aware recovery a session switch uses: a DB soft-refresh
+  // (never clobbers a live bubble — cache-only while streaming) then an
+  // authoritative reattach (cooldown-throttled, idempotent). The listener is
+  // registered once; the ref carries the freshest closure so resume always
+  // reads the current session/agent, not a stale render snapshot.
+  const resumeRecoveryRef = useRef<() => void>(() => {});
+  resumeRecoveryRef.current = () => {
+    const sid = resumeRecoveryTarget({
+      isActive, previewMode, chatMode, selectedAgent, activeSessionId,
+      placeholderId: NEW_CHAT_PLACEHOLDER_ID,
+    });
+    if (!sid || !selectedAgent) return;
+    const key = currentConvKeyRef.current;
+    void loadSessionMessages(sid, key).then(() => {
+      void tryReattachActiveStream(selectedAgent, sid, key);
+    });
+  };
+  useEffect(() => {
+    const onResume = () => {
+      if (document.visibilityState === 'visible') resumeRecoveryRef.current();
+    };
+    document.addEventListener('visibilitychange', onResume);
+    // pageshow also covers bfcache restoration (mobile Safari back/forward
+    // cache), where visibilitychange alone may not fire.
+    window.addEventListener('pageshow', onResume);
+    return () => {
+      document.removeEventListener('visibilitychange', onResume);
+      window.removeEventListener('pageshow', onResume);
+    };
+  }, []);
 
   // Load older sessions (append to the list) — History panel "load more"
   const loadMoreSessions = useCallback(async () => {
@@ -5107,7 +5167,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                     className={`w-8 h-8 flex items-center justify-center rounded-lg transition-colors shrink-0 ${
                       l2Floating ? 'bg-brand-500/15 text-brand-500' : 'text-fg-tertiary hover:text-fg-secondary hover:bg-surface-elevated'
                     }`}
-                    title="Toggle team panel"
+                    title={t('chat.toggleTeamPanel')}
                   >
                     <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                       <rect x="3" y="3" width="18" height="18" rx="2" ry="2" />
@@ -5178,7 +5238,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                         <span
                           className="text-sm font-semibold truncate cursor-pointer hover:text-brand-500 transition-colors"
                           onClick={() => { setHeaderNameDraft(headerName ?? ''); setEditingHeaderName(true); }}
-                          title="Click to edit name"
+                          title={t('chat.clickToEditName')}
                         >
                           {headerName}
                         </span>
@@ -5196,14 +5256,14 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                           onBlur={handleSaveHeaderDesc}
                           onKeyDown={e => { if (e.key === 'Enter') handleSaveHeaderDesc(); if (e.key === 'Escape') setEditingHeaderDesc(false); }}
                           className="text-[11px] text-fg-tertiary bg-transparent border-b border-brand-500/50 outline-none py-0 px-0 w-full max-w-[400px] mt-0.5"
-                          placeholder="Add title..."
+                          placeholder={t('chat.addTitle')}
                           autoFocus
                         />
                       ) : (
                         <div
                           className="text-[11px] text-fg-tertiary truncate cursor-pointer hover:text-fg-secondary transition-colors mt-0.5"
                           onClick={() => { setHeaderDescDraft(headerDesc); setEditingHeaderDesc(true); }}
-                          title="Click to edit title"
+                          title={t('chat.clickToEditTitle')}
                         >
                           {headerDesc || 'No title'}
                         </div>

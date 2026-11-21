@@ -7,12 +7,16 @@
  *
  * 纪律：
  *  · 入参统一 epoch ms；ISO 字符串必须在边界处经 `toEpochMs()` 归一化；
- *  · 解析失败返回 `''` / `'时长未知'`，绝不把 NaN 泄露到界面上；
- *  · 不读 i18n —— 这里的输出是**同一句话**，与语言无关的纯函数才可以被单测直接钉住。
+ *  · 解析失败返回 `''` / i18n 的「时长未知」，绝不把 NaN 泄露到界面上；
+ *  · 文案全部走 i18n 单例（本文件是 `.ts`，不是组件，拿不到 `useTranslation`）：
+ *    「N 分钟前」复用 `common:time.*`；纯区间（不带「前」）走自己的
+ *    `common:duration.*` —— 两组语义相反，**不能**共用一个键。
  *
  * 出处：与 feat/thread-trigger-router 的 `lib/threadPresentation.ts` 同实现（逐字一致），
  * 移植到本分支时只带这里纯函数部分，避免把 thread 领域的词表一起搬进来。
  */
+
+import i18n from '../i18n/index.ts';
 
 const MINUTE = 60_000;
 const HOUR = 3_600_000;
@@ -22,22 +26,22 @@ const DAY = 86_400_000;
 export function formatRelative(ms: number): string {
   if (!Number.isFinite(ms)) return '';
   const diff = Date.now() - ms;
-  if (diff < 0) return '刚刚';
-  if (diff < MINUTE) return '刚刚';
-  if (diff < HOUR) return `${Math.floor(diff / MINUTE)} 分钟前`;
-  if (diff < DAY) return `${Math.floor(diff / HOUR)} 小时前`;
+  if (diff < 0) return i18n.t('common:justNow');
+  if (diff < MINUTE) return i18n.t('common:justNow');
+  if (diff < HOUR) return i18n.t('common:time.minutesAgo', { count: Math.floor(diff / MINUTE) });
+  if (diff < DAY) return i18n.t('common:time.hoursAgo', { count: Math.floor(diff / HOUR) });
   const d = Math.floor(diff / DAY);
-  return d === 1 ? '昨天' : `${d} 天前`;
+  return d === 1 ? i18n.t('common:time.yesterday') : i18n.t('common:time.daysAgo', { count: d });
 }
 
 /** 时长 → 「3 分钟」（纯区间，不带「前」）。 */
 export function formatDuration(ms: number): string {
-  if (!Number.isFinite(ms)) return '时长未知';
+  if (!Number.isFinite(ms)) return i18n.t('common:duration.unknown');
   const d = Math.max(0, ms);
-  if (d < MINUTE) return '不到 1 分钟';
-  if (d < HOUR) return `${Math.floor(d / MINUTE)} 分钟`;
-  if (d < DAY) return `${Math.floor(d / HOUR)} 小时`;
-  return `${Math.floor(d / DAY)} 天`;
+  if (d < MINUTE) return i18n.t('common:duration.lessThanAMinute');
+  if (d < HOUR) return i18n.t('common:duration.minutes', { count: Math.floor(d / MINUTE) });
+  if (d < DAY) return i18n.t('common:duration.hours', { count: Math.floor(d / HOUR) });
+  return i18n.t('common:duration.days', { count: Math.floor(d / DAY) });
 }
 
 /** ISO 字符串 → epoch ms。解析失败返回 NaN，交给上游的防御分支。 */

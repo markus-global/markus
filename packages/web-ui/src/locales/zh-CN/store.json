@@ -29,7 +29,11 @@
     "topCreators": "顶尖创作者",
     "topCreatorsSub": "生态贡献榜",
     "empty": "生态正在成长中",
-    "emptyHint": "成为首批创作者，分享你的第一个资产"
+    "emptyHint": "成为首批创作者，分享你的第一个资产",
+    "featured": "★ 精选 · {{type}}",
+    "free": "免费",
+    "worksCount": "{{count}} 作品",
+    "worksCount_one": "{{count}} 作品"
   },
   "connectorStore": {
     "searchPlaceholder": "搜索连接器 (MCP)…",
@@ -131,7 +135,9 @@
     "integration": "集成",
     "instructions": "说明",
     "permissions": "权限",
-    "tags": "标签"
+    "tags": "标签",
+    "installsCount": "{{count}} 次安装",
+    "installsCount_one": "{{count}} 次安装"
   },
   "card": {
     "install": "安装",
@@ -215,5 +221,15 @@
     "cancel": "取消",
     "create": "创建智能体",
     "creating_progress": "创建中…"
+  },
+  "catalog": {
+    "hubAssets": "Hub 资产",
+    "localTemplates": "本地模板"
+  },
+  "teamsStore": {
+    "nothingHere": "这里没有任何团队模板或 Hub 资产"
+  },
+  "templates": {
+    "nothingHere": "这里没有任何模板或 Hub 资产"
   }
 }

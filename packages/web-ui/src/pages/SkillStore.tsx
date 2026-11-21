@@ -60,6 +60,18 @@ function localizedBuiltinDesc(skill: BuiltinSkill, lang: string): string {
   return skill.i18n?.[lang]?.description || skill.description || '';
 }
 
+/**
+ * Locale-aware compact count for large numbers, so "万" never leaks into
+ * non-Chinese UIs: zh-CN → "1.2万", en → "12.3K", es → "12,3 mil".
+ */
+function formatCompactCount(n: number, lang: string): string {
+  try {
+    return new Intl.NumberFormat(lang, { notation: 'compact', maximumFractionDigits: 1 }).format(n);
+  } catch {
+    return n.toLocaleString();
+  }
+}
+
 function isNewerVersion(latest: string, current: string): boolean {
   const a = latest.split('.').map(Number);
   const b = current.split('.').map(Number);
@@ -717,7 +729,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
               onClick={() => { setSkillhubPage(1); void loadSkillhub({ q: skillhubSearch || undefined, category: skillhubCategory || undefined, page: 1 }); }}
               className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg shrink-0"
             >
-              Search
+              {t('common:search')}
             </button>
           </div>
 
@@ -752,7 +764,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                       footerLeft={
                         <span className="flex items-center gap-2 text-[10px] text-fg-tertiary">
                           {skill.stars > 0 && <span className="text-amber-600">★ {skill.stars.toLocaleString()}</span>}
-                          {skill.downloads > 0 && <span>{skill.downloads >= 10000 ? `${(skill.downloads / 10000).toFixed(1)}万` : skill.downloads.toLocaleString()} {t('skillStore.downloads')}</span>}
+                          {skill.downloads > 0 && <span>{skill.downloads >= 10000 ? formatCompactCount(skill.downloads, i18n.language) : skill.downloads.toLocaleString()} {t('skillStore.downloads')}</span>}
                         </span>
                       }
                       actions={isInst ? undefined : (
@@ -804,7 +816,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
               onClick={() => { if (skillsshSearch.trim()) void loadSkillssh(skillsshSearch); }}
               className="px-3 py-1.5 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs rounded-lg shrink-0"
             >
-              Search
+              {t('common:search')}
             </button>
             {!isMobile && <span className="text-xs text-fg-tertiary ml-auto">
               <a href="https://skills.sh" target="_blank" rel="noopener noreferrer" className="text-brand-500 hover:text-brand-500">{t('skillStore.visitSite')}</a>
@@ -837,7 +849,7 @@ export function SkillStore({ highlightItemId, onHighlightDone }: { highlightItem
                     hideStats
                     cornerLabel={isInst ? undefined : 'skills.sh'}
                     onClick={() => window.open(skill.url, '_blank', 'noopener,noreferrer')}
-                    footerLeft={skill.installs ? <span className="text-[10px] text-fg-tertiary">{skill.installs} installs</span> : undefined}
+                    footerLeft={skill.installs ? <span className="text-[10px] text-fg-tertiary">{t('skillStore.installsCount', { count: skill.installs })}</span> : undefined}
                     actions={isInst ? undefined : (
                       <button
                         onClick={() => void installSkillssh(skill)}

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
+import { useTranslation } from 'react-i18next';
 import { api } from '../api.ts';
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
@@ -63,6 +64,7 @@ const AGENT_BG: Record<string, string> = {
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 export function BrowserTestPanel({ extensionConnected }: { extensionConnected: boolean }) {
+  const { t } = useTranslation('common');
   const [mode, setMode] = useState<'quick' | 'chaos'>('quick');
   const [running, setRunning] = useState(false);
 
@@ -166,14 +168,14 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
       <div className="flex items-center gap-3 mb-4">
         <span className="px-2 py-0.5 text-[10px] font-bold uppercase tracking-wider bg-purple-500/20 text-purple-400 rounded">DEV</span>
         <div>
-          <div className="text-sm font-semibold text-fg-primary">Browser Integration Test Suite</div>
-          <div className="text-xs text-fg-tertiary">Concurrent multi-agent browser test with correctness verification</div>
+          <div className="text-sm font-semibold text-fg-primary">{t('browserTest.title')}</div>
+          <div className="text-xs text-fg-tertiary">{t('browserTest.subtitle')}</div>
         </div>
       </div>
 
       {!extensionConnected && (
         <div className="mb-4 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-xs text-amber-400">
-          Chrome extension not connected. Connect the extension first to run tests.
+          {t('browserTest.extensionNotConnected')}
         </div>
       )}
 
@@ -183,13 +185,13 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
           onClick={() => setMode('quick')}
           className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'quick' ? 'bg-purple-500/20 text-purple-400' : 'text-fg-tertiary hover:text-fg-secondary'}`}
         >
-          Quick Test (~15s)
+          {t('browserTest.quickTab')}
         </button>
         <button
           onClick={() => setMode('chaos')}
           className={`flex-1 px-3 py-1.5 text-xs font-medium rounded-md transition-colors ${mode === 'chaos' ? 'bg-purple-500/20 text-purple-400' : 'text-fg-tertiary hover:text-fg-secondary'}`}
         >
-          Chaos Test
+          {t('browserTest.chaosTab')}
         </button>
       </div>
 
@@ -205,9 +207,9 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
               {running ? (
                 <span className="flex items-center gap-2">
                   <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="3" strokeDasharray="28 56" /></svg>
-                  Running...
+                  {t('execution.toolRunning')}...
                 </span>
-              ) : 'Run Quick Test'}
+              ) : t('browserTest.runQuick')}
             </button>
             {quickResult && (
               <span className={`text-xs font-medium px-2.5 py-1 rounded-full ${quickResult.failed === 0 ? 'bg-green-500/20 text-green-400' : 'bg-red-500/20 text-red-400'}`}>
@@ -265,7 +267,7 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
           {/* Controls */}
           <div className="flex items-center gap-3 mb-4 flex-wrap">
             <div className="flex items-center gap-2">
-              <label className="text-xs text-fg-tertiary">Duration:</label>
+              <label className="text-xs text-fg-tertiary">{t('browserTest.duration')}:</label>
               <input
                 type="number" min={1} max={10} value={chaosDuration}
                 onChange={(e) => setChaosDuration(Math.max(1, Math.min(10, Number(e.target.value))))}
@@ -275,7 +277,7 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
               <span className="text-xs text-fg-tertiary">min</span>
             </div>
             <div className="flex items-center gap-2">
-              <label className="text-xs text-fg-tertiary">Agents:</label>
+              <label className="text-xs text-fg-tertiary">{t('agents')}:</label>
               <input
                 type="number" min={2} max={5} value={chaosAgents}
                 onChange={(e) => setChaosAgents(Math.max(2, Math.min(5, Number(e.target.value))))}
@@ -289,14 +291,14 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
                 disabled={!extensionConnected}
                 className="px-4 py-1.5 text-xs font-medium bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors disabled:opacity-40"
               >
-                Start Chaos
+                {t('browserTest.startChaos')}
               </button>
             ) : (
               <button
                 onClick={stopChaos}
                 className="px-4 py-1.5 text-xs font-medium bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
               >
-                Stop
+                {t('agent:actions.stop')}
               </button>
             )}
           </div>
@@ -308,9 +310,9 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
                 <span className="text-fg-secondary font-medium">
                   {(chaosStats?.totalOps ?? chaosDone?.totalOps ?? 0)} ops
                 </span>
-                <span className="text-green-400">{chaosStats?.passed ?? chaosDone?.passed ?? 0} passed</span>
+                <span className="text-green-400">{t('browserTest.passedCount', { n: chaosStats?.passed ?? chaosDone?.passed ?? 0 })}</span>
                 <span className={`${(chaosStats?.failed ?? chaosDone?.failed ?? 0) > 0 ? 'text-red-400' : 'text-fg-tertiary'}`}>
-                  {chaosStats?.failed ?? chaosDone?.failed ?? 0} failed
+                  {t('browserTest.failedCount', { n: chaosStats?.failed ?? chaosDone?.failed ?? 0 })}
                 </span>
                 {chaosStats && <span className="text-fg-tertiary">{chaosStats.opsPerSec} ops/s</span>}
               </div>
@@ -327,7 +329,11 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
               </div>
               {chaosDone && (
                 <div className={`text-xs font-medium ${chaosDone.failed === 0 ? 'text-green-400' : 'text-amber-400'}`}>
-                  Complete: {chaosDone.passed}/{chaosDone.totalOps} passed in {(chaosDone.elapsed / 1000).toFixed(1)}s
+                  {t('browserTest.completeSummary', {
+                    passed: chaosDone.passed,
+                    total: chaosDone.totalOps,
+                    seconds: (chaosDone.elapsed / 1000).toFixed(1),
+                  })}
                 </div>
               )}
             </div>
@@ -337,7 +343,9 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
           {chaosOps.length > 0 && (
             <div className="flex items-center justify-between mb-2">
               <span className="text-[10px] text-fg-tertiary uppercase tracking-wider">
-                Live Log ({filteredOps.length}{showFailuresOnly ? ' failures' : ' ops'})
+                {showFailuresOnly
+                  ? t('browserTest.liveLogFailures', { n: filteredOps.length })
+                  : t('browserTest.liveLogOps', { n: filteredOps.length })}
               </span>
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
@@ -346,7 +354,7 @@ export function BrowserTestPanel({ extensionConnected }: { extensionConnected: b
                   onChange={(e) => setShowFailuresOnly(e.target.checked)}
                   className="w-3 h-3 rounded"
                 />
-                <span className="text-[10px] text-fg-tertiary">Failures only</span>
+                <span className="text-[10px] text-fg-tertiary">{t('browserTest.failuresOnly')}</span>
               </label>
             </div>
           )}

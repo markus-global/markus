@@ -20,6 +20,7 @@ import {
   msgHasContent,
   shouldRenderChatMsg,
   pickStreamReattachTarget,
+  resumeRecoveryTarget,
   stopRunningTools,
   stripEmbeddedReplyQuote,
   stripNotifyContext,
@@ -874,6 +875,53 @@ describe('resolveTurnBubbleId —— 回合气泡的 React key', () => {
   it('跳轮不同 ⇒ key 不同', () => {
     expect(resolveTurnBubbleId({ messageId: 'a' }))
       .not.toBe(resolveTurnBubbleId({ messageId: 'b' }));
+  });
+});
+
+describe('resumeRecoveryTarget — 页面恢复可见时的内容恢复闸门（P1 移动端休眠）', () => {
+  // 这条边补的是「休眠期间 agent 已跑完 ⇒ 恢复可见时无人把落库回复拉进显示」的洞。
+  // 每个否定用例都咬住一道闸门：删掉任一条件，对应用例立刻变红。
+  const base = {
+    isActive: true,
+    previewMode: false,
+    chatMode: 'direct' as const,
+    selectedAgent: 'agt_1',
+    activeSessionId: 'sess_real',
+    placeholderId: 'new-chat-placeholder',
+  };
+
+  it('激活的 direct 真实会话 ⇒ 点名该会话做 DB 软刷新 + 权威重连', () => {
+    expect(resumeRecoveryTarget(base)).toBe('sess_real');
+  });
+
+  it('页面未激活 ⇒ 不恢复（停留在别的页面时不该搬内容）', () => {
+    expect(resumeRecoveryTarget({ ...base, isActive: false })).toBeNull();
+  });
+
+  it('预览模式 ⇒ 不恢复', () => {
+    expect(resumeRecoveryTarget({ ...base, previewMode: true })).toBeNull();
+  });
+
+  it('channel 模式 ⇒ 不恢复（本恢复边只服务 direct 会话）', () => {
+    expect(resumeRecoveryTarget({ ...base, chatMode: 'channel' })).toBeNull();
+  });
+
+  it('dm 模式 ⇒ 不恢复', () => {
+    expect(resumeRecoveryTarget({ ...base, chatMode: 'dm' })).toBeNull();
+  });
+
+  it('未选中 agent ⇒ 不恢复', () => {
+    expect(resumeRecoveryTarget({ ...base, selectedAgent: undefined })).toBeNull();
+    expect(resumeRecoveryTarget({ ...base, selectedAgent: null })).toBeNull();
+  });
+
+  it('新建占位会话 ⇒ 不恢复（占位 id 不可查询）', () => {
+    expect(resumeRecoveryTarget({ ...base, activeSessionId: base.placeholderId })).toBeNull();
+  });
+
+  it('尚无会话 ⇒ 不恢复', () => {
+    expect(resumeRecoveryTarget({ ...base, activeSessionId: null })).toBeNull();
+    expect(resumeRecoveryTarget({ ...base, activeSessionId: undefined })).toBeNull();
   });
 });
 

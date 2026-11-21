@@ -20,7 +20,9 @@
     "tasksTotal": "Completed / Total",
     "tokenUsage": "Token Usage",
     "currentWorking": "Currently Working",
-    "storage": "Storage"
+    "storage": "Storage",
+    "cuQuota": "CU Quota",
+    "cuUsedToday": "Today's CU Used"
   },
   "gettingStarted": {
     "title": "Your AI workforce is ready",
@@ -92,6 +94,10 @@
       "team": "Create Tech Frontier Think Tank",
       "teamDesc": "Build an AI think tank with 4 tech visionary personas — Elon Musk, Steve Jobs, Sam Altman, and Jensen Huang — to analyze cutting-edge technology trends from different perspectives",
       "teamAction": "Create Now",
+      "greetPrompt": "Hi! I'm a new user — could you briefly introduce what you can help me with?",
+      "projectPrompt": "Create a project called \"Explore Markus\" so I can learn about and try out everything Markus can do.",
+      "requirementsPrompt": "In the \"Explore Markus\" project, create two requirements: 1. Understand the architecture and design philosophy of the Markus open-source project 2. Explore what Markus agents can do and how to use them.",
+      "teamPrompt": "Build me a team called \"Tech Frontier Think Tank\" with four agents playing tech leaders: Elon Musk (space, EVs, AI safety), Steve Jobs (product design and user experience), Sam Altman (AGI and the AI startup ecosystem), and Jensen Huang (GPUs, AI compute and data centres). The team's goal is to analyse frontier technology trends from different perspectives.",
       "shortcuts": "Learn Keyboard Shortcuts",
       "shortcutsDesc": "Practice the essential shortcuts: navigation, toggle sidebars, new conversation and tab switching",
       "shortcutsAction": "Open Shortcut List"

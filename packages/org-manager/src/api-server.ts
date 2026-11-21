@@ -6873,9 +6873,25 @@ export class APIServer {
         }
         if (body['agentRole'] !== undefined) cfg.agentRole = body['agentRole'];
         if (body['skills'] !== undefined) cfg.skills = body['skills'];
-        if (body['llmConfig'] !== undefined) {
+        // Only touch the model column when the caller actually sent it. This
+        // used to write `cfg.llmConfig` back unconditionally, so an unrelated
+        // PATCH (rename, title) rewrote the column from the in-memory object and
+        // could clobber a newer value written by an agent's own tool.
+        const llmConfigProvided = body['llmConfig'] !== undefined;
+        const previousLlmConfig = cfg.llmConfig;
+        if (llmConfigProvided) {
           const lc = body['llmConfig'] as Record<string, unknown>;
-          cfg.llmConfig = { ...(cfg.llmConfig as Record<string, unknown>), ...lc };
+          const merged: Record<string, unknown> = { ...(cfg.llmConfig as Record<string, unknown>) };
+          for (const [key, value] of Object.entries(lc)) {
+            // `null` means "remove this key". A plain spread cannot express that:
+            // callers used to send `defaultModel: undefined`, JSON.stringify
+            // dropped it, and the merge kept the old model on the row — so
+            // resetting to "follow global" left a stale model that resurrected
+            // itself the next time the mode flipped back to 'custom'.
+            if (value === null) delete merged[key];
+            else merged[key] = value;
+          }
+          cfg.llmConfig = merged;
         }
         // Apply the heartbeat interval live (clamped) so the scheduler picks
         // up the new cadence immediately without a process restart.
@@ -6903,12 +6919,20 @@ export class APIServer {
               name: body['name'] !== undefined ? stripHtmlTags(body['name'] as string) : undefined,
               agentRole: body['agentRole'] as string | undefined,
               skills: body['skills'] as unknown,
-              llmConfig: cfg.llmConfig,
+              llmConfig: llmConfigProvided ? cfg.llmConfig : undefined,
               heartbeatIntervalMs: effectiveHeartbeatMs,
               profile: titleProvided ? cfg.profile : undefined,
             });
           } catch (persistErr) {
-            log.warn('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
+            // A failed write must not answer 200. It used to log a warning and
+            // report success, so the UI showed the new model, the live process
+            // used it, and the binding evaporated on the next restart because
+            // the row was never updated. Roll the live value back so memory and
+            // DB agree, then tell the caller it did not save.
+            if (llmConfigProvided) cfg.llmConfig = previousLlmConfig;
+            log.error('Failed to persist agent config to DB', { agentId, error: String(persistErr) });
+            this.json(res, 500, { error: 'Failed to save agent config; the change was not persisted' });
+            return;
           }
         }
 

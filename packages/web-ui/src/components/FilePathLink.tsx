@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef, useSyncExternalStore, lazy, Suspense } from 'react';
+import { useTranslation } from 'react-i18next';
 import { createPortal } from 'react-dom';
 import { api } from '../api.ts';
 import type { DirectoryEntry } from '../api.ts';
@@ -149,6 +150,7 @@ function parentDir(p: string): string {
 // ─── File preview modal ──────────────────────────────────────────────────────
 
 function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: () => void }) {
+  const { t } = useTranslation('common');
   const zIndex = useModalStack(onClose);
   // Navigation cursor — starts at the link's path; subdir/file clicks update it
   // so the modal browses inside the directory without leaving the modal.
@@ -228,22 +230,22 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
               <button
                 className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
                 onClick={backToDir}
-                title="返回上级目录"
+                title={t('backToParentDir')}
               >
-                ← 上级
+                ← {t('goUp')}
               </button>
             )}
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
               onClick={copyPath}
-              title="复制路径"
+              title={t('copyPath')}
             >
-              {copied ? '✓ 已复制' : '复制路径'}
+              {copied ? `✓ ${t('ambassador.copied')}` : t('copyPath')}
             </button>
             <button
               className="text-xs text-fg-secondary hover:text-fg-primary px-2 py-1 rounded hover:bg-surface-elevated transition-colors"
               onClick={() => api.files.reveal(activePath)}
-              title="Reveal in file explorer"
+              title={t('revealInFileExplorer')}
             >
               <svg className="w-4 h-4" viewBox="0 0 20 20" fill="currentColor">
                 <path d="M4.5 17a2.5 2.5 0 01-2.5-2.5v-9A2.5 2.5 0 014.5 3h3.672a1.5 1.5 0 011.06.44L10.56 4.77a.5.5 0 00.354.147H15.5A2.5 2.5 0 0118 7.417v7.083A2.5 2.5 0 0115.5 17h-11z" />
@@ -269,7 +271,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           )}
           {error && (
             <div className="text-center py-12 text-fg-secondary text-sm">
-              <p className="text-red-400 mb-1">Failed to load file</p>
+              <p className="text-red-400 mb-1">{t('filePreview.loadFailed')}</p>
               <p className="text-xs text-fg-tertiary">{error}</p>
             </div>
           )}
@@ -312,17 +314,17 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
           )}
           {!loading && !error && (fileType === 'binary' || (!content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'directory')) && (
             <div className="text-center py-8 space-y-3">
-              <p className="text-sm text-fg-secondary">This file type cannot be previewed.</p>
+              <p className="text-sm text-fg-secondary">{t('filePreview.unsupported')}</p>
               <button
                 className="px-3 py-2 text-xs rounded-lg bg-brand-600/20 text-brand-500 hover:bg-brand-600/30 transition-colors"
                 onClick={() => void api.files.reveal(activePath)}
               >
-                Reveal in file explorer
+                {t('revealInFileExplorer')}
               </button>
             </div>
           )}
           {!loading && !error && content && fileType !== 'image' && fileType !== 'audio' && fileType !== 'video' && fileType !== 'binary' && fileType !== 'directory' && (
-            <Suspense fallback={<div className="text-xs text-fg-tertiary">Loading…</div>}>
+            <Suspense fallback={<div className="text-xs text-fg-tertiary">{t('loading')}</div>}>
               <LazyContentRenderer content={content} format={fileType === 'text' ? 'text' : fileType} className="text-sm" />
             </Suspense>
           )}
@@ -336,6 +338,7 @@ function FilePreviewModal({ filePath, onClose }: { filePath: string; onClose: ()
 // ─── FilePathLink component ──────────────────────────────────────────────────
 
 export function FilePathLink({ path: filePath }: { path: string }) {
+  const { t } = useTranslation('common');
   const info = useFileInfo(filePath);
   const layout = useLayout();
 
@@ -374,7 +377,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
 
   if (!exists) {
     return (
-      <code data-file-path-link="missing" className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title="File not found">
+      <code data-file-path-link="missing" className="bg-surface-secondary/50 px-1.5 py-0.5 rounded text-xs font-mono text-fg-tertiary border border-border-default/30 line-through decoration-fg-tertiary/30 break-all" title={t('fileNotFound')}>
         {filePath}
       </code>
     );
@@ -385,7 +388,7 @@ export function FilePathLink({ path: filePath }: { path: string }) {
       data-file-path-link="ready"
         className="bg-brand-500/10 px-1.5 py-0.5 rounded text-xs font-mono text-brand-500 cursor-pointer hover:bg-brand-500/20 transition-colors border border-brand-500/20 hover:border-brand-500/40 break-all"
         onClick={handleClick}
-        title={isPreviewable ? 'Click to preview' : 'Click to reveal in file explorer'}
+        title={isPreviewable ? t('clickToPreview') : t('clickToRevealInExplorer')}
         role="button"
         tabIndex={0}
     ><span className="whitespace-nowrap">{fileIcon}{filePath.charAt(0)}</span>{filePath.slice(1)}</code>

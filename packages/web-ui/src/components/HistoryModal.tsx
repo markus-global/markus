@@ -38,10 +38,10 @@ import type { SourceState } from '../lib/resourceState.ts';
  * 现在：圆点一律弱化（结果由 chip 文字承担），chip 降一档对比度。
  */
 const APPROVAL_STATUS = {
-  approved: { label: '已批准', dot: 'bg-fg-muted/30', chip: 'bg-green-500/8 text-green-600/70' },
-  rejected: { label: '已拒绝', dot: 'bg-fg-muted/30', chip: 'bg-red-500/8 text-red-500/70' },
-  cancelled: { label: '已取消', dot: 'bg-fg-muted/25', chip: 'bg-surface-overlay text-fg-tertiary' },
-  expired: { label: '已过期', dot: 'bg-fg-muted/25', chip: 'bg-amber-500/8 text-amber-600/70' },
+  approved: { labelKey: 'common:approvalStatus.approved', dot: 'bg-fg-muted/30', chip: 'bg-green-500/8 text-green-600/70' },
+  rejected: { labelKey: 'common:approvalStatus.rejected', dot: 'bg-fg-muted/30', chip: 'bg-red-500/8 text-red-500/70' },
+  cancelled: { labelKey: 'common:approvalStatus.cancelled', dot: 'bg-fg-muted/25', chip: 'bg-surface-overlay text-fg-tertiary' },
+  expired: { labelKey: 'common:approvalStatus.expired', dot: 'bg-fg-muted/25', chip: 'bg-amber-500/8 text-amber-600/70' },
 } as const;
 
 type ResolvedStatus = keyof typeof APPROVAL_STATUS;
@@ -181,7 +181,7 @@ export function HistoryModal({
    */
   const [markingAll, setMarkingAll] = useState(false);
   const [markAllError, setMarkAllError] = useState<string | null>(null);
-  const { t } = useTranslation(['team']);
+  const { t } = useTranslation(['team', 'common', 'home']);
   const [loading, setLoading] = useState(false);
   const [done, setDone] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -211,14 +211,14 @@ export function HistoryModal({
         }
         setError(null);
       } catch (e) {
-        setError(e instanceof Error ? e.message : '读取失败');
+        setError(e instanceof Error ? e.message : t('common:loadFailed'));
         // 读失败 ⇒ 未读数进入「不知道」，**不**沿用上一次的快照（事故②的原样复现）。
         setUnreadState('error');
       } finally {
         setLoading(false);
       }
     },
-    [userId],
+    [userId, t],
   );
 
   // 别处（铃铛 / 概览）标了已读 → 弹窗里的未读点与计数必须跟着变，
@@ -378,28 +378,28 @@ export function HistoryModal({
         {/* 头 */}
         <div className="flex items-center justify-between px-4 pt-3.5 pb-2 shrink-0">
           <div className="flex items-center gap-2">
-            <h3 className="text-sm font-semibold text-fg-primary">历史</h3>
+            <h3 className="text-sm font-semibold text-fg-primary">{t('home:attention.history')}</h3>
             {unreadState === 'error' && (
               // 不显示数字 = 不陈述一个不知道的事实。可操作的出口在下面的「重试」。
               <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-500/10 text-rose-600">
-                未读数未知（读取失败）
+                {t('team:history.unreadUnknown')}
               </span>
             )}
             {unreadState === 'loading' && (
-              <span className="text-[10px] text-fg-muted">未读…</span>
+              <span className="text-[10px] text-fg-muted">{t('team:history.unreadLoading')}</span>
             )}
             {unread !== null && unread > 0 && (
               <button
                 onClick={() => setUnreadOnly(v => !v)}
                 aria-pressed={unreadOnly}
-                title={unreadOnly ? '显示全部' : '只看未读'}
+                title={unreadOnly ? t('team:history.showAll') : t('team:history.onlyUnread')}
                 className={`text-[10px] font-semibold px-1.5 py-0.5 rounded-full tabular-nums transition-colors ${
                   unreadOnly
                     ? 'bg-brand-500 text-on-brand'
                     : 'text-brand-400 bg-brand-500/10 hover:bg-brand-500/20'
                 }`}
               >
-                {unread} 条未读
+                {t('team:history.unreadCount', { count: unread })}
               </button>
             )}
             {unread !== null && unreadOnly && unread === 0 && (
@@ -407,7 +407,7 @@ export function HistoryModal({
                 onClick={() => setUnreadOnly(false)}
                 className="text-[10px] font-semibold text-fg-tertiary bg-surface-overlay px-1.5 py-0.5 rounded-full"
               >
-                已全部读完·看全部
+                {t('team:history.allReadShowAll')}
               </button>
             )}
             {/*「全部标为已读」：只在**读到了**未读且 > 0 时出现。
@@ -423,7 +423,7 @@ export function HistoryModal({
               </button>
             )}
           </div>
-          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay text-fg-tertiary" aria-label="关闭">
+          <button onClick={onClose} className="p-1.5 rounded-lg hover:bg-surface-overlay text-fg-tertiary" aria-label={t('common:close')}>
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
               <line x1="18" y1="6" x2="6" y2="18" />
               <line x1="6" y1="6" x2="18" y2="18" />
@@ -434,9 +434,9 @@ export function HistoryModal({
         {/* 分段器：自己的样式（胶囊），不是通知页的下划线 tab */}
         <div className="px-4 pb-2.5 shrink-0 flex items-center gap-1">
           {([
-            { id: 'all' as Tab, label: '全部', count: resolvedCount + notices.length },
-            { id: 'approvals' as Tab, label: '审批结果', count: resolvedCount },
-            { id: 'notices' as Tab, label: '通知', count: notices.length },
+            { id: 'all' as Tab, label: t('common:all'), count: resolvedCount + notices.length },
+            { id: 'approvals' as Tab, label: t('team:history.tabApprovals'), count: resolvedCount },
+            { id: 'notices' as Tab, label: t('team:notifications.notifications'), count: notices.length },
           ]).map(seg => {
             const active = tab === seg.id;
             return (
@@ -471,7 +471,7 @@ export function HistoryModal({
                 disabled={markingAll}
                 className="shrink-0 rounded bg-rose-500/15 px-2 py-0.5 font-semibold hover:bg-rose-500/25 disabled:opacity-50"
               >
-                重试
+                {t('common:retry')}
               </button>
             </div>
           )}
@@ -481,15 +481,15 @@ export function HistoryModal({
               {/* 单文本节点：错误文案是给人和测试看的**一条事实**，不拆成几段拼接。 */}
               <span className="flex-1">
                 {[
-                  error ? `通知读取失败：${error}（这不等于「没有历史」）。` : null,
-                  approvalsState === 'error' ? '审批历史读取失败（不等于「没有审批」）。' : null,
+                  error ? t('team:history.noticesLoadFailed', { error }) : null,
+                  approvalsState === 'error' ? t('team:history.approvalsLoadFailed') : null,
                 ].filter(Boolean).join(' ')}
               </span>
               <button
                 onClick={retry}
                 className="shrink-0 rounded bg-rose-500/15 px-2 py-0.5 font-semibold hover:bg-rose-500/25"
               >
-                重试
+                {t('common:retry')}
               </button>
             </div>
           )}
@@ -509,8 +509,8 @@ export function HistoryModal({
               </div>
             ) : (
               <div className="px-3 py-10 text-center">
-                <div className="text-[12px] text-fg-secondary">还没有历史记录</div>
-                <div className="text-[11px] text-fg-muted mt-1">团队开始工作后，审批和通知会出现在这里</div>
+                <div className="text-[12px] text-fg-secondary">{t('team:history.empty')}</div>
+                <div className="text-[11px] text-fg-muted mt-1">{t('team:history.emptyHint')}</div>
               </div>
             )
           )}
@@ -532,26 +532,26 @@ export function HistoryModal({
                       onClose();
                       navigateForApproval(row.approval);
                     }}
-                    title="打开对应的任务 / 需求 / 会话"
+                    title={t('team:history.openTarget')}
                     className="flex items-center gap-2.5 px-2.5 py-2.5 rounded-xl hover:bg-surface-overlay/50 transition-colors cursor-pointer"
                   >
                     <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${st.dot}`} />
                     <div className="flex-1 min-w-0">
                       <div className="flex items-center gap-1.5">
-                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${st.chip}`}>{st.label}</span>
+                        <span className={`text-[10px] font-semibold px-1.5 py-0.5 rounded shrink-0 ${st.chip}`}>{t(st.labelKey)}</span>
                         <span className="text-xs text-fg-secondary truncate">{row.approval.title}</span>
                       </div>
                       <div className="text-[11px] text-fg-tertiary mt-0.5 truncate">
                         {row.approval.agentName} · {row.approval.status === 'approved'
-                          ? (isAgentQuestion(row.approval) ? '已答复' : '已批准')
+                          ? (isAgentQuestion(row.approval) ? t('team:history.answered') : t('common:approvalStatus.approved'))
                           : row.approval.status === 'rejected'
-                            ? (isAgentQuestion(row.approval) ? '未答复' : '已拒绝')
-                            : st.label}
-                        {' '}于 {formatRelativeAny(at)}
+                            ? (isAgentQuestion(row.approval) ? t('team:history.unanswered') : t('common:approvalStatus.rejected'))
+                            : t(st.labelKey)}
+                        {' '}{t('team:history.atTime', { time: formatRelativeAny(at) })}
                         {/* 「等了多久」是回顾时最想知道的那个数：请求有 requestedAt、答复有
                             respondedAt，所以这段时长是**精确**的，不用「约」。 */}
                         {row.approval.respondedAt && row.approval.requestedAt && (
-                          <> · 等了 {formatWaiting({ waitingSince: row.approval.requestedAt, waitingBasis: 'requested' }, Date.parse(row.approval.respondedAt))}</>
+                          <> · {t('team:history.waited', { duration: formatWaiting({ waitingSince: row.approval.requestedAt, waitingBasis: 'requested' }, Date.parse(row.approval.respondedAt)) })}</>
                         )}
                       </div>
                     </div>
@@ -567,7 +567,7 @@ export function HistoryModal({
                     // 不能点的原因写在这里：不是“已读所以不能点”，而是这条通知没有关联对象。
                     // Owner 2026-11-04 实测后直接问「有的没法点？还是已读的没法点？」——
                     // 界面没解释，用户只能猜。
-                    title={go ? undefined : '这条通知没有关联的任务 / 需求 / 会话，仅作告知'}
+                    title={go ? undefined : t('team:history.noTargetHint')}
                     className={`flex items-start gap-2.5 px-2.5 py-2.5 rounded-xl transition-colors ${go ? 'hover:bg-surface-overlay/50 cursor-pointer' : ''}`}
                     onClick={go ? () => {
                       // 与铃铛对齐：点一条，就把**同一任务/需求**的其它未读通知一起标已读。
@@ -584,7 +584,7 @@ export function HistoryModal({
                       <div className={`text-xs truncate ${row.notice.read ? 'text-fg-tertiary' : 'text-fg-primary font-medium'}`}>
                         {row.notice.title}
                         {!go && (
-                          <span className="ml-1.5 align-middle text-[10px] font-normal text-fg-muted">仅告知</span>
+                          <span className="ml-1.5 align-middle text-[10px] font-normal text-fg-muted">{t('team:history.infoOnly')}</span>
                         )}
                       </div>
                       {row.notice.body && (
@@ -600,9 +600,9 @@ export function HistoryModal({
 
           {/* 哨兵：滚到底自动加载更早的 */}
           <div ref={sentinelRef} className="h-8 flex items-center justify-center">
-            {loading && <span className="text-[11px] text-fg-muted">加载中…</span>}
+            {loading && <span className="text-[11px] text-fg-muted">{t('common:loading')}</span>}
             {!loading && done && notices.length > 0 && (
-              <span className="text-[10px] text-fg-muted">没有更早的记录了</span>
+              <span className="text-[10px] text-fg-muted">{t('team:history.noMore')}</span>
             )}
           </div>
         </div>

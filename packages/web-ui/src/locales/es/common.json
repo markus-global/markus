@@ -182,7 +182,8 @@
     "urgent": "Urgente",
     "high": "Alta",
     "normal": "Normal",
-    "low": "Baja"
+    "low": "Baja",
+    "medium": "Media"
   },
   "role": {
     "owner": "Propietario",
@@ -206,7 +207,8 @@
     "now": "Ahora",
     "minutesAgo": "{{count}}m",
     "hoursAgo": "{{count}}h",
-    "daysAgo": "{{count}}d"
+    "daysAgo": "{{count}}d",
+    "yesterday": "ayer"
   },
   "signOut": "A ver.",
   "openInBrowser": "Abrir en Navegador",
@@ -447,7 +449,9 @@
       "text": "texto",
       "thinkingTag": "pensando",
       "round": "Ronda #{{n}}",
-      "rounds": "{{count}} rondas"
+      "rounds": "{{count}} rondas",
+      "toolsExecuted": "{{count}} herramientas ejecutadas",
+      "toolsLine": "{{count}} herramientas"
     },
     "fullLog": {
       "title": "Registro de ejecución",
@@ -477,8 +481,19 @@
       "state": {
         "running": "En curso",
         "done": "Completado"
-      }
-    }
+      },
+      "tools": "{{count}} herramientas",
+      "subagents": "{{count}} subagentes",
+      "errors": "{{count}} errores"
+    },
+    "prompt": "Prompt",
+    "inputArguments": "Argumentos de entrada",
+    "earlierStepsOmitted": "{{n}} pasos anteriores omitidos",
+    "filesChanged": "{{n}} archivos modificados",
+    "modifiedFiles": "Archivos modificados",
+    "cost": "Coste",
+    "inputTokens": "{{n}} tokens de entrada",
+    "outputTokens": "{{n}} tokens de salida"
   },
   "taskDag": {
     "noTasks": "No hay tareas que mostrar",
@@ -559,14 +574,17 @@
     "typographyDesc": "Ajuste la fuente y el tamaño de la salida HTML copiada",
     "renderingDiagram": "Renderizando diagrama…",
     "mermaidRenderError": "Error al renderizar Mermaid",
-    "plantumlRenderError": "Error al renderizar PlantUML"
+    "plantumlRenderError": "Error al renderizar PlantUML",
+    "imageLoadFailed": "No se pudo cargar la imagen — haz clic para reintentar",
+    "clickToRetry": "Haz clic para reintentar"
   },
   "activity": {
     "step_one": "{{count}} paso",
     "step_other": "{{count}} Medidas adoptadas",
     "failed": "{{count}} fallado",
     "thinking": "Pensando",
-    "writingResponse": "Respuesta por escrito…"
+    "writingResponse": "Respuesta por escrito…",
+    "step": "Paso {{count}}"
   },
   "copyFailed": "Fallido",
   "aiDisclaimer": "El contenido es generado por AI; por favor verifique antes de confiar en él.",
@@ -795,5 +813,80 @@
       "task": "Tarea",
       "deliverable": "Entregable"
     }
-  }
+  },
+  "retry": "Reintentar",
+  "copyPath": "Copiar ruta",
+  "exitFullscreen": "Salir de pantalla completa",
+  "fullscreen": "Pantalla completa",
+  "collapsePanel": "Ocultar panel",
+  "agents": "Agentes",
+  "tasks": "Tareas",
+  "requirements": "Requisitos",
+  "projects": "Proyectos",
+  "deliverables": "Entregables",
+  "workflows": "Flujos",
+  "showAll": "Ver todo",
+  "searchHint": "Escribe una palabra clave",
+  "toggle": "Mostrar/ocultar",
+  "switchTab": "Cambiar pestaña",
+  "navigate": "Navegar",
+  "justNow": "ahora mismo",
+  "rawOutput": "Salida sin procesar",
+  "filePreview": {
+    "loadFailed": "No se pudo cargar el archivo",
+    "unsupported": "Este tipo de archivo no se puede previsualizar."
+  },
+  "browserTest": {
+    "title": "Suite de pruebas de integración del navegador",
+    "subtitle": "Prueba de navegador concurrente multiagente con verificación de corrección",
+    "failuresOnly": "Solo fallos",
+    "extensionNotConnected": "La extensión de Chrome no está conectada. Conecta la extensión antes de ejecutar las pruebas.",
+    "quickTab": "Prueba rápida (~15 s)",
+    "chaosTab": "Prueba de caos",
+    "runQuick": "Ejecutar prueba rápida",
+    "duration": "Duración",
+    "startChaos": "Iniciar caos",
+    "passedCount": "{{n}} correctas",
+    "failedCount": "{{n}} fallidas",
+    "completeSummary": "Completado: {{passed}}/{{total}} correctas en {{seconds}} s",
+    "liveLogFailures": "Registro en vivo ({{n}} fallos)",
+    "liveLogOps": "Registro en vivo ({{n}} ops)"
+  },
+  "menu": "Menú",
+  "forward": "Adelante",
+  "fileNotFound": "Archivo no encontrado",
+  "htmlPreview": "Vista previa HTML",
+  "revealInFileExplorer": "Mostrar en el explorador de archivos",
+  "publishToHub": "Publicar en Markus Hub",
+  "duration": {
+    "unknown": "Duración desconocida",
+    "lessThanAMinute": "Menos de un minuto",
+    "lessThan1Minute": "<1 min",
+    "minutes": "{{count}} min",
+    "hours": "{{count}} h",
+    "days": "{{count}} d",
+    "daysHours": "{{days}} d {{hours}} h",
+    "moreThan30Days": ">30 d",
+    "approximate": "aprox. {{duration}}"
+  },
+  "loadFailed": "Error al cargar",
+  "readErrorNotice": "No se pudo cargar {{subject}}: {{error}} (esto no significa «{{notEquals}}»)",
+  "emptyDirectory": "Esta carpeta está vacía",
+  "revealInFileBrowser": "Mostrar en el navegador de archivos",
+  "backToParentDir": "Volver a la carpeta superior",
+  "goUp": "Subir",
+  "clickToPreview": "Haz clic para previsualizar",
+  "clickToRevealInExplorer": "Haz clic para mostrar en el explorador de archivos",
+  "codingTool": {
+    "files": "{{n}} archivos",
+    "tokensIn": "{{n}} de entrada",
+    "tokensOut": "{{n}} de salida"
+  },
+  "slashMenu": {
+    "commands": "Comandos"
+  },
+  "searchResults": {
+    "workflowMeta": "{{n}} pasos · v{{version}}"
+  },
+  "readFailed": "Error de lectura"
 }

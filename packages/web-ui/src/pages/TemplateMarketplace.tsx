@@ -4,6 +4,7 @@ import { api, hubApi, kebab, ownsHubItem, type AuthUser, type HubItem } from '..
 import { consume, PREFETCH_KEYS } from '../prefetchCache.ts';
 import { useStoreCatalog } from '../hooks/useStoreCatalog.ts';
 import { ReadErrorNotice } from '../components/ListState.tsx';
+import { formatSourceList } from '../lib/resourceState.ts';
 import { ArtifactDetail } from './ArtifactDetail.tsx';
 import { AssetCard } from '../components/AssetCard.tsx';
 import { Masonry } from '../components/Masonry.tsx';
@@ -280,9 +281,9 @@ export function TemplateMarketplace({ authUser: _authUser, highlightItemId, onHi
       <div className="flex-1 overflow-y-auto p-7 space-y-8">
         {catalog.sources.failures.length > 0 && (
           <ReadErrorNotice
-            subject={catalog.sources.failures.join('、')}
-            error={catalog.hub.error ?? catalog.templates.error ?? '读取失败'}
-            notEquals="这里没有任何模板或 Hub 资产"
+            subject={formatSourceList(catalog.sources.failures)}
+            error={catalog.hub.error ?? catalog.templates.error ?? t('common:readFailed')}
+            notEquals={t('store:templates.nothingHere')}
             onRetry={catalog.reload}
           />
         )}
