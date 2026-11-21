@@ -1,5 +1,6 @@
 import * as Lark from '@larksuiteoapi/node-sdk';
 import { createLogger } from '@markus/shared';
+import { createFeishuHttpInstance } from './feishu-http.js';
 
 const log = createLogger('feishu-api-client');
 
@@ -26,6 +27,11 @@ export class FeishuApiClient {
       appId: opts.appId,
       appSecret: opts.appSecret,
       domain: this.domain,
+      // Ride the platform's single egress path (fetch/undici) instead of the
+      // SDK's default axios instance: axios reads HTTP(S)_PROXY out of the
+      // process env (exported by shared net/egress for child processes) and
+      // mis-tunnels HTTPS to Feishu's gateway. See feishu-http.ts.
+      httpInstance: createFeishuHttpInstance() as unknown as Lark.HttpInstance,
     });
   }
 
@@ -47,6 +53,8 @@ export class FeishuApiClient {
       appId: this.appId,
       appSecret: this.appSecret,
       domain: this.domain,
+      // Same egress path as the REST client (WS endpoint handshake included).
+      httpInstance: createFeishuHttpInstance() as unknown as Lark.HttpInstance,
       loggerLevel: Lark.LoggerLevel.debug,
       onReady: () => {
         log.info('Feishu WSClient onReady callback fired — connection is live');

@@ -261,6 +261,15 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
   }
 
   // Children (git, gh, npm, tunnel binaries) inherit these.
+  //
+  // Hazard (learned the hard way): these vars are read *in-process* too, by any
+  // HTTP client that consumes the standard proxy env vars on its own — notably
+  // axios (proxy-from-env), whose https-over-http-proxy handling mis-tunnels and
+  // turns an HTTPS call into a plaintext request on the TLS port. `fetch`/undici
+  // is unaffected because it rides the global dispatcher installed above. If you
+  // add a client backed by axios or another self-proxying library, give it an
+  // explicit fetch-based `httpInstance` (see org-manager/src/feishu-http.ts)
+  // rather than letting it read these variables.
   process.env['HTTPS_PROXY'] = policy.url;
   process.env['HTTP_PROXY'] = policy.url;
   process.env['NO_PROXY'] = policy.noProxy.join(',');
