@@ -439,7 +439,17 @@ export class OutboundDispatcher {
     // Several configured destinations and more than one of them could have carried
     // this: say which won, so "why did the notification show up in *that* chat?"
     // has an answer in the log instead of in the candidate ordering.
-    const otherInstanceScoped = (alternatives ?? []).filter((c) => c.scope === 'instance');
+    // Only an *eligible* destination counts as an alternative. The resolver
+    // returns every candidate after the winner **unjudged** — it is a pure walk,
+    // and "why may this message not go there" belongs here (see eligibilityFor).
+    // Filtering by scope alone therefore listed a bot whose notifications were
+    // switched off as `alsoAvailable`, inventing a routing choice that never
+    // existed. That reads as a mis-route and sends the operator to "fix" routing
+    // which is already correct — a warning must point at a real lever.
+    const isEligible = this.eligibilityFor(msg);
+    const otherInstanceScoped = (alternatives ?? []).filter(
+      (c) => c.scope === 'instance' && !isEligible(c.target),
+    );
     if (scope === 'instance' && otherInstanceScoped.length > 0) {
       log.warn('Several notification destinations available — the first eligible one was used', {
         title: msg.title,
