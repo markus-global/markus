@@ -429,13 +429,16 @@ pnpm test:skipped-audit
    CI set — label it as such, or wire it into CI on its own card. Writing it as
    "CI-equivalent" would claim a gate that does not exist.
 5. Coverage steps sit outside the seven and **none of them block**: the `quality` job
-   ends with "Frontend coverage (web-ui, blocking)" (`test:coverage:web-ui`) and
-   "Coverage ratchet" (`coverage:ratchet`), both carrying `continue-on-error: true`;
-   `backend-coverage` is a whole job with `continue-on-error: true` (build →
+   ends with "Frontend coverage (web-ui, non-blocking — see comment)"
+   (`test:coverage:web-ui`) and "Coverage ratchet" (`coverage:ratchet`), both carrying
+   `continue-on-error: true`; each step's comment now states its release condition
+   (healthy collection + ≥5 consecutive green CI runs + CTO-verified, Owner-approved
+   promotion). `backend-coverage` is a whole job with `continue-on-error: true` (build →
    `coverage:node` → `coverage:ratchet:node`), where only the last step deliberately
    omits the flag, so that job turns red while the run stays green — a signal, not a
-   merge gate. **Do not judge blocking from a step name**: one is literally called
-   "blocking" and carries `continue-on-error: true`; the flag is the authority.
+   merge gate. **Do not judge blocking from a step name**: until 2026-11-22 the first
+   step was literally called "blocking" while carrying `continue-on-error: true`
+   (renamed by the CI-naming card, same commit as this note); the flag is the authority.
 6. CI fires on `push` to `main` **and** on `pull_request` targeting `main` or `feat/**`
    (`ci.yml:3-13`), so these coverage steps also run on every merge to `main` — not
    only on PRs.

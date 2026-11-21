@@ -84,9 +84,10 @@ jobs:
       - name: Skipped-test audit
         run: pnpm test:skipped-audit
 
-      # ── 5. frontend coverage (blocking) ────────────────────────────────────
+      # ── 5. frontend coverage (non-blocking, temporary) ─────────────────────
       # 前端此前完全不在覆盖率分母里（`coverage.exclude: ['packages/web-ui/**']`），
-      # 所以没人会抱怨它。现在它进分母了，而且是**阻塞**的。
+      # 所以没人会抱怨它。现在它进分母了；是否阻塞合并以 step 的 continue-on-error
+      # 为准（当前非阻塞，解除条件见 step 上方注释），别按名字或本段历史判断。
       #
       # 曾经报过 0% —— 真因不是"收集坏了"，而是**分母装错了**（2026-09-19 定位）：
       #   vitest 4 跑 `--project web-ui --coverage` 时生效的是**根级** coverage，
@@ -96,13 +97,26 @@ jobs:
       # 修法：前端这一跑用独立配置 vitest.web-ui.coverage.config.ts（无根级干扰）。
       # 真实前端覆盖率：6.06 st / 4.66 br / 4.69 fn / 6.60 ln（481 用例）。
       # 详见 audit-reports/test-hardening-2026-09-19.md → §F1（已解决）。
-      - name: Frontend coverage (web-ui, blocking)
+      # 临时非阻塞（2026-11-22 口径对齐：step 名必须与 flag 一致，认 flag 不认名字）。
+      # 解除条件——三条全满足时删掉下面的 continue-on-error，让它真正阻塞：
+      #   1. 收集链路健康：CI 报告分母 = packages/web-ui/src 且四指标非 0
+      #      （独立配置 vitest.web-ui.coverage.config.ts 已修过一次分母错误）；
+      #   2. 本步在 CI 连续 ≥5 次绿，且实测稳定高于阈值 6/4/4/6——当前实测
+      #      6.06/4.66/4.69/6.60 只高出 0.06–0.69pp，余量太薄，应先补测试拉开余量；
+      #   3. CTO 核验上述证据、Owner 批准（转正 = 改变合并门禁语义，属 Owner 决策，
+      #      不许顺手删 flag）。
+      - name: Frontend coverage (web-ui, non-blocking — see comment)
         run: pnpm test:coverage:web-ui
         continue-on-error: true
 
       - name: Coverage ratchet (floor must not drop)
         run: pnpm coverage:ratchet
         # 2026-09-19: 其收集健康检查（0% 即判定门禁失效）目前会命中，故先非阻塞。
+        # 临时非阻塞，解除条件——三条全满足时删掉下面的 continue-on-error：
+        #   1. 健康检查不再命中（以 CI 实测为准）：上游 coverage/web-ui/coverage-summary.json
+        #      四指标非 0。若仍命中，修收集链路，绝不删健康检查——它防的是假绿；
+        #   2. 本步在 CI 连续 ≥5 次绿（实测 ≥ coverage-baseline.json 的 web-ui 地板）；
+        #   3. CTO 核验证据、Owner 批准，与上一步同批转正（同一条收集链路，同一决策）。
         continue-on-error: true
 
 # ─────────────────────────────────────────────────────────────────────────────
