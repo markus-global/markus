@@ -57,12 +57,14 @@ describe('ConversationBufferManager', () => {
       expect(mgr.getPhase('agent1')).toBe('streaming');
     });
 
-    it('resetConv from any phase -> idle + clears activeSession', () => {
+    it('resetConv clears the view but never touches stream-lifecycle phase', () => {
       mgr.setActiveSession('agent1', 'sess1');
       mgr.beginStream('agent1');
       expect(mgr.getPhase('agent1')).toBe('streaming');
       mgr.resetConv('agent1');
-      expect(mgr.getPhase('agent1')).toBe('idle');
+      // Phase belongs to beginStream/endStream/abortStream — a view reset must
+      // not declare a live stream dead (concurrent-session phase collapse).
+      expect(mgr.getPhase('agent1')).toBe('streaming');
       expect(mgr.getActiveSession('agent1')).toBeUndefined();
     });
 

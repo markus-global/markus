@@ -15,8 +15,9 @@
  *
  * | 域 | 语义 | 例子 |
  * |---|---|---|
- * | `'*'` | 全局独占 —— 与**任何**请求冲突 | `shell_execute`（可触及任意资源）、安装、未知写工具 |
- * | `'fs'` + `sub` | 同一文件互斥，不同文件并行 | `file_write {path}` |
+ * | `'*'` | 全局独占 —— 与**任何**请求冲突 | `package_install` / `hub_install` / `process` |
+ * | `'shell-session'` + `sub` | 同一持久 shell 进程互斥（物理串行），不同进程并行 | `shell_execute`（按执行上下文细分） |
+ * | `'fs'` + `sub` | 同一文件互斥，不同文件并行 | `file_write {path}`、`apply_patch`、shell 静态写目标 |
  * | `'memory'` / `'notebook'` / … | 单体资源互斥 | `memory_save` |
  * | `'task'` + `sub` | 同一实体互斥，不同实体并行 | `task_update {task_id}` |
  *
@@ -31,7 +32,14 @@
  * 4. **失败安全**：未分类的写工具落到 `'*'`，宁可串行不可竞态。
  *
  * 已知取舍：`'*'` 请求在已被其他域占用时需等待，期间其他域仍可继续获取
- * （非写者优先），理论上 `'*'` 可能被短暂推迟。因为每次持锁都很短，实际可忽略。
+ * （非写者优先），理论上 `'*'` 可能被短暂推迟。
+ *
+ * 历史教训（2026-11-22）：shell_execute / apply_patch / background_exec 曾登记为
+ * `'*'` 且持锁覆盖整个命令执行期。「每次持锁都很短」的假设对 shell 不成立 ——
+ * 一个 worker `sleep 210` 等 CI，冻结了全 agent 所有写工具（session rename 等锁
+ * 151.9s、git diff 等锁 148.6s，真实执行仅 10ms/93ms）。互斥必须按**实际触及的
+ * 资源** keyed：shell 现在取 shell-session 锁 + 静态写目标 fs 锁（见 agent.ts
+ * resourceLocksFor 特判），不再以「能力未知」为由独占一切。
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';

@@ -462,7 +462,7 @@ argument so that *different* resources run in parallel:
 > `packages/core/src/lock-resources.ts` (`AGENT_MEMORY_RESOURCE_DOMAIN = 'agent-memory'`,
 > `memoryResourceForPath()`, `memoryResourceLock()`). Table entries for memory tools now
 > carry `{ domain: 'agent-memory', resource: 'knowledge' | 'notebook' }`, and
-> `Agent.resourceLocksFor(toolCall, dataDir)` rewrites an `fs`-domain lock into the memory
+> `Agent.resourceLocksFor(toolCall, opts)` rewrites an `fs`-domain lock into the memory
 > resource lock when the path names an agent memory file (`knowledge.md`, `NOTEBOOK.md`,
 > `state.md`, `role/ROLE.md`, `role/HEARTBEAT.md`).
 > Invariant pinned by `packages/core/test/lock-resource-keys.test.ts`: **same resource ⇒ same lock key**
@@ -471,8 +471,9 @@ argument so that *different* resources run in parallel:
 
 | Domain | Keyed by | Examples |
 |---|---|---|
-| `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `process` |
-| `fs` | normalized path | `file_write`, `file_edit`, `generate_image`, `office_generate` |
+| `'*'` | — (global exclusive) | `package_install`, `hub_install`, `process` |
+| `shell-session` | shell session key (per execution context, `shellSessionIdFor`) | `shell_execute` |
+| `fs` | normalized path | `file_write`, `file_edit`, `apply_patch` (per `patches[].file`), `shell_execute` / `background_exec` static write targets, `generate_image`, `office_generate` |
 | `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
 | `a2a-out` | target agent / channel | `agent_send_message`, `feishu_send_message` |
@@ -498,6 +499,21 @@ Two important subtleties:
   `shell_execute` released `'*'`). Lesson: a tool whose own work is nanoseconds must
   never inherit global serialisation — the reported duration becomes a lie about the
   tool. Regression: `test/agent-write-lock.test.ts` → "discover_tools 不得排队等全局写锁".
+- **Shell/patch locks are resource-derived, not capability-derived (2026-11-22).**
+  `shell_execute` / `apply_patch` / `background_exec` used to take `'*'` for the whole
+  command duration. A worker polling CI with `sleep 210` froze every write tool of every
+  other worker: `session` rename waited **151.9 s**, `git diff --stat` waited **148.6 s**
+  (actual work: 10 ms / 93 ms — DB activity-log evidence, 08:33–08:39 UTC). Now
+  `shell_execute` locks its persistent shell process (keyed per execution context via
+  `shellSessionIdFor` — the SAME formula the executor uses) plus statically parsed write
+  targets (`extractShellWriteTargets`); `apply_patch` locks each `patches[].file`;
+  `background_exec` locks its command's write targets at dispatch. The default shell
+  session is per-conversation, so concurrent workers no longer share one shell process
+  (cap `SHELL_MAX_SESSIONS_PER_AGENT = 16`, one-shot spawn fallback at the cap).
+  Residual: implicit writes of arbitrary programs (build output) are statically
+  unknowable — the platform guarantees only *decidable* mutual exclusion, exactly as
+  with lock-free readers; workspace isolation and branch discipline cover the rest.
+  Regression: `test/agent-write-lock.test.ts` → “纯读/纯等待的 shell_execute 不再冻结其他 session 的写工具”.
 - **Unknown tools get `tool:<name>`, not `'*'`.** MCP/skill/dynamically-registered tools
   are capability-unknown, but serialising *all* of them against *all* writes would break
   the platform's "multiple tool calls in one turn run in parallel" contract and stall the
@@ -635,9 +651,10 @@ These are deliberate trade-offs, documented rather than hidden:
      `shell_execute` even if it mutates the same resources. Builtins are safe because a
      test asserts every one of them is classified.
    - **`background_exec` / `process` are protected at *dispatch*, not for the job's
-     lifetime.** The lock covers registering the job in the process table; the spawned
-     process then runs outside the lock and may write files concurrently with other
-     workers. Treat long background jobs as a handoff-log *fact*, not as lock-covered.
+     lifetime.** `background_exec` locks its command's static write targets (fs domain)
+     at dispatch; `process` keeps `'*'` for the consumption action. The spawned process
+     then runs outside the lock and may write files concurrently with other workers.
+     Treat long background jobs as a handoff-log *fact*, not as lock-covered.
      `process poll/log` shares the domain: the lock covers the *consumption* action
      (marking the result consumed + resolving the callback entry). In-turn delivery
      (`injectTurnDelta`) consumes the row inside the turn loop, not at tool dispatch.

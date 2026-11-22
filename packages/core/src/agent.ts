@@ -113,6 +113,8 @@ import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } fro
 import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin, type MailboxIdentityPort } from './mailbox.js';
 import { AttentionController, type AttentionDelegate } from './attention.js';
 import { ResourceLockRegistry, GLOBAL_LOCK_DOMAIN, type LockRequest } from './resource-locks.js';
+import { extractShellWriteTargets } from './write-guard.js';
+import { shellSessionIdFor } from './tools/shell-session.js';
 import { requestHistoryWindow } from './history-window.js';
 import {
   normalizeTurnSessionHint,
@@ -1167,12 +1169,6 @@ export class Agent {
   private workerWorkspaces = new Map<number, SessionWorkspace>();
   /** 并发交接记录（P2a）：worker 生命周期的 declared/fact/done/conflict 持久化日志。 */
   private handoffLog: ConcurrentHandoffLog | undefined;
-  /**
-   * P2：agent 级「工具写互斥」链。所有写语义工具（task_update/comment、
-   * memory_save、file_write、shell_execute 等）执行时互斥——并发 worker 时，
-   * 同一 agent 的状态写永不并发（同实体写必然是其中子集），读/纯计算仍并行。
-   * Promise 链实现：前一个写完成后唤醒下一个。
-   */
   /**
    * 写工具的资源域锁（并发模式下跨 worker 串行化共享状态写）。
    * 见 `resource-locks.ts` —— 取代早期的单一全局写链。
@@ -9728,14 +9724,21 @@ export class Agent {
     file_write:       { domain: 'fs', arg: ['path', 'filePath'] },
     file_edit:        { domain: 'fs', arg: ['path', 'filePath'] },
     // ── 可触及任意资源 → 全局独占
-    shell_execute:    { domain: GLOBAL_LOCK_DOMAIN },
-    apply_patch:      { domain: GLOBAL_LOCK_DOMAIN },
     package_install:  { domain: GLOBAL_LOCK_DOMAIN },
     hub_install:      { domain: GLOBAL_LOCK_DOMAIN },
-    // 后台作业：派发期登记进程表 + 生成后续会写盘/写库的进程。
-    // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/architecture/concurrent-processing.md §3.3）。
-    background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
     process:          { domain: GLOBAL_LOCK_DOMAIN },
+    // ── shell / patch：锁**实际触及的资源**，不是「能力未知 → 独占一切」。
+    // 旧登记把三者全判 '*' 且持锁覆盖整个命令执行期 —— 一个 worker `sleep 210`
+    // 等 CI 就冻结全 agent 所有写工具（2026-11-22 实测：session rename 等锁
+    // 151.9s、git diff 等锁 148.6s，真实执行仅 10ms/93ms）。现在：
+    //   shell_execute   → 持久 shell 进程锁（按执行上下文细分）+ 静态写目标 fs 锁
+    //   apply_patch     → 写集完全已知（patches[].file），逐路径 fs 锁
+    //   background_exec → 派发期命令写目标 fs 锁（执行期本就在锁外，
+    //                     见 docs/architecture/concurrent-processing.md §3.3）
+    // 细分键由 resourceLocksFor 特判派生；arg 仅声明参数来源，不走通用字符串查找。
+    shell_execute:    { domain: 'shell-session' },
+    apply_patch:      { domain: 'fs', arg: ['patches'] },
+    background_exec:  { domain: 'fs', arg: ['command'] },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
     // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
     // 锁键。曾经 notebook 工具有「正式名 + 兼容别名」两套登记；别名现已删除，
@@ -9920,14 +9923,10 @@ export class Agent {
    * 推导一次写工具调用的互斥资源域。
    *
    * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
-   * 拿到不同锁键；未登记的写工具（或缺少细分参数）退化为整域 / 全局独占 ——
-   * 宁可串行，不可竞态。
-   */
-  /**
-   * 推导一次写工具调用的互斥资源域。
-   *
-   * 文件路径做 `resolve` 归一化，避免 `/a/b`、`./b`、`/a/./b` 指向同一文件却
    * 拿到不同锁键；缺少细分参数退化为整域独占。
+   *
+   * **shell / patch 特判**：锁实际触及的资源（shell 进程 + 静态写目标 / patch
+   * 文件集），见 WRITE_TOOL_DOMAINS 注释与 shellCommandLocks / applyPatchLocks。
    *
    * **未分类工具**（MCP / 技能 / 运行时注册的自定义工具）取**按工具名**的互斥域：
    * 同一工具的并发调用被串行（保护该工具自身的状态），不同工具仍可并行。
@@ -9939,7 +9938,16 @@ export class Agent {
    * —— 内建工具由 `agent-write-lock.test.ts` 强制显式分类，因此该残余只影响
    * 真正动态的工具，已在 `docs/architecture/concurrent-processing.md` 记录。
    */
-  private static resourceLocksFor(toolCall: LLMToolCall, dataDir?: string): LockRequest[] {
+  private static resourceLocksFor(
+    toolCall: LLMToolCall,
+    opts?: { dataDir?: string; agentId?: string; contextSessionId?: string; workspacePath?: string },
+  ): LockRequest[] {
+    if (toolCall.name === 'shell_execute' || toolCall.name === 'background_exec') {
+      return Agent.shellCommandLocks(toolCall, opts);
+    }
+    if (toolCall.name === 'apply_patch') {
+      return Agent.applyPatchLocks(toolCall, opts);
+    }
     const spec = Agent.WRITE_TOOL_DOMAINS[toolCall.name];
     if (!spec) return [{ domain: 'tool', sub: toolCall.name }];
 
@@ -9956,7 +9964,7 @@ export class Agent {
             // 通用文件工具命中 agent 记忆文件时，改用它所属**记忆资源**的锁键。
             // 否则 `file_write knowledge.md`（fs 域）与 `memory_update`（记忆资源）
             // 互不互斥：外部编辑会被下一次内存模型的整文件重写静默覆盖。
-            const memory = memoryResourceForPath(raw, dataDir);
+            const memory = memoryResourceForPath(raw, opts?.dataDir);
             if (memory) return [memoryResourceLock(memory)];
             sub = normalizeFsLockKey(raw);
           } else {
@@ -9969,14 +9977,80 @@ export class Agent {
     return [sub === undefined ? { domain: spec.domain } : { domain: spec.domain, sub }];
   }
 
+  /** 一个文件路径 → 锁请求（记忆文件归记忆资源域，其余 fs 域）。 */
+  private static fsLockForPath(rawPath: string, cwd: string | undefined, dataDir: string | undefined): LockRequest {
+    const abs = resolvePath(cwd ?? process.cwd(), rawPath);
+    const memory = memoryResourceForPath(abs, dataDir);
+    if (memory) return memoryResourceLock(memory);
+    return { domain: 'fs', sub: normalizeFsLockKey(abs) };
+  }
+
+  /**
+   * shell_execute / background_exec：shell 进程锁（仅 shell_execute）+ 静态解析
+   * 出的写目标 fs 锁。纯读命令（git diff / gh pr view）与纯等待（sleep）不再
+   * 与任何写工具互斥 —— 互斥按「实际触及的资源」keyed，而非「能力未知」。
+   * shell 进程锁的键与 shell.ts 实际执行的会话键共用 `shellSessionIdFor`，
+   * 保证锁住的就是跑命令的那个进程。
+   *
+   * 已知残余：任意程序的隐式写（构建产物等）静态不可知 —— 与读工具从不加锁
+   * 一样，平台只保证**可判定**的互斥；工作区隔离与分支纪律负责其余。
+   */
+  private static shellCommandLocks(
+    toolCall: LLMToolCall,
+    opts?: { dataDir?: string; agentId?: string; contextSessionId?: string; workspacePath?: string },
+  ): LockRequest[] {
+    const args = (toolCall.arguments ?? {}) as Record<string, unknown>;
+    const command = typeof args['command'] === 'string' ? args['command'] : '';
+    const locks: LockRequest[] = [];
+    if (toolCall.name === 'shell_execute') {
+      const explicit = typeof args['session_id'] === 'string' && args['session_id'] ? args['session_id'] : undefined;
+      locks.push({
+        domain: 'shell-session',
+        sub: shellSessionIdFor(opts?.agentId ?? 'agent', explicit, opts?.contextSessionId),
+      });
+    }
+    const rawCwd = typeof args['cwd'] === 'string' && args['cwd'] ? args['cwd'] : undefined;
+    const cwd = rawCwd ? resolvePath(opts?.workspacePath ?? process.cwd(), rawCwd) : opts?.workspacePath;
+    for (const target of extractShellWriteTargets(command)) {
+      locks.push(Agent.fsLockForPath(target, cwd, opts?.dataDir));
+    }
+    return locks;
+  }
+
+  /** apply_patch：写集 = patches[].file（含 delete），逐路径 fs 锁。 */
+  private static applyPatchLocks(
+    toolCall: LLMToolCall,
+    opts?: { dataDir?: string; workspacePath?: string },
+  ): LockRequest[] {
+    const patches = (toolCall.arguments as Record<string, unknown> | undefined)?.['patches'];
+    const files: string[] = [];
+    if (Array.isArray(patches)) {
+      for (const p of patches) {
+        const f = (p as { file?: unknown } | null)?.file;
+        if (typeof f === 'string' && f.length > 0) files.push(f);
+      }
+    }
+    // 形状未知 → 保守全局独占（宁可串行不可竞态）。
+    if (files.length === 0) return [{ domain: GLOBAL_LOCK_DOMAIN }];
+    return files.map(f => Agent.fsLockForPath(f, opts?.workspacePath, opts?.dataDir));
+  }
+
   /**
    * 写工具跨 worker 互斥（资源域锁）。
    *
    * 取代早期的「一把 Agent 级全局写锁」：不同资源域可并行，同域严格串行。
    * 详见 `resource-locks.ts`。
    */
-  private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>): Promise<T> {
-    return this.resourceLocks.withLocks(Agent.resourceLocksFor(toolCall, this.dataDir), fn);
+  private async withToolWriteLock<T>(toolCall: LLMToolCall, fn: () => Promise<T>, sessionId?: string): Promise<T> {
+    return this.resourceLocks.withLocks(
+      Agent.resourceLocksFor(toolCall, {
+        dataDir: this.dataDir,
+        agentId: this.id,
+        contextSessionId: sessionId ?? this.currentSessionId,
+        workspacePath: this.pathPolicy?.primaryWorkspace,
+      }),
+      fn,
+    );
   }
 
   private async executeTool(toolCall: LLMToolCall, onOutput?: ToolOutputCallback, sessionId?: string): Promise<string> {
@@ -9994,7 +10068,7 @@ export class Agent {
     //   写工具 → 取资源域锁 → 执行瀑布逻辑（executeToolInternal）
     //   读工具 → 直接执行，不互斥
     if (Agent.isWriteTool(toolCall.name)) {
-      return await this.withToolWriteLock(toolCall, () => this.executeToolInternal(toolCall, onOutput, sessionId));
+      return await this.withToolWriteLock(toolCall, () => this.executeToolInternal(toolCall, onOutput, sessionId), sessionId);
     }
     return await this.executeToolInternal(toolCall, onOutput, sessionId);
   }
@@ -10447,9 +10521,15 @@ export class Agent {
     // the model emits camelCase (and vice versa) — otherwise a casing mismatch
     // yields a misleading "required" error and the model retries the same call.
     const baseArgs = addArgCasingAliases(beforeResult.modifiedArgs ?? toolCall.arguments);
-    const effectiveArgs = sessionId
-      ? { ...baseArgs, _browserSessionId: sessionId, _terminalSessionId: sessionId }
-      : baseArgs;
+    // Shell context uses the SAME identity formula as the lock derivation
+    // (sessionId ?? currentSessionId) — one formula, or the lock would guard a
+    // different shell process than the one actually executing the command.
+    const shellContextId = sessionId ?? this.currentSessionId;
+    const effectiveArgs = {
+      ...baseArgs,
+      ...(sessionId ? { _browserSessionId: sessionId, _terminalSessionId: sessionId } : {}),
+      ...(shellContextId ? { _shellContextId: shellContextId } : {}),
+    };
 
     let lastError: unknown;
     for (let attempt = 0; attempt <= Agent.TOOL_RETRY_MAX; attempt++) {
