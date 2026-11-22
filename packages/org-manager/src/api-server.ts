@@ -119,6 +119,7 @@ import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { AgentDelivery, newChainId, NULL_WORK_UNITS } from './agent-delivery.js';
 import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
+import { createIdentityAuditPort } from './identity-audit-runner.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -489,7 +490,6 @@ export class APIServer {
                 // 「本来就没有父」，静默且不可察觉。
                 return manager.hasAgent(agentId) ? manager.turnWorkUnitRef(agentId) : null;
               },
-              linkMailboxItem: (itemId, ref) => this.workUnits!.linkMailboxItem(itemId, ref),
               transition: (ref, to, opts) => this.workUnits!.tryTransition(ref, to as never, opts as never),
             }
           : NULL_WORK_UNITS,
@@ -2142,6 +2142,18 @@ export class APIServer {
         }) !== null;
       },
     });
+    // C10-0B §3.5：每日真库身份审计端口（工厂：记录里要写「今天哪个 agent 跑的」）。
+    // 时钟归 core 的 AgentClock（具名 source identity-audit）；这里只装配「做什么」。
+    // 库路径是装配知识（markusHome()/data.db），core 不认识它。
+    // 包装成 void 返回：端口契约是「每天跑一次」，读数记录是实现侧产物，不进契约。
+    manager.setIdentityAuditPortFactory((agentId) => {
+      const port = createIdentityAuditPort({
+        agentId,
+        markusHome: markusHome(),
+        dbPath: join(markusHome(), 'data.db'),
+      });
+      return { runDaily: () => { port.runDaily(); } };
+    });
   }
 
   /**
@@ -2723,9 +2735,11 @@ export class APIServer {
       if (title) await this.storage.chatSessionRepo.updateLastMessage(session.id, title);
 
       // ── 第七刀 C7-A：一轮对话 = 一个 WorkUnit ─────────────────────────────
-      // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
+      // 顺序不可反：**先建实体（ensure），再收口**。
       // 反过来就是 C6 刻意避免的「先建引用后建实体」，一行指向不存在 WU 的
       // `work_unit_ref` 比 null 更坏 —— 它看起来像有身份。
+      // C10-0B：这里不再回写 `mailbox_items.work_unit_ref`（chat 行在入队时
+      // 就带着同一个 ref；把同一个值再写一遍是第二个写者，而不是保险）。
       const units = this.workUnits;
       if (units) {
         // C8 收口纠偏：优先用**回合开始时写在那条 mailbox 行上的 ref**。
@@ -2787,8 +2801,11 @@ export class APIServer {
    * 都在 `work_units` 里留下一条永远 `running` 的行（实测一轮一积：1 → 3）。
    * 「回合结束」这个事实原本有三个写者各自记一遍，漏一个不报错，只是台账说错话。
    *
-   * 顺序：先补 context_ref（只填空值）→ 回填 mailbox 引用 → running → idle。
+   * 顺序：先补 context_ref（只填空值）→ running → idle。
    * 只在 `running` 上迁：重放同一轮会命中已 `idle` 的行，那不是「未收口」。
+   *
+   * C10-0B：删除了其中的「回填 mailbox 引用」一步。chat 行在**入队时**就带着 ref，
+   * 再写一遍只会让「谁写这列」重新长成两处（任务链的 leak 正是从这种补写开始的）。
    */
   private settleChatTurnWorkUnit(
     agentId: string,
@@ -2801,7 +2818,6 @@ export class APIServer {
     try {
       const contextRef = opts.memorySessionId ?? null;
       if (contextRef) units.adoptContextRef(ref, contextRef);
-      if (opts.mailboxItemId) units.linkMailboxItem(opts.mailboxItemId, ref);
       const row = this.storage?.workUnitRepo?.getByRef(ref);
       if (row?.status === 'running') {
         units.tryTransition(ref, 'idle', {

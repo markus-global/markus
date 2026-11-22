@@ -56,7 +56,6 @@ function memoryPort(seed?: WorkUnitRecord[]): WorkUnitPort & { rows: Map<string,
     getByRef: (ref) => rows.get(ref),
     listByAgent: (agentId) => [...rows.values()].filter((r) => r.agentId === agentId),
     listChildren: (parentId) => [...rows.values()].filter((r) => r.parentId === parentId),
-    linkMailboxItem: () => true,
   };
 }
 
@@ -189,36 +188,6 @@ describe('WorkUnitService.workStatus —— 答案来自对象，不读 payload'
       ]),
     });
     expect(svc.workStatus('agt_b').units.map((u) => u.ref)).toEqual(['r_b']);
-  });
-});
-
-describe('WorkUnitService.linkMailboxItem —— 先实体后引用', () => {
-  it('无 itemId ⇒ 直接跳过（不猜「最近一条」）', () => {
-    const link = vi.fn();
-    const svc = new WorkUnitService({ repo: { ...memoryPort(), linkMailboxItem: link } });
-    expect(svc.linkMailboxItem(undefined, 'r1')).toBe(false);
-    expect(link).not.toHaveBeenCalled();
-  });
-
-  it('行不存在（0 行被改）⇒ 结构化 link_failed 事件', () => {
-    const events: WorkUnitEvent[] = [];
-    const svc = new WorkUnitService({
-      repo: { ...memoryPort(), linkMailboxItem: () => false },
-      onEvent: (e) => events.push(e),
-    });
-    expect(svc.linkMailboxItem('mbx_1', 'r1')).toBe(false);
-    expect(events[0]!.type).toBe('work_unit.link_failed');
-    expect(events[0]!.itemId).toBe('mbx_1');
-  });
-
-  it('写库抛错 ⇒ 吞掉 + 记事件（观测设施不得成为业务故障点）', () => {
-    const events: WorkUnitEvent[] = [];
-    const svc = new WorkUnitService({
-      repo: { ...memoryPort(), linkMailboxItem: () => { throw new Error('locked'); } },
-      onEvent: (e) => events.push(e),
-    });
-    expect(svc.linkMailboxItem('mbx_2', 'r1')).toBe(false);
-    expect(events.some((e) => e.type === 'work_unit.link_failed')).toBe(true);
   });
 });
 

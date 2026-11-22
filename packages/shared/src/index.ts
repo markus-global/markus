@@ -49,3 +49,4 @@ export * from './mas.js';
 export * from './address.js';
 export * from './work-unit.js';
 export * from './facts/predicates.js';
+export * from './identity-audit.js';

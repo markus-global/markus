@@ -112,8 +112,8 @@ export interface DeliveryDeps {
          * C8-A：这条 item 属于哪个 WorkUnit（结构事实）。
          *
          * 必须能穿到这里：内存里的 item 若不带身份，调度期的实体键（`workunit` 维度）
-         * 与会话锁都会退化成 `system:` 全局单键 —— 而 `linkMailboxItem` 只写 DB 列，
-         * 补不了内存。
+         * 与会话锁都会退化成 `system:` 全局单键 —— DB 列补不了内存（C10-0B 已把那个
+         * “事后补列”的写者删除：身份只有一个建造点，就是入队时）。
          */
         workUnitRef?: string | null;
         runtime?: { responsePromise?: { resolve: (v: string) => void; reject: (r: unknown) => void } };
@@ -166,7 +166,6 @@ export interface DeliveryDeps {
      * 禁止用库查询实现。必填而非可选：`NULL_WORK_UNITS` 让它显式返回 null。
      */
     turnWorkUnitRef(agentId: string): string | null;
-    linkMailboxItem(itemId: string | null | undefined, ref: string | null): boolean;
     transition(ref: string, to: string, opts?: { reason?: string | null }): unknown;
   };
 }
@@ -180,7 +179,6 @@ export interface DeliveryDeps {
 export const NULL_WORK_UNITS: DeliveryDeps['workUnits'] = {
   ensure: () => null,
   turnWorkUnitRef: () => null,
-  linkMailboxItem: () => false,
   transition: () => undefined,
 };
 
@@ -250,10 +248,11 @@ export class AgentDelivery {
         // 会话 id；拿不到派生值时退回频道（与旧行为一致），绝不静默换成一个新会话。
         const entitySessionKey = sessionScopeKeyOfWorkUnitRef(entityRef) ?? req.channelKey;
 
-        // 顺序不可反：**先建实体（ensure），再建引用（linkMailboxItem）**。
-        // ensure 现在提到 enqueue 之前：入队那一刻 item 就得带着真实身份，否则
-        // 内存里的 item 到处理时仍无 WU（`linkMailboxItem` 只写 DB 列），实体键与
-        // 会话锁都会退化成 `system:` 全局单键。失败（无 WU repo）时显式 null。
+        // 顺序不可反：**先建实体（ensure），再入队并带上引用**。
+        // 入队那一刻 item 就得带着真实身份，否则内存里的 item 到处理时仍无 WU,
+        // 实体键与会话锁都会退化成 `system:` 全局单键。失败（无 WU repo）时显式 null。
+        // C10-0B：这段顺序就是全仓的范本 —— 任务执行链原先反着来（先入队、
+        // 再由第二个写者补 DB 列），于是台账与库分成两套真相。
         const wu = units.ensure({
           ref: entityRef,
           agentId: req.fromAgentId,
@@ -261,7 +260,7 @@ export class AgentDelivery {
           parentRef,
         });
 
-        const item = agent.enqueueToMailbox('a2a_message', {
+        agent.enqueueToMailbox('a2a_message', {
           summary: req.mentions?.length
             ? `@mention from ${req.fromAgentName}`
             : `A2A message from ${req.fromAgentName}`,
@@ -293,9 +292,8 @@ export class AgentDelivery {
             ...(req.throttled ? { throttled: true } : {}),
           },
         }, {
-          // C8-A：身份随消息一起落地（内存 + DB 同源）。`linkMailboxItem` 仍是
-          // `mailbox_items.work_unit_ref` 这一列的唯一写者，这里只让**内存里的 item**
-          // 立刻带上身份，否则调度期的实体键与会话锁都会退化。
+          // C8-A：身份随消息一起落地（内存 + DB 同源）。`mailbox_items.work_unit_ref`
+          // 这一列的唯一写者就是入队本身；内存与 DB 在同一个装配点写同一个值。
           workUnitRef: wu ? entityRef : null,
           metadata: {
             senderId: req.fromAgentId,
@@ -321,8 +319,8 @@ export class AgentDelivery {
         //
         // C8-A 的改动只有一处、在身份上：ref 由 `a2a:<channelKey>:<deliveryId>` 改成
         // `a2a:<entityKey>`（见上方 entityKey 的推导）。实体已由 `ensure` 在入队前建好，
-        // 这里只补 DB 引用（该列的唯一写者）与状态留痕。
-        units.linkMailboxItem((item as { id?: string } | undefined)?.id, entityRef);
+        // 引用随入队写入（C10-0B：删除此处的事后补列调用 —— 它只能改 DB，
+        // 而内存里的 item 早在 enqueue 时就拿到了同一个 ref）。
         // 投递已入队 = 这条活不再在跑 → `running → idle`，留痕在 `status_transitions`
         // （`entity_type='work_unit'`）：不留痕的话「它什么时候停的」只能靠猜。
         // 只在 `running` 上迁：重投同一跳会命中既有 `idle` 行（idle→idle 不在矩阵里）。

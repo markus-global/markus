@@ -124,7 +124,7 @@ executing turn could not attribute.
 | Field | Meaning |
 |---|---|
 | `workUnitRef` | The turn that produced the item: `session:<id>:r<N>` for a chat turn, `task_<taskId>_r<N>` for a task execution, `a2a:<entity>` for agent-to-agent. This is the intended normal case — measured coverage was 0.18% before the enqueue gate became mandatory (2026-11-18); see §6.7. |
-| `refOrigin` | The caller's declaration of where identity comes from: `"entity"` / `"turn"` (a ref is present), `"pending-link"` (enqueued while wiring a link that will be attached on dispatch), or `"platform-internal"` (the platform itself, not an agent turn). **Required whenever `workUnitRef` is absent** — see §6.7 for why an undeclared NULL is rejected rather than logged. |
+| `refOrigin` | The caller's declaration of where identity comes from: `"entity"` / `"turn"` (a ref is present), or `"platform-internal"` (the platform itself, not an agent turn). **Required whenever `workUnitRef` is absent** — see §6.7 for why an undeclared NULL is rejected rather than logged. C10-0B removed the former `"pending-link"` declaration: identity must exist at enqueue (memory + DB, one writer); a post-enqueue link wrote only the DB column and left the in-memory item null. |
 
 Enforcement is in `AgentMailbox.enqueue` (`packages/core/src/mailbox.ts`): an item carrying
 neither field logs an ERROR and is **rejected**, rather than being stored with a NULL
@@ -786,8 +786,11 @@ An item carries either a `workUnitRef` or an explicit `refOrigin` declaration:
 | Declaration | Meaning |
 |---|---|
 | `entity` / `turn` | a ref is present (entity identity / current turn identity) |
-| `pending-link` | identity legitimately arrives after the work starts |
 | `platform-internal` | genuinely no entity (receipts, internal events) |
+
+(C10-0B deleted `pending-link`: "identity arrives later" licensed a second writer
+that UPDATE-ed only the DB column — the in-memory item the decision ledger reads
+stayed null. Identity is built before enqueue and lands with the enqueue itself.)
 
 Neither present ⇒ **`enqueue()` rejects** with an actionable message. The guard is
 not opt-in: an optional strictness guards nothing. Under the previous
