@@ -25,22 +25,9 @@ interface ProviderModels {
  * so the composer, Settings routing, and the server agree on one definition.
  */
 
-/** Optional modifiers for a global-scope selection. */
-export interface GlobalScopeOptions {
-  /**
-   * When true (default), applying to global ALSO resets the current agent's
-   * per-agent binding back to "follow global" — so the composer's shown model
-   * equals both the global default and the agent's actual model (no ambiguity).
-   * The catalog-repair path also passes true: an agent pinned to a model that
-   * is no longer in the enabled catalog must lose that binding, otherwise the
-   * label would keep advertising a model the agent can no longer resolve.
-   */
-  resetCurrentAgent?: boolean;
-}
-
 interface ChatModelMenuProps {
   value: ChatModelSelection | null;
-  onSelect: (sel: ChatModelSelection, scope: 'global' | 'agent', opts?: GlobalScopeOptions) => void;
+  onSelect: (sel: ChatModelSelection, scope: 'global' | 'agent') => void;
   /** Agent to bind a per-agent model selection to (scope 'agent'). */
   agentId?: string;
   disabled?: boolean;
@@ -57,6 +44,20 @@ interface ChatModelMenuProps {
  * The per-agent scope is the default: picking a model writes the current
  * agent's per-agent default — a model is bound to the AGENT (or to global
  * routing), never to a single conversation/session.
+ *
+ * READ PATH NEVER WRITES. This menu mounts on every Team chat visit, and the
+ * catalog it loads is eventually-consistent: at boot it can be cold or partial
+ * (a Hub refresh mid-window returned 66 of 739 models on 2026-11-22). The old
+ * "catalog repair" treated a bound model missing from that snapshot as a dead
+ * binding and persistently reset the agent to follow-global ON MOUNT — eating
+ * the user's setting whenever Team chat was the first page opened after a
+ * restart (Settings force-refreshes the shared cache, which masked the window).
+ * Now: the label shows the authoritative binding (`value`, from GET
+ * /api/agents/:id effectiveModel) regardless of catalog membership; catalog
+ * gaps never write. A genuinely dead model degrades at call time via the
+ * router's existing upstream-failure fallback — user intent is never destroyed
+ * by a read. Global-routing healing against the catalog is owned by the
+ * backend GET /api/settings/llm (healMarkusRoutingAgainstCatalog) — one writer.
  */
 export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelMenuProps) {
   const { t } = useTranslation('team');
@@ -122,13 +123,10 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
       list.sort((a, b) => a.displayName.localeCompare(b.displayName));
       setProviders(list);
 
-      const inCatalog = (sel: ChatModelSelection | null | undefined): boolean => {
-        if (!sel?.provider || !sel.model) return false;
-        const p = list.find(x => x.provider === sel.provider);
-        return !!p?.models.some(m => m.id === sel.model);
-      };
-
       // Prefer explicit routing default; else default provider's active model.
+      // No healing here: a sticky default missing from this (possibly cold or
+      // partial) snapshot is healed by the backend GET /api/settings/llm
+      // against the warm catalog — the read path must not rewrite routing.
       let nextGlobal: ChatModelSelection | null = null;
       if (data.routingDefaultModel?.provider && data.routingDefaultModel?.model) {
         nextGlobal = {
@@ -142,25 +140,6 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
         }
       }
 
-      // Sticky RDM can outlive geo-filtered catalogs (e.g. CN drops Claude).
-      // Fall back to first Markus / first available model and persist globally.
-      if (nextGlobal && !inCatalog(nextGlobal)) {
-        const markus = list.find(p => p.provider === 'markus');
-        const fallback = markus?.models[0]
-          ? { provider: 'markus', model: markus.models[0].id }
-          : list[0]?.models[0]
-            ? { provider: list[0].provider, model: list[0].models[0]!.id }
-            : null;
-        if (fallback) {
-          nextGlobal = fallback;
-          void api.settings.updateRouting({
-            defaultProvider: fallback.provider,
-            routingDefaultModel: fallback,
-          }).then(() => invalidateLlmSettings()).catch(() => { /* non-fatal */ });
-        } else {
-          nextGlobal = null;
-        }
-      }
       setGlobalDefault(nextGlobal);
     } catch {
       setProviders([]);
@@ -206,37 +185,12 @@ export function ChatModelMenu({ value, onSelect, agentId, disabled }: ChatModelM
       .filter(p => p.models.length > 0);
   }, [providers, query]);
 
-  const selectionInCatalog = useCallback((sel: ChatModelSelection | null | undefined) => {
-    if (!sel?.provider || !sel.model) return false;
-    // While catalog is loading, don't treat selection as missing.
-    if (providers.length === 0) return true;
-    const p = providers.find(x => x.provider === sel.provider);
-    return !!p?.models.some(m => m.id === sel.model);
-  }, [providers]);
-
-  // The agent's bound model can go missing from the catalog (provider turned
-  // off, CN geo-filter dropping it). Repair by falling back to the global
-  // default AND resetting the agent to "follow global" — the unusable binding
-  // must go too, otherwise the label would keep showing a model the agent no
-  // longer resolves to (and the repair would re-fire on every render).
-  useEffect(() => {
-    if (!value || providers.length === 0) return;
-    if (selectionInCatalog(value)) return;
-    const fallback = (globalDefault && selectionInCatalog(globalDefault))
-      ? globalDefault
-      : (() => {
-          const markus = providers.find(p => p.provider === 'markus');
-          if (markus?.models[0]) return { provider: 'markus', model: markus.models[0].id };
-          if (providers[0]?.models[0]) {
-            return { provider: providers[0].provider, model: providers[0].models[0]!.id };
-          }
-          return null;
-        })();
-    if (fallback) onSelect(fallback, 'global', { resetCurrentAgent: true });
-  }, [value, providers, globalDefault, selectionInCatalog, onSelect]);
-
-  const effective = (value && selectionInCatalog(value)) ? value : globalDefault;
-  // Trigger shows a short model id (session override or global default).
+  // The binding is the fact (GET /api/agents/:id effectiveModel); the catalog
+  // is an eventually-consistent opinion. Show the binding even when the current
+  // snapshot lacks it — a cold/partial catalog must never change what the user
+  // sees as their setting, and must never write (see header contract).
+  const effective = value ?? globalDefault;
+  // Trigger shows a short model id (agent binding, else global default).
   const shortModel = effective?.model
     ? (effective.model.includes('/') ? effective.model.split('/').pop()! : effective.model)
     : '';
@@ -365,7 +319,6 @@ export async function applyChatModelSelection(
   sel: ChatModelSelection,
   scope: 'global' | 'agent',
   agentId?: string,
-  opts?: GlobalScopeOptions,
 ): Promise<void> {
   if (scope === 'agent') {
     if (!agentId) return;
@@ -380,10 +333,11 @@ export async function applyChatModelSelection(
     return;
   }
   // global scope
-  // If the user picks a global model while an agent is selected, also reset
-  // that agent to "follow global" — otherwise the composer shows the global
-  // pick but the agent still uses its own bound model (ambiguous).
-  if (agentId && opts?.resetCurrentAgent !== false) {
+  // An EXPLICIT user pick of a global model while an agent is selected also
+  // resets that agent to "follow global" — otherwise the composer shows the
+  // global pick but the agent still uses its own bound model (ambiguous).
+  // This is the only reset path left: it fires on user action, never on mount.
+  if (agentId) {
     // `null` clears the key server-side; `undefined` would be dropped by
     // JSON.stringify and leave the old model on the row.
     await api.agents.updateConfig(agentId, {
