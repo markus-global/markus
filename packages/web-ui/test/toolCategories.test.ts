@@ -30,7 +30,7 @@ describe('categorizeTools — known tool placement', () => {
         tool('office_generate'),
         tool('kb_search'),
         tool('decide'),
-        tool('background_wait'),
+        tool('background_exec'),
       ],
       t,
     );
@@ -40,7 +40,7 @@ describe('categorizeTools — known tool placement', () => {
     expect(groupOf(groups, 'office_generate')).toBe('deliverables');
     expect(groupOf(groups, 'kb_search')).toBe('knowledge');
     expect(groupOf(groups, 'decide')).toBe('reasoning');
-    expect(groupOf(groups, 'background_wait')).toBe('runtime');
+    expect(groupOf(groups, 'background_exec')).toBe('runtime');
     // The catch-all must stay empty — an uncategorized tool is a grouping bug.
     expect(groups.find(g => g.category === 'other')).toBeUndefined();
   });

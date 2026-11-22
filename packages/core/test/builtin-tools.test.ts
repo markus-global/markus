@@ -28,7 +28,6 @@ vi.mock('../src/tools/web-extract.js', () => ({
 }));
 vi.mock('../src/tools/process-manager.js', () => ({
   createBackgroundExecTool: vi.fn(() => ({ name: 'background_exec', execute: vi.fn() })),
-  createBackgroundWaitTool: vi.fn(() => ({ name: 'background_wait', execute: vi.fn() })),
   createProcessTool: vi.fn(() => ({ name: 'process_manage', execute: vi.fn() })),
 }));
 
