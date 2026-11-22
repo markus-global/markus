@@ -6,22 +6,27 @@
  *   1) `--self-test`  —— CI 用。建一个临时库、**主动塞进每种违规**，断言每条判据都能抓到；
  *                        再塞进**纪元前**的同形违规，断言计数一条都不变（历史是档案，不是
  *                        违规）；最后修好，断言全部归零。
- *   2) 无参数          —— 运维用。对真实库（默认 ~/.markus/data.db，可用 MARKUS_AUDIT_DB 覆盖）
- *                        跑同样几条查询，任一条 >0 就以非零码退出。
+ *   2) `--epoch <ts> [--db <path>]` —— Owner 本地实例的定时任务用（C10-0G）。
+ *                        对真实库（--db > MARKUS_AUDIT_DB > ~/.markus/data.db）跑同样几条查询，
+ *                        任一条 >0 就以非零码退出。纪元是部署参数，必须显式传入；
+ *                        缺纪元 = exit 2（epoch-unset，绝不静默绿）。
+ *                        退出码：0=pass，1=fail/error，2=epoch-unset。
  *
  * ── 判据从哪来（C10-0B §3.4）────────────────────────────────────────────────
- * 判据**不在本文件定义**了：`@markus/shared` 的 `identity-audit` 模块是唯一写者
- * （`makeIdentityGates`），因为每日审计（agent 时钟源 `identity-audit`）要跑同一份。
+ * 判据**不在本文件定义**：`@markus/shared` 的 `identity-audit` 模块是唯一写者
+ * （`makeIdentityGates`），CI 自检与本脚本 import 同一份。
  * 本文件只保留「怎么执行」：临时库自检 / 真库只读跑。
  *
  * ⚠️ **构建前置条件**：判据来自 `packages/shared/dist`，所以本脚本必须先
  * `pnpm --filter @markus/shared build`（CI 在 self-test 步骤前跑 `tsc -b`）。
  * 读不到 dist 就**失败退出**——一个不知道自己该审什么的门禁必须响亮报错，不能默认放行。
  *
- * ── 时间下界（C10-0B 删除滚动窗口）──────────────────────────────────────────
- * 只有一个下界：`IDENTITY_FIX_EPOCH`（固定产品常量）。旧实现的
- * `MARKUS_AUDIT_SINCE = now - 7d` 已删除——两个下界就是同一件事的两个度量，
- * 同一行历史今天算违规、明天不算，读数不可复现。
+ * ── 时间下界（C10-0B 删滚动窗口；C10-0G 纪元本地化）──────────────────────────────────────────
+ * 只有一个下界：`--epoch` 显式传入的纪元。旧实现的滚动窗口
+ * `MARKUS_AUDIT_SINCE = now - 7d` 已删除——两个下界就是同一件事的两个度量。
+ * 产品纪元常量也已删除（C10-0G）：纪元的正确值属于部署现场（Owner 本地
+ * 实例的修复构建进程启动时刻，见 docs/records/identity-backlog-disposition-2026-11-22.md
+ * 的 dated 更正注），不随产品发货，也不从任何常量读取。
  *
  * C9-A 口径（2026-11-15）：facts 的六条门禁（6–11）**故意不把 facts 的触发器与
  * 部分唯一索引建进自检夹具**。理由：那两道守卫会直接把违规样本拒之门外，于是
@@ -37,10 +42,9 @@ import { fileURLToPath } from 'node:url';
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SHARED_DIST_ENTRY = join(HERE, '..', 'packages', 'shared', 'dist', 'identity-audit.js');
 
-let IDENTITY_FIX_EPOCH;
 let makeIdentityGates;
 try {
-  ({ IDENTITY_FIX_EPOCH, makeIdentityGates } = await import(SHARED_DIST_ENTRY));
+  ({ makeIdentityGates } = await import(SHARED_DIST_ENTRY));
 } catch (err) {
   console.error(
     `✗ 无法从 shared dist 读取门禁定义：${SHARED_DIST_ENTRY}\n` +
@@ -51,8 +55,8 @@ try {
 }
 
 /**
- * 自检夹具的纪元（**显式注入**，不读产品常量）：自检证明的是「判据逻辑有效」，
- * 与产品纪元是否已定值无关 —— 哨兵期 CI 也必须能跑自检。
+ * 自检夹具的纪元（**显式注入**）：自检证明的是「判据逻辑有效」，
+ * 与真库纪元（部署参数，--epoch）无关 —— CI 没有真库也必须能跑自检。
  */
 const FIXTURE_EPOCH = '2026-11-15T00:00:00.000Z';
 const GATES = makeIdentityGates({ epoch: FIXTURE_EPOCH });
@@ -207,27 +211,42 @@ function openReadOnly(path) {
   }
 }
 
+/** CLI 旗标值（--epoch <ts> / --db <path>）：缺则返回 undefined。 */
+function argValue(flag) {
+  const i = process.argv.indexOf(flag);
+  return i !== -1 && i + 1 < process.argv.length ? process.argv[i + 1] : undefined;
+}
+
 function auditRealDb() {
-  const path = process.env.MARKUS_AUDIT_DB ?? join(homedir(), '.markus', 'data.db');
+  // 纪元本地化（C10-0G）：纪元是部署参数，必须显式传入；缺 = 独立状态，绝不静默绿。
+  // 退出码三态：0=pass，1=fail/error，2=epoch-unset（未显式传入）。
+  const epoch = argValue('--epoch');
+  if (epoch === undefined || epoch.trim() === '') {
+    console.error(
+      'state: epoch-unset\n' +
+      '纪元未显式传入：真库审计需要 --epoch <ts>（部署参数，C10-0G 本地化）。\n' +
+      'Owner 本地实例的本机线记录在 docs/records/identity-backlog-disposition-2026-11-22.md 的 dated 更正注。\n' +
+      '这不是「通过」——没有下界，审计无法区分历史与活漏。',
+    );
+    process.exit(2);
+  }
+  const path = argValue('--db') ?? process.env.MARKUS_AUDIT_DB ?? join(homedir(), '.markus', 'data.db');
   if (!existsSync(path)) {
     console.log(`未找到库 ${path} —— 跳过（这不是失败：CI 环境本来就没有生产库）。`);
     return;
   }
-  // ── 哨兵期（CTO 裁决 A）：纪元未定值 = 独立状态，绝不静默绿 ──────────────
-  // 退出码三态：0=已定值且通过，1=已定值且有违规，2=纪元未定值（哨兵期）。
-  if (IDENTITY_FIX_EPOCH === null) {
-    console.error(
-      'state: epoch-unset\n' +
-      '纪元未定值（哨兵期）：修复构建尚未上线（Owner 重启后按处置决议记录定值）。\n' +
-      '这不是「通过」——审计无法区分历史与活漏，直到纪元定值。',
-    );
-    process.exit(2);
+  // ── C10-0G：缺纪元的 epoch-unset 检查在函数开头（部署参数，绝不静默绿） ──────────────
+  let gates;
+  try {
+    gates = makeIdentityGates({ epoch });
+  } catch (err) {
+    console.error(`state: error\n无法建门禁：${String(err)}`);
+    process.exit(1);
   }
-  const gates = makeIdentityGates({ epoch: IDENTITY_FIX_EPOCH });
   const db = openReadOnly(path);
   let bad = 0;
   try {
-    console.log(`审计库：${path}\n纪元下界（判据 1/2/5/11）：${IDENTITY_FIX_EPOCH}\n`);
+    console.log(`审计库：${path}\n纪元下界（判据 1/2/5/11）：${epoch}\n`);
     for (const g of gates) {
       if (g.requiresColumn && !hasColumn(db, g.requiresColumn.table, g.requiresColumn.column)) {
         console.log(`– 判据 ${g.id} 跳过（${g.requiresColumn.table}.${g.requiresColumn.column} 尚未迁移）  ${g.name}`);

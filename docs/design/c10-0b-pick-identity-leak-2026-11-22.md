@@ -1,5 +1,16 @@
 # C10-0B — Pick identity leak: single identity constructor + fixed epoch + daily real-DB audit
 
+> **Dated correction (2026-11-22, C10-0G).** Owner ruling: the daily real-DB audit
+> mechanism (§3.5) and the fixed PRODUCT epoch (§3.4's constant + sentinel
+> protocol) do not ship to users. C10-0G deleted the in-process mechanism,
+> localized the epoch to an explicit `--epoch` deployment parameter, and replaced
+> the daily clock with a retireable scheduled task on the Owner's instance
+> (tsk_d4ed5b323793d738c746d719). The single constructor (§3.1–3.3) and the gate
+> closed set remain the permanent net. See
+> docs/records/identity-backlog-disposition-2026-11-22.md §0 and
+> docs/design/c10-external-adapters-plan-2026-11-19.md §0G. Sections below are
+> kept as history, not as instructions.
+
 Status: built-pending (this document is the implementation SSOT for card tsk_fcd9cb0fabeeb39e3eaa496a)
 Base: origin/feat/refactor-plan @ 5ea5efd4. Branch: task/c10-0b-pick-identity-leak.
 
@@ -94,7 +105,7 @@ writer, not at call sites:
 - Gate 11 is NOT relaxed: every persisted decision row must have identity. After 3.1+3.2
   every non-internal item has identity at enqueue, and internal items produce no rows.
 
-### 3.4 Fixed product epoch + real-DB audit alerts only post-epoch
+### 3.4 Fixed product epoch + real-DB audit alerts only post-epoch (superseded by C10-0G — see the dated correction at the top)
 
 - New single source: `packages/shared/src/identity-audit.ts` exporting
   `IDENTITY_FIX_EPOCH` (fixed constant, identical on every instance; NEVER read from
@@ -122,7 +133,7 @@ writer, not at call sites:
   (presetting a planned time into the constant goes red). Self-test uses an explicit
   fixture epoch, so CI keeps biting regardless of the sentinel.
 
-### 3.5 Daily real-DB audit on the existing AgentClock (no new setInterval)
+### 3.5 Daily real-DB audit on the existing AgentClock (no new setInterval) (superseded by C10-0G — mechanism deleted, see the dated correction at the top)
 
 - Core port `IdentityAuditPort { runDaily(): void | Promise<void> }` injected via
   AgentOptions (same wiring pattern as workUnitPort, api-server.ts:482 → agent-manager).

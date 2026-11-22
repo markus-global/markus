@@ -119,7 +119,6 @@ import { handleSkillsRoutes } from './routes/skills.js';
 import { isDmMisdirectedRelay, isDmPureAcknowledgment } from './dm-ack-guard.js';
 import { AgentDelivery, newChainId, NULL_WORK_UNITS } from './agent-delivery.js';
 import { WorkUnitService, WORK_UNIT_REF } from './work-unit-service.js';
-import { createIdentityAuditPort } from './identity-audit-runner.js';
 import { buildAgentRuntimeInfo } from './agent-runtime.js';
 import {
   AgentConservator,
@@ -2141,18 +2140,6 @@ export class APIServer {
           contextRef: taskId ? ref : null,
         }) !== null;
       },
-    });
-    // C10-0B §3.5：每日真库身份审计端口（工厂：记录里要写「今天哪个 agent 跑的」）。
-    // 时钟归 core 的 AgentClock（具名 source identity-audit）；这里只装配「做什么」。
-    // 库路径是装配知识（markusHome()/data.db），core 不认识它。
-    // 包装成 void 返回：端口契约是「每天跑一次」，读数记录是实现侧产物，不进契约。
-    manager.setIdentityAuditPortFactory((agentId) => {
-      const port = createIdentityAuditPort({
-        agentId,
-        markusHome: markusHome(),
-        dbPath: join(markusHome(), 'data.db'),
-      });
-      return { runDaily: () => { port.runDaily(); } };
     });
   }
 
