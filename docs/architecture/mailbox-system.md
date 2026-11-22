@@ -1685,6 +1685,23 @@ Addresses are bound to targets in `channel_bindings` (`address` + `revoked_at`, 
 address, and scoping by the *current* org would make `cto.acme@markus.global` unresolvable
 from any other org's instance. Revoking stamps `revoked_at`; rows are never deleted.
 
+**C10-A slug ownership.** `organizations.org_slug` (nullable, partial unique index
+`uq_organizations_org_slug`) is the registry fact "which org owns this slug". `bind()`
+checks the address's org segment — taken from the single parser, never a second split —
+against the binding org's declared slug: no declared slug ⇒ `bounced/org_slug_unset`
+(fail closed), mismatch ⇒ `bounced/org_slug_mismatch` (anti-squatting: the global unique
+index prevents collisions, not squatting). Slugs are assigned explicitly only:
+`createOrg` and the one-time upgrade backfill share the single derivation point
+`registryOrgSlug(id) = org_<id>` — **never derived from `name`**; the explicit
+declaration path is `SqliteOrgRepo.declareOrgSlug`, immutable after the first address
+issuance (revoked bindings count as history). `revoke()` deliberately has no ownership
+gate: releasing your own historical binding must not be locked out by registry state.
+The `address_bindings` view is **recreated on every init** (`DROP VIEW IF EXISTS` +
+`CREATE VIEW`; a view holds zero rows, so this is non-destructive) and exposes `kind`
+(frozen closed set `{agent, role, platform}`, metadata only); `bind()` writes
+`kind='agent'`. Bind/revoke record `status_transitions` rows with `entity_type='address'`
+through the single transition execution point.
+
 `resolveEnvelopeTarget(envelope, catchAllOwner, lookup?)` is the **single resolver** and
 reads the envelope only — its signature makes `payload` / `sourceType` physically
 unreachable (rule 1 expressed as a type boundary, not a comment). It returns exactly two
@@ -1710,7 +1727,7 @@ writer; no module may hand-write the object literal.
 | `intent` | `deliver` \| `trigger_execution` \| `action_required` — promoted out of `payload.extra.{triggerExecution,actionRequired}` |
 | `signalClass` | `chat` \| `a2a` \| `callback` \| `governance_event` \| `record` \| `system` — assigned by the single routing decision |
 | `externalThreadRef` | Causal chain (In-Reply-To / References). **Read-only**: never routes, never dedups |
-| `auth` / `replyTo` / `workUnitRef` | Reserved slots, **always `null`** in v1 (no SPF/DKIM/DMARC, no replies, no WorkUnit writer yet) |
+| `auth` / `replyTo` / `workUnitRef` | Reserved slots, **always `null`** until a writer exists. C10-A froze `auth` as four nullable fields `{spf, dkim, dmarc, verified}`; values are written only by an adapter that actually verifies (C10-D). `auth.verified` is the authentication verdict — not `fromVerified` (the routing trust bit) |
 
 Reserved slots are written as explicit `null`s rather than omitted: omitting makes the
 JSON shape vary with the input, which forces a branch per shape on the read side.
@@ -1816,7 +1833,7 @@ one state would make "recorded but not yet collected" inexpressible.
 
 | Tool | Semantics |
 |---|---|
-| `bind_address` | Claim / rebind an address; omitting `targetRef` means self. Binding another agent's address is refused |
+| `bind_address` | Claim / rebind an address; omitting `targetRef` means self. Binding another agent's address is refused; the org segment must be your org's declared `org_slug` (C10-A anti-squatting) |
 | `address_list` | Read own (optionally org-wide) active bindings |
 | `address_revoke` | Stamp `revoked_at` on one's own binding |
 | `message_route` | Read one signal's resolution, `drop_reason` and catch-all bucket — the取证 path for I3 |
@@ -1830,8 +1847,12 @@ logs, it can only model from the return value.
 
 Idempotent `ALTER TABLE … ADD COLUMN` for every new column (`mailbox_items.envelope`,
 `work_unit_ref`, `signal_class`, `intent`, `message_id`, `drop_reason`, `bounce_target`;
-`channel_bindings.address`, `revoked_at`) and `CREATE VIEW IF NOT EXISTS address_bindings`.
-**No backfill**: historical rows keep `NULL` and the read path warns and falls back to
+`channel_bindings.address`, `revoked_at`; C10-A: `organizations.org_slug`,
+`agents.agent_alias`). The `address_bindings` view is recreated on every init so
+upgraded DBs expose `kind` (zero rows — non-destructive). **No backfill except one
+explicit write**: when the upgrade adds `org_slug`, existing orgs receive `org_<id>`
+via the single derivation point (never from `name`), once; all other historical rows
+keep `NULL` and the read path warns and falls back to
 `agent_id`. Old rows without `intent` / `round` are decoded once at the persistence →
 memory boundary (`rehydrateStructuredFields()`); that shim's removal condition is
 "`envelope IS NULL` rows = 0". Rollback is `git revert` per card; the resolver has an
@@ -1839,8 +1860,11 @@ off-switch that restores the legacy `explicitAgentId → channel → instance` c
 
 ### 28.9 Explicit boundaries (what v1 does not do)
 
-No mail send/receive, no DNS/MX/SPF/DKIM/DMARC, no `org_slug` / `agent_alias` /
-`role_slug` columns, no cross-org delivery, no alias self-service, no global address
-registry. `work_unit_ref` is a column with a **write count of zero** — the only writer
+No mail send/receive, no DNS/MX/SPF/DKIM/DMARC, no cross-org delivery, no alias
+self-service. C10-A built the `org_slug` / `agent_alias` columns (nullable + unique
+constraints, slug ownership enforced at bind); `role_slug` stays a reserved name with
+no table. `agent_alias` has **no writer yet** — the issuance/revocation lifecycle
+arrives with a later card; the envelope `auth` slot stays `null` until an adapter
+actually verifies (C10-D). `work_unit_ref` is a column with a **write count of zero** — the only writer
 arrives with WorkUnits, and creating a reference before the entity would be a dangling
 reference by construction.

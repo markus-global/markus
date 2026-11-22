@@ -34,7 +34,9 @@ afterEach(() => {
 function open() {
   const db = openSqlite(dbPath);
   for (const orgId of [ORG1, ORG2]) {
-    db.prepare("INSERT INTO organizations (id, name, owner_id) VALUES (?, ?, 'usr_owner')").run(orgId, orgId);
+    // C10-A：bind 现在校验 slug 归属 —— 夹具显式声明组织 slug（夹具扮演注册表；
+    // ORG1/ORG2 的 id 本身就是合法 slug）。不声明则 bind 一律 org_slug_unset。
+    db.prepare("INSERT INTO organizations (id, name, owner_id, org_slug) VALUES (?, ?, 'usr_owner', ?)").run(orgId, orgId, orgId);
   }
   return { db, repo: new SqliteAddressBindingRepo(db), users: new SqliteUserRepo(db) };
 }
@@ -160,12 +162,16 @@ describe('C1 A3：跨组织不撞（同名 local 可共存，同一完整地址�
     );
   });
 
-  it('同一完整地址在两个组织下也只能绑一次（跨组织唯一）', () => {
+  it('同一完整地址跨组织不可重复认领：C10-A 起先被归属门拒绝（防抢注）', () => {
     const { repo } = open();
     const address = `alice.${ORG1}@markus.global`;
     expect(repo.bind({ orgId: ORG1, agentId: A1, address }).status).toBe('bound');
-    // 换个 org_id 写同一地址：唯一键里没有 org_id，所以必须冲突。
-    expect(repo.bind({ orgId: ORG2, agentId: A2, address }).status).toBe('conflict');
+    // C10-A：换个 org_id 写同一地址，org 段不是它的 slug → 归属门先拒
+    // （org_slug_mismatch）。全局唯一索引仍是兑底裁决（键里没有 org_id，
+    // 见上方架构守卫测试）；同组织内抢同一地址仍走 conflict（I1 测试）。
+    const squat = repo.bind({ orgId: ORG2, agentId: A2, address });
+    expect(squat).toMatchObject({ status: 'bounced', detail: 'org_slug_mismatch' });
+    expect(repo.resolve(address)).toMatchObject({ matched: true, agentId: A1 });
   });
 });
 
