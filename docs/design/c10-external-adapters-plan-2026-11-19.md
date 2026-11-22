@@ -1,341 +1,240 @@
 # C10 — External Source Adapters: Execution Plan
 
-Date: 2026-11-19 · Author: CTO · Status: **Owner-approved 2026-11-19 (with amendments); Part 1 in execution**
-Base: `feat/refactor-plan` @ `617e9fda` (branch `task/c10-plan`)
-Concept SSOT: master refactor plan (workspace deliverable `markus-master-refactor-plan-2026-11-11.md`, §4.9 / §5.2 C10 row / appendix A-4). This doc is the execution plan only; it does not redefine concepts.
+Date: 2026-11-19 · Refreshed: 2026-11-22 20:3x CST · Author: CTO
+Status: **Part 1 CLOSED (all six cards dispositioned, code merged). Part 2 re-planned
+from measured code state; ready to open as a new requirement.**
+Base: `origin/feat/refactor-plan` @ `92237b30` (refresh worktree `task/c10-plan-refresh`).
+Concept SSOT: master refactor plan (workspace deliverable
+`markus-master-refactor-plan-2026-11-11.md`, §4.9 / §5.2 C10 row / appendix A-4).
+This doc is the execution plan only; it does not redefine concepts.
 
-> Owner instruction 2026-11-19: write the C10 plan; **anything still broken from earlier
-> cuts gets fixed in the first half of C10**, with the problem and the solution written
-> here. Part 1 is that first half. Part 2 is C10 proper.
->
-> Owner decision 2026-11-19 (adjudicates the ⚖ gates below): **no data migration and no
-> DROP — old-user compatibility is preserved**; everything else is delegated to the CTO
-> on first principles. Fix existing defects completely before starting C10 proper.
-> Consequences: 0C becomes freeze-and-guard (no table drop); 0B's disposition uses a
-> fixed product-wide epoch constant in code, never an instance restart reading.
+> Owner instruction 2026-11-19: anything still broken from earlier cuts gets fixed in
+> the first half of C10. That half is now closed (§1). Owner decision 2026-11-19
+> (still binding): **no data migration and no DROP — old-user compatibility is
+> preserved**; everything else delegated to the CTO on first principles.
+> Owner instruction 2026-11-22: re-read the master plan, this plan, and the feature
+> branch; adjust from first principles; update both SSOTs; propose the requirement
+> and task DAG for the second half. This refresh is that adjustment.
 
 ---
 
-## 0. Position and preconditions
+## 0. Position and preconditions (measured 2026-11-22 20:2x CST)
 
-- C6–C9 code is merged into `feat/refactor-plan`: #451 (C8), #459 (C9 integration),
-  #461 (C9 doc placement), #462 (C8 residuals, merged 2026-11-15 22:04 CST),
-  #464 (forever loop + work record by entity, merged 2026-11-19 12:11 CST).
-  At snapshot time no code PR was open against the integration branch; the first are
-  this plan (PR #470, consolidated from the closed #466) and C10-0A (#467).
-- Master plan §5.1 rule 0 stands: **nothing enters `main` until all cuts are complete
-  and accepted.** All probes run against feature-branch builds.
-- The running instance **now contains the new build**: process started 2026-11-19
-  14:09:30 CST; `app.asar` built 12:13 the same day; symbol probes `loop_` ×17 and
-  `declarationDebt` ×2 present; `/api/health` = `0.12.3`, 100 agents, port 8056.
-  Live-DB readings taken after 14:09:30 measure the #464 build — earlier rows do not.
-- C10's precondition "C9 fact layer stable" is **code-stable but not runtime-closed**:
-  the C9-E terminal-hook probe (steps 0–5, recorded in the C9 probe spec) has never
-  been executed on a running instance. Its trigger condition (C9-E in the running
-  build) became true at 14:09:30 today. It is therefore the first item of Part 1,
-  not a reason to defer C10 planning.
+- C6–C9 merged. Part 1 closed via #467 (0A), #468→#470 (0D), #475 (0B+0E+0C),
+  plus the CI-wording card; 0F cancelled by adjudication (§1). C9 requirement
+  `req_dcbf7ddf997c6346e0ee1ba2` = **completed** (runtime probe landed, 0D).
+- Merged since the 11-19 snapshot: #471 (tool-budget eviction removed, `memory_curate`),
+  #472 (chat reply recovery / notification folding / Feishu SDK egress), #474
+  (background-callback lineage: one durable store, in-turn await, coalesced
+  continuations), #475 (first-half closeout), #476 (concurrent session isolation),
+  #477 (composer model menu never rewrites the agent binding).
+- **The serving instance restarted 2026-11-22 20:18:34 CST into the fix build**
+  (pid 28013, `ps -o lstart=` reading; `app.asar` built 20:17; symbol probes
+  `identity-audit` ×15, `ensureExecutionEpoch` ×4, `epoch-unset` ×2;
+  `/api/health` = 0.12.3, 100 agents, port 8056). This **triggers the 0B post-restart
+  closure protocol** (disposition record §5) → card C10-0G below.
+- Live readings (2026-11-22 20:2x CST, `~/.markus/data.db`): `work_units` 510,
+  `facts` 61, `envelope` non-empty 1,704; business tables 53 (+`sqlite_sequence` = 54
+  in `sqlite_master`, no new table since 11-19). Post-restart: `pick` decisions 2/2
+  carry a resolving ref; `requirement_update` 1/1 carries a ref. `agents.autonomy`:
+  **240/240 = 'act'** (no observe-mode agent today).
+- Identity audit: `state = epoch-unset` — the honest sentinel reading. The epoch
+  constant `IDENTITY_FIX_EPOCH` (shared `identity-audit.ts`) is still `null` at tip;
+  finalization is C10-0G, not a silent assumption.
+- Master plan §5.1 rule 0 stands: nothing enters `main` until all cuts are complete
+  and accepted. All probes run against feature-branch builds.
 
-### 0.1 Evidence snapshot (2026-11-19 14:1x CST, all freshly measured)
+### 0.1 Two code facts that change Part 2 (verified at `92237b30`, not from memory)
 
-`node scripts/identity-audit.mjs` against `~/.markus/data.db`
-(window `SINCE` = 2026-11-12T06:16Z rolling 7 days; decisions epoch = 2026-11-15T00:00Z):
+1. **Identity assembly is now fail-closed, and there is exactly one constructor.**
+   #475 (0B) physically deleted `linkMailboxItem` and the `'pending-link'` token
+   (guard: `identity-single-constructor.guard.test.ts`); task execution ensures its
+   ref *before* enqueue; platform-internal closed-set sources write **no decision
+   rows** at all. Consequence for adapters: an external event is **not**
+   platform-internal, so it must arrive at `mailbox.enqueue` already carrying a
+   resolvable `work_unit_ref` built by the single `WORK_UNIT_REF` constructor
+   (shared `work-unit.ts`). "Enqueue now, link identity later" is structurally
+   impossible — the old plan's wording predates this and is corrected in C10-B.
+2. **The observe/act enforcement point was deleted by #464 — it must be rebuilt,
+   not reused.** `maySelfInitiate()` + its single consumer (`agent.ts:1415`) + the
+   declaration witness + `autonomy-single-consumer.test.ts` were introduced by #462
+   (`cc06f99e`) and **physically removed by #464** (`887e6a58`, forever-loop rewrite;
+   `git log -S maySelfInitiate` shows exactly these two commits). At tip the
+   `agents.autonomy` column has writers and **zero readers**. The old C10-C text
+   ("enforced at `maySelfInitiate`, #462") referenced a phantom. All 240 agents are
+   `'act'`, so there is no live behavioral difference today; the risk window is
+   accepted until C10-C lands, and C10-C is now explicitly a *rebuild* card.
 
-| Gate | Reading | Breakdown (measured, gate criteria) |
+---
+
+## 1. Part 1 closeout (C10-0) — CLOSED 2026-11-22
+
+Six cards, dispositioned as follows. Problem/solution detail lives in the card
+records and the dated repo records; this table is the authoritative outcome.
+
+| Card | Outcome | Evidence |
 |---|---|---|
-| 1 identity missing | **334** | 328 pre-seal historical (11-12: 110 / 11-13: 166 / 11-14: 89) + **6 `requirement_update` rows from the old-build era** (11-15T20:05Z → 11-18T08:07Z). **0 after today's restart** — but no `requirement_update` event has fired since, so the path is untested, not proven |
-| 2 dangling ref | **5** | all 2026-11-16: `task_tsk_1203177c_r1` ×3, `task_tsk_30360e66_r5`, `task_tsk_280e77f4_r1` — refs declared on mailbox items whose WorkUnit was never ensured. Gate has **no time filter** → stays red forever unless dispositioned |
-| 3 zombie running | 0 | — |
-| 5 cancel fact w/o identity | **3** | `task_status_update` with `invalidatesPremise:true`, 11-14T14:48/15:22/15:44Z — pre-seal historical, ages out of the window by 11-22 |
-| 6–10, 12–13 (facts layer) | **0** | all green |
-| 11 new-epoch decision w/o identity | **23** | `pick` decisions: 11-17: 1 / 11-18: 14 / 11-19: 8 — **all written by the pre-restart process**. The new build's first pick (06:12Z = 14:12 CST) **has** a ref (n=1) |
+| 0A identity enforcement at assembly | **Done** — #467: ensureIdentity at the single assembly point; three `?? null` requirement-service sites → `turn ?? entity ref` | `d7f3288f`; regression 6012 green |
+| 0B backlog disposition + audit point | **Done, rewritten** — the "34 historical rows" premise was falsified by the live DB (1,100 post-epoch identity-less rule picks, ~94% of rule picks). Real fix: single identity constructor (pre-enqueue ensure; `linkMailboxItem`/`pending-link` deleted; internal sources write no decision rows) + shared `identity-audit` module + sentinel epoch + AgentClock daily source `identity-audit` (24h, no new `setInterval`, records under `~/.markus/records/identity-audit/`) | #475 (`52c8b534`); `docs/records/identity-backlog-disposition-2026-11-22.md` |
+| 0C orphan marketplace freeze | **Done, merged into 0E** (both touch `architecture-guard.mjs` — one card, one writer): 3 rows exported verbatim, resurrection guard biting, no DROP | #475; `docs/records/marketplace-orphan-freeze-2026-11-22.md` |
+| 0D C9 runtime close-out | **Done** — probe steps 0–6 executed on the serving build; requirement completed via review | #468→#470; `docs/records/cut9-runtime-probe-2026-11-19.md` |
+| 0E activities append-only | **Done** — the single UPDATE path removed, guard forbids `UPDATE agent_activities`, derived readers unchanged | #475 |
+| 0F L4 baseline + L1 wording | **Cancelled by adjudication** (requirement comment `rc_82a1461ab6e84971`): G10 repo-side already aligned (no "no Thread symbol" claim, no 53/55-table contradiction); G9 deferred — it is new instrumentation, not residual closure, and a baseline across churning build epochs has no explanatory power. **Restart condition:** after 0B's fix is live and the instance runs 7 days in a single build epoch, re-evaluate; if still no consumer, close G9 instead of measuring | requirement `req_1a8c554721a5d43576a28590` completed 2026-11-22 |
+| CI wording (extra card) | **Done** — step names aligned with `continue-on-error` reality; removal conditions written | #475 train |
 
-Other live counts: `work_units` 401, `facts` 39, `envelope` non-empty 937, tables 53.
-`marketplace_templates` 2 rows + `marketplace_skills` 1 row, **zero read paths in code**.
+**Post-restart obligation still open (the only Part 1 tail, and it is owned):**
+the 0B closure protocol (disposition record §5) — epoch finalization commit + live
+post-epoch probe + two consecutive daily readings — was waiting for the Owner
+restart. The restart happened 2026-11-22 20:18:34 CST. It is now card **C10-0G**.
 
-Code facts (HEAD `617e9fda`):
-
-- `attention.ts:1822` — `recordDecision` writes `workUnitRef: item.workUnitRef ?? null`:
-  decision identity is only as good as item identity. #464 rewrote `attention.ts`
-  (522 lines) and `mailbox.ts`; the item-side gap appears closed but n=1.
-- `requirement-service.ts:706 / 808 / 1018` — `workUnitRef: agent.turnWorkUnitRef?.() ?? null`.
-  **Live code gap**: requirement events triggered by a human (approve / reject / status
-  change via UI) happen outside any agent turn → `turnWorkUnitRef()` is null → the row
-  lands without identity. The 6 leaked rows prove this path fires in production.
-- `agent.ts:1876` — `enqueueToMailbox` is a thin pass-through to `mailbox.enqueue`;
-  there is **no identity enforcement at the assembly point**.
-- `MARKUS_STRICT_IDENTITY` — 0 hits repo-wide: the flag was retired (#462/#464);
-  enforcement is now structural (`refOrigin` contract, `docs/architecture/mailbox-system.md` §3.2).
-- CI runs `identity-audit.mjs --self-test` only (`.github/workflows/ci.yml:68`).
-  No scheduled real-DB audit exists — the 23 pick rows accumulated over 3 days unnoticed.
+**Structural lessons kept (they constrain Part 2):**
+- One identity, N construction points is the same R1 disease as one fact, N writers.
+  The fix is deleting construction points, not filtering their output.
+- A permanently-red alarm trains people to ignore it; a sentinel that reports
+  "epoch unset" instead of green is the honest instrument. Never preset a planned
+  timestamp as the epoch — that bets on the restart being on time.
+- Rewrites can silently delete an invariant's only consumer (§0.1 fact 2). After any
+  mechanism rewrite, grep the witness registry, not just the tests that survived.
 
 ---
 
-## Part 1 — Close prior residuals (C10-0)
-
-Six cards, cut by independently reviewable seam. Owner decision gates are marked ⚖.
-
-### C10-0A · Identity enforcement at the single assembly point (P1+P2+P3) — DONE (#467)
-
-**Problem.** Three leaks, one root cause: a mailbox item can declare (or omit) a
-`work_unit_ref` without anyone checking that the referenced WorkUnit exists.
-- P1: `requirement_update` enqueued outside a turn writes NULL (6 rows, live code gap).
-- P2: task status/rejection paths declare `task_<id>_r<round>` refs that were never
-  ensured (5 dangling rows).
-- P3: `pick` decisions inherit whatever the item had (23 rows, old process).
-
-**Solution (structure, not guards) — implemented in #467.** `mailbox.enqueue` is
-already the single envelope assembly point (C2). It is now the single **identity
-enforcement point** too:
-1. Every non-platform-internal enqueue must carry a resolvable `work_unit_ref` or an
-   explicit `refOrigin` declaration; the guard rejects with an actionable message
-   pointing at the two legal exits (constructor / declaration).
-2. A declared ref is ensured at the assembly point via `MailboxIdentityPort.ensureIdentity`
-   (wired by `APIServer.wireWorkUnits` to `WorkUnitService.ensure`, the one writer, C7) —
-   "declared but uncreated" becomes structurally unrepresentable. Ensure failures are
-   counted (`takeIdentityEnsureFailedCount`), never silent, never break the business
-   path. Owner resolution lives in org-manager: task → assignee, requirement → creator,
-   fallback: recipient. Core never guesses entity semantics.
-3. The three requirement-service sites carry
-   `turnWorkUnitRef ?? WORK_UNIT_REF.requirement(id)` — never NULL. The turn ref is kept
-   when present because C8-B same-turn delta matching is exact-ref; the entity ref
-   (`requirement:<id>`, single constructor in shared) covers human-triggered events
-   outside any turn. The `?? null` fallbacks are deleted, not guarded.
-4. `linkExecutionEpoch` transitions a notification-prebuilt idle WU to `running`
-   (`execution_started` transition row) — a turn never runs on an idle row; ensure is
-   insert-or-nothing, the same row is reused.
-5. `recordDecision` keeps copying `item.workUnitRef` — no second writer, no new
-   mechanism; once items are honest, decisions are honest.
-
-**Acceptance (probes on the running build, not fixtures).**
-- Human approves a disposable requirement while the assignee is idle → the
-  `requirement_update` row has a ref that resolves in `work_units`; gate 1 count for
-  new `requirement_update` rows = 0.
-- Reject a disposable task → `task_status_update` / `task_comment` refs resolve;
-  gate 2 gains no new row.
-- ≥10 `pick` decisions across ≥3 source types on the new build, all refs resolving;
-  gate 11 stops growing.
-- Behavior tests bite: removing the enforcement makes each probe's test red;
-  `--self-test` still 13/13 (fixtures use post-epoch timestamps).
-- Full regression green in CI order (typecheck → lint → architecture-guard → tests).
-
-**Status 2026-11-19**: code + tests + docs landed in #467 (target suite red(10) →
-green(53); real-SQLite probes for the idle→running transition and the identity-port
-wiring; full regression core+org-manager+shared 6012 passed / 11 skipped, 449 files;
-eslint 0 errors; architecture-guard 27/27). The runtime probes above run after #467
-merges into `feat/refactor-plan` and the instance restarts into it — they are 0B's
-entry evidence, not a fixture substitute.
-
-### C10-0B · Backlog disposition + audit execution point (P4+P6) — policy adjudicated
-
-**Problem.** After 0A, the gates still read red for rows that can never be fixed:
-gate 2's 5 rows (no time filter) and gate 11's 23 rows (fixed epoch 11-15, all
-pre-restart). A permanently-red, unactionable alarm trains people to ignore it —
-the audit script's own documented failure mode. And nobody runs the real-DB audit
-periodically (G4): CI cannot have a real DB, so "who runs it and records the result"
-is missing, not "wire it into CI".
-
-**Solution.**
-1. **Disposition policy (Owner-approved 2026-11-19)**: add a documented build-epoch
-   filter to gates 2 and 11 — same pattern as the existing `DECISIONS_IDENTITY_EPOCH`:
-   a **fixed product-wide epoch constant in code** (value 2026-11-19T06:09:30Z, the
-   first restart into the identity-complete build), identical on every instance —
-   never read from instance state (a per-instance restart reading is a second writer
-   and drifts per install). The 28 historical rows are enumerated in a dated record
-   (`docs/records/identity-backlog-disposition-2026-11-1x.md`) with their refs and why
-   they are pre-fix. Gate 1's 328+6 historical rows age out of the rolling window
-   naturally (by 11-22 / 11-26); the 6 are listed in the same record. No backfill,
-   no fabricated history, rows stay readable.
-2. **Execution point**: a named clock source (the `AgentClock` pattern — no second
-   `setInterval`) runs the real-DB audit daily, writes the readings as a dated
-   record/fact, and surfaces any post-epoch violation in the overview. Alert only on
-   actionable (post-epoch) violations.
-
-**Acceptance.** Two consecutive daily runs recorded with timestamps; a seeded
-violation on a test instance produces a visible alert; `--self-test` unchanged and
-green; the disposition record enumerates exactly 34 rows (5+23+6) plus the 3 gate-5
-rows with their aging-out dates.
-
-### C10-0C · Orphan marketplace rows (P5, master-plan G7) — adjudicated: freeze, no DROP
-
-**Problem.** `marketplace_templates` (2 rows) and `marketplace_skills` (1 row) still
-hold data, but #462 (A3, Owner-merged) deleted their CREATE statements and repos;
-grep confirms **zero read paths**. New databases no longer create these tables, old
-ones still have them — the schema has forked, and three rows are unreachable.
-"Table exists, data exists, nobody can read it" is not a safe state.
-
-**Decision (Owner 2026-11-19): no migration, no DROP — old-user compatibility wins.**
-The earlier recommended option (export then drop) is rejected: dropping tables on
-existing installs is a data migration, and the 3 rows are harmless where they sit.
-What is not safe is *ambiguity* — "table exists, data exists, nobody can read it"
-without a recorded verdict. So freeze, don't delete:
-1. Export the 3 rows verbatim into a dated record
-   (`docs/records/marketplace-orphan-freeze-2026-11-1x.md`) — git becomes the readable
-   archive; the DB rows stay untouched.
-2. An architecture-guard invariant forbids any new reader/writer of
-   `marketplace_templates` / `marketplace_skills` in source (resurrection guard) —
-   the tombstone cannot grow a second life.
-3. The schema fork is documented as intentional: fresh DBs never create the tables;
-   existing DBs keep them frozen. No migration closes the fork by deletion.
-
-The master plan's §M6 / §8.4 / G7 wording is aligned this round to the adjudicated
-reality: "delete CREATE statements + unreachable repos; data rows frozen in place;
-no DROP, no migration" (G6 was settled by the Owner's #462 merge).
-
-**Acceptance.** Record contains all 3 rows byte-faithful; the guard invariant is
-present and biting (a seeded reader fails the guard); zero code paths read or write
-the two tables; no migration entry added; existing rows untouched (before/after row
-counts identical).
-
-### C10-0D · C9 runtime close-out (P7)
-
-**Problem.** C9's code is merged and its close-out record exists
-(`docs/records/cut9-live-verification-2026-11-15.md`, added via #462), but the
-**runtime** half was never executed: branch code does not run at review time, and
-until today the serving instance predated C9-E. The requirement
-`req_dcbf7ddf997c6346e0ee1ba2` is still `in_progress`.
-
-**Solution.** Execute the recorded C9-E probe spec (steps 0–5) now that the trigger
-condition holds (instance restarted 14:09:30 into the #464 build):
-0. Record the instance's version/commit evidence (already in §0.1).
-1. Tool reachability before hooks: actually call `fact_assert` and
-   `task_submit_review` once each in an execution session.
-2. Negative: disposable one-shot card, no fact asserted → submit must be rejected;
-   record the exact error text.
-3. Positive: same card, `fact_assert` per the error text → same path submits clean.
-4. Cancel the disposable card; dirty state back to zero.
-5. Laziness: `FACTS_ENABLED=0` on a **second instance** (independent port + data
-   dir) — both hooks inert, old behavior unchanged, readings before/after.
-   **Never restart the serving instance.**
-Readings land in `docs/records/cut9-runtime-probe-2026-11-19.md`; then the
-requirement goes through review to completed (reviewer, not the worker).
-
-**Acceptance.** All six steps have timestamped readings; the record is referenced
-from the C9 close-out record; requirement status changes via the review gate.
-
-### C10-0E · `agent_activities` append-only (P8, master-plan G8)
-
-**Problem.** Promised in the C8 archive (§3.3) and never done: activity rows are
-still updatable, so "what happened" has a second writer path.
-
-**Solution.** Remove UPDATE paths on `agent_activities`; corrections become new
-rows; readers derive current state; an architecture-guard invariant forbids
-`UPDATE agent_activities` in source. No data migration (existing rows stay).
-
-**Acceptance.** `grep "UPDATE agent_activities" packages/*/src` = 0; a behavior test
-that attempts an update is rejected; derived readers unchanged in output (dual-run
-diff = 0 on live data).
-
-### C10-0F · L4 baseline + gate wording (P9+P10, master-plan G9/G10)
-
-**Problem.** The single north star (L4: human attention per completed work) has
-never been measured; and L1's wording ("no `Thread` symbol") can never pass because
-C9's derived views are legitimately named `ThreadStage*`.
-
-**Solution.**
-- L4: define the measurement from existing tables only — human interventions =
-  `status_transitions.changed_by_type='human'` on task/requirement objects per day;
-  completed work = work units reaching terminal per day. A script computes the
-  ratio; record a 7-day baseline as a dated record. No new instrumentation tables.
-- L1: tighten to "no `Thread` **domain object**; derived-view names allowed"
-  (master plan updated this round); align any repo doc still claiming 55 tables or
-  "no table drops".
-
-**Acceptance.** Baseline record with daily readings + reproducible script; wording
-change landed in both SSOTs; no doc contradicts the measured table count (53).
-
-### Part 1 dependency graph
-
-```
-0A (identity enforcement) ──> 0B (disposition + audit point; needs 0A verified first)
-0C (orphan freeze + guard)     independent (Owner decision rendered: no DROP)
-0D (C9 runtime probe)          independent (trigger already true)
-0E (append-only)               independent
-0F (baseline + wording)        independent
-```
-
-Part 2 starts only when 0A/0B/0D are accepted (identity gates green on the new
-epoch, C9 runtime-closed). 0C/0E/0F may finish in parallel with early Part 2 slices.
-
----
-
-## Part 2 — C10 proper: external source adapters
+## Part 2 — C10 proper: external source adapters (re-planned 2026-11-22)
 
 Scope authority: master plan §5.2 C10 row + §4.9.4 trust boundary + §4.9.5 hook
-list (H3/H5/H6/H7/H8/H9/H11 enable here). The one-sentence contract:
+list (H3/H5/H6/H7/H8/H9/H11 enable here). The one-sentence contract, amended with
+the post-0B identity reality:
 
 > **An adapter only translates an external event into a DeliveryEnvelope. It never
-> routes, never decides identity, never writes WorkUnits directly. The platform
-> signs all outbound uniformly. Every external event is traceable
+> routes, never decides identity, never writes WorkUnits directly. It ensures the
+> event's `work_unit_ref` BEFORE enqueue, through the single `WORK_UNIT_REF`
+> constructor — assembly is fail-closed and there is no "link later" path. The
+> platform signs all outbound uniformly. Every external event is traceable
 > `external_thread_ref → work_unit_ref`. `verified=false` inbound can only
 > `observe`. No new table without a writer and real traffic.**
+
+### C10-0G · Epoch finalization + 0B post-restart closure (trigger already fired)
+
+**What.** Execute the disposition record §5 protocol, now unblocked by the
+2026-11-22 20:18:34 CST restart into the fix build:
+1. Re-verify the serving build contains #475 (symbol probes) and that this was the
+   first restart into it. Epoch reading already taken: `ps -o lstart= -p 28013` →
+   `日 11月/22 20:18:34 2026` (CST) = **2026-11-22T12:18:34Z**. The executor records
+   the command + raw output in the disposition record; if the instance restarted
+   again before execution, the epoch stays the FIRST fix-build start, not the latest.
+2. One finalization commit: `IDENTITY_FIX_EPOCH` null → value, disposition record
+   updated (source command + raw output + reading time), test expectations updated.
+   One commit, no second writer.
+3. Live probe: real-DB audit post-epoch violations = 0 (reading + timestamp).
+4. Two consecutive daily audit runs with timestamped dated records
+   (`~/.markus/records/identity-audit/`; first run is staggered, not at startup).
+   This card spans ~2 days by construction — that is the protocol, not a stall.
+
+**Acceptance.** Disposition record §5 items 1–4 all evidenced; sentinel state gone;
+`--self-test` green; a seeded post-epoch violation still alerts (the instrument
+still bites after finalization).
 
 ### C10-A · Identity columns and envelope slots (H3 / H5 / H6)
 
 **What.** Build the columns §4.9.6 reserved (names and semantics already frozen):
 - `organizations.org_slug TEXT` — nullable, `UNIQUE`, immutable after first address
   issuance, `source:'registry'` semantics. The two historical orgs get explicit
-  `org_<id>` values in one migration — **never derived from `name`** (both rows are
-  literally named "My Organization"; slugify would be a second writer).
+  `org_<id>` values in one migration — never derived from `name`.
 - `agents.agent_alias TEXT` — nullable, `UNIQUE(org_id, agent_alias)`; unset = no
   mail address; a change revokes the old binding + isolation period.
-- `role_slug` — name stays reserved; **no table until a consumer exists** (the
-  tombstone lesson: a table nobody reads is where a second copy of a fact goes).
+- `role_slug` — name stays reserved; no table until a consumer exists.
 - `envelope.auth = {spf, dkim, dmarc, verified}` — four nullable fields, no values
   written until an adapter actually verifies.
-- `address_bindings.kind` column; `status_transitions.entity_type` gains `address`
-  (TEXT, no schema change).
+- `address_bindings.kind` column; `status_transitions.entity_type` gains `address`.
+
+**Consumer clarification (2026-11-22, measured).** `bind_address` already exists
+(C6, `core/src/tools/address-tools.ts`) and validates format + global uniqueness
+only. The real consumers these columns add: **slug ownership** — today any org can
+bind any org's slug (the global unique index prevents collision, not squatting);
+`org_slug` makes "which org owns this slug" a checkable fact at bind time — plus
+alias issuance/revocation lifecycle (`agent_alias`) and registry-copy semantics.
+This is why A precedes B: the L5 gate binds an address, and binding must be
+org-owned, not first-come-first-served.
 
 **Migration discipline** (data-layer contract): DDL + migrations array entry both;
 indexes/uniques after migrations, never in `SCHEMA_SQL`; nullable only; no backfill
 of observation logs; fresh-DB and migrated-DB schema identical (tested).
 
-**Acceptance.** Columns + constraints exist on both fresh and migrated DBs;
-`formatAddress`/`parseAddress` behavior tests still 24/24 (the format does not
-change); explicit-assignment probe for the two orgs; a test proves no code path
-derives a slug from a display name.
+**Acceptance.** Columns + constraints on both fresh and migrated DBs;
+`formatAddress`/`parseAddress` behavior tests still green (format unchanged);
+explicit-assignment probe for the two orgs; a test proves no code path derives a
+slug from a display name; **squatting probe: org B binding `x.<orgA-slug>@…` is
+rejected with an actionable hint**.
 
-### C10-B · Adapter contract + first adapters: webhook and RSS
+### C10-B · Adapter contract + external ref constructor + webhook + RSS
 
-**What.** One adapter interface, two first consumers chosen because they need
-**no DNS change and no auth chain** — everything arrives `verified=false` and the
-observe ceiling is exercised from day one:
+**What.** One adapter interface, two first consumers chosen because they need no
+DNS change and no auth chain — everything arrives `verified=false` and the observe
+ceiling is exercised from day one:
 - Interface: external event → envelope `{from: AddressRef{kind:'external', raw,
   verified:false}, to: <resolved internal address>, messageId (idempotency key),
   external_thread_ref (opaque, read-only, never routes/dedupes), auth: null}`.
-  Enqueue goes through the single assembly point (which enforces identity after
-  C10-0A) — adapters get no private write path.
-- Each adapter: its own kill switch (offline without losing queued items), its own
-  traffic gate: **≥1 real event → envelope row → resolving work_unit_ref → visible
-  in overview**. A 0-row table at acceptance = fail, not "ready for traffic".
-- IM adapters come next, reusing the existing messaging-gateway (bot instances,
-  channel refs, bindings); the adapter only translates, the gateway keeps its
-  single-writer contracts.
+- **Identity (amended post-0B):** a new constructor in the single `WORK_UNIT_REF`
+  table (shared `work-unit.ts`) for external signals — shape decided in-card under
+  frozen constraints: idempotent per `messageId`, ensured before enqueue, exactly
+  one construction point (extend `identity-single-constructor.guard.test.ts` to
+  bite on any straggler). External sources are NOT platform-internal; the fail-closed
+  assembly guard rejects a ref-less external enqueue. No adapter gets a private
+  write path, and no adapter may resurrect a "link later" token.
+- Each adapter: its own kill switch (offline without losing queued items — the
+  post-#474 durable-store pattern, not an in-memory buffer), its own traffic gate:
+  **≥1 real event → envelope row → resolving work_unit_ref → visible in overview**.
+  A 0-row table at acceptance = fail. Traffic-gate readings ride the existing daily
+  `identity-audit` clock source — no second audit mechanism.
 
 **Acceptance.** Real webhook POST and real RSS item each traced end-to-end in the
 live DB; `verified=false` signal cannot create a task or send a message (behavior
 test bites: flip the ceiling → red); duplicate `messageId` produces exactly one
-item; kill switch stops ingestion cleanly.
+item; kill switch stops ingestion cleanly; the ref-constructor guard is red when a
+second construction point is seeded.
 
-### C10-C · Trust boundary enforcement (H7 + observe ceiling)
+### C10-B2 · IM inbound into the envelope contract (Feishu first, real traffic)
 
-**What.**
-- `cross_org_policy` defaults `observe`; elevation to `auto` requires one human
-  approval + an audit row. Global resolution stays org-agnostic (the C6 partial
-  unique index already excludes `org_id`).
-- The `verified=false → observe` ceiling is enforced at **one point** — the
-  autonomy axis (`maySelfInitiate`, #462) — not per-adapter guards.
+**Why a separate card (new 2026-11-22).** IM is the only external channel with
+substantial existing traffic (`channel_messages` ≥8,280 rows, Feishu approval-card
+chains verified through round 8). Webhook/RSS prove the contract on traffic we
+generate; B2 closes the traceability invariant on traffic that already exists.
+Different seam (comms gateway files), independently reviewable.
+
+**What.** The existing messaging-gateway keeps its single-writer contracts; the
+Feishu inbound path (`processMessageEvent` / `processCardAction`, one dispatch
+point) gains envelope + pre-ensured ref translation only. No routing behavior
+change: golden tests lock inbound behavior line by line; dual-run diff = 0.
+
+**Acceptance.** A real Feishu message traced `external_thread_ref → work_unit_ref`
+in the live DB; routing dual-run diff = 0; the approval-card action path unchanged
+(the 2026-11-21 verified chain stays green).
+
+### C10-C · Trust boundary: REBUILD the enforcement point + cross-org policy
+
+**What (amended — this is construction, not reuse; see §0.1 fact 2).**
+- **Rebuild the autonomy axis consumer:** one named predicate in shared
+  (`maySelfInitiate` restored or one new name — exactly one), exactly one consumer
+  at the self-initiation admission (the forever-loop wake path where #464 deleted
+  the check), the declaration witness re-registered in `declarations.ts`, and the
+  biting test restored (delete the consumer → red; set an agent to `observe` → it
+  proposes but does not act). The `verified=false → observe` ceiling hangs on the
+  SAME predicate — not per-adapter guards.
+- `cross_org_policy` defaults `observe` (no code slot exists today — grep 0 at
+  `92237b30`; this is new construction); elevation to `auto` requires one human
+  approval + an audit row. Global resolution stays org-agnostic.
 - Forged-identity rule: an external `From` that looks internal
   (`cto.acme@markus.global` from outside) is still `kind:'external', verified:false`
   — dot-count parsing decides namespace, string similarity never decides identity.
 
-**Acceptance.** Forged-From probe lands in observe-only; cross-org delivery probe
-between the two local orgs resolves globally; policy elevation without a human
-approval row is rejected.
+**Acceptance.** Observe-mode agent probe (set one disposable agent to `observe`,
+it must not self-initiate); forged-From probe lands observe-only; cross-org delivery
+probe between the two local orgs resolves globally; policy elevation without a
+human approval row is rejected; witness registry shows the predicate witnessed.
 
 ### C10-D · Email (⚖ every DNS/policy step Owner-approved)
 
-**What.** Last, because it is the only adapter whose trust chain requires external
-changes. Order inside the slice:
+Unchanged in shape; starts only after C is accepted AND the Owner approves the
+first DNS change. Order inside the slice:
 1. ⚖ SPF include + DKIM key generation (keys never in DB or agent-readable files)
    + DMARC `p=none → quarantine` — each a separate Owner-approved DNS change with
    a written rollback.
@@ -350,33 +249,36 @@ changes. Order inside the slice:
 envelope; a forged email lands observe-only; a bounce is visible in catch-all;
 DMARC rollback rehearsed once.
 
-### Explicit non-goals (inherited, unchanged)
+### Explicit non-goals (inherited + one addition)
 
 No four-tier autonomy (product decision, Owner only); no `rest()` for N workers;
 no global slug registry until global addressing actually enables (H11); no `+tag`
 sub-addressing (v2); no `main` merge / release without Owner approval; no DNS
 change without Owner approval; no new table without writer + traffic gate.
+**Added 2026-11-22: no G9/L4 baseline in this cut** — Owner-adjudicated deferral
+(§1, 0F row); the restart condition lives in the requirement record, not here.
 
 ### L5 end-to-end acceptance (master plan §4.3)
 
 Give a content agent a resource it has never owned (an RSS feed is enough): within
 one conversation it binds the address, receives the first real signal, and proposes
 the next step — no human UI clicks — with corresponding rows in `work_units`,
-`address_bindings`, and `facts`. This is the cut's final gate, after C10-B.
+`address_bindings`, and `facts`. This is the cut's final gate, after C10-B; B2/C
+strengthen it with real IM traffic and the rebuilt ceiling.
 
 ---
 
 ## 3. Execution discipline
 
-- Branches `task/c10-<slice>` from `origin/feat/refactor-plan`; one worktree per
-  card. **Integration (Owner 2026-11-19):** after task-board review approval the
-  CTO merges the card branch into `build/c10-integration` (`--no-ff`); the single
-  PR #470 (`build/c10-integration` -> `feat/refactor-plan`) accumulates those
-  merges and is the one gate into the feature branch. No per-card PRs target the
-  integration branch: CI only runs on bases `main` / `feat/**`, so a PR to
-  `build/**` would silently skip CI — card verification happens at review time,
-  and PR #470's CI is the final gate. The main checkout stays on
-  `build/c10-integration` for this phase; never branch from its HEAD.
+- Branches `task/c10-<slice>` from `origin/feat/refactor-plan` (@ `92237b30` at
+  refresh time; re-read at card start); one worktree per card. **Integration
+  (second half):** after task-board review approval the CTO merges the card branch
+  into `build/c10-adapters` (`--no-ff`); a single PR (`build/c10-adapters` →
+  `feat/refactor-plan`) accumulates those merges and is the one gate into the
+  feature branch. No per-card PRs target the integration branch: CI only runs on
+  bases `main` / `feat/**`, so a PR to `build/**` would silently skip CI — card
+  verification happens at review time, and the final PR's CI is the last gate.
+  Never branch from the main checkout's HEAD.
 - Per slice: red test first → implement → real-data probe on the running build →
   both gate layers in §3.1; one rollback-able commit per slice.
 - Evidence: every reading carries a timestamp; live counts written as "≥N + read
@@ -384,9 +286,9 @@ the next step — no human UI clicks — with corresponding rows in `work_units`
 
 ### 3.1 Verification gates — two layers, one convergence point
 
-The convergence point is the `--no-ff` merge into `build/c10-integration`, not the
+The convergence point is the `--no-ff` merge into `build/c10-adapters`, not the
 per-card review. Merges are serial, so a red gate is attributable to the card that just
-merged; nothing may accumulate to PR #470 unattributed.
+merged; nothing may accumulate to the final PR unattributed.
 
 **Layer 1 — every card, at review (seconds, mandatory):**
 
@@ -402,7 +304,7 @@ C9 integration branch was `packages/core/src/agent.ts:60  '@markus/shared' impor
   duplicated (no-duplicate-imports)` — it passed review (tsc + vitest + guards) and was
 caught by the CI `lint` step alone.
 
-**Layer 2 — before every merge into `build/c10-integration` (CTO runs the full set, in
+**Layer 2 — before every merge into `build/c10-adapters` (CTO runs the full set, in
 this order; the order is load-bearing):**
 
 ```
@@ -449,21 +351,21 @@ covered locally** — never as "all green".
 `packages/*/src/` and `typecheck` never reads markdown, so neither layer has anything
 to say about it. The criterion is where the change lands, not what it looks like:
 anything under `packages/*/src`, `scripts/`, or a test file runs both layers.
-- Owner gates: backlog disposition (0B) and orphan disposition (0C) **adjudicated
-  2026-11-19** (no migration / no DROP; fixed epoch constant). Remaining: each
-  DNS/policy change (C10-D), and the final `main` merge after all cuts are accepted.
 
-## 4. Card summary
+- Owner gates: first-half dispositions all adjudicated and executed (§1). Remaining:
+  each DNS/policy change (C10-D), and the final `main` merge after all cuts are
+  accepted.
+
+## 4. Card summary (second half, 2026-11-22)
 
 | Card | Seam | Depends on | Owner gate |
 |---|---|---|---|
-| C10-0A | identity enforcement at mailbox assembly + 3 enqueue fixes + probes | — | done (#467) |
-| C10-0B | audit epochs + disposition record + daily audit clock source | 0A | policy adjudicated |
-| C10-0C | orphan freeze record + resurrection guard (no DROP) | — | adjudicated: freeze |
-| C10-0D | C9-E runtime probe 0–5 + requirement close-out | — | — |
-| C10-0E | agent_activities append-only + guard | — | — |
-| C10-0F | L4 baseline script/record + L1 wording | — | — |
-| C10-A | identity columns + envelope slots | 0A/0B/0D accepted | — |
-| C10-B | adapter contract + webhook + RSS (+IM next) | C10-A | — |
-| C10-C | trust boundary + cross-org policy | C10-B | — |
-| C10-D | email auth chain + in/outbound + bounce | C10-C | ⚖ per DNS step |
+| C10-0G | epoch finalization + 0B post-restart closure (disposition §5) | — (restart fired 11-22 20:18:34) | — |
+| C10-A | identity columns + envelope slots + slug-ownership enforcement | — (parallel with 0G) | — |
+| C10-B | adapter contract + external ref constructor + webhook + RSS | 0G, A | — |
+| C10-B2 | IM inbound envelope-ization (Feishu real traffic, routing diff=0) | B | — |
+| C10-C | autonomy axis REBUILD + trust boundary + cross-org policy | B (parallel with B2) | — |
+| C10-D | email auth chain + in/outbound + bounce | C | ⚖ per DNS step |
+
+L5 end-to-end is the cut's final gate (after B; B2/C strengthen it). Cut-level
+acceptance and the final integration PR are the reviewer's job, not a separate card.
