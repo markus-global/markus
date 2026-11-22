@@ -350,18 +350,22 @@ describe('AttentionController 并发 worker 池（方案 A）', () => {
     controller.setDelegate(delegate);
     controller.start();
 
-    // 同一实体的两个 item 同时入队 → 两 worker 竞相抢同一实体锁，必有一个冲突
-    mailbox.enqueue('a2a_message', { taskId: 'tsk_RACE', summary: 'r1', content: 'r1' });
-    mailbox.enqueue('a2a_message', { taskId: 'tsk_RACE', summary: 'r2', content: 'r2' });
+    // 粘性路由（concurrent-processing.md §3.4）后，同实体的两个 item 不再产生锁竞争——
+    // 第二个只能由 owner 认领，竞争在路由层就被消除（这正是本修复的目的）。
+    // 冲突上报机制仍需守卫：用「不同主实体、共享锁维度」构造真实竞争——
+    // task item（主键 task:tsk_RACE）与 requirement item（主键 req:req_SHARED）都锁 req:req_SHARED。
+    mailbox.enqueue('a2a_message', { taskId: 'tsk_RACE', requirementId: 'req_SHARED', summary: 'r1', content: 'r1' });
+    mailbox.enqueue('requirement_comment', { requirementId: 'req_SHARED', summary: 'r2', content: 'r2' });
     await waitFor(() => doneIds.length >= 2, 6000);
     controller.stop();
 
-    // report 策略下应至少发出一次冲突事件（同实体并发必然有锁竞争）
+    // report 策略下应至少发出一次冲突事件（共享锁维度必然有锁竞争）
     expect(conflicts.length).toBeGreaterThanOrEqual(1);
-    expect(conflicts[0].entityKey).toBe('task:tsk_RACE');
+    expect(['task:tsk_RACE', 'req:req_SHARED']).toContain(conflicts[0].entityKey);
     // item 不丢：两个 item 最终都被处理
     expect(doneIds).toHaveLength(2);
     // 锁不泄漏
-    expect(mailbox.isEntityLocked('tsk_RACE')).toBe(false);
+    expect(mailbox.isEntityLocked('task:tsk_RACE')).toBe(false);
+    expect(mailbox.isEntityLocked('req:req_SHARED')).toBe(false);
   });
 });

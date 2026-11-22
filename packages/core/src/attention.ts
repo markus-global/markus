@@ -3,14 +3,11 @@ import {
   generateId,
   type MailboxItem,
   type MailboxItemType,
-  type MailboxPriority,
   type AttentionState,
   type AttentionDecision,
   type DecisionType,
   type DecisionSource,
-  type DecisionContext,
   type AgentMindState,
-  type TriageContext,
   MailboxPriorityLevel,
   routeMailboxItem,
   MAILBOX_ITEM_MAX_RETRIES,
@@ -22,7 +19,6 @@ import {
   APPROVAL_WAIT_TIMEOUT_MS,
   WATCHDOG_INTERVAL_MS,
   WATCHDOG_DRIFT_THRESHOLD_MS,
-  TRIAGE_BACKLOG_THRESHOLD,
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
@@ -482,6 +478,12 @@ export class AttentionController {
     this.mailbox.cancelWait();
     this.workerPromises = [];
     this.activeWorkerIds.clear();
+    // 粘性路由（§3.4）：新纪元清除旧所有权声明 + 安装存活探针。探针读唯一权威
+    // （activeWorkerIds + worker 状态），mailbox 不猜 worker 状态。
+    this.mailbox.resetEntityOwnership();
+    this.mailbox.setWorkerProbe(id => !this.activeWorkerIds.has(id)
+      ? 'gone'
+      : (this.workerState(id).state === 'idle' ? 'idle' : 'busy'));
     for (let w = 1; w <= this.workerCount; w++) {
       this.workerState(w); // 预创建 worker 状态
       const p = this.concurrentWorkerLoop(w, gen).catch(err => {
@@ -764,7 +766,9 @@ export class AttentionController {
    * 并发 worker 循环（workerCount > 1 时每个 worker 一个协程）。
    *
    * 按方案 A 设计——「并发不打断」：
-   * - 每个 worker 是纯消费者：dequeueAsync → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 每个 worker 是纯消费者：dequeueAsync(workerId) → 实体锁 → processMailboxItem → 解锁 → 循环；
+   * - 粘性路由（concurrent-processing.md §3.4）：dequeue 只取「无主或本 worker  owned」
+   *   的 item，同一实体跨回合固定同一分身；owner 忙/gone 时按宽限规则转移；
    * - 不做 triage/deliberation/中断抢占（这些保留给串行模式的 runLoop）；
    * - 实体亲和锁保证同一任务/需求/会话/用户永不并发处理；
    * - 每个 worker 用独立 SessionWorkspace 挂载处理链路（async_hooks 隔离）。
@@ -794,7 +798,7 @@ export class AttentionController {
 
         let item: MailboxItem;
         try {
-          item = await this.mailbox.dequeueAsync();
+          item = await this.mailbox.dequeueAsync(workerId);
         } catch {
           // MailboxCancelledError（或任何错误）且非 running → 正常退出
           if (!this.running || gen !== this.loopGeneration) break;

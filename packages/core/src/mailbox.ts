@@ -80,6 +80,13 @@ const UNICAST_WAKE_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType
 ]);
 
 /**
+ * 粘性路由宽限窗（concurrent-processing.md §3.4）：owner 忙碌时，同实体 item 最多等
+ * 这么久（自 queuedAt 起）；超过后任何空闲 worker 可偷走（所有权转移并记日志）。
+ * 活性是硬不变量，粘性是优化——宽限窗是两者的显式边界。
+ */
+export const STICKY_STEAL_GRACE_MS = 30_000;
+
+/**
  * P2 可观测事件名（结构化日志）。
  *
  * 仅日志、无指标后端：每条日志都带稳定的 `event` 字段与可加总的计数字段，
@@ -88,6 +95,8 @@ const UNICAST_WAKE_TYPES: ReadonlySet<MailboxItemType> = new Set<MailboxItemType
 export const MAILBOX_OBSERVABILITY_EVENTS = {
   /** 认领竞争：候选已被其它 worker / 实例认领，本次认领失败并让位。 */
   claimContested: 'mailbox.claim_contested',
+  /** 粘性所有权转移：busy-owner 宽限偷取或 gone-owner 接手（§3.4）。reason 区分两种。 */
+  stickyTransfer: 'mailbox.sticky_transfer',
   /** 认领通道异常（持久层抛错）→ 保守放行（fail-open）。 */
   claimError: 'mailbox.claim_error',
   /** 租约过期重放：过期租约被回收、item 退回 queued 后可被重新认领。 */
@@ -493,14 +502,26 @@ export class AgentMailbox {
   /** 租约 TTL；可通过 `setLeaseTtlMs()` 覆盖（测试用）。 */
   private leaseTtlMs: number = MAILBOX_LEASE_TTL_MS;
   /**
-   * Idle waiters — one per concurrently-dequeuing attention worker.
+   * Idle waiters — keyed by registration seq (NOT worker id: multiple anonymous
+   * waiters must coexist); each entry carries its worker id (0 = serial/anonymous)
+   * so unicast wake can prefer the entity owner.
    * Multi-consumer: enqueue / unlock wake ALL waiters; each then re-dequeues
    * and `shift`-style selection keeps items exclusive. Single-waiter in
    * serial mode — exactly the old behavior.
    */
-  private idleWaiters = new Set<() => void>();
+  private idleWaiters = new Map<number, { workerId: number; wake: () => void }>();
+  /** 单调注册序号：waiter 身份是「这次注册」，不是 workerId。 */
+  private waiterSeq = 0;
   /** 实体亲和锁：entityKey → holder（处理中的 mailbox item id）。同一实体永不并发。 */
   private entityLocks = new Map<string, string>();
+  /**
+   * 粘性路由（concurrent-processing.md §3.4）：主实体键 → owner workerId。
+   * 锁回答「能否并发」（互斥），所有权回答「该谁处理」（连续性）——同层、同一执行点
+   * （dequeue）。epoch  scoped：launchWorkerPool 重置；持久化它会声称一份已不存在的温热。
+   */
+  private entityOwners = new Map<string, number>();
+  /** worker 存活探针——attention 在池启动时安装；mailbox 从不猜测 worker 状态。 */
+  private workerProbe?: (workerId: number) => 'idle' | 'busy' | 'gone';
   /**
    * Set by cancelWait(): waiting dequeueAsync calls should exit with
    * MailboxCancelledError. Cleared on any real wakeup (enqueue/unlock),
@@ -1335,7 +1356,7 @@ export class AgentMailbox {
 
     this.eventBus.emit('mailbox:new-item', { agentId: this.agentId, item });
     // P1：把「入队事件」的类型 + 路由键交给唤醒器，让其对单播类型只唤醒一个 waiter。
-    this.wakeIdleLoop({ type: sourceType, key: AgentMailbox.unicastRouteKey(item) });
+    this.wakeIdleLoop({ type: sourceType, key: AgentMailbox.unicastRouteKey(item), entityKey: this.entityKeyOf(item) });
 
     return item;
   }
@@ -1354,7 +1375,7 @@ export class AgentMailbox {
     this.wakeIdleLoop();
   }
 
-  private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string }): void {
+  private wakeIdleLoop(routeHint?: { type: MailboxItemType; key: string; entityKey?: string }): void {
     if (this.idleWaiters.size === 0) return;
 
     // P1 单播（根因 #3）：语义上「一次事件只需一个 worker」的类型只唤醒**恰好一个**
@@ -1364,32 +1385,39 @@ export class AgentMailbox {
     // 只当存在多个 waiter 时才需要单播；单 waiter 时广播 / 单播等价（走到下面的分支）。
     if (routeHint && UNICAST_WAKE_TYPES.has(routeHint.type)
       && this.idleWaiters.size > 1) {
-      const waiters = [...this.idleWaiters];
+      const entries = [...this.idleWaiters.entries()];
+      // 粘性路由（§3.4）：优先唤醒实体 owner 的 waiter——唤醒非 owner 只会让它空转
+      // 一次（它认领不了）。无 owner / owner 未注册时退回落确定性 hash 路由。
+      const owner = routeHint.entityKey ? this.entityOwners.get(routeHint.entityKey) : undefined;
+      const ownerEntry = owner !== undefined ? entries.find(([, w]) => w.workerId === owner) : undefined;
       // 确定性路由：hash(taskId+round) % n —— 同一轮评审稳定落到同一 waiter，
       // 不依赖注册顺序、不用随机数（可复现、可断言）。
-      const idx = AgentMailbox.hashKey(routeHint.key) % waiters.length;
-      const target = waiters[idx]!;
+      const idx = ownerEntry
+        ? entries.indexOf(ownerEntry)
+        : AgentMailbox.hashKey(routeHint.key) % entries.length;
+      const [targetSeq, target] = entries[idx]!;
       // 只把被选中的 waiter 移出在册集合并唤醒；**其余保持注册**（若一并移出而不
       // resolve，它们将永远不再被唤醒 = 死锁）。
-      this.idleWaiters.delete(target);
+      this.idleWaiters.delete(targetSeq);
       this.cancelPending = false;
       log.info('Mailbox unicast wake — exactly one waiter selected', {
         event: MAILBOX_OBSERVABILITY_EVENTS.unicastWake,
         agentId: this.agentId,
         type: routeHint.type,
         routeKey: routeHint.key,
-        waiters: waiters.length,
+        waiters: entries.length,
         targetIndex: idx,
+        ownerPreferred: !!ownerEntry,
       });
-      target();
+      target.wake();
       return;
     }
 
-    const waiters = [...this.idleWaiters];
+    const waiters = [...this.idleWaiters.values()];
     this.idleWaiters.clear();
     // Real work arrived — cancel intent is void (stop → restart scenario).
     this.cancelPending = false;
-    for (const resolve of waiters) resolve();
+    for (const w of waiters) w.wake();
   }
 
   /**
@@ -1422,8 +1450,9 @@ export class AgentMailbox {
    * Whether any queued item is currently runnable (i.e. not blocked by an
    * entity lock). Used to avoid waking workers on exclusively locked queues.
    */
-  private hasRunnableItem(): boolean {
-    return this.queue.some(it => it.status === 'queued' && !this.isItemEntityLocked(it));
+  private hasRunnableItem(workerId?: number): boolean {
+    return this.queue.some(it => it.status === 'queued'
+      && !this.isItemEntityLocked(it) && this.stickyClaimable(it, workerId));
   }
 
   /**
@@ -1500,6 +1529,69 @@ export class AgentMailbox {
   /** item 的任一实体维度是否已被锁定。 */
   isItemEntityLocked(item: MailboxItem): boolean {
     return this.entityKeysOf(item).some(k => this.entityLocks.has(k));
+  }
+
+  // ── 粘性 entity→worker 路由（concurrent-processing.md §3.4）─────────────────
+  // 锁回答「能否并发」（互斥），所有权回答「该谁处理」（连续性）。唯一执行点在
+  // dequeue(workerId)；worker 存活由 attention 的探针表态，mailbox 不猜。
+
+  /** 安装/清除 worker 存活探针（attention 在池启动时调用）。 */
+  setWorkerProbe(probe: ((workerId: number) => 'idle' | 'busy' | 'gone') | undefined): void {
+    this.workerProbe = probe;
+  }
+
+  /** worker 池换代（launchWorkerPool）时调用：所有权是 epoch 内的声明，新纪元从零开始。 */
+  resetEntityOwnership(): void {
+    this.entityOwners.clear();
+  }
+
+  /**
+   * 所有权键 = 主实体键（entityKeysOf[0]），不是全键集。req:/user: 是协调维度：
+   * 钉住 req: 会把同一需求的所有任务钉到一个 worker，杀掉跨实体并行。互斥锁仍锁
+   * 全键；所有权只钉连续性维度。user:-primary（无 task/req/conv 可解析）不设 owner。
+   */
+  private ownershipKeyOf(item: MailboxItem): string | undefined {
+    const key = this.entityKeysOf(item)[0];
+    return key && !key.startsWith('user:') ? key : undefined;
+  }
+
+  /**
+   * 粘性判定：null = 可认领；Infinity = owner 空闲，永不偷；有限值 = 最早可偷时刻
+   * （owner 忙碌 + 宽限窗）。串行模式（workerId undefined）不过滤。
+   */
+  private stickyBlockedUntil(item: MailboxItem, workerId: number | undefined): number | null {
+    if (workerId === undefined) return null;
+    const key = this.ownershipKeyOf(item);
+    if (!key) return null;
+    const owner = this.entityOwners.get(key);
+    if (owner === undefined || owner === workerId) return null;
+    if (!this.workerProbe) return null; // fail-open：活性优先
+    const state = this.workerProbe(owner);
+    if (state === 'gone') return null;
+    if (state === 'idle') return Infinity;
+    return Date.parse(item.queuedAt) + STICKY_STEAL_GRACE_MS;
+  }
+
+  private stickyClaimable(item: MailboxItem, workerId: number | undefined): boolean {
+    const until = this.stickyBlockedUntil(item, workerId);
+    return until === null || until <= Date.now();
+  }
+
+  /** 认领成功后记录所有权；跨 worker 转移必须可观测（steal / owner-gone），绝不静默。 */
+  private recordOwnership(item: MailboxItem, workerId: number | undefined): void {
+    if (workerId === undefined) return;
+    const key = this.ownershipKeyOf(item);
+    if (!key) return;
+    const prev = this.entityOwners.get(key);
+    if (prev !== undefined && prev !== workerId) {
+      log.info('Sticky ownership transferred', {
+        event: MAILBOX_OBSERVABILITY_EVENTS.stickyTransfer,
+        agentId: this.agentId, entityKey: key, fromWorker: prev, toWorker: workerId,
+        reason: this.workerProbe?.(prev) === 'gone' ? 'owner-gone' : 'steal',
+        waitedMs: Date.now() - Date.parse(item.queuedAt), count: 1,
+      });
+    }
+    this.entityOwners.set(key, workerId);
   }
 
   /**
@@ -1615,9 +1707,10 @@ export class AgentMailbox {
    * 认领失败（已被其它实例/worker 拿走）的候选会被移出本地队列并继续找下一个，
    * 保证「同一 item 至多一个 worker 处理」。
    */
-  dequeue(): MailboxItem | undefined {
+  dequeue(workerId?: number): MailboxItem | undefined {
     for (;;) {
-      const idx = this.queue.findIndex(it => it.status === 'queued' && !this.isItemEntityLocked(it));
+      const idx = this.queue.findIndex(it => it.status === 'queued'
+        && !this.isItemEntityLocked(it) && this.stickyClaimable(it, workerId));
       if (idx === -1) return undefined;
       const candidate = this.queue[idx]!;
 
@@ -1636,6 +1729,7 @@ export class AgentMailbox {
           return undefined;
         }
         if (candidate.sourceType === 'heartbeat') this._processingHeartbeatId = candidate.id;
+        this.recordOwnership(candidate, workerId);
         return candidate;
       }
 
@@ -1660,6 +1754,7 @@ export class AgentMailbox {
       // 原子认领已在 DB 内完成 queued → processing；矩阵在 tryClaim 之前已裁决过。
       this.projectClaimed(item!, item!.startedAt ?? new Date().toISOString());
       if (item!.sourceType === 'heartbeat') this._processingHeartbeatId = item!.id;
+      this.recordOwnership(item!, workerId);
       return item;
     }
   }
@@ -1673,24 +1768,43 @@ export class AgentMailbox {
    * between the empty check and wait cannot lose its wakeup (classic lost-wakeup
    * race — leaves attention "idle" forever with items still queued).
    */
-  async dequeueAsync(): Promise<MailboxItem> {
+  async dequeueAsync(workerId?: number): Promise<MailboxItem> {
+    const waiterKey = workerId ?? 0;
     for (;;) {
-      const item = this.dequeue();
+      const item = this.dequeue(workerId);
       if (item) {
         this.cancelPending = false;
         return item;
       }
 
       await new Promise<void>(resolve => {
-        this.idleWaiters.add(resolve);
-        // Close the race: runnable work may have arrived after the empty dequeue above.
-        if (this.hasRunnableItem()) {
-          this.idleWaiters.delete(resolve);
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const seq = ++this.waiterSeq;
+        const done = () => {
+          if (timer !== undefined) clearTimeout(timer);
+          this.idleWaiters.delete(seq);
           resolve();
+        };
+        this.idleWaiters.set(seq, { workerId: waiterKey, wake: done });
+        // Close the race: runnable work may have arrived after the empty dequeue above.
+        if (this.hasRunnableItem(workerId)) {
+          done();
+          return;
+        }
+        // 定时唤醒（§3.4）：只被「忙碌 owner」挡住的 item 的最早可偷时刻。没有它，
+        // 偷取要等一个无关事件来唤醒——活性漏洞。Infinity（owner 空闲）不参与。
+        let earliest = Infinity;
+        for (const it of this.queue) {
+          if (it.status !== 'queued' || this.isItemEntityLocked(it)) continue;
+          const until = this.stickyBlockedUntil(it, workerId);
+          if (until !== null && until < earliest) earliest = until;
+        }
+        if (earliest < Infinity) {
+          timer = setTimeout(done, Math.max(0, earliest - Date.now()) + 1);
         }
       });
 
-      const afterWake = this.dequeue();
+      const afterWake = this.dequeue(workerId);
       if (afterWake) {
         this.cancelPending = false;
         return afterWake;
@@ -2429,9 +2543,9 @@ export class AgentMailbox {
   cancelWait(): void {
     this.cancelPending = true;
     if (this.idleWaiters.size > 0) {
-      const waiters = [...this.idleWaiters];
+      const waiters = [...this.idleWaiters.values()];
       this.idleWaiters.clear();
-      for (const resolve of waiters) resolve();
+      for (const w of waiters) w.wake();
     }
   }
 
