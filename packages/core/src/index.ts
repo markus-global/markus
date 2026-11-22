@@ -185,6 +185,7 @@ export {
   createPatchTool,
   createBackgroundExecTool,
   createProcessTool,
+  wasBackgroundResultConsumed,
   onBackgroundCompletion,
   drainCompletedNotifications,
   MCPClientManager,

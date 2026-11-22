@@ -422,6 +422,8 @@ This leverages existing group-chat infrastructure:
 
 Async operations (e.g., `background_exec`) register callbacks tracked by `PendingCallbackRegistry`. When complete, results enter the originating agent's mailbox as `callback_result` items — ensuring they flow through the attention loop rather than being injected directly into sessions. Timed-out callbacks surface in heartbeat for investigation.
 
+The result **belongs to the turn that launched it**. When the completion's `callback_result` row is queued under the launching turn's WorkUnit and that turn is still running, `injectTurnDelta` delivers the FULL result content into the turn before its next LLM call and consumes the row (a tail append — C8-B's ≤600-char label teaser cannot carry kilobytes of stdout), so no separate completion turn fires. If the turn has ended, the row drives a lineage continuation instead. `process poll/log` on a finished session also marks the result consumed, suppressing the redundant turn. Lineage (`originSessionId` + `originScenario` + `workUnitRef`) is persisted in the registry row — the ONE durable store — so a restart cannot orphan a completion from its launching scenario/entity, and same-origin queued completions coalesce into a single turn.
+
 Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePendingCallbackRepo`.
 
 ---

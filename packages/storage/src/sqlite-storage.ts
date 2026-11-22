@@ -797,6 +797,8 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   command TEXT,
   note TEXT,
   correlation_id TEXT,
+  origin_scenario TEXT,
+  work_unit_ref TEXT,
   wake_at INTEGER,
   recurring_ms INTEGER,
   registered_at INTEGER NOT NULL,
@@ -987,6 +989,13 @@ export function openSqlite(dbPath: string): DatabaseSync {
     { table: 'pending_callbacks', column: 'correlation_id', sql: 'ALTER TABLE pending_callbacks ADD COLUMN correlation_id TEXT' },
     { table: 'pending_callbacks', column: 'wake_at', sql: 'ALTER TABLE pending_callbacks ADD COLUMN wake_at INTEGER' },
     { table: 'pending_callbacks', column: 'recurring_ms', sql: 'ALTER TABLE pending_callbacks ADD COLUMN recurring_ms INTEGER' },
+    // Callback lineage must survive restarts: the scenario + work-unit identity of
+    // the launching turn are the ONLY facts that let a completion continue the
+    // right entity with the right tool pack. Previously originScenario existed
+    // only in process memory (save/loadAll dropped it) — a restart silently
+    // downgraded every pending callback to the heartbeat reflex pack.
+    { table: 'pending_callbacks', column: 'origin_scenario', sql: 'ALTER TABLE pending_callbacks ADD COLUMN origin_scenario TEXT' },
+    { table: 'pending_callbacks', column: 'work_unit_ref', sql: 'ALTER TABLE pending_callbacks ADD COLUMN work_unit_ref TEXT' },
     // ─── 知识库（V2 数据模型：知识库文件 = deliverable source='knowledge' + project knowledge_base_paths）────────────
     { table: 'projects', column: 'knowledge_base_paths', sql: "ALTER TABLE projects ADD COLUMN knowledge_base_paths TEXT DEFAULT '[]'" },
     { table: 'deliverables', column: 'source', sql: "ALTER TABLE deliverables ADD COLUMN source TEXT NOT NULL DEFAULT 'agent'" },
@@ -7003,13 +7012,14 @@ export class SqliteWorkflowScheduleRepo {
 export class SqlitePendingCallbackRepo {
   constructor(private db: DatabaseSync) {}
 
-  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
+  save(cb: { id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; originScenario?: string; workUnitRef?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }): void {
     this.db.prepare(
-      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, wake_at, recurring_ms, registered_at, timeout_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      `INSERT OR REPLACE INTO pending_callbacks (id, agent_id, origin_session_id, type, delivery_mode, command, note, correlation_id, origin_scenario, work_unit_ref, wake_at, recurring_ms, registered_at, timeout_ms)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       cb.id, cb.agentId, cb.originSessionId, cb.type, cb.deliveryMode ?? 'in_session',
       cb.command ?? null, cb.note ?? null, cb.correlationId ?? null,
+      cb.originScenario ?? null, cb.workUnitRef ?? null,
       cb.wakeAt ?? null, cb.recurringMs ?? null, cb.registeredAt, cb.timeoutMs,
     );
   }
@@ -7041,7 +7051,7 @@ export class SqlitePendingCallbackRepo {
     return (res.changes ?? 0) > 0;
   }
 
-  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
+  loadAll(): Array<{ id: string; agentId: string; originSessionId: string; type: string; deliveryMode?: string; command?: string; note?: string; correlationId?: string; originScenario?: string; workUnitRef?: string; wakeAt?: number; recurringMs?: number; registeredAt: number; timeoutMs: number }> {
     const rows = this.db.prepare('SELECT * FROM pending_callbacks').all() as Record<string, unknown>[];
     return rows.map(r => ({
       id: r['id'] as string,
@@ -7052,6 +7062,8 @@ export class SqlitePendingCallbackRepo {
       command: (r['command'] as string | null) ?? undefined,
       note: (r['note'] as string | null) ?? undefined,
       correlationId: (r['correlation_id'] as string | null) ?? undefined,
+      originScenario: (r['origin_scenario'] as string | null) ?? undefined,
+      workUnitRef: (r['work_unit_ref'] as string | null) ?? undefined,
       wakeAt: (r['wake_at'] as number | null) ?? undefined,
       recurringMs: (r['recurring_ms'] as number | null) ?? undefined,
       registeredAt: r['registered_at'] as number,

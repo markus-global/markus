@@ -1,6 +1,6 @@
 # Concurrent Processing
 
-> Status: **implemented** · Last updated: 2026-09-11
+> Status: **implemented** · Last updated: 2026-11-22 (sticky entity→worker routing, §3.4)
 > Scope: how a single agent processes **multiple mailbox items / sessions at once**
 > through a pool of isolated workers, while preserving factual consistency.
 > Design origin: the original design memo (rationale, alternatives, phase plan) — superseded by this
@@ -34,10 +34,16 @@ independent consumer of the same mailbox:
 - Worker activity is made visible to every other worker through a persistent
   **concurrent handoff log**, injected into the system prompt.
 
-The invariant is simple to state:
+The invariants are simple to state:
 
 > **Concurrency only ever happens *between* entities. A single entity is never
 > processed by two workers at the same time.**
+>
+> **An entity's work is handled by its *owner* worker — the one that first claimed
+> it — across turns, not just within one turn.** Rotating workers inside an entity
+> buys no parallelism (the mutex already serialises it) and only pays costs: context
+> rebuild, cold prompt cache, lost in-flight continuity. Stickiness is the default;
+> liveness overrides it under the explicit rules of §3.4.
 
 `maxWorkers = 1` reproduces the pre-concurrency behaviour exactly — that is the
 compatibility floor and the regression contract.
@@ -295,6 +301,76 @@ Two additions make the queue safe for multiple consumers:
    always goes through the multi-key API.)
 
    <!-- verified-against-code: 2026-09-11, packages/core/src/mailbox.ts:437-489, packages/shared/src/types/mailbox.ts:102-118 -->
+
+### 3.4 Sticky entity→worker routing — ownership, not just exclusion
+
+**Problem (observed 2026-11-22).** The entity-affinity lock is a *mutex*: it answers
+"may two workers touch this entity **at the same time**?" (no). It does not answer
+"**which** worker should handle this entity's next item?" — `dequeueAsync()` was a
+broadcast race, so any idle worker won. A real conversation (`cs_0203031913ba4072`)
+bounced worker 3 → 1 → 2 across four turns. Every bounce re-orients a fresh worker,
+rebuilds the session context, and risks a cold prompt cache — for zero parallelism
+gain, because the entity was serialised anyway.
+
+**First principles.**
+
+1. Workers exist to parallelise *across* entities. Within an entity the mutex already
+   serialises, so worker rotation inside an entity is pure cost.
+2. Therefore ownership must persist **across turns**: first successful claim assigns
+   the entity to that worker; later items of the same entity are claimable only by it.
+3. **Liveness is a hard invariant and beats stickiness.** An item must never starve
+   while capacity is idle. Stickiness yields under exactly three conditions (below).
+4. One fact, one writer, one enforcement point: ownership lives in the mailbox next
+   to `entityLocks`, enforced inside `dequeue(workerId)` — the same place the lock
+   filter already runs. Worker liveness is owned by the attention controller, which
+   supplies a probe; the mailbox never guesses worker state.
+
+**Ownership key = the item's *primary* entity key** (`entityKeysOf(item)[0]`), not the
+full key set. `req:` / `user:` are *coordination* dimensions: pinning them would nail
+every task of a requirement (or every session of a user) to one worker and destroy
+cross-entity parallelism. The mutex still locks **all** keys; ownership pins only the
+continuity dimension. A `user:`-primary item (no task/req/conversation resolves) gets
+no owner at all.
+
+**Claimability rule** — `dequeue(workerId)` skips an item unless, for its ownership key:
+
+| Owner state | Rule |
+|---|---|
+| unowned / self | claimable; a successful claim (re)assigns ownership |
+| owner **idle** | not claimable by others — the owner is awake and will take it |
+| owner **busy**, item waited < `STICKY_STEAL_GRACE_MS` (30 s, from `queuedAt`) | not claimable — wait for the owner |
+| owner **busy**, item waited ≥ grace | **steal**: any idle worker may claim; ownership transfers; logged as `mailbox.sticky_transfer` (reason `steal`) |
+| owner **gone** (not in the live pool) | immediate transfer, no grace (reason `owner-gone`) |
+| no probe installed | claimable (fail-open: liveness first) |
+
+**Lifecycle.** Ownership is in-memory and epoch-scoped: `launchWorkerPool()` calls
+`resetEntityOwnership()` and installs a fresh probe (`gone` if the id is not in
+`activeWorkerIds`, else `idle`/`busy` from the worker's state). Persisting ownership
+across restarts would claim a warmth that no longer exists. Serial mode
+(`dequeue()` / `dequeueAsync()` without a `workerId`) neither filters nor records —
+the §6 equivalence contract is untouched.
+
+**Wake-up correctness** (three places where stickiness could have introduced stalls):
+
+- `idleWaiters` is keyed by worker id, so the unicast wake (`review_request`) prefers
+  the **owner's** registered waiter; the deterministic hash remains the fallback.
+- `dequeueAsync(workerId)` arms a **timed wake** at the earliest steal deadline among
+  items blocked only by a busy owner — a steal never depends on an unrelated event.
+- The lost-wakeup recheck (`hasRunnableItem(workerId)`) uses the same claimability
+  predicate as `dequeue`, so a worker never spins on items it may not claim.
+
+**Trade-offs (deliberate, documented).**
+
+- Head-of-line latency: while its owner is busy elsewhere, an entity's item waits up
+  to the grace window even if other workers are idle. That is the price of continuity;
+  30 s bounds it.
+- A steal transfers continuity — unavoidable when liveness demands it — and is always
+  observable (`mailbox.sticky_transfer`), never silent.
+- Items whose entity is *currently locked* are skipped by the pre-existing lock filter
+  before ownership is consulted; when the owner finishes, the unlock broadcast lets the
+  owner reclaim first (its `dequeue` runs in the same synchronous continuation).
+
+<!-- verified-against-code: 2026-11-22, packages/core/src/mailbox.ts (entityOwners/dequeue/dequeueAsync/wakeIdleLoop), packages/core/src/attention.ts (launchWorkerPool/concurrentWorkerLoop) -->
 
 ## 4. Consistency model
 
@@ -562,6 +638,9 @@ These are deliberate trade-offs, documented rather than hidden:
      lifetime.** The lock covers registering the job in the process table; the spawned
      process then runs outside the lock and may write files concurrently with other
      workers. Treat long background jobs as a handoff-log *fact*, not as lock-covered.
+     `process poll/log` shares the domain: the lock covers the *consumption* action
+     (marking the result consumed + resolving the callback entry). In-turn delivery
+     (`injectTurnDelta`) consumes the row inside the turn loop, not at tool dispatch.
 
 3. **Write-lock nesting is fail-fast.** A call chain that requests a lock conflicting
    with one it already holds raises `LockNestingConflictError` (§4.3) instead of
@@ -597,6 +676,7 @@ Concurrency-specific suites under `packages/core/test/`:
 |---|---|
 | `attention-concurrent.test.ts` | worker pool start/stop, directed cancel, conflict policy |
 | `mailbox-concurrent.test.ts` | broadcast wake-up, entity lock/unlock, key derivation |
+| `mailbox-sticky-routing.test.ts` | ownership establishment, idle-owner exclusion, busy-owner grace + steal, gone-owner transfer, primary-key-only pinning, unicast owner preference, timed steal wake, serial-mode equivalence |
 | `agent-concurrent-activity.test.ts` | per-worker `currentActivity` isolation |
 | `agent-write-lock.test.ts` | domain-lock serialisation, per-path/per-entity parallelism, no-leak on throw, **write-tool classification totality**, lock-free HITL tools, unknown-tool per-name domain |
 | `resource-locks.test.ts` | domain conflict matrix, FIFO fairness, reentrancy |

@@ -21,7 +21,7 @@ const groupOf = (groups: ReturnType<typeof categorizeTools>, name: string) =>
   groups.find(g => g.tools.some(x => x.name === name))?.category;
 
 describe('categorizeTools — known tool placement', () => {
-  it('places memory / office / knowledge / decide tools in semantic groups, never in 其他', () => {
+  it('places memory / office / knowledge / decide / runtime tools in semantic groups, never in 其他', () => {
     const groups = categorizeTools(
       [
         tool('memory_stats'),
@@ -30,6 +30,7 @@ describe('categorizeTools — known tool placement', () => {
         tool('office_generate'),
         tool('kb_search'),
         tool('decide'),
+        tool('background_exec'),
       ],
       t,
     );
@@ -39,6 +40,7 @@ describe('categorizeTools — known tool placement', () => {
     expect(groupOf(groups, 'office_generate')).toBe('deliverables');
     expect(groupOf(groups, 'kb_search')).toBe('knowledge');
     expect(groupOf(groups, 'decide')).toBe('reasoning');
+    expect(groupOf(groups, 'background_exec')).toBe('runtime');
     // The catch-all must stay empty — an uncategorized tool is a grouping bug.
     expect(groups.find(g => g.category === 'other')).toBeUndefined();
   });

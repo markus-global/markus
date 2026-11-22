@@ -2,7 +2,7 @@ export { ShellTool, createShellTool, type ShellAgentMeta } from './shell.js';
 export { FileReadTool, FileWriteTool, FileEditTool, createFileReadTool, createFileWriteTool, createFileEditTool } from './file.js';
 export { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 export { createPatchTool } from './patch.js';
-export { createBackgroundExecTool, createProcessTool, onBackgroundCompletion, drainCompletedNotifications } from './process-manager.js';
+export { createBackgroundExecTool, createProcessTool, onBackgroundCompletion, drainCompletedNotifications, wasBackgroundResultConsumed, markBackgroundResultConsumed } from './process-manager.js';
 export { WebFetchTool } from './web-fetch.js';
 export {
   WebSearchTool,

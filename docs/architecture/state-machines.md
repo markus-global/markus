@@ -501,17 +501,22 @@ loopEnabled=false      (re-enable / raise max)
 
 ```
 registerBackgroundSession()
-              │
+              │  (lineage: originSessionId + originScenario + workUnitRef
+              │   persisted in the SAME row — one durable store, no parallel maps)
               ▼
           pending ────── resolve() ──────► resolved
               │         (operation done)     │
-              │                              └── enqueue callback_result
+              │                              ├── result already consumed? ──► (no delivery;
+              │                              │    queued item skipped at processing)
+              │                              └── else enqueue callback_result
+              │                                   (same-origin queued siblings coalesce
+              │                                    into ONE turn; siblings → merged)
               │
               ├── getTimedOut() ──► timed_out
               │                          │
               │                          └── expireTimedOut() ──► expired
               │                               (removed; surfaced in heartbeat)
-              └── (server restart) ──► pending  (restored from SQLite)
+              └── (server restart) ──► pending  (restored from SQLite, lineage intact)
 ```
 
 ### Transitions
@@ -519,7 +524,7 @@ registerBackgroundSession()
 | From | To | Trigger | Side Effect |
 |------|----|---------|-------------|
 | — | `pending` | `registerBackgroundSession()` / `PendingCallbackRegistry.register()` | Persisted via `SqlitePendingCallbackRepo` |
-| `pending` | `resolved` | Operation completes; `resolve(id)` | Registry entry removed; `callback_result` mailbox item enqueued |
+| `pending` | `resolved` | Operation completes; `resolve(id)` | Registry entry removed; `callback_result` enqueued UNLESS the result was already consumed (`wasBackgroundResultConsumed`). The queued row is delivered in-turn by `injectTurnDelta` if the launching turn is still running, else drives a lineage continuation |
 | `pending` | `timed_out` | Heartbeat calls `getTimedOut()` (`now - registeredAt > timeoutMs`) | Detected only — entry still in registry |
 | `timed_out` | `expired` | Heartbeat calls `expireTimedOut(id)` | Registry entry removed; details injected into heartbeat prompt (no `callback_result`) |
 | `pending` | `pending` | Server restart | `setPersistence()` restores all pending callbacks |
@@ -529,6 +534,9 @@ registerBackgroundSession()
 1. **Resolved → mailbox** — only the `resolved` path produces a `callback_result` item; timeouts are surfaced for agent investigation, not auto-enqueued
 2. **Default timeout** — 10 minutes for `background_exec`
 3. **Origin session preserved** — `originSessionId` on the callback is copied into `callback_result.extra` for session resumption
+4. **The result belongs to the launching turn** — if that turn is still running, `injectTurnDelta` delivers the full result content in-turn and consumes the row (no separate completion turn); if it has ended, the `callback_result` row drives a lineage continuation. `process poll/log` on a finished session also marks the result consumed, and a queued item for an already-consumed result is skipped at processing
+5. **Lineage is durable** — `originScenario` + `workUnitRef` live in the persisted row (the ONE store); a restart cannot orphan a callback from its launching scenario/entity. The completion replays the registered scenario (task completions keep task tools, not the heartbeat reflex pack)
+6. **One waiting context wakes once** — queued `callback_result` items for the same origin session are coalesced into a single turn; absorbed siblings terminate as `merged`
 
 ---
 

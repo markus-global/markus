@@ -49,6 +49,13 @@ export interface PendingCallback {
    * Kept as a loose `string` for the same decoupling reason as `type` above.
    */
   originScenario?: string;
+  /**
+   * Work-unit identity of the turn that registered this callback (`workUnitRef`).
+   * Persisted alongside the scenario so the completion lands on the SAME entity
+   * (task/session) even after a process restart — lineage lives in ONE durable
+   * store (this registry), never in a parallel in-memory map.
+   */
+  workUnitRef?: string;
   /** For scheduled wakeups: epoch ms at which the wakeup is due. */
   wakeAt?: number;
   /** For recurring wakeups: re-arm interval in ms after firing. */
@@ -82,6 +89,7 @@ export interface PersistedCallback {
   note?: string;
   correlationId?: string;
   originScenario?: string;
+  workUnitRef?: string;
   wakeAt?: number;
   recurringMs?: number;
   registeredAt: number;
@@ -121,6 +129,11 @@ export class PendingCallbackRegistry {
     this.callbacks.set(cb.id, cb);
     this.persistence?.save(cb);
     log.debug('Registered pending callback', { id: cb.id, agentId: cb.agentId, type: cb.type });
+  }
+
+  /** Read an entry WITHOUT removing it (bus handlers peek before claiming). */
+  get(id: string): PendingCallback | undefined {
+    return this.callbacks.get(id);
   }
 
   resolve(id: string): PendingCallback | undefined {

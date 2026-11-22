@@ -2,6 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { resolve } from 'node:path';
 import { platform } from 'node:os';
 import type { AgentToolHandler } from '../agent.js';
+import { pendingCallbackRegistry } from '../pending-callback.js';
 import {
   KILL_GRACE_MS,
   isProcessGroupAlive,
@@ -36,6 +37,62 @@ function hasLeakedDescendants(s: BackgroundSession): boolean {
 
 const sessions = new Map<string, BackgroundSession>();
 let sessionCounter = 0;
+
+/**
+ * Results already delivered IN-TURN (injectTurnDelta) or read via `process
+ * poll`/`log` on a finished session. A completion whose result the launching
+ * turn already consumed must NOT spawn another attention cycle — that turn
+ * would burn a full context re-injection re-deriving what the agent already
+ * knows (measured: ~53k tokens / 0 tools / HEARTBEAT_OK per redundant callback).
+ *
+ * Kept separate from `sessions` so `process clear` cannot erase the dedupe
+ * evidence while a queued callback item is still waiting. TTL-bounded.
+ */
+const consumedResults = new Map<string, number>();
+const CONSUMED_TTL_MS = 60 * 60 * 1000;
+const CONSUMED_MAX = 1000;
+
+/**
+ * Mark a background session's final result consumed, by id. SINGLE writer of
+ * `consumedResults`. Called by in-turn delivery (injectTurnDelta) and by
+ * `process poll`/`log` (via markResultConsumed). Resolving the registry entry
+ * means "nothing left to deliver"; if the completion bus already fired, the
+ * queued mailbox item is skipped via wasBackgroundResultConsumed — both
+ * orderings are covered by the same consumption fact.
+ */
+export function markBackgroundResultConsumed(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (session && session.exitCode !== null) session.notified = true;
+  consumedResults.set(sessionId, Date.now());
+  pendingCallbackRegistry.resolve(sessionId);
+  if (consumedResults.size > CONSUMED_MAX) {
+    const now = Date.now();
+    for (const [id, at] of consumedResults) {
+      if (now - at > CONSUMED_TTL_MS) consumedResults.delete(id);
+    }
+    while (consumedResults.size > CONSUMED_MAX) {
+      const oldest = consumedResults.keys().next().value;
+      if (oldest === undefined) break;
+      consumedResults.delete(oldest);
+    }
+  }
+}
+
+function markResultConsumed(session: BackgroundSession): void {
+  if (session.exitCode === null) return;
+  markBackgroundResultConsumed(session.id);
+}
+
+/** True when this session's final result was already returned to a turn. */
+export function wasBackgroundResultConsumed(sessionId: string): boolean {
+  const at = consumedResults.get(sessionId);
+  if (at === undefined) return false;
+  if (Date.now() - at > CONSUMED_TTL_MS) {
+    consumedResults.delete(sessionId);
+    return false;
+  }
+  return true;
+}
 
 export type CompletionCallback = (notification: {
   sessionId: string;
@@ -114,7 +171,7 @@ function notifyCompletion(session: BackgroundSession): void {
 export function createBackgroundExecTool(workspacePath?: string): AgentToolHandler {
   return {
     name: 'background_exec',
-    description: 'Run a shell command in the background. Returns immediately with a session ID. Use the "process" tool to poll for results, view logs, or kill the process. Ideal for long-running commands like dev servers, test suites, or builds. You will be automatically notified when the process completes.',
+    description: 'Run a shell command in the background. Returns immediately with a session ID. When the command finishes, its full result is delivered back into THIS conversation: if your turn is still running it is injected before your next step; otherwise a continuation turn brings it to you. Use the "process" tool to poll, view logs, or kill. Ideal for long-running commands like dev servers, test suites, or builds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -252,7 +309,7 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
 export function createProcessTool(): AgentToolHandler {
   return {
     name: 'process',
-    description: 'Manage background exec sessions. Actions: list (show all sessions), poll (check status + new output), log (view output), kill (terminate), clear (remove finished sessions).',
+    description: 'Manage background exec sessions. Actions: list (show all sessions), poll (check status + new output), log (view output), kill (terminate), clear (remove finished sessions). Reading a FINISHED session\'s result via poll/log consumes it: the separate completion notification turn is suppressed (you already have the answer).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -296,6 +353,7 @@ export function createProcessTool(): AgentToolHandler {
 
           const recentStdout = s.stdout.slice(-tail).join('\n');
           const recentStderr = s.stderr.slice(-tail).join('\n');
+          if (s.exitCode !== null) markResultConsumed(s);
 
           return JSON.stringify({
             status: 'success',
@@ -312,6 +370,7 @@ export function createProcessTool(): AgentToolHandler {
           if (!sessionId) return JSON.stringify({ status: 'error', error: 'sessionId required' });
           const s = sessions.get(sessionId);
           if (!s) return JSON.stringify({ status: 'error', error: `Session not found: ${sessionId}` });
+          if (s.exitCode !== null) markResultConsumed(s);
 
           return JSON.stringify({
             status: 'success',

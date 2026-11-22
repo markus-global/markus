@@ -211,7 +211,7 @@ Agents now have tools to actively manage their mailbox queue and cognitive works
 
 This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
 
-**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions.
+**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items. If the launching turn is still running, `injectTurnDelta` delivers the full result in-turn and consumes the row; otherwise the row drives a lineage continuation. A result already consumed in-turn (or via `process poll/log`) suppresses the redundant completion turn. Lineage (origin session + scenario + work-unit) is persisted in the registry row itself.
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -835,7 +835,7 @@ patrol does run:
 - **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
 - **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
 - Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
-- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks)
+- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks). If the launching turn is still running, `injectTurnDelta` delivers the full result in-turn and consumes the row (no separate completion turn); otherwise the row drives a lineage continuation, and same-origin queued completions coalesce into one turn
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---
