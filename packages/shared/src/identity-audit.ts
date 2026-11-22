@@ -199,5 +199,27 @@ export function makeIdentityGates(options: IdentityGateOptions): IdentityGate[] 
                AND (json_extract(verification_json, '$.verified_by') IS NULL
                     OR TRIM(json_extract(verification_json, '$.verified_by')) = '')`,
     },
+    {
+      // C10-B：信号级天花板违规 —— 未验证外部信号带权威 intent。读信封 JSON（事实源），
+      // 不读 intent 投影列（投影是读侧便利，不是第二事实源；夹具也无该列）。
+      id: 14,
+      name: '未验证外部信号带权威 intent（天花板违规）',
+      sql: `SELECT COUNT(*) AS c FROM mailbox_items
+             WHERE source_type = 'external_signal' AND queued_at >= '${epoch}'
+               AND json_valid(envelope)
+               AND json_extract(envelope, '$.fromVerified') = 0
+               AND json_extract(envelope, '$.intent') IN ('trigger_execution', 'action_required')`,
+    },
+    {
+      // C10-B：external_signal 行的 ref 不是唯一构造器形状（第二建造点的库内证据）。
+      // NULL ref 由判据 1 管辖（external_signal 非平台内部来源）；本判据只咬非 NULL 错形状。
+      // LIKE 'external:%' 是读取谓词（一个冒号），不是建造 —— 守卫不误咬。
+      id: 15,
+      name: 'external_signal 行 ref 非唯一构造器形状',
+      sql: `SELECT COUNT(*) AS c FROM mailbox_items
+             WHERE source_type = 'external_signal' AND queued_at >= '${epoch}'
+               AND work_unit_ref IS NOT NULL
+               AND work_unit_ref NOT LIKE 'external:%'`,
+    },
   ];
 }

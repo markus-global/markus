@@ -815,6 +815,28 @@ CREATE TABLE IF NOT EXISTS pending_callbacks (
   lease_until INTEGER
 );
 CREATE INDEX IF NOT EXISTS idx_pending_callbacks_agent ON pending_callbacks(agent_id);
+
+-- C10-B：外部信号源（webhook / RSS）的持久配置 + kill switch。
+-- 有写者（SqliteExternalSourceRepo）+ 真流量（验收 ≥1 真事件）满足建表门。
+-- enabled = 持久 kill switch：每 tick / 每 POST 现读 DB（无内存缓存 = 无第二写者），
+-- 重启后状态保持。cursor = RSS 水位（重启不重扫全量）。新表走 CREATE IF NOT EXISTS
+-- （SCHEMA_SQL 每次 init 都跑）⇒ fresh 与 upgraded 逻辑 schema 天然一致，无需迁移数组。
+CREATE TABLE IF NOT EXISTS external_sources (
+  id TEXT PRIMARY KEY,
+  org_id TEXT NOT NULL REFERENCES organizations(id),
+  agent_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  address TEXT NOT NULL,
+  config TEXT NOT NULL DEFAULT '{}',
+  enabled INTEGER NOT NULL DEFAULT 1,
+  cursor TEXT,
+  last_event_at TEXT,
+  last_error TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_external_sources_org ON external_sources(org_id);
+CREATE INDEX IF NOT EXISTS idx_external_sources_kind_enabled ON external_sources(kind, enabled);
 `;
 
 /**
@@ -6688,6 +6710,131 @@ export class SqliteAddressBindingRepo {
       kind: (r['kind'] as string | null) ?? null,
       revokedAt: (r['revoked_at'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
+    };
+  }
+}
+
+// ─── C10-B：外部信号源（webhook / RSS）持久配置 + kill switch ──────────────────
+//
+// 唯一写者。enabled = 持久 kill switch（每 tick / 每 POST 现读 DB，无内存缓存）；
+// cursor = RSS 水位。kind 闭集 {webhook, rss}；address 经唯一解析器 parseAddress
+// 校验为可认领的 markus 组织地址（格式门；绑定归属由 service/工具层裁决）。
+
+export type ExternalSourceKind = 'webhook' | 'rss';
+
+export interface ExternalSourceRecord {
+  id: string;
+  orgId: string;
+  agentId: string;
+  kind: ExternalSourceKind;
+  address: string;
+  /** JSON 字符串（feedUrl / pollIntervalMs / token 等）。 */
+  config: string;
+  enabled: boolean;
+  cursor: string | null;
+  lastEventAt: string | null;
+  lastError: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type ExternalSourceRegisterOutcome =
+  | { status: 'registered'; source: ExternalSourceRecord }
+  | { status: 'bounced'; reason: 'invalid_kind' | 'invalid_address'; address: string; hint: string };
+
+export class SqliteExternalSourceRepo {
+  constructor(private db: DatabaseSync) {}
+
+  /** 注册一个源。kind 闭集 + 地址格式门（唯一解析器）；不静默改写非法输入。 */
+  register(input: {
+    orgId: string; agentId: string; kind: string; address: string; config?: Record<string, unknown>;
+  }): ExternalSourceRegisterOutcome {
+    if (input.kind !== 'webhook' && input.kind !== 'rss') {
+      return {
+        status: 'bounced', reason: 'invalid_kind', address: input.address,
+        hint: `kind must be "webhook" or "rss" (got ${JSON.stringify(input.kind)}).`,
+      };
+    }
+    const parsed = parseAddress(input.address);
+    if (!parsed.ok || parsed.value.kind !== 'markus') {
+      return {
+        status: 'bounced', reason: 'invalid_address', address: input.address,
+        hint: `address must be a claimable <local>.<org>@${MARKUS_MAIL_DOMAIN} address (external domains / platform-reserved / malformed are rejected).`,
+      };
+    }
+    const id = generateId('src');
+    const now = new Date().toISOString();
+    const config = JSON.stringify(input.config ?? {});
+    this.db
+      .prepare(
+        `INSERT INTO external_sources (id, org_id, agent_id, kind, address, config, enabled, cursor, last_event_at, last_error, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, 1, NULL, NULL, NULL, ?, ?)`,
+      )
+      .run(id, input.orgId, input.agentId, input.kind, parsed.value.address, config, now, now);
+    return { status: 'registered', source: this.get(id)! };
+  }
+
+  get(id: string): ExternalSourceRecord | undefined {
+    const row = this.db.prepare('SELECT * FROM external_sources WHERE id = ?').get(id) as Record<string, unknown> | undefined;
+    if (!row) return undefined;
+    return this.mapRow(row);
+  }
+
+  listByOrg(orgId: string): ExternalSourceRecord[] {
+    const rows = this.db.prepare('SELECT * FROM external_sources WHERE org_id = ? ORDER BY created_at, id').all(orgId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  listByAgent(orgId: string, agentId: string): ExternalSourceRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM external_sources WHERE org_id = ? AND agent_id = ? ORDER BY created_at, id')
+      .all(orgId, agentId) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  listEnabledByKind(kind: ExternalSourceKind): ExternalSourceRecord[] {
+    const rows = this.db
+      .prepare('SELECT * FROM external_sources WHERE kind = ? AND enabled = 1 ORDER BY created_at, id')
+      .all(kind) as Record<string, unknown>[];
+    return rows.map(r => this.mapRow(r));
+  }
+
+  /** kill switch：写 enabled 列（持久）。返回是否命中行。 */
+  setEnabled(id: string, enabled: boolean): boolean {
+    const result = this.db
+      .prepare('UPDATE external_sources SET enabled = ?, updated_at = ? WHERE id = ?')
+      .run(enabled ? 1 : 0, new Date().toISOString(), id);
+    return result.changes > 0;
+  }
+
+  /** RSS 水位入库（重启不重扫全量）。lastEventAt 缺省时不动该列。 */
+  updateCursor(id: string, cursor: string | null, lastEventAt?: string): void {
+    const now = new Date().toISOString();
+    if (lastEventAt !== undefined) {
+      this.db.prepare('UPDATE external_sources SET cursor = ?, last_event_at = ?, updated_at = ? WHERE id = ?').run(cursor, lastEventAt, now, id);
+    } else {
+      this.db.prepare('UPDATE external_sources SET cursor = ?, updated_at = ? WHERE id = ?').run(cursor, now, id);
+    }
+  }
+
+  recordError(id: string, error: string | null): void {
+    this.db.prepare('UPDATE external_sources SET last_error = ?, updated_at = ? WHERE id = ?').run(error, new Date().toISOString(), id);
+  }
+
+  private mapRow(r: Record<string, unknown>): ExternalSourceRecord {
+    return {
+      id: r['id'] as string,
+      orgId: r['org_id'] as string,
+      agentId: r['agent_id'] as string,
+      kind: r['kind'] as ExternalSourceKind,
+      address: r['address'] as string,
+      config: r['config'] as string,
+      enabled: (r['enabled'] as number) !== 0,
+      cursor: (r['cursor'] as string | null) ?? null,
+      lastEventAt: (r['last_event_at'] as string | null) ?? null,
+      lastError: (r['last_error'] as string | null) ?? null,
+      createdAt: r['created_at'] as string,
+      updatedAt: r['updated_at'] as string,
     };
   }
 }

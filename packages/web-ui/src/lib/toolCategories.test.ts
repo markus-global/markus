@@ -23,6 +23,8 @@ describe('categorizeTools', () => {
       'deliverable_create', 'spawn_subagent', 'spawn_subagents', 'memory_save',
       'session', 'agent_send_message', 'llm_list_providers', 'agent_model_get',
       'list_teams', 'goal_create', 'check_mailbox', 'discover_tools',
+      // C10-B：外部信号源自助工具（注册 / 列表 / 持久 kill switch）与邮箱同组。
+      'external_source_register', 'external_source_list', 'external_source_toggle',
     ].map(tool);
 
     const groups = categorizeTools(tools, stubT);
@@ -54,6 +56,10 @@ describe('categorizeTools', () => {
     expect(catOf('list_teams')).toBe('teamManager');
     expect(catOf('goal_create')).toBe('planning');
     expect(catOf('check_mailbox')).toBe('mailbox');
+    // C10-B：新增工具必须被显式归位 —— 没有 prefix 就会落到「其他」（分组 bug）。
+    expect(catOf('external_source_register')).toBe('mailbox');
+    expect(catOf('external_source_list')).toBe('mailbox');
+    expect(catOf('external_source_toggle')).toBe('mailbox');
     expect(catOf('discover_tools')).toBe('system');
 
     // None of these known platform tools should be in 其他.

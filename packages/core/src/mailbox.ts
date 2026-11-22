@@ -573,7 +573,7 @@ export class AgentMailbox {
   /** 第六刀 C3：地址簿只读端口（`resolve(envelope)` 的唯一输入）。未接线 ⇒ 只认 `agent:` 直达。 */
   private addressLookup?: SignalAddressLookup;
 
-  setAddressLookup(lookup: SignalAddressLookup): void {
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
     this.addressLookup = lookup;
   }
 

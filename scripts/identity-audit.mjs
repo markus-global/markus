@@ -108,7 +108,12 @@ INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_uni
   -- C9-E：G12（无证据的验证）/ G13（无作者的验证）
   ('fact_g12','task','t5','task.completion_evidence','{}','task:t5:r1','a1','["d1"]','{"result":"pass","verified_by":"a2","evidence_refs":[]}','${POST_EPOCH}'),
   ('fact_g13','task','t6','task.completion_evidence','{}','task:t6:r1','a1','["d1"]','{"result":"pass","verified_by":"","evidence_refs":["c1"]}','${POST_EPOCH}');
-INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${POST_EPOCH}');`;
+INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${POST_EPOCH}');
+-- C10-B：G14（未验证外部带权威 intent）/ G15（external_signal ref 非构造器形状）各一条。
+-- mbx_g14 的 ref 合形状（G15 不咬）、envelope 违规（G14 咬）；mbx_g15 反之。
+INSERT INTO mailbox_items VALUES
+  ('mbx_g14','a','external_signal','queued','${POST_EPOCH}','external:src_x:m14','{"from":{"kind":"external","address":"x@y.z"},"fromVerified":false,"intent":"trigger_execution"}',NULL),
+  ('mbx_g15','a','external_signal','queued','${POST_EPOCH}','hand-built-ref',NULL,NULL);`;
 
 /**
  * 纪元**前**的同形违规：它们必须**不被计数**。
@@ -121,7 +126,11 @@ INSERT INTO mailbox_items VALUES
   ('mbx_hist_1','a','human_chat','completed','${PRE_EPOCH}',NULL,NULL,NULL),
   ('mbx_hist_2','a','a2a_message','completed','${PRE_EPOCH}','session:gone:r1',NULL,NULL),
   ('mbx_hist_5','a','task_status_update','completed','${PRE_EPOCH}',NULL,'{"invalidatesPremise":true}','${PRE_EPOCH}');
-INSERT INTO agent_decisions VALUES ('dec_hist_11','a1',NULL,'${PRE_EPOCH}');`;
+INSERT INTO agent_decisions VALUES ('dec_hist_11','a1',NULL,'${PRE_EPOCH}');
+-- C10-B：纪元前的同形违规（G14/G15 必须沉默）。
+INSERT INTO mailbox_items VALUES
+  ('mbx_hist_14','a','external_signal','completed','${PRE_EPOCH}','external:src_x:h14','{"from":{"kind":"external","address":"x@y.z"},"fromVerified":false,"intent":"action_required"}',NULL),
+  ('mbx_hist_15','a','external_signal','completed','${PRE_EPOCH}','hand-built-old',NULL,NULL);`;
 
 const FIX_VIOLATIONS = `
 UPDATE mailbox_items SET work_unit_ref='session:ok:r1'
@@ -137,7 +146,11 @@ UPDATE facts SET predicate='work.defect_class' WHERE id='fact_g10';
 -- C9-E：修好验证两条 —— 只改它自己违规的那个子字段。
 UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g12';
 UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g13';
-UPDATE agent_decisions SET work_unit_ref='task:audit:r1' WHERE id='dec_g11';`;
+UPDATE agent_decisions SET work_unit_ref='task:audit:r1' WHERE id='dec_g11';
+-- C10-B：修好 G14/G15 —— 每条只改它自己违规的那个字段；并补 external ref 的实体（G2 悬空）。
+UPDATE mailbox_items SET envelope='{"from":{"kind":"external","address":"x@y.z"},"fromVerified":false,"intent":"deliver"}' WHERE id='mbx_g14';
+UPDATE mailbox_items SET work_unit_ref='external:src_x:m15' WHERE id='mbx_g15';
+INSERT INTO work_units VALUES ('wu_g14','external:src_x:m14','idle',NULL),('wu_g15','external:src_x:m15','idle',NULL);`;
 
 function runGates(db) {
   return GATES.map(g => ({ ...g, count: db.prepare(g.sql).get().c }));

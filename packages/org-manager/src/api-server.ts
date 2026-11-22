@@ -48,6 +48,7 @@ import {
 } from '@markus/core';
 import type { ChannelMsg } from '@markus/storage';
 import type { OrganizationService } from './org-service.js';
+import type { ExternalSourceService } from './external-source-service.js';
 import { persistChatImages } from './chat-attachments.js';
 import { getManifest } from '@markus/comms';
 import {
@@ -142,6 +143,7 @@ const PUBLIC_API_PREFIXES = [
   '/api/auth', // login / init / status / logout — must work before a session exists
   '/api/health', // liveness probe used by the desktop shell and CLI
   '/api/gateway', // external gateway — every branch verifies its own bearer token
+  '/api/webhooks', // C10-B external webhook entry — each source verifies its own config.token
   '/api/license', // desktop license refresh before a session exists
 ];
 
@@ -212,6 +214,9 @@ const ROLE_RULES: RoleRule[] = [
   { path: underPrefix('/api/system/maintenance'), minRole: 'admin' },
   // Per-user Hub tokens: every member manages their own.
   { path: underPrefix('/api/settings/hub-token'), minRole: 'member' },
+  // C10-B：外部信号源的自助面（GET/POST /api/external-sources、POST /api/external-sources/:id/toggle）
+  // —— 每个成员管**自己的**源；归属裁决在 ExternalSourceService（唯一写者），这里只声明门槛。
+  { path: underPrefix('/api/external-sources'), minRole: 'member' },
   { path: underPrefix('/api/settings'), methods: ['POST', 'PUT', 'PATCH', 'DELETE'], minRole: 'admin' },
   { path: underPrefix('/api/oauth'), minRole: 'admin' },
 ];
@@ -4385,6 +4390,78 @@ export class APIServer {
           internal: /^(requirement_|channel_|session:)/.test(u.ref),
         })),
       });
+      return;
+    }
+
+    // ── C10-B：外部信号源（webhook 入口 + 自助面）────────────────────────────
+    //
+    // webhook 入口是**公开**路径（PUBLIC_API_PREFIXES）：外部系统没有本地会话，每个源用
+    // 自己 config.token 验身（同 /api/gateway 的口径）。判决全在服务层
+    // （ExternalSourceService.receiveWebhook：源存在 / kind / token / 翻译 / ingest），
+    // 这里只搬运 sourceId/body/token —— 路由不做第二个决策点。
+    // 未接线 ⇒ 503（fail-closed：不假装收下了，也不回一个会让人以为「已投递」的 200）。
+    if (path.match(/^\/api\/webhooks\/[^/]+$/) && req.method === 'POST') {
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const sourceId = path.split('/')[3]!;
+      const body = await this.readBody(req);
+      // token：显式头优先，其次 Bearer（外部系统习惯把共享密钥放 Authorization）。
+      const hdr = req.headers['x-webhook-token'];
+      const authz = req.headers['authorization'];
+      const token = (typeof hdr === 'string' && hdr.length > 0 ? hdr : null)
+        ?? (typeof authz === 'string' && authz.startsWith('Bearer ') ? authz.slice(7).trim() : null);
+      const out = svc.receiveWebhook(sourceId, body, token);
+      this.json(res, out.http, out.body);
+      return;
+    }
+    // 自助面（member 门槛见 ROLE_GATES）：orgId 取会话身份（成员不能跨 org 看别人的源），
+    // agentId 是被查询/操作的主体；归属裁决仍只在 service（唯一写者）。
+    if (path === '/api/external-sources') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      if (req.method === 'GET') {
+        const agentId = url.searchParams.get('agentId') ?? url.searchParams.get('agent_id') ?? '';
+        if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+        this.json(res, 200, { sources: svc.listSources(authUser.orgId, agentId) });
+        return;
+      }
+      if (req.method === 'POST') {
+        const body = await this.readBody(req);
+        const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+        if (!agentId) { this.json(res, 400, { error: 'agentId is required' }); return; }
+        const rawConfig = body['config'];
+        const config = rawConfig && typeof rawConfig === 'object' && !Array.isArray(rawConfig)
+          ? (rawConfig as Record<string, unknown>)
+          : undefined;
+        const out = svc.registerSource({
+          orgId: authUser.orgId,
+          agentId,
+          kind: typeof body['kind'] === 'string' ? body['kind'] : '',
+          address: typeof body['address'] === 'string' ? body['address'] : '',
+          config,
+        });
+        // 结果形状与工具面同一份（status 字段是唯一判决）；HTTP 码只做粗粒度映射。
+        this.json(res, out.status === 'forbidden' ? 403 : out.status === 'registered' ? 201 : 400, out);
+        return;
+      }
+    }
+    if (path.match(/^\/api\/external-sources\/[^/]+\/toggle$/) && req.method === 'POST') {
+      const authUser = await this.getAuthUser(req, res);
+      if (!authUser) return;
+      const svc = this.externalSourceService;
+      if (!svc) { this.json(res, 503, { status: 'unavailable' }); return; }
+      const body = await this.readBody(req);
+      const agentId = typeof body['agentId'] === 'string' ? body['agentId'] : '';
+      const enabled = body['enabled'];
+      // 非布尔一律拒绝：把 "false" 静默强转成 true 等于「以为关掉了其实没关」。
+      if (!agentId || typeof enabled !== 'boolean') {
+        this.json(res, 400, { error: 'agentId (string) and enabled (boolean) are required' });
+        return;
+      }
+      const out = svc.setSourceEnabled({ orgId: authUser.orgId, agentId, sourceId: path.split('/')[3]!, enabled });
+      this.json(res, out.status === 'forbidden' ? 403 : 200, out);
       return;
     }
 
@@ -15657,6 +15734,12 @@ EXPLANATION_END`;
   setDeliverableService(svc: DeliverableService): void {
     this.deliverableService = svc;
   }
+  /** C10-B：外部信号源服务（webhook 入口 + RSS 轮询 + 源 CRUD 唯一裁决）。惰性接线（cli 注入）。 */
+  private externalSourceService?: ExternalSourceService;
+  setExternalSourceService(svc: ExternalSourceService): void {
+    this.externalSourceService = svc;
+  }
+
   setRequirementService(svc: RequirementService): void {
     this.requirementService = svc;
   }

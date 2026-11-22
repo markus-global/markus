@@ -51,6 +51,7 @@ import {
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
   WORK_UNIT_REF,
+  type SignalAddressLookup,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -774,6 +775,11 @@ export class Agent {
   /** C10-0A：身份 ensure 端口转发给 mailbox（装配唯一入口 wireWorkUnits）。 */
   setMailboxIdentityPort(port: MailboxIdentityPort | undefined): void {
     this.mailbox.setIdentityPort(port);
+  }
+
+  /** C10-B：地址簿只读端口转发给 mailbox（外部信号路由跟绑定走，D8；装配唯一入口）。 */
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.mailbox.setAddressLookup(lookup);
   }
 
   /**

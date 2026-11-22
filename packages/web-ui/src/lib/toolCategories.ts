@@ -31,6 +31,9 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   // 第六刀新增的邮箱工具（地址绑定 C1 / 路由与 catch-all 概览 C3）与投递域同一处分组：
   // 它们的读面都是 mailbox，放在这里才不会被归到「其他」。
   { id: 'mailbox', prefixes: ['check_mailbox', 'defer_mailbox_item', 'drop_mailbox_item', 'prioritize_mailbox_item', 'delegate_message', 'bind_address', 'address_revoke', 'address_list', 'message_route', 'catch_all',
+    // C10-B：外部信号源工具（注册 / 列表 / 持久 kill switch）—— 读面同样是 mailbox
+    // （信号进来的地方），与地址绑定同组；web-ui 不能 import @markus/shared，只镜像字串。
+    'external_source_register', 'external_source_list', 'external_source_toggle',
     // C8-C: `rest(wakeOn)` 是「声明我在等哪条邮箱事件」，与邮箱同组；`list_waits` / `cancel_wait` 是同一关系的读/取消面。
     'rest', 'list_waits', 'cancel_wait'] },
   { id: 'planning', prefixes: ['goal_create', 'goal_update', 'goal_status', 'workflow_'] },
