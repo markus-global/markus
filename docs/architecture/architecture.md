@@ -211,7 +211,7 @@ Agents now have tools to actively manage their mailbox queue and cognitive works
 
 This shifts from system-driven to agent-driven cognition. The deliberation threshold is lowered to 2 items, making agent-driven triage the norm.
 
-**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions.
+**PendingCallbackRegistry** tracks async operations (A2A messages, `background_exec`, etc.). Completions route back through the mailbox as `callback_result` items rather than being injected directly into active sessions — unless the launching turn already consumed the result in-band (`background_wait` / `process poll/log`), which suppresses the redundant completion turn. Lineage (origin session + scenario + work-unit) is persisted in the registry row itself.
 
 External callers use the mailbox API exclusively:
 - `agent.sendMessage()` — Awaitable chat/notification
@@ -835,7 +835,7 @@ patrol does run:
 - **Lightweight actions allowed**: check status, send messages, create tasks, retry failed tasks, quick reviews, save insights
 - **Complex work goes into tasks**: if something needs heavy implementation, heartbeat creates a task and notifies the user
 - Infinite loop protection via a configurable tool-iteration safety cap (default 200, `maxToolIterations`), not artificial per-heartbeat limits
-- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks)
+- **Background process completions**: `background_exec` results route through `PendingCallbackRegistry` → mailbox `callback_result` items (heartbeat also surfaces timed-out callbacks). `background_wait` returns the result in the launching turn instead; in-turn consumption suppresses the separate completion turn, and same-origin queued completions coalesce into one turn
 - **Governance mode**: in_progress tasks are not auto-resumed on service start; requires manual trigger
 
 ---

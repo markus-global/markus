@@ -466,6 +466,7 @@ export function getDistillationAllowlist(isManager: boolean): Set<string> {
  */
 export const TASK_EXECUTION_EXTRA_TOOLS = [
   'background_exec',
+  'background_wait',
   'process',
   'deliverable_create',
   'goal_create',

@@ -28,6 +28,7 @@ vi.mock('../src/tools/web-extract.js', () => ({
 }));
 vi.mock('../src/tools/process-manager.js', () => ({
   createBackgroundExecTool: vi.fn(() => ({ name: 'background_exec', execute: vi.fn() })),
+  createBackgroundWaitTool: vi.fn(() => ({ name: 'background_wait', execute: vi.fn() })),
   createProcessTool: vi.fn(() => ({ name: 'process_manage', execute: vi.fn() })),
 }));
 
@@ -48,15 +49,17 @@ describe('createBuiltinTools', () => {
       'web_search',
       'web_extract',
       'background_exec',
+      'background_wait',
       'process_manage',
     ]);
-    expect(tools).toHaveLength(13);
+    expect(tools).toHaveLength(14);
   });
 
   it('excludes background exec tools when disabled', () => {
     const tools = createBuiltinTools({ enableBackgroundExec: false });
     const names = tools.map(t => t.name);
     expect(names).not.toContain('background_exec');
+    expect(names).not.toContain('background_wait');
     expect(names).not.toContain('process_manage');
     expect(tools).toHaveLength(11);
   });

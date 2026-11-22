@@ -107,7 +107,7 @@ import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { resolveOutputReserve } from './context-budgets.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback, type DelegationWorkUnitPort } from './tools/subagent.js';
-import { onBackgroundCompletion, drainCompletedNotifications } from './tools/process-manager.js';
+import { onBackgroundCompletion, drainCompletedNotifications, wasBackgroundResultConsumed, hasActiveBackgroundWaiter } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin, type MailboxIdentityPort } from './mailbox.js';
@@ -1135,24 +1135,10 @@ export class Agent {
   private static dreamQueue: Array<() => void> = [];
   private static readonly DEFAULT_MAX_TOOL_ITERATIONS = 200;
   private static readonly HEARTBEAT_MAX_TOOL_ITERATIONS = 30;
-  /** Maps background_exec session IDs to the originating session that spawned them */
-  private bgSessionOrigin = new Map<string, string>();
-  /** Scenario each background session was launched from (replayed on completion).
-   *  The completion fires *later*, outside any turn, so `activeScenario` is no
-   *  longer the launching scenario by then — it must be captured at registration. */
-  private bgSessionScenario = new Map<string, AgentScenario>();
-  /**
-   * 后台会话 → **发起它的那个回合的工作单元身份**（`workUnitRef`）。
-   *
-   * 【为什么必须有】回调行的归属只能靠结构字段。之前只带 `originSessionId`，
-   * 而它在心跳/思考回合里长得像 `hb_agt_x_173…`、`deliberation_agt_x_…` ——
-   * 都不是 `chat_sessions` 的行，路由器就无从归属，于是 203 条
-   * `[BACKGROUND PROCESS COMPLETED] … tail -c 200 …` 回执沉到无主桶，
-   * 又被「系统类」判据一把推进了决策循环（Owner 2026-11-18 实测质问）。
-   * 工作单元 identity 是**唯一带解析器**的实体键（`taskIdOfWorkUnitRef`），
-   * 所以由生产者在启动时记下、完成时交回去 —— 不在读路径另写一份语法。
-   */
-  private bgSessionWorkUnit = new Map<string, string>();
+  // Background-session lineage (origin session / scenario / work-unit identity)
+  // lives in ONE durable store: `pendingCallbackRegistry` (persisted rows).
+  // The old parallel in-memory maps lost every lineage on restart and drifted
+  // from the persisted row — deleted, not guarded.
   private _maxToolIterations: number;
   /** C8-B：轮内 delta 注入开关（关掉 = C8-A 排队语义，见 `AgentOptions.turnDeltaInjection`）。 */
   private turnDeltaInjectionEnabled: boolean;
@@ -1424,13 +1410,29 @@ export class Agent {
     // registered the bg session may deliver a callback. Falling back to
     // `currentSessionId` used to fan out one completion into N ghost mailbox items.
     this._bgCompletionUnsub = onBackgroundCompletion((notification) => {
-      const originSession = this.bgSessionOrigin.get(notification.sessionId);
-      if (!originSession) return;
-      this.bgSessionOrigin.delete(notification.sessionId);
-      const originScenario = this.bgSessionScenario.get(notification.sessionId);
-      this.bgSessionScenario.delete(notification.sessionId);
-      const originWorkUnitRef = this.bgSessionWorkUnit.get(notification.sessionId);
-      this.bgSessionWorkUnit.delete(notification.sessionId);
+      // Lineage comes from the durable registry (single store): peek → verify
+      // this agent owns the entry → claim. Only the registering agent delivers.
+      const reg = pendingCallbackRegistry.get(notification.sessionId);
+      if (!reg || reg.agentId !== this.id || reg.type !== 'background_exec') return;
+      // A turn is awaiting this result in-band RIGHT NOW (background_wait in
+      // flight). The bus fires synchronously on exit — before that turn's
+      // continuation resumes — so the result belongs to the waiting turn.
+      // Leave the entry: background_wait consumes + resolves it itself.
+      if (hasActiveBackgroundWaiter(notification.sessionId)) return;
+      pendingCallbackRegistry.resolve(notification.sessionId);
+      // Result already returned in-turn (background_wait / process poll/log):
+      // a continuation turn would re-derive what the agent already knows.
+      if (wasBackgroundResultConsumed(notification.sessionId)) return;
+      const originSession = reg.originSessionId;
+      const originScenario = asAgentScenario(reg.originScenario);
+      const originWorkUnitRef = reg.workUnitRef;
+      if (!originScenario) {
+        log.error('Background completion has no origin scenario — the launching turn entry did not record activeScenario; the continuation falls back to the heartbeat reflex pack and cannot continue task work', {
+          agentId: this.id,
+          bgSessionId: notification.sessionId,
+          originSession,
+        });
+      }
 
       const status = notification.exitCode === 0 ? 'succeeded' : `failed (exit ${notification.exitCode})`;
       const parts = [
@@ -1444,9 +1446,6 @@ export class Agent {
       if (notification.exitCode === 0 && notification.stdoutTail) {
         parts.push(`Output (last lines):\n${notification.stdoutTail}`);
       }
-
-      // Resolve from PendingCallbackRegistry if registered
-      pendingCallbackRegistry.resolve(notification.sessionId);
 
       this.deliverCallback({
         callbackId: notification.sessionId,
@@ -3493,6 +3492,36 @@ export class Agent {
           // 实测累计 200+ 个 `sys_*` 空壳会话）。契约规定「推不出来就保持当前会话，
           // 绝不静默新建」，所以这里不再兜底造 id。
           const originSessionId = extra.originSessionId as string | undefined;
+          // In-turn consumption dedupe: `background_wait` / `process poll` already
+          // returned this result to the launching turn. Another full attention
+          // cycle would burn a context re-injection re-deriving known facts.
+          const cbId = extra.callbackId as string | undefined;
+          if (extra.callbackType === 'background_exec' && cbId && wasBackgroundResultConsumed(cbId)) {
+            const consumedReply = '[Background result already consumed in-turn — no continuation needed]';
+            resolveResponse(consumedReply);
+            return consumedReply;
+          }
+          // Coalesce: queued background completions for the SAME origin session
+          // are answers to one waiting context — deliver them in ONE turn, not N
+          // sequential full-context turns. Siblings terminate as `merged` (the
+          // transition matrix's own terminal for "absorbed into another item").
+          let cbContent = item.payload.content;
+          if (originSessionId && extra.callbackType === 'background_exec') {
+            const siblings = this.mailbox.getQueuedItems().filter(s =>
+              s.id !== item.id
+              && s.sourceType === 'callback_result'
+              && s.payload.extra?.callbackType === 'background_exec'
+              && s.payload.extra?.originSessionId === originSessionId);
+            for (const sib of siblings) {
+              const sibCbId = sib.payload.extra?.callbackId as string | undefined;
+              if (sibCbId && wasBackgroundResultConsumed(sibCbId)) {
+                this.mailbox.complete(sib.id);
+                continue;
+              }
+              cbContent += `\n\n---\n\n${sib.payload.content}`;
+              this.mailbox.merge(sib.id, item.id);
+            }
+          }
           // Replay the scenario the callback was registered from (`deliverCallback`).
           //
           // 注意这个 `?? 'heartbeat'` 是**合法的边界防御**，不是兜底：回调可能是
@@ -3514,7 +3543,7 @@ export class Agent {
           // 的「保持当前会话」纪律处理。
           if (originSessionId) cbOpts.sessionId = originSessionId;
           let reply = await this.handleMessage(
-            item.payload.content,
+            cbContent,
             undefined,
             undefined,
             cbOpts,
@@ -7360,6 +7389,13 @@ export class Agent {
     resumeNotice?: string,
   ): Promise<void> {
     this.currentTaskId = taskId;
+    // The launching turn's scenario is a per-workspace fact that async-callback
+    // registration reads (registerBackgroundSession). The task path builds its
+    // own tool face and never passes through handleMessage, so it must record
+    // the scenario itself — otherwise every background_exec launched from a
+    // task registers with NO scenario and its completion falls back to the
+    // heartbeat reflex pack (measured: ~53k tokens, 0 tools, HEARTBEAT_OK).
+    this.activeScenario = 'task_execution';
     // 防御性闸（统一闸之后仍保留）：拿**实际生效**的任务并发上限对账，而不是原始
     // profile 值。旧实现用 `!== undefined && activeTasks.size >= profile`，
     // profile=0 / 负数这类脏配置会让它变成「恒真」的假闸。
@@ -8020,6 +8056,7 @@ export class Agent {
       taskFailed = String(error);
       throw error;
     } finally {
+      this.activeScenario = undefined;
       if (cancelPollTimer) clearInterval(cancelPollTimer);
 
       // Task workspace tools are now task-local (stored in AsyncLocalStorage) and
@@ -8133,6 +8170,9 @@ export class Agent {
     }) => void,
   ): Promise<string> {
     this.transitionStatus({ to: 'working' });
+    // Same contract as handleMessage / task execution: record the launching
+    // scenario so async callbacks registered from this turn replay it.
+    this.activeScenario = 'chat';
     const risLabel = userMessage.replace(/^[\s#*[\]]+/g, '').slice(0, 80) || 'Session response';
     const actId = this.startActivity('respond_in_session', risLabel);
 
@@ -8391,6 +8431,7 @@ export class Agent {
       emit('error', String(error));
       throw error;
     } finally {
+      this.activeScenario = undefined;
       this.endActivity(actId);
       this.transitionStatus({ to: 'idle' });
       await this.finalizeBrowserSession(sessionId);
@@ -8742,11 +8783,18 @@ export class Agent {
     timeoutMs = 10 * 60 * 1000,
     originScenario?: AgentScenario,
   ): void {
-    this.bgSessionOrigin.set(bgSessionId, originSessionId);
-    if (originScenario) this.bgSessionScenario.set(bgSessionId, originScenario);
-    // 记下发起回合的工作单元身份：回调回来时才能落到「哪件事」上。
-    const wu = this.turnWorkUnitRef();
-    if (wu) this.bgSessionWorkUnit.set(bgSessionId, wu);
+    if (!originScenario) {
+      // Every turn entry sets workspace().activeScenario (handleMessage, task
+      // execution, respondInSession). A registration without one means a
+      // producer path forgot — loud, because the completion would otherwise
+      // silently fall back to the heartbeat reflex pack (no task tools).
+      log.error('background_exec registered without an origin scenario — turn entry did not set activeScenario', {
+        agentId: this.id, bgSessionId, originSessionId,
+      });
+    }
+    // Lineage (origin session + scenario + work-unit identity) is written to
+    // the ONE durable store. The completion bus reads it back from here, so a
+    // restart cannot orphan the lineage from the persisted row.
     pendingCallbackRegistry.register({
       id: bgSessionId,
       agentId: this.id,
@@ -8754,6 +8802,7 @@ export class Agent {
       type: 'background_exec',
       command,
       originScenario,
+      workUnitRef: this.turnWorkUnitRef() ?? undefined,
       registeredAt: Date.now(),
       timeoutMs,
     });
@@ -9592,6 +9641,9 @@ export class Agent {
     // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/architecture/concurrent-processing.md §3.3）。
     background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
     process:          { domain: GLOBAL_LOCK_DOMAIN },
+    // 与 process 同域：wait 会消费结果（写 consumed 表 + resolve 回调登记），
+    // 不是纯读；锁只覆盖消费动作，等待期在锁外。
+    background_wait:  { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
     // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
     // 锁键。曾经 notebook 工具有「正式名 + 兼容别名」两套登记；别名现已删除，

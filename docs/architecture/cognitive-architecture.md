@@ -422,6 +422,8 @@ This leverages existing group-chat infrastructure:
 
 Async operations (e.g., `background_exec`) register callbacks tracked by `PendingCallbackRegistry`. When complete, results enter the originating agent's mailbox as `callback_result` items — ensuring they flow through the attention loop rather than being injected directly into sessions. Timed-out callbacks surface in heartbeat for investigation.
 
+The result **belongs to the turn that launched it**: `background_wait` lets that turn await the outcome in-band (same scenario, same tool pack, cheap append) instead of paying a fresh attention cycle. Consuming a result in-turn (`background_wait`, or `process poll/log` on a finished session) suppresses the separate completion turn in both orderings; a wait timeout keeps the notification alive. Lineage (`originSessionId` + `originScenario` + `workUnitRef`) is persisted in the registry row — the ONE durable store — so a restart cannot orphan a completion from its launching scenario/entity, and same-origin queued completions coalesce into a single turn.
+
 Implementation: `packages/core/src/pending-callback.ts`, persisted via `SqlitePendingCallbackRepo`.
 
 ---

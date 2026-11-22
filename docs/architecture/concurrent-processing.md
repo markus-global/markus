@@ -395,7 +395,7 @@ argument so that *different* resources run in parallel:
 
 | Domain | Keyed by | Examples |
 |---|---|---|
-| `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `process` |
+| `'*'` | — (global exclusive) | `shell_execute`, `apply_patch`, `package_install`, `hub_install`, `background_exec`, `background_wait`, `process` |
 | `fs` | normalized path | `file_write`, `file_edit`, `generate_image`, `office_generate` |
 | `task` / `requirement` / `workflow` / `project` / `deliverable` | entity id | `task_update`, `requirement_update_status`, `workflow_run`, `deliverable_update` |
 | `terminal` / `browser` | terminal id / page id | `exec_terminal`, `click`, `navigate_page` |
@@ -562,6 +562,9 @@ These are deliberate trade-offs, documented rather than hidden:
      lifetime.** The lock covers registering the job in the process table; the spawned
      process then runs outside the lock and may write files concurrently with other
      workers. Treat long background jobs as a handoff-log *fact*, not as lock-covered.
+     `background_wait` shares the domain: the lock covers the *consumption* action
+     (marking the result consumed + resolving the callback entry); the await itself
+     runs outside the lock.
 
 3. **Write-lock nesting is fail-fast.** A call chain that requests a lock conflicting
    with one it already holds raises `LockNestingConflictError` (§4.3) instead of

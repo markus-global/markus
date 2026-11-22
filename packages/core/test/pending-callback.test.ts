@@ -67,6 +67,39 @@ describe('PendingCallbackRegistry (generalized)', () => {
     expect(store.has('wk1')).toBe(false);
   });
 
+  it('get() peeks without removing; resolve() is the only consumer', () => {
+    registry.register({ id: 'bg1', agentId: 'a1', originSessionId: 's1', type: 'background_exec', registeredAt: Date.now(), timeoutMs: 1000 });
+    // The completion bus must be able to read lineage BEFORE claiming ownership.
+    expect(registry.get('bg1')?.originSessionId).toBe('s1');
+    expect(registry.get('bg1')).toBeDefined(); // peek did not consume
+    expect(registry.get('missing')).toBeUndefined();
+    registry.resolve('bg1');
+    expect(registry.get('bg1')).toBeUndefined();
+  });
+
+  it('lineage (originScenario + workUnitRef) survives a persistence roundtrip', () => {
+    const store = new Map<string, PersistedCallback>();
+    const persistence = {
+      save: (cb: PersistedCallback) => { store.set(cb.id, cb); },
+      remove: (id: string) => { store.delete(id); },
+      loadAll: () => [...store.values()],
+    };
+    registry.setPersistence(persistence);
+    registry.register({
+      id: 'bg_lineage', agentId: 'a1', originSessionId: 'task_t1_r1', type: 'background_exec',
+      originScenario: 'task_execution', workUnitRef: 'task:tsk_1#round=2',
+      registeredAt: 1, timeoutMs: 2,
+    });
+    // A restart loads from the SAME durable store — lineage must not live only
+    // in a parallel in-memory map that dies with the process.
+    const registry2 = new PendingCallbackRegistry();
+    registry2.setPersistence(persistence);
+    const restored = registry2.get('bg_lineage');
+    expect(restored?.originScenario).toBe('task_execution');
+    expect(restored?.workUnitRef).toBe('task:tsk_1#round=2');
+    expect(restored?.originSessionId).toBe('task_t1_r1');
+  });
+
   it('defaults deliveryMode to in_session on restore when missing', () => {
     const persistence = {
       save: () => {},
