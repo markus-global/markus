@@ -760,7 +760,7 @@ describe('SqliteDeliverableRepo', () => {
 });
 
 describe('SqliteActivityRepo', () => {
-  it('insert, update, query, search, and batch lookup', () => {
+  it('insert, append end event, query, search, and batch lookup', () => {
     const db = openSqlite(dbPath);
     seedBase(db);
     const repo = new SqliteActivityRepo(db);
@@ -774,7 +774,9 @@ describe('SqliteActivityRepo', () => {
       mailboxItemId: 'mb-1',
       startedAt: '2026-06-01T10:00:00Z',
     });
-    repo.updateActivity('act-1', {
+    // C10-0E：结束 = 追加 activity_end 事件；当前态由读侧派生（行为细节见
+    // c10-0e-activities-append-only.test.ts）。
+    repo.appendActivityEnd('act-1', {
       endedAt: '2026-06-01T11:00:00Z',
       totalTokens: 1000,
       totalTools: 5,
@@ -785,7 +787,7 @@ describe('SqliteActivityRepo', () => {
     repo.insertActivityLog({ activityId: 'act-1', seq: 0, type: 'log', content: 'Started', metadata: { step: 1 } });
 
     expect(repo.getActivity('act-1')?.summary).toBe('Completed build successfully');
-    expect(repo.getActivityLogs('act-1')).toHaveLength(1);
+    expect(repo.getActivityLogs('act-1')).toHaveLength(2);
     expect(repo.getByMailboxItemId('mb-1')?.id).toBe('act-1');
 
     const batch = repo.getByMailboxItemIds(['mb-1', 'mb-missing']);
@@ -796,8 +798,6 @@ describe('SqliteActivityRepo', () => {
     expect(repo.queryActivities('agent-1', { before: '2026-06-02T00:00:00Z', limit: 5 })).toHaveLength(1);
     expect(repo.searchActivities('agent-1', 'build feature')).toHaveLength(1);
     expect(repo.searchActivities('agent-1', 'a')).toEqual([]);
-
-    repo.updateActivity('missing', { summary: 'noop' });
   });
 });
 
