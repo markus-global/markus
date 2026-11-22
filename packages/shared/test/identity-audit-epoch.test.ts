@@ -1,70 +1,55 @@
 /**
- * C10-0B §3.4 —— 产品纪元的**哨兵协议守卫**（CTO 裁决 A + 补口①②③④）。
+ * C10-0G —— 纪元本地化契约守卫（取代 C10-0B 哨兵协议测试，哨兵测试随哨兵机制死）。
  *
- * 咬住的约束：
- *   ① 纪元常量与处置决议记录**同源**：常量里的值必须就是记录里定值的那个。
- *      变异「有人预置计划时刻」（往常量塞一个不在记录里的时间）→ 本测试红。
- *      定值 commit 必须同时改常量 + 记录（补口②），否则红。
- *   ② 哨兵期（null）不得静默绿：makeIdentityGates 对 null 抛错（fail closed），
- *      resolveIdentityFixEpoch 绝不用 Date.now() 兜底。
- *      变异「把哨兵改成静默通过 / now() 兜底」→ 本测试红。
- *   ③ 三态可区分：null 是独立状态，不是某个时间字符串。
+ * Owner 裁决（2026-11-22）：每日审计机制不进产品；真库审计只以 Owner 本地实例的
+ * 定时任务存在。纪元因此不再是产品常量（产品纪元常量与缺省解析器已删除，
+ * 名字在下方断言里运行时拼接，保全文 grep 干净），而是**部署参数**：
+ *   ① 模块不得再导出纪元常量 / 缺省解析器（复活 → 本测试红）；
+ *   ② makeIdentityGates 必须显式传纪元 —— 缺省 / null / undefined / 空串一律拒
+ *      （fail closed，绝不静默绿，绝不 now() 兜底）；
+ *   ③ 显式纪元是唯一 lower bound：调用方传什么就是什么（本地化语义，无第二来源）；
+ *   ④ 不可解析的纪元必须拒。
+ * 处置决议记录现在是历史档案 + dated 更正注，产品代码不再读它 ——
+ * 「常量与记录同源」的旧断言随产品常量一起死。
  */
 import { describe, it, expect } from 'vitest';
-import { readFileSync } from 'node:fs';
-import { fileURLToPath } from 'node:url';
-import {
-  IDENTITY_FIX_EPOCH,
-  resolveIdentityFixEpoch,
-  makeIdentityGates,
-} from '../src/identity-audit.js';
+import * as identityAudit from '../src/identity-audit.js';
+import { makeIdentityGates, type IdentityGateOptions } from '../src/identity-audit.js';
 
-const RECORD_PATH = fileURLToPath(
-  new URL('../../../docs/records/identity-backlog-disposition-2026-11-22.md', import.meta.url),
-);
+const EPOCH_A = '2026-11-22T12:18:34.000Z';
+const EPOCH_B = '2026-11-15T00:00:00.000Z';
+// 已删符号的名字运行时拼接：本文件是「缺席断言」，不是残留。
+const DEAD_CONSTANT = 'IDENTITY_FIX_' + 'EPOCH';
+const DEAD_RESOLVER = 'resolveIdentityFix' + 'Epoch';
 
-/** 处置决议记录里的定值标记（唯一权威出处）。`unset` = 哨兵期。 */
-function recordedFinalEpoch(): string | null {
-  const text = readFileSync(RECORD_PATH, 'utf-8');
-  const m = text.match(/^FINAL_EPOCH:\s*(\S+)\s*$/m);
-  if (!m) {
-    throw new Error(`处置决议记录缺少 FINAL_EPOCH 标记：${RECORD_PATH}`);
-  }
-  return m[1] === 'unset' ? null : m[1]!;
-}
+describe('C10-0G：纪元本地化契约', () => {
+  it('模块不得导出产品纪元常量或缺省解析器（复活必须红）', () => {
+    expect(Object.keys(identityAudit)).not.toContain(DEAD_CONSTANT);
+    expect(Object.keys(identityAudit)).not.toContain(DEAD_RESOLVER);
+  });
 
-describe('C10-0B：产品纪元哨兵协议', () => {
-  it('纪元常量与处置决议记录同源（预置计划时刻变异必须红）', () => {
-    const recorded = recordedFinalEpoch();
-    expect(
-      IDENTITY_FIX_EPOCH,
-      '常量必须就是处置决议记录里定值的那个时刻；哨兵期两边都是 null/unset。' +
-      '往常量里塞一个记录里没有的时刻 = 预置计划时刻（赌重启准时），必须红。',
-    ).toBe(recorded);
-    if (IDENTITY_FIX_EPOCH !== null) {
-      expect(Number.isNaN(Date.parse(IDENTITY_FIX_EPOCH)), '定值必须是可解析的时间').toBe(false);
+  it('缺纪元必拒：无参 / null / undefined / 空串都抛（绝不静默绿，绝不 now() 兜底）', () => {
+    // 无参调用：epoch 是必填参数，类型上就不该允许；这里同时咬运行时行为。
+    expect(() => (makeIdentityGates as unknown as () => unknown)()).toThrow(/epoch-unset|显式/);
+    expect(() => makeIdentityGates({ epoch: null } as unknown as IdentityGateOptions)).toThrow(/epoch-unset|显式/);
+    expect(() => makeIdentityGates({ epoch: undefined } as unknown as IdentityGateOptions)).toThrow(/epoch-unset|显式/);
+    expect(() => makeIdentityGates({ epoch: '' })).toThrow(/epoch-unset|显式/);
+  });
+
+  it('不可解析的纪元必须拒', () => {
+    expect(() => makeIdentityGates({ epoch: 'not-a-timestamp' })).toThrow(/可解析/);
+  });
+
+  it('显式纪元是唯一 lower bound（本地化：调用方的纪元被尊重，无第二来源）', () => {
+    const gatesA = makeIdentityGates({ epoch: EPOCH_A });
+    const gatesB = makeIdentityGates({ epoch: EPOCH_B });
+    expect(gatesA.length).toBeGreaterThanOrEqual(12);
+    for (const id of [1, 2, 5, 11]) {
+      const a = gatesA.find(g => g.id === id)!;
+      const b = gatesB.find(g => g.id === id)!;
+      expect(a.sql, `判据 ${id} 必须用调用方传入的纪元`).toContain(EPOCH_A);
+      expect(a.sql, `判据 ${id} 不得混入另一个纪元（第二来源）`).not.toContain(EPOCH_B);
+      expect(b.sql).toContain(EPOCH_B);
     }
-  });
-
-  it('哨兵期 fail closed：null 纪元不得建门禁（绝不静默绿）', () => {
-    expect(() => makeIdentityGates({ epoch: null })).toThrow(/epoch-unset|未定值/);
-  });
-
-  it('resolveIdentityFixEpoch 绝不用 now() 兜底', () => {
-    expect(resolveIdentityFixEpoch(null), '显式 null 保持 null（哨兵语义）').toBeNull();
-    expect(resolveIdentityFixEpoch('2026-11-15T00:00:00.000Z'), '显式注入优先').toBe('2026-11-15T00:00:00.000Z');
-    // 缺省读产品常量：哨兵期必须得到 null，而不是一个「现在」的时间戳。
-    expect(resolveIdentityFixEpoch()).toBe(IDENTITY_FIX_EPOCH);
-    if (IDENTITY_FIX_EPOCH === null) {
-      expect(resolveIdentityFixEpoch(), '哨兵期缺省解析必须是 null，不得兜底成 now()').toBeNull();
-    }
-  });
-
-  it('已定值时门禁可建且带纪元下界（定值后哨兵测试仍绿）', () => {
-    const epoch = IDENTITY_FIX_EPOCH ?? '2026-11-15T00:00:00.000Z';
-    const gates = makeIdentityGates({ epoch });
-    const g11 = gates.find(g => g.id === 11)!;
-    expect(g11.sql).toContain(epoch);
-    expect(gates.length).toBeGreaterThanOrEqual(12);
   });
 });

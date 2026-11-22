@@ -545,6 +545,8 @@ const RULE_SCOPE = {
   'activities-append-only': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
   // C10-0C：复活守卫 —— 任何包的 src 都不得长出孤儿表读写路径。
   'no-orphan-marketplace': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0G：复活守卫 —— 产品级每日身份审计机制已删，src 不得长回自动运行路径。
+  'no-auto-identity-audit': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -983,6 +985,53 @@ function selfTestOrphanMarketplace() {
   return failures;
 }
 
+/**
+ * 规则 10（C10-0G）：产品级每日身份审计机制已删除，不得复活。
+ *
+ * Owner 裁决（2026-11-22）：永久防线 = 结构（单一构造器 + fail-closed 装配）+ CI
+ * 守卫/行为测试；真库审计是验证仪器，只以 Owner 本地实例的定时任务存在
+ * （scripts/identity-audit.mjs --epoch …），绝不随产品发货。因此各包的 src
+ * 里不得长出任何自动运行的审计机制：
+ *   ① 端口符号族（类型 / option / 字段 / setter / 工厂 / create 函数，任意大小写）；
+ *   ② 时钟源名 / logger 名 / records 目录段用的那个连字符字符串字面量。
+ * 注释里提及是知识，不是违规；仪器本身（scripts/）不在本规则扫描范围。
+ * 检测正则由片段运行时拼接：守卫源码不得含完整违规字面量，否则全仓残留
+ * grep 会命中守卫自身（与 no-orphan-marketplace 同一纪律）。
+ */
+const AUTO_AUDIT_PORT_RE = new RegExp('identity' + 'audit' + 'port', 'i');
+const AUTO_AUDIT_NAME_RE = new RegExp('[\'"`]' + 'identity-audit' + '[\'"`]');
+
+function checkNoAutoIdentityAudit(_file, text) {
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (AUTO_AUDIT_PORT_RE.test(lines[i]) || AUTO_AUDIT_NAME_RE.test(lines[i])) {
+      out.push({ rule: 'no-auto-identity-audit', line: i + 1, snippet: lines[i].trim().slice(0, 110) });
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：违规样本运行时拼接（守卫源码字面量保持 0）。 */
+function selfTestNoAutoIdentityAudit() {
+  const port = 'Identity' + 'AuditPort';
+  const lower = port.charAt(0).toLowerCase() + port.slice(1);
+  const name = 'identity' + '-audit';
+  const fixtures = [
+    { ok: 'const auditPort = null;', bad: `agent.set${port}(port)` },
+    { ok: `// ${port} 已由 C10-0G 删除；仪器在 scripts/，不进产品`, bad: `private ${lower}?: ${port};` },
+    { ok: "import { makeIdentityGates } from './identity-audit.js';", bad: `this.clock.register({ name: '${name}', everyMs: 86400000 })` },
+    { ok: "const dir = join(home, 'records', 'audit');", bad: `const log = createLogger('${name}')` },
+    { ok: 'function runDailyAudit() {}', bad: `export function create${port}(opts) { return { runDaily() {} }; }` },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkNoAutoIdentityAudit('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'no-auto-identity-audit', detail: `误报合规样本：${f.ok}` });
+    if (checkNoAutoIdentityAudit('fixture.ts', f.bad).length === 0) failures.push({ rule: 'no-auto-identity-audit', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
@@ -1001,6 +1050,7 @@ for (const file of collectSources()) {
     ...checkIdentitySingleBuilder(file, text),
     ...checkActivitiesAppendOnly(file, text),
     ...checkOrphanMarketplace(file, text),
+    ...checkNoAutoIdentityAudit(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
@@ -1042,7 +1092,7 @@ if (violations.length) {
 
 // 契约门禁自检：每次运行都做。门禁自身的检测器一旦失效（正则不再命中真实违规形态），
 // 必须**拒绝静默放行** —— 一个永远不红的门禁比没有门禁更危险。
-const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder(), ...selfTestActivitiesAppendOnly(), ...selfTestOrphanMarketplace()];
+const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder(), ...selfTestActivitiesAppendOnly(), ...selfTestOrphanMarketplace(), ...selfTestNoAutoIdentityAudit()];
 for (const f of selfTestFailures) {
   console.error(`[guard] ✗ 门禁自检失败：${f.rule} —— ${f.detail}`);
 }
@@ -1073,6 +1123,8 @@ if (fresh.length) {
   console.error('[guard]                         读侧派生当前态（契约见 docs/architecture/derived-views.md §14/§15）');
   console.error('[guard]   no-orphan-marketplace → marketplace 孤儿表已冻结（Owner 裁决：不迁移、不 DROP），');
   console.error('[guard]                         档案在 docs/records/marketplace-orphan-freeze-2026-11-22.md，不得新增读写路径');
+  console.error('[guard]   no-auto-identity-audit → 产品级每日身份审计机制已由 C10-0G 删除（Owner 裁决：审计只作');
+  console.error('[guard]                         Owner 本地实例定时任务，仪器在 scripts/identity-audit.mjs，不得长回产品 src');
   console.error('[guard]   （确属安全豁免：把它加进 scripts/architecture-allowlist.json 并写理由）\n');
   process.exit(1);
 }
