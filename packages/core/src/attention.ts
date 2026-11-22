@@ -22,7 +22,11 @@ import {
   isStrictStateItem,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
-import { MAILBOX_LEASE_RENEW_INTERVAL_MS, type AgentMailbox } from './mailbox.js';
+import {
+  MAILBOX_LEASE_RENEW_INTERVAL_MS,
+  PLATFORM_INTERNAL_SOURCES,
+  type AgentMailbox,
+} from './mailbox.js';
 import { displayLabelOf, bounceReasonOfFailure } from './mailbox-summary.js';
 import { createSessionWorkspace, sessionWorkspaceStore, type SessionWorkspace } from './session-workspace.js';
 
@@ -926,8 +930,10 @@ export class AttentionController {
     // 所以「选中并开始处理」只有一个写者。放在任何一条 loop 里，另一条就会静默漏账：
     // 2026-11-18 实测，并发模式下当日 116 条输入只留下 3 条 drop 决策，台账成了拒绝簿。
     const resumeLabel = item.metadata?.isResume ? 'Continuing' : 'Processing';
+    // C10-0B §3.3：内部来源（平台唤醒）不落账 —— 此时 `pickDecision` 为 null，
+    // 不通知 delegate「有决策」，但本轮处理照常继续。
     const pickDecision = this.recordDecision('pick', item, `${resumeLabel} ${item.sourceType}`);
-    this.delegate?.onDecisionMade(pickDecision);
+    if (pickDecision) this.delegate?.onDecisionMade(pickDecision);
 
     let reply: string | void = undefined;
     let timedOut = false;
@@ -1521,7 +1527,7 @@ export class AttentionController {
 
     const reasoning = this.formatDecisionReasoning(decisionType, this.currentFocus, newItem);
     const decision = this.recordDecision(decisionType, newItem, reasoning, undefined, source, overrode);
-    this.delegate?.onDecisionMade(decision);
+    if (decision) this.delegate?.onDecisionMade(decision);
 
     if (decisionType === 'merge') {
       const merged = this.mailbox.merge(newItem.id, this.currentFocus.id);
@@ -1729,7 +1735,7 @@ export class AttentionController {
     if (item.sourceType === 'human_chat') return false;
     this.mailbox.defer(itemId, deferUntilMs ? new Date(Date.now() + deferUntilMs).toISOString() : undefined);
     const decision = this.recordDecision('defer', item, reason);
-    this.delegate?.onDecisionMade(decision);
+    if (decision) this.delegate?.onDecisionMade(decision);
     return true;
   }
 
@@ -1740,7 +1746,7 @@ export class AttentionController {
       if (item.sourceType === 'human_chat') return false;
       this.mailbox.drop(itemId);
       const decision = this.recordDecision('drop', item, reason);
-      this.delegate?.onDecisionMade(decision);
+      if (decision) this.delegate?.onDecisionMade(decision);
       return true;
     }
     // Ghost / already-handled: not in the live queue. Force-drop in persistence
@@ -1757,7 +1763,7 @@ export class AttentionController {
       metadata: {},
       queuedAt: new Date().toISOString(),
     }, reason);
-    this.delegate?.onDecisionMade(decision);
+    if (decision) this.delegate?.onDecisionMade(decision);
     return true;
   }
 
@@ -1804,7 +1810,21 @@ export class AttentionController {
     outcome?: string,
     source: DecisionSource = 'rule',
     overrode?: DecisionType,
-  ): AttentionDecision {
+  ): AttentionDecision | null {
+    // ── C10-0B §3.3：平台内部唤醒不产生决策行 ───────────────────────────────
+    //
+    // `PLATFORM_INTERNAL_SOURCES`（heartbeat / system_event / …）本质**没有实体**：
+    // 它们是平台唤醒信号，不是「关于某项工作的决策」，也没有回合身份可以挂在行上。
+    // 给它们写一条 `work_unit_ref IS NULL` 的决策行，等于把台账变成一本
+    // 「谁都没身份」的拒绕簿 —— 真机 1093/1106 的 leak 就是这些行。
+    //
+    // 在**唯一写者**处拒绝，而不是在每个 pick 调用点各判一次：不得合成的判定
+    // 只能有一个执行点，否则下一条 loop 会又多一份。
+    //
+    // 注意：不落账 ≠ 不处理。item 照常被 pick、照常进 `processMailboxItem`；
+    // 只是没有“决策”这个副作用。（决策 ≠ 动作）
+    if (PLATFORM_INTERNAL_SOURCES.has(item.sourceType)) return null;
+
     const decision: AttentionDecision = {
       id: generateId('dec'),
       agentId: this.agentId,

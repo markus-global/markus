@@ -10,12 +10,13 @@
  * 闭包里，只能靠**阅读**判定它对不对，没有可执行契约。抽成导出函数后，测试直接调用
  * **生产代码**（而不是复制一份 options 形状）—— 夹具才咬得住：删掉那句表态，用例变红。
  *
- * 身份裁决（为何是 `platform-internal` 而不是 `pending-link`）：
+ * 身份裁决（为何是 `platform-internal`）：
  * - 创建瞬间还没有 WorkUnit；第一份 WU（`task_<id>_r1`）是执行开始时创建、并挂到**执行那条
  *   item** 上的，与本回执行记录无关；
- * - 没有任何路径会回链这一行（`linkMailboxItem` 的调用方只认执行 / 投递链路）；
+ * - 没有任何路径会回链这一行（唯一写 `mailbox_items.work_unit_ref` 的地方是入队本身）；
  * - 任务实体的关联是**结构承载**的：`envelope.messageId = gateway-task:<id>` + `metadata.taskId`。
- * 声明 `pending-link` 等于承诺一个没人履行的链接 —— 那是谎报，不是表态。
+ * C10-0B 删除了“身份稍后会补上”这一档声明：平台内部来源就是确实无实体，
+ * 而声称“待链接” = 承诺一个没人履行的链接，那是谎报，不是表态。
  */
 import { agentAddressRef, type MailboxItemType, type MailboxPayload } from '@markus/shared';
 import type { EnqueueOptions } from '@markus/core';

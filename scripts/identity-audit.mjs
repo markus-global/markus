@@ -1,18 +1,27 @@
 #!/usr/bin/env node
 /**
- * 身份不变量审计（C8 剩余四条 + C9 各刀新增判据；原判据 4 已删，理由见 GATES 内注释）。
+ * 身份不变量审计（C8 剩余四条 + C9 / C10-0B 各刀新增判据；原判据 4 已删，理由见门禁定义处）。
  *
  * 两种模式：
  *   1) `--self-test`  —— CI 用。建一个临时库、**主动塞进每种违规**，断言每条判据都能抓到；
- *                        再修好它们，断言全部归零。这证明的是「判据本身有效」，
- *                        而不是「生产库很干净」——后者不属于 CI 的判断范围。
+ *                        再塞进**纪元前**的同形违规，断言计数一条都不变（历史是档案，不是
+ *                        违规）；最后修好，断言全部归零。
  *   2) 无参数          —— 运维用。对真实库（默认 ~/.markus/data.db，可用 MARKUS_AUDIT_DB 覆盖）
  *                        跑同样几条查询，任一条 >0 就以非零码退出。
  *
- * 设计口径（2026-11-14 真机教训）：
- *   - 判据 1/5/11 必须带时间下界：老库里有大量修复前的历史行，不带下界的门禁永远红，
- *     而「永远亮着又不可行动」的告警比没有更糟（会训练人忽略它）。
- *   - 判据 3 只看「租约**已过期**」：chat 回合本来就不走租约认领，把 NULL 算违规是假阳性。
+ * ── 判据从哪来（C10-0B §3.4）────────────────────────────────────────────────
+ * 判据**不在本文件定义**了：`@markus/shared` 的 `identity-audit` 模块是唯一写者
+ * （`makeIdentityGates`），因为每日审计（agent 时钟源 `identity-audit`）要跑同一份。
+ * 本文件只保留「怎么执行」：临时库自检 / 真库只读跑。
+ *
+ * ⚠️ **构建前置条件**：判据来自 `packages/shared/dist`，所以本脚本必须先
+ * `pnpm --filter @markus/shared build`（CI 在 self-test 步骤前跑 `tsc -b`）。
+ * 读不到 dist 就**失败退出**——一个不知道自己该审什么的门禁必须响亮报错，不能默认放行。
+ *
+ * ── 时间下界（C10-0B 删除滚动窗口）──────────────────────────────────────────
+ * 只有一个下界：`IDENTITY_FIX_EPOCH`（固定产品常量）。旧实现的
+ * `MARKUS_AUDIT_SINCE = now - 7d` 已删除——两个下界就是同一件事的两个度量，
+ * 同一行历史今天算违规、明天不算，读数不可复现。
  *
  * C9-A 口径（2026-11-15）：facts 的六条门禁（6–11）**故意不把 facts 的触发器与
  * 部分唯一索引建进自检夹具**。理由：那两道守卫会直接把违规样本拒之门外，于是
@@ -20,159 +29,42 @@
  * 测试面，真实 schema 是**不变量**的执行点，两者不能合成一个。
  */
 import { DatabaseSync } from 'node:sqlite';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const PLATFORM_INTERNAL = [
-  'heartbeat', 'system_event', 'session_reply',
-  'memory_consolidation', 'callback_result', 'workflow_update',
-].map(s => `'${s}'`).join(',');
+const HERE = dirname(fileURLToPath(import.meta.url));
+const SHARED_DIST_ENTRY = join(HERE, '..', 'packages', 'shared', 'dist', 'identity-audit.js');
 
-/** since：只审「本次部署之后新增的事实」。默认 7 天，可用 MARKUS_AUDIT_SINCE 覆盖。 */
-const SINCE = process.env.MARKUS_AUDIT_SINCE
-  ?? new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-
-/**
- * `agent_decisions.work_unit_ref` 的**纪元起点**（该列于 2026-11-15 加并接上写者）。
- *
- * 为何不跟 `SINCE` 滚动：加列之前的 22.7 万行按定义没有身份 —— 那是旧纪元，
- * 不是违规。用滚动窗口会让判据 11 为一批永远不会被修的历史账亮一阵，
- * 然后所有人学会忽略它（“永远亮着且不可行动”的告警比没有更糟）。
- * 固定纪元起点说的是实话：这件事从这一天起才算数。
- */
-const DECISIONS_IDENTITY_EPOCH = '2026-11-15T00:00:00.000Z';
-
-/**
- * 谓词闭集的白名单 —— 从**代码**派生，不在这里再抄一份。
- *
- * 两份白名单 = 同一个事实两个写者：代码里新增谓词、这里忘了改，门禁就会把
- * 合法事实判成违规（误报），或者把新增谓词全都放过（漏报）。因此直接读
- * `packages/shared/src/facts/predicates.ts` 里的 `predicate: '…'` 字面量。
- * 读不到就**失败**：一个不知道自己该审什么的门禁必须响亮地报错，不能默认放行。
- */
-function readPredicateWhitelist() {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const file = join(here, '..', 'packages', 'shared', 'src', 'facts', 'predicates.ts');
-  if (!existsSync(file)) {
-    console.error(`✗ 无法读取谓词闭集：${file} 不存在 —— 门禁不能默认放行。`);
-    process.exit(1);
-  }
-  const names = [...readFileSync(file, 'utf-8').matchAll(/^\s*predicate:\s*'([^']+)'/gm)].map(m => m[1]);
-  if (names.length === 0) {
-    console.error('✗ 谓词闭集里解析出 0 个谓词 —— 解析规则可能已失效。');
-    process.exit(1);
-  }
-  return names;
+let IDENTITY_FIX_EPOCH;
+let makeIdentityGates;
+try {
+  ({ IDENTITY_FIX_EPOCH, makeIdentityGates } = await import(SHARED_DIST_ENTRY));
+} catch (err) {
+  console.error(
+    `✗ 无法从 shared dist 读取门禁定义：${SHARED_DIST_ENTRY}\n` +
+    '  先跑 `pnpm --filter @markus/shared build`（CI 在 self-test 前跑 `tsc -b`）。\n' +
+    `  原因：${String(err)}`,
+  );
+  process.exit(1);
 }
 
-const PREDICATE_WHITELIST = readPredicateWhitelist();
-const PREDICATE_SQL_LIST = PREDICATE_WHITELIST.map(p => `'${p}'`).join(',');
+/**
+ * 自检夹具的纪元（**显式注入**，不读产品常量）：自检证明的是「判据逻辑有效」，
+ * 与产品纪元是否已定值无关 —— 哨兵期 CI 也必须能跑自检。
+ */
+const FIXTURE_EPOCH = '2026-11-15T00:00:00.000Z';
+const GATES = makeIdentityGates({ epoch: FIXTURE_EPOCH });
 
-const GATES = [
-  {
-    id: 1,
-    name: '身份缺失（非平台内部事实没有 work_unit_ref）',
-    sql: `SELECT COUNT(*) AS c FROM mailbox_items
-           WHERE work_unit_ref IS NULL AND queued_at >= '${SINCE}'
-             AND source_type NOT IN (${PLATFORM_INTERNAL})`,
-  },
-  {
-    id: 2,
-    name: '悬空引用（ref 指向不存在的 work_unit）',
-    sql: `SELECT COUNT(*) AS c FROM mailbox_items m
-            LEFT JOIN work_units w ON w.ref = m.work_unit_ref
-           WHERE m.work_unit_ref IS NOT NULL AND w.id IS NULL`,
-  },
-  {
-    id: 3,
-    name: '租约已过期的 running（僵尸在跑）',
-    sql: `SELECT COUNT(*) AS c FROM work_units
-           WHERE status = 'running' AND lease_until IS NOT NULL
-             AND lease_until <= strftime('%Y-%m-%dT%H:%M:%fZ','now')`,
-  },
-  // ── 原判据 4（「触发行已终态但 ended_at 仍为空」）在 C9-B 删除 ──────────────
-  // 它测的是一条**由扫库机制维持**的不变量：`agent_activities.ended_at` 必须补齐。
-  // C9-B 删掉了那个机制（`closeOrphansAgainstTerminalMailbox`）：「在跑」只认
-  // `work_units`，一行 activity 没有结束时间就是「没记到结束」，不是状态、也不是违规。
-  // 留着这条判据有两个后果，都不可接受：
-  //   1. 真机上有 3269 行历史僵尸行、且没有时间下界 → 门禁**永远红**（本文件自己的
-  //      口径：「永远亮着又不可行动的告警比没有更糟」）；
-  //   2. 要让它变绿，只能重新引入「替事件编造结束时间」的写者 —— 正是本轮删掉的东西。
-  // 同一个事实（「回合已收口，却留下悬挂的工作单元」）在**权威对象**上已有判据 3
-  // （租约过期的 running），所以这里不需要第二个度量。
-  {
-    id: 5,
-    name: '撤销型事实无身份（无法反查「谁撤销了哪一轮」）',
-    sql: `SELECT COUNT(*) AS c FROM mailbox_items
-           WHERE envelope LIKE '%"invalidatesPremise":true%'
-             AND work_unit_ref IS NULL AND queued_at >= '${SINCE}'`,
-  },
-  // ── C9-A：facts 层六条（方案 §8.3）───────────────────────────────────────────
-  {
-    id: 6,
-    name: '事实无来源身份（work_unit_ref 缺失/空串）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE work_unit_ref IS NULL OR TRIM(work_unit_ref) = ''`,
-  },
-  {
-    id: 7,
-    name: '事实不可追溯（source_refs_json 为空或不是非空数组）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE source_refs_json IS NULL
-              OR json_valid(source_refs_json) = 0
-              OR json_array_length(source_refs_json) = 0`,
-  },
-  {
-    id: 8,
-    name: '自证通过（verified_by 与 asserted_by 同一人）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE json_valid(verification_json)
-             AND json_extract(verification_json, '$.result') = 'pass'
-             AND json_extract(verification_json, '$.verified_by') = asserted_by`,
-  },
-  {
-    id: 9,
-    name: '同一 subject+predicate 多条 active（结论有两个当前值）',
-    sql: `SELECT COUNT(*) AS c FROM (
-            SELECT subject_kind, subject_id, predicate, COUNT(*) AS n
-              FROM facts WHERE superseded_by IS NULL
-             GROUP BY 1, 2, 3 HAVING n > 1)`,
-  },
-  {
-    id: 10,
-    name: '谓词不在闭集内（白名单从代码派生）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE predicate NOT IN (${PREDICATE_SQL_LIST})`,
-  },
-  {
-    id: 11,
-    name: '新纪元决策行无身份（agent_decisions 有列却没写 work_unit_ref）',
-    sql: `SELECT COUNT(*) AS c FROM agent_decisions
-           WHERE created_at >= '${DECISIONS_IDENTITY_EPOCH}' AND work_unit_ref IS NULL`,
-    // 依赖 C9-B 加的列：列未迁移时跳过（而不是永远红）。
-    requiresColumn: { table: 'agent_decisions', column: 'work_unit_ref' },
-  },
-  // ── C9-E：验证事实的两条（验证也是一种事实，但它必须可核）────────────────────
-  {
-    id: 12,
-    name: '验证结论无证据（pass/fail 都没有 evidence_refs）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE json_valid(verification_json)
-             AND json_extract(verification_json, '$.result') IN ('pass','fail')
-             AND (json_extract(verification_json, '$.evidence_refs') IS NULL
-                  OR json_array_length(json_extract(verification_json, '$.evidence_refs')) = 0)`,
-  },
-  {
-    id: 13,
-    name: '验证结论无作者（verified_by 缺失/空串）',
-    sql: `SELECT COUNT(*) AS c FROM facts
-           WHERE json_valid(verification_json)
-             AND (json_extract(verification_json, '$.verified_by') IS NULL
-                  OR TRIM(json_extract(verification_json, '$.verified_by')) = '')`,
-  },
-];
+/**
+ * 自检夹具的两个时间点（相对夹具纪元，**不跟墙钟走**）。
+ *
+ * 双向咬人：纪元**后**的违规必须咬住，纪元**前**的违规必须闭嘴。
+ * 写死成「纪元 ±1h」而不是「今天 ±N 天」：这条自检要在任何一天跑出同一个答案。
+ */
+const POST_EPOCH = new Date(Date.parse(FIXTURE_EPOCH) + 3600_000).toISOString();
+const PRE_EPOCH = new Date(Date.parse(FIXTURE_EPOCH) - 3600_000).toISOString();
 
 const DDL = `
 CREATE TABLE mailbox_items (
@@ -195,24 +87,37 @@ CREATE TABLE agent_decisions (
   id TEXT PRIMARY KEY, agent_id TEXT, work_unit_ref TEXT, created_at TEXT
 );`;
 
-/** 每种违规各塞一条 —— 判据抓不到它们就是判据写错了。 */
+/** 每种违规各塞一条（**纪元之后**）—— 判据抓不到它们就是判据写错了。 */
 const SEED_VIOLATIONS = `
 INSERT INTO mailbox_items VALUES
-  ('mbx_g1','a','human_chat','queued','${SINCE}',NULL,NULL,NULL),
-  ('mbx_g2','a','a2a_message','queued','${SINCE}','session:dangling:r1',NULL,NULL),
-  ('mbx_g5','a','task_status_update','completed','${SINCE}',NULL,'{"invalidatesPremise":true}','${SINCE}');
+  ('mbx_g1','a','human_chat','queued','${POST_EPOCH}',NULL,NULL,NULL),
+  ('mbx_g2','a','a2a_message','queued','${POST_EPOCH}','session:dangling:r1',NULL,NULL),
+  ('mbx_g5','a','task_status_update','completed','${POST_EPOCH}',NULL,'{"invalidatesPremise":true}','${POST_EPOCH}');
 INSERT INTO work_units VALUES ('wu_g3','task_g3_r1','running','2000-01-01T00:00:00.000Z');
 -- C9-A：六条 facts 门禁各一条违规样本（夹具无触发器/唯一索引，故能塞进去）。
 INSERT INTO facts (id, subject_kind, subject_id, predicate, value_json, work_unit_ref, asserted_by, source_refs_json, verification_json, created_at) VALUES
-  ('fact_g6','task','t1','task.completion_evidence','{}',NULL,'a1','["d1"]',NULL,'${SINCE}'),
-  ('fact_g7','task','t1','work.defect_class','{}','task:t1:r1','a1','[]',NULL,'${SINCE}'),
-  ('fact_g8','task','t2','task.completion_evidence','{}','task:t2:r1','a1','["d1"]','{"result":"pass","verified_by":"a1"}','${SINCE}'),
-  ('fact_g9a','task','t3','task.completion_evidence','{}','task:t3:r1','a1','["d1"]',NULL,'${SINCE}'),
-  ('fact_g9b','task','t3','task.completion_evidence','{}','task:t3:r2','a1','["d2"]',NULL,'${SINCE}'),  ('fact_g10','task','t4','custom.made_up','{}','task:t4:r1','a1','["d1"]',NULL,'${SINCE}'),
+  ('fact_g6','task','t1','task.completion_evidence','{}',NULL,'a1','["d1"]',NULL,'${POST_EPOCH}'),
+  ('fact_g7','task','t1','work.defect_class','{}','task:t1:r1','a1','[]',NULL,'${POST_EPOCH}'),
+  ('fact_g8','task','t2','task.completion_evidence','{}','task:t2:r1','a1','["d1"]','{"result":"pass","verified_by":"a1"}','${POST_EPOCH}'),
+  ('fact_g9a','task','t3','task.completion_evidence','{}','task:t3:r1','a1','["d1"]',NULL,'${POST_EPOCH}'),
+  ('fact_g9b','task','t3','task.completion_evidence','{}','task:t3:r2','a1','["d2"]',NULL,'${POST_EPOCH}'),  ('fact_g10','task','t4','custom.made_up','{}','task:t4:r1','a1','["d1"]',NULL,'${POST_EPOCH}'),
   -- C9-E：G12（无证据的验证）/ G13（无作者的验证）
-  ('fact_g12','task','t5','task.completion_evidence','{}','task:t5:r1','a1','["d1"]','{"result":"pass","verified_by":"a2","evidence_refs":[]}','${SINCE}'),
-  ('fact_g13','task','t6','task.completion_evidence','{}','task:t6:r1','a1','["d1"]','{"result":"pass","verified_by":"","evidence_refs":["c1"]}','${SINCE}');
-INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${DECISIONS_IDENTITY_EPOCH}');`;
+  ('fact_g12','task','t5','task.completion_evidence','{}','task:t5:r1','a1','["d1"]','{"result":"pass","verified_by":"a2","evidence_refs":[]}','${POST_EPOCH}'),
+  ('fact_g13','task','t6','task.completion_evidence','{}','task:t6:r1','a1','["d1"]','{"result":"pass","verified_by":"","evidence_refs":["c1"]}','${POST_EPOCH}');
+INSERT INTO agent_decisions VALUES ('dec_g11','a1',NULL,'${POST_EPOCH}');`;
+
+/**
+ * 纪元**前**的同形违规：它们必须**不被计数**。
+ *
+ * 历史行是档案，不是违规。判据若没有纪元下界，这本台账就永远红着 ——
+ * 而「永远亮着又不可行动」的告警比没有更糟。
+ */
+const SEED_HISTORY = `
+INSERT INTO mailbox_items VALUES
+  ('mbx_hist_1','a','human_chat','completed','${PRE_EPOCH}',NULL,NULL,NULL),
+  ('mbx_hist_2','a','a2a_message','completed','${PRE_EPOCH}','session:gone:r1',NULL,NULL),
+  ('mbx_hist_5','a','task_status_update','completed','${PRE_EPOCH}',NULL,'{"invalidatesPremise":true}','${PRE_EPOCH}');
+INSERT INTO agent_decisions VALUES ('dec_hist_11','a1',NULL,'${PRE_EPOCH}');`;
 
 const FIX_VIOLATIONS = `
 UPDATE mailbox_items SET work_unit_ref='session:ok:r1'
@@ -223,13 +128,12 @@ UPDATE work_units SET lease_until=NULL WHERE id='wu_g3';
 UPDATE facts SET work_unit_ref='task:audit:r1' WHERE id='fact_g6';
 UPDATE facts SET source_refs_json='["audit"]' WHERE id='fact_g7';
 UPDATE facts SET verification_json=NULL WHERE id='fact_g8';
-UPDATE facts SET superseded_by='fact_g9b', superseded_at='${SINCE}' WHERE id='fact_g9a';
+UPDATE facts SET superseded_by='fact_g9b', superseded_at='${POST_EPOCH}' WHERE id='fact_g9a';
 UPDATE facts SET predicate='work.defect_class' WHERE id='fact_g10';
 -- C9-E：修好验证两条 —— 只改它自己违规的那个子字段。
 UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g12';
 UPDATE facts SET verification_json='{"result":"pass","verified_by":"a2","evidence_refs":["c1"]}' WHERE id='fact_g13';
-UPDATE agent_decisions SET work_unit_ref='task:audit:r1' WHERE id='dec_g11';
-`;
+UPDATE agent_decisions SET work_unit_ref='task:audit:r1' WHERE id='dec_g11';`;
 
 function runGates(db) {
   return GATES.map(g => ({ ...g, count: db.prepare(g.sql).get().c }));
@@ -260,6 +164,18 @@ function selfTest() {
       console.log(`${ok ? '✓' : '✗'} 判据 ${g.id} 能抓到违规样本  ${g.name}  [count=${g.count}]`);
     }
 
+    // ── 双向咬人：纪元**前**的同形违规不得改变任何计数 ──────────────────────
+    // 只验「能咬人」的门禁有两种失效方式：①永远红（历史行也算违规）②只咬旧账。
+    // 这一轮把「纪元前的违规样本」塞进去，计数必须与刚才**逐条相等**。
+    db.exec(SEED_HISTORY);
+    const withHistory = runGates(db);
+    for (const g of withHistory) {
+      const before = dirty.find(d => d.id === g.id)?.count;
+      const ok = g.count === before;
+      if (!ok) failed += 1;
+      console.log(`${ok ? '✓' : '✗'} 判据 ${g.id} 对纪元前历史沉默    ${g.name}  [count=${g.count}, 期望=${before}]`);
+    }
+
     // 修好违规 → 每条必须归零（否则判据会误报，误报等于没有）
     db.exec(FIX_VIOLATIONS);
 
@@ -274,10 +190,12 @@ function selfTest() {
     rmSync(dir, { recursive: true, force: true });
   }
   if (failed > 0) {
-    console.error(`\n身份不变量自检失败：${failed} 条判据没有按预期咬人。`);
+    console.error(`\n身份不变量自检失败：${failed} 条断言没有按预期咬人。`);
     process.exit(1);
   }
-  console.log(`\n身份不变量自检通过：${GATES.length} 条判据都能咬人、且修好后归零。`);
+  console.log(
+    `\n身份不变量自检通过：${GATES.length} 条判据都能咬人、对纪元前历史沉默、且修好后归零。`,
+  );
 }
 
 function openReadOnly(path) {
@@ -295,11 +213,22 @@ function auditRealDb() {
     console.log(`未找到库 ${path} —— 跳过（这不是失败：CI 环境本来就没有生产库）。`);
     return;
   }
+  // ── 哨兵期（CTO 裁决 A）：纪元未定值 = 独立状态，绝不静默绿 ──────────────
+  // 退出码三态：0=已定值且通过，1=已定值且有违规，2=纪元未定值（哨兵期）。
+  if (IDENTITY_FIX_EPOCH === null) {
+    console.error(
+      'state: epoch-unset\n' +
+      '纪元未定值（哨兵期）：修复构建尚未上线（Owner 重启后按处置决议记录定值）。\n' +
+      '这不是「通过」——审计无法区分历史与活漏，直到纪元定值。',
+    );
+    process.exit(2);
+  }
+  const gates = makeIdentityGates({ epoch: IDENTITY_FIX_EPOCH });
   const db = openReadOnly(path);
   let bad = 0;
   try {
-    console.log(`审计库：${path}\n时间下界（判据 1/5/11）：${SINCE}\n`);
-    for (const g of GATES) {
+    console.log(`审计库：${path}\n纪元下界（判据 1/2/5/11）：${IDENTITY_FIX_EPOCH}\n`);
+    for (const g of gates) {
       if (g.requiresColumn && !hasColumn(db, g.requiresColumn.table, g.requiresColumn.column)) {
         console.log(`– 判据 ${g.id} 跳过（${g.requiresColumn.table}.${g.requiresColumn.column} 尚未迁移）  ${g.name}`);
         continue;
@@ -313,10 +242,10 @@ function auditRealDb() {
     db.close();
   }
   if (bad > 0) {
-    console.error(`\n${bad} 条身份不变量被违反。`);
+    console.error(`\nstate: fail\n${bad} 条身份不变量被违反。`);
     process.exit(1);
   }
-  console.log(`\n${GATES.length} 条身份不变量全部为 0（已跳过未迁移的列）。`);
+  console.log(`\nstate: pass\n${gates.length} 条身份不变量全部为 0（已跳过未迁移的列）。`);
 }
 
 if (process.argv.includes('--self-test')) selfTest();

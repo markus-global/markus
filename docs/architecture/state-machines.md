@@ -786,7 +786,7 @@ A message's WorkUnit identity is written in exactly one place: the `mailbox_item
 
 The reason is structural: two writers of the same fact always drift, and of the two the column is the one that can be indexed and joined while the envelope is a JSON projection. If a projection is ever needed (cross-org delivery carrying WU identity inside the envelope), derive it from the column — do not write both.
 
-The write order is fixed and must not be reversed: `ensure()` first, `linkMailboxItem()` second. Writing the reference before the entity exists is precisely the dangling reference that cut 6 avoided by adding the column and writing zero rows.
+The write order is fixed and must not be reversed: `ensure()` first, then enqueue **carrying the ref** — the enqueue INSERT is the only writer of `mailbox_items.work_unit_ref` (C10-0B deleted the post-enqueue `linkMailboxItem()` UPDATE: it wrote only the DB column while the in-memory item stayed null, so the decision ledger — which reads memory — recorded picks without identity). Writing the reference before the entity exists is precisely the dangling reference that cut 6 avoided by adding the column and writing zero rows.
 
 ### Current State in C7-A (what is deliberately not in force)
 

@@ -24,7 +24,7 @@ import {
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
 } from '@markus/shared';
-import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
+import { Agent, type AgentToolHandler, type AgentOptions, type IdentityAuditPort } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
 import type { MailboxIdentityPort } from './mailbox.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
@@ -3861,9 +3861,28 @@ export class AgentManager {
     for (const agent of this.agents.values()) agent.setMailboxIdentityPort(port);
   }
 
+  /**
+   * C10-0B §3.5：每日身份审计端口 —— 与委派端口同一装配纪律（两条建 Agent 的路径都走）。
+   *
+   * 这里用**工厂**而不是单个端口实例：记录里要写 `agentId`（"今天哪个 agent 跑的"），
+   * 而 core 的端口形状是 `runDaily()` 无参。工厂让装配处用 agentId 闭包出实例，
+   * 而不必把 agentId 塞进「做什么」的契约里。
+   */
+  private identityAuditPortFactory?: (agentId: string) => IdentityAuditPort;
+  setIdentityAuditPortFactory(factory: ((agentId: string) => IdentityAuditPort) | undefined): void {
+    this.identityAuditPortFactory = factory;
+    for (const [agentId, agent] of this.agents) agent.setIdentityAuditPort(factory?.(agentId));
+  }
+
   private applyWorkUnitPort(agent: Agent): void {
     if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
     if (this.mailboxIdentityPort) agent.setMailboxIdentityPort(this.mailboxIdentityPort);
+  }
+
+  private applyIdentityAuditPort(agent: Agent): void {
+    if (this.identityAuditPortFactory) {
+      agent.setIdentityAuditPort(this.identityAuditPortFactory(agent.id));
+    }
   }
 
   private registerAddressTools(agent: Agent, agentId: string): void {

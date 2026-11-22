@@ -541,6 +541,10 @@ const RULE_SCOPE = {
   'no-activity-liveness': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
   // C9 收尾：身份字符串只有一个建造者 —— 全仓服务端 src 适用（排除 builders 在检测器内）。
   'identity-string-single-builder': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0E：append-only —— 全仓 src 适用（与 facts-single-writer 同口径）。
+  'activities-append-only': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
+  // C10-0C：复活守卫 —— 任何包的 src 都不得长出孤儿表读写路径。
+  'no-orphan-marketplace': (relPath) => /^packages\/[^/]+\/src\//.test(relPath),
 };
 
 /** 递归收集 packages/<pkg>/src/** 下的源码文件（只看 src，不看测试）。 */
@@ -883,6 +887,102 @@ function selfTestIdentitySingleBuilder() {
   return failures;
 }
 
+/**
+ * 规则 8（C10-0E / G8）：`agent_activities` 是 append-only。
+ *
+ * 活动行只写一次（insertActivity）；「结束 / 更正」是 agent_activity_logs 里新的
+ * activity_end 事件，当前态由读侧派生（ACTIVITY_CURRENT_SELECT，定义只一份）。
+ * 旧 UPDATE 路径让「发生过什么」有第二个写者 —— 历史可以被改写，读者分不清
+ * 原始与篡改。现在两层防线：
+ *   · 数据库层：BEFORE UPDATE 触发器 agent_activities_no_update（结构拒绝，
+ *     行为测试 packages/storage/test/c10-0e-activities-append-only.test.ts）；
+ *   · 源码层：本门禁拦 UPDATE / OR REPLACE / OR IGNORE / ON CONFLICT DO UPDATE。
+ * 契约见 docs/architecture/derived-views.md §14/§15。
+ */
+const ACTIVITIES_APPEND_ONLY_PATTERNS = [
+  { id: 'update-activities', re: /\bUPDATE\s+agent_activities\b/i },
+  { id: 'replace-activities', re: /\bOR\s+(?:REPLACE|IGNORE)\s+INTO\s+agent_activities\b/i },
+];
+// 多行 upsert：对去注释后的全文扫（有界窗口，避免跨语句误报）。
+const ACTIVITIES_UPSERT_RE = /\bINTO\s+agent_activities\b[\s\S]{0,400}?\bON\s+CONFLICT\b[\s\S]{0,200}?\bDO\s+UPDATE\b/i;
+
+function checkActivitiesAppendOnly(_file, text) {
+  const out = [];
+  const stripped = stripCommentsKeepLines(text);
+  const lines = stripped.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    for (const p of ACTIVITIES_APPEND_ONLY_PATTERNS) {
+      if (p.re.test(lines[i])) {
+        out.push({ rule: 'activities-append-only', line: i + 1, snippet: `${p.id}: ${lines[i].trim().slice(0, 110)}` });
+        break;
+      }
+    }
+  }
+  const m = ACTIVITIES_UPSERT_RE.exec(stripped);
+  if (m) {
+    out.push({ rule: 'activities-append-only', line: stripped.slice(0, m.index).split('\n').length, snippet: 'upsert-activities: INSERT ... ON CONFLICT DO UPDATE' });
+  }
+  return out;
+}
+
+/**
+ * 门禁自检。夹具用运行时拼接：验收口径要求 packages/+scripts/ 下
+ * 「UPDATE 后跟 agent_activities」的语句字面量为 0（含本文件）—— 检测器咬人与 grep 为 0 同时成立。
+ */
+function selfTestActivitiesAppendOnly() {
+  const updateStmt = 'UPDATE ' + 'agent_activities SET summary = ? WHERE id = ?';
+  const fixtures = [
+    { ok: 'SELECT * FROM agent_activities WHERE id = ?', bad: updateStmt },
+    { ok: 'INSERT INTO agent_activities (id) VALUES (?)', bad: 'INSERT OR REPLACE INTO agent_activities (id) VALUES (?)' },
+    // ok：注释里的历史形态不得误报（说明性文字是知识，不是违规）
+    { ok: '// 历史形态：' + updateStmt + ' 已在 C10-0E 删除', bad: 'INSERT INTO agent_activities (id) VALUES (?) ON CONFLICT(id) DO UPDATE SET summary = excluded.summary' },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkActivitiesAppendOnly('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'activities-append-only', detail: `误报合规样本：${f.ok}` });
+    if (checkActivitiesAppendOnly('fixture.ts', f.bad).length === 0) failures.push({ rule: 'activities-append-only', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
+/**
+ * 规则 9（C10-0C / G7）：孤儿 marketplace 表已冻结，不得复活。
+ *
+ * Owner 裁决（2026-11-19）：不迁移、不 DROP —— 老用户库里那 3 行就地冻结，
+ * 逐字档案在 docs/records/marketplace-orphan-freeze-2026-11-22.md（冻结快照，真库为准）。
+ * #462 已删两表的 CREATE 与 repo，新库不再建表。源码里任何新的读写路径都是违规 ——
+ * 墓碑不能长出第二条命。注释里提到表名是知识，不是违规。
+ */
+const ORPHAN_MARKETPLACE_RE = /\bmarketplace_(?:templates|skills)\b/;
+
+function checkOrphanMarketplace(_file, text) {
+  const out = [];
+  const lines = stripCommentsKeepLines(text).split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (ORPHAN_MARKETPLACE_RE.test(lines[i])) {
+      out.push({ rule: 'no-orphan-marketplace', line: i + 1, snippet: lines[i].trim().slice(0, 110) });
+    }
+  }
+  return out;
+}
+
+/** 门禁自检：表名同样运行时拼接（源码字面量保持 0，档案在 docs/records/）。 */
+function selfTestOrphanMarketplace() {
+  const tpl = 'marketplace_' + 'templates';
+  const skl = 'marketplace_' + 'skills';
+  const fixtures = [
+    { ok: 'SELECT * FROM skills WHERE id = ?', bad: `SELECT * FROM ${tpl}` },
+    { ok: `// ${skl} 已由 C10-0C 冻结，档案见 docs/records/`, bad: `db.prepare('INSERT INTO ${skl} (id) VALUES (?)').run(x)` },
+    { ok: 'const marketplaceSkills = [];', bad: `DELETE FROM ${tpl} WHERE id = ?` },
+  ];
+  const failures = [];
+  for (const f of fixtures) {
+    if (checkOrphanMarketplace('fixture.ts', f.ok).length !== 0) failures.push({ rule: 'no-orphan-marketplace', detail: `误报合规样本：${f.ok}` });
+    if (checkOrphanMarketplace('fixture.ts', f.bad).length === 0) failures.push({ rule: 'no-orphan-marketplace', detail: `漏过违规样本：${f.bad}` });
+  }
+  return failures;
+}
+
 const rel = (abs) => relative(ROOT, abs).split(process.platform === 'win32' ? '\\' : '/').join('/');
 
 const allowlist = loadAllowlist();
@@ -899,18 +999,24 @@ for (const file of collectSources()) {
     ...checkFactsSingleWriter(file, text),
     ...checkActivityLiveness(file, text),
     ...checkIdentitySingleBuilder(file, text),
+    ...checkActivitiesAppendOnly(file, text),
+    ...checkOrphanMarketplace(file, text),
   ]) {
     if (!(RULE_SCOPE[v.rule]?.(relPath) ?? true)) continue;
     violations.push({ ...v, file: relPath, allowed: Boolean(allowlist[v.rule]?.[relPath]) });
   }
 }
 
-// C9-B：`scripts/` 不属于产品扫描根，但这同一条不变量对运维脚本同样成立（上一轮漏点）。
-// 只补这一条规则，且**不做白名单豁免** —— 一个可以豁免的「唯一权威」等于没有。
+// C9-B/C10：`scripts/` 不属于产品扫描根，但这些路径不变量对运维脚本同样成立。
+// **不做白名单豁免** —— 一个可以豁免的「唯一权威」等于没有。
 for (const file of collectScriptSources()) {
   const text = readFileSync(file, 'utf-8');
   const relPath = rel(file);
-  for (const v of checkActivityLiveness(file, text)) {
+  for (const v of [
+    ...checkActivityLiveness(file, text),
+    ...checkActivitiesAppendOnly(file, text),
+    ...checkOrphanMarketplace(file, text),
+  ]) {
     violations.push({ ...v, file: relPath, allowed: false });
   }
 }
@@ -936,7 +1042,7 @@ if (violations.length) {
 
 // 契约门禁自检：每次运行都做。门禁自身的检测器一旦失效（正则不再命中真实违规形态），
 // 必须**拒绝静默放行** —— 一个永远不红的门禁比没有门禁更危险。
-const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder()];
+const selfTestFailures = [...selfTestInvariants(), ...selfTestActivityLiveness(), ...selfTestIdentitySingleBuilder(), ...selfTestActivitiesAppendOnly(), ...selfTestOrphanMarketplace()];
 for (const f of selfTestFailures) {
   console.error(`[guard] ✗ 门禁自检失败：${f.rule} —— ${f.detail}`);
 }
@@ -963,6 +1069,10 @@ if (fresh.length) {
   console.error('[guard]                         activity 的 endedAt / ended_at IS NULL 只是历史属性，不是状态');
   console.error('[guard]   identity-string-single-builder → 身份字符串只许 `WORK_UNIT_REF.task()` 造；');
   console.error('[guard]                         消费方读结构、不反解字符串（需要实体 id 就显式传入）');
+  console.error('[guard]   activities-append-only → agent_activities 是 append-only：结束/更正 = 新 activity_end 事件，');
+  console.error('[guard]                         读侧派生当前态（契约见 docs/architecture/derived-views.md §14/§15）');
+  console.error('[guard]   no-orphan-marketplace → marketplace 孤儿表已冻结（Owner 裁决：不迁移、不 DROP），');
+  console.error('[guard]                         档案在 docs/records/marketplace-orphan-freeze-2026-11-22.md，不得新增读写路径');
   console.error('[guard]   （确属安全豁免：把它加进 scripts/architecture-allowlist.json 并写理由）\n');
   process.exit(1);
 }

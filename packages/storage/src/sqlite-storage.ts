@@ -1076,6 +1076,14 @@ export function openSqlite(dbPath: string): DatabaseSync {
 
     // Indexes that depend on migrated columns (must run AFTER column migrations)
     _db.exec('CREATE INDEX IF NOT EXISTS idx_agent_activities_mailbox ON agent_activities(mailbox_item_id)');
+    // C10-0E（G8）：agent_activities 是 append-only —— 结构上拒绝任何改写。
+    // 触发器与索引同类：幂等 DDL，打开旧库时补建，不动任何数据行。
+    // 「更正」是 agent_activity_logs 里新的 activity_end 事件，读侧派生当前态。
+    _db.exec(`CREATE TRIGGER IF NOT EXISTS agent_activities_no_update
+      BEFORE UPDATE ON agent_activities
+      BEGIN SELECT RAISE(ABORT, 'agent_activities is append-only (C10-0E): corrections are new activity_end events'); END`);
+    // 派生读只关心 activity_end 事件：部分索引让窗口子查询走索引而不是扫全日志表。
+    _db.exec("CREATE INDEX IF NOT EXISTS idx_activity_logs_end ON agent_activity_logs(activity_id, seq DESC) WHERE type = 'activity_end'");
     // C9-B：观测四表的 `work_unit_ref` 索引。必须在列迁移之后 —— 老库在 SCHEMA_SQL
     // 阶段还没有这四列，把索引写进 SCHEMA_SQL 会让「打开旧库」直接 no such column。
     for (const table of ['agent_activities', 'agent_activity_logs', 'execution_stream_logs', 'task_logs']) {
@@ -4057,6 +4065,27 @@ export interface ActivityLogRecord {
   createdAt: string;
 }
 
+// C10-0E（G8）：activity 的「当前态」是派生值，定义只此一份，所有读方法包一层。
+// 基础行只写一次（insertActivity）；结束/更正 = agent_activity_logs 里新的
+// activity_end 事件（payload 在 metadata）。旧行（C10-0E 之前）结束数据在行上、
+// 没有 end 事件 ⇒ COALESCE 落回原值，派生是恒等映射，无需迁移。
+// 多个 end 事件取最新（seq DESC, id DESC）—— 与旧 UPDATE 的 last-wins 语义一致。
+const ACTIVITY_CURRENT_SELECT = `SELECT a.id, a.agent_id, a.mailbox_item_id, a.type, a.label, a.task_id,
+       a.started_at, a.work_unit_ref, a.created_at,
+       COALESCE(json_extract(e.metadata, '$.endedAt'), a.ended_at) AS ended_at,
+       COALESCE(json_extract(e.metadata, '$.totalTokens'), a.total_tokens) AS total_tokens,
+       COALESCE(json_extract(e.metadata, '$.totalTools'), a.total_tools) AS total_tools,
+       COALESCE(json_extract(e.metadata, '$.success'), a.success) AS success,
+       COALESCE(json_extract(e.metadata, '$.summary'), a.summary) AS summary,
+       COALESCE(json_extract(e.metadata, '$.keywords'), a.keywords) AS keywords
+FROM agent_activities a
+LEFT JOIN (
+  SELECT activity_id, metadata,
+         ROW_NUMBER() OVER (PARTITION BY activity_id ORDER BY seq DESC, id DESC) AS rn
+  FROM agent_activity_logs
+  WHERE type = 'activity_end'
+) e ON e.activity_id = a.id AND e.rn = 1`;
+
 export class SqliteActivityRepo {
   constructor(private db: DatabaseSync) {}
 
@@ -4103,21 +4132,22 @@ export class SqliteActivityRepo {
       );
   }
 
-  updateActivity(
+  /**
+   * C10-0E（G8）：「活动结束/更正」的唯一写路径 —— 追加一条 activity_end 事件。
+   * seq 与 work_unit_ref 都由子查询派生（与 insertActivityLog 同源），调用方不再传一遍。
+   * metadata 用内联 JSON、**不做 blob 外置**：读侧派生靠 json_extract 取字段，
+   * 外置指针会让派生静默落空；payload 有界（core 把 summary 截到 500 字符）。
+   */
+  appendActivityEnd(
     activityId: string,
-    update: { endedAt?: string; totalTokens?: number; totalTools?: number; success?: boolean; summary?: string; keywords?: string }
+    end: { endedAt: string; totalTokens: number; totalTools: number; success: boolean; summary?: string; keywords?: string }
   ): void {
-    const sets: string[] = [];
-    const vals: SqlParams = [];
-    if (update.endedAt !== undefined) { sets.push('ended_at = ?'); vals.push(update.endedAt); }
-    if (update.totalTokens !== undefined) { sets.push('total_tokens = ?'); vals.push(update.totalTokens); }
-    if (update.totalTools !== undefined) { sets.push('total_tools = ?'); vals.push(update.totalTools); }
-    if (update.success !== undefined) { sets.push('success = ?'); vals.push(update.success ? 1 : 0); }
-    if (update.summary !== undefined) { sets.push('summary = ?'); vals.push(update.summary); }
-    if (update.keywords !== undefined) { sets.push('keywords = ?'); vals.push(update.keywords); }
-    if (sets.length === 0) return;
-    vals.push(activityId);
-    this.db.prepare(`UPDATE agent_activities SET ${sets.join(', ')} WHERE id = ?`).run(...vals);
+    this.db
+      .prepare(
+        'INSERT INTO agent_activity_logs (activity_id, seq, type, content, metadata, work_unit_ref, created_at) ' +
+          'VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM agent_activity_logs WHERE activity_id = ?), ?, ?, ?, (SELECT work_unit_ref FROM agent_activities WHERE id = ?), ?)'
+      )
+      .run(activityId, activityId, 'activity_end', end.summary ?? '', toJson(end), activityId, now());
   }
 
   insertActivityLog(data: {
@@ -4172,7 +4202,7 @@ export class SqliteActivityRepo {
     const limit = opts?.limit ?? 30;
     params.push(limit);
 
-    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(r => this.mapActivity(r));
   }
@@ -4193,12 +4223,12 @@ export class SqliteActivityRepo {
   }
 
   getActivity(activityId: string): ActivityRecord | null {
-    const r = this.db.prepare('SELECT * FROM agent_activities WHERE id = ?').get(activityId) as Record<string, unknown> | undefined;
+    const r = this.db.prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE id = ?`).get(activityId) as Record<string, unknown> | undefined;
     return r ? this.mapActivity(r) : null;
   }
 
   getByMailboxItemId(mailboxItemId: string): ActivityRecord | null {
-    const r = this.db.prepare('SELECT * FROM agent_activities WHERE mailbox_item_id = ? LIMIT 1').get(mailboxItemId) as Record<string, unknown> | undefined;
+    const r = this.db.prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE mailbox_item_id = ? LIMIT 1`).get(mailboxItemId) as Record<string, unknown> | undefined;
     return r ? this.mapActivity(r) : null;
   }
 
@@ -4207,7 +4237,7 @@ export class SqliteActivityRepo {
     if (ids.length === 0) return result;
     const placeholders = ids.map(() => '?').join(',');
     const rows = this.db
-      .prepare(`SELECT * FROM agent_activities WHERE mailbox_item_id IN (${placeholders})`)
+      .prepare(`SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE mailbox_item_id IN (${placeholders})`)
       .all(...ids) as Record<string, unknown>[];
     for (const r of rows) {
       const rec = this.mapActivity(r);
@@ -4237,7 +4267,7 @@ export class SqliteActivityRepo {
     }
 
     params.push(limit);
-    const sql = `SELECT * FROM agent_activities WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
+    const sql = `SELECT * FROM (${ACTIVITY_CURRENT_SELECT}) WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC LIMIT ?`;
     const rows = this.db.prepare(sql).all(...params) as Record<string, unknown>[];
     return rows.map(r => this.mapActivity(r));
   }
@@ -4571,18 +4601,25 @@ export class SqliteMailboxRepo {
     dropReason?: string | null;
     /** C3：catch-all 概览桶 id（退信行归集目标）。 */
     bounceTarget?: string | null;
-    /** C8：入队即已知的回合身份（与行同时写入；后补身份仍走 `linkMailboxItem`）。 */
+    /**
+     * C8：入队即已知的身份（与行同时写入）。
+     *
+     * C10-0B：**入队是这一列的唯一写者**。曾经存在一条「后补身份」的 UPDATE
+     * 路径（先入队、再改写这列），它不碰内存里的 item —— 而决策台账读的是内存，
+     * 于是同一行在库里带身份、在台账里永远 NULL。那条路径已删除。
+     */
     workUnitRef?: string | null;
   }): boolean {
     const res = this.db
       .prepare(
         // `work_unit_ref` 在这里**也要写**：C8 之后它是入队参数，入队那一刻就已知。
         // 2026-11-14 真机证据：生产者（task/requirement/mention/review_request）
-        // 都传了 `workUnitRef`，但 INSERT 不写这一列、又没有一处调 `linkMailboxItem`，
-        // 于是取消投递带上了 `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、
-        // 没身份，`turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
+        // 都传了 `workUnitRef`，但 INSERT 不写这一列，于是取消投递带上了
+        // `invalidatesPremise:true` 却 `ref=NULL` —— 事实有标志、没身份，
+        // `turn-delta` 按 ref 匹配永远匹配不到，矛盾分支依旧不可达。
         //
-        // 后补身份仍走 `linkMailboxItem()`（活开始后才拿到身份的路径）。
+        // C10-0B：INSERT 是这一列的**唯一**写点；任何“入队后再 UPDATE 这一列”的
+        // 路径都是第二个建适点（已全部删除）。
         `INSERT INTO mailbox_items (id, agent_id, source_type, priority, status, payload, metadata, queued_at, dedup_key,
                                     envelope, message_id, signal_class, intent, drop_reason, bounce_target, work_unit_ref)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -6053,18 +6090,6 @@ export class SqliteWorkUnitRepo {
     return typeof n === 'bigint' ? Number(n) : n;
   }
 
-  /**
-   * 让 C6 的墓碑变活：把 `mailbox_items.work_unit_ref` 写成本 WU 的 ref。
-   *
-   * 只有这一处写这列（本文件 + 本方法），而且只在**实体已存在之后**写：
-   * 顺序反过来就是 C6 刻意避免的「先建引用后建实体」。
-   */
-  linkMailboxItem(itemId: string, ref: string): boolean {
-    const res = this.db
-      .prepare('UPDATE mailbox_items SET work_unit_ref = ? WHERE id = ?')
-      .run(ref, itemId);
-    return ((res as { changes?: number }).changes ?? 0) === 1;
-  }
 }
 
 // ─── Integration ─────────────────────────────────────────────────────────────

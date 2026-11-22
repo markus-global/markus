@@ -29,6 +29,7 @@ import {
   resolveEntityKeys,
   isStrictStateItem,
   routeMailboxItem,
+  PLATFORM_INTERNAL_SOURCE_TYPES,
 } from '@markus/shared';
 import type { EventBus } from './events.js';
 import { bumpMergeCount, displayLabelOf } from './mailbox-summary.js';
@@ -192,12 +193,16 @@ export interface EnqueueOptions {
    * 而类型上分不出来。2026-11-14 六个同族缺陷全是后者：某条路径没传，下游当默认。
    *
    * - `entity` / `turn`：带 ref（实体身份 / 当前回合身份）
-   * - `pending-link`：活开始后才拿到身份 → 登记为待链接，由启动清扫兔底
    * - `platform-internal`：本质无实体（回执 / 内部事件），不报错
+   *
+   * C10-0B：**删除了「身份迟到」这一档取值**。它是一张许可证：允许「先入队、
+   * 再由另一个写者补 DB 列」，而补写只改列、不改内存，于是
+   * 台账（读内存）与库分成两套真相 —— 真机 94% 的 pick 决策 `work_unit_ref IS NULL`
+   * 就是这么来的。现在身份只有**一个**建造点：入队时。
    *
    * 不声明且没 ref ⇒ `enqueue()` 报错并计数（不再静默）。
    */
-  refOrigin?: 'entity' | 'turn' | 'pending-link' | 'platform-internal';
+  refOrigin?: 'entity' | 'turn' | 'platform-internal';
   /**
    * C8-B：更正链 —— 本条事实替换了哪些既有事实的 id。
    * 结构字段（不解析正文）；非空即「与正在执行的前提矛盾」。
@@ -432,15 +437,12 @@ export function rehydrateStructuredFields(row: {
  *
  * 它们带 NULL ref 是正确语义，而不是“忘了传”——把这条名单写成数据，
  * 比在每个生产者里各写一句注释可审计。
+ *
+ * C10-0B：名单本身在 `@markus/shared`（`PLATFORM_INTERNAL_SOURCE_TYPES`），
+ * 因为身份门禁的 SQL 也要用它（`NOT IN (...)`）。两份名单 = 同一个事实两个写者，
+ * 而这张卡修的正是这个句式。导出的**类型**是 Set 是因为入队守卫要 O(1) 判定。
  */
-const PLATFORM_INTERNAL_SOURCES: ReadonlySet<string> = new Set([
-  'heartbeat',
-  'system_event',
-  'session_reply',
-  'memory_consolidation',
-  'callback_result',
-  'workflow_update',
-]);
+export const PLATFORM_INTERNAL_SOURCES: ReadonlySet<string> = new Set(PLATFORM_INTERNAL_SOURCE_TYPES);
 
 /** 累计“没声明的空身份”次数，供诊断接口 / CI 校验读取。 */
 let unclaimedIdentityCount = 0;
@@ -1283,8 +1285,11 @@ export class AgentMailbox {
     }
 
     // ── C8-P0：缺失不再静默 ───────────────────────────────────────────
-    // 判据：`workUnitRef` 为空时，调用方必须**表态**（pending-link 或
-    // platform-internal）。没表态 = 忘了传 —— 这正是今晚六层缺陷的共同句式。
+    // 判据：`workUnitRef` 为空时，调用方必须**表态**（`platform-internal`）。
+    // 没表态 = 忘了传 —— 这正是今晚六层缺陷的共同句式。
+    // C10-0B：`platform-internal` 之外**没有**第二种表态。旧实现还有一档「身份
+    // 稍后由另一个写者补上」，而那个写者只能改 DB 列 → 内存永远 null。
+    // 身份必须在这里就是事实，否则「入队」与「有身份」是两件事。
     // C10-0A：提示升级为两条出路——实体信号用唯一构造器 WORK_UNIT_REF 声明 ref
     // （人触发的通知路径结构上拿不到回合身份，旧提示对它们不可行动）。
     if (!item.workUnitRef && !options?.refOrigin && !PLATFORM_INTERNAL_SOURCES.has(sourceType)) {
@@ -1292,7 +1297,10 @@ export class AgentMailbox {
       const msg =
         `mailbox.enqueue(${sourceType}) has no workUnitRef and no refOrigin — ` +
         'identity would be silently NULL. Pass workUnitRef built by WORK_UNIT_REF ' +
-        '(entity identity), or declare refOrigin: "pending-link" | "platform-internal"';
+        '(entity identity) at enqueue time, or — if this source genuinely has no ' +
+        'entity (platform wake / receipt) — declare refOrigin: "platform-internal"';
+      // C10-0B：提示里不再有第二条出路。旧提示曾让“晚点再补身份”看起来合法，
+      // 而“补”的写者只改 DB 列，台账读的是内存 → 同一事实两套真相。
       // 默认**拒绝**：可选的严格性不守任何东西。旧实现只在 CI 环境变量下抛错，
       // 生产走「记日志 + 放行」，于是 242,496 条输入里只有 0.18% 带身份
       //（2026-11-18 实测）—— 校验存在，但它不拦任何人。
@@ -2104,6 +2112,8 @@ export class AgentMailbox {
    * 「复用原行回队」而不是「同键 → 幂等抑制」（后者会让该行永远停在 `processing`）。
    *
    * 身份（C9 相邻路径）：**复用既有行 = 继承该行的 `work_unit_ref`，不在本调用点重新表态**。
+   * C10-0B：回队也只交回调用方手里那一份 ref（有就 `entity`，没有就不表态）；
+   * 非内部来源缺 ref 时守卫照常拒绝 —— 缺身份的回队是缺陷，不是豁免理由。
    *
    * 机制证据（真机探针，docs/records/cut9-adjacent-identity-paths-2026-11-15.md）：
    * `requeueItem()` 的 UPDATE 只改 `status / queued_at / started_at / completed_at /
@@ -2113,8 +2123,9 @@ export class AgentMailbox {
    * 因此本方法只做两件事：
    * 1. 把调用方手里**已经持有**的 ref 交回去（`item.workUnitRef`），否则回队后的内存项会
    *    丢掉原投递带的身份（`enqueue` 用 `options.workUnitRef ?? null` 重建 item）；
-   * 2. 没有 ref 时显式表态：`pending-link` —— 身份不由本调用点决定，行才是权威
-   *    （task / a2a 的身份都是入队后由 `linkMailboxItem` 迟到的）。
+   * 2. 没有 ref 时不表态（`undefined`）：非内部来源由守卫拒绝（fail closed），
+   *    内部来源由闭集豁免。C10-0B 之前这里显式声明“身份迟到”，那等于允许一条
+   *    迟到的回队 —— 迟到 = 由第二个写者补 DB 列 = 台账与库两套真相。
    *
    * @returns 回队后的 item（`status === 'queued'`）；若既有行已收口则返回被抑制的 item。
    */
@@ -2126,7 +2137,7 @@ export class AgentMailbox {
       round: item.round,
       reuseItemId: item.id,
       workUnitRef: item.workUnitRef ?? null,
-      refOrigin: item.workUnitRef ? 'entity' : 'pending-link',
+      refOrigin: item.workUnitRef ? 'entity' : undefined,
     });
   }
 
