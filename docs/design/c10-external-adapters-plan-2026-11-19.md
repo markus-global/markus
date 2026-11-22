@@ -38,9 +38,12 @@ This doc is the execution plan only; it does not redefine concepts.
   in `sqlite_master`, no new table since 11-19). Post-restart: `pick` decisions 2/2
   carry a resolving ref; `requirement_update` 1/1 carries a ref. `agents.autonomy`:
   **240/240 = 'act'** (no observe-mode agent today).
-- Identity audit: `state = epoch-unset` — the honest sentinel reading. The epoch
-  constant `IDENTITY_FIX_EPOCH` (shared `identity-audit.ts`) is still `null` at tip;
-  finalization is C10-0G, not a silent assumption.
+- Identity audit: `state = epoch-unset` at tip (sentinel). **Owner decision
+  2026-11-22 (night): the audit is verification scaffolding, not a product
+  mechanism.** C10-0G deletes the per-instance auto-run clock, keeps the script +
+  gates + CI self-test, and replaces the periodic run with a scheduled task on the
+  Owner's instance only. The epoch becomes a local CLI argument; the shipped
+  product constant is deleted. Users never run the audit.
 - Master plan §5.1 rule 0 stands: nothing enters `main` until all cuts are complete
   and accepted. All probes run against feature-branch builds.
 
@@ -82,10 +85,15 @@ records and the dated repo records; this table is the authoritative outcome.
 | 0F L4 baseline + L1 wording | **Cancelled by adjudication** (requirement comment `rc_82a1461ab6e84971`): G10 repo-side already aligned (no "no Thread symbol" claim, no 53/55-table contradiction); G9 deferred — it is new instrumentation, not residual closure, and a baseline across churning build epochs has no explanatory power. **Restart condition:** after 0B's fix is live and the instance runs 7 days in a single build epoch, re-evaluate; if still no consumer, close G9 instead of measuring | requirement `req_1a8c554721a5d43576a28590` completed 2026-11-22 |
 | CI wording (extra card) | **Done** — step names aligned with `continue-on-error` reality; removal conditions written | #475 train |
 
-**Post-restart obligation still open (the only Part 1 tail, and it is owned):**
-the 0B closure protocol (disposition record §5) — epoch finalization commit + live
-post-epoch probe + two consecutive daily readings — was waiting for the Owner
-restart. The restart happened 2026-11-22 20:18:34 CST. It is now card **C10-0G**.
+**Post-restart obligation — superseded by Owner decision 2026-11-22 (night):**
+the 0B closure protocol (disposition record §5: finalize a product-wide epoch +
+two daily readings on the always-on clock) was waiting for the Owner restart; the
+restart happened 2026-11-22 20:18:34 CST. But the Owner then adjudicated the
+audit's final shape: **structure + CI guards are the permanent defense; the
+periodic real-DB check is a local scheduled task on the Owner's instance, never
+shipped to users, with a written retirement condition.** Card **C10-0G** now
+deletes the auto-run mechanism instead of finalizing a global epoch; it appends a
+dated correction to the disposition record (history is not rewritten).
 
 **Structural lessons kept (they constrain Part 2):**
 - One identity, N construction points is the same R1 disease as one fact, N writers.
@@ -93,6 +101,12 @@ restart. The restart happened 2026-11-22 20:18:34 CST. It is now card **C10-0G**
 - A permanently-red alarm trains people to ignore it; a sentinel that reports
   "epoch unset" instead of green is the honest instrument. Never preset a planned
   timestamp as the epoch — that bets on the restart being on time.
+- **An audit is verification scaffolding, not a product mechanism** (Owner
+  2026-11-22 night). Fixing the code is the cure; the real-DB check only proves
+  the cure holds and catches the next unknown leak. It runs where it is needed
+  (the Owner's instance, as a scheduled task with a retirement condition), never
+  as a per-user daily alarm. A global wall-clock epoch for an instance-scoped
+  fact is a scope error — it manufactures false alarms for late upgraders.
 - Rewrites can silently delete an invariant's only consumer (§0.1 fact 2). After any
   mechanism rewrite, grep the witness registry, not just the tests that survived.
 
@@ -112,26 +126,73 @@ the post-0B identity reality:
 > `external_thread_ref → work_unit_ref`. `verified=false` inbound can only
 > `observe`. No new table without a writer and real traffic.**
 
-### C10-0G · Epoch finalization + 0B post-restart closure (trigger already fired)
+### C10-0G · Audit localization: delete the product-wide daily mechanism, replace with a local scheduled task
 
-**What.** Execute the disposition record §5 protocol, now unblocked by the
-2026-11-22 20:18:34 CST restart into the fix build:
-1. Re-verify the serving build contains #475 (symbol probes) and that this was the
-   first restart into it. Epoch reading already taken: `ps -o lstart= -p 28013` →
-   `日 11月/22 20:18:34 2026` (CST) = **2026-11-22T12:18:34Z**. The executor records
-   the command + raw output in the disposition record; if the instance restarted
-   again before execution, the epoch stays the FIRST fix-build start, not the latest.
-2. One finalization commit: `IDENTITY_FIX_EPOCH` null → value, disposition record
-   updated (source command + raw output + reading time), test expectations updated.
-   One commit, no second writer.
-3. Live probe: real-DB audit post-epoch violations = 0 (reading + timestamp).
-4. Two consecutive daily audit runs with timestamped dated records
-   (`~/.markus/records/identity-audit/`; first run is staggered, not at startup).
-   This card spans ~2 days by construction — that is the protocol, not a stall.
+**Decision (Owner 2026-11-22 night).** The permanent defense is structure (single
+constructor, fail-closed assembly) + CI guards/behavior tests — that is what users
+receive. The periodic real-DB audit is verification scaffolding: it runs ONLY as a
+scheduled task on the Owner's local instance, never ships to users, and retires
+once C10's new construction points are proven clean on real data. This supersedes
+the disposition record §5 protocol (global epoch finalization + always-on daily
+clock); 0G appends a dated correction to that record.
 
-**Acceptance.** Disposition record §5 items 1–4 all evidenced; sentinel state gone;
-`--self-test` green; a seeded post-epoch violation still alerts (the instrument
-still bites after finalization).
+**Deletion inventory (measured at `63f2277b` — the auto-run mechanism, file:line):**
+- `packages/core/src/agent.ts` — `IdentityAuditPort` type; `identityAuditPort`
+  option (:388), field (:779), `setIdentityAuditPort` (:806), constructor wiring
+  (:1345-1346); `IDENTITY_AUDIT_INTERVAL_MS` (:1227),
+  `IDENTITY_AUDIT_INITIAL_DELAY_MS()` (:1235); the `identity-audit` clock
+  registration (:1838-1846); `runIdentityAuditTick` (:1895).
+- `packages/core/src/agent-manager.ts` — `IdentityAuditPort` import (:27);
+  `identityAuditPortFactory` (:3871), `setIdentityAuditPortFactory` (:3872-3874),
+  `applyIdentityAuditPort` (:3882-3884) + its call sites.
+- `packages/org-manager/src/api-server.ts` — `createIdentityAuditPort` import
+  (:122) + the factory wiring (:2146-2150ff).
+- `packages/org-manager/src/identity-audit-runner.ts` — **delete the whole file**
+  (the in-process daily port: runDaily, records writer, alerting).
+- Tests that die with the mechanism: `core/test/identity-audit-clock-source.test.ts`,
+  `org-manager/test/identity-audit-runner.test.ts`.
+
+**Keep (permanent net + on-demand instrument):**
+- `scripts/identity-audit.mjs` — the CLI audit; the scheduled task's entry point.
+- `packages/shared/src/identity-audit.ts` — `makeIdentityGates` + gate closed set
+  + `--self-test` (CI's permanent regression net).
+- `identity-single-constructor.guard.test.ts` — the structural guard stays.
+
+**Epoch localization.** Delete the shipped `IDENTITY_FIX_EPOCH` product constant
+and `resolveIdentityFixEpoch`'s constant default; `makeIdentityGates` requires an
+explicit epoch. The script gains `--epoch <ts>`: the Owner's local line =
+**2026-11-22T12:18:34Z** (first fix-build process start, `ps -o lstart= -p 28013`,
+evidence already recorded). The self-test keeps injecting its fixture epoch.
+`shared/test/identity-audit-epoch.test.ts` is rewritten to bite the new contract
+(no product constant; gates refuse a missing epoch) — the sentinel-era test dies
+with the sentinel.
+
+**Replacement.** A Markus scheduled task (daily, Owner's instance only, assignee
+CTO, reviewer Owner): run
+`node scripts/identity-audit.mjs --db ~/.markus/data.db --epoch 2026-11-22T12:18:34Z`,
+write the dated reading under `~/.markus/records/identity-audit/` (the task becomes
+the single writer of those records), alert only on actionable violations.
+**Retirement condition (written into the card + disposition record):** retire the
+scheduled task once C10's external construction points are proven clean on real
+data. No permanent daily-check institution.
+
+**Guard that bites (red first).** New architecture-guard invariant: no auto-run
+audit mechanism in `packages/*/src` (`identityAuditPort`, the `identity-audit`
+clock registration, `createIdentityAuditPort`). On the current tree the guard is
+RED (the mechanism exists); after deletion it is green; seeding any symbol back
+turns it red again — the same resurrection-guard pattern as the marketplace freeze.
+
+**Acceptance.**
+- Deletion grep = 0 in `packages/*/src` for every inventory symbol; both mechanism
+  test files gone; the resurrection guard bites (seed → red).
+- `--self-test` green; script with `--epoch` on the real DB: post-epoch violations
+  = 0 (reading + timestamp; the 21:1x probe already shows pick 6/6 with ref,
+  0 identity-less requirement_update, 0 dangling).
+- Scheduled task created; first run recorded; retirement condition written into
+  the disposition record's dated correction.
+- Full-repo residue grep (docs / prompts / fixtures): the c10-0b design doc and
+  disposition record get dated correction notes, not silent rewrites.
+- Full regression in CI order; typecheck / lint / architecture-guard green.
 
 ### C10-A · Identity columns and envelope slots (H3 / H5 / H6)
 
@@ -360,7 +421,7 @@ anything under `packages/*/src`, `scripts/`, or a test file runs both layers.
 
 | Card | Seam | Depends on | Owner gate |
 |---|---|---|---|
-| C10-0G | epoch finalization + 0B post-restart closure (disposition §5) | — (restart fired 11-22 20:18:34) | — |
+| C10-0G | audit localization: delete product daily mechanism + local scheduled task + closure verification | — | — |
 | C10-A | identity columns + envelope slots + slug-ownership enforcement | — (parallel with 0G) | — |
 | C10-B | adapter contract + external ref constructor + webhook + RSS | 0G, A | — |
 | C10-B2 | IM inbound envelope-ization (Feishu real traffic, routing diff=0) | B | — |
