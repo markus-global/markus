@@ -21,10 +21,6 @@ interface BackgroundSession {
   process: ChildProcess;
   /** Whether the completion has been consumed via drainCompletedNotifications */
   notified: boolean;
-  /** Resolves when the process exits (any cause). Idempotent; lets a turn await
-   *  the result in-band (`background_wait`) instead of via a separate turn. */
-  done: Promise<void>;
-  resolveDone: () => void;
   /**
    * The wrapper leads its own POSIX process group (spawned `detached`), so
    * `kill(-pid)` reaches every descendant instead of only the shell.
@@ -43,11 +39,11 @@ const sessions = new Map<string, BackgroundSession>();
 let sessionCounter = 0;
 
 /**
- * Results already read IN-TURN (`background_wait`, or `process poll`/`log` on a
- * finished session). A completion whose result the launching turn already
- * consumed must NOT spawn another attention cycle — that turn would burn a full
- * context re-injection re-deriving what the agent already knows (measured:
- * ~53k tokens / 0 tools / HEARTBEAT_OK per redundant callback).
+ * Results already delivered IN-TURN (injectTurnDelta) or read via `process
+ * poll`/`log` on a finished session. A completion whose result the launching
+ * turn already consumed must NOT spawn another attention cycle — that turn
+ * would burn a full context re-injection re-deriving what the agent already
+ * knows (measured: ~53k tokens / 0 tools / HEARTBEAT_OK per redundant callback).
  *
  * Kept separate from `sessions` so `process clear` cannot erase the dedupe
  * evidence while a queued callback item is still waiting. TTL-bounded.
@@ -56,16 +52,19 @@ const consumedResults = new Map<string, number>();
 const CONSUMED_TTL_MS = 60 * 60 * 1000;
 const CONSUMED_MAX = 1000;
 
-function markResultConsumed(session: BackgroundSession): void {
-  if (session.exitCode === null) return;
-  session.notified = true;
-  consumedResults.set(session.id, Date.now());
-  // Close the pending question: the completion bus peeks the registry for
-  // lineage, so a resolved entry means "nothing left to deliver". If the bus
-  // already fired (completion preceded the read), the queued mailbox item is
-  // skipped at processing time via wasBackgroundResultConsumed — both
-  // orderings are covered by the same consumption fact.
-  pendingCallbackRegistry.resolve(session.id);
+/**
+ * Mark a background session's final result consumed, by id. SINGLE writer of
+ * `consumedResults`. Called by in-turn delivery (injectTurnDelta) and by
+ * `process poll`/`log` (via markResultConsumed). Resolving the registry entry
+ * means "nothing left to deliver"; if the completion bus already fired, the
+ * queued mailbox item is skipped via wasBackgroundResultConsumed — both
+ * orderings are covered by the same consumption fact.
+ */
+export function markBackgroundResultConsumed(sessionId: string): void {
+  const session = sessions.get(sessionId);
+  if (session && session.exitCode !== null) session.notified = true;
+  consumedResults.set(sessionId, Date.now());
+  pendingCallbackRegistry.resolve(sessionId);
   if (consumedResults.size > CONSUMED_MAX) {
     const now = Date.now();
     for (const [id, at] of consumedResults) {
@@ -79,18 +78,9 @@ function markResultConsumed(session: BackgroundSession): void {
   }
 }
 
-/**
- * Sessions a turn is awaiting IN-BAND right now (`background_wait` in flight).
- * The completion bus fires synchronously on exit — BEFORE the waiting turn's
- * continuation resumes — so "consumed" alone cannot suppress that delivery.
- * While a waiter is active the result belongs to that turn: the bus defers,
- * and `background_wait` consumes + resolves the registry entry itself.
- */
-const activeWaiters = new Map<string, number>();
-
-/** True while some turn is inside `background_wait` for this session. */
-export function hasActiveBackgroundWaiter(sessionId: string): boolean {
-  return (activeWaiters.get(sessionId) ?? 0) > 0;
+function markResultConsumed(session: BackgroundSession): void {
+  if (session.exitCode === null) return;
+  markBackgroundResultConsumed(session.id);
 }
 
 /** True when this session's final result was already returned to a turn. */
@@ -164,8 +154,6 @@ export function drainCompletedNotifications(): Array<{
 }
 
 function notifyCompletion(session: BackgroundSession): void {
-  // Resolve in-turn waiters FIRST — even when no bus listener exists.
-  session.resolveDone();
   if (completionListeners.length === 0) return;
   const notification = {
     sessionId: session.id,
@@ -183,7 +171,7 @@ function notifyCompletion(session: BackgroundSession): void {
 export function createBackgroundExecTool(workspacePath?: string): AgentToolHandler {
   return {
     name: 'background_exec',
-    description: 'Run a shell command in the background. Returns immediately with a session ID. If you need the outcome to continue your current work (build/test/CI results), call "background_wait" with the session ID before ending the turn — the result arrives as a normal tool result in THIS turn. Use the "process" tool to poll, view logs, or kill. Ideal for long-running commands like dev servers, test suites, or builds. If you end the turn without consuming the result, a continuation turn notifies you when the process completes.',
+    description: 'Run a shell command in the background. Returns immediately with a session ID. When the command finishes, its full result is delivered back into THIS conversation: if your turn is still running it is injected before your next step; otherwise a continuation turn brings it to you. Use the "process" tool to poll, view logs, or kill. Ideal for long-running commands like dev servers, test suites, or builds.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -223,9 +211,6 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         },
       );
 
-      let resolveDone!: () => void;
-      const done = new Promise<void>(res => { resolveDone = res; });
-
       const session: BackgroundSession = {
         id,
         pid: child.pid ?? 0,
@@ -236,8 +221,6 @@ export function createBackgroundExecTool(workspacePath?: string): AgentToolHandl
         stderr: [],
         process: child,
         notified: false,
-        done,
-        resolveDone,
         // Trust the spawn contract: we passed `detached: !isWin`, so on POSIX
         // this child IS the leader of its own process group. Probing with `ps`
         // here is wrong — once the wrapper exits (self-daemonizing commands
@@ -458,108 +441,6 @@ export function createProcessTool(): AgentToolHandler {
         default:
           return JSON.stringify({ status: 'error', error: `Unknown action: ${action}` });
       }
-    },
-  };
-}
-
-/**
- * In-turn await for background sessions.
- *
- * First principle: the result of a background command BELONGS to the turn that
- * launched it. `background_wait` delivers that result as a normal tool result
- * in the SAME turn — same scenario, same tool pack, cheap append — instead of
- * severing the bond and re-entering as a fresh attention cycle (which paid a
- * full context re-injection, re-decided the scenario, and could not continue
- * the launching turn's reasoning).
- *
- * Consuming a result here suppresses the separate completion turn in BOTH
- * orderings: while this wait is in flight the completion bus defers to the
- * waiting turn (`hasActiveBackgroundWaiter` — the bus fires synchronously on
- * exit, before this continuation resumes); if completion preceded the read,
- * the already-queued mailbox item is skipped at processing time via
- * `wasBackgroundResultConsumed`.
- */
-export function createBackgroundWaitTool(): AgentToolHandler {
-  return {
-    name: 'background_wait',
-    description: 'Wait for background_exec session(s) to finish and return their results IN THIS TURN as a normal tool result. Use when you need the outcome to continue your current work (build/test/CI results): launch via background_exec, do other useful work, then background_wait before ending the turn. Consuming a result here suppresses the separate completion notification turn (no duplicate wake-up). If the timeout elapses first, still-running sessions keep their notification — you will be woken after this turn ends, or call background_wait again.',
-    inputSchema: {
-      type: 'object',
-      properties: {
-        session_ids: {
-          type: 'array',
-          items: { type: 'string' },
-          description: 'Background session IDs returned by background_exec (one or more; waits for all, sharing one deadline)',
-        },
-        timeout_ms: { type: 'number', description: 'Max milliseconds to wait (default 120000, max 600000)' },
-        tail: { type: 'number', description: 'Output lines from the end returned per session (default 50)' },
-      },
-      required: ['session_ids'],
-    },
-
-    async execute(args: Record<string, unknown>): Promise<string> {
-      const rawIds = args['session_ids'];
-      if (!Array.isArray(rawIds) || rawIds.length === 0 || rawIds.some(x => typeof x !== 'string')) {
-        return JSON.stringify({ status: 'error', error: 'session_ids must be a non-empty array of session ID strings' });
-      }
-      const ids = [...new Set(rawIds as string[])];
-      const rawTimeout = Number(args['timeout_ms']);
-      const timeoutMs = Math.min(Number.isFinite(rawTimeout) && rawTimeout > 0 ? rawTimeout : 120_000, 600_000);
-      const rawTail = Number(args['tail']);
-      const tail = Math.max(1, Number.isFinite(rawTail) && rawTail > 0 ? rawTail : 50);
-      const deadline = Date.now() + timeoutMs;
-      const results: Array<Record<string, unknown>> = [];
-
-      for (const id of ids) {
-        const s = sessions.get(id);
-        if (!s) {
-          results.push({ sessionId: id, status: 'not_found' });
-          continue;
-        }
-        if (s.exitCode === null) {
-          const remaining = deadline - Date.now();
-          if (remaining > 0) {
-            // Announce the in-band waiter BEFORE awaiting: the completion bus
-            // fires synchronously on exit and must defer to this turn.
-            activeWaiters.set(id, (activeWaiters.get(id) ?? 0) + 1);
-            try {
-              // Race the session's exit against the shared deadline; clear the
-              // timer when exit wins so a long timeout leaves no dangling handle.
-              await new Promise<void>(resolve => {
-                const timer = setTimeout(resolve, remaining);
-                void s.done.then(() => { clearTimeout(timer); resolve(); });
-              });
-            } finally {
-              const n = (activeWaiters.get(id) ?? 1) - 1;
-              if (n <= 0) activeWaiters.delete(id);
-              else activeWaiters.set(id, n);
-            }
-          }
-        }
-        if (s.exitCode !== null) {
-          markResultConsumed(s);
-          results.push({
-            sessionId: id,
-            status: 'completed',
-            exitCode: s.exitCode,
-            durationMs: Date.now() - s.startedAt,
-            stdout: s.stdout.slice(-tail).join('\n'),
-            stderr: s.stderr.slice(-tail).join('\n') || undefined,
-            orphanedDescendants: hasLeakedDescendants(s) || undefined,
-          });
-        } else {
-          results.push({ sessionId: id, status: 'running', uptimeMs: Date.now() - s.startedAt });
-        }
-      }
-
-      const anyRunning = results.some(r => r['status'] === 'running');
-      return JSON.stringify({
-        status: 'success',
-        results,
-        ...(anyRunning
-          ? { hint: 'Still-running sessions keep their completion notification — you will be woken after this turn ends, or call background_wait again.' }
-          : {}),
-      });
     },
   };
 }

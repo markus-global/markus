@@ -107,7 +107,7 @@ import { ConcurrentHandoffLog } from './concurrent-handoff.js';
 import { createBuiltinTools } from './tools/builtin.js';
 import { resolveOutputReserve } from './context-budgets.js';
 import { createSubagentTool, createParallelSubagentTool, type SubagentContext, type SubagentProgressCallback, type DelegationWorkUnitPort } from './tools/subagent.js';
-import { onBackgroundCompletion, drainCompletedNotifications, wasBackgroundResultConsumed, hasActiveBackgroundWaiter } from './tools/process-manager.js';
+import { onBackgroundCompletion, drainCompletedNotifications, wasBackgroundResultConsumed, markBackgroundResultConsumed } from './tools/process-manager.js';
 import { isToolErrorResult } from './tools/result.js';
 import { pendingCallbackRegistry, type CallbackType, type CallbackDelivery } from './pending-callback.js';
 import { AgentMailbox, type EnqueueOptions, type DeliveryOrigin, type MailboxIdentityPort } from './mailbox.js';
@@ -837,7 +837,27 @@ export class Agent {
         snapshotSeq,
       );
     }
-    const deltaRows: TurnDeltaRow[] = rows.map(item => ({
+    // 后台命令结果是「欠本回合的债」，不是一条 teaser 事实：把**完整结果内容**
+    // 在轮内投递给发起会话，并消费掉该行 —— 于是不再起续接回合。C8-B 的 segment
+    // 是 ≤600 字符的 label teaser，装不下几千字节的 stdout/stderr，所以结果走
+    // 完整内容尾追加，而非 teaser。cursor 已在上面推进过这些行，不会被重读。
+    const bgResultRows = rows.filter(item =>
+      item.sourceType === 'callback_result'
+      && (item.payload.extra as Record<string, unknown> | undefined)?.callbackType === 'background_exec');
+    const bgIds = new Set(bgResultRows.map(r => r.id));
+    for (const item of bgResultRows) {
+      const extra = (item.payload.extra ?? {}) as Record<string, unknown>;
+      const full = typeof item.payload.content === 'string' && item.payload.content.length > 0
+        ? item.payload.content
+        : (typeof item.payload.summary === 'string' ? item.payload.summary : '[background_exec] (no output)');
+      // 尾追加：既有消息字节一个不动（缓存前缀稳定）。
+      this.memory.appendMessage(sessionId, { role: 'user', content: full });
+      const cbId = typeof extra.callbackId === 'string' ? extra.callbackId : item.id;
+      markBackgroundResultConsumed(cbId); // 记 consumed + resolve 注册表（防重投）
+      this.mailbox.complete(item.id);     // 出队 → 注意力不会再起续接回合
+    }
+
+    const deltaRows: TurnDeltaRow[] = rows.filter(item => !bgIds.has(item.id)).map(item => ({
       id: item.id,
       sourceType: item.sourceType,
       seq: this.mailbox.seqOf(item.id),
@@ -1414,14 +1434,12 @@ export class Agent {
       // this agent owns the entry → claim. Only the registering agent delivers.
       const reg = pendingCallbackRegistry.get(notification.sessionId);
       if (!reg || reg.agentId !== this.id || reg.type !== 'background_exec') return;
-      // A turn is awaiting this result in-band RIGHT NOW (background_wait in
-      // flight). The bus fires synchronously on exit — before that turn's
-      // continuation resumes — so the result belongs to the waiting turn.
-      // Leave the entry: background_wait consumes + resolves it itself.
-      if (hasActiveBackgroundWaiter(notification.sessionId)) return;
+      // 结果投递：入队 callback 行。发起回合若仍在跑，其下一次 injectTurnDelta
+      // 会在轮内消费它（完整结果尾追加）；否则注意力循环驱动血缘续接。两条路都把
+      // 结果送回发起会话 —— 不再需要单独的等待工具。
       pendingCallbackRegistry.resolve(notification.sessionId);
-      // Result already returned in-turn (background_wait / process poll/log):
-      // a continuation turn would re-derive what the agent already knows.
+      // Result already delivered in-turn (injectTurnDelta) or read via process
+      // poll/log: a continuation turn would re-derive what the agent already knows.
       if (wasBackgroundResultConsumed(notification.sessionId)) return;
       const originSession = reg.originSessionId;
       const originScenario = asAgentScenario(reg.originScenario);
@@ -3492,7 +3510,7 @@ export class Agent {
           // 实测累计 200+ 个 `sys_*` 空壳会话）。契约规定「推不出来就保持当前会话，
           // 绝不静默新建」，所以这里不再兜底造 id。
           const originSessionId = extra.originSessionId as string | undefined;
-          // In-turn consumption dedupe: `background_wait` / `process poll` already
+          // In-turn consumption dedupe: injectTurnDelta / `process poll` already
           // returned this result to the launching turn. Another full attention
           // cycle would burn a context re-injection re-deriving known facts.
           const cbId = extra.callbackId as string | undefined;
@@ -9641,9 +9659,6 @@ export class Agent {
     // 注意：锁只覆盖**派发**，作业本身的执行期在锁外（见 docs/architecture/concurrent-processing.md §3.3）。
     background_exec:  { domain: GLOBAL_LOCK_DOMAIN },
     process:          { domain: GLOBAL_LOCK_DOMAIN },
-    // 与 process 同域：wait 会消费结果（写 consumed 表 + resolve 回调登记），
-    // 不是纯读；锁只覆盖消费动作，等待期在锁外。
-    background_wait:  { domain: GLOBAL_LOCK_DOMAIN },
     // ── 单体状态资源：按**资源**而非工具名登记 ──────────────────────────
     // `resource` 让「同一个可变状态」的所有工具（正式名 + 兼容别名）解析到同一个
     // 锁键。曾经 notebook 工具有「正式名 + 兼容别名」两套登记；别名现已删除，

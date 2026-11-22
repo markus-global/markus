@@ -187,7 +187,6 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
   goal_update:          { label: 'Updating goal',          icon: '🎯' },
   goal_status:          { label: 'Goal status',            icon: '🎯' },
   background_exec:      { label: 'Background command',     icon: '⌨' },
-  background_wait:      { label: 'Awaiting background result', icon: '⏳' },
   process:              { label: 'Managing process',       icon: '⚙' },
   feishu_send_message:  { label: 'Sending Feishu msg',     icon: '✉' },
   feishu_search_docs:   { label: 'Searching Feishu',       icon: '🔍' },
@@ -266,7 +265,7 @@ const TOOL_META: Record<string, { label: string; icon: string }> = {
 // TOOL_META, these inherit `currentColor`, so the tool icon itself can be tinted
 // green (success) / red (failure) instead of a separate status badge.
 const TOOL_ICON_NAME: Record<string, string> = {
-  shell_execute: 'square-terminal', background_exec: 'square-terminal', background_wait: 'square-terminal', process: 'settings',
+  shell_execute: 'square-terminal', background_exec: 'square-terminal', process: 'settings',
   list_terminals: 'square-terminal', new_terminal: 'square-terminal', select_terminal: 'square-terminal',
   close_terminal: 'square-terminal', read_terminal: 'square-terminal', write_terminal: 'square-terminal',
   exec_terminal: 'square-terminal',

@@ -15,7 +15,7 @@ import type { AgentToolInfo } from '../api.ts';
 export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   { id: 'files', prefixes: ['file_read', 'file_write', 'file_edit', 'apply_patch'] },
   { id: 'search', prefixes: ['grep_search', 'glob_find', 'list_directory'] },
-  { id: 'runtime', prefixes: ['shell_execute', 'background_exec', 'background_wait', 'process'] },
+  { id: 'runtime', prefixes: ['shell_execute', 'background_exec', 'process'] },
   { id: 'terminal', prefixes: ['terminal__', 'list_terminals', 'new_terminal', 'select_terminal', 'close_terminal', 'read_terminal', 'write_terminal', 'exec_terminal'] },
   { id: 'web', prefixes: ['web_search', 'web_fetch', 'web_extract'] },
   { id: 'multimodal', prefixes: ['generate_image', 'text_to_speech', 'speech_to_text', 'generate_video', 'describe_image', 'upload_reference'] },

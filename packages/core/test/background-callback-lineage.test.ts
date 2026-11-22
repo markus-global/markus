@@ -24,8 +24,8 @@ import type { MailboxItem } from '@markus/shared';
 import { pendingCallbackRegistry } from '../src/pending-callback.js';
 import {
   createBackgroundExecTool,
-  createBackgroundWaitTool,
   createProcessTool,
+  markBackgroundResultConsumed,
 } from '../src/tools/process-manager.js';
 
 let tempDir: string;
@@ -81,7 +81,6 @@ function cbItem(extra: Record<string, unknown>): MailboxItem {
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 const exec = createBackgroundExecTool();
-const wait = createBackgroundWaitTool();
 
 async function launchReal(command: string): Promise<string> {
   const r = JSON.parse(await exec.execute({ command, timeout_seconds: 30 }));
@@ -161,33 +160,40 @@ describe('完成总线：lineage 从 durable registry 回放（真实进程）',
     expect(pendingCallbackRegistry.get(id)).toBeUndefined();
   });
 
-  it('回合内已消费（wait-before-exit）→ 不再投递延续回合', async () => {
+  it('轮内消费（injectTurnDelta）后，排队回调项在处理时被跳过，不烧注意力周期', async () => {
     const agent = createTestAgent('agt_lin_suppress');
-    const seen: unknown[] = [];
-    vi.spyOn(agent as unknown as { enqueueToMailbox: (...a: unknown[]) => void }, 'enqueueToMailbox')
-      .mockImplementation((...a) => { seen.push(a); });
-
-    const id = await launchReal('sleep 0.2; echo consumed');
-    agent.registerBackgroundSession(id, 'task_t1_r1', 'cmd', 60000, 'task_execution');
-    // The launching turn reads the result in-band BEFORE the process exits.
-    const r = JSON.parse(await wait.execute({ session_ids: [id], timeout_ms: 5000 }));
-    expect(r.results[0].status).toBe('completed');
-    await sleep(400); // completion fires — registry already resolved → no delivery
-    expect(seen.length).toBe(0);
-  });
-
-  it('exit-before-wait：已排队的回调项在处理时被跳过，不烧注意力周期', async () => {
-    const agent = createTestAgent('agt_lin_skip');
-    vi.spyOn(agent as unknown as { enqueueToMailbox: (...a: unknown[]) => void }, 'enqueueToMailbox')
-      .mockImplementation(() => {});
     const handled: string[] = [];
     vi.spyOn(agent as unknown as { handleMessage: (c: string) => Promise<string> }, 'handleMessage')
       .mockImplementation(async (c) => { handled.push(c); return 'done'; });
 
     const id = await launchReal('echo early');
     agent.registerBackgroundSession(id, 'task_t1_r1', 'cmd', 60000, 'task_execution');
-    await sleep(400); // bus fired first; the item would already be queued
-    await wait.execute({ session_ids: [id], timeout_ms: 5000 }); // turn consumes it
+    await sleep(400); // bus fired first; the callback row is already queued
+    // The launching turn consumes the result in-turn (as injectTurnDelta does).
+    markBackgroundResultConsumed(id);
+
+    const reply = await (agent as unknown as {
+      processMailboxItemCore: (i: MailboxItem) => Promise<string>;
+    }).processMailboxItemCore(cbItem({
+      callbackId: id, callbackType: 'background_exec',
+      originSessionId: 'task_t1_r1', scenario: 'task_execution',
+    }));
+    expect(handled.length).toBe(0);
+    expect(reply).toContain('already consumed');
+  });
+
+  it('process poll 消费已完成会话后，排队回调项同样被跳过（exit-before-read）', async () => {
+    const agent = createTestAgent('agt_lin_skip');
+    const handled: string[] = [];
+    vi.spyOn(agent as unknown as { handleMessage: (c: string) => Promise<string> }, 'handleMessage')
+      .mockImplementation(async (c) => { handled.push(c); return 'done'; });
+
+    const id = await launchReal('sleep 0.2; echo p');
+    agent.registerBackgroundSession(id, 'task_t1_r1', 'cmd', 60000, 'task_execution');
+    await sleep(500); // bus fired; item queued
+    const proc = createProcessTool();
+    const p = JSON.parse(await proc.execute({ action: 'poll', sessionId: id }));
+    expect(p.running).toBe(false); // poll consumes the finished result
 
     const reply = await (agent as unknown as {
       processMailboxItemCore: (i: MailboxItem) => Promise<string>;

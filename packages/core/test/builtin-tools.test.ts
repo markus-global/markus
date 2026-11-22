@@ -49,17 +49,15 @@ describe('createBuiltinTools', () => {
       'web_search',
       'web_extract',
       'background_exec',
-      'background_wait',
       'process_manage',
     ]);
-    expect(tools).toHaveLength(14);
+    expect(tools).toHaveLength(13);
   });
 
   it('excludes background exec tools when disabled', () => {
     const tools = createBuiltinTools({ enableBackgroundExec: false });
     const names = tools.map(t => t.name);
     expect(names).not.toContain('background_exec');
-    expect(names).not.toContain('background_wait');
     expect(names).not.toContain('process_manage');
     expect(tools).toHaveLength(11);
   });

@@ -184,7 +184,6 @@ export {
   createListDirectoryTool,
   createPatchTool,
   createBackgroundExecTool,
-  createBackgroundWaitTool,
   createProcessTool,
   wasBackgroundResultConsumed,
   onBackgroundCompletion,

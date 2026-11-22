@@ -7,7 +7,7 @@ import { WebSearchTool } from './web-search.js';
 import { WebExtractTool } from './web-extract.js';
 import { createGrepTool, createGlobTool, createListDirectoryTool } from './search.js';
 import { createPatchTool } from './patch.js';
-import { createBackgroundExecTool, createBackgroundWaitTool, createProcessTool } from './process-manager.js';
+import { createBackgroundExecTool, createProcessTool } from './process-manager.js';
 import type { SecurityGuard } from '../security.js';
 
 export interface BuiltinToolsOptions {
@@ -41,7 +41,6 @@ export function createBuiltinTools(opts?: BuiltinToolsOptions): AgentToolHandler
 
   if (opts?.enableBackgroundExec !== false) {
     tools.push(createBackgroundExecTool(wp));
-    tools.push(createBackgroundWaitTool());
     tools.push(createProcessTool());
   }
 
