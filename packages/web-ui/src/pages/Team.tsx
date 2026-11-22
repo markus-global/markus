@@ -732,7 +732,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     messages, setMessages,
     sending, setSending,
     activities, setActivities,
-    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, writeConvMsgs,
+    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, readSessionMsgs, writeConvMsgs,
     setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
@@ -2858,7 +2858,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
   const chatStream = useChatStream({
     stateRef: streamVolatileRef,
-    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, readSessionMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
