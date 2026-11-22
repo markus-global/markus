@@ -96,13 +96,17 @@ export function isAuthoritativeIntent(intent: MailboxIntent | undefined): boolea
 }
 
 /**
- * 信封 `auth` 槽位（预留，H5）。本卡恒为 null —— 形状先定，C10 接外部邮件时才写值。
+ * 信封 `auth` 槽位（H5）。C10-A 冻结形状：**四个可空字段**。
+ * 在适配器真正做校验之前不写任何值（C10-D）—— buildDeliveryEnvelope 恒 `auth: null`。
+ * `verified` 是适配器对 SPF/DKIM/DMARC 结果的认证裁决；它**不是** `fromVerified`
+ * （路由信任位，H1）：一个是原始校验结论，一个是平台对身份的信任决定，两个事实。
  * 保留成可判别形状（而不是 `unknown`）是为了让「有没有验证过」在类型上无法被忽略。
  */
 export interface EnvelopeAuth {
-  spf: 'pass' | 'fail' | 'none';
-  dkim: 'pass' | 'fail' | 'none';
-  dmarc: 'pass' | 'fail' | 'none';
+  spf: 'pass' | 'fail' | 'none' | null;
+  dkim: 'pass' | 'fail' | 'none' | null;
+  dmarc: 'pass' | 'fail' | 'none' | null;
+  verified: boolean | null;
 }
 
 /**

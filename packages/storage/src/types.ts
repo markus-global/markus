@@ -331,6 +331,8 @@ export interface AddressBindingRow {
   /** 形如 `agent:<agentId>`，由 `agent_id` 派生，不是独立存储列（单一写者）。 */
   targetRef: string;
   agentId: string;
+  /** C10-A：绑定目标类别，冻结闭集 {agent, role, platform}，仅元数据（主计划 §4.9.6）。 */
+  kind: string | null;
   revokedAt: string | null;
   createdAt: string;
 }

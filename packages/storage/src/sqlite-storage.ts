@@ -13,7 +13,9 @@ import {
   normalizeSignalStatus, catchAllTargetOf,
   pickOrgSecretary, toStringArray,
   assertWorkUnitTransition,
+  checkOrgSlug, MARKUS_MAIL_DOMAIN,
   type AddressBindOutcome, type AddressResolution, type AddressRevokeOutcome,
+  type MailAddressRef,
   type MailboxItemType, type MailboxPayload, type UserInputQuestion, type UserInputAnswer,
   type WorkUnitRecord, type WorkUnitStatus,
 } from '@markus/shared';
@@ -116,7 +118,10 @@ CREATE TABLE IF NOT EXISTS organizations (
   manager_agent_id TEXT,
   settings TEXT DEFAULT '{}',
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- C10-A：注册表 slug。可空；唯一索引在迁移之后建。取值只有显式赋值
+  -- （createOrg 与一次性 backfill 共用 registryOrgSlug），绝不从 name 推导。
+  org_slug TEXT
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -154,7 +159,10 @@ CREATE TABLE IF NOT EXISTS agents (
   profile TEXT,
   last_heartbeat TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  -- C10-A：邮件别名（预留列，H3）。可空 = 未设置；UNIQUE(org_id, agent_alias)
+  -- 部分索引在迁移之后建。签发/撤销生命周期的写者归后续卡，本卡只建列与约束。
+  agent_alias TEXT
 );
 
 CREATE TABLE IF NOT EXISTS tasks (
@@ -1021,6 +1029,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ─── 第六刀 C1：地址绑定（执行文档 §2.1）。只加可空列，旧行 NULL 合法，不回填 ──
     { table: 'channel_bindings', column: 'address', sql: 'ALTER TABLE channel_bindings ADD COLUMN address TEXT' },
     { table: 'channel_bindings', column: 'revoked_at', sql: 'ALTER TABLE channel_bindings ADD COLUMN revoked_at TEXT' },
+    // ─── C10-A：身份列（计划 §A）。只加可空列；唯一的数据写入是下方 org_slug
+    // 的显式 backfill（org_<id>，绝不从 name 推导）。索引在迁移之后建。 ───
+    { table: 'organizations', column: 'org_slug', sql: 'ALTER TABLE organizations ADD COLUMN org_slug TEXT' },
+    { table: 'agents', column: 'agent_alias', sql: 'ALTER TABLE agents ADD COLUMN agent_alias TEXT' },
     // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/derived-views.md）──
     // 只加列、不回填：~9M 历史行保持 NULL（= 早于身份链）。回填等于制造第二份历史真相。
     // 索引在下面「依赖迁移列的索引」段创建 —— 老库上列还不存在时建索引会直接报错。
@@ -1051,6 +1063,21 @@ export function openSqlite(dbPath: string): DatabaseSync {
         .run();
       if (backfilled.changes > 0) {
         log.info(`Migration: backfilled status_changed_at from updated_at (${backfilled.changes} rows)`);
+      }
+    }
+
+    // C10-A：org_slug 显式 backfill —— org_<id>，绝不从 name 推导。只在
+    // 「这一次升级刚好补上这列」时执行（与上面同一次性纪律）：重复打开库
+    // 不写任何一行，已声明的 slug 永远不会被覆盖。registryOrgSlug 是与
+    // createOrg 共用的唯一派生点。
+    if (addedColumns.includes('organizations.org_slug')) {
+      const rows = _db
+        .prepare('SELECT id FROM organizations WHERE org_slug IS NULL')
+        .all() as Array<{ id: string }>;
+      const assign = _db.prepare('UPDATE organizations SET org_slug = ? WHERE id = ?');
+      for (const r of rows) assign.run(registryOrgSlug(r.id), r.id);
+      if (rows.length > 0) {
+        log.info(`Migration: assigned org_slug = org_<id> to ${rows.length} organisation(s) (explicit, id-based)`);
       }
     }
 
@@ -1126,15 +1153,31 @@ export function openSqlite(dbPath: string): DatabaseSync {
       'CREATE UNIQUE INDEX IF NOT EXISTS uq_channel_bindings_address_active ' +
         'ON channel_bindings(address) WHERE revoked_at IS NULL',
     );
+    // C10-A：身份列的唯一约束，都在列迁移之后建（老库上列还不存在时建索引会报错）。
+    // org_slug 全局唯一（部分索引：NULL 互不相等，未声明的组织不受约束）。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_organizations_org_slug ' +
+        'ON organizations(org_slug) WHERE org_slug IS NOT NULL',
+    );
+    // agent_alias 组织内唯一；未设置（NULL）= 无邮件地址，多个 NULL 共存。
+    _db.exec(
+      'CREATE UNIQUE INDEX IF NOT EXISTS uq_agents_org_alias ' +
+        'ON agents(org_id, agent_alias) WHERE agent_alias IS NOT NULL',
+    );
     // 2) 唯一读面：地址解析（C2 的 resolve）与 `address_list` 工具都只读这个视图，
     //    不各自拼 SQL —— 一处定义「active 地址绑定长什么样」。`target_ref` 由
     //    `agent_id` 派生（`agent:<id>`），不是第二列存储：目标只有一个写者，才不会漂移。
-    _db.exec(`CREATE VIEW IF NOT EXISTS address_bindings AS
+    // C10-A：视图**重建**而不是 IF NOT EXISTS —— 老库的旧视图没有 kind 列，
+    //    IF NOT EXISTS 会把旧形状永远留在老库上。视图零行，DROP VIEW 非破坏性；
+    //    不 DROP 任何表/列。kind 暴露冻结闭集 {agent, role, platform}（仅元数据）。
+    _db.exec('DROP VIEW IF EXISTS address_bindings');
+    _db.exec(`CREATE VIEW address_bindings AS
       SELECT id,
              org_id,
              address,
              'agent:' || agent_id AS target_ref,
              agent_id,
+             kind,
              revoked_at,
              created_at
         FROM channel_bindings
@@ -1445,6 +1488,17 @@ export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
 
 // ─── Repo implementations ────────────────────────────────────────────────────
 
+/**
+ * C10-A：org_slug 缺省值的**唯一派生点** —— `org_<id>`（主计划 §4.9.6 / M10）。
+ * 只有两个调用方：createOrg（新建组织）与升级时的一次性显式 backfill。
+ * 绝不从 name 推导：历史两组织同名 My Organization，name 推导必撞且不可逆。
+ * 注意 `org_<id>` 含下划线，不是合法地址段 —— 它是注册表占位事实；组织要
+ * 绑地址必须先经 declareOrgSlug 显式声明一个合法 slug（全部由人显式声明）。
+ */
+export function registryOrgSlug(orgId: string): string {
+  return `org_${orgId}`;
+}
+
 export class SqliteOrgRepo {
   constructor(private db: DatabaseSync) {}
 
@@ -1457,10 +1511,10 @@ export class SqliteOrgRepo {
     const ts = now();
     this.db
       .prepare(
-        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, created_at, updated_at)
-       VALUES (?, ?, ?, ?, '{}', ?, ?)`
+        `INSERT OR IGNORE INTO organizations (id, name, owner_id, plan, settings, org_slug, created_at, updated_at)
+       VALUES (?, ?, ?, ?, '{}', ?, ?, ?)`
       )
-      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', ts, ts);
+      .run(data.id, data.name, data.ownerId, data.plan ?? 'free', registryOrgSlug(data.id), ts, ts);
     return this.findOrgById(data.id)!;
   }
 
@@ -1503,6 +1557,52 @@ export class SqliteOrgRepo {
       .run(managerAgentId, now(), orgId);
   }
 
+  /**
+   * C10-A：org_slug 的显式声明路径（注册表写者，source:'registry'）。
+   *
+   * 三条纪律：
+   * 1. 校验走 shared 的 checkOrgSlug —— 与地址格式同一套段级规则，无第二份。
+   * 2. 首次签发地址后不可变（含已撤销的绑定：签发历史是永久事实）。
+   * 3. 跨组织冲突由 uq_organizations_org_slug 裁决，不做读-再-写。
+   * 绝不读 name：slug 只能来自显式声明或 registryOrgSlug 派生点。
+   */
+  declareOrgSlug(
+    orgId: string,
+    slug: string,
+  ): { ok: true; orgSlug: string } | { ok: false; reason: 'org_not_found' | 'invalid_slug' | 'immutable' | 'conflict'; hint: string } {
+    const org = this.findOrgById(orgId);
+    if (!org) {
+      return { ok: false, reason: 'org_not_found', hint: `Organisation ${orgId} does not exist; create it before declaring a slug.` };
+    }
+    const check = checkOrgSlug(slug);
+    if (!check.ok) {
+      return { ok: false, reason: 'invalid_slug', hint: check.hint };
+    }
+    const issued = this.db
+      .prepare('SELECT 1 FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL LIMIT 1')
+      .get(orgId);
+    if (issued !== undefined) {
+      return {
+        ok: false,
+        reason: 'immutable',
+        hint: `org_slug is immutable after the first address issuance (organisation ${orgId} has issued addresses). Keep "${org.orgSlug}".`,
+      };
+    }
+    try {
+      this.db
+        .prepare('UPDATE organizations SET org_slug = ?, updated_at = ? WHERE id = ?')
+        .run(slug, now(), orgId);
+      return { ok: true, orgSlug: slug };
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      return {
+        ok: false,
+        reason: 'conflict',
+        hint: `Slug "${slug}" is already owned by another organisation. Pick a different slug; org slugs are globally unique.`,
+      };
+    }
+  }
+
   private _mapOrg(r: Record<string, unknown>) {
     return {
       id: r['id'] as string,
@@ -1510,6 +1610,7 @@ export class SqliteOrgRepo {
       ownerId: r['owner_id'] as string,
       plan: r['plan'] as string,
       managerAgentId: r['manager_agent_id'] as string | null,
+      orgSlug: (r['org_slug'] as string | null) ?? null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),
@@ -5724,8 +5825,8 @@ export class SqliteStatusTransitionRepo {
   constructor(private db: DatabaseSync) {}
 
   record(data: {
-    /** C7-A：`work_unit` 是本卡新增的唯一值；`signal` 由 C3 扩入。 */
-    entityType: 'task' | 'requirement' | 'signal' | 'work_unit';
+    /** C7-A：`work_unit`；C3：`signal`；C10-A：`address`（地址签发/撤销生命周期）。 */
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit' | 'address';
     entityId: string;
     fromStatus: string;
     toStatus: string;
@@ -5751,7 +5852,7 @@ export class SqliteStatusTransitionRepo {
   }
 
   getByEntity(
-    entityType: 'task' | 'requirement' | 'signal' | 'work_unit',
+    entityType: 'task' | 'requirement' | 'signal' | 'work_unit' | 'address',
     entityId: string,
     limit = 50,
   ): StatusTransitionRow[] {
@@ -6367,21 +6468,65 @@ function isUniqueViolation(err: unknown): boolean {
  *    `agentId`。「改他人绑定」在这层 API 上**不可表达**（I5 的正面回答在工具面）。
  */
 export class SqliteAddressBindingRepo {
-  constructor(private db: DatabaseSync) {}
+  /** C10-A：地址生命周期留痕走与其他实体同一个唯一执行点（entity_type='address'）。 */
+  private readonly transitions: SqliteStatusTransitionRepo;
+
+  constructor(private db: DatabaseSync) {
+    this.transitions = new SqliteStatusTransitionRepo(db);
+  }
 
   /** 认领一个地址。唯一冲突的裁决权在 DB 部分唯一索引上。 */
   bind(input: { orgId: string; agentId: string; address: string }): AddressBindOutcome {
-    const rejected = this.rejectUnbindable(input.address);
-    if (rejected) return rejected;
+    const gate = this.parseBindable(input.address);
+    if (!gate.ok) return gate.outcome;
 
     const address = input.address;
+    // C10-A：slug 归属校验（防抢注）。全局唯一索引只防碰撞，不防「绑别人
+    // 组织的 slug」；这道门让「这个 slug 属于哪个组织」在 bind 时可检查。
+    // org 段来自唯一解析器 parseAddress（gate.value），不做第二次 split。
+    const orgRow = this.db
+      .prepare('SELECT org_slug FROM organizations WHERE id = ?')
+      .get(input.orgId) as { org_slug: string | null } | undefined;
+    const ownedSlug = orgRow?.org_slug ?? null;
+    if (ownedSlug === null) {
+      return {
+        status: 'bounced',
+        address,
+        reason: 'unresolved_address',
+        detail: 'org_slug_unset',
+        hint: `Your organisation has no declared org_slug yet, so it owns no address namespace. Ask the org owner to declare a slug (registry), then bind <local>.<slug>@${MARKUS_MAIL_DOMAIN}.`,
+        catchAllId: null,
+      };
+    }
+    if (gate.value.orgSlug !== ownedSlug) {
+      return {
+        status: 'bounced',
+        address,
+        reason: 'unresolved_address',
+        detail: 'org_slug_mismatch',
+        hint: `The org segment "${gate.value.orgSlug}" is not your organisation's slug. Yours is "${ownedSlug}" — bind <local>.${ownedSlug}@${MARKUS_MAIL_DOMAIN} instead; binding another organisation's slug is squatting and is rejected.`,
+        catchAllId: null,
+      };
+    }
     try {
       this.db
         .prepare(
           `INSERT INTO channel_bindings (id, org_id, scope, instance_id, native_id, kind, agent_id, address, created_at)
-           VALUES (?, ?, 'address', NULL, NULL, 'mail', ?, ?, ?)`,
+           VALUES (?, ?, 'address', NULL, NULL, 'agent', ?, ?, ?)`,
         )
         .run(generateId('cb'), input.orgId, input.agentId, address, new Date().toISOString());
+      // C10-A：签发留痕。from_status 诚实反映前态：有过撤销行 = revoked，否则 unbound。
+      const priorRevoked = this.db
+        .prepare('SELECT 1 FROM channel_bindings WHERE address = ? AND revoked_at IS NOT NULL LIMIT 1')
+        .get(address);
+      this.transitions.record({
+        entityType: 'address',
+        entityId: address,
+        fromStatus: priorRevoked !== undefined ? 'revoked' : 'unbound',
+        toStatus: 'bound',
+        changedById: input.agentId,
+        changedByType: 'agent',
+      });
       return { status: 'bound', address, targetRef: addressTargetRef(input.agentId) };
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
@@ -6400,8 +6545,9 @@ export class SqliteAddressBindingRepo {
 
   /** 撤销自己的绑定：打 `revoked_at`，行保留（地址随即可以被重新认领）。 */
   revoke(input: { orgId: string; agentId: string; address: string }): AddressRevokeOutcome {
-    const rejected = this.rejectUnbindable(input.address);
-    if (rejected) return rejected;
+    // C10-A：撤销不加 slug 归属门 —— 释放自己的历史绑定不得被注册表状态锁死。
+    const gate = this.parseBindable(input.address);
+    if (!gate.ok) return gate.outcome;
 
     const address = input.address;
     const result = this.db
@@ -6409,7 +6555,17 @@ export class SqliteAddressBindingRepo {
         'UPDATE channel_bindings SET revoked_at = ? WHERE address = ? AND revoked_at IS NULL AND agent_id = ?',
       )
       .run(new Date().toISOString(), address, input.agentId);
-    if (result.changes > 0) return { status: 'revoked', address };
+    if (result.changes > 0) {
+      this.transitions.record({
+        entityType: 'address',
+        entityId: address,
+        fromStatus: 'bound',
+        toStatus: 'revoked',
+        changedById: input.agentId,
+        changedByType: 'agent',
+      });
+      return { status: 'revoked', address };
+    }
 
     const existing = this.findActive(address);
     if (!existing) {
@@ -6472,40 +6628,54 @@ export class SqliteAddressBindingRepo {
   /**
    * 解析阶段的拒绝，统一在这里产出：只有 `kind='markus'` 的地址可以认领。
    * bind / revoke 共用同一套判定，避免两条写路径各写一份规则。
+   * C10-A：成功时把解析结果一并交出（归属校验读 org 段用），调用方不得再解析一次。
    */
-  private rejectUnbindable(raw: string): Extract<AddressBindOutcome, { status: 'bounced' }> | null {
+  private parseBindable(
+    raw: string,
+  ):
+    | { ok: true; value: Extract<MailAddressRef, { kind: 'markus' }> }
+    | { ok: false; outcome: Extract<AddressBindOutcome, { status: 'bounced' }> } {
     const parsed = parseAddress(raw);
     if (!parsed.ok) {
       return {
-        status: 'bounced',
-        address: raw,
-        reason: 'unresolved_address',
-        detail: parsed.reason,
-        hint: parsed.hint,
-        catchAllId: null,
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: parsed.reason,
+          hint: parsed.hint,
+          catchAllId: null,
+        },
       };
     }
     if (parsed.value.kind === 'platform') {
       return {
-        status: 'bounced',
-        address: raw,
-        reason: 'unresolved_address',
-        detail: 'platform_reserved',
-        hint: `${raw} is a platform-reserved 0-dot address. Organisations cannot claim it; bind <local>.<org>@markus.global instead.`,
-        catchAllId: null,
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: 'platform_reserved',
+          hint: `${raw} is a platform-reserved 0-dot address. Organisations cannot claim it; bind <local>.<org>@markus.global instead.`,
+          catchAllId: null,
+        },
       };
     }
     if (parsed.value.kind === 'external') {
       return {
-        status: 'bounced',
-        address: raw,
-        reason: 'unresolved_address',
-        detail: 'external_domain',
-        hint: `${raw} is an external domain. Only <local>.<org>@markus.global addresses can be claimed on this platform.`,
-        catchAllId: null,
+        ok: false,
+        outcome: {
+          status: 'bounced',
+          address: raw,
+          reason: 'unresolved_address',
+          detail: 'external_domain',
+          hint: `${raw} is an external domain. Only <local>.<org>@markus.global addresses can be claimed on this platform.`,
+          catchAllId: null,
+        },
       };
     }
-    return null;
+    return { ok: true, value: parsed.value };
   }
 
   private mapRow(r: Record<string, unknown>): AddressBindingRow {
@@ -6515,6 +6685,7 @@ export class SqliteAddressBindingRepo {
       address: r['address'] as string,
       targetRef: r['target_ref'] as string,
       agentId: r['agent_id'] as string,
+      kind: (r['kind'] as string | null) ?? null,
       revokedAt: (r['revoked_at'] as string | null) ?? null,
       createdAt: r['created_at'] as string,
     };
