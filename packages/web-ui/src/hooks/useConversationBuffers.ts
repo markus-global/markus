@@ -110,9 +110,12 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
       setActivities([]);
     }
   }, [bumpStreamMembership]);
+  // View-only reset — the manager owns the full semantics (placeholder draft
+  // cleanup under the live-stream guard). No second deletion here: `deleteBuffer(key)`
+  // used to destroy the conv-keyed fallback buffer behind the manager's back,
+  // a second writer of the same "buffer lifecycle" fact.
   const resetConv = useCallback((key: string, repinTo?: string) => {
     mgr.current.resetConv(key, repinTo);
-    mgr.current.deleteBuffer(key);
   }, []);
 
   // Phase-aware async load
@@ -197,6 +200,10 @@ export function useConversationBuffers(initialMessages?: ChatMsg[]) {
     },
     // 会话缓冲的唯一读/写入口（取代直接 .get/.set buffers）。
     readConvMsgs: (k: string) => mgr.current.getMessages(k),
+    /** Read a SPECIFIC session's buffer — not the view projection. A stream's
+     *  own bookkeeping (empty-bubble recovery, reattach target pick) must answer
+     *  "what do I have for MY session", never "what is on screen right now". */
+    readSessionMsgs: (sessionId: string) => mgr.current.buffers.get(sessionId),
     writeConvMsgs: (k: string, msgs: ChatMsg[]) => {
       const r = mgr.current.updateMessages(k, () => msgs);
       if (r.displayChanged && r.newMessages) setMessages(r.newMessages);

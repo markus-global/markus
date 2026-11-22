@@ -732,7 +732,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     messages, setMessages,
     sending, setSending,
     activities, setActivities,
-    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, writeConvMsgs,
+    activeSessionBuffer, actBuffers, sessionTabsBuffer, readConvMsgs, readSessionMsgs, writeConvMsgs,
     setActiveSession,
     currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
@@ -2858,7 +2858,7 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
   };
   const chatStream = useChatStream({
     stateRef: streamVolatileRef,
-    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, readSessionMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream, clearStreamSession, setStreamSession, getStreamSession,
     setActiveSession,
@@ -3776,10 +3776,10 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
       setOpenSessionTabs(prev => prev.some(t => t.id === childSession.id) ? prev : [...prev, childSession]);
       setActiveSessionId(childSession.id);
       const key = makeConvKey('direct', selectedAgent, activeChannel, activeDmUserId);
-      // reset + re-pin atomically: resetConv deletes the manager's activeSession
-      // for this key, then re-pins to the child session — so a stream from the
-      // PARENT session still running on the backend is routed to its own cache,
-      // never mixed into this new conversation's buffer.
+      // View-only reset + re-pin: the PARENT session's buffer and any live
+      // stream stay intact (writes route by sessionId, never by the view), so
+      // a still-running parent stream keeps landing in its own buffer while
+      // this child conversation starts empty.
       resetConv(key, childSession.id);
       setStoredActiveSession(selectedAgent, childSession.id);
       setMessages([]);
@@ -4057,12 +4057,12 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
     // bound model, else global routing), never the session — so a fresh chat
     // cannot inherit a foreign pick.
     const key = currentConvKeyRef.current;
-    // reset + re-pin atomically: resetConv deletes the manager's activeSession
-    // for this key, then re-pins it to the new-chat placeholder so a
-    // still-running stream from a PREVIOUS session is routed to its own session
-    // cache (isSameSession=false) instead of being written into the fresh
-    // new-chat buffer — this is what mixed concurrent streams together and made
-    // content land in the wrong bubbles.
+    // View-only reset + re-pin to the new-chat placeholder. A still-running
+    // stream from a PREVIOUS session keeps its buffer and keeps consuming its
+    // SSE (writes route by sessionId, never by the view) — the fresh tab starts
+    // empty without destroying anyone else's in-flight transcript. (The old
+    // reset deleted the viewed buffer here, which silently ate the live stream
+    // of whichever tab the user was on — concurrent-session bubble loss.)
     resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
     setMessages([]);
     setShowSessions(false);
@@ -5402,8 +5402,8 @@ export function TeamPage({ initialAgentId, authUser, previewMode, previewData }:
                   onClick={() => {
                     if (s.id === NEW_CHAT_PLACEHOLDER_ID) {
                       setActiveSessionId(NEW_CHAT_PLACEHOLDER_ID);
-                      // Same atomic reset + re-pin as newConversation(): keeps a
-                      // concurrently-streaming PREVIOUS session out of this tab.
+                      // Same view-only reset + re-pin as newConversation(): the
+                      // previous session's live stream keeps its own buffer.
                       const key = currentConvKeyRef.current;
                       resetConv(key, NEW_CHAT_PLACEHOLDER_ID);
                       setMessages([]);

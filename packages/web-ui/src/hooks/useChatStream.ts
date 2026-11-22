@@ -85,6 +85,9 @@ export interface ChatStreamContext {
   activeSessionBuffer: ActiveSessionView;
   /** Read the messages rendered for a conversation (projection of the view pointer). */
   readConvMsgs: (k: string) => ChatMsg[] | undefined;
+  /** Read a SPECIFIC session's buffer (never the view projection) — a stream's
+   *  own bookkeeping must not depend on which tab happens to be on screen. */
+  readSessionMsgs: (sessionId: string) => ChatMsg[] | undefined;
   currentConvKeyRef: RefObject<string>;
   // Buffer callbacks (stable useCallback from useConversationBuffers)
   updateConvMsgs: (k: string, u: (p: ChatMsg[]) => ChatMsg[], s?: string | null) => void;
@@ -185,7 +188,7 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
   const { stateRef } = ctx;
   // Stable destructure — deps for useCallback below stay constant.
   const {
-    actBuffers, activeSessionBuffer, readConvMsgs, currentConvKeyRef,
+    actBuffers, activeSessionBuffer, readConvMsgs, readSessionMsgs, currentConvKeyRef,
     updateConvMsgs, updateConvMsgsRaf, appendConvActivity,
     beginStream, endStream, abortStream,
     clearStreamSession, setStreamSession, getStreamSession, setActiveSession,
@@ -341,7 +344,9 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       let lastMessageId: string | undefined;
       const status = await api.sessions.streamStatus(agentId, sessionId);
       if (status.messageId) lastMessageId = status.messageId;
-      const msgs = readConvMsgs(convKey) ?? [];
+      // Read THIS session's buffer, not the view projection: reattach targets a
+      // specific session, and the view may already point at another tab.
+      const msgs = readSessionMsgs(sessionId) ?? [];
       const serverStreaming = status.status === 'streaming';
       // Reattach must only ever continue the IN-FLIGHT bubble. Two signals:
       //  · `expectedMessageId` — the server names the in-flight assistant message;
@@ -1702,9 +1707,15 @@ export function useChatStream(ctx: ChatStreamContext): ChatStreamApi {
       // poll the session messages to recover the persisted reply.
       // Use the actual session ID from the stream result (or activeSessionId) instead
       // of blindly fetching the "latest" session which could be a different conversation.
-      const currentMsgs = readConvMsgs(sendKey) ?? [];
+      // Read MY session's buffer — the view may point at another tab (concurrent
+      // sessions), and "is my bubble empty" must not be answered with someone
+      // else's transcript. Same for the poll target: recover the session this
+      // send owns, not whichever session is currently on screen.
+      const currentMsgs = (streamSessionId ? readSessionMsgs(streamSessionId) : readConvMsgs(sendKey)) ?? [];
       const agentMsg = currentMsgs.find(m => m.id === agentMsgId);
-      const pollSessionId = volatile.activeSessionId && volatile.activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? volatile.activeSessionId : null;
+      const pollSessionId = streamSessionId && streamSessionId !== NEW_CHAT_PLACEHOLDER_ID
+        ? streamSessionId
+        : (volatile.activeSessionId && volatile.activeSessionId !== NEW_CHAT_PLACEHOLDER_ID ? volatile.activeSessionId : null);
       const hasVisibleContent = agentMsg ? msgHasContent(agentMsg) : false;
       if (agentMsg && !hasVisibleContent && volatile.chatMode === 'direct' && pollSessionId && !abortCtrl.signal.aborted) {
         // 指数退避 + 抖动 + 重试上限：SSE 断连后从 DB 恢复回复，避免紧密死循环轮询，

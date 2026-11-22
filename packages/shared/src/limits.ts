@@ -815,8 +815,12 @@ export const SHELL_TIMEOUT_DEFAULT_MS = 60_000;
  *  Prevents commands from hanging indefinitely (e.g. interactive git rebase). */
 export const SHELL_TIMEOUT_MAX_MS = 300_000;
 
-/** Maximum concurrent persistent shell sessions per agent. */
-export const SHELL_MAX_SESSIONS_PER_AGENT = 3;
+/** Maximum concurrent persistent shell sessions per agent.
+ *  The default session is per execution context (one per concurrent
+ *  conversation/worker), so this must cover the concurrency fan-out plus named
+ *  sessions; idle reaping (SHELL_SESSION_IDLE_TIMEOUT_MS) bounds the live count.
+ *  At the cap, callers fall back to one-shot spawn. */
+export const SHELL_MAX_SESSIONS_PER_AGENT = 16;
 
 /** Idle timeout (ms) before a persistent shell session is reaped.
  *  10 minutes of no activity → session is killed and removed. */

@@ -200,18 +200,32 @@ export class ConversationBufferManager {
     }
   }
 
-  /** Clear a conversation back to empty idle, pointing the view at `repinTo`. */
+  /**
+   * Point the view at a fresh start (`repinTo`, usually the new-chat placeholder).
+   *
+   * **View-only reset.** A buffer belongs to its SESSION's lifecycle (DB load /
+   * stream teardown / LRU eviction) — never to the view pointer. The old
+   * implementation deleted `buffers[view]`, which under concurrent session tabs
+   * is whichever session the user happened to be looking at: clicking "new
+   * conversation" while session A was streaming destroyed A's live buffer, and
+   * A's still-attached SSE then wrote deltas into a void (bubble gone → silent
+   * drop). Switching back to A showed only the user message; a page refresh
+   * "fixed" it because reattach rebuilt from the server snapshot.
+   *
+   * The only state a view reset may discard is the placeholder DRAFT — and only
+   * when no turn is in flight under it (an in-flight placeholder turn is promoted
+   * to its real session by `setActiveSession`; destroying it mid-turn is the same
+   * bug one level down). Phase is stream-lifecycle state, not view state: it is
+   * owned by beginStream/endStream/abortStream and derived via `getPhase`.
+   */
   resetConv(key: string, repinTo?: string): void {
-    this.phase.set(key, 'idle');
-    const cur = this.view.get(key);
-    if (cur) {
-      this.buffers.delete(cur);
-      // 事实与内容同生命周期：buffer 没了，它的窗口边界也必须没了，
-      // 否则下一次进入这个 key 会拿到上一段的「还能往前翻」，指向一段不存在的历史。
-      this.windowBounds.delete(cur);
+    if (!this.isStreamLiveForSession(key, ConversationBufferManager.NEW_CHAT_ID)) {
+      this.buffers.delete(ConversationBufferManager.NEW_CHAT_ID);
+      this.windowBounds.delete(ConversationBufferManager.NEW_CHAT_ID);
+      this.actBuffers.delete(ConversationBufferManager.NEW_CHAT_ID);
+      // Legacy conv-keyed activity fallback (writes with no session id yet).
+      this.actBuffers.delete(key);
     }
-    this.actBuffers.delete(cur ?? key);
-    this.actBuffers.delete(key);
     if (repinTo) this.view.set(key, repinTo);
     else this.view.delete(key);
   }
@@ -579,19 +593,45 @@ export class ConversationBufferManager {
     return this.view.get(k) ?? k;
   }
 
+  /**
+   * Buffers that must NEVER be destroyed by eviction — the single enforcement
+   * point of the invariant "a live stream always has its buffer". Two families:
+   *  1. every buffer some conversation's view points at (what the user sees);
+   *  2. every buffer with a stream in flight, INCLUDING the pre-registration
+   *     window (phase flipped by beginStream before session_start lands the
+   *     mark) — a background tab's stream is exactly as live as the viewed one.
+   * Evicting a live background buffer is the same bug as resetConv deleting it:
+   * the owning SSE keeps writing into a void. Both eviction paths consult this
+   * one predicate; neither may invent its own keep-set.
+   */
+  private protectedBufferIds(): Set<string> {
+    const ids = new Set<string>(this.view.values());
+    ids.add(this.viewBufferId());
+    for (const set of this.streamingSessions.values()) {
+      for (const sid of set) ids.add(sid);
+    }
+    for (const [key, ph] of this.phase) {
+      if (ph === 'streaming' && !this.streamingSessions.get(key)?.size) {
+        ids.add(ConversationBufferManager.NEW_CHAT_ID);
+        ids.add(this.view.get(key) ?? key);
+      }
+    }
+    return ids;
+  }
+
   private evictIfNeeded(currentId: string): void {
     if (this.buffers.size <= ConversationBufferManager.MAX_BUFFERS) return;
-    const keep = this.viewBufferId();
+    const keep = this.protectedBufferIds();
+    keep.add(currentId);
     for (const k of [...this.buffers.keys()]) {
       if (this.buffers.size <= ConversationBufferManager.MAX_BUFFERS) break;
-      if (k === currentId || k === keep) continue;
-      this.buffers.delete(k);
+      if (keep.has(k)) continue;
+      this.deleteBuffer(k);
       this.actBuffers.delete(k);
-      this.windowBounds.delete(k);
     }
   }
 
-  /** Track a buffer write for LRU eviction (oldest first, viewed buffer kept). */
+  /** Track a buffer write for LRU eviction (oldest first, protected buffers kept). */
   touchBuffer(id: string): void {
     const idx = this.bufferOrder.indexOf(id);
     if (idx !== -1) this.bufferOrder.splice(idx, 1);
@@ -599,14 +639,12 @@ export class ConversationBufferManager {
 
     while (this.bufferOrder.length > ConversationBufferManager.MAX_BUFFERS) {
       const oldest = this.bufferOrder.shift()!;
-      const keep = new Set([this.viewBufferId(), ...this.view.values()]);
-      if (keep.has(oldest)) {
+      if (this.protectedBufferIds().has(oldest)) {
         this.bufferOrder.push(oldest);
         break;
       }
-      this.buffers.delete(oldest);
+      this.deleteBuffer(oldest);
       this.actBuffers.delete(oldest);
-      this.windowBounds.delete(oldest);
     }
   }
 }

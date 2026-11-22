@@ -4,7 +4,7 @@ import { platform } from 'node:os';
 import { SHELL_TIMEOUT_DEFAULT_MS, SHELL_TIMEOUT_MAX_MS, sanitizeForLLM, isToolDisabledInMAS, getMASToolBlockedMessage, type PathAccessPolicy } from '@markus/shared';
 import type { AgentToolHandler, ToolOutputCallback } from '../agent.js';
 import { defaultSecurityGuard, type SecurityGuard } from '../security.js';
-import { getShellSessionManager } from './shell-session.js';
+import { getShellSessionManager, shellSessionIdFor, ShellSessionLimitError } from './shell-session.js';
 import { assertShellWriteAllowed } from '../write-guard.js';
 
 export interface ShellAgentMeta {
@@ -112,7 +112,7 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
         },
         session_id: {
           type: 'string',
-          description: 'Reuse a persistent shell session by name. State (cwd, env vars, shell variables) persists across calls with the same session_id. Omit to use the default session.',
+          description: 'Reuse a persistent shell session by name. State (cwd, env vars, shell variables) persists across calls with the same session_id. Omit to use this conversation\'s default session (isolated per conversation, so concurrent sessions do not queue behind each other).',
         },
         max_output_chars: {
           type: 'number',
@@ -199,6 +199,10 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
 
       const finalCommand = injectGitCommitMeta(command, agentMeta);
       const sessionId = args['session_id'] as string | undefined;
+      // Execution-context identity injected at the Agent tool boundary (same
+      // pattern as _browserSessionId / _terminalSessionId). The default shell
+      // is keyed by it so concurrent conversations run separate shell processes.
+      const contextId = typeof args['_shellContextId'] === 'string' ? args['_shellContextId'] as string : undefined;
 
       // ── Persistent session path ──────────────────────────────────────
       // When an agentId is available, route through the session manager.
@@ -206,8 +210,14 @@ export function createShellTool(security?: SecurityGuard, workspacePath?: string
       if (agentMeta?.agentId) {
         try {
           const mgr = getShellSessionManager();
+          // Named sessions are get-or-created here (execute only consumes
+          // existing ids). Cap exhaustion throws → one-shot fallback below.
+          if (sessionId && !mgr.create(agentMeta.agentId, sessionId, effectiveCwd ?? undefined)) {
+            throw new ShellSessionLimitError(agentMeta.agentId);
+          }
           const result = await mgr.execute(agentMeta.agentId, finalCommand, {
-            sessionId: sessionId ? `${agentMeta.agentId}:${sessionId}` : undefined,
+            sessionId: sessionId ? shellSessionIdFor(agentMeta.agentId, sessionId) : undefined,
+            contextId,
             cwd: effectiveCwd ?? undefined,
             timeoutMs,
             onOutput: onOutput ? (chunk) => onOutput(sanitizeForLLM(chunk)) : undefined,
