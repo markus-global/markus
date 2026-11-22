@@ -17,12 +17,16 @@
  * 本文件三段，缺一段就会退化成 fail-open 或「只测 options 能传值」：
  *
  *   1. 正向（真实装配链 + 真实 SQLite + `MARKUS_STRICT_IDENTITY=1`）：先按生产形态入队
- *      （`pending-link`）→ 用唯一写者 `linkMailboxItem()` 写身份 → `dequeue()` 认领 →
+ *      （C10-0B：入队**即带** ref，内存 + DB 同源）→ `dequeue()` 认领 →
  *      `reEnqueueOnShutdown()`。断言不抛、回队后行仍是 `queued`、`work_unit_ref` **继承原值**。
- *      删掉 `reEnqueueOnShutdown` 里的表态 ⇒ 本例变红（守卫抛错）。
+ *      删掉 `reEnqueueOnShutdown` 里的 ref 交还/表态 ⇒ 本例变红（守卫抛错）。
  *   2. 负向：同类型事实**未表态**（非回队路径）必须抛错。删掉守卫里的 `throw` ⇒ 本例变红。
  *   3. 契约：回队只有**一处**实现（`attention.ts` 不得再内联 `reuseItemId`）——
  *      否则「继承身份」的表态就又变成两份，迟早只改一份。
+ *
+ * C10-0B：身份没有第二个建造点。旧用例「先入队（`pending-link`），再用唯一写者
+ * `linkMailboxItem()` 补 DB 列」已删除——那个后补写者已不存在；回队继承的是
+ * **入队那一刻**就已存在的 ref。
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -31,7 +35,7 @@ import { fileURLToPath } from 'node:url';
 import { tmpdir } from 'node:os';
 import { AgentMailbox, takeUnclaimedIdentityCount, type MailboxPersistence } from '../src/mailbox.js';
 import { EventBus } from '../src/events.js';
-import { openSqlite, closeSqlite, SqliteMailboxRepo, SqliteWorkUnitRepo } from '../../storage/src/sqlite-storage.js';
+import { openSqlite, closeSqlite, SqliteMailboxRepo } from '../../storage/src/sqlite-storage.js';
 
 const AGENT = 'agt_identity_reuse';
 const TASK = 'tsk_identity_reuse';
@@ -42,7 +46,6 @@ const LENIENT = 'MARKUS_LENIENT_IDENTITY';
 let tempDir: string;
 let db: ReturnType<typeof openSqlite>;
 let repo: SqliteMailboxRepo;
-let units: SqliteWorkUnitRepo;
 
 /** 与 `cli/start.ts` 的 `wireMailboxPersistence` 同形（含 P1.x 最小 API + 信封投影）。 */
 function makePersistence(r: SqliteMailboxRepo): MailboxPersistence {
@@ -78,13 +81,14 @@ function newMailbox(): AgentMailbox {
   return new AgentMailbox(AGENT, new EventBus(), makePersistence(repo));
 }
 
-/** 生产形态的 task 执行指令：入队时声明身份迟到（sendTaskExecution 的形状）。 */
-function enqueueTaskExecution(mb: AgentMailbox, round: number) {
+/** 生产形态的 task 执行指令：C10-0B 之后身份在入队那一刻就是事实（sendTaskExecution 的形状）。 */
+function enqueueTaskExecution(mb: AgentMailbox, round: number, workUnitRef: string) {
   return mb.enqueue('task_status_update', {
     summary: 'Task: identity reuse', content: 'do it', taskId: TASK,
   } as never, {
     intent: 'trigger_execution',
-    refOrigin: 'pending-link',
+    workUnitRef,
+    refOrigin: 'entity',
     round,
     metadata: { taskId: TASK },
   });
@@ -94,7 +98,6 @@ beforeEach(() => {
   tempDir = mkdtempSync(join(tmpdir(), 'markus-identity-reuse-'));
   db = openSqlite(join(tempDir, 'reuse.db'));
   repo = new SqliteMailboxRepo(db);
-  units = new SqliteWorkUnitRepo(db);
   delete process.env[LENIENT];
   takeUnclaimedIdentityCount();
 });
@@ -109,9 +112,10 @@ afterEach(() => {
 describe('C9 相邻路径：停机复用回队继承行身份', () => {
   it('正向：复用回队不抛错，行身份继承原值（不是 NULL），且状态真的回到 queued', () => {
     const mb = newMailbox();
-    const enq = enqueueTaskExecution(mb, 2);
-    // 身份的唯一写者：实体存在之后回填（生产侧 = TaskService 收到 onItemEnqueued 后写）。
-    expect(units.linkMailboxItem(enq.id, REF), '唯一写者应命中 1 行').toBe(true);
+    const enq = enqueueTaskExecution(mb, 2, REF);
+    // C10-0B：身份在**入队那一刻**就写进内存 item 与 DB 行（同一个写者 = 入队）。
+    expect(enq.workUnitRef, '入队即带 ref').toBe(REF);
+    expect(repo.getById(enq.id)!.workUnitRef, '入队 INSERT 写同一列').toBe(REF);
 
     const inflight = mb.dequeue()!;               // 停机那一刻：已被本实例取走（processing）
     expect(inflight.id).toBe(enq.id);
@@ -125,6 +129,7 @@ describe('C9 相邻路径：停机复用回队继承行身份', () => {
     expect(requeued.status, '回队不得返回 dropped/processing').toBe('queued');
     expect(requeued.id).toBe(enq.id);
     expect(requeued.round, '轮次是结构字段，回队不得丢').toBe(2);
+    expect(requeued.workUnitRef, '内存项必须交还入队时的 ref').toBe(REF);
     expect(takeUnclaimedIdentityCount(), '表态后不应再计入未声明身份').toBe(0);
 
     const row = repo.getById(enq.id)!;            // 断言一律回读持久层，不看内存态

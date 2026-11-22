@@ -341,6 +341,19 @@ export interface TaskProjectContext {
   repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
 }
 
+/**
+ * C10-0B §3.5：每日真库身份审计的**端口**。
+ *
+ * core 只声明“每天请跑一次”，实现归 org-manager（它才知道库在哪、记录写到哪）：
+ * 端口而不是 import service，因为 core 不得反向依赖 org-manager。
+ *
+ * 为什么不在这里传 agentId / dbPath：那是**实现侧**的装配知识（每个 agent 的端口
+ * 实例由装配处用 `agentId` 闭包出来）。端口越小，越不容易长成第二个调度器。
+ */
+export interface IdentityAuditPort {
+  runDaily(): void | Promise<void>;
+}
+
 export interface AgentOptions {
   config: AgentConfig;
   role: RoleTemplate;
@@ -366,6 +379,11 @@ export interface AgentOptions {
   skillRegistry?: SkillRegistry;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
   handbookPath?: string;
+  /**
+   * C10-0B §3.5：每日身份审计端口（与 `workUnitPort` 同一装配方向：装配处注入，
+   * core 只认最小端口）。缺省 = 不注册时钟源。
+   */
+  identityAuditPort?: IdentityAuditPort;
 }
 
 import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, SCENARIO_ACTIVITY_TYPE, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
@@ -749,6 +767,14 @@ export class Agent {
    * （`peekTurnSessionId`）—— 可知的降级，不是隐藏的崩溃。
    */
   private workUnitPort?: DelegationWorkUnitPort;
+  /**
+   * C10-0B §3.5：每日真库身份审计端口（装配处注入，core 不认识它与库的关系）。
+   *
+   * 未注入 ⇒ **不注册时钟源**（装配惰性由依赖缺席证明，而不是靠注释）：
+   * 一个没有 storage 的装配路径（CLI 单测、纯内存 agent）不该每天跑一次审计，
+   * 更不该为此长出一个新的 `setInterval`。
+   */
+  private identityAuditPort?: IdentityAuditPort;
   /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
   private currentTurnWorkUnitRef: string | null = null;
   /**
@@ -767,6 +793,16 @@ export class Agent {
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
+  }
+
+  /**
+   * C10-0B §3.5：设置每日身份审计端口（AgentManager 在装配时调用）。
+   *
+   * 只有 `Agent.start()` 会根据它注册时钟源 —— 端口本身是“做什么”，时钟源是
+   * “什么时候”。混在一起就会出现第二个周期驱动器（本仓的 `AgentClock` 是唯一的）。
+   */
+  setIdentityAuditPort(port: IdentityAuditPort | undefined): void {
+    this.identityAuditPort = port;
   }
 
   /** C10-0A：身份 ensure 端口转发给 mailbox（装配唯一入口 wireWorkUnits）。 */
@@ -1185,6 +1221,18 @@ export class Agent {
    *  sweep — a wait's expiry is not latency-critical, and this rides the one clock. */
   private static readonly TRIGGER_EXPIRY_SWEEP_INTERVAL_MS = 60_000;
   private static readonly MAILBOX_MAINTENANCE_INTERVAL_MS = 30_000;
+  /** C10-0B §3.5：每日真库身份审计的周期（24h，骑在 AgentClock 上，不新建定时器）。 */
+  private static readonly IDENTITY_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+  /**
+   * 首跑错峰窗口。
+   *
+   * “一天一条记录”由实现侧的独占创建保证，但错峰仍有意义：重启风暴（一次部署
+   * 同时拉起 N 个 agent）不该在启动瞬间把 N 份门禁查询同时打到真库，也不该让
+   * “审计”成为启动延迟的一部分（它锦上添花，不是启动步骤）。10–60 分钟随机。
+   */
+  private static IDENTITY_AUDIT_INITIAL_DELAY_MS(): number {
+    return 10 * 60_000 + Math.floor(Math.random() * 50 * 60_000);
+  }
   /**
    * The single periodic driver for this agent's time-driven transitions
    * (mailbox upkeep, memory consolidation, wakeup sweep). One interval, N
@@ -1291,6 +1339,9 @@ export class Agent {
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
+    // C10-0B §3.5：端口来自装配处（AgentOptions），与 setter 同一条路 —— 两个入口
+    // 都走 `this.identityAuditPort`，时钟源注册时看不到“第二个真源”。
+    this.identityAuditPort = options.identityAuditPort;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.turnDeltaInjectionEnabled = options.turnDeltaInjection !== false;
     this.eventBus = new EventBus();
@@ -1769,6 +1820,16 @@ export class Agent {
     // C8-C / M5: expiry of `rest(wakeOn)` waits rides this clock source — never a timer
     // per subscription. Matching happens at construction time (see `_triggerUnsub` below);
     // this source is what makes a wait that was never matched still end in a TURN.
+    // C10-0B §3.5：每日真库身份审计 —— **只**在端口装配时注册（依赖缺席 = 惰性）。
+    // 周期 24h，首跑错峰：启动瞬间不跑（重启风暴不该把审计变成启动步骤）。
+    if (this.identityAuditPort) {
+      this.clock.register({
+        name: 'identity-audit',
+        everyMs: Agent.IDENTITY_AUDIT_INTERVAL_MS,
+        initialDelayMs: Agent.IDENTITY_AUDIT_INITIAL_DELAY_MS(),
+        fn: () => this.runIdentityAuditTick(),
+      });
+    }
     this.clock.register({
       name: 'trigger-expiry',
       everyMs: Agent.TRIGGER_EXPIRY_SWEEP_INTERVAL_MS,
@@ -1809,6 +1870,20 @@ export class Agent {
       // `consolidateMemory` already contains its own failures; this guards the emit path
       // so a broken listener can never wedge the clock source.
       log.warn('Dream tick failed', { agentId: this.id, error: String(e) });
+    }
+  }
+
+  /**
+   * C10-0B §3.5：时钟源的**唯一**执行体。
+   *
+   * 失败隔离：审计失败绝不影响 agent（观测设施不是故障点），但必须可见 ——
+   * 一个每天静默失败的仪器等于没有仪器。
+   */
+  private async runIdentityAuditTick(): Promise<void> {
+    try {
+      await this.identityAuditPort?.runDaily();
+    } catch (e) {
+      log.warn('Identity audit tick failed', { agentId: this.id, error: String(e) });
     }
   }
 
@@ -2000,9 +2075,10 @@ export class Agent {
         priority: options?.priority,
         // C7-B：身份随消息一起落地（不是写入后回填），见 options.workUnitRef 的说明。
         workUnitRef: options?.workUnitRef ?? null,
-        // 表态：有 ref = 本回合身份；没有 = 活开始后才拿到，登记待链接。
-        // 「确实没有实体」与「忘了传」必须在入队前分开，否则下游只能猜。
-        refOrigin: options?.workUnitRef ? 'turn' : 'pending-link',
+        // 表态：有 ref = 本回合身份；没有 = **不表态**（非内部来源由守卫拒绝）。
+        // C10-0B：不再有「身份迟到」这一档 —— 迟到的身份只能由第二个写者补 DB 列，
+        // 而台账读内存，于是同一事实两套真相。缺 ref 就是缺陷，必须响亮。
+        refOrigin: options?.workUnitRef ? 'turn' : undefined,
         metadata: {
           senderId,
           senderName: senderInfo?.name,
@@ -2052,7 +2128,7 @@ export class Agent {
       priority: 0,
       // 与 sendMessage / sendMessageStream 同源：身份随消息一起落地。
       workUnitRef: options.workUnitRef,
-      refOrigin: options.workUnitRef ? 'turn' : 'pending-link',
+      refOrigin: options.workUnitRef ? 'turn' : undefined,
       metadata: {
         senderId,
         senderName: senderInfo?.name,
@@ -2131,7 +2207,7 @@ export class Agent {
         },
         // C7-B：同上 —— 流式路径也必须在入队前带上本轮 WU 身份。
         workUnitRef: options?.workUnitRef ?? null,
-        refOrigin: options?.workUnitRef ? 'turn' : 'pending-link',
+        refOrigin: options?.workUnitRef ? 'turn' : undefined,
         runtime: { responsePromise: { resolve, reject } },
       });
       options?.onItemEnqueued?.({ id: enqueued.id, sourceType: 'human_chat' });
@@ -2169,13 +2245,18 @@ export class Agent {
      */
     resumeNotice: string | undefined,
     /**
-     * C7-B：本轮 enqueue 产生的 mailbox item 身份。
+     * C10-0B §3.1：本执行纪元的身份（`WORK_UNIT_REF.task(taskId, round)`）。
      *
-     * 必填而不是可选：item id 只存在于 `mailbox.enqueue` 的返回值里，「漏传」
-     * 等于让 task 链路的 `work_unit_ref` 永远留空（C6 的墓碑态）。TaskService 用
-     * 它把这一纪元的 WU 挂到那条 item 上（先实体后引用）。
+     * **必填 `string`**（fail closed）：任务执行链这个参数是身份的唯一来路。
+     * 旧实现是尾部的 `onItemEnqueued: (item) => void` 回调 —— 它让入队不带 ref，
+     * 随后由 `TaskService.linkExecutionEpoch` 走“只写 DB 列”的后补写者。
+     * 后果：决策台账读的是**内存** item，而补写只改库 → 同一行在库里带身份、
+     * 在台账里永远 NULL（2026-11-21 真机：纪元后 1100/1171 条 pick 决策无身份）。
+     *
+     * 现在身份在**入队那一刻**就是事实（内存 + DB 同源），实体由 C10-0A 的
+     * identityPort 在 mailbox 装配点 ensure。没有第二个建造点，也就不可能漂移。
      */
-    onItemEnqueued: (item: { id: string }) => void,
+    workUnitRef: string,
   ): Promise<string> {
     const payload: MailboxPayload = {
       summary: `Task: ${taskTitle ?? taskDescription.slice(0, 80)}`,
@@ -2192,24 +2273,20 @@ export class Agent {
     };
 
     return new Promise<string>((resolve, reject) => {
-      const item = this.mailbox.enqueue('task_status_update', payload, {
+      this.mailbox.enqueue('task_status_update', payload, {
         priority: 1,
         // 权威态的唯一来源：结构字段 intent（旧读法 payload.extra.triggerExecution 已删除）。
         intent: 'trigger_execution',
-        // C9 附带缺陷：本条事实**入队那一刻还没有身份** —— item id 只存在于 `enqueue` 的
-        // 返回值里，调用方随后用 `onItemEnqueued` 把 `mailbox_items.work_unit_ref` 写成
-        // `task_<taskId>_r<round>`（2026-11-15 真机 13/13 条命中行事后都落到该形状）。
-        // 因此显式表态 `pending-link`：身份是**迟到**，不是「没有」。缺这条声明时
-        // 入队守卫直接拒绝（默认行为，见 mailbox.enqueue）——「闸门要求的能力在该
-        // 回合不可达」正是这么来的：声明通道存在，却没有任何调用方走它。
-        refOrigin: 'pending-link',
+        // C10-0B §3.1：身份随入队一起落地。实体已在调用方 `ensureExecutionEpoch()`
+        // 里建好（先实体后引用），这里只把 ref 交给 mailbox —— 内存 item 与 DB 行
+        // 同一个值、同一个时刻、同一个写者。
+        workUnitRef,
+        refOrigin: 'entity',
         metadata: {
           taskId,
         },
         runtime: { responsePromise: { resolve, reject } },
       });
-      // C7-B：入队后立刻回填，调用方据此写 `mailbox_items.work_unit_ref`。
-      onItemEnqueued({ id: item.id });
     });
   }
 
