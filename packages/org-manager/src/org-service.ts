@@ -16,6 +16,7 @@ import {
   type HumanUser,
   type HumanRole,
   isSecretaryLikeAgent, pickOrgSecretary, secretaryDisplayName, resolveHostLocale,
+  type CrossOrgPolicy,
 } from '@markus/shared';
 import { RoleLoader, type AgentManager, type CreateAgentRequest, type SkillRegistry, discoverSkillsInDir, WELL_KNOWN_SKILL_DIRS, getAgentSkillWarnings } from '@markus/core';
 import type { StorageBridge } from './storage-bridge.js';
@@ -796,6 +797,45 @@ export class OrganizationService {
 
   getStorage(): StorageBridge | undefined {
     return this.storage;
+  }
+
+  /**
+   * C10-C: the ONLY path that changes organizations.cross_org_policy.
+   * Human approval is structural, not conventional: the actor must resolve to a
+   * row in the users table (agents have no users row, so an agent id or a ghost
+   * id is refused), and every successful change writes exactly one audit row.
+   * The repo writer (setCrossOrgPolicy) is this method's instrument — no other
+   * caller may elevate trust. Downgrades are audited too: policy history must
+   * be reconstructable from audit_logs alone.
+   */
+  async setCrossOrgPolicy(
+    orgId: string,
+    policy: CrossOrgPolicy,
+    actorUserId?: string,
+  ): Promise<{ from: CrossOrgPolicy; to: CrossOrgPolicy }> {
+    const storage = this.storage;
+    if (!storage) throw new Error('cross_org_policy change requires storage');
+    if (!actorUserId) throw new Error('cross_org_policy change requires a human approval (no actor)');
+    const human = storage.userRepo.findById(actorUserId);
+    if (!human) {
+      throw new Error('cross_org_policy change requires a human approval (actor is not a human user)');
+    }
+    const org = storage.orgRepo.findOrgById(orgId);
+    if (!org) throw new Error(`organization not found: ${orgId}`);
+    if (!storage.auditRepo) throw new Error('cross_org_policy change requires an audit writer');
+    const from = ((org as { crossOrgPolicy?: string }).crossOrgPolicy ?? 'observe') as CrossOrgPolicy;
+    storage.orgRepo.setCrossOrgPolicy(orgId, policy);
+    await storage.auditRepo.insert({
+      id: generateId('audit'),
+      orgId,
+      userId: actorUserId,
+      type: 'cross_org_policy_changed',
+      action: `cross_org_policy ${from} -> ${policy}`,
+      metadata: { orgId, from, to: policy },
+      success: true,
+      createdAt: new Date(),
+    });
+    return { from, to: policy };
   }
 
   /**

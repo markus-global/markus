@@ -1,64 +1,25 @@
 /**
- * C10-0B §3.4 —— 身份不变量门禁的**唯一**定义（纯数据 + SQL 字符串）。
+ * C10-0B §3.4 / C10-0G —— 身份不变量门禁的**唯一**定义（纯数据 + SQL 字符串）。
  *
  * 为什么住在这里，而不是继续留在 `scripts/identity-audit.mjs` 里：
  *
- *   1. **一个事实一个写者**。判据此前有三份消费者（CI 自检 / 运维真库跑 / 新增的
- *      每日审计），却只有一份定义写在脚本里。每日审计要跑同样的判据时，唯一
- *      不产生第二套语义的做法是让定义成为**模块**，三处 import 同一份。
- *   2. **纪元是产品常量，不是部署参数**。旧脚本用滚动窗口
+ *   1. **一个事实一个写者**。判据有两份消费者（CI 自检 / Owner 实例定时任务的
+ *      真库跑），定义是**模块**，两处 import 同一份 —— 不产生第二套语义。
+ *   2. **纪元是部署参数，不是产品常量（C10-0G 本地化）**。旧脚本用滚动窗口
  *      `MARKUS_AUDIT_SINCE = now - 7d`：同一行历史数据今天算违规、明天不算，
  *      同一件事于是有两个度量（R2）。固定纪元说的是实话——「这件事从这一刻起
- *      才算数」，且每个实例读到同一个值（绝不读实例重启时间）。
+ *      才算数」。但纪元的正确值属于部署现场（Owner 本地实例的修复构建启动时刻），
+ *      不属于产品：随产品发货的常量要么赌重启准时，要么把一台实例的本机线
+ *      冻结进所有用户的产品。因此 makeIdentityGates 必须显式传纪元，缺纪元必拒。
  *   3. **谓词白名单从代码派生**。旧脚本用正则去读 `facts/predicates.ts` 的源码
  *      字面量，那是「同一份知识的第二个读者」：代码改个写法，解析就静默失效。
  *      这里直接用 `FACT_PREDICATES`。
  *
  * ⚠️ 本模块**不 import `node:sqlite`**：它只产出 SQL 字符串。执行归调用方
- * （脚本用 CLI 的 `DatabaseSync`，每日审计用只读连接）。把执行也放进来，这个
+ * （脚本用 CLI 的 `DatabaseSync` 只读打开真库）。把执行也放进来，这个
  * 模块就再也不能被 web-ui / 无 Node 内置 sqlite 的运行时安全导入。
  */
 import { FACT_PREDICATES } from './facts/predicates.js';
-
-/**
- * 身份修复的**产品纪元**（决策台账 / 邮箱行从这一刻起必须带身份）。
- *
- * 语义：纪元之前的行是**档案**，不是违规；纪元之后缺身份才是缺陷。
- * 因此它是常量，不是 `now()`、不是实例重启时间、不是滚动窗口 ——
- * 三个实例读到不同下界，就等于没有下界。
- *
- * ── 哨兵期（CTO 裁决 A，2026-11-21；卡面结构解第 4 条）─────────────────────
- * `null` = **纪元未定值**。修复构建上线（Owner 执行重启）之前，不存在正确的
- * 纪元值：任何预置的「计划时刻」都是赌重启准时，赌输了就把旧构建仍在漏的行
- * 算成纪元后违规（永远红），或把新构建的干净行漏掉（假绿）。
- *
- * 定值协议（处置决议记录 docs/records/identity-backlog-disposition-2026-11-22.md
- * 是唯一权威出处）：
- *   1. 纪元**定义为**「修复构建的新进程启动时刻」，唯一读数 = `ps -o lstart`
- *      （或 runtime 日志首行，二者只取其一）——定义与读数必须同源。
- *   2. 定值 commit 同时做三件事：把本常量从 null 改成该时刻、在处置决议记录
- *      写下来源命令 + 原始输出 + 时刻、更新测试期望。一次成型，不留第二写者。
- *   3. 哨兵期间审计必须输出独立的 `epoch-unset` 状态（非零退出 / 告警），
- *      **绝不静默绿**。`identity-audit-epoch.test.ts` 咬住这条：往常量里塞一个
- *      不在处置决议记录里的时刻（预置计划时刻变异）必须红。
- */
-export const IDENTITY_FIX_EPOCH: string | null = null;
-
-/**
- * 审计的三态（CTO 补口④）：「已定值且通过」「未定值（哨兵期）」「失败」必须可区分。
- * 只要未定值仍落在「通过」这一态里，「绝不静默绿」就只是措辞。
- * `error` 是仪器自身故障（库打不开等）——同样不是绿。
- */
-export type IdentityAuditState = 'pass' | 'fail' | 'epoch-unset' | 'error';
-
-/**
- * 解析本次审计使用的纪元：显式注入优先（自检夹具 / 测试），否则读产品常量。
- * **绝不**用 `Date.now()` 兜底 —— 兜底就是「每台机器一个下界」的第二写者。
- * 返回 null = 哨兵期，调用方必须走 `epoch-unset` 状态，不得建门禁假装通过。
- */
-export function resolveIdentityFixEpoch(injected?: string | null): string | null {
-  return injected !== undefined ? injected : IDENTITY_FIX_EPOCH;
-}
 
 /**
  * 本质上**没有实体**的事实类型（回执 / 平台唤醒信号）。
@@ -93,11 +54,12 @@ export interface IdentityGate {
 
 export interface IdentityGateOptions {
   /**
-   * 下界（默认 {@link IDENTITY_FIX_EPOCH}）。调用方可注入以便两向自检。
-   * `null` = 哨兵期：**抛错**而不是建一份没有下界的门禁 —— 调用方必须先走
-   * `epoch-unset` 状态（fail closed，不许静默放行历史行）。
+   * 下界（**必填**，C10-0G 纪元本地化）。纪元是部署参数：调用方
+   * （CI 自检夹具 / Owner 实例定时任务的 --epoch）显式传入。
+   * 缺省 / null / 空串一律**抛错**（fail closed，不许静默放行历史行，
+   * 绝不 now() 兜底 —— 兜底就是「每台机器一个下界」的第二写者）。
    */
-  epoch?: string | null;
+  epoch: string;
   /** 谓词闭集（默认 {@link FACT_PREDICATES}）；非法取值会在 SQL 里被计数。 */
   predicates?: readonly string[];
 }
@@ -127,11 +89,11 @@ function sqlLiteralList(values: readonly string[], what: string): string {
  *     （僵尸在跑、事实没来源、同一结论两个当前值……）。它们不需要下界：
  *     一条 2025 年的 `running` 挂了租约同样是僵尸。
  */
-export function makeIdentityGates(options: IdentityGateOptions = {}): IdentityGate[] {
-  const epoch = resolveIdentityFixEpoch(options.epoch);
-  if (epoch === null) {
+export function makeIdentityGates(options: IdentityGateOptions): IdentityGate[] {
+  const epoch = options?.epoch;
+  if (typeof epoch !== 'string' || epoch.trim() === '') {
     throw new Error(
-      'identity-audit：纪元未定值（哨兵期）——审计必须输出 epoch-unset 状态，不得建门禁假装通过。',
+      'identity-audit：纪元未显式传入（epoch-unset）——makeIdentityGates 要求显式纪元；缺纪元必拒，不得静默放行或 now() 兜底。',
     );
   }
   if (Number.isNaN(Date.parse(epoch))) {
@@ -236,6 +198,28 @@ export function makeIdentityGates(options: IdentityGateOptions = {}): IdentityGa
              WHERE json_valid(verification_json)
                AND (json_extract(verification_json, '$.verified_by') IS NULL
                     OR TRIM(json_extract(verification_json, '$.verified_by')) = '')`,
+    },
+    {
+      // C10-B：信号级天花板违规 —— 未验证外部信号带权威 intent。读信封 JSON（事实源），
+      // 不读 intent 投影列（投影是读侧便利，不是第二事实源；夹具也无该列）。
+      id: 14,
+      name: '未验证外部信号带权威 intent（天花板违规）',
+      sql: `SELECT COUNT(*) AS c FROM mailbox_items
+             WHERE source_type = 'external_signal' AND queued_at >= '${epoch}'
+               AND json_valid(envelope)
+               AND json_extract(envelope, '$.fromVerified') = 0
+               AND json_extract(envelope, '$.intent') IN ('trigger_execution', 'action_required')`,
+    },
+    {
+      // C10-B：external_signal 行的 ref 不是唯一构造器形状（第二建造点的库内证据）。
+      // NULL ref 由判据 1 管辖（external_signal 非平台内部来源）；本判据只咬非 NULL 错形状。
+      // LIKE 'external:%' 是读取谓词（一个冒号），不是建造 —— 守卫不误咬。
+      id: 15,
+      name: 'external_signal 行 ref 非唯一构造器形状',
+      sql: `SELECT COUNT(*) AS c FROM mailbox_items
+             WHERE source_type = 'external_signal' AND queued_at >= '${epoch}'
+               AND work_unit_ref IS NOT NULL
+               AND work_unit_ref NOT LIKE 'external:%'`,
     },
   ];
 }

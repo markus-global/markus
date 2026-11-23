@@ -212,6 +212,16 @@ export function parseAddress(raw: string): AddressResult {
 }
 
 /**
+ * C10-A：org slug 的段级校验 —— 与 formatAddress / parseAddress 的 org 段
+ * **同一套规则**（validateLabel + ORG_RESERVED），不是第二套。注册表声明路径
+ * （storage 的 declareOrgSlug）必须经过这里；slug 合法性只有一个裁决点。
+ */
+export type OrgSlugCheck = { ok: true } | Extract<AddressResult, { ok: false }>;
+export function checkOrgSlug(slug: string): OrgSlugCheck {
+  return validateLabel(slug, MAX_ORG_SLUG_LENGTH, ORG_RESERVED) ?? { ok: true };
+}
+
+/**
  * 人类邮箱隔离守卫（A4）：users.email 不得占用组织地址格式。
  * 只有组织内地址返回 true；平台保留邮箱与外部地址都返回 false。
  */
@@ -233,7 +243,11 @@ export type AddressBindRejectDetail =
   /** 外部域地址：本刀不认领（C10 才接外部邮件）。 */
   | 'external_domain'
   /** 平台保留的 0 点地址（conduct@ 等）：组织不得绑定。 */
-  | 'platform_reserved';
+  | 'platform_reserved'
+  /** C10-A：本组织没有已声明的 org_slug（fail-closed，先声明再绑定）。 */
+  | 'org_slug_unset'
+  /** C10-A：地址的 org 段不是本组织声明的 slug —— 防抢注的正面拒绝。 */
+  | 'org_slug_mismatch';
 
 /** `bind_address` 的结局。 */
 export type AddressBindOutcome =

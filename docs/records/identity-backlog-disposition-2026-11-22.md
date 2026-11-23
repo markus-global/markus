@@ -1,9 +1,52 @@
 # Identity backlog disposition — C10-0B (2026-11-22)
 
-Status: living record. The `FINAL_EPOCH` marker below is the **single authoritative
-source** for the product epoch constant `IDENTITY_FIX_EPOCH`
-(`packages/shared/src/identity-audit.ts`); a guard test
-(`packages/shared/test/identity-audit-epoch.test.ts`) fails if the two diverge.
+Status: living record. **Partially superseded by C10-0G (2026-11-22) — read §0
+first.** The `FINAL_EPOCH` marker below WAS the single authoritative source for
+the product epoch constant `IDENTITY_FIX_EPOCH`
+(`packages/shared/src/identity-audit.ts`), with a guard test
+(`packages/shared/test/identity-audit-epoch.test.ts`) biting any divergence.
+C10-0G deleted the product constant and the daily mechanism; the marker and the
+sentinel protocol are retained as history only (§0).
+
+## 0. Dated correction — C10-0G audit localization (2026-11-22, Owner ruling)
+
+**Decision.** The permanent defense is structure (single constructor, fail-closed
+assembly) + CI guards/behavior tests — that is what ships to users. The periodic
+real-DB audit is verification scaffolding: it runs ONLY as a scheduled task on the
+Owner's local instance and retires once C10's new construction points are proven
+clean on real data. Card tsk_4c92df2b5c2a6295e24d55c7, branch task/c10-0g:
+
+1. **Deleted the product-wide daily mechanism**: the audit port (type / option /
+   field / setter / constructor wiring), the named clock source, the agent-manager
+   factory, the api-server assembly, and `org-manager/src/identity-audit-runner.ts`
+   (whole file), plus the two mechanism tests. Resurrection guard:
+   `no-auto-identity-audit` in `scripts/architecture-guard.mjs` (red on the old
+   tree, green after deletion, seeded symbols turn it red again).
+2. **Localized the epoch**: the product constant and its default resolver are
+   deleted; `makeIdentityGates` requires an explicit epoch (missing = throw, fail
+   closed); `scripts/identity-audit.mjs` gains `--epoch <ts>` / `--db <path>`.
+   The sentinel protocol (§4) and the FINAL_EPOCH marker are retired — the product
+   no longer reads any epoch constant or this record. The rewritten
+   `identity-audit-epoch.test.ts` bites the new contract.
+3. **Replacement**: scheduled task tsk_d4ed5b323793d738c746d719 (daily 09:00
+   Asia/Shanghai, assignee CTO, reviewer Owner; pending Owner approval) runs
+   `node scripts/identity-audit.mjs --db ~/.markus/data.db --epoch 2026-11-22T12:18:34Z`
+   and is the SINGLE WRITER of `~/.markus/records/identity-audit/` dated readings.
+   **Retirement condition:** retire the task once C10's external construction
+   points are proven clean on real data; no permanent daily-check institution.
+
+**Owner-local epoch line (deployment parameter, not a product constant).**
+Value `2026-11-22T12:18:34Z` = 2026-11-22 20:18:34 CST, the first fix-build process
+start. Reading (re-verified 2026-11-22 22:0x CST): `ps -o lstart= -p 28013` →
+`日 11月/22 20:18:34 2026`; pid 28013 = the desktop Markus process. Later restarts
+do NOT move this lower bound; changing it requires an Owner ruling plus a
+synchronized update of the scheduled-task card and this record.
+
+**First run (manual, by card C10-0G).** 2026-11-22T22:00:05+0800: all 12 gates
+count=0, state pass; the missing-epoch probe exits 2 (epoch-unset). Record:
+`~/.markus/records/identity-audit/2026-11-22-first-run-c10-0g.md`.
+
+§3 item 4, §4 and §5 below describe the SUPERSEDED protocol; kept as history.
 
 ## 1. What is being disposed of (counts, not rows)
 
@@ -54,8 +97,10 @@ leaking, it does not rewrite old ones.
 4. Fixed product epoch + daily real-DB audit on the existing AgentClock (named
    source `identity-audit`, no new setInterval), one dated record per day
    (exclusive create), alerting only on post-epoch violations.
+   **(Superseded by C10-0G §0: the in-process daily mechanism is deleted; the
+   audit lives only in the retireable Owner-instance scheduled task.)**
 
-## 4. Epoch protocol (CTO ruling A, 2026-11-21; supplements ①–④ agreed)
+## 4. Epoch protocol (CTO ruling A, 2026-11-21; supplements ①–④ agreed) — SUPERSEDED by C10-0G §0 (historical)
 
 - **Definition (single source of meaning):** the epoch IS the **start time of the
   new process running the fix build** — not "build effective time", not a planned
@@ -78,7 +123,15 @@ leaking, it does not rewrite old ones.
 
 FINAL_EPOCH: unset
 
+(Retired marker, kept as history: the product constant no longer exists. The
+Owner-local epoch line is now a deployment parameter — see §0.)
+
 ## 5. Post-restart closure (pending Owner restart — asked, never self-restart)
+
+**(Dated note 2026-11-22, C10-0G: steps 1–3 are done — the Owner restarted into
+the fix build at 20:18:34 CST, the epoch line was read and recorded (§0), and the
+first-run probe passed 12/12 at 22:00:05+0800. Step 4's daily-run protocol is
+superseded by the Owner-instance scheduled task (§0).)**
 
 After the Owner restarts the instance into the fix build:
 1. Read the new process start time (command + raw output recorded here).

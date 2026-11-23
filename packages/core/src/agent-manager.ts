@@ -4,6 +4,8 @@ import {
   generateId,
   stripInternalBlocks,
   type AgentConfig,
+  type AgentAutonomy,
+  type OrgTrustBoundaryPort,
   type AgentConcurrentConfig,
   type AgentProfile,
   type LLMAssignment,
@@ -23,8 +25,9 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
+  type SignalAddressLookup,
 } from '@markus/shared';
-import { Agent, type AgentToolHandler, type AgentOptions, type IdentityAuditPort } from './agent.js';
+import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
 import type { MailboxIdentityPort } from './mailbox.js';
 import { AgentStoppedByHumanError, decideStart, type StartCause } from './agent-start-cause.js';
@@ -78,6 +81,7 @@ import type { FactService } from './facts/fact-service.js';
 // without a loud failure.
 import { assertActionToolReachability, toolFaceNames } from './capability-packs.js';
 import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
+import { createExternalSourceTools, type ExternalSourcePort, type ExternalSourceToolContext } from './tools/external-source-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
@@ -357,6 +361,8 @@ export interface CreateAgentRequest {
   agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
+  /** C10-C: autonomy axis — 'observe' = read-only tier (no self-initiated patrol). Default 'act'. */
+  autonomy?: AgentAutonomy;
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
@@ -1605,6 +1611,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: request.autonomy ?? 'act',
       concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1650,6 +1657,7 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
     this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
     this.applyFactService(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
@@ -1888,6 +1896,8 @@ export class AgentManager {
 
     // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
     this.registerAddressTools(agent, id);
+    // C10-B：外部信号源工具 + 地址簿只读端口（同一装配纪律：两条建 Agent 路径都走）。
+    this.applyExternalSource(agent, id);
 
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
@@ -2499,6 +2509,7 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
+    autonomy?: string;
     profile?: unknown;
     tokensUsedToday?: number;
     activeTaskIds?: unknown;
@@ -2572,6 +2583,7 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: (row.autonomy as AgentAutonomy | undefined) ?? 'act',
       concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2613,6 +2625,7 @@ export class AgentManager {
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
     this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
     this.applyFactService(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
@@ -2843,6 +2856,7 @@ export class AgentManager {
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
     this.registerAddressTools(agent, id);
+    this.applyExternalSource(agent, id);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -3861,28 +3875,31 @@ export class AgentManager {
     for (const agent of this.agents.values()) agent.setMailboxIdentityPort(port);
   }
 
-  /**
-   * C10-0B §3.5：每日身份审计端口 —— 与委派端口同一装配纪律（两条建 Agent 的路径都走）。
-   *
-   * 这里用**工厂**而不是单个端口实例：记录里要写 `agentId`（"今天哪个 agent 跑的"），
-   * 而 core 的端口形状是 `runDaily()` 无参。工厂让装配处用 agentId 闭包出实例，
-   * 而不必把 agentId 塞进「做什么」的契约里。
-   */
-  private identityAuditPortFactory?: (agentId: string) => IdentityAuditPort;
-  setIdentityAuditPortFactory(factory: ((agentId: string) => IdentityAuditPort) | undefined): void {
-    this.identityAuditPortFactory = factory;
-    for (const [agentId, agent] of this.agents) agent.setIdentityAuditPort(factory?.(agentId));
-  }
-
   private applyWorkUnitPort(agent: Agent): void {
     if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
     if (this.mailboxIdentityPort) agent.setMailboxIdentityPort(this.mailboxIdentityPort);
   }
 
-  private applyIdentityAuditPort(agent: Agent): void {
-    if (this.identityAuditPortFactory) {
-      agent.setIdentityAuditPort(this.identityAuditPortFactory(agent.id));
-    }
+  /**
+   * C10-C：信任边界端口 —— 与委派端口同一装配纪律（setter 对已存在 agent 逐个
+   * 补装；两条建 Agent 路径都走 apply）。组织级端口带 receiverOrgId（api-server
+   * 实现 org/policy 判定）；Agent 级端口按 agent 绑定接收方组织，Agent 契约保持
+   * (senderAgentIds) => ceiling。未注入 ⇒ Agent 无天花板（自主轴本身照常咬人）。
+   */
+  private trustBoundaryPort?: OrgTrustBoundaryPort;
+  setTrustBoundaryPort(port: OrgTrustBoundaryPort | undefined): void {
+    this.trustBoundaryPort = port;
+    for (const agent of this.agents.values()) this.applyTrustBoundaryPort(agent);
+  }
+
+  private applyTrustBoundaryPort(agent: Agent): void {
+    // 与 applyWorkUnitPort 同一守卫纪律：端口未注入时不触碰 agent——
+    // 测试替身没有新 setter 也必须能活（装配惰性=依赖缺席，不是崩溃）。
+    const port = this.trustBoundaryPort;
+    if (!port) return;
+    agent.setTrustBoundaryPort({
+      selfInitiationCeiling: (senderAgentIds) => port.selfInitiationCeiling(agent.config.orgId, senderAgentIds),
+    });
   }
 
   private registerAddressTools(agent: Agent, agentId: string): void {
@@ -3897,6 +3914,37 @@ export class AgentManager {
       list: (input) => port.list(input),
     };
     for (const tool of createAddressTools(ctx)) agent.registerTool(tool);
+  }
+
+  /**
+   * C10-B：外部信号源端口 + 地址簿只读端口（D8）。与 address-binding 同纪律：
+   * 未接线 ⇒ 工具不注册（空能力不注册）；两条建 Agent 路径 + 运行期补装都走
+   * applyExternalSource，避免「一半 agent 有外部源工具、一半没有」。
+   * addressLookup 让 mailbox 唯一解析器把外部信号路由到 active 绑定（跟绑定走，不跟源主走）。
+   */
+  private externalSourcePort?: ExternalSourcePort;
+  private addressLookup?: SignalAddressLookup;
+  setExternalSourcePort(port: ExternalSourcePort | undefined): void {
+    this.externalSourcePort = port;
+    for (const [id, agent] of this.agents) this.applyExternalSource(agent, id);
+  }
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.addressLookup = lookup;
+    for (const agent of this.agents.values()) agent.setAddressLookup(lookup);
+  }
+  private applyExternalSource(agent: Agent, agentId: string): void {
+    if (this.addressLookup) agent.setAddressLookup(this.addressLookup);
+    const port = this.externalSourcePort;
+    if (!port) return;
+    const orgId = agent.config.orgId ?? 'default';
+    const ctx: ExternalSourceToolContext = {
+      agentId,
+      orgId,
+      register: (input) => port.register(input),
+      list: (input) => port.list(input),
+      toggle: (input) => port.toggle(input),
+    };
+    for (const tool of createExternalSourceTools(ctx)) agent.registerTool(tool);
   }
   /**
    * Legacy wiring hook kept for API compatibility. The session tool is now

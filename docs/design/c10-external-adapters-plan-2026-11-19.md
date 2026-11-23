@@ -253,6 +253,21 @@ test bites: flip the ceiling → red); duplicate `messageId` produces exactly on
 item; kill switch stops ingestion cleanly; the ref-constructor guard is red when a
 second construction point is seeded.
 
+**Landed 2026-11-22 (C10-B round 2, branch `task/c10-b`, base `37c817aa`).**
+Implementation + verification complete. 112/112 C10-B tests green; falsification trio
+proven (seed second construction point → guard red → revert → green; flip ceiling →
+behavior red → restore → green; kill switch in-memory → restart test red → restore →
+green); new tests copied back to the base tree go red (non-empty-shell). CI seven-step in
+order: all exit 0 except `test:json`=1 — sole red is the pre-existing quickInit-8056 port
+collision (dual-card precedent 0E+0C/0B; full suite 9034 passed | 1 failed). Real-instance
+probe (second instance, HOME redirect, port 18731): webhook real event
+`c10b-ctrl-1795366537` → ingested → `work_unit_ref external:<sourceId>:<messageId>` →
+overview visible; RSS hnrss.org 20+ real HN items; duplicate `messageId` → `work_units`
+row count 1→1 (no increase); kill switch toggle → DB `enabled=0` → POST `disabled`,
+survives SIGKILL + restart; L5 structural premise met (self-bind row + tool face wired +
+33 external_signal items consumed). B2 contract seams S1/S2/S3 reconciled in-card.
+Awaiting CTO `merge --no-ff` into `build/c10-adapters` (no per-card PR).
+
 ### C10-B2 · IM inbound into the envelope contract (Feishu first, real traffic)
 
 **Why a separate card (new 2026-11-22).** IM is the only external channel with

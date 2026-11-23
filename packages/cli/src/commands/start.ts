@@ -32,7 +32,6 @@ import {
   resolveActionSecret,
   resolveHostLocale,
   installEgress,
-  imAddressRef,
   catchAllTargetOf,
 } from '@markus/shared';
 import {
@@ -88,9 +87,11 @@ import {
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
+  ExternalSourceService,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
+import { buildImInboundOrigin, buildImInboundWorkUnitRef } from './im-inbound-origin.js';
 import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
@@ -2329,6 +2330,34 @@ async function startServerCore(
     });
   }
 
+  // C10-B：外部信号源（webhook/RSS）—— 地址簿 lookup + 自助工具 + 唯一 ingest 服务 + RSS 轮询。
+  // 未接线（缺 repo）⇒ 工具不注册、路由 503（同 address-tools 惰性纪律，不注册空能力）。
+  if (storage?.addressBindingRepo && storage?.externalSourceRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    const sourceRepo = storage.externalSourceRepo;
+    const findActive = (addr: string) => {
+      const row = addressRepo.findActive(addr);
+      return row ? { agentId: row.agentId, targetRef: row.targetRef } : undefined;
+    };
+    // D8：地址簿只读端口接进每 agent mailbox（外部信号路由跟绑定走，不跟源主走）。
+    agentManager.setAddressLookup({ findActive });
+    const externalSourceService = new ExternalSourceService({
+      sources: sourceRepo,
+      findActive,
+      mailboxOf: (agentId) => {
+        try { return agentManager.getAgent(agentId)?.getMailbox(); } catch { return undefined; }
+      },
+    });
+    // 工具端口：归属裁决在 service（org-manager 唯一写者），core 工具面只翻译表面语义。
+    agentManager.setExternalSourcePort({
+      register: (input) => externalSourceService.registerSource(input),
+      list: (input) => externalSourceService.listSources(input.orgId, input.agentId),
+      toggle: (input) => externalSourceService.setSourceEnabled(input),
+    });
+    apiServer.setExternalSourceService(externalSourceService);
+    externalSourceService.startPolling();
+  }
+
   // Wire mailbox + decision persistence to SQLite
   if (storage?.mailboxRepo && storage?.decisionRepo) {
     const mbRepo = storage.mailboxRepo;
@@ -2672,15 +2701,15 @@ async function startServerCore(
         // IM 入站 = 外部人类发来的消息 → 聊天回合（显式表态）。
         scenario: 'chat',
         channelKey,
-        // 第六刀 C2（§2.3 投递点 1）：IM 入站交出信封的 from/messageId。
-        // `message.id` 是平台自己的 native 消息 id → 同一条群消息被适配器重投时
-        // 只能落一行 queued + 一条 duplicate_message_id 退信（V5）。
-        origin: {
-          from: imAddressRef(message.platform, message.senderId),
-          messageId: message.id,
-          externalThreadRef: message.threadId ?? null,
-          subject: (message.content.text ?? '').slice(0, 120),
-        },
+        // 第六刀 C2（§2.3 投递点 1）+ C10-B2（S1）：IM 入站信封头的唯一写者
+        // 是 buildImInboundOrigin。messageId = 适配器在分派点 surface 的 native
+        // id（飞书 om_*）→ 重投命中 V5 (agent, messageId) 去重；未 envelope 化
+        // 的平台回退 message.id（原行为不变）。
+        origin: buildImInboundOrigin(message),
+        // C10-B2（S3）：IM 入口入队前铸 per-message external ref（唯一 C10-B
+        // 构造器），经 options.workUnitRef 传入 → 装配点 ensureIdentity 保证实体。
+        // 与 Web UI prepareChatTurnWorkUnit / injectFollowUp 同一不变量：入口写 ref。
+        workUnitRef: buildImInboundWorkUnitRef(message),
       });
       auditService.record({
         orgId: 'default',

@@ -561,9 +561,7 @@ describe('C10-0A：身份端口接线 —— 声明的 ref 在装配点必须有
       setFactService: () => {},
       setWorkUnitStatusProvider: () => {},
       setWorkUnitPort: () => {},
-      // C10-0B：装配方法新增每日审计端口工厂 —— 桩必须镜像真实接口，
-      // 否则接线测试测的是「旧接口还能用」，不是「新接口接对了」。
-      setIdentityAuditPortFactory: () => {},
+      setTrustBoundaryPort: () => {},
       setMailboxIdentityPort: (p: IdentityPort) => {
         port = p;
       },

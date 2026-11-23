@@ -25,6 +25,9 @@ export { TelegramAdapter } from './telegram/adapter.js';
 export { TelegramClient } from './telegram/client.js';
 export { MessageRouter } from './router.js';
 export type { BotInstanceStatus, ConnectionTestHook } from './router.js';
+// C10-B：外部信号源适配器（只翻译信封，不路由）。
+export { webhookAdapter, rssAdapter } from './external-source.js';
+export type { ExternalEvent, ExternalSourceAdapter, ExternalSourceKind } from './external-source.js';
 export { ConnectionTestRegistry } from './gateway/connection-test.js';
 export type {
   ConnectionTestLeg,

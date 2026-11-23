@@ -69,6 +69,8 @@ export interface StorageBridge {
   channelBindingRepo?: any;
   /** 邮箱地址绑定（第六刀 C1）：channel_bindings 上的 address 语义 + address_bindings 视图。 */
   addressBindingRepo?: any;
+  /** C10-B：外部信号源（webhook/RSS）持久配置 + kill switch 的唯一写者。 */
+  externalSourceRepo?: any;
 }
 
 function resolveSqlitePath(url?: string): string {
@@ -277,6 +279,7 @@ async function initSqliteStorage(url?: string): Promise<StorageBridge | null> {
       platformInstanceRepo: new storage.SqlitePlatformInstanceRepo(db),
       channelBindingRepo: new storage.SqliteChannelBindingRepo(db),
       addressBindingRepo: new storage.SqliteAddressBindingRepo(db),
+      externalSourceRepo: new storage.SqliteExternalSourceRepo(db),
       pendingCallbackRepo: new storage.SqlitePendingCallbackRepo(db),
     };
     log.info('SQLite storage initialized', { path: dbPath });

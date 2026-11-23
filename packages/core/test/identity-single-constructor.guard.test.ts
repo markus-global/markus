@@ -81,3 +81,63 @@ describe('C10-0B §3.2：身份只有一个建造点（入队时）', () => {
     expect(sourceFiles().length).toBeGreaterThan(50);
   });
 });
+
+// ─── C10-B：外部信号 ref 的唯一建造点 ─────────────────────────────────────────
+//
+// WORK_UNIT_REF.external（shared/work-unit.ts）是外部信号 ref 的唯一构造器。
+// 第二个建造点 = 同一个事件可以长出两个身份（R1 的身份版）。检测器咬三种
+// **建造**形态（模板插值 / 字符串拼接 / 硬编码整 ref），不咬读取谓词：
+// identity-audit 的门禁 SQL 用 LIKE 'external:%' 做形状检查（一个冒号，读取），
+// 不是建造。豁免文件只有构造器本身（含其文档注释）。
+//
+// 本组在 base 上是「缺席断言」（0 命中 = 绿）；咬人证据 = 证伪阶段种第二建造点。
+
+/** 唯一合法建造点（相对仓库根）。 */
+const EXTERNAL_REF_CONSTRUCTOR_FILE = join('packages', 'shared', 'src', 'work-unit.ts');
+
+/** 三种建造形态：模板插值 / 拼接 / 硬编码整 ref（source:messageId 两段）。 */
+const EXTERNAL_BUILD_PATTERNS: RegExp[] = [
+  /`external:\$\{/,
+  /['"]external:['"]\s*\+/,
+  /['"]external:[a-z0-9_-]+:/,
+];
+
+function externalBuildOffenders(): string[] {
+  const hits: string[] = [];
+  for (const file of sourceFiles()) {
+    if (relative(REPO_ROOT, file) === EXTERNAL_REF_CONSTRUCTOR_FILE) continue;
+    const text = readFileSync(file, 'utf-8');
+    const lines = text.split('\n');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i]!;
+      if (EXTERNAL_BUILD_PATTERNS.some(p => p.test(line))) {
+        hits.push(`${relative(REPO_ROOT, file)}:${i + 1}: ${line.trim().slice(0, 140)}`);
+      }
+    }
+  }
+  return hits;
+}
+
+describe('C10-B：外部信号 ref 只有一个建造点（WORK_UNIT_REF.external）', () => {
+  it('packages/*/src 中除构造器文件外，0 个 external ref 建造点', () => {
+    const hits = externalBuildOffenders();
+    expect(hits, `第二建造点必须删除（一个事件两个身份 = R1）：\n${hits.join('\n')}`)
+      .toHaveLength(0);
+  });
+
+  it('检测器真的会咬：三种建造形态的内存样本各命中一条（自检）', () => {
+    const samples = [
+      'const ref = `external:${src}:${id}`;',
+      "const ref = 'external:' + src + ':' + id;",
+      "const ref = 'external:src_hook:msg-1';",
+    ];
+    for (const s of samples) {
+      expect(EXTERNAL_BUILD_PATTERNS.some(p => p.test(s)), `样本必须被咬：${s}`).toBe(true);
+    }
+    // 读取谓词（门禁 SQL 的形状检查）不是建造，不得误咬。
+    const readPredicate = "work_unit_ref NOT LIKE 'external:%'";
+    expect(EXTERNAL_BUILD_PATTERNS.some(p => p.test(readPredicate))).toBe(false);
+    // 唯一构造器调用形态也不咬。
+    expect(EXTERNAL_BUILD_PATTERNS.some(p => p.test('WORK_UNIT_REF.external(src, id)'))).toBe(false);
+  });
+});

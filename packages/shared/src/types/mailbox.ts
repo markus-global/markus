@@ -18,7 +18,8 @@ export type MailboxItemType =
   | 'daily_report'
   | 'memory_consolidation'
   | 'workflow_update'
-  | 'callback_result';
+  | 'callback_result'
+  | 'external_signal';
 
 export type MailboxPriority = 0 | 1 | 2 | 3 | 4;
 
@@ -266,6 +267,10 @@ export const MAILBOX_TYPE_REGISTRY: Record<MailboxItemType, MailboxTypeDescripto
   memory_consolidation: { label: 'Memory Consolidation', category: 'system',       icon: '🧠', signalClass: 'system',           policy: { priority: 4, invokesLLM: true,  affinity: ['system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
   workflow_update:      { label: 'Workflow Update',      category: 'task',         icon: '🔄', signalClass: 'governance_event', policy: { priority: 2, invokesLLM: true,  affinity: ['task', 'requirement', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: true } },
   callback_result:      { label: 'Callback Result',      category: 'system',       icon: '↩',  signalClass: 'callback',         policy: { priority: 1, invokesLLM: true,  affinity: ['conversation', 'system'], dedupePerRound: false, triageStaleDrop: true,  backgroundWork: true,  strictState: false, actionRequiredStrict: false } },
+  // C10-B：外部信号（webhook / RSS）是 record 类、invokesLLM=false —— 信号自身永不
+  // spawning 动作回合（observe 的结构表达）；内容经 delta 进 agent 自己的下一回合。
+  // 实体维度 workunit（每事件即实体 wu:<ref>），intent 在唯一 ingest 点封顶 deliver。
+  external_signal:      { label: 'External Signal',      category: 'notification', icon: '📡', signalClass: 'record',           policy: { priority: 2, invokesLLM: false, affinity: ['workunit', 'system'], dedupePerRound: false, triageStaleDrop: false, backgroundWork: false, strictState: false, actionRequiredStrict: false } },
 };
 
 // ─── The single routing decision point ───────────────────────────────────────
@@ -380,7 +385,7 @@ export function routeMailboxItem(item: MailboxItemLite): MailboxRoute {
 export const MAILBOX_CATEGORIES: Record<MailboxCategory, { label: string; types: MailboxItemType[] }> = {
   interaction:  { label: 'Interaction',  types: ['human_chat', 'a2a_message', 'mention'] },
   task:         { label: 'Task',         types: ['task_status_update', 'task_comment', 'requirement_comment', 'review_request', 'session_reply', 'workflow_update'] },
-  notification: { label: 'Notification', types: ['requirement_update'] },
+  notification: { label: 'Notification', types: ['requirement_update', 'external_signal'] },
   system:       { label: 'System',       types: ['system_event', 'heartbeat', 'daily_report', 'memory_consolidation', 'callback_result'] },
 };
 

@@ -160,6 +160,30 @@ export const DECLARATIONS = {
     witness: { type: 'reader', at: 'mailboxScenario' },
     note: 'Signal-driven shapes come from MAILBOX_TYPE_SCENARIO; path facts stay inline by design.',
   },
+  'agent.autonomyLevel': {
+    kind: 'param',
+    declaredAt: 'packages/shared/src/types/agent.ts:AgentConfig',
+    // REBUILT (2026-11-23, C10-C). #462 introduced this axis; #464 deleted the
+    // predicate + consumer + witness, leaving agents.autonomy with writers and
+    // zero readers. One consumer: the maySelfInitiate predicate is called from exactly one
+    // place (the patrol admission at the top of handleHeartbeat in core/agent.ts).
+    // A second call site turns packages/shared/test/autonomy-single-consumer.test.ts
+    // red on purpose. The verified=false trust ceiling is an INPUT to the same
+    // predicate, not a second measure.
+    witness: { type: 'reader', at: 'maySelfInitiate' },
+    note: "DEFAULT 'act' in the agents table keeps historical rows identical to pre-column behaviour — compatible read, no data migration.",
+  },
+  'org.crossOrgPolicy': {
+    kind: 'policy',
+    declaredAt: 'packages/storage/src/sqlite-storage.ts:organizations.cross_org_policy',
+    // C10-C: cross-org trust policy. Default 'observe' caps self-initiated
+    // action on unverified cross-org input; elevation to 'auto' requires a
+    // human actor (users-table check) + one audit row, enforced structurally
+    // in OrganizationService.setCrossOrgPolicy — the repo writer is its
+    // instrument, not a public path.
+    witness: { type: 'reader', at: 'selfInitiationCeiling' },
+    note: "Reader chain: api-server trust port (org/policy lookup) → Agent.selfInitiationCeiling (INPUT derivation) → the maySelfInitiate predicate, single.",
+  },
 } as const satisfies Record<string, Declaration>;
 
 export type DeclarationKey = keyof typeof DECLARATIONS;

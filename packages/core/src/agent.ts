@@ -51,6 +51,10 @@ import {
   type ExecutionCancelToken,
   sessionLockKeyOfContextRef,
   WORK_UNIT_REF,
+  type SignalAddressLookup,
+  maySelfInitiate,
+  type AgentAutonomy,
+  type TrustBoundaryPort,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -343,19 +347,6 @@ export interface TaskProjectContext {
   repositories: Array<{ localPath: string; defaultBranch: string; role: string }>;
 }
 
-/**
- * C10-0B §3.5：每日真库身份审计的**端口**。
- *
- * core 只声明“每天请跑一次”，实现归 org-manager（它才知道库在哪、记录写到哪）：
- * 端口而不是 import service，因为 core 不得反向依赖 org-manager。
- *
- * 为什么不在这里传 agentId / dbPath：那是**实现侧**的装配知识（每个 agent 的端口
- * 实例由装配处用 `agentId` 闭包出来）。端口越小，越不容易长成第二个调度器。
- */
-export interface IdentityAuditPort {
-  runDaily(): void | Promise<void>;
-}
-
 export interface AgentOptions {
   config: AgentConfig;
   role: RoleTemplate;
@@ -381,11 +372,6 @@ export interface AgentOptions {
   skillRegistry?: SkillRegistry;
   /** Absolute path to the AGENT HANDBOOK (templates/roles/HANDBOOK.md). Injected into the prompt so the agent reads it without searching. */
   handbookPath?: string;
-  /**
-   * C10-0B §3.5：每日身份审计端口（与 `workUnitPort` 同一装配方向：装配处注入，
-   * core 只认最小端口）。缺省 = 不注册时钟源。
-   */
-  identityAuditPort?: IdentityAuditPort;
 }
 
 import { createSessionWorkspace, sessionWorkspaceStore, asAgentScenario, SCENARIO_ACTIVITY_TYPE, type AgentScenario, type SessionWorkspace } from './session-workspace.js';
@@ -769,14 +755,6 @@ export class Agent {
    * （`peekTurnSessionId`）—— 可知的降级，不是隐藏的崩溃。
    */
   private workUnitPort?: DelegationWorkUnitPort;
-  /**
-   * C10-0B §3.5：每日真库身份审计端口（装配处注入，core 不认识它与库的关系）。
-   *
-   * 未注入 ⇒ **不注册时钟源**（装配惰性由依赖缺席证明，而不是靠注释）：
-   * 一个没有 storage 的装配路径（CLI 单测、纯内存 agent）不该每天跑一次审计，
-   * 更不该为此长出一个新的 `setInterval`。
-   */
-  private identityAuditPort?: IdentityAuditPort;
   /** C7-B：当前回合的父 WU ref（由 `onFocusChanged` 从 item 上取；无 item = null）。 */
   private currentTurnWorkUnitRef: string | null = null;
   /**
@@ -798,18 +776,23 @@ export class Agent {
   }
 
   /**
-   * C10-0B §3.5：设置每日身份审计端口（AgentManager 在装配时调用）。
-   *
-   * 只有 `Agent.start()` 会根据它注册时钟源 —— 端口本身是“做什么”，时钟源是
-   * “什么时候”。混在一起就会出现第二个周期驱动器（本仓的 `AgentClock` 是唯一的）。
+   * C10-C：信任边界端口 —— 自主轴天花板 INPUT 的唯一来源（装配：api-server，
+   * 镜像 setWorkUnitPort）。未注入 ⇒ 无天花板（单组织/内嵌部署没有跨组织知识；
+   * 权限轴本身照常咬人）。
    */
-  setIdentityAuditPort(port: IdentityAuditPort | undefined): void {
-    this.identityAuditPort = port;
+  private trustBoundaryPort?: TrustBoundaryPort;
+  setTrustBoundaryPort(port: TrustBoundaryPort | undefined): void {
+    this.trustBoundaryPort = port;
   }
 
   /** C10-0A：身份 ensure 端口转发给 mailbox（装配唯一入口 wireWorkUnits）。 */
   setMailboxIdentityPort(port: MailboxIdentityPort | undefined): void {
     this.mailbox.setIdentityPort(port);
+  }
+
+  /** C10-B：地址簿只读端口转发给 mailbox（外部信号路由跟绑定走，D8；装配唯一入口）。 */
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.mailbox.setAddressLookup(lookup);
   }
 
   /**
@@ -1223,18 +1206,6 @@ export class Agent {
    *  sweep — a wait's expiry is not latency-critical, and this rides the one clock. */
   private static readonly TRIGGER_EXPIRY_SWEEP_INTERVAL_MS = 60_000;
   private static readonly MAILBOX_MAINTENANCE_INTERVAL_MS = 30_000;
-  /** C10-0B §3.5：每日真库身份审计的周期（24h，骑在 AgentClock 上，不新建定时器）。 */
-  private static readonly IDENTITY_AUDIT_INTERVAL_MS = 24 * 60 * 60 * 1000;
-  /**
-   * 首跑错峰窗口。
-   *
-   * “一天一条记录”由实现侧的独占创建保证，但错峰仍有意义：重启风暴（一次部署
-   * 同时拉起 N 个 agent）不该在启动瞬间把 N 份门禁查询同时打到真库，也不该让
-   * “审计”成为启动延迟的一部分（它锦上添花，不是启动步骤）。10–60 分钟随机。
-   */
-  private static IDENTITY_AUDIT_INITIAL_DELAY_MS(): number {
-    return 10 * 60_000 + Math.floor(Math.random() * 50 * 60_000);
-  }
   /**
    * The single periodic driver for this agent's time-driven transitions
    * (mailbox upkeep, memory consolidation, wakeup sweep). One interval, N
@@ -1341,9 +1312,6 @@ export class Agent {
     this.dataDir = options.dataDir;
     this.pathPolicy = options.pathPolicy;
     this.skillRegistry = options.skillRegistry;
-    // C10-0B §3.5：端口来自装配处（AgentOptions），与 setter 同一条路 —— 两个入口
-    // 都走 `this.identityAuditPort`，时钟源注册时看不到“第二个真源”。
-    this.identityAuditPort = options.identityAuditPort;
     this._maxToolIterations = options.maxToolIterations ?? Agent.DEFAULT_MAX_TOOL_ITERATIONS;
     this.turnDeltaInjectionEnabled = options.turnDeltaInjection !== false;
     this.eventBus = new EventBus();
@@ -1833,16 +1801,6 @@ export class Agent {
     // C8-C / M5: expiry of `rest(wakeOn)` waits rides this clock source — never a timer
     // per subscription. Matching happens at construction time (see `_triggerUnsub` below);
     // this source is what makes a wait that was never matched still end in a TURN.
-    // C10-0B §3.5：每日真库身份审计 —— **只**在端口装配时注册（依赖缺席 = 惰性）。
-    // 周期 24h，首跑错峰：启动瞬间不跑（重启风暴不该把审计变成启动步骤）。
-    if (this.identityAuditPort) {
-      this.clock.register({
-        name: 'identity-audit',
-        everyMs: Agent.IDENTITY_AUDIT_INTERVAL_MS,
-        initialDelayMs: Agent.IDENTITY_AUDIT_INITIAL_DELAY_MS(),
-        fn: () => this.runIdentityAuditTick(),
-      });
-    }
     this.clock.register({
       name: 'trigger-expiry',
       everyMs: Agent.TRIGGER_EXPIRY_SWEEP_INTERVAL_MS,
@@ -1883,20 +1841,6 @@ export class Agent {
       // `consolidateMemory` already contains its own failures; this guards the emit path
       // so a broken listener can never wedge the clock source.
       log.warn('Dream tick failed', { agentId: this.id, error: String(e) });
-    }
-  }
-
-  /**
-   * C10-0B §3.5：时钟源的**唯一**执行体。
-   *
-   * 失败隔离：审计失败绝不影响 agent（观测设施不是故障点），但必须可见 ——
-   * 一个每天静默失败的仪器等于没有仪器。
-   */
-  private async runIdentityAuditTick(): Promise<void> {
-    try {
-      await this.identityAuditPort?.runDaily();
-    } catch (e) {
-      log.warn('Identity audit tick failed', { agentId: this.id, error: String(e) });
     }
   }
 
@@ -10764,10 +10708,42 @@ export class Agent {
       });
   }
 
+  /**
+   * C10-C: derive the trust-ceiling INPUT for the autonomy predicate — not a
+   * second permissibility measure. Only unverified agent-origin queued mail
+   * feeds it: a2a envelopes default fromVerified=false platform-wide, and the
+   * same-org/cross-org + policy decision belongs to the port (org-manager).
+   * external/im/platform origins never feed it — external records are already
+   * demand-capped at ingest (C10-B signal ceiling: a different fact, a different
+   * owner), and IM human chat is conversational input, not cross-org traffic.
+   */
+  private selfInitiationCeiling(): AgentAutonomy | undefined {
+    const port = this.trustBoundaryPort;
+    if (!port) return undefined;
+    const senders = new Set<string>();
+    for (const item of this.mailbox.getQueuedItems()) {
+      const env = item.envelope;
+      if (env && env.from.kind === 'agent' && env.fromVerified === false) {
+        senders.add(env.from.agentId);
+      }
+    }
+    if (senders.size === 0) return undefined;
+    return port.selfInitiationCeiling([...senders]);
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
   }): Promise<string | void> {
+    // C10-C: the ONE consumer of the autonomy axis (rebuilt after #464 deleted
+    // the #462 check). All three patrol paths — clock tick, api trigger, mailbox
+    // heartbeat item — converge here, so one check covers every self-initiation.
+    // Must go through recordHeartbeatSkip, not a bare return: an observe agent
+    // still reports liveness, or it looks dead in the UI.
+    if (!maySelfInitiate(this.config.autonomy, this.selfInitiationCeiling())) {
+      this.recordHeartbeatSkip('Heartbeat', 'autonomy=observe — self-initiated patrol disabled');
+      return;
+    }
     log.info('Processing heartbeat check-in');
 
     if (this.shouldDeferHeartbeatForHumanChat()) {

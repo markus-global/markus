@@ -509,6 +509,17 @@ export class FeishuAdapter implements CommAdapter {
     // Skip messages from bots
     if (sender.sender_type === 'bot') return;
 
+    // C10-B2 fail-closed: without the platform-native message_id no stable
+    // envelope idempotency key can be formed (V5 could never dedupe a
+    // redelivery), so the dispatch point refuses the event instead of
+    // enqueueing it under a fresh random surrogate id.
+    if (!msgEvent.message_id) {
+      log.warn('Feishu inbound without native message_id — dropped (fail-closed, no stable idempotency key)', {
+        chatId: msgEvent.chat_id,
+      });
+      return;
+    }
+
     let text = '';
     try {
       const content = JSON.parse(msgEvent.content) as { text?: string };
@@ -537,6 +548,10 @@ export class FeishuAdapter implements CommAdapter {
       content: { type: 'text', text },
       replyToId: undefined,
       threadId: msgEvent.message_id,
+      // C10-B2 (seam S1): the envelope idempotency key is the NATIVE message id,
+      // surfaced here at the single dispatch point. `id` stays the random
+      // platform item id (semantics unchanged; the golden lock keeps idKind).
+      nativeMessageId: msgEvent.message_id,
       timestamp: new Date().toISOString(),
       // Only the *platform-derived* context lives here: a p2p chat is a `dm`,
       // everything else a `group` (isolation stays the default). The bot
