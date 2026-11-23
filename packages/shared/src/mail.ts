@@ -281,6 +281,21 @@ export { agentAddressRef };
 // 按当前 org 过滤会让 `cto.acme@markus.global` 在组织 B 的实例上永远解析不到。
 
 /** 地址簿只读端口（由 storage 实现；core/comms 不依赖 storage）。 */
+/**
+ * C10-B —— 信号级 observe 天花板的**唯一谓词**。
+ *
+ * 一条外部信号能否要求接收方执行动作（intent trigger_execution / action_required），
+ * 只取决于发送者身份是否已验证。未验证（fromVerified !== true）⇒ 只能 observe（封顶
+ * deliver）。fail-closed：undefined / null / 任何非 true 取值都按未验证处理，不猜。
+ *
+ * 两个事实、两个所有者，不撞 C10-C：本谓词是**信号级**（一条信号能要求什么），唯一
+ * 消费者 = ExternalSourceService 的唯一 ingest 点；C10-C 的 maySelfInitiate 是**agent 级**
+ * （agent 能否自主发起动作）。kind 无关 —— 只认 verified===true，external/im 皆然。
+ */
+export function mayExternalSignalDemandAction(fromVerified: boolean): boolean {
+  return fromVerified === true;
+}
+
 export interface SignalAddressLookup {
   /** 该地址当前是否有一个 active 目标。被谁占用是结构字段，不是字符串推断。 */
   findActive(address: string): { agentId: string; targetRef: string } | undefined;

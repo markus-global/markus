@@ -30,6 +30,14 @@ export {
   type AddressBindingRecord,
   type AddressToolContext,
 } from './address-tools.js';
+export {
+  createExternalSourceTools,
+  type ExternalSourcePort,
+  type ExternalSourceToolContext,
+  type ExternalSourceRegisterResult,
+  type ExternalSourceToggleResult,
+  type ExternalSourceListRecord,
+} from './external-source-tools.js';
 export { createWorkflowTools, type WorkflowToolsContext } from './workflow-tools.js';
 export { createFactTools, type FactToolsContext } from './fact-tools.js';
 export { createMultiModalTools, type MultiModalToolsContext } from './multimodal.js';

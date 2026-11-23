@@ -173,6 +173,33 @@ export const WORK_UNIT_REF = {
   delegation(parentRef: string, childKey: string): string {
     return `delegation:${parentRef}#${childKey}`;
   },
+  /**
+   * C10-B —— 一条**外部信号**（webhook / RSS）= 一个 WU 实体。
+   *
+   * `external:<source>:<encodeURIComponent(messageId)>`。source 是 external_sources
+   * 行 id（charset /^[a-z0-9][a-z0-9_-]*$/，≤64）；messageId 是适配器交出的稳定原生
+   * id（RSS=guid/link；webhook=payload.messageId，缺省由 ingest 点生成平台 id）。
+   *
+   * 为什么 encodeURIComponent 而不是 sanitize：外部 messageId 是任意字符串（RSS guid
+   * 常是 URL），单射编码保证「不同 messageId 绝不同 ref」—— 清洗式替换非法字符会碰撞
+   * = 假幂等。它是 JS 全局函数，本文件保持纯声明、零 import。
+   *
+   * 幂等 per (source, messageId)：同事件重投命中 uq_work_units_ref = 同一条活。
+   * 这是外部 ref 的**唯一建造点**（identity-single-constructor.guard 扫描咬第二建造点）。
+   * 入队前由唯一 ingest 点（ExternalSourceService）调用，装配点 ensureIdentity 保证实体存在。
+   */
+  external(source: string, messageId: string): string {
+    if (typeof source !== 'string' || source.length === 0 || source.length > 64 || !/^[a-z0-9][a-z0-9_-]*$/.test(source)) {
+      throw new Error(
+        `WORK_UNIT_REF.external: invalid source ${JSON.stringify(source)} — ` +
+        'must match /^[a-z0-9][a-z0-9_-]*$/ and be 1..64 chars (fail-closed, no silent rewrite)',
+      );
+    }
+    if (typeof messageId !== 'string' || messageId.length === 0) {
+      throw new Error('WORK_UNIT_REF.external: messageId must be a non-empty string (it is the idempotency key)');
+    }
+    return `external:${source}:${encodeURIComponent(messageId)}`;
+  },
 } as const;
 
 // ─── 会话锁键派生（C7-B：单一来源是 context_ref）───────────────────────────

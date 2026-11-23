@@ -88,6 +88,7 @@ import {
   type PlatformIntegrationStoreDeps,
   recordInstanceVerification,
   type InstanceStoreDeps,
+  ExternalSourceService,
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
@@ -2327,6 +2328,34 @@ async function startServerCore(
       revoke: (input) => addressRepo.revoke(input),
       list: (input) => addressRepo.listVisible(input),
     });
+  }
+
+  // C10-B：外部信号源（webhook/RSS）—— 地址簿 lookup + 自助工具 + 唯一 ingest 服务 + RSS 轮询。
+  // 未接线（缺 repo）⇒ 工具不注册、路由 503（同 address-tools 惰性纪律，不注册空能力）。
+  if (storage?.addressBindingRepo && storage?.externalSourceRepo) {
+    const addressRepo = storage.addressBindingRepo;
+    const sourceRepo = storage.externalSourceRepo;
+    const findActive = (addr: string) => {
+      const row = addressRepo.findActive(addr);
+      return row ? { agentId: row.agentId, targetRef: row.targetRef } : undefined;
+    };
+    // D8：地址簿只读端口接进每 agent mailbox（外部信号路由跟绑定走，不跟源主走）。
+    agentManager.setAddressLookup({ findActive });
+    const externalSourceService = new ExternalSourceService({
+      sources: sourceRepo,
+      findActive,
+      mailboxOf: (agentId) => {
+        try { return agentManager.getAgent(agentId)?.getMailbox(); } catch { return undefined; }
+      },
+    });
+    // 工具端口：归属裁决在 service（org-manager 唯一写者），core 工具面只翻译表面语义。
+    agentManager.setExternalSourcePort({
+      register: (input) => externalSourceService.registerSource(input),
+      list: (input) => externalSourceService.listSources(input.orgId, input.agentId),
+      toggle: (input) => externalSourceService.setSourceEnabled(input),
+    });
+    apiServer.setExternalSourceService(externalSourceService);
+    externalSourceService.startPolling();
   }
 
   // Wire mailbox + decision persistence to SQLite

@@ -9,6 +9,11 @@ export {
   type WorkStatusReport,
 } from './work-unit-service.js';
 export { APIServer } from './api-server.js';
+export {
+  ExternalSourceService,
+  type ExternalSourceServiceDeps,
+  type IngestOutcome,
+} from './external-source-service.js';
 export { WSBroadcaster } from './ws-server.js';
 export { HITLService, isAnswerableByTap, assessResponseCompleteness, type NotificationPriority } from './hitl-service.js';
 export type { ApprovalRequest, ApprovalResponse, Notification, IncompleteResponse } from './hitl-service.js';

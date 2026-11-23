@@ -47,6 +47,7 @@ export const MAILBOX_TYPE_STRUCTURE: Readonly<Record<string, MailboxTypeStructur
   memory_consolidation: { icon: '🧠', category: 'system' },
   workflow_update:      { icon: '🔄', category: 'task' },
   callback_result:      { icon: '↩', category: 'system' },
+  external_signal:      { icon: '📡', category: 'notification' },
 };
 
 /** Icon for a mailbox type; unknown types get a neutral dot instead of nothing. */

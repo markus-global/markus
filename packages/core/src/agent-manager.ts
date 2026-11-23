@@ -23,6 +23,7 @@ import {
   type UserInputAnswer,
   DEFAULT_HEARTBEAT_INTERVAL_MS,
   MailboxPriorityLevel,
+  type SignalAddressLookup,
 } from '@markus/shared';
 import { Agent, type AgentToolHandler, type AgentOptions } from './agent.js';
 import type { DelegationWorkUnitPort } from './tools/subagent.js';
@@ -78,6 +79,7 @@ import type { FactService } from './facts/fact-service.js';
 // without a loud failure.
 import { assertActionToolReachability, toolFaceNames } from './capability-packs.js';
 import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
+import { createExternalSourceTools, type ExternalSourcePort, type ExternalSourceToolContext } from './tools/external-source-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
@@ -1888,6 +1890,8 @@ export class AgentManager {
 
     // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
     this.registerAddressTools(agent, id);
+    // C10-B：外部信号源工具 + 地址簿只读端口（同一装配纪律：两条建 Agent 路径都走）。
+    this.applyExternalSource(agent, id);
 
     // Recall tool — agents can query their own execution history
     if (this.recallCallbacks) {
@@ -2843,6 +2847,7 @@ export class AgentManager {
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
     this.registerAddressTools(agent, id);
+    this.applyExternalSource(agent, id);
 
     if (this.recallCallbacks) {
       agent.registerTool(createRecallTool({ agentId: id, ...this.recallCallbacks }));
@@ -3878,6 +3883,37 @@ export class AgentManager {
       list: (input) => port.list(input),
     };
     for (const tool of createAddressTools(ctx)) agent.registerTool(tool);
+  }
+
+  /**
+   * C10-B：外部信号源端口 + 地址簿只读端口（D8）。与 address-binding 同纪律：
+   * 未接线 ⇒ 工具不注册（空能力不注册）；两条建 Agent 路径 + 运行期补装都走
+   * applyExternalSource，避免「一半 agent 有外部源工具、一半没有」。
+   * addressLookup 让 mailbox 唯一解析器把外部信号路由到 active 绑定（跟绑定走，不跟源主走）。
+   */
+  private externalSourcePort?: ExternalSourcePort;
+  private addressLookup?: SignalAddressLookup;
+  setExternalSourcePort(port: ExternalSourcePort | undefined): void {
+    this.externalSourcePort = port;
+    for (const [id, agent] of this.agents) this.applyExternalSource(agent, id);
+  }
+  setAddressLookup(lookup: SignalAddressLookup | undefined): void {
+    this.addressLookup = lookup;
+    for (const agent of this.agents.values()) agent.setAddressLookup(lookup);
+  }
+  private applyExternalSource(agent: Agent, agentId: string): void {
+    if (this.addressLookup) agent.setAddressLookup(this.addressLookup);
+    const port = this.externalSourcePort;
+    if (!port) return;
+    const orgId = agent.config.orgId ?? 'default';
+    const ctx: ExternalSourceToolContext = {
+      agentId,
+      orgId,
+      register: (input) => port.register(input),
+      list: (input) => port.list(input),
+      toggle: (input) => port.toggle(input),
+    };
+    for (const tool of createExternalSourceTools(ctx)) agent.registerTool(tool);
   }
   /**
    * Legacy wiring hook kept for API compatibility. The session tool is now
