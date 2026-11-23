@@ -91,7 +91,7 @@ import {
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
-import { buildImInboundOrigin } from './im-inbound-origin.js';
+import { buildImInboundOrigin, buildImInboundWorkUnitRef } from './im-inbound-origin.js';
 import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
@@ -2706,6 +2706,10 @@ async function startServerCore(
         // id（飞书 om_*）→ 重投命中 V5 (agent, messageId) 去重；未 envelope 化
         // 的平台回退 message.id（原行为不变）。
         origin: buildImInboundOrigin(message),
+        // C10-B2（S3）：IM 入口入队前铸 per-message external ref（唯一 C10-B
+        // 构造器），经 options.workUnitRef 传入 → 装配点 ensureIdentity 保证实体。
+        // 与 Web UI prepareChatTurnWorkUnit / injectFollowUp 同一不变量：入口写 ref。
+        workUnitRef: buildImInboundWorkUnitRef(message),
       });
       auditService.record({
         orgId: 'default',

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { buildImInboundOrigin } from '../src/commands/im-inbound-origin.js';
-import type { Message } from '@markus/shared';
+import { buildImInboundOrigin, buildImInboundWorkUnitRef } from '../src/commands/im-inbound-origin.js';
+import { WORK_UNIT_REF, type Message } from '@markus/shared';
 
 /**
  * C10-B2 — the single writer of the IM inbound envelope header.
@@ -49,5 +49,43 @@ describe('buildImInboundOrigin — IM inbound envelope header single writer (C10
       buildImInboundOrigin(makeMessage({ content: { type: 'text', text: long } })).subject,
     ).toHaveLength(120);
     expect(buildImInboundOrigin(makeMessage({ content: { type: 'text' } })).subject).toBe('');
+  });
+});
+
+/**
+ * C10-B2 ref-leg (S3 resolution) — the IM entry ensures a per-message external
+ * work-unit ref BEFORE enqueue, reusing the single C10-B constructor
+ * `WORK_UNIT_REF.external(source, messageId)`. The entry is the ref writer
+ * (same invariant as Web UI `prepareChatTurnWorkUnit` and `injectFollowUp`);
+ * the mailbox assembly point `ensureIdentity` guarantees the entity exists.
+ *
+ * Red-first: at base the IM entry passes no workUnitRef (probe 2026-11-23
+ * 04:03–04:10Z showed work_unit_ref=NULL, work_units=0, overview empty).
+ */
+describe('buildImInboundWorkUnitRef — IM entry per-message external ref (C10-B2 S3)', () => {
+  it('mints the canonical external ref from platform + native message id', () => {
+    const ref = buildImInboundWorkUnitRef(
+      makeMessage({ nativeMessageId: 'om_native_1', threadId: 'om_native_1' }),
+    );
+    // Must equal the single C10-B constructor output — no second construction point.
+    expect(ref).toBe(WORK_UNIT_REF.external('feishu', 'om_native_1'));
+    expect(ref).toBe('external:feishu:om_native_1');
+  });
+
+  it('is idempotent: same native id always yields the same ref', () => {
+    const msg = makeMessage({ nativeMessageId: 'om_dup_check' });
+    expect(buildImInboundWorkUnitRef(msg)).toBe(buildImInboundWorkUnitRef(msg));
+  });
+
+  it('returns undefined when no native id was surfaced (legacy adapters unchanged)', () => {
+    // Adapters not yet envelope-ized keep the previous behavior (no ref claim).
+    expect(buildImInboundWorkUnitRef(makeMessage())).toBeUndefined();
+  });
+
+  it('uses the message platform as source (not a hard-coded string)', () => {
+    const ref = buildImInboundWorkUnitRef(
+      makeMessage({ platform: 'telegram', nativeMessageId: 'tg_123' }),
+    );
+    expect(ref).toBe(WORK_UNIT_REF.external('telegram', 'tg_123'));
   });
 });

@@ -13,12 +13,20 @@
  * native id keep the previous behavior (`message.id`) until they are
  * envelope-ized; this card closes Feishu, the only IM channel with real traffic.
  *
- * Routing is untouched: this header is traceability only. The chat turn's
- * work-unit identity stays the session ref (chat path, `Agent.onItemEnqueued`);
- * the external per-event ref (`WORK_UNIT_REF.external`) belongs to the
- * external-signal ingest path (webhook/RSS), not to IM chat turns.
+ * Routing is untouched: this header is traceability only.
+ *
+ * S3 resolution (card §B2 "入队前经唯一 WORK_UNIT_REF 构造器 ensure ref"):
+ * the IM entry mints a per-message external ref via the single C10-B
+ * constructor `WORK_UNIT_REF.external(platform, nativeMessageId)` and passes
+ * it through `options.workUnitRef` — the same entry-writes-ref invariant as
+ * Web UI `prepareChatTurnWorkUnit` and `injectFollowUp` (agent.ts:2056, which
+ * fixed the identical NULL-ref defect class for the follow-up chat entry).
+ * The mailbox assembly point `ensureIdentity` guarantees the entity exists
+ * before the item is persisted ("enqueue first, patch identity later" is
+ * structurally inexpressible). Adapters without a surfaced native id claim
+ * no ref (undefined → legacy behavior unchanged).
  */
-import { imAddressRef, type Message } from '@markus/shared';
+import { imAddressRef, WORK_UNIT_REF, type Message } from '@markus/shared';
 import type { DeliveryOrigin } from '@markus/core';
 
 export function buildImInboundOrigin(message: Message): DeliveryOrigin {
@@ -28,4 +36,14 @@ export function buildImInboundOrigin(message: Message): DeliveryOrigin {
     externalThreadRef: message.threadId ?? null,
     subject: (message.content.text ?? '').slice(0, 120),
   };
+}
+
+/**
+ * Per-message external work-unit ref for IM inbound (C10-B2 S3).
+ * Reuses the single C10-B constructor — no second construction point.
+ * Returns undefined when no native id was surfaced (legacy adapters unchanged).
+ */
+export function buildImInboundWorkUnitRef(message: Message): string | undefined {
+  if (!message.nativeMessageId) return undefined;
+  return WORK_UNIT_REF.external(message.platform, message.nativeMessageId);
 }
