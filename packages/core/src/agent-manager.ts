@@ -4,6 +4,8 @@ import {
   generateId,
   stripInternalBlocks,
   type AgentConfig,
+  type AgentAutonomy,
+  type OrgTrustBoundaryPort,
   type AgentConcurrentConfig,
   type AgentProfile,
   type LLMAssignment,
@@ -359,6 +361,8 @@ export interface CreateAgentRequest {
   agentRole?: 'manager' | 'worker';
   skills?: string[];
   heartbeatIntervalMs?: number;
+  /** C10-C: autonomy axis — 'observe' = read-only tier (no self-initiated patrol). Default 'act'. */
+  autonomy?: AgentAutonomy;
   tools?: AgentToolHandler[];
   orgContext?: OrgContext;
   enableSandbox?: boolean;
@@ -1607,6 +1611,7 @@ export class AgentManager {
         : { modelMode: 'default' as const, primary: this.llmRouter.defaultProviderName },
       channels: [],
       heartbeatIntervalMs: request.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: request.autonomy ?? 'act',
       concurrent: this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -1652,6 +1657,7 @@ export class AgentManager {
 
     const agent = new Agent(agentOpts);
     this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
     this.applyFactService(agent);
 
     // (0.9.7 context-root-fix) Agent-driven context compaction: agents may
@@ -2503,6 +2509,7 @@ export class AgentManager {
     skills: unknown;
     llmConfig: unknown;
     heartbeatIntervalMs: number;
+    autonomy?: string;
     profile?: unknown;
     tokensUsedToday?: number;
     activeTaskIds?: unknown;
@@ -2576,6 +2583,7 @@ export class AgentManager {
       })(),
       channels: [],
       heartbeatIntervalMs: row.heartbeatIntervalMs ?? DEFAULT_HEARTBEAT_INTERVAL_MS,
+      autonomy: (row.autonomy as AgentAutonomy | undefined) ?? 'act',
       concurrent: (row as Record<string, unknown>)['concurrent'] as AgentConfig['concurrent'] ?? this._concurrentConfig,
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
@@ -2617,6 +2625,7 @@ export class AgentManager {
       handbookPath: this.resolveHandbookPath(row.roleId ?? row.roleName),
     });
     this.applyWorkUnitPort(agent);
+    this.applyTrustBoundaryPort(agent);
     this.applyFactService(agent);
 
     // Progressive disclosure: catalog metadata only; full bodies via discover_tools
@@ -3869,6 +3878,28 @@ export class AgentManager {
   private applyWorkUnitPort(agent: Agent): void {
     if (this.workUnitPort) agent.setWorkUnitPort(this.workUnitPort);
     if (this.mailboxIdentityPort) agent.setMailboxIdentityPort(this.mailboxIdentityPort);
+  }
+
+  /**
+   * C10-C：信任边界端口 —— 与委派端口同一装配纪律（setter 对已存在 agent 逐个
+   * 补装；两条建 Agent 路径都走 apply）。组织级端口带 receiverOrgId（api-server
+   * 实现 org/policy 判定）；Agent 级端口按 agent 绑定接收方组织，Agent 契约保持
+   * (senderAgentIds) => ceiling。未注入 ⇒ Agent 无天花板（自主轴本身照常咬人）。
+   */
+  private trustBoundaryPort?: OrgTrustBoundaryPort;
+  setTrustBoundaryPort(port: OrgTrustBoundaryPort | undefined): void {
+    this.trustBoundaryPort = port;
+    for (const agent of this.agents.values()) this.applyTrustBoundaryPort(agent);
+  }
+
+  private applyTrustBoundaryPort(agent: Agent): void {
+    // 与 applyWorkUnitPort 同一守卫纪律：端口未注入时不触碰 agent——
+    // 测试替身没有新 setter 也必须能活（装配惰性=依赖缺席，不是崩溃）。
+    const port = this.trustBoundaryPort;
+    if (!port) return;
+    agent.setTrustBoundaryPort({
+      selfInitiationCeiling: (senderAgentIds) => port.selfInitiationCeiling(agent.config.orgId, senderAgentIds),
+    });
   }
 
   private registerAddressTools(agent: Agent, agentId: string): void {
