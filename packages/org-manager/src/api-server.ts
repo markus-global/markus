@@ -83,6 +83,7 @@ import { assessResponseCompleteness, type HITLService } from './hitl-service.js'
 import { ApprovalApplier, targetOfApproval, type ApprovalTargetPort } from './approval-apply.js';
 import { leanChatMessage } from './message-lean.js';
 import { enqueueGatewayTaskReceipt } from './gateway-task-receipt.js';
+import { createWorklogEntityResolver } from './worklog-entity.js';
 import { deriveSessionTitle } from './session-title.js';
 import type { BillingService } from './billing-service.js';
 import type { AuditService, AuditEventType } from './audit-service.js';
@@ -6449,100 +6450,16 @@ export class APIServer {
         //
         // 旧数据必须能读（main 上的历史行）：`workUnitRef` 大量为 NULL，且实体行
         // 可能已被删。所以解析失败一律**降级到短 id 标签**，绝不返回空。
-        const entityMemo = new Map<string, { kind: string; id: string; name: string }>();
-        const short = (id: string) => (id.length > 12 ? `${id.slice(0, 10)}…` : id);
-        const put = (kind: string, id: string, name: string | undefined, fallbackPrefix: string) => {
-          const key = `${kind}:${id}`;
-          const hit = entityMemo.get(key);
-          if (hit) return hit;
-          const v = { kind, id, name: (name && name.trim()) || `${fallbackPrefix} ${short(id)}` };
-          entityMemo.set(key, v);
-          return v;
-        };
-        const resolveEntity = (item: Record<string, unknown>) => {
-          const payload = (item.payload ?? {}) as Record<string, unknown>;
-          const meta = (item.metadata ?? {}) as Record<string, unknown>;
-          const ref = typeof item.workUnitRef === 'string' ? item.workUnitRef : '';
-
-          // 启动唤醒（`start()` 里的 [RESTARTED]）：直接入队，**没有** `work_unit_ref`
-          // （ref 要等会话身份解析后才有），所以库里那列是 NULL。但它明确标了
-          // `extra.loopWake`，属于决策循环，不是「未归属」。
-          const extra = (payload['extra'] ?? {}) as Record<string, unknown>;
-          /**
-           * 归属判据（按顺序，互斥）：
-           *
-           * ① **结构身份优先**：`taskId` / `requirementId` / 工作单元 ref（下面 1~5 条）。
-           * ② **自身事务**：只有**它自己的决策与维护**（唤醒信号 / dream / 日报）归决策循环。
-           * ③ 其余（心跳 tick、无主的后台命令回执）是**执行流水/遥测**——不属于任何「事」，
-           *    由调用方从工作记录的聚合里滤掉（`WORKLOG_TELEMETRY_TYPES`）。
-           *
-           * 【为什么不再用 `category === 'system'`】`category` 回答的是「**怎么投递的**」，
-           * 不是「**是谁的活**」。把投递类别当归属判据，`callback_result`（后台命令回执）
-           * 就被当成“决策”扫进了决策循环 —— Owner 2026-11-18 实测到 203 条
-           * `[BACKGROUND PROCESS COMPLETED] … tail -c 200 …` 躺在里面。
-           * 同一个谓词回答两个问题，就是这类 bug 的温床。
-           *
-           * 【“它自己”只有一个键】不另开 `self:`/`自身运维` 之类的第二个键：
-           * 同一条事实两个归属，谁也不知道该看哪个（Owner 当日追问过此点）。
-           */
-          const stType = String(item.sourceType ?? '');
-          const isWake = extra['loopWake'] === true || extra['triggerWake'] === true;
-          /** 它自己的决策与维护：有唤醒标记，或只是这三种自护类型。 */
-          const SELF_OWNED_TYPES = new Set(['system_event', 'memory_consolidation', 'daily_report']);
-          if (isWake || SELF_OWNED_TYPES.has(stType)) {
-            return put('channel', `loop_${agentId}`, '决策循环（Loop）', '决策循环');
-          }
-
-          // 1) 任务：结构事实优先（载荷/元数据上的 taskId），不依赖 ref
-          const taskId = (payload['taskId'] ?? meta['taskId']) as string | undefined;
-          if (taskId) {
-            return put('task', taskId, this.taskService?.getTask(taskId)?.title, '任务');
-          }
-          // 2) 需求
-          const reqId = payload['requirementId'] as string | undefined;
-          if (reqId) {
-            const title = (this.storage?.requirementRepo?.findById?.(reqId) as { title?: string } | undefined)?.title;
-            return put('requirement', reqId, title, '需求');
-          }
-          // 3) ref 里解（旧行可能没有 ref → 直接跳过）。
-          //    ref 的语法只许住在 `@markus/shared` 的构造器旁边 —— 这里调它的官方
-          //    反解函数，不在这里再写一份正则（两份正则 = 两个语法写者）。
-          const taskIdFromRef = taskIdOfWorkUnitRef(ref);
-          if (taskIdFromRef) {
-            return put('task', taskIdFromRef, this.taskService?.getTask(taskIdFromRef)?.title, '任务');
-          }
-          const sessFromRef = /^session:(.+?):r\d+$/.exec(ref);
-          if (sessFromRef) {
-            const sid = sessFromRef[1]!;
-            const title = (this.storage?.chatSessionRepo?.getSession?.(sid) as { title?: string } | undefined)?.title;
-            return put('channel', sid, title, sid.startsWith('loop_') ? '决策循环' : '会话');
-          }
-          // 4) 委派 → 递归到父单元（它服务的那件事才是实体）
-          if (ref.startsWith('delegation:')) {
-            const body = ref.slice('delegation:'.length);
-            const hash = body.indexOf('#');
-            const parentRef = hash > 0 ? body.slice(0, hash) : body;
-            return resolveEntity({ ...item, workUnitRef: parentRef });
-          }
-          // 5) a2a：ref 里已带实体键
-          if (ref.startsWith('a2a:task:')) {
-            const id = ref.slice('a2a:task:'.length);
-            return put('task', id, this.taskService?.getTask(id)?.title, '任务');
-          }
-          if (ref.startsWith('a2a:channel:')) {
-            const id = ref.slice('a2a:channel:'.length);
-            return put('channel', id, undefined, '频道');
-          }
-          // `a2a:dm:a2a:agt_x:agt_y` —— agent 间 DM。之前只认 task/channel 两种前缀，
-          // DM 形状就落到 null → 「未归属」了（实测全库 17 条能归却没归）。
-          // DM 本身就是一条会话地址，所以归「会话」而不是未归属。
-          if (ref.startsWith('a2a:')) {
-            const inner = ref.slice('a2a:'.length);
-            return put('channel', inner, undefined, '会话');
-          }
-          // 7) 解不出 → null，前端显示「未归属」，不猜、不塞进别的实体
-          return null;
-        };
+        // 实体解析的唯一写者是 worklog-entity.ts 的纯函数（可被行为测试逐条钉死）。
+        // 名字从实体表取，经注入点访问 storage；IM 人类会话读入口声明的 channelKey。
+        const resolveEntity = createWorklogEntityResolver({
+          agentId,
+          taskTitle: id => this.taskService?.getTask(id)?.title,
+          requirementTitle: id =>
+            (this.storage?.requirementRepo?.findById?.(id) as { title?: string } | undefined)?.title,
+          chatSessionTitle: id =>
+            (this.storage?.chatSessionRepo?.getSession?.(id) as { title?: string } | undefined)?.title,
+        });
         // ── 工作记录：左栏 = 实体分组（服务端聚合 + 分页）───────────
         // 聚合必须在**整段历史**上做，否则实体计数会随当前页漂移。
         const wrmode = url.searchParams.get('mode') ?? '';
