@@ -561,6 +561,7 @@ describe('C10-0A：身份端口接线 —— 声明的 ref 在装配点必须有
       setFactService: () => {},
       setWorkUnitStatusProvider: () => {},
       setWorkUnitPort: () => {},
+      setTrustBoundaryPort: () => {},
       setMailboxIdentityPort: (p: IdentityPort) => {
         port = p;
       },

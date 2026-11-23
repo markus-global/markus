@@ -52,6 +52,9 @@ import {
   sessionLockKeyOfContextRef,
   WORK_UNIT_REF,
   type SignalAddressLookup,
+  maySelfInitiate,
+  type AgentAutonomy,
+  type TrustBoundaryPort,
 } from '@markus/shared';
 import { AGENT_MEMORY_RESOURCE_DOMAIN, memoryResourceForPath, memoryResourceLock, type AgentMemoryResource } from './lock-resources.js';
 import { shouldRunDreamCycle, dreamWindowKey } from './memory/dream-trigger.js';
@@ -770,6 +773,16 @@ export class Agent {
 
   /** C7-B：设置委派 WU 端口（AgentManager 在装配时调用）。 */
   setWorkUnitPort(port: DelegationWorkUnitPort | undefined): void {    this.workUnitPort = port;
+  }
+
+  /**
+   * C10-C：信任边界端口 —— 自主轴天花板 INPUT 的唯一来源（装配：api-server，
+   * 镜像 setWorkUnitPort）。未注入 ⇒ 无天花板（单组织/内嵌部署没有跨组织知识；
+   * 权限轴本身照常咬人）。
+   */
+  private trustBoundaryPort?: TrustBoundaryPort;
+  setTrustBoundaryPort(port: TrustBoundaryPort | undefined): void {
+    this.trustBoundaryPort = port;
   }
 
   /** C10-0A：身份 ensure 端口转发给 mailbox（装配唯一入口 wireWorkUnits）。 */
@@ -10695,10 +10708,42 @@ export class Agent {
       });
   }
 
+  /**
+   * C10-C: derive the trust-ceiling INPUT for the autonomy predicate — not a
+   * second permissibility measure. Only unverified agent-origin queued mail
+   * feeds it: a2a envelopes default fromVerified=false platform-wide, and the
+   * same-org/cross-org + policy decision belongs to the port (org-manager).
+   * external/im/platform origins never feed it — external records are already
+   * demand-capped at ingest (C10-B signal ceiling: a different fact, a different
+   * owner), and IM human chat is conversational input, not cross-org traffic.
+   */
+  private selfInitiationCeiling(): AgentAutonomy | undefined {
+    const port = this.trustBoundaryPort;
+    if (!port) return undefined;
+    const senders = new Set<string>();
+    for (const item of this.mailbox.getQueuedItems()) {
+      const env = item.envelope;
+      if (env && env.from.kind === 'agent' && env.fromVerified === false) {
+        senders.add(env.from.agentId);
+      }
+    }
+    if (senders.size === 0) return undefined;
+    return port.selfInitiationCeiling([...senders]);
+  }
+
   private async handleHeartbeat(ctx: {
     agentId: string;
     triggeredAt: string;
   }): Promise<string | void> {
+    // C10-C: the ONE consumer of the autonomy axis (rebuilt after #464 deleted
+    // the #462 check). All three patrol paths — clock tick, api trigger, mailbox
+    // heartbeat item — converge here, so one check covers every self-initiation.
+    // Must go through recordHeartbeatSkip, not a bare return: an observe agent
+    // still reports liveness, or it looks dead in the UI.
+    if (!maySelfInitiate(this.config.autonomy, this.selfInitiationCeiling())) {
+      this.recordHeartbeatSkip('Heartbeat', 'autonomy=observe — self-initiated patrol disabled');
+      return;
+    }
     log.info('Processing heartbeat check-in');
 
     if (this.shouldDeferHeartbeatForHumanChat()) {

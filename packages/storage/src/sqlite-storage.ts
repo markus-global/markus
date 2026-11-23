@@ -121,7 +121,11 @@ CREATE TABLE IF NOT EXISTS organizations (
   updated_at TEXT NOT NULL DEFAULT (datetime('now')),
   -- C10-A：注册表 slug。可空；唯一索引在迁移之后建。取值只有显式赋值
   -- （createOrg 与一次性 backfill 共用 registryOrgSlug），绝不从 name 推导。
-  org_slug TEXT
+  org_slug TEXT,
+  -- C10-C：跨组织信任策略。默认 observe：未验证跨组织输入可投递可读，
+  -- 不驱动自主动作。升 auto 的唯一写者 = OrganizationService.setCrossOrgPolicy
+  -- （一次人批 + 一条 audit 行）；本列不在创建时手写。
+  cross_org_policy TEXT NOT NULL DEFAULT 'observe'
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -994,6 +998,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // A5: 自主档位。ADD COLUMN 带 DEFAULT，SQLite 会让历史行读出来就是 'act'，
     // 与加列之前的行为一致，因此不需要回填、也不需要迁移数据。
     { table: 'agents', column: 'autonomy', sql: "ALTER TABLE agents ADD COLUMN autonomy TEXT NOT NULL DEFAULT 'act'" },
+    // C10-C: cross-org trust policy. The DEFAULT backfills existing rows at
+    // ALTER time — compatible read, no data rewrite. Elevation to 'auto' goes
+    // through OrganizationService (human approval + audit row), never raw SQL.
+    { table: 'organizations', column: 'cross_org_policy', sql: "ALTER TABLE organizations ADD COLUMN cross_org_policy TEXT NOT NULL DEFAULT 'observe'" },
     // ①-2：决策行也要能回答「谁在哪个回合撤销了什么」。可空且不回填 ——
     // 加列之前的 22.7 万行属于旧纪元，NULL 是诚实的「不知道」，不是缺失。
     { table: 'agent_decisions', column: 'work_unit_ref', sql: 'ALTER TABLE agent_decisions ADD COLUMN work_unit_ref TEXT' },
@@ -1580,6 +1588,17 @@ export class SqliteOrgRepo {
   }
 
   /**
+   * C10-C: the single column writer for cross_org_policy. An instrument of
+   * OrganizationService.setCrossOrgPolicy — the only path that may call it,
+   * after a human approval and with an audit row. Not a public elevation path.
+   */
+  setCrossOrgPolicy(orgId: string, policy: 'observe' | 'auto') {
+    this.db
+      .prepare('UPDATE organizations SET cross_org_policy = ?, updated_at = ? WHERE id = ?')
+      .run(policy, now(), orgId);
+  }
+
+  /**
    * C10-A：org_slug 的显式声明路径（注册表写者，source:'registry'）。
    *
    * 三条纪律：
@@ -1633,6 +1652,7 @@ export class SqliteOrgRepo {
       plan: r['plan'] as string,
       managerAgentId: r['manager_agent_id'] as string | null,
       orgSlug: (r['org_slug'] as string | null) ?? null,
+      crossOrgPolicy: (r['cross_org_policy'] as string | null) ?? 'observe',
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),

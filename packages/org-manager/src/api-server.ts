@@ -2124,6 +2124,21 @@ export class APIServer {
       },
       settle: (ref, opts) => units.settle(ref, opts),
     });
+    // C10-C: trust-boundary ceiling port — org/policy decision lives here; core
+    // derives only the INPUT (unverified agent-origin senders of queued mail).
+    // 'auto' (human-approved, audited) lifts the ceiling; same-org senders never
+    // feed it. Storage absent ⇒ no ceiling (documented fail-open for embedded).
+    manager.setTrustBoundaryPort({
+      selfInitiationCeiling: (receiverOrgId, senderAgentIds) => {
+        const org = storage?.orgRepo.findOrgById(receiverOrgId);
+        if ((org?.crossOrgPolicy ?? 'observe') === 'auto') return undefined;
+        for (const senderId of senderAgentIds) {
+          const sender = storage?.agentRepo.findById(senderId);
+          if (sender && sender.orgId !== receiverOrgId) return 'observe';
+        }
+        return undefined;
+      },
+    });
     // C10-0A：身份 ensure 端口 —— 声明了的 ref 在 mailbox 装配点必须存在。
     // 所有者解析归 org-manager（core 不猜实体语义）：task → assignee，
     // requirement → creator；解析不到合法 agent 时落接收方。
@@ -6295,6 +6310,32 @@ export class APIServer {
         (body['ownerId'] as string) ?? authUser.userId
       );
       this.json(res, 201, { org });
+      return;
+    }
+
+    // C10-C: cross_org_policy elevation — human-only (owner/admin), audited.
+    // The service re-validates the actor against the users table; this gate is
+    // the role check, not a second source of the human/agent decision.
+    const crossOrgPolicyMatch = path.match(/^\/api\/orgs\/([^/]+)\/cross-org-policy$/);
+    if (crossOrgPolicyMatch && req.method === 'POST') {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      if (authUser.role !== 'owner' && authUser.role !== 'admin') {
+        this.json(res, 403, { error: 'cross_org_policy change requires owner or admin', code: 'FORBIDDEN' });
+        return;
+      }
+      const body = await this.readBody(req);
+      const policy = body['policy'];
+      if (policy !== 'observe' && policy !== 'auto') {
+        this.json(res, 400, { error: "policy must be 'observe' or 'auto'" });
+        return;
+      }
+      try {
+        const result = await this.orgService.setCrossOrgPolicy(crossOrgPolicyMatch[1]!, policy, authUser.userId);
+        this.json(res, 200, { ok: true, ...result });
+      } catch (err) {
+        this.json(res, 400, { error: err instanceof Error ? err.message : String(err) });
+      }
       return;
     }
 
@@ -15437,6 +15478,7 @@ EXPLANATION_END`;
 
       // ── Orgs ─────────────────────────────────────────────────────────────
       exact('/api/orgs', 'GET', 'POST'),
+      regex(/^\/api\/orgs\/[^/]+\/cross-org-policy$/, 'POST'),
 
       // ── Message ──────────────────────────────────────────────────────────
       exact('/api/message', 'POST'),
