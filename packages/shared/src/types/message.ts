@@ -36,6 +36,15 @@ export interface Message {
   instanceId?: string;
   /** Adapter-declared conversation kind; the gateway defaults to `group`. */
   channelKind?: MessageChannelKind;
+  /**
+   * C10-B2 — the platform's NATIVE message id, surfaced by the adapter at the
+   * single inbound dispatch point. This is the delivery envelope's idempotency
+   * key (V5): `id` is a fresh random platform item id per dispatch and can never
+   * dedupe a redelivered external message. Optional — adapters that have not
+   * been envelope-ized leave it unset and the delivery point falls back to `id`
+   * (their existing behavior, unchanged).
+   */
+  nativeMessageId?: string;
 }
 
 export interface MessageContent {

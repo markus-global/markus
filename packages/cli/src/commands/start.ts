@@ -32,7 +32,6 @@ import {
   resolveActionSecret,
   resolveHostLocale,
   installEgress,
-  imAddressRef,
   catchAllTargetOf,
 } from '@markus/shared';
 import {
@@ -92,6 +91,7 @@ import {
 } from '@markus/org-manager';
 import { MessageRouter, PLATFORM_MANIFESTS, setHttpFetch, getManifest, RepoBindingLookup, MAIN_CONVERSATION_KEY, resolveCardActionValue, ConnectionTestRegistry, type PlatformField, type PlatformManifest } from '@markus/comms';
 import { setupOutboundDispatch } from './outbound.js';
+import { buildImInboundOrigin } from './im-inbound-origin.js';
 import { buildApprovalCardResolution, cardActorFields, scheduleCardRewrite } from './approval-card.js';
 import { initStartupLogger, startupLog, startupBlank, startupSection, closeStartupLogger, getStartupLogFile } from '../utils/logger.js';
 import { openBrowserAfterHealthCheck } from '../utils/browser.js';
@@ -2701,15 +2701,11 @@ async function startServerCore(
         // IM 入站 = 外部人类发来的消息 → 聊天回合（显式表态）。
         scenario: 'chat',
         channelKey,
-        // 第六刀 C2（§2.3 投递点 1）：IM 入站交出信封的 from/messageId。
-        // `message.id` 是平台自己的 native 消息 id → 同一条群消息被适配器重投时
-        // 只能落一行 queued + 一条 duplicate_message_id 退信（V5）。
-        origin: {
-          from: imAddressRef(message.platform, message.senderId),
-          messageId: message.id,
-          externalThreadRef: message.threadId ?? null,
-          subject: (message.content.text ?? '').slice(0, 120),
-        },
+        // 第六刀 C2（§2.3 投递点 1）+ C10-B2（S1）：IM 入站信封头的唯一写者
+        // 是 buildImInboundOrigin。messageId = 适配器在分派点 surface 的 native
+        // id（飞书 om_*）→ 重投命中 V5 (agent, messageId) 去重；未 envelope 化
+        // 的平台回退 message.id（原行为不变）。
+        origin: buildImInboundOrigin(message),
       });
       auditService.record({
         orgId: 'default',
