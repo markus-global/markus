@@ -1,0 +1,432 @@
+{
+  "cases": [
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_a",
+            "channelId": "oc_bound",
+            "channelKind": "dm",
+            "content": {
+              "text": "hello",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_p2p-text",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_a",
+            "conversationKey": "im:feishu:dm:oc_bound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "dm",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "p2p-text",
+      "replyCalls": [
+        {
+          "channelId": "oc_bound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_p2p-text"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_a",
+            "channelId": "oc_bound",
+            "channelKind": "group",
+            "content": {
+              "text": "hi all",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_group-text",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_a",
+            "conversationKey": "im:feishu:group:oc_bound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "group",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "group-text",
+      "replyCalls": [
+        {
+          "channelId": "oc_bound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_group-text"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_a",
+            "channelId": "oc_bound",
+            "channelKind": "group",
+            "content": {
+              "text": "hi",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_group-mention",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_a",
+            "conversationKey": "im:feishu:group:oc_bound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "group",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "group-mention",
+      "replyCalls": [
+        {
+          "channelId": "oc_bound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_group-mention"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "bot-sender",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "empty-after-mention",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_a",
+            "channelId": "oc_bound",
+            "channelKind": "group",
+            "content": {
+              "text": "plain",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_non-json-content",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_a",
+            "conversationKey": "im:feishu:group:oc_bound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "group",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "non-json-content",
+      "replyCalls": [
+        {
+          "channelId": "oc_bound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_non-json-content"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "missing-message",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "missing-sender",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "empty-text",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_a",
+            "channelId": "oc_bound",
+            "channelKind": "group",
+            "content": {
+              "text": "hello",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "unknown",
+            "senderName": "User",
+            "threadId": "om_no-open-id",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_a",
+            "conversationKey": "im:feishu:group:oc_bound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "group",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "no-open-id",
+      "replyCalls": [
+        {
+          "channelId": "oc_bound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_no-open-id"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_p",
+            "channelId": "oc_unbound",
+            "channelKind": "group",
+            "content": {
+              "text": "hello",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_unbound-channel",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_p",
+            "conversationKey": "im:feishu:group:oc_unbound",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "group",
+            "matchedScope": "platform"
+          }
+        }
+      ],
+      "name": "unbound-channel",
+      "replyCalls": [
+        {
+          "channelId": "oc_unbound",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_unbound-channel"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "notification-channel",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [
+        {
+          "message": {
+            "agentId": "agt_m",
+            "channelId": "oc_main",
+            "channelKind": "group",
+            "content": {
+              "text": "hello",
+              "type": "text"
+            },
+            "direction": "inbound",
+            "idKind": "generated",
+            "instanceId": "feishu",
+            "platform": "feishu",
+            "replyToId": null,
+            "senderId": "ou_u1",
+            "senderName": "User",
+            "threadId": "om_main-channel",
+            "timestampKind": "iso"
+          },
+          "target": {
+            "agentId": "agt_m",
+            "conversationKey": "main",
+            "ignored": false,
+            "instanceId": "feishu",
+            "kind": "main",
+            "matchedScope": "channel"
+          }
+        }
+      ],
+      "name": "main-channel",
+      "replyCalls": [
+        {
+          "channelId": "oc_main",
+          "markdown": true,
+          "method": "sendReply",
+          "threadId": "om_main-channel"
+        }
+      ]
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "nothing-bound",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [
+        {
+          "actorId": "ou_op",
+          "instanceId": "feishu",
+          "messageId": "om_c",
+          "payload": {
+            "action": {
+              "value": {
+                "action": "approve",
+                "approvalId": "ap_1"
+              }
+            },
+            "context": {
+              "open_message_id": "om_c"
+            },
+            "operator": {
+              "open_id": "ou_op"
+            }
+          },
+          "platform": "feishu",
+          "timestampKind": "iso"
+        }
+      ],
+      "agentCalls": [],
+      "name": "card-v2",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [
+        {
+          "actorId": "ou_op2",
+          "instanceId": "feishu",
+          "messageId": "om_c2",
+          "payload": {
+            "action": {
+              "value": {
+                "action": "reject",
+                "approvalId": "ap_2"
+              }
+            },
+            "open_id": "ou_op2",
+            "open_message_id": "om_c2"
+          },
+          "platform": "feishu",
+          "timestampKind": "iso"
+        }
+      ],
+      "agentCalls": [],
+      "name": "card-legacy",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "card-no-value",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "card-no-action",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [
+        {
+          "actorId": "unknown",
+          "instanceId": "feishu",
+          "messageId": null,
+          "payload": {
+            "action": {
+              "value": {
+                "action": "approve",
+                "approvalId": "ap_3"
+              }
+            }
+          },
+          "platform": "feishu",
+          "timestampKind": "iso"
+        }
+      ],
+      "agentCalls": [],
+      "name": "card-no-operator",
+      "replyCalls": []
+    },
+    {
+      "actionCalls": [],
+      "agentCalls": [],
+      "name": "action-no-handler",
+      "replyCalls": []
+    }
+  ]
+}
