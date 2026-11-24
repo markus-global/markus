@@ -193,9 +193,61 @@ export function shouldBypassEgress(target: string | URL, policy: EgressPolicy = 
 export const EGRESS_PROBE_URL = 'https://api.ipify.org?format=json';
 
 interface UndiciLike {
-  ProxyAgent: new (opts: Record<string, unknown>) => unknown;
+  Agent: new (opts?: Record<string, unknown>) => EgressDispatcher;
+  ProxyAgent: new (opts: Record<string, unknown>) => EgressDispatcher;
   setGlobalDispatcher: (dispatcher: unknown) => void;
   fetch: (url: string | URL, init?: Record<string, unknown>) => Promise<Response>;
+}
+
+/**
+ * The slice of the undici `Dispatcher` interface the policy router touches.
+ * Kept structural (not `implements Dispatcher`) so the pure routing logic can be
+ * unit-tested with fakes and never needs a live socket to prove the bypass works.
+ */
+export interface EgressDispatcher {
+  dispatch(options: { origin?: unknown; [key: string]: unknown }, handler: unknown): boolean;
+  close(): Promise<void>;
+  destroy(): Promise<void>;
+}
+
+function originHost(origin: unknown): string | undefined {
+  if (!origin) return undefined;
+  try {
+    const asString = origin instanceof URL ? origin.toString() : String(origin);
+    return new URL(asString).hostname;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Route each request to the direct or the proxied dispatcher based on the
+ * bypass list.
+ *
+ * This exists because a bare `undici.ProxyAgent` proxies *everything* — it does
+ * not read `NO_PROXY`. A global ProxyAgent therefore silently sends calls to
+ * loopback / private hosts (Ollama on `127.0.0.1:11434`, an internal API on
+ * `10.x`) through the external proxy, where they fail with `fetch failed`
+ * (`UND_ERR_SOCKET`). The `noProxy` list was documented and surfaced in Settings
+ * but never actually enforced on the wire — this is the enforcement point.
+ */
+export function createPolicyDispatcher(opts: {
+  direct: EgressDispatcher;
+  proxied: EgressDispatcher;
+  noProxy: string[];
+}): EgressDispatcher {
+  const { direct, proxied, noProxy } = opts;
+  return {
+    dispatch(options, handler) {
+      const host = originHost(options.origin);
+      if (host && hostMatchesNoProxy(host, noProxy)) {
+        return direct.dispatch(options, handler);
+      }
+      return proxied.dispatch(options, handler);
+    },
+    close: () => Promise.all([direct.close(), proxied.close()]).then(() => undefined),
+    destroy: () => Promise.all([direct.destroy(), proxied.destroy()]).then(() => undefined),
+  };
 }
 
 export interface EgressStatus {
@@ -257,6 +309,21 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
       delete process.env['NO_PROXY'];
       envExported = false;
     }
+    // A previously-installed global proxy dispatcher outlives a config change.
+    // Without this reset, turning the proxy OFF would keep routing every request
+    // (loopback included) through the old proxy until the process restarts — the
+    // settings switch would look applied while traffic still went out via proxy.
+    if (installed) {
+      const undici = await loadUndici();
+      if (undici) {
+        try {
+          undici.setGlobalDispatcher(new undici.Agent());
+        } catch (err) {
+          installError = `failed to reset dispatcher: ${String(err)}`;
+        }
+      }
+      installed = false;
+    }
     return { policy, installed: false, error: installError, displayUrl: undefined };
   }
 
@@ -286,12 +353,20 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
   }
 
   try {
-    const agent = new undici.ProxyAgent({
+    const direct = new undici.Agent();
+    const proxied = new undici.ProxyAgent({
       uri: policy.url,
       // Some CDNs fingerprint the TLS stack; keep the long-standing workaround.
       requestTls: { maxVersion: 'TLSv1.2' },
     });
-    undici.setGlobalDispatcher(agent);
+    // Route by host instead of proxying everything. `ProxyAgent` ignores
+    // `NO_PROXY`, so a bare global ProxyAgent would push loopback / private
+    // requests (Ollama on 127.0.0.1:11434, an internal API on 10.x) through the
+    // external proxy, where they fail with `fetch failed`. The bypass list is
+    // documented and exposed in Settings — this is where it is enforced.
+    undici.setGlobalDispatcher(
+      createPolicyDispatcher({ direct, proxied, noProxy: policy.noProxy }),
+    );
     installed = true;
     installError = undefined;
   } catch (err) {

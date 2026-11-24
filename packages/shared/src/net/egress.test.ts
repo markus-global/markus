@@ -9,9 +9,11 @@
 import { describe, it, expect } from 'vitest';
 import {
   buildEgressPolicy,
+  createPolicyDispatcher,
   hostMatchesNoProxy,
   maskProxyUrl,
   shouldBypassEgress,
+  type EgressDispatcher,
 } from './egress.js';
 
 describe('buildEgressPolicy — precedence', () => {
@@ -108,5 +110,73 @@ describe('maskProxyUrl', () => {
 
   it('returns undefined for no URL', () => {
     expect(maskProxyUrl(undefined)).toBeUndefined();
+  });
+});
+
+describe('createPolicyDispatcher — the bypass list is actually enforced', () => {
+  function fakeDispatcher(): EgressDispatcher & { calls: string[] } {
+    const calls: string[] = [];
+    return {
+      calls,
+      dispatch(options) {
+        const origin = options.origin;
+        calls.push(origin instanceof URL ? origin.hostname : String(origin));
+        return true;
+      },
+      close: () => Promise.resolve(),
+      destroy: () => Promise.resolve(),
+    };
+  }
+
+  it('routes loopback to the direct dispatcher and never touches the proxy', () => {
+    // The regression this guards: a bare undici ProxyAgent proxied *everything*
+    // and ignored NO_PROXY, so local services on 127.0.0.1:11434 (Ollama) were
+    // sent out through the system proxy and failed with `fetch failed`. If the
+    // routing ever collapses back to "always proxied", proxied.calls goes non-empty
+    // and this assertion fails — the test bites.
+    const direct = fakeDispatcher();
+    const proxied = fakeDispatcher();
+    const d = createPolicyDispatcher({
+      direct,
+      proxied,
+      noProxy: ['localhost', '127.0.0.1', '::1'],
+    });
+
+    d.dispatch({ origin: new URL('http://127.0.0.1:11434/api/version') }, {});
+    d.dispatch({ origin: new URL('http://localhost:11434/api/tags') }, {});
+
+    expect(direct.calls).toEqual(['127.0.0.1', 'localhost']);
+    expect(proxied.calls).toEqual([]);
+  });
+
+  it('still sends public hosts through the proxy', () => {
+    const direct = fakeDispatcher();
+    const proxied = fakeDispatcher();
+    const d = createPolicyDispatcher({
+      direct,
+      proxied,
+      noProxy: ['localhost', '127.0.0.1', '::1'],
+    });
+
+    d.dispatch({ origin: new URL('https://api.anthropic.com/v1/messages') }, {});
+
+    expect(proxied.calls).toEqual(['api.anthropic.com']);
+    expect(direct.calls).toEqual([]);
+  });
+
+  it('treats private CIDR ranges from the bypass list as direct', () => {
+    const direct = fakeDispatcher();
+    const proxied = fakeDispatcher();
+    const d = createPolicyDispatcher({
+      direct,
+      proxied,
+      noProxy: ['10.0.0.0/8', '192.168.0.0/16'],
+    });
+
+    d.dispatch({ origin: new URL('http://10.1.2.3:8080/health') }, {});
+    d.dispatch({ origin: new URL('http://192.168.1.5/') }, {});
+
+    expect(direct.calls).toEqual(['10.1.2.3', '192.168.1.5']);
+    expect(proxied.calls).toEqual([]);
   });
 });
