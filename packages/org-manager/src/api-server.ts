@@ -1921,6 +1921,136 @@ export class APIServer {
     }
   }
 
+  /**
+   * C10-D：组织余额的唯一读取口（`org_usage` 工具 / 未来的 UI 都走这里）。
+   *
+   * 三条纪律：
+   * 1. **不本地重算**：`remainingCu` 的单一实现是 hub 的 `helpers/org-usage`；
+   *    这里只搬运，绝不写第二份「月配额+购买+赠送-已用」。
+   * 2. **0 与「不知道」必须可区分**：失败返回有名字的原因 + 下一步，绝不返回 0。
+   * 3. **组织优先按 hub_org_id 对齐**：同一个用户可能在 hub 有多个组织，只有
+   *    `hub_org_id` 才说明「本机这个组织」对应哪一个。
+   */
+  async getOrgUsage(orgId: string): Promise<
+    | {
+        ok: true;
+        usage: {
+          orgSlug: string | null;
+          plan: string;
+          remainingCu: number;
+          monthlyQuotaCu: number;
+          purchasedCu: number;
+          bonusCu: number;
+          cuUsed: number;
+          syncedAt: string;
+        };
+      }
+    | {
+        ok: false;
+        reason: 'not_connected' | 'hub_unreachable' | 'hub_rejected' | 'org_not_found';
+        hint: string;
+      }
+  > {
+    const org = this.storage?.orgRepo?.findOrgById(orgId) as
+      | { id: string; ownerId?: string; plan?: string; orgSlug?: string | null; hubOrgId?: string | null }
+      | undefined;
+    if (!org) {
+      return {
+        ok: false,
+        reason: 'org_not_found',
+        hint: `No local organisation "${orgId}". Call org_list to see the orgs on this instance.`,
+      };
+    }
+
+    // Token：优先该组织 owner 的 per-user hub token（需求 9），回落全局文件。
+    const ownerId = org.ownerId;
+    const perUser = ownerId ? (this.storage?.userRepo?.getHubToken(ownerId) as string | null) : null;
+    const token = perUser ?? this.readGlobalHubTokenForUsage();
+    if (!token) {
+      return {
+        ok: false,
+        reason: 'not_connected',
+        hint:
+          'This instance has no Hub session, so the credit balance is unknown (not zero). ' +
+          'Sign in with a Markus Hub account (hub-login) to read it.',
+      };
+    }
+
+    let res: Response;
+    try {
+      res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'hub_unreachable',
+        hint: `Could not reach ${this.hubUrl} (${(err as Error).message}). Local work continues; retry when the network is back.`,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint: `The Hub refused the org query (HTTP ${res.status}). Re-run hub-login to refresh the session.`,
+      };
+    }
+
+    const data = (await res.json()) as {
+      orgs?: Array<{
+        id: string;
+        slug?: string | null;
+        role?: string;
+        plan?: string;
+        usage?: {
+          monthlyQuotaCu?: number;
+          purchasedCu?: number;
+          bonusCu?: number;
+          usedCu?: number;
+          remainingCu?: number;
+        };
+      }>;
+    };
+    const mine = data.orgs ?? [];
+    const match =
+      mine.find((o) => o.id === org.hubOrgId) ?? mine.find((o) => o.role === 'owner') ?? mine[0];
+    if (!match?.usage) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint:
+          `The Hub returned no usage block for "${orgId}". This hub is older than the identity contract — ` +
+          'upgrade markus-hub (GET /api/orgs/mine must carry usage) or read /api/orgs/:id/allocations instead.',
+      };
+    }
+
+    const u = match.usage;
+    return {
+      ok: true,
+      usage: {
+        orgSlug: match.slug ?? org.orgSlug ?? null,
+        plan: match.plan ?? org.plan ?? 'free',
+        remainingCu: Number(u.remainingCu ?? 0),
+        monthlyQuotaCu: Number(u.monthlyQuotaCu ?? 0),
+        purchasedCu: Number(u.purchasedCu ?? 0),
+        bonusCu: Number(u.bonusCu ?? 0),
+        cuUsed: Number(u.usedCu ?? 0),
+        syncedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  /** 全局 hub token（`~/.markus/hub-token`）—— 与 applyPreferredOrgNameToHub 同一来源。 */
+  private readGlobalHubTokenForUsage(): string | undefined {
+    try {
+      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      return existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   setBillingService(service: BillingService): void {
     this.billingService = service;
   }

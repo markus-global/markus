@@ -45,7 +45,10 @@ export const TOOL_CATEGORY_DEF: Array<{ id: string; prefixes: string[] }> = [
   // 第七刀 C7-A：`work_status` 是**运行时自省**（读本 agent 的 WorkUnit 台账），
   // 与 `discover_tools` 同族，归入 system；不新开分类 —— 新建一个桶要给
   // zh-CN/en/es 三份 locale 各加一个字串，而它只是展示分组，不值得那个改动量。
-  { id: 'system', prefixes: ['work_status', 'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval'] },
+  { id: 'system', prefixes: ['work_status', 'discover_tools', 'notify_user', 'request_user_input', 'request_user_approval', 'schedule_wakeup', 'cancel_wakeup', 'set_heartbeat_interval',
+    // C10-D：组织身份 / 余额查询（org_info / org_list / org_usage）是运行时自省，
+    // 与 work_status 同族 —— 同样不新开分类（新桶要在三份 locale 各加字串）。
+    'org_info', 'org_list', 'org_usage'] },
   { id: 'llm', prefixes: ['llm_', 'agent_model_'] },
 ];
 

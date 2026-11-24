@@ -1626,6 +1626,19 @@ export class SqliteOrgRepo {
     return { ok: true, orgSlug: nextSlug, ...(slugSkipped ? { slugSkipped } : {}) };
   }
 
+  /**
+   * 已签发的邮箱地址数（`org_info` / `org_list` 的读数）。
+   * 只数 `address IS NOT NULL` 且未撤销的行 —— 撤销过的地址属于历史，不是「现在有几个」。
+   */
+  countBoundAddresses(orgId: string): number {
+    const row = this.db
+      .prepare(
+        'SELECT COUNT(*) AS c FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL AND revoked_at IS NULL',
+      )
+      .get(orgId) as { c?: number } | undefined;
+    return Number(row?.c ?? 0);
+  }
+
   findOrgById(id: string) {
     const row = this.db.prepare('SELECT * FROM organizations WHERE id = ?').get(id) as
       | Record<string, unknown>

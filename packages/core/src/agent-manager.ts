@@ -82,6 +82,7 @@ import type { FactService } from './facts/fact-service.js';
 import { assertActionToolReachability, toolFaceNames } from './capability-packs.js';
 import { createAddressTools, type AddressBindingPort, type AddressToolContext } from './tools/address-tools.js';
 import { createExternalSourceTools, type ExternalSourcePort, type ExternalSourceToolContext } from './tools/external-source-tools.js';
+import { createOrgTools, type OrgQueryPort, type OrgToolContext } from './tools/org-tools.js';
 import { createSettingsTools, type SettingsAgentContext } from './tools/settings.js';
 import { createMultiModalTools } from './tools/multimodal.js';
 import { createFeishuTools, type FeishuToolsConfig } from './tools/feishu.js';
@@ -1896,6 +1897,8 @@ export class AgentManager {
 
     // 邮箱地址自助工具（第六刀 C1）：未接线时 helper 内部直接返回，不注册空能力。
     this.registerAddressTools(agent, id);
+    // C10-D：组织身份与余额查询（同样：未接线不注册）。
+    this.registerOrgTools(agent, id);
     // C10-B：外部信号源工具 + 地址簿只读端口（同一装配纪律：两条建 Agent 路径都走）。
     this.applyExternalSource(agent, id);
 
@@ -2856,6 +2859,7 @@ export class AgentManager {
     for (const tool of createMailboxTools(mailboxToolCtx2)) agent.registerTool(tool);
 
     this.registerAddressTools(agent, id);
+    this.registerOrgTools(agent, id);
     this.applyExternalSource(agent, id);
 
     if (this.recallCallbacks) {
@@ -3757,6 +3761,18 @@ export class AgentManager {
     for (const [id, agent] of this.agents) this.registerAddressTools(agent, id);
   }
 
+  /**
+   * C10-D：组织查询端口（org_info / org_list / org_usage）。与地址端口同一装配
+   * 纪律：未接线 ⇒ 工具不注册（空能力不注册，而不是注册一个必然失败的桩）。
+   * core 不认识 storage，也不认识 hub 的 HTTP：它只拿到三个结构化函数。
+   */
+  private orgQueryPort?: OrgQueryPort;
+
+  setOrgQueryPort(port: OrgQueryPort): void {
+    this.orgQueryPort = port;
+    for (const [id, agent] of this.agents) this.registerOrgTools(agent, id);
+  }
+
   /** 单一注册点：两个建 Agent 的路径都调这里，避免两套工具集漂移。 */
   /**
    * 第七刀 C7-A：`work_status()` 自省端口的接入口（org-manager 装配时注入）。
@@ -3914,6 +3930,20 @@ export class AgentManager {
       list: (input) => port.list(input),
     };
     for (const tool of createAddressTools(ctx)) agent.registerTool(tool);
+  }
+
+  /** C10-D：组织查询三工具。单一注册点 —— 两条建 Agent 路径都走这里，避免工具集漂移。 */
+  private registerOrgTools(agent: Agent, agentId: string): void {
+    const port = this.orgQueryPort;
+    if (!port) return;
+    const ctx: OrgToolContext = {
+      agentId,
+      orgId: agent.config.orgId ?? 'default',
+      info: (input) => port.info(input),
+      list: () => port.list(),
+      usage: (input) => port.usage(input),
+    };
+    for (const tool of createOrgTools(ctx)) agent.registerTool(tool);
   }
 
   /**
