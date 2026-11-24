@@ -125,7 +125,12 @@ CREATE TABLE IF NOT EXISTS organizations (
   -- C10-C：跨组织信任策略。默认 observe：未验证跨组织输入可投递可读，
   -- 不驱动自主动作。升 auto 的唯一写者 = OrganizationService.setCrossOrgPolicy
   -- （一次人批 + 一条 audit 行）；本列不在创建时手写。
-  cross_org_policy TEXT NOT NULL DEFAULT 'observe'
+  cross_org_policy TEXT NOT NULL DEFAULT 'observe',
+  -- C10-D：组织的全局身份（markus.global 侧 org id）。NULL = 从未连接过 hub，
+  -- 此时 org_slug 只是本地占位事实。唯一写者 = SqliteOrgRepo.bindHubOrg，
+  -- 由登录时的对齐调用（幂等：同一 hub org 重复登录不产生第二次写入）。
+  hub_org_id TEXT,
+  hub_synced_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS teams (
@@ -1062,6 +1067,10 @@ export function openSqlite(dbPath: string): DatabaseSync {
     // ─── C10-A：身份列（计划 §A）。只加可空列；唯一的数据写入是下方 org_slug
     // 的显式 backfill（org_<id>，绝不从 name 推导）。索引在迁移之后建。 ───
     { table: 'organizations', column: 'org_slug', sql: 'ALTER TABLE organizations ADD COLUMN org_slug TEXT' },
+    // C10-D：hub 身份列。只加可空列、不回填 —— hub_org_id IS NULL 就是「从未
+    // 对齐过」，回填等于编造一份没发生过的历史。对齐只发生在登录时（bindHubOrg）。
+    { table: 'organizations', column: 'hub_org_id', sql: 'ALTER TABLE organizations ADD COLUMN hub_org_id TEXT' },
+    { table: 'organizations', column: 'hub_synced_at', sql: 'ALTER TABLE organizations ADD COLUMN hub_synced_at TEXT' },
     { table: 'agents', column: 'agent_alias', sql: 'ALTER TABLE agents ADD COLUMN agent_alias TEXT' },
     // ─── 第九刀 C9-B：观测四表加可空 work_unit_ref（契约见 docs/architecture/derived-views.md）──
     // 只加列、不回填：~9M 历史行保持 NULL（= 早于身份链）。回填等于制造第二份历史真相。
@@ -1096,7 +1105,8 @@ export function openSqlite(dbPath: string): DatabaseSync {
       }
     }
 
-    // C10-A：org_slug 显式 backfill —— org_<id>，绝不从 name 推导。只在
+    // C10-A / C10-D：org_slug 显式 backfill —— 由 registryOrgSlug 按 id 派生
+    // （`local-<hash>`），绝不从 name 推导。只在
     // 「这一次升级刚好补上这列」时执行（与上面同一次性纪律）：重复打开库
     // 不写任何一行，已声明的 slug 永远不会被覆盖。registryOrgSlug 是与
     // createOrg 共用的唯一派生点。
@@ -1519,14 +1529,20 @@ export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
 // ─── Repo implementations ────────────────────────────────────────────────────
 
 /**
- * C10-A：org_slug 缺省值的**唯一派生点** —— `org_<id>`（主计划 §4.9.6 / M10）。
+ * org_slug 缺省值的**唯一派生点** —— `local-<hash>`（C10-A / C10-D）。
  * 只有两个调用方：createOrg（新建组织）与升级时的一次性显式 backfill。
  * 绝不从 name 推导：历史两组织同名 My Organization，name 推导必撞且不可逆。
- * 注意 `org_<id>` 含下划线，不是合法地址段 —— 它是注册表占位事实；组织要
- * 绑地址必须先经 declareOrgSlug 显式声明一个合法 slug（全部由人显式声明）。
+ *
+ * 为何是**合法地址段**（C10-D 变更）：占位 slug 会出现在用户看到的地址里
+ * （`<local>.local-ab12cd34@markus.global`）。它如果不合法，未连 hub 的用户拿到的
+ * 地址根本解析不了 —— 占位就变成噪声。改成 `local-<hash>` 后：
+ * - 仍然是**占位事实**而非声明：由 id 派生、不可挑选；
+ * - hub 对齐时被真 slug 覆盖（SqliteOrgRepo.bindHubOrg），已签发地址则保持不动；
+ * - 人显式声明 slug 仍然只有 declareOrgSlug 一条路径。
+ * hash = sha256 前 8 位：同一 orgId 恒得同一 slug（幂等），不含随机/时序成分。
  */
 export function registryOrgSlug(orgId: string): string {
-  return `org_${orgId}`;
+  return `local-${createHash('sha256').update(orgId).digest('hex').slice(0, 8)}`;
 }
 
 export class SqliteOrgRepo {
@@ -1546,6 +1562,68 @@ export class SqliteOrgRepo {
       )
       .run(data.id, data.name, data.ownerId, data.plan ?? 'free', registryOrgSlug(data.id), ts, ts);
     return this.findOrgById(data.id)!;
+  }
+
+  /**
+   * C10-D：把本地组织对齐到它在 markus.global 的身份。**hub_org_id 的唯一写者。**
+   *
+   * 三条纪律：
+   * 1. **不替代主键**：organizations.id 不动（agents / teams / channel_bindings 全挂它）。
+   *    hub_org_id 只回答「这个本地组织在 hub 上是哪个 org」——身份映射的唯一事实。
+   * 2. **地址段跟 hub 走**：hub 的 slug 是全局唯一的地址段；不同步就会出现「hub 上
+   *    看到的地址本机解析不了」两个世界。
+   * 3. **已签发地址的组织不改 slug**：一旦有 channel_binding 指向旧 slug，改 slug 会让
+   *    已发出的地址悬空。此时只记 hub_org_id，slug 留给人显式声明（declareOrgSlug）。
+   *
+   * 幂等：同一 (hubOrgId, slug) 重复调用写入相同字节，不产生第二份历史。
+   */
+  bindHubOrg(
+    orgId: string,
+    hubOrgId: string,
+    hubSlug: string | null,
+  ):
+    | { ok: true; orgSlug: string | null; slugSkipped?: 'already_issued' | 'invalid_hub_slug' | 'conflict' }
+    | { ok: false; reason: 'org_not_found' } {
+    const org = this.findOrgById(orgId);
+    if (!org) return { ok: false, reason: 'org_not_found' };
+
+    let slugSkipped: 'already_issued' | 'invalid_hub_slug' | 'conflict' | undefined;
+    let nextSlug = org.orgSlug;
+
+    if (hubSlug && hubSlug !== org.orgSlug) {
+      if (!checkOrgSlug(hubSlug).ok) {
+        slugSkipped = 'invalid_hub_slug';
+      } else if (
+        this.db
+          .prepare('SELECT 1 FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL LIMIT 1')
+          .get(orgId) !== undefined
+      ) {
+        // 地址已签发 —— 可绑性优先于同步（已发出的地址不能变成悬空引用）。
+        slugSkipped = 'already_issued';
+      } else {
+        nextSlug = hubSlug;
+      }
+    }
+
+    const ts = now();
+    try {
+      this.db
+        .prepare(
+          'UPDATE organizations SET hub_org_id = ?, hub_synced_at = ?, org_slug = COALESCE(?, org_slug), updated_at = ? WHERE id = ?',
+        )
+        .run(hubOrgId, ts, nextSlug, ts, orgId);
+    } catch (err) {
+      if (!isUniqueViolation(err)) throw err;
+      // 本地另有组织占着这个 slug（hub 侧已保证唯一，只可能是本地先手写）。
+      // 记下身份即可，slug 交给 declareOrgSlug 显式裁决。
+      slugSkipped = 'conflict';
+      nextSlug = org.orgSlug;
+      this.db
+        .prepare('UPDATE organizations SET hub_org_id = ?, hub_synced_at = ?, updated_at = ? WHERE id = ?')
+        .run(hubOrgId, ts, ts, orgId);
+    }
+
+    return { ok: true, orgSlug: nextSlug, ...(slugSkipped ? { slugSkipped } : {}) };
   }
 
   findOrgById(id: string) {
@@ -1653,6 +1731,8 @@ export class SqliteOrgRepo {
       managerAgentId: r['manager_agent_id'] as string | null,
       orgSlug: (r['org_slug'] as string | null) ?? null,
       crossOrgPolicy: (r['cross_org_policy'] as string | null) ?? 'observe',
+      hubOrgId: (r['hub_org_id'] as string | null) ?? null,
+      hubSyncedAt: (r['hub_synced_at'] as string | null) ?? null,
       settings: fromJson(r['settings'] as string),
       createdAt: toDate(r['created_at'] as string),
       updatedAt: toDate(r['updated_at'] as string),

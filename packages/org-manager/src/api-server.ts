@@ -1860,6 +1860,67 @@ export class APIServer {
     }
   }
 
+  /**
+   * C10-D：把本机组织对齐到它在 markus.global 的身份（幂等）。
+   *
+   * 为何要做：org_slug 是地址段 `<local>.<org>@markus.global` 的中间那段。没对齐时
+   * 本机拿的是本地占位 slug，hub 上拿的是 hub slug——同一个组织在两个世界里有两个
+   * 地址，用户复制哪个都可能解析不了。所以登录后以 hub 为准做一次镜像。
+   *
+   * 纪律：
+   * - 不替代主键：只写 organizations.hub_org_id，本地 id 与所有子表引用不动。
+   * - 幂等锚点：先认已绑 hub_org_id 的组织，再认从未绑过的，绝不新建组织。
+   * - 失败不阻断登录：本地可用是底线，对齐下次登录再补（写入本身就是幂等的）。
+   */
+  private async syncHubOrgIdentity(hubToken: string): Promise<void> {
+    const orgRepo = this.storage?.orgRepo;
+    if (!orgRepo?.bindHubOrg) return;
+
+    const res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+      headers: { Authorization: `Bearer ${hubToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      log.warn('hub org identity: /api/orgs/mine rejected', { status: res.status });
+      return;
+    }
+
+    const data = (await res.json()) as { orgs?: Array<{ id: string; slug?: string | null; role?: string }> };
+    const orgs = data.orgs ?? [];
+    // 拥有者优先：编辑/成员身份不该把别人的 slug 写到本机组织上。
+    const target = orgs.find((o) => o.role === 'owner') ?? orgs[0];
+    if (!target) return;
+
+    const local = orgRepo.listOrgs() as Array<{ id: string; orgSlug: string | null; hubOrgId: string | null }>;
+    const bound =
+      local.find((o) => o.hubOrgId === target.id) ?? local.find((o) => !o.hubOrgId) ?? local[0];
+    if (!bound) return;
+
+    const r = orgRepo.bindHubOrg(bound.id, target.id, target.slug ?? null) as {
+      ok: boolean;
+      orgSlug?: string | null;
+      slugSkipped?: string;
+    };
+    if (!r.ok) {
+      log.warn('hub org identity: local org missing', { orgId: bound.id });
+    } else if (r.slugSkipped) {
+      // 不静默：slug 没同步是一个用户可见的事实（他会在 hub 看到 A、本机看到 B）。
+      log.warn('hub org identity: slug not synced', {
+        orgId: bound.id,
+        reason: r.slugSkipped,
+        hubSlug: target.slug ?? null,
+        localSlug: bound.orgSlug,
+      });
+    } else if (r.orgSlug !== bound.orgSlug) {
+      log.info('hub org identity: slug synced', {
+        orgId: bound.id,
+        from: bound.orgSlug,
+        to: r.orgSlug,
+        hubOrgId: target.id,
+      });
+    }
+  }
+
   setBillingService(service: BillingService): void {
     this.billingService = service;
   }
@@ -3928,6 +3989,14 @@ export class APIServer {
         await this.applyPreferredOrgNameToHub(hubToken);
       } catch (err) {
         log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
+      }
+
+      // C10-D：对齐 hub 身份。放在改名之后：改名会动 hub org，slug 不会，但两者
+      // 读的都是 /api/orgs/mine，保持同一个会话内的先后顺序才不会对到半个状态。
+      try {
+        await this.syncHubOrgIdentity(hubToken);
+      } catch (err) {
+        log.warn('Failed to sync hub org identity', { error: (err as Error).message });
       }
 
       // Await OpenRouter + recommended routing before returning so the client
