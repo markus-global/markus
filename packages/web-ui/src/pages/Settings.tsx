@@ -2324,11 +2324,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </SettingRow>
 
-            {/* ② Current status — compact single line */}
+            {/* ② Current status — a strip, not a *card*. It used to be the only
+                tinted, bordered block on the page, so it outweighed the settings above
+                and below it — and a block that looks different reads as a different
+                kind of thing, which is what made this section feel jumbled. It is
+                information to read, so it takes the same row rhythm as everything
+                else and lets the green dot carry the state. */}
             {proxyEffective && (
-              <div className={`mx-5 my-3 flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''} ${
-                proxyEffective.proxy ? 'bg-emerald-500/5 border border-emerald-500/12' : 'bg-surface-secondary/60 border border-border-default/50'
-              }`}>
+              <div className={`flex items-center gap-2.5 px-5 py-3.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''}`}>
                 <span className={`w-2 h-2 rounded-full shrink-0 ${
                   proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'
                 }`} />

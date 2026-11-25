@@ -331,7 +331,7 @@
     "envControlled": "Controlado por la variable de entorno MARKUS_HOST; aquí es de solo lectura",
     "save": "Guardar",
     "saved": "Guardado",
-    "restartRequired": "Guardado: reinicia Markus para aplicarlo",
+    "restartRequired": "Guardado. Aplicar ahora cambia de inmediato (la conexión se corta unos segundos); si no, se aplica en el próximo reinicio.",
     "saveFailed": "Error al guardar",
     "applyNow": "Aplicar ahora",
     "applying": "Aplicando…",

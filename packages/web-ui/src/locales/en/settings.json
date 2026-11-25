@@ -331,7 +331,7 @@
     "envControlled": "Controlled by the MARKUS_HOST environment variable and read-only here",
     "save": "Save",
     "saved": "Saved",
-    "restartRequired": "Saved — restart Markus to apply",
+    "restartRequired": "Saved. Apply now switches right away (the connection drops for a few seconds); otherwise it takes effect at the next restart.",
     "saveFailed": "Save failed",
     "applyNow": "Apply now",
     "applying": "Applying…",

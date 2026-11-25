@@ -627,14 +627,14 @@ function MethodChooser({
               key={m.kind}
               type="button"
               onClick={() => onSelect(m.kind)}
-              className={`text-left p-3 rounded-xl border transition-colors ${
+              className={`text-left p-2.5 rounded-lg border transition-colors ${
                 active
                   ? 'border-brand-500 bg-brand-500/5'
                   : 'border-border-default bg-surface-secondary hover:border-brand-400/60'
               }`}
             >
               <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-fg-primary">
+                <span className="text-[13px] font-medium text-fg-primary">
                   {t(METHOD_LABEL[m.kind].name)}
                 </span>
                 {m.recommended && (
@@ -643,10 +643,14 @@ function MethodChooser({
                   </span>
                 )}
               </div>
-              <p className="text-xs text-fg-tertiary mt-1 leading-snug">
+              {/* Same 13px/11px rhythm as the settings rows above: the old
+                  text-sm + text-xs pair made these cards read as a different,
+                  heavier component than the rest of the page. Description is
+                  clamped so five options fit in the space of two. */}
+              <p className="mt-0.5 line-clamp-2 text-[11px] leading-snug text-fg-tertiary">
                 {t(METHOD_LABEL[m.kind].desc)}
               </p>
-              <div className="flex flex-wrap items-center gap-1.5 mt-2">
+              <div className="mt-1.5 flex flex-wrap items-center gap-1">
                 <Chip>{t(BARRIER_LABEL[m.barrier])}</Chip>
                 <Chip>{t(STABILITY_LABEL[m.stability])}</Chip>
                 <Chip>
