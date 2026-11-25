@@ -257,7 +257,11 @@ export function RemoteAccessSection() {
 
   return (
     <Section title={t('settings:remoteAccess.title')}>
-      <div className="space-y-5">
+      {/* Card container so this section has the same footprint as the two above it.
+          It used to render straight onto the page background at x=256 while its
+          siblings sat inside a card at x=277 — reading down, the content shifted
+          left and widened by 42px with no visual cue why. */}
+      <div className="bg-surface-elevated rounded-xl border border-border-default/40 p-5 space-y-5">
         <p className="text-sm text-fg-secondary">{t('settings:remoteAccess.description')}</p>
         {/* Moved down from the access-scope block. It explains how remote access
             behaves (the tunnel talks to 127.0.0.1, so you need not open the LAN),

@@ -2159,7 +2159,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'network' && <>
         {/* ───── Access scope (bind host) ───── */}
-        <CollapsibleSection title={t('accessScope.title')} defaultOpen={true}>
+        <Section title={t('accessScope.title')}>
           <div className={`${CARD} p-5 space-y-4`}>
             <p className="text-[13px] text-fg-secondary leading-relaxed">{t('accessScope.description')}</p>
 
@@ -2200,8 +2200,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </p>
             )}
 
-            {/* Single morphing button: 保存 → 立即生效 → 保存 */}
-            <div className="flex items-center gap-3 pt-0.5">
+            {/* Single morphing button: 保存 → 立即生效 → 保存。
+                Right-aligned, like every other action on this page — it used to sit
+                flush left under the segmented control while the proxy block below it
+                saved on the right, so two "保存" buttons appeared at opposite ends of
+                the same column. `order-first` keeps the notice beside the button
+                without moving it in the DOM. */}
+            <div className="flex items-center justify-end gap-3 pt-0.5">
               <button
                 disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
                 onClick={async () => {
@@ -2292,16 +2297,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
               </button>
               {bindHostNotice && (
-                <span className={`text-[13px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-fg-muted'}`}>
+                <span className={`order-first text-[13px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-fg-muted'}`}>
                   {bindHostNotice.text}
                 </span>
               )}
             </div>
           </div>
-        </CollapsibleSection>
+        </Section>
 
-        {/* ───── Network / Proxy — redesigned ───── */}
-        <CollapsibleSection title={t('networkProxy.title')} defaultOpen={true}>
+        {/* ───── Network / Proxy ───── */}
+        <Section title={t('networkProxy.title')}>
           <div className={`${CARD} p-5 space-y-4`}>
 
             {/* ① Row: description + toggle */}
@@ -2440,7 +2445,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             </div>
 
           </div>
-        </CollapsibleSection>
+        </Section>
         <RemoteAccessSection />
 
         </>}
