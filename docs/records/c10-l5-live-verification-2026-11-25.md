@@ -166,8 +166,16 @@ Structural evidence, not inference: `external_signal` has exactly **one** refere
 `external-source-service.ts:113`. The wake/execution branches in `agent.ts` key on
 `sourceType === 'human_chat' | 'a2a_message' | 'callback_result'`; no branch consumes
 `external_signal`. `complete()` (`mailbox.ts:1890`) marks the row `completed` with
-`why:'turn-complete'` while no turn happened, so the row's terminal state says
-"finished" for a signal nothing ever worked on.
+`why:'turn-complete'`.
+
+> **Correction (2026-11-25 22:2x, same day).** This section first claimed the terminal state
+> lied ("no turn happened"). The runtime log contradicts that — the turn bootstrap did run
+> (`Turn has NO session identity … sourceType=external_signal`, then two `Context assembled`).
+> The defensible statement is narrower: **a turn ran and closed without claiming its
+> `work_unit`, without a session identity of its own, and without producing a fact.**
+> `processing → completed` is a legal FSM-2 transition (`回合正常收口`); the defect is that the
+> turn had nothing to work with, not that the state machine lied. D1/D2/D3 in
+> `docs/design/external-signal-decision-loop-2026-11-25.md` stand unchanged.
 
 **Consequence for the cut gate:** L5 condition 5 cannot be closed by starting the
 content agent. External signals need a consumer that starts a work turn (claim the
