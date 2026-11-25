@@ -1,14 +1,13 @@
 /**
- * 组织身份（C10-D）—— 声明组织地址前缀的唯一 UI 入口。
+ * 组织标识（C10-D）—— 声明组织 slug 的唯一 UI 入口。
  *
- * 为什么必须有这个页面：邮箱地址的格式是 `<local>.<org>@markus.global`，中间那段
- * `<org>` 必须是本组织**已声明**的合法 slug（C10-A 的防抢注门）。而 `declareOrgSlug`
- * 在此之前只有 storage 方法，没有任何 HTTP/UI 入口 —— 真实用户永远走不到"声明"这一步，
- * 于是地址永远绑不上。这个页面就是那个缺失的入口。
+ * slug 是本组织在所有组织中的唯一标识（C10-A 的防抢注门）。`declareOrgSlug`
+ * 在此之前只有 storage 方法，没有任何 HTTP/UI 入口 —— 真实用户永远走不到"声明"这一步。
+ * 这个页面就是那个缺失的入口。
  *
  * 三条产品规则（都由后端裁决，前端只负责如实呈现）：
- *  1. 只有 owner 能改（slug 是全局唯一的地址段，不能让成员改走别人的名字）。
- *  2. 已签发地址的组织**锁定** —— 改 slug 会让已经发出去的地址变成悬空引用。
+ *  1. 只有 owner 能改（slug 全局唯一，不能让成员改走别人的名字）。
+ *  2. 已派生标识的组织**锁定** —— 再改会让已经依赖它的东西变成悬空引用。
  *  3. 校验失败要给出 hint 与错误码，不能只说"保存失败"。
  */
 import { useCallback, useEffect, useState } from 'react';
@@ -207,7 +206,6 @@ export function OrgSummarySection() {
             {t('orgSummary.manageMembers')}
           </a>
         </div>
-        <p className="text-[11px] text-fg-tertiary">{t('orgSummary.hubOnly')}</p>
       </div>
     </div>
   );
@@ -272,27 +270,26 @@ export function OrgIdentitySection({ authUser }: { authUser?: AuthUser }) {
 
   const locked = state?.locked ?? false;
   const slug = state?.orgSlug ?? '';
-  const preview = slug ? `${t('orgIdentity.previewLocal')}.${slug}@markus.global` : null;
 
   return (
     <div className="space-y-8">
       <OrgSummarySection />
 
       <div>
-        <h2 className="text-lg font-semibold text-[var(--text-primary)]">{t('orgIdentity.title')}</h2>
-        <p className="mt-1 text-sm text-[var(--text-secondary)]">{t('orgIdentity.desc')}</p>
+        <h2 className="text-lg font-semibold text-fg-primary">{t('orgIdentity.title')}</h2>
+        <p className="mt-1 text-sm text-fg-secondary">{t('orgIdentity.desc')}</p>
       </div>
 
-      {loading && <p className="text-sm text-[var(--text-tertiary)]">{t('common:loading')}</p>}
+      {loading && <p className="text-sm text-fg-tertiary">{t('common:loading')}</p>}
 
       {!loading && state && (
-        <div className="rounded-lg border border-[var(--border-default)] bg-[var(--bg-secondary)] p-4 space-y-4">
+        <div className="rounded-lg border border-border-default bg-surface-secondary p-4 space-y-4">
           <div className="flex items-center justify-between gap-4">
             <div>
-              <p className="text-xs uppercase tracking-wide text-[var(--text-tertiary)]">
+              <p className="text-xs uppercase tracking-wide text-fg-tertiary">
                 {t('orgIdentity.current')}
               </p>
-              <p className="mt-1 font-mono text-sm text-[var(--text-primary)]">
+              <p className="mt-1 font-mono text-sm text-fg-primary">
                 {slug || t('orgIdentity.unset')}
               </p>
             </div>
@@ -307,19 +304,13 @@ export function OrgIdentitySection({ authUser }: { authUser?: AuthUser }) {
             </span>
           </div>
 
-          {preview && (
-            <p className="text-sm text-[var(--text-secondary)]">
-              {t('orgIdentity.preview')}: <span className="font-mono">{preview}</span>
-            </p>
-          )}
-
           {locked ? (
-            <p className="rounded-md bg-[var(--bg-tertiary)] p-3 text-sm text-[var(--text-secondary)]">
+            <p className="rounded-md bg-surface-elevated p-3 text-sm text-fg-secondary">
               {t('orgIdentity.locked', { count: state.issuedAddresses })}
             </p>
           ) : isOwner ? (
             <div className="space-y-3">
-              <label className="block text-sm text-[var(--text-secondary)]" htmlFor="org-slug-input">
+              <label className="block text-sm text-fg-secondary" htmlFor="org-slug-input">
                 {t('orgIdentity.inputLabel')}
               </label>
               <div className="flex gap-2">
@@ -333,21 +324,21 @@ export function OrgIdentitySection({ authUser }: { authUser?: AuthUser }) {
                   }}
                   placeholder={t('orgIdentity.placeholder')}
                   spellCheck={false}
-                  className="flex-1 rounded-md border border-[var(--border-default)] bg-[var(--bg-primary)] px-3 py-2 font-mono text-sm text-[var(--text-primary)]"
+                  className="flex-1 rounded-md border border-border-default bg-surface-primary px-3 py-2 font-mono text-sm text-fg-primary outline-none focus:border-brand-500"
                 />
                 <button
                   type="button"
                   onClick={() => void save()}
                   disabled={busy || !draft.trim() || draft.trim() === slug}
-                  className="rounded-md bg-[var(--accent-primary)] px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
+                  className="rounded-md bg-brand-600 px-4 py-2 text-sm font-medium text-on-brand transition-colors hover:bg-brand-500 disabled:opacity-50"
                 >
                   {busy ? t('orgIdentity.saving') : t('orgIdentity.save')}
                 </button>
               </div>
-              <p className="text-xs text-[var(--text-tertiary)]">{t('orgIdentity.rule')}</p>
+              <p className="text-xs text-fg-tertiary">{t('orgIdentity.rule')}</p>
             </div>
           ) : (
-            <p className="text-sm text-[var(--text-secondary)]">{t('orgIdentity.ownerOnly')}</p>
+            <p className="text-sm text-fg-secondary">{t('orgIdentity.ownerOnly')}</p>
           )}
 
           {saved && <p className="text-sm text-emerald-600">{t('orgIdentity.saved')}</p>}
