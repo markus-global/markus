@@ -1270,58 +1270,52 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
-        <div className="space-y-3.5">
-          <div className={`${CARD} p-5 divide-y divide-border-default/40`}>
-            <Field label={t('appearance.theme')} description={t('appearance.themeDesc')}>
-              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
-                {THEME_OPTIONS.map(({ value }) => (
-                  <button
-                    key={value}
-                    onClick={() => onThemeChange?.(value)}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      theme === value ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
-                    }`}
-                  >
-                    {t(`appearance.modes.${value}`)}
-                  </button>
-                ))}
-              </div>
-            </Field>
-            <div className="pt-4">
-            <Field label={t('appearance.language')} description={t('appearance.languageDesc')}>
-              <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
-                {SUPPORTED_LANGUAGES.map(({ code, label }) => (
-                  <button
-                    key={code}
-                    onClick={() => {
-                      void i18n.changeLanguage(code);
-                      // Persist so the agent picks the matching default Markus search provider.
-                      void api.settings.updateSearch({ language: code }).catch(() => {});
-                    }}
-                    className={`px-3 py-1.5 text-xs rounded-md transition-colors ${
-                      i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
-                        ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
-                    }`}
-                  >
-                    {label}
-                  </button>
-                ))}
-              </div>
-            </Field>
+        <div className={`${CARD} divide-y divide-border-default/40`}>
+          <SettingRow label={t('appearance.theme')} hint={t('appearance.themeDesc')}>
+            <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
+              {THEME_OPTIONS.map(({ value }) => (
+                <button
+                  key={value}
+                  onClick={() => onThemeChange?.(value)}
+                  className={`px-3 py-1.5 text-[11px] rounded-md transition-colors ${
+                    theme === value ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >
+                  {t(`appearance.modes.${value}`)}
+                </button>
+              ))}
             </div>
-            {isElectron() && (
-              <div className="pt-4">
-                <Field label={t('appearance.launchAtLogin')} description={t('appearance.launchAtLoginDesc')}>
-                  <Switch
-                    checked={launchAtLogin}
-                    onChange={() => void toggleLaunchAtLogin()}
-                    label={t('appearance.launchAtLogin')}
-                    disabled={launchAtLoginBusy}
-                  />
-                </Field>
-              </div>
-            )}
-          </div>
+          </SettingRow>
+          <SettingRow label={t('appearance.language')} hint={t('appearance.languageDesc')}>
+            <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
+              {SUPPORTED_LANGUAGES.map(({ code, label }) => (
+                <button
+                  key={code}
+                  onClick={() => {
+                    void i18n.changeLanguage(code);
+                    // Persist so the agent picks the matching default Markus search provider.
+                    void api.settings.updateSearch({ language: code }).catch(() => {});
+                  }}
+                  className={`px-3 py-1.5 text-[11px] rounded-md transition-colors ${
+                    i18n.language === code || (code === 'en' && !SUPPORTED_LANGUAGES.some(l => l.code === i18n.language))
+                      ? 'bg-brand-600 text-on-brand shadow-sm' : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </SettingRow>
+          {isElectron() && (
+            <SettingRow label={t('appearance.launchAtLogin')} hint={t('appearance.launchAtLoginDesc')}>
+              <Switch
+                checked={launchAtLogin}
+                onChange={() => void toggleLaunchAtLogin()}
+                label={t('appearance.launchAtLogin')}
+                disabled={launchAtLoginBusy}
+              />
+            </SettingRow>
+          )}
         </div>
         </>}
 
@@ -2458,8 +2452,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'execution' && <>
         <Section title={t('agentExecution.title')}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <Field label={t('agentExecution.maxToolIterations')} description={t('agentExecution.maxToolIterationsDesc')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow label={t('agentExecution.maxToolIterations')} hint={t('agentExecution.maxToolIterationsDesc')}>
               <input
                 type="number"
                 min={0}
@@ -2467,9 +2461,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
               />
-            </Field>
-            <div className="border-t border-border-default/40" />
-            <Field label={t('agentExecution.maxPendingTasksPerAgent')} description={t('agentExecution.maxPendingTasksPerAgentDesc')}>
+            </SettingRow>
+            <SettingRow label={t('agentExecution.maxPendingTasksPerAgent')} hint={t('agentExecution.maxPendingTasksPerAgentDesc')}>
               <input
                 type="number"
                 min={1}
@@ -2477,12 +2470,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
               />
-            </Field>
+            </SettingRow>
             {/* One save for the whole group. The backend applies each field
                 independently (`if (typeof body.x === 'number')`), so a single call
                 persists both. Per-input buttons invited a real failure: save one,
                 navigate away, and the other silently stayed at its old value. */}
-            <div className="flex items-center justify-end">
+            <div className="flex items-center justify-end px-5 py-3.5">
               <button
                 disabled={agentSaving}
                 onClick={async () => {
@@ -2503,22 +2496,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {agentSaving ? t('common:saving') : t('common:save')}
               </button>
             </div>
-            {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
+            {agentMsg && <div className="px-5 pb-3.5"><Msg type={agentMsg.type} text={agentMsg.text} /></div>}
           </div>
         </Section>
 
         {/* ── Concurrent Processing（并发处理） ── */}
         <Section title={t('concurrent.title')} description={t('concurrent.description')}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <Field label={t('concurrent.enabled')} description={t('concurrent.enabledDesc')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow label={t('concurrent.enabled')} hint={t('concurrent.enabledDesc')}>
               <Switch
                 checked={concEnabled}
                 onChange={(v) => { setConcEnabled(v); setConcMsg(null); }}
                 label={t('concurrent.enabled')}
               />
-            </Field>
-
-            <Field label={t('concurrent.maxWorkers')} description={t('concurrent.maxWorkersDesc')}>
+            </SettingRow>
+            <SettingRow label={t('concurrent.maxWorkers')} hint={t('concurrent.maxWorkersDesc')}>
               <input
                 type="number"
                 min={1}
@@ -2528,9 +2520,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 onChange={e => { setConcMaxWorkers(Number(e.target.value)); setConcMsg(null); }}
                 className={`${FIELD_INPUT} w-24 text-right tabular-nums disabled:opacity-40`}
               />
-            </Field>
-
-            <Field label={t('concurrent.conflictPolicy')} description={t('concurrent.conflictPolicyDesc')}>
+            </SettingRow>
+            <SettingRow label={t('concurrent.conflictPolicy')} hint={t('concurrent.conflictPolicyDesc')}>
               <select
                 value={concConflictPolicy}
                 disabled={!concEnabled}
@@ -2540,9 +2531,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 <option value="auto">{t('concurrent.policyAuto')}</option>
                 <option value="report">{t('concurrent.policyReport')}</option>
               </select>
-            </Field>
-
-            <div className="flex items-center justify-end">
+            </SettingRow>
+            <div className="flex items-center justify-end px-5 py-3.5">
               <button
                 disabled={concSaving}
                 onClick={async () => {
@@ -2563,7 +2553,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {concSaving ? t('common:saving') : t('common:save')}
               </button>
             </div>
-            {concMsg && <Msg type={concMsg.type} text={concMsg.text} />}
+            {concMsg && <div className="px-5 pb-3.5"><Msg type={concMsg.type} text={concMsg.text} /></div>}
           </div>
         </Section>
         </>}
@@ -3935,21 +3925,6 @@ function PageHeader({ tab }: { tab: SettingsTab }) {
         {desc && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc} leading-snug`}>{desc}</p>}
       </div>
     </header>
-  );
-}
-
-/** A labelled setting row: label + hint on the left, control on the right. */
-function Field({ label, description, children }: {
-  label: React.ReactNode; description?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
-      <div className="min-w-0">
-        <div className={`${TYPE.label} ${FG.strong}`}>{label}</div>
-        {description && <div className={`mt-0.5 ${TYPE.hint} ${FG.desc}`}>{description}</div>}
-      </div>
-      <div className="shrink-0">{children}</div>
-    </div>
   );
 }
 
