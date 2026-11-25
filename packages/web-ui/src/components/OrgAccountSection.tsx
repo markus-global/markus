@@ -72,6 +72,17 @@ function OrgSlugRow({ orgId }: { orgId?: string }) {
  * 只读：本地没有成员管理 API（`/api/orgs/*` 只有 GET、POST 和 slug），改成员、换套餐
  * 都在 markus.global 完成。这里让用户看清自己是什么状态，并给出去处。
  */
+/**
+ * Loading placeholder for a single value.
+ *
+ * The row — label and layout — is already on screen; only the value is pending. Without
+ * this the whole block used to collapse to one "loading" line and then expand once the
+ * data arrived, so the page height jumped under the user's cursor.
+ */
+function ValueSkeleton({ w = 'w-16' }: { w?: string }) {
+  return <span className={`inline-block h-3 ${w} animate-pulse rounded bg-surface-elevated`} aria-hidden="true" />;
+}
+
 export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation(['settings', 'common']);
   const [planInfo, setPlanInfo] = useState<{
@@ -146,7 +157,12 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
     : Math.round(planInfo?.totalConsumedThisPeriod ?? planInfo?.cuUsed ?? 0);
   const creditsTotal = showPersonalLimit ? (planInfo?.memberCuLimit ?? 0) : totalCredits;
 
-  if (loading) return <p className="text-sm text-fg-tertiary">{t('common:loading')}</p>;
+  // While loading, hold the row too: showing it only once the number exists would add a
+  // row after the fact and jump the layout a second time.
+  const showCreditsRow = loading || creditsTotal > 0;
+  // Three distinct states, each with its own honest rendering: pending (skeleton),
+  // resolved with an org (values), resolved without one (empty state).
+  const orgRowsVisible = loading || !!primaryOrg;
 
   return (
     <div className="space-y-3">
@@ -195,37 +211,55 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
         <div className="space-y-3 rounded-lg border border-border-default px-5 py-4">
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="text-fg-tertiary">{t('orgSummary.plan')}</span>
-            <span className="rounded border border-brand-500/15 bg-brand-600/10 px-2 py-0.5 text-xs font-semibold capitalize text-brand-500">
-              {planInfo?.planType ?? t('orgSummary.planUnknown')}
-            </span>
+            {loading ? (
+              <ValueSkeleton w="w-14" />
+            ) : (
+              <span className="rounded border border-brand-500/15 bg-brand-600/10 px-2 py-0.5 text-xs font-semibold capitalize text-brand-500">
+                {planInfo?.planType ?? t('orgSummary.planUnknown')}
+              </span>
+            )}
           </div>
-          {creditsTotal > 0 && (
+          {showCreditsRow && (
             <div className="flex items-center justify-between gap-3 text-xs">
               <span className="text-fg-tertiary">
                 {showPersonalLimit ? t('account.personalLimit') : t('account.credits')}
               </span>
               <span className="font-medium tabular-nums text-fg-primary">
-                {creditsUsed.toLocaleString()} / {creditsTotal.toLocaleString()}
+                {loading ? <ValueSkeleton w="w-24" /> : <>{creditsUsed.toLocaleString()} / {creditsTotal.toLocaleString()}</>}
               </span>
             </div>
           )}
-          {primaryOrg && (
+          {orgRowsVisible ? (
             <>
               <div className="flex items-center justify-between gap-3 text-xs">
                 <span className="text-fg-tertiary">{t('org.nameLabel')}</span>
-                <span className="font-medium text-fg-primary">{primaryOrg.name}</span>
+                {loading ? (
+                  <ValueSkeleton w="w-28" />
+                ) : (
+                  <span className="font-medium text-fg-primary">{primaryOrg?.name}</span>
+                )}
               </div>
               <div className="flex items-center justify-between gap-3 text-xs">
                 <span className="text-fg-tertiary">{t('account.memberCount')}</span>
-                <span className="font-medium text-fg-primary">{primaryOrg.memberCount}</span>
+                {loading ? (
+                  <ValueSkeleton w="w-6" />
+                ) : (
+                  <span className="font-medium text-fg-primary">{primaryOrg?.memberCount}</span>
+                )}
               </div>
               <div className="flex items-center justify-between gap-3 text-xs">
                 <span className="text-fg-tertiary">{t('org.orgId')}</span>
-                <code className="rounded bg-surface-elevated px-1.5 py-0.5 text-[11px] text-fg-secondary">
-                  {primaryOrg.id}
-                </code>
+                {loading ? (
+                  <ValueSkeleton w="w-40" />
+                ) : (
+                  <code className="rounded bg-surface-elevated px-1.5 py-0.5 text-[11px] text-fg-secondary">
+                    {primaryOrg?.id}
+                  </code>
+                )}
               </div>
             </>
+          ) : (
+            <p className="text-xs text-fg-tertiary">{t('account.noOrg')}</p>
           )}
 
           <div className="flex flex-wrap gap-2 pt-1">

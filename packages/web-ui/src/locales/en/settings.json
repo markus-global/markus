@@ -812,7 +812,8 @@
     "manageBilling": "Manage Subscription",
     "manageOrg": "Manage Organization",
     "orgSection": "Organization",
-    "memberCount": "Members"
+    "memberCount": "Members",
+    "noOrg": "Not a member of any organization"
   },
   "orgSummary": {
     "plan": "Plan",

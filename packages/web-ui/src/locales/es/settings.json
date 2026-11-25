@@ -798,7 +798,8 @@
     "manageBilling": "Administrar la suscripción",
     "manageOrg": "Organización de gestión",
     "orgSection": "Organización",
-    "memberCount": "Miembros"
+    "memberCount": "Miembros",
+    "noOrg": "No perteneces a ninguna organización"
   },
   "orgSummary": {
     "plan": "Plan",

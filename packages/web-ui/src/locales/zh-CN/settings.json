@@ -812,7 +812,8 @@
     "manageBilling": "管理订阅",
     "manageOrg": "管理组织",
     "orgSection": "组织",
-    "memberCount": "成员数"
+    "memberCount": "成员数",
+    "noOrg": "未加入任何组织"
   },
   "orgSummary": {
     "plan": "套餐",
