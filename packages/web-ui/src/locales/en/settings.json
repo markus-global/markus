@@ -588,6 +588,7 @@
   "dataStorage": {
     "title": "Data & Storage",
     "scanning": "Scanning storage...",
+    "scanningHint": "Scanning organization disk usage. The first scan can take a while; other pages stay responsive meanwhile.",
     "openInFinder": "Open in Finder",
     "storageBreakdown": "Storage Breakdown",
     "agentStorage": "Agent Storage ({{count}})",

@@ -574,6 +574,7 @@
   "dataStorage": {
     "title": "Almacenamiento de datos",
     "scanning": "Almacenamiento de exploración...",
+    "scanningHint": "Analizando el uso de disco de la organización. El primer análisis puede tardar; el resto de páginas sigue disponible mientras tanto.",
     "openInFinder": "Abrir en Finder",
     "storageBreakdown": "Desglose de almacenamiento",
     "agentStorage": "Agente Almacenamiento ({{count}})",

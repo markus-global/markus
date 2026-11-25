@@ -2972,21 +2972,56 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         <Section title={t('dataStorage.title')}>
           <div className={`${CARD} p-5 space-y-5`}>
             {storageLoading && !storageInfo && (
-              <div className="space-y-4" data-testid="data-storage-skeleton">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="space-y-2">
-                    <div className="h-7 w-28 animate-pulse rounded bg-surface-secondary" />
-                    <div className="h-3 w-56 animate-pulse rounded bg-surface-secondary" />
+              <div className="space-y-5" data-testid="data-storage-skeleton" role="status" aria-busy="true">
+                {/* Mirrors the loaded layout row for row: headline + path + two buttons,
+                    stacked bar, clearable hint, then the item list. Every placeholder
+                    height matches its real counterpart on purpose — a skeleton that is
+                    shaped differently from the content it replaces only trades one jerk
+                    (empty panel) for another (everything jumps when the scan lands). */}
+                <div className="space-y-3">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0 space-y-2">
+                      <div className="h-8 w-32 animate-pulse rounded bg-surface-secondary" />
+                      <div className="h-3 w-64 animate-pulse rounded bg-surface-secondary" />
+                    </div>
+                    <div className="flex shrink-0 gap-2">
+                      <div className="h-8 w-20 animate-pulse rounded-lg bg-surface-secondary" />
+                      <div className="h-8 w-24 animate-pulse rounded-lg bg-surface-secondary" />
+                    </div>
                   </div>
-                  <div className="h-8 w-24 animate-pulse rounded bg-surface-secondary" />
+                  <div className="h-2 w-full animate-pulse rounded-full bg-surface-secondary" />
+                  <div className="h-3 w-72 animate-pulse rounded bg-surface-secondary" />
                 </div>
-                <div className="h-2 w-full animate-pulse rounded-full bg-surface-secondary" />
-                <div className="space-y-2">
-                  {[0, 1, 2, 3].map(i => (
-                    <div key={i} className="h-4 w-full animate-pulse rounded bg-surface-secondary" />
-                  ))}
+
+                <div className="border-t border-border-default pt-4">
+                  <div className="mb-3 flex items-baseline justify-between gap-3">
+                    <div className="h-3 w-20 animate-pulse rounded bg-surface-secondary" />
+                    <div className="h-3 w-16 animate-pulse rounded bg-surface-secondary" />
+                  </div>
+                  <div className="divide-y divide-border-default/70 overflow-hidden rounded-xl border border-border-default/70">
+                    {[0, 1, 2, 3, 4].map(i => (
+                      <div key={i} className="flex items-center gap-3 px-3.5 py-3">
+                        <div className="min-w-0 flex-1 space-y-1.5">
+                          <div className="h-4 animate-pulse rounded bg-surface-secondary" style={{ width: `${30 + ((i * 13) % 30)}%` }} />
+                          <div className="h-3 animate-pulse rounded bg-surface-secondary" style={{ width: `${55 + ((i * 9) % 25)}%` }} />
+                        </div>
+                        <div className="shrink-0 space-y-1.5 text-right">
+                          <div className="ml-auto h-4 w-14 animate-pulse rounded bg-surface-secondary" />
+                          <div className="ml-auto h-3 w-8 animate-pulse rounded bg-surface-secondary" />
+                        </div>
+                        <div className="h-7 w-[4.5rem] shrink-0 animate-pulse rounded-lg bg-surface-secondary" />
+                      </div>
+                    ))}
+                  </div>
                 </div>
-                <div className="text-xs text-fg-tertiary">{t('dataStorage.scanning')}</div>
+
+                {/* Says what is happening and roughly how long it takes. "Scanning…"
+                    alone leaves the user unable to tell a 3-second wait from a hung
+                    page — which is exactly how this panel was reported. */}
+                <div className="flex items-start gap-2 text-xs leading-relaxed text-fg-tertiary">
+                  <span className="mt-0.5 inline-block h-3 w-3 shrink-0 animate-spin rounded-full border-2 border-border-default border-t-fg-tertiary" aria-hidden />
+                  <span>{t('dataStorage.scanningHint')}</span>
+                </div>
               </div>
             )}
             {storageInfo && (() => {

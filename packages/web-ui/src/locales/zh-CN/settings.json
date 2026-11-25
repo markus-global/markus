@@ -588,6 +588,7 @@
   "dataStorage": {
     "title": "数据与存储",
     "scanning": "正在扫描存储…",
+    "scanningHint": "正在扫描组织磁盘占用，首次扫描可能需要几十秒；期间其他页面照常可用。",
     "openInFinder": "在访达中打开",
     "storageBreakdown": "存储明细",
     "agentStorage": "智能体存储（{{count}}）",
