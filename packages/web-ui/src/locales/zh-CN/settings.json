@@ -40,27 +40,7 @@
   "orgIdentity": {
     "label": "组织标识",
     "unset": "未设置",
-    "synced": "已同步",
-    "localOnly": "仅本机",
-    "edit": "修改",
-    "locked": "已有 {{count}} 项内容依赖此标识，标识已锁定。",
-    "inputLabel": "组织标识",
-    "placeholder": "例如 acme",
-    "rule": "只能用小写字母、数字和连字符，长度 2–30，且不能以数字或连字符开头。",
-    "save": "保存",
-    "saving": "保存中…",
-    "saved": "已保存",
-    "err": {
-      "INVALID_SLUG": "这个标识不可用",
-      "CONFLICT": "该标识已被其他组织占用",
-      "IMMUTABLE": "标识已锁定",
-      "NOT_ORG_OWNER": "没有修改权限",
-      "ORG_REPO_UNAVAILABLE": "服务暂不可用，请重启后再试",
-      "SLUG_REQUIRED": "请填写组织标识",
-      "ORG_NOT_FOUND": "组织不存在",
-      "NETWORK": "网络错误",
-      "ERROR": "保存失败"
-    }
+    "synced": "已同步"
   },
   "appearance": {
     "title": "通用",

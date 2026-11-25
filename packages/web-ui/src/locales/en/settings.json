@@ -40,27 +40,7 @@
   "orgIdentity": {
     "label": "Organization slug",
     "unset": "Not set",
-    "synced": "Synced",
-    "localOnly": "Local only",
-    "edit": "Edit",
-    "locked": "{{count}} item(s) already depend on this slug, so it is locked.",
-    "inputLabel": "Organization slug",
-    "placeholder": "e.g. acme",
-    "rule": "Lowercase letters, digits and hyphens; 2–30 characters; must start with a letter.",
-    "save": "Save",
-    "saving": "Saving…",
-    "saved": "Saved",
-    "err": {
-      "INVALID_SLUG": "That slug is not usable",
-      "CONFLICT": "Another organization already uses that slug",
-      "IMMUTABLE": "The slug is locked",
-      "NOT_ORG_OWNER": "Not allowed",
-      "ORG_REPO_UNAVAILABLE": "Service unavailable — restart and retry",
-      "SLUG_REQUIRED": "Enter an organization slug",
-      "ORG_NOT_FOUND": "Organization not found",
-      "NETWORK": "Network error",
-      "ERROR": "Save failed"
-    }
+    "synced": "Synced"
   },
   "appearance": {
     "title": "General",

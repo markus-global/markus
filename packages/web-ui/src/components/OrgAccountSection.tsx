@@ -1,20 +1,18 @@
 /**
  * 组织标识 + 订阅账户信息。
  *
- * ## slug 的权威在哪（这一行的形态由它决定）
+ * ## slug 只在 Hub 有意义
  *
- * slug 是全局唯一的命名空间（防抢注），**唯一权威是 markus.global**。本机离线时
- * 根本不可能知道某个名字有没有被别人占用，所以本地不是一个合法的写者。
+ * slug 的唯一用途是 markus.global 上的**全局唯一命名空间**——`hub_organizations.slug`
+ * 上有 `CREATE UNIQUE INDEX idx_orgs_slug`，唯一性由数据库层保证，唯一权威在 Hub。
  *
- * 现状（改造前）是个陷阱：本地 `PUT /api/orgs/:id/slug` 只写本地，而登录时
- * `syncHubOrgIdentity` 会拿 Hub 的 slug 覆盖本地 —— 用户改了一个 Hub 不知道的
- * 名字，下次登录被静默改回去，还不知道为什么。
+ * 因此本机不做任何编辑入口：
+ *  - 未连接 Hub：没有全局命名空间，slug 是个无处可用的字符串，这一行不渲染。
+ *  - 已连接 Hub：显示 Hub 镜像下来的值，修改在 Hub 侧完成。
  *
- * 因此按绑定状态分流：
- *  - 已绑定 Hub（hubOrgId 非空）→ 本机只读，按钮引导去 Hub 改。改完下次登录自动同步回来。
- *  - 纯本地组织 → 本地就是唯一权威，就地编辑（不存在跨世界冲突）。
- *
- * 不提供「本地改完推给 Hub」：那需要 Hub 先有更新端点，且会让本地重新变成第二写者。
+ * 历史教训（改造前）：本地 `PUT /api/orgs/:id/slug` 只写本地库，而登录时
+ * `syncHubOrgIdentity` 会拿 Hub 的值覆盖本地 —— 用户改了个 Hub 不知道的名字，
+ * 下次登录被静默回滚，且完全不知道为什么。任何"本地可编辑"的方案都会重演这个问题。
  */
 import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -22,164 +20,48 @@ import { api, hubApi, getHubUser, getHubToken } from '../api';
 import type { AuthUser } from '../api';
 
 interface OrgIdentityState {
-  orgId: string;
   orgSlug: string | null;
   hubOrgId: string | null;
-  issuedAddresses: number;
-  locked: boolean;
-}
-
-interface SlugError {
-  code: string;
-  hint?: string;
 }
 
 /**
- * 组织标识 —— 订阅账户表格里的一行。
+ * 组织标识 —— 订阅账户表格里的一行，只读镜像。
  *
- * 只有一个写者的判断在这里：已绑定 Hub 时不给编辑控件（给了就是在制造分歧数据），
- * 未绑定时就地编辑（本地即权威）。
+ * 未绑定 Hub 时返回 null：没有 Hub 身份就没有全局命名空间，显示一个空标识行
+ * 只会让人以为"我该填点什么"。
  */
 function OrgSlugRow({ orgId }: { orgId?: string }) {
-  const { t } = useTranslation(['settings', 'common']);
+  const { t } = useTranslation('settings');
   const [state, setState] = useState<OrgIdentityState | null>(null);
-  const [draft, setDraft] = useState('');
-  const [editing, setEditing] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<SlugError | null>(null);
-  const [saved, setSaved] = useState(false);
-  const [loading, setLoading] = useState(true);
-
-  const load = useCallback(async () => {
-    if (!orgId) {
-      setLoading(false);
-      return;
-    }
-    try {
-      const res = await fetch(`/api/orgs/${orgId}/slug`, { credentials: 'include' });
-      if (res.ok) {
-        const data = (await res.json()) as OrgIdentityState;
-        setState(data);
-        setDraft(data.orgSlug ?? '');
-      }
-    } finally {
-      setLoading(false);
-    }
-  }, [orgId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  const save = async () => {
     if (!orgId) return;
-    setBusy(true);
-    setError(null);
-    setSaved(false);
-    try {
-      const res = await fetch(`/api/orgs/${orgId}/slug`, {
-        method: 'PUT',
-        credentials: 'include',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ slug: draft.trim() }),
-      });
-      const body = (await res.json().catch(() => ({}))) as SlugError;
-      if (!res.ok) {
-        setError({ code: body.code ?? 'ERROR', hint: body.hint });
-        return;
-      }
-      setSaved(true);
-      setEditing(false);
-      await load();
-    } catch (err) {
-      setError({ code: 'NETWORK', hint: (err as Error).message });
-    } finally {
-      setBusy(false);
-    }
-  };
+    let cancelled = false;
+    fetch(`/api/orgs/${orgId}/slug`, { credentials: 'include' })
+      .then((res) => (res.ok ? (res.json() as Promise<OrgIdentityState>) : null))
+      .then((data) => {
+        if (!cancelled && data) setState(data);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [orgId]);
 
-  if (loading) return <p className="text-xs text-fg-tertiary">{t('common:loading')}</p>;
-  if (!state) return null;
-
-  const slug = state.orgSlug ?? '';
-  const synced = !!state.hubOrgId;
-  // 已绑定 Hub ⇒ 不以本地为权威；已锁定 ⇒ 有成依赖的历史，不能改。
-  const canEditHere = !synced && !state.locked;
+  // 没有 Hub 身份 = 没有全局命名空间 = 这一行不成立。
+  if (!state?.hubOrgId) return null;
 
   return (
-    <div className="rounded-md border border-brand-500/25 bg-brand-600/[0.06] px-3 py-2">
-      <div className="flex items-center justify-between gap-3">
-        <span className="shrink-0 text-xs text-fg-tertiary">{t('orgIdentity.label')}</span>
-        <div className="flex min-w-0 items-center gap-2">
-          <code className="truncate font-mono text-xs text-fg-primary">
-            {slug || t('orgIdentity.unset')}
-          </code>
-          <span
-            className={`shrink-0 rounded px-1.5 py-0.5 text-[10px] ${
-              synced ? 'bg-green-500/15 text-green-600' : 'bg-surface-elevated text-fg-tertiary'
-            }`}
-          >
-            {synced ? t('orgIdentity.synced') : t('orgIdentity.localOnly')}
-          </span>
-          {/* 已绑定 Hub 时不给编辑控件：Hub 是唯一权威，本地改了会被下次登录覆盖。
-              Hub 侧目前也还没有 slug 编辑入口（见 PR 说明），所以这里只如实展示状态，
-              不放一个点过去也改不了的按钮。 */}
-          {!synced && canEditHere && (
-            <button
-              type="button"
-              onClick={() => {
-                setEditing((v) => !v);
-                setError(null);
-                setSaved(false);
-              }}
-              className="shrink-0 rounded bg-brand-600 px-2 py-1 text-[11px] font-medium text-on-brand transition-colors hover:bg-brand-500"
-            >
-              {t('orgIdentity.edit')}
-            </button>
-          )}
-        </div>
+    <div className="flex items-center justify-between gap-3 rounded-md border border-brand-500/25 bg-brand-600/[0.06] px-3 py-2">
+      <span className="shrink-0 text-xs text-fg-tertiary">{t('orgIdentity.label')}</span>
+      <div className="flex min-w-0 items-center gap-2">
+        <code className="truncate font-mono text-xs text-fg-primary">
+          {state.orgSlug || t('orgIdentity.unset')}
+        </code>
+        <span className="shrink-0 rounded bg-green-500/15 px-1.5 py-0.5 text-[10px] text-green-600">
+          {t('orgIdentity.synced')}
+        </span>
       </div>
-
-      {state.locked && (
-        <p className="mt-1.5 text-[11px] text-amber-600">
-          {t('orgIdentity.locked', { count: state.issuedAddresses })}
-        </p>
-      )}
-
-      {editing && canEditHere && (
-        <div className="mt-2 space-y-2 border-t border-border-subtle pt-2">
-          <div className="flex gap-2">
-            <input
-              value={draft}
-              onChange={(e) => {
-                setDraft(e.target.value);
-                setSaved(false);
-                setError(null);
-              }}
-              placeholder={t('orgIdentity.placeholder')}
-              spellCheck={false}
-              aria-label={t('orgIdentity.inputLabel')}
-              className="min-w-0 flex-1 rounded-md border border-border-default bg-surface-primary px-2.5 py-1.5 font-mono text-xs text-fg-primary outline-none focus:border-brand-500"
-            />
-            <button
-              type="button"
-              onClick={() => void save()}
-              disabled={busy || !draft.trim() || draft.trim() === slug}
-              className="shrink-0 rounded-md bg-brand-600 px-3 py-1.5 text-xs font-medium text-on-brand transition-colors hover:bg-brand-500 disabled:opacity-50"
-            >
-              {busy ? t('orgIdentity.saving') : t('orgIdentity.save')}
-            </button>
-          </div>
-          <p className="text-[11px] text-fg-tertiary">{t('orgIdentity.rule')}</p>
-          {saved && <p className="text-[11px] text-green-600">{t('orgIdentity.saved')}</p>}
-          {error && (
-            <p className="text-[11px] text-red-500">
-              {t(`orgIdentity.err.${error.code}`, error.code)}
-              {error.hint && <span className="ml-1 font-mono text-red-500/80">{error.hint}</span>}
-            </p>
-          )}
-        </div>
-      )}
     </div>
   );
 }
@@ -306,7 +188,7 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
         </div>
       )}
 
-      {/* 表格：组织标识（特殊配色，可操作）在前，订阅事实在后。 */}
+      {/* 表格：组织标识（特殊配色）在前，订阅事实在后。 */}
       <div className="space-y-2">
         <OrgSlugRow orgId={authUser?.orgId} />
 

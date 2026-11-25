@@ -40,27 +40,7 @@
   "orgIdentity": {
     "label": "Slug de la organización",
     "unset": "Sin definir",
-    "synced": "Sincronizado",
-    "localOnly": "Solo local",
-    "edit": "Editar",
-    "locked": "{{count}} elemento(s) ya dependen de este slug, por eso está bloqueado.",
-    "inputLabel": "Slug de la organización",
-    "placeholder": "p. ej. acme",
-    "rule": "Letras minúsculas, dígitos y guiones; 2–30 caracteres; debe empezar por una letra.",
-    "save": "Guardar",
-    "saving": "Guardando…",
-    "saved": "Guardado",
-    "err": {
-      "INVALID_SLUG": "Ese slug no es utilizable",
-      "CONFLICT": "Otra organización ya usa ese slug",
-      "IMMUTABLE": "El slug está bloqueado",
-      "NOT_ORG_OWNER": "Sin permiso",
-      "ORG_REPO_UNAVAILABLE": "Servicio no disponible — reinicia e inténtalo de nuevo",
-      "SLUG_REQUIRED": "Introduce un slug",
-      "ORG_NOT_FOUND": "Organización no encontrada",
-      "NETWORK": "Error de red",
-      "ERROR": "Error al guardar"
-    }
+    "synced": "Sincronizado"
   },
   "appearance": {
     "title": "General",
