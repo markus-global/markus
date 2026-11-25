@@ -2302,11 +2302,10 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {/* ───── Network / Proxy ───── */}
         <Section title={t('networkProxy.title')}>
-          <div className={`${CARD} p-5 space-y-4`}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
 
             {/* ① Row: description + toggle */}
-            <div className="flex items-start justify-between gap-4">
-              <p className="text-[13px] text-fg-secondary leading-relaxed">{t('networkProxy.description')}</p>
+            <SettingRow label={t('networkProxy.enabledLabel')} hint={t('networkProxy.description')}>
               <button
                 onClick={async () => {
                   const newVal = !proxyEnabled;
@@ -2319,15 +2318,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     loadNetworkSettings();
                   } catch { setProxyEnabled(!newVal); }
                 }}
-                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors mt-0.5 ${proxyEnabled ? 'bg-green-500' : 'bg-fg-muted/30'}`}
+                className={`relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors ${proxyEnabled ? 'bg-green-500' : 'bg-fg-muted/30'}`}
               >
                 <span className={`inline-block h-4 w-4 rounded-full bg-white shadow-sm transition-transform ${proxyEnabled ? 'translate-x-[22px]' : 'translate-x-1'}`} />
               </button>
-            </div>
+            </SettingRow>
 
             {/* ② Current status — compact single line */}
             {proxyEffective && (
-              <div className={`flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''} ${
+              <div className={`mx-5 my-3 flex items-center gap-2.5 rounded-lg px-3.5 py-2.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''} ${
                 proxyEffective.proxy ? 'bg-emerald-500/5 border border-emerald-500/12' : 'bg-surface-secondary/60 border border-border-default/50'
               }`}>
                 <span className={`w-2 h-2 rounded-full shrink-0 ${
@@ -2365,13 +2364,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             )}
 
             {/* ③ Primary action: Proxy URL input + Save — PROMINENT */}
-            <div className={`flex gap-2.5 items-center transition-opacity ${!proxyEnabled ? 'opacity-40 pointer-events-none' : ''}`}>
+            <SettingRow label={t('networkProxy.addressLabel')}>
+              <div className={`flex items-center gap-2.5 transition-opacity ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
               <input
                 type="text"
                 value={proxyUrl}
                 onChange={e => setProxyUrl(e.target.value)}
                 placeholder={t('networkProxy.placeholder')}
-                className="flex-1 min-w-0 px-3.5 py-2.5 text-sm bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
+                className="w-[300px] px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
               />
               <button
                 onClick={async () => {
@@ -2392,14 +2392,16 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   finally { setProxySaving(false); }
                 }}
                 disabled={proxySaving}
-                className={`${BTN_PRIMARY} shrink-0`}
+                className={`${BTN_PRIMARY} min-w-[88px] shrink-0`}
               >
                 {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
               </button>
-            </div>
+              </div>
+            </SettingRow>
             {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
 
             {/* ④ Bypass list — COLLAPSIBLE (default closed to reduce noise) */}
+            <div className="px-5 py-3.5">
             <ProxyBypassSection
               noProxyList={noProxyList}
               setNoProxyList={setNoProxyList}
@@ -2427,13 +2429,14 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               loadNetworkSettings={loadNetworkSettings}
               t={t}
             />
+            </div>
 
             {/* Coverage note — subordinate to the proxy block, not a peer of it.
                 It used to carry its own border and background, so it read as a
                 third section wedged between 「网络代理」and 「远程访问」: the page
                 went heading → content → heading → content → *untitled box* →
                 heading. A rule above it says "still part of the above". */}
-            <div className="space-y-1 border-t border-border-default/30 pt-3">
+            <div className="space-y-1 px-5 py-3.5">
               <p className="text-[11px] font-medium text-fg-secondary/80">{t('networkProxy.coverageTitle')}</p>
               <p className="text-[11px] text-fg-muted/70 leading-relaxed">{t('networkProxy.coverageCovered')}</p>
               <p className="text-[11px] text-amber-500/60 leading-relaxed">{t('networkProxy.coverageNotCovered')}</p>
