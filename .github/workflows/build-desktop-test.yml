@@ -19,6 +19,11 @@ on:
     paths:
       - '.github/workflows/build-desktop-test.yml'
 
+env:
+  # web-ui 的 `vite build` 在 macos-latest（~7 GB）上用默认 old-space 会
+  # OOM 退出（exit 134）。给够堆，两个平台都受益且无害。
+  NODE_OPTIONS: --max-old-space-size=6144
+
 concurrency:
   group: build-desktop-test-${{ github.ref }}
   cancel-in-progress: true
