@@ -11,6 +11,10 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import {
+  CARD, TYPE, FG, FIELD_INPUT, BTN_PRIMARY, BTN_SECONDARY,
+  Badge, SettingRow, Section, CollapsibleSection,
+} from '../lib/settings-primitives.tsx';
 import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
@@ -1419,19 +1423,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     <span className={`w-2 h-2 shrink-0 rounded-full ${info.configured && info.enabled ? 'bg-green-400' : info.configured ? 'bg-amber-400' : 'bg-gray-600'}`} />
                     <div className="min-w-0">
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-sm font-medium">{info.displayName ?? name}</span>
-                        {name === llm.defaultProvider && <span className="text-[10px] bg-brand-500/15 text-brand-500 px-1.5 py-0.5 rounded">{t('modelProviders.badgeDefault')}</span>}
-                        {info.configured && !info.enabled && <span className="text-[10px] bg-amber-500/15 text-amber-600 px-1.5 py-0.5 rounded">{t('modelProviders.disabled')}</span>}
-                        {info.oauthConnected && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.badgeOAuth')}</span>}
-                        {testResults[name]?.ok === true && <span className="text-[10px] bg-green-500/15 text-green-600 px-1.5 py-0.5 rounded">{t('modelProviders.testOk', { ms: testResults[name].durationMs })}</span>}
+                        <span className="text-[13px] font-medium">{info.displayName ?? name}</span>
+                        {name === llm.defaultProvider && <Badge tone="brand">{t('modelProviders.badgeDefault')}</Badge>}
+                        {info.configured && !info.enabled && <Badge tone="warn">{t('modelProviders.disabled')}</Badge>}
+                        {info.oauthConnected && <Badge tone="ok">{t('modelProviders.badgeOAuth')}</Badge>}
+                        {testResults[name]?.ok === true && <Badge tone="ok">{t('modelProviders.testOk', { ms: testResults[name].durationMs })}</Badge>}
                         {testResults[name]?.ok === false && (
-                          <span className="text-[10px] bg-red-500/15 text-red-500 px-1.5 py-0.5 rounded" title={testResults[name].error}>
+                          <Badge tone="danger" title={testResults[name].error}>
                             {testResults[name].errorCode
                               ? t('modelProviders.testFailedCode', { code: testResults[name].errorCode })
                               : testResults[name].code === 'PROVIDER_DISABLED'
                                 ? t('modelProviders.testDisabled')
                                 : t('modelProviders.testFailed')}
-                          </span>
+                          </Badge>
                         )}
                       </div>
                       <div className="text-xs text-fg-tertiary mt-0.5">
@@ -3868,8 +3872,10 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
  * (Rule: if you find yourself hand-writing `bg-surface-elevated rounded-xl`
  *  or a primary button, use one of these instead.) */
 
-/** Base card surface — pair with a padding utility (usually `p-5`). */
-const CARD = 'bg-surface-elevated rounded-xl border border-border-default/40';
+/* 纯样式与排版原语（CARD / TYPE / FG / FIELD_INPUT / BTN_* / Badge /
+ * SettingRow / Section / CollapsibleSection）已抽到
+ * `../lib/settings-primitives.tsx`，其余 tab 可直接 import。
+ * PageHeader 依赖本页的 tab 目录，因此留在下方。 */
 
 /* ── 排版与颜色 token ──────────────────────────────────────────────────
  * 设置界面只允许这六档字号、四种文字颜色。页面里**不写魔法值**。
@@ -3881,33 +3887,7 @@ const CARD = 'bg-surface-elevated rounded-xl border border-border-default/40';
  *
  * 层级只三级（页面 → 组 → 项）：pageTitle / groupTitle+groupDesc / label+hint。
  */
-const TYPE = {
-  pageTitle:  'text-lg font-semibold',
-  groupTitle: 'text-[13px] font-semibold',
-  groupDesc:  'text-xs leading-relaxed',
-  label:      'text-[13px] font-medium',
-  body:       'text-[13px]',
-  hint:       'text-[11px] leading-relaxed',
-  badge:      'text-[11px] font-medium',
-} as const;
-
-const FG = {
-  strong: 'text-fg-primary',
-  desc:   'text-fg-tertiary',
-  ok:     'text-emerald-600 dark:text-emerald-400',
-  warn:   'text-amber-600 dark:text-amber-400',
-  brand:  'text-brand-600 dark:text-brand-400',
-  danger: 'text-red-500',
-} as const;
-
-/** Standard text input / number input. Add width utils at the call site. */
-const FIELD_INPUT = 'px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary/50 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none transition-colors';
-
-/** Primary (commit) action. */
-const BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-[13px] font-medium bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-40 rounded-lg transition-colors';
-
-/** Secondary / neutral action. */
-const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 text-[13px] font-medium border border-border-default text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40 rounded-lg transition-colors';
+/* token / 按钮 / 输入框样式定义见 `../lib/settings-primitives.tsx` */
 
 /** Per-tab page header — the anchor every Settings panel was missing. */
 function PageHeader({ tab }: { tab: SettingsTab }) {
@@ -3925,81 +3905,6 @@ function PageHeader({ tab }: { tab: SettingsTab }) {
         {desc && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc} leading-snug`}>{desc}</p>}
       </div>
     </header>
-  );
-}
-
-/**
- * One setting: label on the left, control on the right, on a single baseline.
- *
- * This is the page's only layout primitive, and it exists because the page had none.
- * Every block used to invent its own arrangement — a paragraph here, a segmented
- * control stretched across the full width there, a save button at whichever end the
- * author happened to pick — so the eye had no vertical line to follow, the same 「保存」
- * appeared at both extremes of one column, and "what can I change here" could only be
- * answered by reading the surrounding prose.
- *
- * Three constraints it enforces by construction, derived from what a settings page is
- * (a list of values the user inspects or changes):
- *  - one row = one setting, so the set of settings is countable at a glance;
- *  - the control is always right-aligned, so every control shares one right edge;
- *  - `hint` is 11px muted and sits under the label — the fourth level of detail is
- *    never allowed to compete with the label it describes.
- */
-function SettingRow({ label, hint, children }: {
-  label?: React.ReactNode; hint?: React.ReactNode; children?: React.ReactNode;
-}) {
-  return (
-    <div className="flex items-start justify-between gap-6 px-5 py-3.5">
-      <div className="min-w-0 flex-1">
-        {label && <div className="text-[13px] font-medium text-fg-primary">{label}</div>}
-        {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-tertiary">{hint}</div>}
-      </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
-    </div>
-  );
-}
-
-function Section({ title, description, action, children }: {
-  title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
-}) {
-  return (
-    <section className="space-y-6">
-      <div className="flex items-end justify-between gap-3">
-        <div className="min-w-0">
-          <h3 className={`${TYPE.groupTitle} ${FG.strong}`}>{title}</h3>
-          {description && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc}`}>{description}</p>}
-        </div>
-        {action}
-      </div>
-      <div className="space-y-3">{children}</div>
-    </section>
-  );
-}
-
-function CollapsibleSection({ title, description, children, defaultOpen = true }: {
-  title: React.ReactNode;
-  description?: React.ReactNode;
-  children: React.ReactNode;
-  defaultOpen?: boolean;
-}) {
-  const [open, setOpen] = useState(defaultOpen);
-  return (
-    <section className="space-y-6">
-      <button
-        type="button"
-        onClick={() => setOpen(!open)}
-        className="flex items-start justify-between w-full group text-left"
-      >
-        <div className="min-w-0">
-          <h3 className={`${TYPE.groupTitle} ${FG.strong}`}>{title}</h3>
-          {description && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc}`}>{description}</p>}
-        </div>
-        <span className={`text-fg-tertiary mt-0.5 transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
-        </span>
-      </button>
-      {open && <div className="space-y-3">{children}</div>}
-    </section>
   );
 }
 
