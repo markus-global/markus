@@ -320,6 +320,7 @@
     "connect": "Connect"
   },
   "accessScope": {
+    "bindHost": "Listen address",
     "title": "Access scope",
     "description": "Controls whether the Markus API can be reached from outside this machine. To reach it from the internet use Remote access instead of opening the LAN.",
     "localOnly": "This machine only",

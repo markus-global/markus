@@ -2159,54 +2159,54 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'network' && <>
         {/* ───── Access scope (bind host) ───── */}
-        <Section title={t('accessScope.title')}>
-          <div className={`${CARD} p-5 space-y-4`}>
-            <p className="text-[13px] text-fg-secondary leading-relaxed">{t('accessScope.description')}</p>
+        <Section title={t('accessScope.title')} description={t('accessScope.description')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            {/* One setting, one row. The group description moved up into the Section
+                subtitle: it explains the group, it is not a setting, and at 13px
+                secondary it competed with the controls for the eye. The two presets
+                stopped stretching across the full width for the same reason — a
+                control does not need 684px to say 「仅本机」. */}
+            <SettingRow
+              label={t('accessScope.bindHost')}
+              hint={
+                <>
+                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${bindHostEffective === '0.0.0.0' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                  {t('accessScope.current', { host: bindHostEffective })}
+                  {' · '}
+                  <span className={bindHostEffective === '0.0.0.0' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
+                    {bindHostEffective === '0.0.0.0' ? t('accessScope.lanHint') : t('accessScope.localOnlyHint')}
+                  </span>
+                  {bindHostFromEnv && <span className="text-amber-500"> · ⚠ {t('accessScope.envControlled')}</span>}
+                </>
+              }
+            >
+              <div className="inline-flex gap-1 rounded-lg bg-surface-secondary/80 p-1">
+                <button
+                  disabled={bindHostFromEnv}
+                  onClick={() => setBindHostValue('127.0.0.1')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    bindHostValue === '127.0.0.1' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.localOnly')}</button>
+                <button
+                  disabled={bindHostFromEnv}
+                  onClick={() => setBindHostValue('0.0.0.0')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    bindHostValue === '0.0.0.0' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.lan')}</button>
+              </div>
+            </SettingRow>
 
-            {/* Segmented control: two presets only */}
-            <div className="flex rounded-lg bg-surface-secondary/80 p-1 gap-1">
-              <button
-                disabled={bindHostFromEnv}
-                onClick={() => setBindHostValue('127.0.0.1')}
-                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
-                  bindHostValue === '127.0.0.1' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-on-brand shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
-                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >{t('accessScope.localOnly')}</button>
-              <button
-                disabled={bindHostFromEnv}
-                onClick={() => setBindHostValue('0.0.0.0')}
-                className={`flex-1 px-4 py-2 text-sm font-medium rounded-md transition-all text-center ${
-                  bindHostValue === '0.0.0.0' && !bindHostFromEnv
-                    ? 'bg-brand-600 text-on-brand shadow-sm'
-                    : 'text-fg-secondary hover:text-fg-primary hover:bg-surface-elevated'
-                } ${bindHostFromEnv ? 'opacity-40 cursor-not-allowed' : ''}`}
-              >{t('accessScope.lan')}</button>
-            </div>
-
-            {/* Status + hint in one clean line */}
-            <div className="flex items-center gap-2 text-[13px] text-fg-secondary">
-              <span className={`w-2 h-2 rounded-full shrink-0 ${bindHostEffective === '0.0.0.0' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
-              <span>{t('accessScope.current', { host: bindHostEffective })}</span>
-              <span className={bindHostEffective === '0.0.0.0' ? 'text-emerald-600 dark:text-emerald-400' : 'text-fg-muted'}>
-                {bindHostEffective === '0.0.0.0' ? t('accessScope.lanHint') : t('accessScope.localOnlyHint')}
-              </span>
-            </div>
-
-            {bindHostFromEnv && (
-              <p className="text-[13px] text-amber-500 flex items-center gap-1.5">
-                ⚠ {t('accessScope.envControlled')}
-              </p>
-            )}
-
-            {/* Single morphing button: 保存 → 立即生效 → 保存。
-                Right-aligned, like every other action on this page — it used to sit
-                flush left under the segmented control while the proxy block below it
-                saved on the right, so two "保存" buttons appeared at opposite ends of
-                the same column. `order-first` keeps the notice beside the button
-                without moving it in the DOM. */}
-            <div className="flex items-center justify-end gap-3 pt-0.5">
+            {/* The group's single action, in a row of its own, so every block on this
+                page saves from the same place at the same right edge. */}
+            <SettingRow hint={bindHostNotice
+              ? <span className={bindHostNotice.warn ? 'text-amber-500' : undefined}>{bindHostNotice.text}</span>
+              : undefined}>
               <button
                 disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
                 onClick={async () => {
@@ -2296,12 +2296,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   t('accessScope.save')
                 )}
               </button>
-              {bindHostNotice && (
-                <span className={`order-first text-[13px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-fg-muted'}`}>
-                  {bindHostNotice.text}
-                </span>
-              )}
-            </div>
+            </SettingRow>
           </div>
         </Section>
 
@@ -3914,6 +3909,37 @@ function Field({ label, description, children }: {
         {description && <div className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</div>}
       </div>
       <div className="shrink-0">{children}</div>
+    </div>
+  );
+}
+
+/**
+ * One setting: label on the left, control on the right, on a single baseline.
+ *
+ * This is the page's only layout primitive, and it exists because the page had none.
+ * Every block used to invent its own arrangement — a paragraph here, a segmented
+ * control stretched across the full width there, a save button at whichever end the
+ * author happened to pick — so the eye had no vertical line to follow, the same 「保存」
+ * appeared at both extremes of one column, and "what can I change here" could only be
+ * answered by reading the surrounding prose.
+ *
+ * Three constraints it enforces by construction, derived from what a settings page is
+ * (a list of values the user inspects or changes):
+ *  - one row = one setting, so the set of settings is countable at a glance;
+ *  - the control is always right-aligned, so every control shares one right edge;
+ *  - `hint` is 11px muted and sits under the label — the fourth level of detail is
+ *    never allowed to compete with the label it describes.
+ */
+function SettingRow({ label, hint, children }: {
+  label?: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode;
+}) {
+  return (
+    <div className="flex items-start justify-between gap-6 px-5 py-3.5">
+      <div className="min-w-0 flex-1">
+        {label && <div className="text-[13px] font-medium text-fg-primary">{label}</div>}
+        {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">{hint}</div>}
+      </div>
+      <div className="flex shrink-0 items-center gap-2">{children}</div>
     </div>
   );
 }

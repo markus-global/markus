@@ -320,6 +320,7 @@
     "connect": "Conectar"
   },
   "accessScope": {
+    "bindHost": "Dirección de escucha",
     "title": "Alcance de acceso",
     "description": "Controla si la API de Markus puede alcanzarse desde fuera de este equipo. Para acceder desde internet usa Acceso remoto en lugar de abrir la red local.",
     "localOnly": "Solo este equipo",
