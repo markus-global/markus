@@ -1270,7 +1270,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           ) : <div className="text-sm text-fg-tertiary">{t('common:loading')}</div>}
         </Section>
 
-        <Section title={t('appearance.title')}>
+        <div className="space-y-3.5">
           <div className={`${CARD} p-5 divide-y divide-border-default/40`}>
             <Field label={t('appearance.theme')} description={t('appearance.themeDesc')}>
               <div className="flex flex-wrap gap-1 bg-surface-secondary/60 rounded-lg p-0.5">
@@ -1322,7 +1322,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             )}
           </div>
-        </Section>
+        </div>
         </>}
 
         {canManageOrgSettings && (
@@ -2447,58 +2447,49 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         <Section title={t('agentExecution.title')}>
           <div className={`${CARD} p-5 space-y-4`}>
             <Field label={t('agentExecution.maxToolIterations')} description={t('agentExecution.maxToolIterationsDesc')}>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={0}
-                  value={agentMaxIter}
-                  onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
-                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
-                />
-                <button
-                  disabled={agentSaving}
-                  onClick={async () => {
-                    setAgentSaving(true); setAgentMsg(null);
-                    try {
-                      const d = await api.settings.updateAgent({ maxToolIterations: agentMaxIter });
-                      setAgentMaxIter(d.maxToolIterations);
-                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
-                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                    setAgentSaving(false);
-                  }}
-                  className={BTN_PRIMARY}
-                >
-                  {agentSaving ? t('common:saving') : t('common:save')}
-                </button>
-              </div>
+              <input
+                type="number"
+                min={0}
+                value={agentMaxIter}
+                onChange={e => { setAgentMaxIter(Number(e.target.value)); setAgentMsg(null); }}
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
             </Field>
             <div className="border-t border-border-default/40" />
             <Field label={t('agentExecution.maxPendingTasksPerAgent')} description={t('agentExecution.maxPendingTasksPerAgentDesc')}>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  min={1}
-                  value={agentMaxPending}
-                  onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
-                  className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
-                />
-                <button
-                  disabled={agentSaving}
-                  onClick={async () => {
-                    setAgentSaving(true); setAgentMsg(null);
-                    try {
-                      const d = await api.settings.updateAgent({ maxPendingTasksPerAgent: agentMaxPending });
-                      setAgentMaxPending(d.maxPendingTasksPerAgent);
-                      setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
-                    } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
-                    setAgentSaving(false);
-                  }}
-                  className={BTN_PRIMARY}
-                >
-                  {agentSaving ? t('common:saving') : t('common:save')}
-                </button>
-              </div>
+              <input
+                type="number"
+                min={1}
+                value={agentMaxPending}
+                onChange={e => { setAgentMaxPending(Number(e.target.value)); setAgentMsg(null); }}
+                className={`${FIELD_INPUT} w-24 text-right tabular-nums`}
+              />
             </Field>
+            {/* One save for the whole group. The backend applies each field
+                independently (`if (typeof body.x === 'number')`), so a single call
+                persists both. Per-input buttons invited a real failure: save one,
+                navigate away, and the other silently stayed at its old value. */}
+            <div className="flex items-center justify-end">
+              <button
+                disabled={agentSaving}
+                onClick={async () => {
+                  setAgentSaving(true); setAgentMsg(null);
+                  try {
+                    const d = await api.settings.updateAgent({
+                      maxToolIterations: agentMaxIter,
+                      maxPendingTasksPerAgent: agentMaxPending,
+                    });
+                    setAgentMaxIter(d.maxToolIterations);
+                    setAgentMaxPending(d.maxPendingTasksPerAgent);
+                    setAgentMsg({ type: 'ok', text: t('agentExecution.saved') });
+                  } catch { setAgentMsg({ type: 'err', text: t('agentExecution.failedToSave') }); }
+                  setAgentSaving(false);
+                }}
+                className={BTN_PRIMARY}
+              >
+                {agentSaving ? t('common:saving') : t('common:save')}
+              </button>
+            </div>
             {agentMsg && <Msg type={agentMsg.type} text={agentMsg.text} />}
           </div>
         </Section>
@@ -2565,7 +2556,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </>}
 
         {resolvedTab === 'browser' && <>
-        <Section title={t('browserAutomation.title')}>
+        <div className="space-y-3.5">
           {/* ── Backend selector: built-in browser vs system Chrome ── */}
           <div className={`${CARD} p-5 mb-4`}>
             <div className="text-xs font-medium text-fg-secondary uppercase tracking-wider">{t('browserAutomation.backendTitle')}</div>
@@ -2960,7 +2951,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           )}
 
           {browserMsg && <div className="mt-4"><Msg type={browserMsg.type} text={browserMsg.text} /></div>}
-        </Section>
+        </div>
 
         {/* DEV-only: Browser Integration Test Suite */}
         {import.meta.env.DEV && <BrowserTestPanel extensionConnected={browserExtensionConnected} />}
@@ -2969,7 +2960,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         {resolvedTab === 'search' && <WebSearchSettings />}
 
         {resolvedTab === 'storage' && <>
-        <Section title={t('dataStorage.title')}>
+        <div className="space-y-3.5">
           <div className={`${CARD} p-5 space-y-5`}>
             {storageLoading && !storageInfo && (
               <div className="space-y-5" data-testid="data-storage-skeleton" role="status" aria-busy="true">
@@ -3132,7 +3123,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               );
             })()}
           </div>
-        </Section>
+        </div>
 
         </>}
 
@@ -3290,12 +3281,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
   };
 
   return (
-    <Section title={t('settings:userManagement.title')}>
-      <div className="mb-3">
-        <p className="text-xs text-fg-tertiary leading-relaxed">{t('settings:userManagement.sharedInstanceDesc')}</p>
-        <p className="text-xs text-fg-tertiary mt-1">{t('settings:userManagement.orgHint')}</p>
-      </div>
-
+    <div className="space-y-3">
       {!showAddUser ? (
         <button onClick={() => setShowAddUser(true)}
           className="mb-3 px-4 py-2 bg-brand-600 hover:bg-brand-500 text-on-brand text-xs font-medium rounded-lg transition-colors">
@@ -3461,7 +3447,7 @@ function UserManagementSection({ authUser }: { authUser?: AuthUser }) {
         </table>
         </div>
       </div>
-    </Section>
+    </div>
   );
 }
 
@@ -4091,23 +4077,19 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
 
 function AccountSection({ authUser }: { authUser?: AuthUser }) {
   const { t } = useTranslation('settings');
+  // `Section` renders an h3 at 13px. These two blocks used to be h2 at text-lg,
+  // which is the same size as the page h1 — so "账户" and "本地账户" looked like
+  // peers and the page read as three unrelated top-level screens. Grouping titles
+  // now match every other settings tab instead of each inventing its own size.
   return (
-    <div className="space-y-8">
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold text-fg-primary">{t('account.localTitle')}</h2>
-          <p className="mt-1 text-sm text-fg-secondary">{t('account.localDesc')}</p>
-        </div>
+    <div className="space-y-6">
+      <Section title={t('account.localTitle')} description={t('account.localDesc')}>
         <UserManagementSection authUser={authUser} />
-      </section>
+      </Section>
 
-      <section className="space-y-3">
-        <div>
-          <h2 className="text-lg font-semibold text-fg-primary">{t('account.subscriptionTitle')}</h2>
-          <p className="mt-1 text-sm text-fg-secondary">{t('account.subscriptionDesc')}</p>
-        </div>
+      <Section title={t('account.subscriptionTitle')} description={t('account.subscriptionDesc')}>
         <OrgSummarySection authUser={authUser} />
-      </section>
+      </Section>
     </div>
   );
 }
