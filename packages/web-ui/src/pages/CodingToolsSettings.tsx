@@ -4,14 +4,6 @@ import { api, type CodingToolDetection, type CodingToolName, type CodingToolMode
 
 const TOOL_ORDER: CodingToolName[] = ['claude-code', 'codex', 'cursor-agent'];
 
-/** Fallback labels — static, so they live at module scope instead of being rebuilt per
- *  row inside the render callback. */
-const TOOL_DISPLAY_NAMES: Record<CodingToolName, string> = {
-  'claude-code': 'Claude Code',
-  'codex': 'Codex',
-  'cursor-agent': 'Cursor Agent',
-};
-
 const DEFAULT_TIMEOUT_MIN = 10;
 
 interface ToolFormState {
@@ -717,28 +709,14 @@ export function CodingToolsSettings() {
         </div>
 
         {loading ? (
-          // Same shape as the real rows: which tools exist is static, only their state
-          // is pending. Collapsing to a single "loading" line would later grow three
-          // rows' worth of height and shove everything below it down. A full map is not
-          // possible here — `toolForms[name]` does not exist until the data lands.
-          TOOL_ORDER.map(name => (
-            <div key={name} className="bg-surface-elevated rounded-xl overflow-hidden">
-              <div className="w-full flex items-center gap-3 px-4 py-3">
-                <ChevronIcon expanded={false} />
-                <div className="flex items-center gap-2 min-w-0 flex-1">
-                  <span className="text-sm font-medium text-fg-primary">{TOOL_DISPLAY_NAMES[name]}</span>
-                  <span className="inline-block h-4 w-16 animate-pulse rounded-full bg-surface-secondary" aria-hidden="true" />
-                </div>
-                <span className="inline-block h-5 w-9 shrink-0 animate-pulse rounded-full bg-surface-secondary" aria-hidden="true" />
-              </div>
-            </div>
-          ))
+          <div className="text-sm text-fg-tertiary py-8 text-center">{t('common:loading')}</div>
         ) : (
           TOOL_ORDER.map(name => {
             const info = getDetection(name);
             const form = toolForms[name];
             const toolDetecting = isDetectingTool(name);
-            const displayName = info?.displayName ?? TOOL_DISPLAY_NAMES[name] ?? name;
+            const DISPLAY_NAMES: Record<CodingToolName, string> = { 'claude-code': 'Claude Code', 'codex': 'Codex', 'cursor-agent': 'Cursor Agent' };
+            const displayName = info?.displayName ?? DISPLAY_NAMES[name] ?? name;
             const isExpanded = expanded.has(name);
             const needsSetup = info && !info.available;
             const needsAuth = info?.available && !info?.authenticated;
