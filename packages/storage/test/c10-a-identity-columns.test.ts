@@ -6,8 +6,8 @@
  * The "legacy DB" fixture strips the C10-A objects off a fresh DB (DROP COLUMN
  * in a test fixture only — production migrations never drop), so unrelated
  * schema cannot drift from hand-copied DDL. Expected slug values are asserted
- * as literals (`org_<id>` is the frozen rule), never computed with the
- * implementation's own helper.
+ * as literals (`local-<sha256[0:8]>` is the frozen placeholder rule, C10-D),
+ * never computed with the implementation's own helper.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -135,7 +135,7 @@ describe('C10-A schema: fresh-init vs upgraded legacy DB are identical', () => {
 });
 
 describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', () => {
-  it('two same-name historical orgs get distinct org_<id> slugs on upgrade', () => {
+  it('two same-name historical orgs get distinct local-<hash> slugs on upgrade', () => {
     const dbPath = join(tempDir, 'hist.db');
     const seed = openSqlite(dbPath);
     seed
@@ -154,8 +154,8 @@ describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', 
       .prepare('SELECT id, name, org_slug FROM organizations ORDER BY id')
       .all() as Array<{ id: string; name: string; org_slug: string | null }>;
     expect(rows.map((r) => r.org_slug)).toEqual([
-      'org_default',
-      'org_user_4941a0558946c8e1f58962cc',
+      'local-37a8eec1',
+      'local-7b6c1393',
     ]);
     // Same display name, different slugs — the name is provably not the source.
     expect(rows[0]!.name).toBe(rows[1]!.name);
@@ -181,11 +181,11 @@ describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', 
     expect(new SqliteOrgRepo(db).findOrgById('default')?.orgSlug).toBe('acme');
   });
 
-  it('createOrg assigns org_<id> regardless of display name', () => {
+  it('createOrg assigns a local-<hash> placeholder regardless of display name', () => {
     const db = openSqlite(join(tempDir, 'create.db'));
     const orgs = new SqliteOrgRepo(db);
     const org = orgs.createOrg({ id: 'newco', name: 'Acme Corp', ownerId: 'u1' });
-    expect(org.orgSlug).toBe('org_newco');
+    expect(org.orgSlug).toBe('local-a68c1385');
     expect(org.orgSlug).not.toBe('acme-corp');
     expect(org.orgSlug).not.toBe('acmecorp');
   });
