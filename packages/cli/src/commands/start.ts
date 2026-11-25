@@ -2330,6 +2330,38 @@ async function startServerCore(
     });
   }
 
+  // C10-D：组织身份 / 余额查询工具（org_info / org_list / org_usage）。
+  // info+list 读本地投影（唯一写者 = SqliteOrgRepo）；余额走 apiServer.getOrgUsage，
+  // 它只搬运 hub 的单一实现，不在本地重算「月配额+购买+赠送-已用」。
+  // 未接线 ⇒ 工具不注册（与地址工具同一惰性纪律）。
+  if (storage?.orgRepo) {
+    const orgRepo = storage.orgRepo;
+    const toView = (o: {
+      id: string;
+      name: string;
+      orgSlug?: string | null;
+      hubOrgId?: string | null;
+      plan?: string;
+      hubSyncedAt?: string | null;
+    }) => ({
+      id: o.id,
+      name: o.name,
+      orgSlug: o.orgSlug ?? null,
+      hubOrgId: o.hubOrgId ?? null,
+      plan: o.plan ?? 'free',
+      hubSyncedAt: o.hubSyncedAt ?? null,
+      addressCount: orgRepo.countBoundAddresses(o.id) as number,
+    });
+    agentManager.setOrgQueryPort({
+      info: ({ orgId }) => {
+        const org = orgRepo.findOrgById(orgId);
+        return org ? toView(org) : null;
+      },
+      list: () => (orgRepo.listOrgs() as Parameters<typeof toView>[0][]).map(toView),
+      usage: ({ orgId }) => apiServer.getOrgUsage(orgId),
+    });
+  }
+
   // C10-B：外部信号源（webhook/RSS）—— 地址簿 lookup + 自助工具 + 唯一 ingest 服务 + RSS 轮询。
   // 未接线（缺 repo）⇒ 工具不注册、路由 503（同 address-tools 惰性纪律，不注册空能力）。
   if (storage?.addressBindingRepo && storage?.externalSourceRepo) {

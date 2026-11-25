@@ -1860,6 +1860,197 @@ export class APIServer {
     }
   }
 
+  /**
+   * C10-D：把本机组织对齐到它在 markus.global 的身份（幂等）。
+   *
+   * 为何要做：org_slug 是地址段 `<local>.<org>@markus.global` 的中间那段。没对齐时
+   * 本机拿的是本地占位 slug，hub 上拿的是 hub slug——同一个组织在两个世界里有两个
+   * 地址，用户复制哪个都可能解析不了。所以登录后以 hub 为准做一次镜像。
+   *
+   * 纪律：
+   * - 不替代主键：只写 organizations.hub_org_id，本地 id 与所有子表引用不动。
+   * - 幂等锚点：先认已绑 hub_org_id 的组织，再认从未绑过的，绝不新建组织。
+   * - 失败不阻断登录：本地可用是底线，对齐下次登录再补（写入本身就是幂等的）。
+   */
+  private async syncHubOrgIdentity(hubToken: string): Promise<void> {
+    const orgRepo = this.storage?.orgRepo;
+    if (!orgRepo?.bindHubOrg) return;
+
+    const res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+      headers: { Authorization: `Bearer ${hubToken}` },
+      signal: AbortSignal.timeout(5_000),
+    });
+    if (!res.ok) {
+      log.warn('hub org identity: /api/orgs/mine rejected', { status: res.status });
+      return;
+    }
+
+    const data = (await res.json()) as { orgs?: Array<{ id: string; slug?: string | null; role?: string }> };
+    const orgs = data.orgs ?? [];
+    // 拥有者优先：编辑/成员身份不该把别人的 slug 写到本机组织上。
+    const target = orgs.find((o) => o.role === 'owner') ?? orgs[0];
+    if (!target) return;
+
+    const local = orgRepo.listOrgs() as Array<{ id: string; orgSlug: string | null; hubOrgId: string | null }>;
+    const bound =
+      local.find((o) => o.hubOrgId === target.id) ?? local.find((o) => !o.hubOrgId) ?? local[0];
+    if (!bound) return;
+
+    const r = orgRepo.bindHubOrg(bound.id, target.id, target.slug ?? null) as {
+      ok: boolean;
+      orgSlug?: string | null;
+      slugSkipped?: string;
+    };
+    if (!r.ok) {
+      log.warn('hub org identity: local org missing', { orgId: bound.id });
+    } else if (r.slugSkipped) {
+      // 不静默：slug 没同步是一个用户可见的事实（他会在 hub 看到 A、本机看到 B）。
+      log.warn('hub org identity: slug not synced', {
+        orgId: bound.id,
+        reason: r.slugSkipped,
+        hubSlug: target.slug ?? null,
+        localSlug: bound.orgSlug,
+      });
+    } else if (r.orgSlug !== bound.orgSlug) {
+      log.info('hub org identity: slug synced', {
+        orgId: bound.id,
+        from: bound.orgSlug,
+        to: r.orgSlug,
+        hubOrgId: target.id,
+      });
+    }
+  }
+
+  /**
+   * C10-D：组织余额的唯一读取口（`org_usage` 工具 / 未来的 UI 都走这里）。
+   *
+   * 三条纪律：
+   * 1. **不本地重算**：`remainingCu` 的单一实现是 hub 的 `helpers/org-usage`；
+   *    这里只搬运，绝不写第二份「月配额+购买+赠送-已用」。
+   * 2. **0 与「不知道」必须可区分**：失败返回有名字的原因 + 下一步，绝不返回 0。
+   * 3. **组织优先按 hub_org_id 对齐**：同一个用户可能在 hub 有多个组织，只有
+   *    `hub_org_id` 才说明「本机这个组织」对应哪一个。
+   */
+  async getOrgUsage(orgId: string): Promise<
+    | {
+        ok: true;
+        usage: {
+          orgSlug: string | null;
+          plan: string;
+          remainingCu: number;
+          monthlyQuotaCu: number;
+          purchasedCu: number;
+          bonusCu: number;
+          cuUsed: number;
+          syncedAt: string;
+        };
+      }
+    | {
+        ok: false;
+        reason: 'not_connected' | 'hub_unreachable' | 'hub_rejected' | 'org_not_found';
+        hint: string;
+      }
+  > {
+    const org = this.storage?.orgRepo?.findOrgById(orgId) as
+      | { id: string; ownerId?: string; plan?: string; orgSlug?: string | null; hubOrgId?: string | null }
+      | undefined;
+    if (!org) {
+      return {
+        ok: false,
+        reason: 'org_not_found',
+        hint: `No local organisation "${orgId}". Call org_list to see the orgs on this instance.`,
+      };
+    }
+
+    // Token：优先该组织 owner 的 per-user hub token（需求 9），回落全局文件。
+    const ownerId = org.ownerId;
+    const perUser = ownerId ? (this.storage?.userRepo?.getHubToken(ownerId) as string | null) : null;
+    const token = perUser ?? this.readGlobalHubTokenForUsage();
+    if (!token) {
+      return {
+        ok: false,
+        reason: 'not_connected',
+        hint:
+          'This instance has no Hub session, so the credit balance is unknown (not zero). ' +
+          'Sign in with a Markus Hub account (hub-login) to read it.',
+      };
+    }
+
+    let res: Response;
+    try {
+      res = await this.hubFetch(`${this.hubUrl}/api/orgs/mine`, {
+        headers: { Authorization: `Bearer ${token}` },
+        signal: AbortSignal.timeout(5_000),
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        reason: 'hub_unreachable',
+        hint: `Could not reach ${this.hubUrl} (${(err as Error).message}). Local work continues; retry when the network is back.`,
+      };
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint: `The Hub refused the org query (HTTP ${res.status}). Re-run hub-login to refresh the session.`,
+      };
+    }
+
+    const data = (await res.json()) as {
+      orgs?: Array<{
+        id: string;
+        slug?: string | null;
+        role?: string;
+        plan?: string;
+        usage?: {
+          monthlyQuotaCu?: number;
+          purchasedCu?: number;
+          bonusCu?: number;
+          usedCu?: number;
+          remainingCu?: number;
+        };
+      }>;
+    };
+    const mine = data.orgs ?? [];
+    const match =
+      mine.find((o) => o.id === org.hubOrgId) ?? mine.find((o) => o.role === 'owner') ?? mine[0];
+    if (!match?.usage) {
+      return {
+        ok: false,
+        reason: 'hub_rejected',
+        hint:
+          `The Hub returned no usage block for "${orgId}". This hub is older than the identity contract — ` +
+          'upgrade markus-hub (GET /api/orgs/mine must carry usage) or read /api/orgs/:id/allocations instead.',
+      };
+    }
+
+    const u = match.usage;
+    return {
+      ok: true,
+      usage: {
+        orgSlug: match.slug ?? org.orgSlug ?? null,
+        plan: match.plan ?? org.plan ?? 'free',
+        remainingCu: Number(u.remainingCu ?? 0),
+        monthlyQuotaCu: Number(u.monthlyQuotaCu ?? 0),
+        purchasedCu: Number(u.purchasedCu ?? 0),
+        bonusCu: Number(u.bonusCu ?? 0),
+        cuUsed: Number(u.usedCu ?? 0),
+        syncedAt: new Date().toISOString(),
+      },
+    };
+  }
+
+  /** 全局 hub token（`~/.markus/hub-token`）—— 与 applyPreferredOrgNameToHub 同一来源。 */
+  private readGlobalHubTokenForUsage(): string | undefined {
+    try {
+      const tokenPath = join(homedir(), '.markus', 'hub-token');
+      return existsSync(tokenPath) ? readFileSync(tokenPath, 'utf-8').trim() : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
   setBillingService(service: BillingService): void {
     this.billingService = service;
   }
@@ -3928,6 +4119,14 @@ export class APIServer {
         await this.applyPreferredOrgNameToHub(hubToken);
       } catch (err) {
         log.warn('Failed to sync preferred org name to Hub', { error: (err as Error).message });
+      }
+
+      // C10-D：对齐 hub 身份。放在改名之后：改名会动 hub org，slug 不会，但两者
+      // 读的都是 /api/orgs/mine，保持同一个会话内的先后顺序才不会对到半个状态。
+      try {
+        await this.syncHubOrgIdentity(hubToken);
+      } catch (err) {
+        log.warn('Failed to sync hub org identity', { error: (err as Error).message });
       }
 
       // Await OpenRouter + recommended routing before returning so the client
