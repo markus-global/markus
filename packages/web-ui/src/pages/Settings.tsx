@@ -2171,160 +2171,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'network' && <>
         {/* ───── Access scope (bind host) ───── */}
-        <Section title={t('accessScope.title')} description={t('accessScope.description')}>
-          <div className={`${CARD} divide-y divide-border-default/40`}>
-            {/* One setting, one row. The group description moved up into the Section
-                subtitle: it explains the group, it is not a setting, and at 13px
-                secondary it competed with the controls for the eye. The two presets
-                stopped stretching across the full width for the same reason — a
-                control does not need 684px to say 「仅本机」. */}
-            <SettingRow
-              label={t('accessScope.bindHost')}
-              hint={
-                <>
-                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${accessMode !== 'local' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
-                  {t('accessScope.current', { host: bindHostEffective })}
-                  {' · '}
-                  <span className={accessMode === 'lan' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
-                    {accessMode === 'local' ? t('accessScope.localOnlyHint')
-                      : accessMode === 'lan' ? t('accessScope.lanHint')
-                      : t('accessScope.remoteHint')}
-                  </span>
-                  {bindHostFromEnv && <span className="text-amber-500"> · ⚠ {t('accessScope.envControlled')}</span>}
-                </>
-              }
-            >
-              <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
-                <button
-                  disabled={bindHostFromEnv}
-                  onClick={() => { setAccessMode('local'); setBindHostValue('127.0.0.1'); }}
-                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
-                    accessMode === 'local' && !bindHostFromEnv
-                      ? 'bg-brand-600 text-on-brand shadow-sm'
-                      : 'text-fg-secondary hover:text-fg-primary'
-                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
-                >{t('accessScope.localOnly')}</button>
-                <button
-                  disabled={bindHostFromEnv}
-                  onClick={() => { setAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
-                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
-                    accessMode === 'lan' && !bindHostFromEnv
-                      ? 'bg-brand-600 text-on-brand shadow-sm'
-                      : 'text-fg-secondary hover:text-fg-primary'
-                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
-                >{t('accessScope.lan')}</button>
-                {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
-                    所以它的按钮不跟 local/lan 一起置灰。 */}
-                <button
-                  onClick={() => setAccessMode('remote')}
-                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
-                    accessMode === 'remote'
-                      ? 'bg-brand-600 text-on-brand shadow-sm'
-                      : 'text-fg-secondary hover:text-fg-primary'
-                  }`}
-                >{t('accessScope.remote')}</button>
-              </div>
-            </SettingRow>
 
-            {/* 监听地址只在 local/lan 下有东西可存；远程访问不改监听地址
-                （隧道连的就是本机 127.0.0.1）。 */}
-            {accessMode !== 'remote' && (
-            <SettingRow hint={bindHostNotice
-              ? <span className={bindHostNotice.warn ? 'text-amber-500' : undefined}>{bindHostNotice.text}</span>
-              : undefined}>
-              <button
-                disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
-                onClick={async () => {
-                  /* ── Phase A: user sees "立即生效" → fire-and-forget + poll for recovery ── */
-                  if (bindHostPendingRestart) {
-                    // Optimistic UI: show applying immediately, don't wait for response
-                    // (backend returns 202 then rebinds, which drops our connection)
-                    setBindHostApplying(true);
-                    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
-                    try {
-                      const res = await fetch('/api/settings/network/apply', {
-                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
-                      });
-                      // If we get here, server managed to respond — could be 200 or 202
-                      if (res.status === 202 || res.ok) {
-                        setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
-                      } else {
-                        throw new Error(`HTTP ${res.status}`);
-                      }
-                    } catch {
-                      // Expected: connection dropped during server rebind
-                      setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
-                    }
-                    // Poll for the server to come back after the rebind. It now
-                    // resolves in well under a second (see applyBindHost), so poll
-                    // briskly and give up quickly instead of waiting 30s.
-                    let retries = 0;
-                    const poll = setInterval(async () => {
-                      retries++;
-                      try {
-                        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
-                        if (r.ok) {
-                          clearInterval(poll);
-                          setBindHostApplying(false);
-                          setBindHostPendingRestart(false);
-                          setBindHostNotice({ text: t('accessScope.applied'), warn: true });
-                          loadNetworkSettings();
-                          return;
-                        }
-                      } catch { /* still down */ }
-                      if (retries > 20) { // ~8s timeout (400ms * 20)
-                        clearInterval(poll);
-                        setBindHostApplying(false);
-                        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
-                      }
-                    }, 400);
-                    return;
-                  }
 
-                  /* ── Phase B: user sees "保存" → clicking saves & may morph button ── */
-                  const prevEffective = bindHostEffective;
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ host: bindHostValue }),
-                    });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const d = await res.json() as { restartRequired?: boolean };
-                    const serverSaysNeedsRestart = !!d.restartRequired;
-                    const valueDidChange = bindHostValue !== prevEffective;
-                    const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
-
-                    setBindHostPendingRestart(shouldShowApply);
-                    setBindHostNotice({
-                      text: shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'),
-                      warn: shouldShowApply,
-                    });
-
-                    // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
-                    // because server.pendingRestart is often false even when a restart IS needed.
-                    // We'll refresh after the user clicks "立即生效".
-                  } catch {
-                    setBindHostNotice({ text: t('accessScope.saveFailed'), warn: false });
-                  }
-                }}
-                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-[13px] font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
-                  bindHostPendingRestart
-                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
-                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
-                }`}
-              >
-                {bindHostApplying ? (
-                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>{t('accessScope.applying')}</>
-                ) : bindHostPendingRestart ? (
-                  t('accessScope.applyNow')
-                ) : (
-                  t('accessScope.save')
-                )}
-              </button>
-            </SettingRow>
-            )}
-          </div>
-        </Section>
 
         {/* ───── Network / Proxy ───── */}
         <Section title={t('networkProxy.title')} description={t('networkProxy.description')}>
@@ -2500,6 +2348,161 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
         {/* 远程访问的详细设置只在选中它时出现：以前它是一张常驻卡片，
             选「仅本机」的人也照样被塞一整块隐道向导。 */}
+        {/* ───── Access scope ─────
+            一道单选题：先选「谁能访问」，再显示该方式需要的设置。
+            以前「仅本机/局域网」是一张卡、「远程访问」是另一张常驻卡 ——
+            三者互斥、平级，却分住两地，选「仅本机」的人也照样被塞一整块隐道向导。
+            排在网络代理之后：先确保自己能出去，再决定别人怎么进来。 */}
+        <Section title={t('accessScope.title')} description={t('accessScope.description')}>
+          <div className={`${CARD} divide-y divide-border-default/40`}>
+            <SettingRow
+              label={t('accessScope.scopeLabel')}
+              hint={
+                <>
+                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${accessMode !== 'local' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                  {t('accessScope.current', { host: bindHostEffective })}
+                  {' · '}
+                  <span className={accessMode === 'lan' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
+                    {accessMode === 'local' ? t('accessScope.localOnlyHint')
+                      : accessMode === 'lan' ? t('accessScope.lanHint')
+                      : t('accessScope.remoteHint')}
+                  </span>
+                  {bindHostFromEnv && <span className="text-amber-500"> · ⚠ {t('accessScope.envControlled')}</span>}
+                </>
+              }
+            >
+              <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
+                <button
+                  disabled={bindHostFromEnv}
+                  onClick={() => { setAccessMode('local'); setBindHostValue('127.0.0.1'); }}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'local' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.localOnly')}</button>
+                <button
+                  disabled={bindHostFromEnv}
+                  onClick={() => { setAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'lan' && !bindHostFromEnv
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                >{t('accessScope.lan')}</button>
+                {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
+                    所以它的按钮不跟 local/lan 一起置灰。 */}
+                <button
+                  onClick={() => setAccessMode('remote')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'remote'
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >{t('accessScope.remote')}</button>
+              </div>
+            </SettingRow>
+
+            {/* 监听地址只在 local/lan 下有东西可存；远程访问不改监听地址
+                （隧道连的就是本机 127.0.0.1）。 */}
+            {accessMode !== 'remote' && (
+            <SettingRow hint={bindHostNotice
+              ? <span className={bindHostNotice.warn ? 'text-amber-500' : undefined}>{bindHostNotice.text}</span>
+              : undefined}>
+              <button
+                disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
+                onClick={async () => {
+                  /* ── Phase A: user sees "立即生效" → fire-and-forget + poll for recovery ── */
+                  if (bindHostPendingRestart) {
+                    // Optimistic UI: show applying immediately, don't wait for response
+                    // (backend returns 202 then rebinds, which drops our connection)
+                    setBindHostApplying(true);
+                    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
+                    try {
+                      const res = await fetch('/api/settings/network/apply', {
+                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
+                      });
+                      // If we get here, server managed to respond — could be 200 or 202
+                      if (res.status === 202 || res.ok) {
+                        setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
+                      } else {
+                        throw new Error(`HTTP ${res.status}`);
+                      }
+                    } catch {
+                      // Expected: connection dropped during server rebind
+                      setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
+                    }
+                    // Poll for the server to come back after the rebind. It now
+                    // resolves in well under a second (see applyBindHost), so poll
+                    // briskly and give up quickly instead of waiting 30s.
+                    let retries = 0;
+                    const poll = setInterval(async () => {
+                      retries++;
+                      try {
+                        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
+                        if (r.ok) {
+                          clearInterval(poll);
+                          setBindHostApplying(false);
+                          setBindHostPendingRestart(false);
+                          setBindHostNotice({ text: t('accessScope.applied'), warn: true });
+                          loadNetworkSettings();
+                          return;
+                        }
+                      } catch { /* still down */ }
+                      if (retries > 20) { // ~8s timeout (400ms * 20)
+                        clearInterval(poll);
+                        setBindHostApplying(false);
+                        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
+                      }
+                    }, 400);
+                    return;
+                  }
+
+                  /* ── Phase B: user sees "保存" → clicking saves & may morph button ── */
+                  const prevEffective = bindHostEffective;
+                  try {
+                    const res = await fetch('/api/settings/network', {
+                      method: 'POST', headers: authHeaders(),
+                      body: JSON.stringify({ host: bindHostValue }),
+                    });
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    const d = await res.json() as { restartRequired?: boolean };
+                    const serverSaysNeedsRestart = !!d.restartRequired;
+                    const valueDidChange = bindHostValue !== prevEffective;
+                    const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
+
+                    setBindHostPendingRestart(shouldShowApply);
+                    setBindHostNotice({
+                      text: shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'),
+                      warn: shouldShowApply,
+                    });
+
+                    // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
+                    // because server.pendingRestart is often false even when a restart IS needed.
+                    // We'll refresh after the user clicks "立即生效".
+                  } catch {
+                    setBindHostNotice({ text: t('accessScope.saveFailed'), warn: false });
+                  }
+                }}
+                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-[13px] font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
+                  bindHostPendingRestart
+                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
+                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
+                }`}
+              >
+                {bindHostApplying ? (
+                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>{t('accessScope.applying')}</>
+                ) : bindHostPendingRestart ? (
+                  t('accessScope.applyNow')
+                ) : (
+                  t('accessScope.save')
+                )}
+              </button>
+            </SettingRow>
+            )}
+          </div>
+        </Section>
+
         {accessMode === 'remote' && <RemoteAccessSection />}
 
         </>}
