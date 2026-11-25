@@ -195,8 +195,44 @@ export const EGRESS_PROBE_URL = 'https://api.ipify.org?format=json';
 interface UndiciLike {
   Agent: new (opts?: Record<string, unknown>) => EgressDispatcher;
   ProxyAgent: new (opts: Record<string, unknown>) => EgressDispatcher;
+  /** Optional: absent in older undici builds (and in test doubles). */
+  Socks5ProxyAgent?: new (url: string) => EgressDispatcher;
   setGlobalDispatcher: (dispatcher: unknown) => void;
   fetch: (url: string | URL, init?: Record<string, unknown>) => Promise<Response>;
+}
+
+/**
+ * True when a proxy URL needs a SOCKS agent rather than an HTTP one.
+ *
+ * `undici.ProxyAgent` accepts a `socks5://` uri without complaint and then fails at
+ * request time, so the scheme — not a try/catch — has to decide the transport.
+ */
+export function isSocksProxy(url: string): boolean {
+  return /^socks(4|5|5h)?:\/\//i.test(url);
+}
+
+/**
+ * Build the dispatcher for the proxied half of the routing decision.
+ *
+ * A SOCKS5 route needs `Socks5ProxyAgent`: `ProxyAgent` speaks HTTP CONNECT and would
+ * fail every request against a SOCKS endpoint. The TLS workaround below applies only
+ * to the HTTP path — it exists because some CDNs fingerprint the TLS stack, and SOCKS
+ * tunnels the TLS handshake untouched, so there is nothing to pin there.
+ */
+export function buildProxiedDispatcher(undici: UndiciLike, url: string): EgressDispatcher {
+  if (isSocksProxy(url)) {
+    if (!undici.Socks5ProxyAgent) {
+      throw new Error(
+        'SOCKS proxy configured but this undici build exposes no Socks5ProxyAgent; traffic would silently go direct',
+      );
+    }
+    return new undici.Socks5ProxyAgent(url);
+  }
+  return new undici.ProxyAgent({
+    uri: url,
+    // Some CDNs fingerprint the TLS stack; keep the long-standing workaround.
+    requestTls: { maxVersion: 'TLSv1.2' },
+  });
 }
 
 /**
@@ -398,11 +434,7 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
 
   try {
     const direct = new undici.Agent();
-    const proxied = new undici.ProxyAgent({
-      uri: policy.url,
-      // Some CDNs fingerprint the TLS stack; keep the long-standing workaround.
-      requestTls: { maxVersion: 'TLSv1.2' },
-    });
+    const proxied = buildProxiedDispatcher(undici, policy.url);
     // Route by host instead of proxying everything. `ProxyAgent` ignores
     // `NO_PROXY`, so a bare global ProxyAgent would push loopback / private
     // requests (Ollama on 127.0.0.1:11434, an internal API on 10.x) through the
