@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { hubApi } from '../api.ts';
 import { useNativeBrowserOverlay } from '../hooks/useNativeBrowserOverlay.ts';
@@ -136,8 +137,19 @@ export function FeedbackModal({ defaultContact, initialTitle, initialBody, onClo
     }
   };
 
-  return (
-    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000] p-4" onClick={() => { if (!busy) onClose(); }}>
+  // Portal 到 document.body，而不是就地渲染。
+  //
+  // `fixed inset-0` 的定位基准是「最近的带 transform / will-change /
+  // backdrop-filter / contain 的祖先」，不是视口。聊天面板就是这种容器，
+  // 就地渲染会把这个全屏遮罩限制在聊天框里（右侧栏打开时浮层挤在左边，
+  // 居中基准也跟着聊天栏走）。仓库里 ConfirmModal / DeliverableDetailModal
+  // 已是同一惯例，这里补齐。
+  const modal = (
+    <div
+      data-testid="feedback-modal"
+      className="fixed inset-0 bg-black/60 flex items-center justify-center z-[10000] p-4"
+      onClick={() => { if (!busy) onClose(); }}
+    >
       <div
         className="bg-surface-secondary border border-border-default rounded-xl w-[540px] max-w-full max-h-[calc(100vh-2rem)] overflow-y-auto shadow-2xl"
         onClick={e => e.stopPropagation()}
@@ -275,4 +287,6 @@ export function FeedbackModal({ defaultContact, initialTitle, initialBody, onClo
       </div>
     </div>
   );
+
+  return typeof document !== 'undefined' ? createPortal(modal, document.body) : modal;
 }
