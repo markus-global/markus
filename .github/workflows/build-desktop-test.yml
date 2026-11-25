@@ -1,0 +1,114 @@
+name: build-desktop-test
+
+# Test-only installer build — produces UNSIGNED installers as downloadable
+# artifacts so a reporting user can try a fix before it is released.
+#
+# Deliberately SEPARATE from publish.yml: no tag, no GH release, no signing
+# credentials, `--publish never`. Running this can never publish anything, so it
+# is not a release path and needs no approval of its own.
+#
+# Why push-triggered as well as manual: `workflow_dispatch` is only offered for
+# workflows that exist on the default branch, so a PR-only workflow cannot be
+# started by hand. The push trigger is scoped to THIS file's own path, so a
+# normal code push never rebuilds the app — bump a comment here to request a
+# fresh installer (once merged, `workflow_dispatch` also works).
+on:
+  workflow_dispatch:
+  push:
+    branches: [fix/markus-provider-endpoint-guard]
+    paths:
+      - '.github/workflows/build-desktop-test.yml'
+
+concurrency:
+  group: build-desktop-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Build Web UI
+        run: pnpm --filter @markus/web-ui build
+
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
+
+      - name: Build Electron app
+        run: pnpm --filter @markus/desktop build:electron
+
+      # No CERTUM_* secrets here on purpose: build/sign.cjs skips signing when
+      # they are unset, so we get a working (unsigned) installer instead of a
+      # build that needs the release signing chain.
+      - name: Package installer (unsigned)
+        working-directory: packages/desktop
+        run: pnpm dist --win --x64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: markus-windows-x64-unsigned
+          path: packages/desktop/dist-electron/*.exe
+          retention-days: 14
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Build all packages
+        run: pnpm build
+
+      - name: Build Web UI
+        run: pnpm --filter @markus/web-ui build
+
+      - name: Pack Chrome extension
+        run: node scripts/ensure-chrome-extension-zip.mjs
+
+      - name: Build Electron app
+        run: pnpm --filter @markus/desktop build:electron
+
+      - name: Package app (unsigned, arm64)
+        working-directory: packages/desktop
+        run: pnpm dist --mac --arm64 --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+
+      - name: Upload app
+        uses: actions/upload-artifact@v4
+        with:
+          name: markus-macos-arm64-unsigned
+          path: |
+            packages/desktop/dist-electron/*.dmg
+            packages/desktop/dist-electron/*.zip
+          retention-days: 14
+          if-no-files-found: error
