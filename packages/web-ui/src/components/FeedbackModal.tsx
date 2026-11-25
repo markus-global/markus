@@ -13,7 +13,14 @@ import {
 
 interface Props {
   /** 联系方式默认值：登录邮箱（没有则为空）。 */
-  defaultContact: string;
+  defaultContact?: string;
+  /**
+   * 标题初值（挂载时读一次，之后用户可改）。不传 = 空白 —— 现有的
+   * UserAccountMenu 入口就是这种「从零开始写」的用法。
+   */
+  initialTitle?: string;
+  /** 正文初值（挂载时读一次，之后用户可改）。错误气泡的「反馈这个问题」靠它预填诊断信息。 */
+  initialBody?: string;
   onClose: () => void;
 }
 
@@ -36,13 +43,14 @@ function rejectMessage(t: (key: string, opts?: Record<string, unknown>) => strin
  * 再把 URL 数组交给 `hubApi.feedback.create()`——Hub 只存快照。
  * 未登录 Hub 时图片上传不可用（上传接口需要鉴权），只允许纯文字反馈。
  */
-export function FeedbackModal({ defaultContact, onClose }: Props) {
+export function FeedbackModal({ defaultContact, initialTitle, initialBody, onClose }: Props) {
   const { t } = useTranslation('common');
   useNativeBrowserOverlay(true);
 
-  const [title, setTitle] = useState('');
-  const [content, setContent] = useState('');
-  const [contact, setContact] = useState(defaultContact);
+  // 初值只在挂载时取一次：之后用户编辑的内容不能被父组件的重渲染盖掉。
+  const [title, setTitle] = useState(initialTitle ?? '');
+  const [content, setContent] = useState(initialBody ?? '');
+  const [contact, setContact] = useState(defaultContact ?? '');
   const [shots, setShots] = useState<Shot[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [error, setError] = useState('');

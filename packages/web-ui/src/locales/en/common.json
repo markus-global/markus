@@ -640,6 +640,7 @@
     "submitting": "Submitting…",
     "titleRequired": "Please enter a title",
     "rejectNotImage": "Only PNG / JPG / WebP / GIF are supported",
+    "reportThisError": "Report this error",
     "rejectTooLarge": "Each image must be under {{size}}",
     "rejectTooMany": "Up to {{max}} screenshots",
     "loginForImages": "Sign in to Hub to attach screenshots. Text feedback still works without signing in.",

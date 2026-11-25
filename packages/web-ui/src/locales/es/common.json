@@ -639,6 +639,7 @@
     "submitting": "Enviando…",
     "titleRequired": "Escribe un título",
     "rejectNotImage": "Solo se admiten PNG / JPG / WebP / GIF",
+    "reportThisError": "Informar de este error",
     "rejectTooLarge": "Cada imagen debe pesar menos de {{size}}",
     "rejectTooMany": "Máximo {{max}} capturas",
     "loginForImages": "Inicia sesión en Hub para adjuntar capturas. El texto se puede enviar sin cuenta.",

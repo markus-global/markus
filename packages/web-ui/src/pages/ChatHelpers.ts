@@ -28,6 +28,14 @@ export interface ChatMsg {
   segments?: MsgSegment[];
   activities?: ActivityStep[];
   isError?: boolean;
+  /**
+   * 未美化的错误原文（provider 原话 / HTTP status / request id）。
+   *
+   * `text` 存的是 friendlyAgentError() 美化后给用户看的那句 —— 美化是**有损**
+   * 的，而「反馈这个问题」需要的是原文。所以错误落气泡时把原文旁路存在这里；
+   * 历史消息（服务端只存美化后的 content）没有这个字段，读不到就是读不到。
+   */
+  errorRaw?: string;
   isStopped?: boolean;
   /** True when the assistant turn finished with no content (survives refresh). */
   emptyReply?: boolean;
