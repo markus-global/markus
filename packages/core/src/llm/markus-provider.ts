@@ -292,6 +292,59 @@ function looksLikeWorkerBase(url: string): boolean {
   return /localhost:8787|127\.0\.0\.1:8787|workers\.dev|markus-proxy/i.test(url);
 }
 
+/**
+ * Fold a configured base back to an API **root** (`<origin>[/prefix]/v1`).
+ *
+ * Why this exists: the only path this provider is allowed to call is
+ * `<root>/chat/completions` (plus the sibling media paths). A base that already
+ * points AT an endpoint (`…/api/v1/chat/completions`), carries a query/hash, or
+ * repeats a version segment makes the composed path something the upstream
+ * refuses with `400 {"error":{"message":"Request path cannot be relayed"}}` —
+ * a message that names no lever, and whose wording ("relayed") sends readers
+ * hunting for a network proxy they never configured. Folding here makes the
+ * wrong shape unrepresentable instead of leaving it to per-call-site luck.
+ */
+function normaliseMarkusApiBase(raw: string | undefined): string {
+  const value = (raw ?? '').trim();
+  if (!value) return '';
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    // Not an absolute URL — leave it untouched; the caller reports it.
+    return value.replace(/\/+$/, '');
+  }
+  parsed.search = '';
+  parsed.hash = '';
+  parsed.pathname = parsed.pathname
+    // A trailing endpoint segment is ours to append, never the base's.
+    .replace(/\/(chat\/completions|completions|messages|images|videos|models)\/?$/i, '')
+    .replace(/\/audio\/(speech|transcriptions)\/?$/i, '')
+    // `…/v1/v1` → `…/v1`
+    .replace(/\/(v\d+)\/\1(?=\/|$)/gi, '/$1')
+    .replace(/\/+$/, '');
+  return `${parsed.origin}${parsed.pathname}`;
+}
+
+/**
+ * Render a non-2xx upstream reply as an error the reader can act on.
+ *
+ * The upstream body alone is not enough: `Request path cannot be relayed` names
+ * neither the URL that was called nor the setting that made it wrong. The
+ * endpoint and the configured base are the two levers — always name them, and
+ * for the path-rejection class say explicitly that this is not a network-proxy
+ * problem (that misreading is what the "relayed" wording invites).
+ */
+function describeUpstreamFailure(status: number, body: string, endpoint: string, base: string): string {
+  const text = `Markus proxy error ${status}: ${body}`;
+  const pathRejected = /cannot be relayed|invalid (request )?path|not a valid (api )?path/i.test(body);
+  if (!pathRejected) return `${text} (request: ${endpoint})`;
+  return `${text} (request: ${endpoint}; baseUrl: ${base || 'default'}) — ` +
+    'upstream rejected the request path. This means the configured model service base is not an ' +
+    'OpenRouter-compatible API root (a full endpoint, an extra path prefix, or a gateway that ' +
+    'rewrites paths), NOT a missing network proxy.';
+}
+
 export class MarkusProvider implements MultiModalProviderInterface {
   readonly name = 'markus';
   model: string;
@@ -352,6 +405,8 @@ export class MarkusProvider implements MultiModalProviderInterface {
     this.hubToken = config?.hubToken ?? process.env['MARKUS_HUB_TOKEN'] ?? '';
     if (this.baseUrl && looksLikeWorkerBase(this.baseUrl)) {
       this.baseUrl = DEFAULT_OR_BASE_URL;
+    } else {
+      this.baseUrl = normaliseMarkusApiBase(this.baseUrl);
     }
   }
 
@@ -369,7 +424,9 @@ export class MarkusProvider implements MultiModalProviderInterface {
     if (config.model) this.model = config.model;
     if (config.apiKey) this.apiKey = config.apiKey;
     if (config.baseUrl) {
-      this.baseUrl = looksLikeWorkerBase(config.baseUrl) ? DEFAULT_OR_BASE_URL : config.baseUrl;
+      this.baseUrl = looksLikeWorkerBase(config.baseUrl)
+        ? DEFAULT_OR_BASE_URL
+        : normaliseMarkusApiBase(config.baseUrl);
     }
     if (config.maxTokens) this.maxTokens = config.maxTokens;
     if (config.modelsUrl !== undefined) this.modelsUrl = config.modelsUrl;
@@ -841,7 +898,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
           return this.chat(next, true);
         }
       }
-      throw new Error(`Markus proxy error ${response.status}: ${errText}`);
+      throw new Error(describeUpstreamFailure(response.status, errText, target.url, this.baseUrl));
     }
 
     const cuCost = 0;
@@ -945,7 +1002,7 @@ export class MarkusProvider implements MultiModalProviderInterface {
           return this.chatStream(next, onEvent, signal, true);
         }
       }
-      throw new Error(`Markus proxy error ${res.status}: ${errText}`);
+      throw new Error(describeUpstreamFailure(res.status, errText, target.url, this.baseUrl));
     }
 
     bumpIdleTimeout();

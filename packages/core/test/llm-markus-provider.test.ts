@@ -1480,3 +1480,52 @@ describe('soft-stop when remaining credits are 0', () => {
     expect(sent.messages.filter((m: { role: string }) => m.role === 'system')).toHaveLength(0);
   });
 });
+
+describe('endpoint guard — a mis-shaped base cannot produce a non-relayable path', () => {
+  const originalFetch = globalThis.fetch;
+
+  beforeEach(() => {
+    vi.stubGlobal('fetch', vi.fn());
+  });
+
+  afterEach(() => {
+    vi.stubGlobal('fetch', originalFetch);
+    vi.restoreAllMocks();
+  });
+
+  it('folds a base that already points AT an endpoint back to the API root', async () => {
+    vi.mocked(fetch).mockResolvedValue(mockResponse(chatCompletionBody()));
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      model: 'deepseek/deepseek-v4.1-flash',
+      // Three reachable mis-shapes at once: endpoint suffix, version repeat, query+hash.
+      baseUrl: 'https://openrouter.ai/api/v1/v1/chat/completions?v=2#x',
+    });
+    await p.chat({ messages: [{ role: 'user', content: 'hi' }], model: 'deepseek/deepseek-v4.1-flash' });
+    const url = String(vi.mocked(fetch).mock.calls.at(-1)![0]);
+    expect(url).toBe('https://openrouter.ai/api/v1/chat/completions');
+  });
+
+  it('names the endpoint and the base when the upstream refuses the request path', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      mockResponse({ error: { message: 'Request path cannot be relayed', code: 400 } }, 400),
+    );
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      model: 'deepseek/deepseek-v4.1-flash',
+      baseUrl: 'https://gateway.example.com/llm/v1',
+    });
+    const err = await p
+      .chat({ messages: [{ role: 'user', content: 'hi' }], model: 'deepseek/deepseek-v4.1-flash' })
+      .then(() => null, (e: unknown) => e as Error);
+    expect(err).toBeInstanceOf(Error);
+    const msg = (err as Error).message;
+    // The body alone is not actionable — both levers must be in the text.
+    expect(msg).toContain('Request path cannot be relayed');
+    expect(msg).toContain('https://gateway.example.com/llm/v1/chat/completions');
+    expect(msg).toContain('baseUrl: https://gateway.example.com/llm/v1');
+    expect(msg).toContain('NOT a missing network proxy');
+  });
+});
