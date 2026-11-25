@@ -3918,15 +3918,6 @@ function InfoCard({ label, value, color }: { label: string; value: string; color
   );
 }
 
-function MiniStat({ label, value }: { label: string; value: string }) {
-  return (
-    <div>
-      <div className="text-[10px] text-fg-tertiary uppercase">{label}</div>
-      <div className="text-xs text-fg-secondary mt-0.5 truncate">{value}</div>
-    </div>
-  );
-}
-
 function formatBytes(bytes: number, t?: (key: string) => string): string {
   if (bytes === 0) return t ? t('dataStorage.bytesZero') : '0 B';
   const units = t ? [t('dataStorage.unitB'), t('dataStorage.unitKB'), t('dataStorage.unitMB'), t('dataStorage.unitGB')] : ['B', 'KB', 'MB', 'GB'];
