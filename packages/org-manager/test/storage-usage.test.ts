@@ -40,13 +40,13 @@ function writeFile(relPath: string, bytes: number): void {
 }
 
 describe('bucketedDirUsage — totals', () => {
-  it('total is the sum of every bucket, not a hand-picked subset', () => {
+  it('total is the sum of every bucket, not a hand-picked subset', async () => {
     writeFile('workspace/a.bin', 300);
     writeFile('sessions/b.bin', 200);
     writeFile('worktrees/c.bin', 100);
     writeFile('subagent-logs/d.bin', 50);
 
-    const usage = bucketedDirUsage(root);
+    const usage = await bucketedDirUsage(root);
 
     expect(usage.total).toBe(650);
     expect(usage.buckets.reduce((s, b) => s + b.size, 0)).toBe(usage.total);
@@ -60,20 +60,20 @@ describe('bucketedDirUsage — totals', () => {
     ]);
   });
 
-  it('counts stray files in the agent home, not just directories', () => {
+  it('counts stray files in the agent home, not just directories', async () => {
     // A 163 MB knowledge.md.bak sits in a real agent home. The old headline
     // figure could not see it, because it only summed five named subdirectories.
     writeFile('knowledge.md.bak', 500);
     writeFile('workspace/a.bin', 10);
 
-    const usage = bucketedDirUsage(root);
+    const usage = await bucketedDirUsage(root);
 
     expect(usage.total).toBe(510);
     expect(usage.buckets.find(b => b.name === 'knowledge.md.bak')?.size).toBe(500);
   });
 
-  it('reports an empty directory as empty rather than throwing', () => {
-    expect(bucketedDirUsage(root)).toEqual({
+  it('reports an empty directory as empty rather than throwing', async () => {
+    expect(await bucketedDirUsage(root)).toEqual({
       total: 0,
       buckets: [],
       depthLimited: false,
@@ -81,13 +81,13 @@ describe('bucketedDirUsage — totals', () => {
     });
   });
 
-  it('reports a missing directory as empty (agents that never ran have no workspace/)', () => {
-    expect(bucketedDirUsage(join(root, 'does-not-exist')).total).toBe(0);
+  it('reports a missing directory as empty (agents that never ran have no workspace/)', async () => {
+    expect((await bucketedDirUsage(join(root, 'does-not-exist'))).total).toBe(0);
   });
 });
 
 describe('bucketedDirUsage — bucket names are real directory names', () => {
-  it('never relabels a bucket', () => {
+  it('never relabels a bucket', async () => {
     // The defect: `memory` was a hand-written label for what the code actually
     // measured — `dirSize(sessions/)` plus two small files. A consumer could not
     // tell from the payload that the label was wrong. Buckets now carry the
@@ -95,52 +95,52 @@ describe('bucketedDirUsage — bucket names are real directory names', () => {
     writeFile('sessions/one.bin', 100);
     writeFile('knowledge.md', 20);
 
-    const usage = bucketedDirUsage(root);
+    const usage = await bucketedDirUsage(root);
 
     expect(usage.buckets.map(b => b.name)).not.toContain('memory');
     expect(usage.buckets.find(b => b.name === 'sessions')?.size).toBe(100);
     expect(usage.buckets.find(b => b.name === 'knowledge.md')?.size).toBe(20);
   });
 
-  it('sorts largest first with a stable tie-break', () => {
+  it('sorts largest first with a stable tie-break', async () => {
     writeFile('aaa/test.bin', 10);
     writeFile('zzz/test.bin', 10);
     writeFile('mmm/test.bin', 99);
 
-    expect(bucketedDirUsage(root).buckets.map(b => b.name)).toEqual(['mmm', 'aaa', 'zzz']);
+    expect((await bucketedDirUsage(root)).buckets.map(b => b.name)).toEqual(['mmm', 'aaa', 'zzz']);
   });
 });
 
 describe('bucketedDirUsage — depth bound is reported, not hidden', () => {
-  it('flags depthLimited instead of passing off a bounded walk as exact', () => {
+  it('flags depthLimited instead of passing off a bounded walk as exact', async () => {
     // workspace/repo/src/index.ts is a file at depth 4: with maxDepth 3 the `src`
     // directory (depth 3) is pruned. Old code silently dropped those bytes,
     // which is how workspace/ displayed 109 MB against 309 MB on disk.
     writeFile('workspace/repo/src/index.ts', 100);
 
-    const shallow = bucketedDirUsage(root, { maxDepth: 3 });
+    const shallow = await bucketedDirUsage(root, { maxDepth: 3 });
     expect(shallow.total).toBe(0);
     expect(shallow.depthLimited).toBe(true);
 
-    const deep = bucketedDirUsage(root, { maxDepth: 12 });
+    const deep = await bucketedDirUsage(root, { maxDepth: 12 });
     expect(deep.depthLimited).toBe(false);
     expect(deep.total).toBe(100);
   });
 
-  it('counts a file at the cap but prunes a directory at the cap', () => {
+  it('counts a file at the cap but prunes a directory at the cap', async () => {
     // Getting this backwards would make every repository look empty: `repo` is a
     // directory at depth 2 (descended) and `nested` a directory at depth 3 (the
     // cap, pruned), while `c.bin` is a file at depth 3 and is a leaf, so it counts.
     writeFile('workspace/repo/c.bin', 42);
     writeFile('workspace/repo/nested/deep.bin', 7);
 
-    const usage = bucketedDirUsage(root, { maxDepth: 3 });
+    const usage = await bucketedDirUsage(root, { maxDepth: 3 });
 
     expect(usage.total).toBe(42);
     expect(usage.depthLimited).toBe(true);
   });
 
-  it('defaults to a depth that does not regress the number it replaces', () => {
+  it('defaults to a depth that does not regress the number it replaces', async () => {
     // The default cap is 4, not 3, because the replaced code walked each
     // subdirectory from that subdirectory as depth 0. Verified on a live agent:
     // maxDepth 4 measures the `workspace` bucket at 109.0 MB — the exact figure
@@ -148,27 +148,27 @@ describe('bucketedDirUsage — depth bound is reported, not hidden', () => {
     // quietly made the number worse than the bug it replaced.
     writeFile('workspace/repo/src/index.ts', 100);
 
-    expect(bucketedDirUsage(root).depthLimited).toBe(false);
-    expect(bucketedDirUsage(root).total).toBe(100);
+    expect((await bucketedDirUsage(root)).depthLimited).toBe(false);
+    expect((await bucketedDirUsage(root)).total).toBe(100);
   });
 
-  it('does not flag depthLimited when nothing was pruned', () => {
+  it('does not flag depthLimited when nothing was pruned', async () => {
     writeFile('workspace/a.bin', 5);
-    expect(bucketedDirUsage(root).depthLimited).toBe(false);
+    expect((await bucketedDirUsage(root)).depthLimited).toBe(false);
   });
 });
 
 describe('bucketedDirUsage — symlinks', () => {
-  it('does not follow a symlinked directory (double counting, then cycles)', () => {
-    // The bug this prevents: statSync follows symlinks, so a symlinked dir was
+  it('does not follow a symlinked directory (double counting, then cycles)', async () => {
+    // The bug this prevents: `stat` follows symlinks, so a symlinked dir was
     // walked — counting another agent's bytes against this agent, and looping
-    // forever on a cycle.
+    // forever on a cycle. The walk uses `lstat` for exactly this reason.
     writeFile('workspace/real.bin', 100);
     writeFile('other/foreign.bin', 400);
     symlinkSync(join(root, 'other'), join(root, 'workspace', 'link-out'));
     symlinkSync(root, join(root, 'workspace', 'link-self'));
 
-    const usage = bucketedDirUsage(root, { maxDepth: 10 });
+    const usage = await bucketedDirUsage(root, { maxDepth: 10 });
 
     // 100 (workspace/real.bin) + 400 (other/foreign.bin). Neither the 400 gets
     // pulled in a second time through workspace/link-out, nor does link-self
@@ -177,11 +177,11 @@ describe('bucketedDirUsage — symlinks', () => {
     expect(usage.symlinksSkipped).toBeGreaterThanOrEqual(2);
   });
 
-  it('ignores .DS_Store', () => {
+  it('ignores .DS_Store', async () => {
     writeFile('.DS_Store', 999);
     writeFile('workspace/a.bin', 10);
 
-    const usage = bucketedDirUsage(root);
+    const usage = await bucketedDirUsage(root);
 
     expect(usage.total).toBe(10);
     expect(usage.buckets.map(b => b.name)).not.toContain('.DS_Store');
