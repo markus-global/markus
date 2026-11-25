@@ -18,6 +18,8 @@ import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { api, hubApi, getHubUser, getHubToken } from '../api';
 import type { AuthUser } from '../api';
+import { openExternal } from '../hooks/useElectron.ts';
+import { hubLoginUrl } from '../lib/remoteAccess.ts';
 
 interface OrgIdentityState {
   orgSlug: string | null;
@@ -99,7 +101,15 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
   } | null>(null);
   const [orgs, setOrgs] = useState<Array<{ id: string; name: string; slug: string; role: string; memberCount: number }>>([]);
   const [invitations, setInvitations] = useState<Array<{ orgId: string; orgName: string; invitedBy: string }>>([]);
-  const [loading, setLoading] = useState(true);
+  // Three states, not two. "Not connected to Hub" is NOT "connected with no org":
+  // the first means we have no idea which orgs exist, the second means we asked and
+  // there are none. Collapsing them into one `loading` boolean made a signed-out
+  // user read 「未加入任何组织」 — an assertion about data we never fetched, with no
+  // way left on the page to connect and find out.
+  const [view, setView] = useState<'not-connected' | 'loading' | 'ready'>(
+    () => (getHubUser() || getHubToken()) ? 'loading' : 'not-connected',
+  );
+  const loading = view === 'loading';
   const [msg, setMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
 
   const loadOrgs = useCallback(() => {
@@ -117,7 +127,7 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
 
   useEffect(() => {
     if (!getHubUser() && !getHubToken()) {
-      setLoading(false);
+      setView('not-connected');
       return;
     }
     loadOrgs();
@@ -125,7 +135,7 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
       .plan()
       .then((p) => setPlanInfo(p as typeof planInfo))
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => setView('ready'));
   }, [loadOrgs]);
 
   const handleAcceptInvite = async (orgId: string) => {
@@ -209,6 +219,20 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
         <OrgSlugRow orgId={authUser?.orgId} />
 
         <div className="space-y-3 rounded-lg border border-border-default px-5 py-4">
+          {view === 'not-connected' ? (
+            <div className="space-y-3">
+              <div className="text-sm font-medium text-fg-primary">{t('orgSummary.notConnectedTitle')}</div>
+              <p className="text-xs leading-relaxed text-fg-tertiary">{t('orgSummary.notConnectedDesc')}</p>
+              <button
+                type="button"
+                onClick={() => void openExternal(hubLoginUrl('markus://auth'))}
+                className="inline-flex items-center gap-1.5 rounded-lg bg-brand-600 px-4 py-2 text-xs font-medium text-on-brand transition-colors hover:bg-brand-500"
+              >
+                {t('orgSummary.connectHub')}
+              </button>
+            </div>
+          ) : (
+          <>
           <div className="flex items-center justify-between gap-3 text-xs">
             <span className="text-fg-tertiary">{t('orgSummary.plan')}</span>
             {loading ? (
@@ -280,6 +304,8 @@ export function OrgSummarySection({ authUser }: { authUser?: AuthUser }) {
               {t('orgSummary.manageMembers')}
             </a>
           </div>
+          </>
+          )}
         </div>
       </div>
     </div>

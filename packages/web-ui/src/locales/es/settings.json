@@ -788,7 +788,7 @@
     "title": "Cuenta",
     "subtitle": "Administrar la suscripción, organización y usuarios locales de Cloud AI.",
     "localTitle": "Cuentas locales",
-    "localDesc": "Cuentas que ejecutan Markus en este equipo — guardadas en la tabla de usuarios local, sin relación con otros equipos.",
+    "localDesc": "Solo válido en este equipo. Todas las cuentas comparten un espacio de trabajo y los mismos agentes; los datos de organización y suscripción están abajo.",
     "subscriptionTitle": "Suscripción de Markus",
     "subscriptionDesc": "Tu organización, plan y créditos en markus.global.",
     "cloudAiTitle": "Cloud AI",
@@ -803,6 +803,9 @@
     "noOrg": "No perteneces a ninguna organización"
   },
   "orgSummary": {
+    "notConnectedTitle": "Markus Hub no conectado",
+    "notConnectedDesc": "Conecta para ver tu organización, plan, miembros y créditos. Ahora mismo esa información no está disponible — lo cual no es lo mismo que no tener ninguna.",
+    "connectHub": "Conectar Markus Hub",
     "plan": "Plan",
     "planUnknown": "Sin plan",
     "manageBilling": "Gestionar plan y facturación",

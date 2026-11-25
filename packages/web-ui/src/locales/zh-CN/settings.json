@@ -802,7 +802,7 @@
     "title": "账户",
     "subtitle": "管理 Cloud AI 订阅、组织与本机用户。",
     "localTitle": "本地账户",
-    "localDesc": "只在这台机器上有效，与其他机器无关。",
+    "localDesc": "只在这台机器上有效；本机所有账号共享同一工作区与团队。组织与订阅信息见下方。",
     "subscriptionTitle": "Markus 订阅账户",
     "subscriptionDesc": "在 markus.global 上的组织、套餐与额度。",
     "cloudAiTitle": "Cloud AI",
@@ -817,6 +817,9 @@
     "noOrg": "未加入任何组织"
   },
   "orgSummary": {
+    "notConnectedTitle": "未连接 Markus Hub",
+    "notConnectedDesc": "连接后才能读到组织、套餐、成员与积分。现在这些信息无从获取——不是没有。",
+    "connectHub": "连接 Markus Hub",
     "plan": "套餐",
     "planUnknown": "未订阅",
     "manageBilling": "管理套餐与账单",

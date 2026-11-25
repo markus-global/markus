@@ -802,7 +802,7 @@
     "title": "Account",
     "subtitle": "Manage Cloud AI subscription, organization, and local users.",
     "localTitle": "Local accounts",
-    "localDesc": "Local to this machine only — unrelated to other machines.",
+    "localDesc": "Local to this machine. All accounts here share one workspace and one set of agents; organization and subscription details are below.",
     "subscriptionTitle": "Markus subscription",
     "subscriptionDesc": "Your organization, plan and credits on markus.global.",
     "cloudAiTitle": "Cloud AI",
@@ -817,6 +817,9 @@
     "noOrg": "Not a member of any organization"
   },
   "orgSummary": {
+    "notConnectedTitle": "Markus Hub not connected",
+    "notConnectedDesc": "Connect to read your organization, plan, members and credits. Right now none of it is available — which is not the same as having none.",
+    "connectHub": "Connect Markus Hub",
     "plan": "Plan",
     "planUnknown": "No plan",
     "manageBilling": "Manage plan & billing",
