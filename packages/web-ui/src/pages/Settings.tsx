@@ -15,7 +15,7 @@ import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
-import { OrgIdentitySection } from '../components/OrgIdentitySection.tsx';
+import { OrgSummarySection } from '../components/OrgAccountSection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
@@ -57,7 +57,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license' | 'orgIdentity';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -72,10 +72,6 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
-  // C10-D：组织地址前缀。这是「绑地址」的唯一入口——org slug 决定
-  // `<local>.<org>@markus.global` 的中间段，之前只有 storage 方法没有 UI，
-  // 真实用户根本走不到“声明”这一步。adminOnly 因为只有 owner 能改。
-  { id: 'orgIdentity', labelKey: 'nav.orgIdentity', adminOnly: true },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
 ];
@@ -86,7 +82,7 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
-  { labelKey: 'nav.group.account', tabs: ['account', 'orgIdentity'] },
+  { labelKey: 'nav.group.account', tabs: ['account'] },
   // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
   // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
   { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
@@ -167,7 +163,7 @@ function SettingsTabIcon({ id, className }: { id: string; className?: string }) 
   );
 }
 
-const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', remote: 'network' };
+const LEGACY_TAB_ALIASES: Record<string, SettingsTab> = { users: 'account', organization: 'account', license: 'account', orgIdentity: 'account', remote: 'network' };
 
 /**
  * Pure hash → tab resolver. `hash` may carry a leading `#` (as `window.location.hash`
@@ -3107,8 +3103,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
         {resolvedTab === 'facts' && <AuditFactsPage role={authUser?.role} authUser={authUser} />}
 
-        {resolvedTab === 'orgIdentity' && <OrgIdentitySection authUser={authUser} />}
-
         {resolvedTab === 'account' && <AccountSection authUser={authUser} />}
 
         {resolvedTab === 'integrations' && <InstancesSection />}
@@ -4056,14 +4050,29 @@ function OrphanSection({ orphanInfo, dataDir, onPurged, formatBytes: formatBytes
  * `components/RemoteAccessSection.tsx` (T9). Logic + state machine:
  * `lib/remoteAccess.ts`. */
 
-/* ─── Account (Local Users) ───
- * 组织身份、套餐、成员、邀请一律在「组织」页与 markus.global；
- * 这里只保留本机账号管理，避免同一事实出现两个写者。 */
+/* ─── Account ───
+ * 一页回答「我是谁、我有什么」：本地账户（本机 user 表）+ Markus 订阅账户（Hub 侧套餐/成员）。
+ * 两块数据源不同、写者不同，所以分板块呈现，但用户不必在两个页面之间跳。 */
 
 function AccountSection({ authUser }: { authUser?: AuthUser }) {
+  const { t } = useTranslation('settings');
   return (
     <div className="space-y-8">
-      <UserManagementSection authUser={authUser} />
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-fg-primary">{t('account.localTitle')}</h2>
+          <p className="mt-1 text-sm text-fg-secondary">{t('account.localDesc')}</p>
+        </div>
+        <UserManagementSection authUser={authUser} />
+      </section>
+
+      <section className="space-y-3">
+        <div>
+          <h2 className="text-lg font-semibold text-fg-primary">{t('account.subscriptionTitle')}</h2>
+          <p className="mt-1 text-sm text-fg-secondary">{t('account.subscriptionDesc')}</p>
+        </div>
+        <OrgSummarySection authUser={authUser} />
+      </section>
     </div>
   );
 }
