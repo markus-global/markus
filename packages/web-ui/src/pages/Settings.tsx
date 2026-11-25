@@ -2376,13 +2376,13 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </div>
               }
             >
-              <div className={`flex items-center gap-2 transition-opacity ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
+              <div className={`flex w-full flex-wrap items-center gap-2 transition-opacity sm:w-auto ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
                 <input
                   type="text"
                   value={proxyUrl}
                   onChange={e => setProxyUrl(e.target.value)}
                   placeholder={t('networkProxy.placeholder')}
-                  className="w-[250px] px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
+                  className="w-full min-w-0 px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors sm:w-[250px]"
                 />
                 <button
                   onClick={async () => {

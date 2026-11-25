@@ -99,12 +99,22 @@ export function SettingRow({ label, hint, children }: {
   label?: ReactNode; hint?: ReactNode; children?: ReactNode;
 }) {
   return (
-    <div className="flex items-start justify-between gap-6 px-5 py-3.5">
-      <div className="min-w-0 flex-1">
+    // Wraps instead of squeezing. The previous `shrink-0` control column could not
+    // shrink and the row could not wrap, so as soon as the card narrowed the label was
+    // compressed to ~46px (rendering 「代理地址」 vertically) while the controls kept
+    // their full width — the row grew to 257px tall and read as a jumble. That happened
+    // at a 548px card, i.e. on a laptop with the side panel open, not only on a phone.
+    //
+    // A `min-w` floor on the label column plus `flex-wrap` makes the控件 drop to their
+    // own line before they can crush the label. Keyed on available width, not on a
+    // viewport breakpoint: the card is narrow whenever the nav is open, whatever the
+    // window size.
+    <div className="flex flex-wrap items-start gap-x-6 gap-y-2 px-5 py-3.5">
+      <div className="min-w-[7rem] flex-1">
         {label && <div className="text-[13px] font-medium text-fg-primary">{label}</div>}
         {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-tertiary">{hint}</div>}
       </div>
-      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
+      {children && <div className="flex flex-wrap items-center gap-2">{children}</div>}
     </div>
   );
 }
