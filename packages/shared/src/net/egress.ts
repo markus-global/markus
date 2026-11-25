@@ -194,6 +194,8 @@ export const EGRESS_PROBE_URL = 'https://api.ipify.org?format=json';
 
 interface UndiciLike {
   ProxyAgent: new (opts: Record<string, unknown>) => unknown;
+  /** Direct (un-proxied) dispatcher: the one we restore when the proxy is turned off. */
+  Agent: new () => unknown;
   setGlobalDispatcher: (dispatcher: unknown) => void;
   fetch: (url: string | URL, init?: Record<string, unknown>) => Promise<Response>;
 }
@@ -257,7 +259,31 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
       delete process.env['NO_PROXY'];
       envExported = false;
     }
-    return { policy, installed: false, error: installError, displayUrl: undefined };
+    // A dispatcher installed by an earlier resolution outlives a config change.
+    // Without this restore, switching the proxy OFF keeps routing every fetch of
+    // this process through the old proxy until a restart: Settings reads "no
+    // proxy" and `egressStatus()` reports `source: 'disabled'`, while the wire
+    // still goes through the proxy — so the upstream failure blames a proxy the
+    // user has already turned off and cannot find (v0.12.4 report:
+    // `Markus proxy error 400 … "Request path cannot be relayed"`, whose only
+    // reachable emitter is the user's own proxy, not us or the provider).
+    if (installed) {
+      const undici = await loadUndici();
+      if (undici) {
+        try {
+          undici.setGlobalDispatcher(new undici.Agent());
+        } catch (err) {
+          installError = `failed to restore the direct dispatcher: ${String(err)}`;
+        }
+      }
+      installed = false;
+    }
+    return {
+      policy,
+      installed: false,
+      error: installError,
+      displayUrl: undefined,
+    };
   }
 
   // Children (git, gh, npm, tunnel binaries) inherit these.

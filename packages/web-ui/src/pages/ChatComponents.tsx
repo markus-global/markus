@@ -15,6 +15,7 @@ import {
   type TaskApprovalInfo, type RequirementApprovalInfo,
 } from '../components/ExecutionTimeline.tsx';
 import { Avatar } from '../components/Avatar.tsx';
+import { ErrorFeedbackButton } from '../components/ErrorFeedbackButton.tsx';
 import { isRememberActionVisible, stripNotifyContext, stripThinkingBlocks, storedSegmentsToMsgSegments, type ChatMsg, type MsgSegment } from './ChatHelpers.ts';
 export { isRememberActionVisible };
 
@@ -1361,6 +1362,12 @@ export const AgentMessageBody = memo(function AgentMessageBody({
               <span>{msg.text.replace(/^⚠\s*/, '')}</span>
             </span>
           </div>
+        )}
+
+        {/* 错误气泡底部的一键反馈入口：把 provider 原文、模型、时间、版本带进
+            反馈草稿，用户不用再把报错复制一遍。只有错误消息才渲染。 */}
+        {!isStreaming && (msg.isError || msg.text.startsWith('⚠')) && msg.text && (
+          <ErrorFeedbackButton msg={msg} />
         )}
 
         {isStopped && (
