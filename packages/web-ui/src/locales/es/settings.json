@@ -365,7 +365,7 @@
     "direct": "directa",
     "coverageTitle": "Qué cubre",
     "coverageCovered": "Cubierto: llamadas fetch/undici de este proceso y procesos hijos (git, gh, npm, túneles).",
-    "coverageNotCovered": "No cubierto: automatización del navegador (Chrome usa su propia configuración de proxy).",
+    "coverageNotCovered": "No cubierto: el navegador integrado (panel derecho) y la automatización del navegador. Usan la pila de red propia de Chromium y siguen el proxy del sistema, no esta configuración.",
     "active": "Activo:",
     "noProxy": "No se detecta ningún proxy",
     "sourceConfig": "markus.json",

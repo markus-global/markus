@@ -365,7 +365,7 @@
     "direct": "直连",
     "coverageTitle": "覆盖范围",
     "coverageCovered": "已覆盖：本进程的 fetch/undici 调用、子进程（git、gh、npm、隧道）。",
-    "coverageNotCovered": "未覆盖：浏览器自动化（Chrome 使用自己的代理设置）。",
+    "coverageNotCovered": "未覆盖：内置浏览器（右侧栏）与浏览器自动化。它们走 Chromium 自己的网络栈，跟随系统代理，不经过这里的设置。",
     "active": "生效中：",
     "noProxy": "未检测到代理",
     "sourceConfig": "markus.json",

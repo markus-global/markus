@@ -365,7 +365,7 @@
     "direct": "direct",
     "coverageTitle": "What this covers",
     "coverageCovered": "Covered: fetch/undici calls in this process and child processes (git, gh, npm, tunnels).",
-    "coverageNotCovered": "Not covered: browser automation — Chrome uses its own proxy settings.",
+    "coverageNotCovered": "Not covered: the built-in browser (right panel) and browser automation. They use Chromium's own network stack and follow the system proxy, not this setting.",
     "active": "Active:",
     "noProxy": "No proxy detected",
     "sourceConfig": "markus.json",
