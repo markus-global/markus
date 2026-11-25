@@ -22,6 +22,7 @@
  * run with an explicit env, and the browser (Chrome uses its own proxy settings).
  */
 import { existsSync, readFileSync } from 'node:fs';
+import { platform } from 'node:os';
 import { markusConfigPath } from '../utils/config-paths.js';
 import { readSystemProxy } from './system-proxy.js';
 
@@ -302,6 +303,73 @@ let cachedPolicy: EgressPolicy | undefined;
 /** True once we have written proxy vars into process.env (so we can take them back). */
 let envExported = false;
 
+/** How often the macOS system proxy is re-read. See {@link createSystemProxyWatcher}. */
+export const SYSTEM_PROXY_POLL_MS = 30_000;
+
+/**
+ * Watch a system proxy value and call `onChange` when it actually differs.
+ *
+ * Why polling: macOS gives a Node process no proxy-change event — `scutil --proxy` is
+ * a one-shot query. The alternative was the previous behaviour, reading once at
+ * startup, which meant a user who turned their VPN's proxy on (or off) had to restart
+ * Markus before it believed them. 30s is the compromise between responsiveness and
+ * spawning a child process on a timer.
+ *
+ * Only fires on a real change: re-installing an identical dispatcher on every tick
+ * would churn live connections for no reason.
+ */
+export function createSystemProxyWatcher(opts: {
+  read: () => string | undefined;
+  onChange: () => void;
+  intervalMs?: number;
+}): () => void {
+  const { read, onChange, intervalMs = SYSTEM_PROXY_POLL_MS } = opts;
+  let last = read() ?? '';
+  const timer = setInterval(() => {
+    const next = read() ?? '';
+    if (next === last) return;
+    last = next;
+    onChange();
+  }, intervalMs);
+  // A watcher must never be the reason the process stays alive.
+  timer.unref?.();
+  return () => clearInterval(timer);
+}
+
+let stopProxyWatch: (() => void) | null = null;
+
+/**
+ * Start following the OS proxy (macOS only — Owner's scope for now).
+ *
+ * Skipped when a config or environment proxy is set: those outrank the system route,
+ * so watching it would only rebuild the same dispatcher every time the OS value moves.
+ *
+ * Called after EVERY resolve, not only after a successful install. If the machine
+ * boots with no proxy and the user enables one later, there is no install to hook onto
+ * — the watcher is the only thing that can notice.
+ */
+function ensureSystemProxyWatch(): void {
+  if (stopProxyWatch) return;
+  if (platform() !== 'darwin') return;
+  if (readNetworkConfig().proxy || fromEnv()) return;
+  stopProxyWatch = createSystemProxyWatcher({
+    read: readSystemProxy,
+    onChange: () => {
+      // Force a fresh resolve: the cached policy predates the OS change, and the
+      // install path re-drives both undici and the embedded browser's session.
+      void installEgress({ force: true });
+    },
+  });
+}
+
+/** Stop following the OS proxy (shutdown paths and tests). */
+export function stopSystemProxyWatch(): void {
+  if (stopProxyWatch) {
+    stopProxyWatch();
+    stopProxyWatch = null;
+  }
+}
+
 /**
  * Sink for the browser half of the same decision.
  *
@@ -379,6 +447,9 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
   // below: "either both on or both off" has to hold on every path, including the
   // proxy-was-just-disabled one.
   await syncChromiumProxy(policy);
+  // Every resolve is a chance to start following the OS proxy — including the
+  // "no proxy yet" case, which is exactly when a later OS change needs noticing.
+  ensureSystemProxyWatch();
 
   if (!policy.url) {
     // Take back the variables we exported, otherwise a disabled proxy keeps
@@ -472,4 +543,5 @@ export function resetEgressForTests(): void {
   installError = undefined;
   cachedPolicy = undefined;
   envExported = false;
+  stopSystemProxyWatch();
 }

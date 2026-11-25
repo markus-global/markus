@@ -6,11 +6,12 @@
  * dispatcher installation itself is process-global and not unit-testable in a
  * meaningful way, so it is exercised by the probe in Settings instead.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildEgressPolicy,
   buildProxiedDispatcher,
   createPolicyDispatcher,
+  createSystemProxyWatcher,
   hostMatchesNoProxy,
   isSocksProxy,
   maskProxyUrl,
@@ -240,5 +241,100 @@ describe('SOCKS5 support', () => {
     };
     expect(() => buildProxiedDispatcher(undici as never, 'socks5://127.0.0.1:1080'))
       .toThrow(/no Socks5ProxyAgent/);
+  });
+});
+
+describe('createSystemProxyWatcher', () => {
+  it('fires only when the OS proxy actually changes', async () => {
+    vi.useFakeTimers();
+    try {
+      let current = 'http://a:1';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      // Three ticks with an unchanged value must not rebuild anything: re-installing
+      // an identical dispatcher would churn live connections every 30s for nothing.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fired).toBe(0);
+
+      current = 'socks5://b:2';
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+
+      // ...and exactly once, not once per subsequent tick.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats undefined -> value as a change (user enables a proxy later)', async () => {
+    // This is the case the old boot-once behaviour could never handle: Markus started
+    // with no proxy, the user turned one on in System Settings, nothing happened.
+    vi.useFakeTimers();
+    try {
+      let current: string | undefined;
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(0);
+
+      current = 'http://127.0.0.1:7890';
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('also notices a proxy being turned off', async () => {
+    vi.useFakeTimers();
+    try {
+      let current: string | undefined = 'http://127.0.0.1:7890';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      current = undefined;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops firing after the returned disposer runs', async () => {
+    vi.useFakeTimers();
+    try {
+      let current = 'a';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+      stop();
+      current = 'b';
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(fired).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
