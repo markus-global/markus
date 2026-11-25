@@ -197,9 +197,10 @@ turns it red again — the same resurrection-guard pattern as the marketplace fr
 ### C10-A · Identity columns and envelope slots (H3 / H5 / H6)
 
 **What.** Build the columns §4.9.6 reserved (names and semantics already frozen):
-- `organizations.org_slug TEXT` — nullable, `UNIQUE`, immutable after first address
-  issuance, `source:'registry'` semantics. The two historical orgs get explicit
-  `org_<id>` values in one migration — never derived from `name`.
+- `organizations.org_slug TEXT` — nullable, `UNIQUE`. Owned by markus.global: the Hub is
+  its only writer (global uniqueness can only be adjudicated there), and the desktop
+  client mirrors the value down. The two historical orgs get `local-<hash>` placeholders
+  in one migration — never derived from `name`.
 - `agents.agent_alias TEXT` — nullable, `UNIQUE(org_id, agent_alias)`; unset = no
   mail address; a change revokes the old binding + isolation period.
 - `role_slug` — name stays reserved; no table until a consumer exists.
