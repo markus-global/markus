@@ -900,6 +900,13 @@
     "orgSection": "Organization",
     "memberCount": "Members"
   },
+  "orgSummary": {
+    "plan": "Plan",
+    "planUnknown": "No plan",
+    "manageBilling": "Manage plan & billing",
+    "manageMembers": "Manage members",
+    "hubOnly": "Members, plan and billing are managed on markus.global — this view is read-only."
+  },
   "org": {
     "title": "My Organization",
     "description": "Manage your organization on Markus Hub. Organization members each install Markus on their own computer and share a single enterprise license. For example: a team of 5 people, each running an independent Markus instance on their own laptop, sharing the organization's license quota.",

@@ -886,6 +886,13 @@
     "orgSection": "Organización",
     "memberCount": "Miembros"
   },
+  "orgSummary": {
+    "plan": "Plan",
+    "planUnknown": "Sin plan",
+    "manageBilling": "Gestionar plan y facturación",
+    "manageMembers": "Gestionar miembros",
+    "hubOnly": "Los miembros, el plan y la facturación se gestionan en markus.global — esta vista es de solo lectura."
+  },
   "org": {
     "title": "Mi Organización",
     "description": "Administra tu organización en Markus Hub. Los miembros de la organización instalan a Markus en su propio equipo y comparten una única licencia de empresa. Por ejemplo: un equipo de 5 personas, cada una ejecutando una instancia independiente Markus en su propio portátil, compartiendo la cuota de licencia de la organización.",

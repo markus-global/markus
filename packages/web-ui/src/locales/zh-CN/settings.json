@@ -900,6 +900,13 @@
     "orgSection": "组织",
     "memberCount": "成员数"
   },
+  "orgSummary": {
+    "plan": "套餐",
+    "planUnknown": "未订阅",
+    "manageBilling": "管理套餐与账单",
+    "manageMembers": "管理成员",
+    "hubOnly": "成员、套餐与账单都在 markus.global 上管理，此处只读。"
+  },
   "org": {
     "title": "我的组织",
     "description": "管理您在 Markus Hub 上的组织。组织成员各自在自己的电脑上安装 Markus，共享同一张企业许可证。例如：团队有 5 个人，每人在各自的笔记本上运行独立的 Markus 实例，共用组织的许可证额度。",
