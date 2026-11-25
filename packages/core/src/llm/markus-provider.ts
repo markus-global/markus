@@ -335,14 +335,25 @@ function normaliseMarkusApiBase(raw: string | undefined): string {
  * for the path-rejection class say explicitly that this is not a network-proxy
  * problem (that misreading is what the "relayed" wording invites).
  */
-function describeUpstreamFailure(status: number, body: string, endpoint: string, base: string): string {
+function describeUpstreamFailure(
+  status: number,
+  body: string,
+  endpoint: string,
+  base: string,
+  diag?: { server?: string; cfRay?: string },
+): string {
   const text = `Markus proxy error ${status}: ${body}`;
+  // Who answered is a fact, not an inference: OpenRouter sits behind Cloudflare,
+  // so a genuine reply always carries `cf-ray`. Its absence is the single
+  // cheapest way to prove the answer did not come from OpenRouter at all.
+  const who = `server=${diag?.server ?? '(none)'}; cf-ray=${diag?.cfRay ?? '(none)'}`;
   const pathRejected = /cannot be relayed|invalid (request )?path|not a valid (api )?path/i.test(body);
-  if (!pathRejected) return `${text} (request: ${endpoint})`;
-  return `${text} (request: ${endpoint}; baseUrl: ${base || 'default'}) — ` +
-    'upstream rejected the request path. This means the configured model service base is not an ' +
-    'OpenRouter-compatible API root (a full endpoint, an extra path prefix, or a gateway that ' +
-    'rewrites paths), NOT a missing network proxy.';
+  if (!pathRejected) return `${text} (request: ${endpoint}; ${who})`;
+  return `${text} (request: ${endpoint}; baseUrl: ${base || 'default'}; ${who}) — ` +
+    'the URL above is the canonical OpenRouter endpoint, so an answer that says it cannot relay ' +
+    'that path did not come from OpenRouter: something between this machine and openrouter.ai ' +
+    'answered instead (TUN-mode VPN, a hosts entry, a DNS override, or a corporate gateway). ' +
+    'Real OpenRouter replies always carry a cf-ray header — cf-ray=(none) above is the proof.';
 }
 
 export class MarkusProvider implements MultiModalProviderInterface {
@@ -898,7 +909,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
           return this.chat(next, true);
         }
       }
-      throw new Error(describeUpstreamFailure(response.status, errText, target.url, this.baseUrl));
+      throw new Error(describeUpstreamFailure(response.status, errText, target.url, this.baseUrl, {
+        server: response.headers.get('server') ?? undefined,
+        cfRay: response.headers.get('cf-ray') ?? undefined,
+      }));
     }
 
     const cuCost = 0;
@@ -1002,7 +1016,10 @@ export class MarkusProvider implements MultiModalProviderInterface {
           return this.chatStream(next, onEvent, signal, true);
         }
       }
-      throw new Error(describeUpstreamFailure(res.status, errText, target.url, this.baseUrl));
+      throw new Error(describeUpstreamFailure(res.status, errText, target.url, this.baseUrl, {
+        server: res.headers.get('server') ?? undefined,
+        cfRay: res.headers.get('cf-ray') ?? undefined,
+      }));
     }
 
     bumpIdleTimeout();

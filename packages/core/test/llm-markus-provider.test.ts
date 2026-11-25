@@ -1526,6 +1526,31 @@ describe('endpoint guard — a mis-shaped base cannot produce a non-relayable pa
     expect(msg).toContain('Request path cannot be relayed');
     expect(msg).toContain('https://gateway.example.com/llm/v1/chat/completions');
     expect(msg).toContain('baseUrl: https://gateway.example.com/llm/v1');
-    expect(msg).toContain('NOT a missing network proxy');
+    // The response carried no cf-ray: that header is OpenRouter's own fingerprint
+    // (Cloudflare edge), so its absence proves the answer was not OpenRouter's.
+    expect(msg).toContain('cf-ray=(none)');
+    expect(msg).toContain('did not come from OpenRouter');
+  });
+
+  it('reports the cf-ray header when the answer did come from OpenRouter', async () => {
+    vi.mocked(fetch).mockResolvedValue(
+      mockResponse({ error: { message: 'Request path cannot be relayed', code: 400 } }, 400, {
+        server: 'cloudflare',
+        'cf-ray': '8f2a1c4b7e5d9f01-SJC',
+      }),
+    );
+    const p = new MarkusProvider({
+      provider: 'markus',
+      apiKey: 'sk-or-test',
+      model: 'deepseek/deepseek-v4.1-flash',
+      baseUrl: 'https://openrouter.ai/api/v1',
+    });
+    const err = await p
+      .chat({ messages: [{ role: 'user', content: 'hi' }], model: 'deepseek/deepseek-v4.1-flash' })
+      .then(() => null, (e: unknown) => e as Error);
+    const msg = (err as Error).message;
+    // Biting assertion: the header has to be READ from the response, not hardcoded.
+    expect(msg).toContain('server=cloudflare');
+    expect(msg).toContain('cf-ray=8f2a1c4b7e5d9f01-SJC');
   });
 });
