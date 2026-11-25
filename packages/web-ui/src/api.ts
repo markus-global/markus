@@ -2509,14 +2509,6 @@ export const api = {
     uploadAvatar: (image: string, type: 'user' | 'agent' = 'user', id?: string) =>
       request<{ avatarUrl: string }>('/avatars/upload', { method: 'POST', body: JSON.stringify({ image, type, id }) }),
   },
-  license: {
-    get: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { agents: number; teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license'),
-    refresh: () => request<{ plan: string; licenseKey?: string; validUntil?: string; isTrial?: boolean; isOffline?: boolean; features: string[]; limits: { maxAgents: number; maxTeams: number; maxToolCallsPerDay: number; maxUsers: number }; usage?: { agents: number; teams: number; toolCallsToday: number; users: number }; instanceId: string; hubUserId?: string; username?: string; orgId?: string; orgName?: string; maxSeats?: number; usedSeats?: number }>('/license/refresh', { method: 'POST' }),
-    activate: (licenseKey: string) =>
-      request<{ success: boolean; error?: string }>('/license/activate', { method: 'POST', body: JSON.stringify({ licenseKey }) }),
-    trial: () =>
-      request<{ success: boolean; error?: string }>('/license/trial', { method: 'POST' }),
-  },
   sessions: {
     hasAny: () =>
       request<{ hasAny: boolean }>('/sessions/has-any'),
