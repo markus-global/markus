@@ -301,7 +301,21 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
    * 隧道向导。local/lan 驱动监听地址；remote 只切展示（隧道连的是 127.0.0.1，
    * 不靠开放监听地址生效）。
    */
-  const [accessMode, setAccessMode] = useState<'local' | 'lan' | 'remote'>('lan');
+  const [accessMode, setAccessMode] = useState<'local' | 'lan' | 'remote'>(() => {
+    // 「访问方式」是用户的意图，无法从监听地址反推：远程访问的监听地址同样是
+    // 127.0.0.1，与「仅本机」完全一样。不持久化的话，用户点完「远程访问」一刷新
+    // 就掉回「仅本机」，会以为自己的选择根本没保存。
+    try {
+      const saved = localStorage.getItem('markus.settings.accessMode');
+      if (saved === 'local' || saved === 'lan' || saved === 'remote') return saved;
+    } catch { /* 隐私模式下 localStorage 会抛，忽略即可 */ }
+    return 'lan';
+  });
+  /** 记住用户显式选的访问方式（存意图，不存监听地址）。 */
+  const chooseAccessMode = (mode: 'local' | 'lan' | 'remote') => {
+    setAccessMode(mode);
+    try { localStorage.setItem('markus.settings.accessMode', mode); } catch { /* ignore */ }
+  };
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -396,9 +410,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         }
         const host = d.server?.host ?? '0.0.0.0';
         setBindHostValue(host);
-        // 首次加载按实际监听地址归位；已选「远程访问」时不覆盖用户的选择
-        // （隧道场景下监听地址本来就是 127.0.0.1）。
-        setAccessMode(prev => prev === 'remote' ? prev : (host === '0.0.0.0' ? 'lan' : 'local'));
+        // 只在用户从未显式选过时才按实际监听地址归位；选过就以他的选择为准。
+        setAccessMode(prev => {
+          try { if (localStorage.getItem('markus.settings.accessMode')) return prev; } catch { /* ignore */ }
+          return host === '0.0.0.0' ? 'lan' : 'local';
+        });
         setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
         setBindHostFromEnv(d.server?.source === 'env');
         setBindHostPendingRestart(!!d.server?.pendingRestart);
@@ -2374,7 +2390,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
                 <button
                   disabled={bindHostFromEnv}
-                  onClick={() => { setAccessMode('local'); setBindHostValue('127.0.0.1'); }}
+                  onClick={() => { chooseAccessMode('local'); setBindHostValue('127.0.0.1'); }}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
                     accessMode === 'local' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
@@ -2383,7 +2399,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 >{t('accessScope.localOnly')}</button>
                 <button
                   disabled={bindHostFromEnv}
-                  onClick={() => { setAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
+                  onClick={() => { chooseAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
                     accessMode === 'lan' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
@@ -2393,7 +2409,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
                     所以它的按钮不跟 local/lan 一起置灰。 */}
                 <button
-                  onClick={() => setAccessMode('remote')}
+                  onClick={() => chooseAccessMode('remote')}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
                     accessMode === 'remote'
                       ? 'bg-brand-600 text-on-brand shadow-sm'
