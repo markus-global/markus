@@ -18,6 +18,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import type * as EgressTypes from './egress.js';
 
 const dispatchers: unknown[] = [];
 
@@ -49,7 +50,7 @@ vi.mock('./system-proxy.js', () => ({
   readSystemProxy: () => undefined,
 }));
 
-type EgressModule = typeof import('./egress.js');
+type EgressModule = typeof EgressTypes;
 
 async function loadModule(): Promise<EgressModule> {
   return import('./egress.js');
