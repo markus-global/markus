@@ -2297,8 +2297,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 </span>
               )}
             </div>
-
-            <p className="text-[12px] text-fg-muted leading-relaxed">{t('accessScope.remoteNote')}</p>
           </div>
         </CollapsibleSection>
 
@@ -2430,8 +2428,12 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               t={t}
             />
 
-            {/* ⑤ Coverage note — minimal footer */}
-            <div className="rounded-lg bg-surface-secondary/40 border border-border-default/30 px-4 py-2.5 space-y-1">
+            {/* Coverage note — subordinate to the proxy block, not a peer of it.
+                It used to carry its own border and background, so it read as a
+                third section wedged between 「网络代理」and 「远程访问」: the page
+                went heading → content → heading → content → *untitled box* →
+                heading. A rule above it says "still part of the above". */}
+            <div className="space-y-1 border-t border-border-default/30 pt-3">
               <p className="text-[11px] font-medium text-fg-secondary/80">{t('networkProxy.coverageTitle')}</p>
               <p className="text-[11px] text-fg-muted/70 leading-relaxed">{t('networkProxy.coverageCovered')}</p>
               <p className="text-[11px] text-amber-500/60 leading-relaxed">{t('networkProxy.coverageNotCovered')}</p>

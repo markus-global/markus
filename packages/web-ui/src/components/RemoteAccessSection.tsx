@@ -259,6 +259,11 @@ export function RemoteAccessSection() {
     <Section title={t('settings:remoteAccess.title')}>
       <div className="space-y-5">
         <p className="text-sm text-fg-secondary">{t('settings:remoteAccess.description')}</p>
+        {/* Moved down from the access-scope block. It explains how remote access
+            behaves (the tunnel talks to 127.0.0.1, so you need not open the LAN),
+            so it belongs next to remote access itself rather than inside a
+            different section two blocks above. */}
+        <p className="text-[12px] text-fg-muted leading-relaxed">{t('settings:accessScope.remoteNote')}</p>
 
         {!isAuthed ? (
           <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
@@ -461,7 +466,11 @@ export function RemoteAccessSection() {
 function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
   return (
     <section>
-      <h3 className="text-sm font-semibold text-fg-secondary uppercase tracking-wider mb-4">{title}</h3>
+      {/* Same 13px semibold h3 the other settings groups use. It was text-sm
+          (14px) in uppercase — a step larger than its siblings, so this section
+          looked higher-ranked than 「访问范围」and 「网络代理」above it when it
+          is in fact their peer. */}
+      <h3 className="text-[13px] font-semibold text-fg-primary mb-4">{title}</h3>
       <div className="space-y-4">{children}</div>
     </section>
   );
