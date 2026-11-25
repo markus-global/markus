@@ -213,8 +213,8 @@ export function parseAddress(raw: string): AddressResult {
 
 /**
  * C10-A：org slug 的段级校验 —— 与 formatAddress / parseAddress 的 org 段
- * **同一套规则**（validateLabel + ORG_RESERVED），不是第二套。注册表声明路径
- * （storage 的 declareOrgSlug）必须经过这里；slug 合法性只有一个裁决点。
+ * **同一套规则**（validateLabel + ORG_RESERVED），不是第二套。slug 的唯一写者是
+ * markus.global；本机只在下发/镜像时校验，合法性裁决点仅此一处。
  */
 export type OrgSlugCheck = { ok: true } | Extract<AddressResult, { ok: false }>;
 export function checkOrgSlug(slug: string): OrgSlugCheck {

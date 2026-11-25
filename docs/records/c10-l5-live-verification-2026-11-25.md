@@ -109,3 +109,9 @@ first sight".
    signals on the next HN update.
 2. **Give `declareOrgSlug` an entry point** (route / UI / agent tool), otherwise
    no real user can satisfy the bind gate.
+
+> **Superseded (2026-11-25, C10-E).** Recommendation 2 was rejected by the owner.
+> Global uniqueness is a Hub property, so the slug write path moved to
+> markus.global (`PUT /api/orgs/:id/slug`) and the local `declareOrgSlug` method and
+> its route were **deleted** rather than wired up. Kept as history because the gap
+> was real — only the fix direction was wrong.

@@ -6513,13 +6513,12 @@ export class APIServer {
       return;
     }
 
-    // ─── 组织地址前缀（org slug）—— C10-D 补上的"声明入口" ────────────────
+    // ─── 组织标识（org slug）—— 只读镜像，写入在 markus.global ────────────
     //
-    // 为何需要这个端点：绑地址的格式是 `<local>.<org>@markus.global`，中段 `<org>`
-    // 必须是本组织**已声明**的合法 slug（C10-A 的防抢注门）。但 declareOrgSlug 之前
-    // 只有 storage 方法、没有任何 HTTP/UI 入口 —— 真实用户走不到这一步，地址永远
-    // 绑不上。这个端点就是那个缺失的写入口；校验/唯一性/不可变仍全在
-    // SqliteOrgRepo.declareOrgSlug（唯一写者，不在这里重实现）。
+    // slug 的唯一意义是 Hub 上的全局唯一命名空间（`hub_organizations.slug` 上有
+    // UNIQUE INDEX）。本机不提供写入口：离线时无法判断名字是否已被占，写了也会被
+    // 下次登录的 syncHubOrgIdentity 覆盖 —— 那是个会静默回滚用户的陷阱。
+    // 本端点只做读取，供 UI 展示 Hub 镜像下来的值。
     const orgSlugMatch = path.match(/^\/api\/orgs\/([^/]+)\/slug$/);
     if (orgSlugMatch) {
       const authUser = await this.requireAuth(req, res);
@@ -6528,9 +6527,6 @@ export class APIServer {
       const repo = this.storage?.orgRepo as
         | {
             findOrgById?: (id: string) => { id: string; orgSlug: string | null; hubOrgId?: string | null } | undefined;
-            declareOrgSlug?: (id: string, slug: string) =>
-              | { ok: true; orgSlug: string }
-              | { ok: false; reason: 'org_not_found' | 'invalid_slug' | 'immutable' | 'conflict'; hint: string };
             countBoundAddresses?: (id: string) => number;
           }
         | undefined;
@@ -6562,27 +6558,6 @@ export class APIServer {
           issuedAddresses,
           locked: issuedAddresses > 0,
         });
-        return;
-      }
-
-      if (req.method === 'PUT') {
-        if (!repo.declareOrgSlug) {
-          this.json(res, 503, { error: 'slug declaration unavailable', code: 'ORG_REPO_UNAVAILABLE' });
-          return;
-        }
-        const body = await this.readBody(req);
-        const slug = String(body['slug'] ?? '').trim();
-        if (!slug) {
-          this.json(res, 400, { error: 'slug is required', code: 'SLUG_REQUIRED' });
-          return;
-        }
-        const result = repo.declareOrgSlug(orgId, slug);
-        if (!result.ok) {
-          const status = result.reason === 'org_not_found' ? 404 : result.reason === 'conflict' ? 409 : 400;
-          this.json(res, status, { error: result.reason, code: result.reason.toUpperCase(), hint: result.hint });
-          return;
-        }
-        this.json(res, 200, { ok: true, orgId, orgSlug: result.orgSlug });
         return;
       }
 

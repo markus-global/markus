@@ -39,17 +39,18 @@ Worktree: `/Users/liuqian/mycode/worktrees/c10-a`, branch `task/c10-a`.
   (`addedColumns.includes('organizations.org_slug')`, same pattern as
   `tasks.status_changed_at`). The backfill is id-based, never name-based; it never
   overwrites a declared value on re-open.
-- **Explicit declaration path** `SqliteOrgRepo.declareOrgSlug(orgId, slug)`:
-  validates through the single segment validator shared with
-  `formatAddress`/`parseAddress` (new export `checkOrgSlug` in `shared/address.ts`
-  — no second rule set), rejects once the org has **ever issued an address**
-  (`channel_bindings` row with `address IS NOT NULL`, revoked rows included —
-  "immutable after first address issuance"), and lets the unique index adjudicate
-  cross-org collisions. Rationale: `org_<id>` contains `_`, which is not a legal
-  address segment, so without a declaration path no real org could ever pass the
-  ownership check and the L5 gate ("binds the address … no human UI clicks")
-  would be structurally dead. Declaration is the registry write; it never reads
-  `name`.
+- **Slug ownership belongs to markus.global; the local DB only mirrors it**
+  (revised in C10-E, 2026-11-25). A slug is a *globally unique namespace* — that
+  property can only be adjudicated where a global unique index exists, i.e.
+  `hub_organizations.slug` on the Hub. The local `declareOrgSlug` write path was
+  therefore **removed** instead of being wired up: a local write cannot know whether
+  the name is already taken, and `syncHubOrgIdentity` would overwrite it on the next
+  login — a control that silently rolls back what the user just did. Local code keeps
+  exactly one slug validator (`checkOrgSlug`, shared with `formatAddress`/
+  `parseAddress` — no second rule set) and a **read-only** mirror endpoint for the UI.
+  `org_<id>` contains `_`, which is not a legal address segment, so the placeholder
+  still has to be replaced by a real slug before bind — that replacement now happens
+  on the Hub and the value is mirrored down here. Neither path ever reads `name`.
 - `_mapOrg` exposes `orgSlug` (read side).
 
 ### D2 — bind-time slug ownership (the consumer that bites)
