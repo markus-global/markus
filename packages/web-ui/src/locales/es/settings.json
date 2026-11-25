@@ -341,6 +341,7 @@
     "restarting": "⏳ Markus se está reiniciando; la página se actualizará automáticamente…"
   },
   "networkProxy": {
+    "activeLabel": "Activo actualmente",
     "enabledLabel": "Activar proxy",
     "addressLabel": "Dirección del proxy",
     "title": "Proxy de red",

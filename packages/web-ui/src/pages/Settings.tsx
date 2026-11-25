@@ -2331,18 +2331,20 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 information to read, so it takes the same row rhythm as everything
                 else and lets the green dot carry the state. */}
             {proxyEffective && (
-              <div className={`flex items-center gap-2.5 px-5 py-3.5 transition-opacity ${!proxyEnabled ? 'opacity-40' : ''}`}>
-                <span className={`w-2 h-2 rounded-full shrink-0 ${
-                  proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'
-                }`} />
-                <span className="text-[13px]">
-                  {!proxyEnabled ? t('networkProxy.disabled') :
-                   proxyEffective.proxy ? (
-                    <>{t('networkProxy.active')}{' '}<code className="font-mono text-brand-600 dark:text-brand-400 font-medium">{proxyEffective.proxy}</code></>
-                  ) : t('networkProxy.noProxy')}
-                </span>
+              <SettingRow
+                label={t('networkProxy.activeLabel')}
+                hint={
+                  !proxyEnabled ? t('networkProxy.disabled')
+                    : proxyEffective.proxy ? undefined
+                    : t('networkProxy.noProxy')
+                }
+              >
+                <span className={`h-1.5 w-1.5 rounded-full ${proxyEnabled && proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                {proxyEnabled && proxyEffective.proxy && (
+                  <code className="font-mono text-[13px] font-medium text-brand-600 dark:text-brand-400">{proxyEffective.proxy}</code>
+                )}
                 {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`text-[11px] px-1.5 py-0.5 rounded font-medium ${
+                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
                     proxyEffective.source === 'config' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
                     proxyEffective.source === 'env' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
                     proxyEffective.source === 'system' ? 'bg-blue-500/10 text-blue-500' :
@@ -2355,15 +2357,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
                 <button
                   onClick={() => loadNetworkSettings()}
-                  className="ml-auto text-[11px] text-fg-muted hover:text-fg-secondary transition-colors flex items-center gap-1"
+                  className="flex items-center gap-1 text-[11px] text-fg-muted transition-colors hover:text-fg-secondary"
                   title={t('networkProxy.refresh')}
                 >
-                  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
                     <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
                   </svg>
                   {t('networkProxy.refresh')}
                 </button>
-              </div>
+              </SettingRow>
             )}
 
             {/* ③ Primary action: Proxy URL input + Save — PROMINENT */}
@@ -2434,16 +2436,19 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             />
             </div>
 
-            {/* Coverage note — subordinate to the proxy block, not a peer of it.
-                It used to carry its own border and background, so it read as a
-                third section wedged between 「网络代理」and 「远程访问」: the page
-                went heading → content → heading → content → *untitled box* →
-                heading. A rule above it says "still part of the above". */}
-            <div className="space-y-1 px-5 py-3.5">
-              <p className="text-[11px] font-medium text-fg-secondary/80">{t('networkProxy.coverageTitle')}</p>
-              <p className="text-[11px] text-fg-muted/70 leading-relaxed">{t('networkProxy.coverageCovered')}</p>
-              <p className="text-[11px] text-amber-500/60 leading-relaxed">{t('networkProxy.coverageNotCovered')}</p>
-            </div>
+            {/* Coverage is a row, not a paragraph block at the bottom. It describes
+                what this setting affects — a property of the setting — so it takes the
+                same label/hint rhythm instead of floating as three unowned 11px lines. */}
+            <SettingRow
+              label={t('networkProxy.coverageTitle')}
+              hint={
+                <>
+                  {t('networkProxy.coverageCovered')}
+                  <br />
+                  <span className="text-amber-500/80">{t('networkProxy.coverageNotCovered')}</span>
+                </>
+              }
+            />
 
           </div>
         </Section>
@@ -3937,7 +3942,7 @@ function Field({ label, description, children }: {
  *    never allowed to compete with the label it describes.
  */
 function SettingRow({ label, hint, children }: {
-  label?: React.ReactNode; hint?: React.ReactNode; children: React.ReactNode;
+  label?: React.ReactNode; hint?: React.ReactNode; children?: React.ReactNode;
 }) {
   return (
     <div className="flex items-start justify-between gap-6 px-5 py-3.5">
@@ -3945,7 +3950,7 @@ function SettingRow({ label, hint, children }: {
         {label && <div className="text-[13px] font-medium text-fg-primary">{label}</div>}
         {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">{hint}</div>}
       </div>
-      <div className="flex shrink-0 items-center gap-2">{children}</div>
+      {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
   );
 }
@@ -3954,7 +3959,7 @@ function Section({ title, description, action, children }: {
   title: React.ReactNode; description?: React.ReactNode; action?: React.ReactNode; children: React.ReactNode;
 }) {
   return (
-    <section className="space-y-3.5">
+    <section className="space-y-6">
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
           <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
@@ -3975,7 +3980,7 @@ function CollapsibleSection({ title, description, children, defaultOpen = true }
 }) {
   const [open, setOpen] = useState(defaultOpen);
   return (
-    <section className="space-y-3.5">
+    <section className="space-y-6">
       <button
         type="button"
         onClick={() => setOpen(!open)}

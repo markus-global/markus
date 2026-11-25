@@ -341,6 +341,7 @@
     "restarting": "⏳ Markus 正在重启，页面将自动刷新…"
   },
   "networkProxy": {
+    "activeLabel": "当前生效",
     "enabledLabel": "启用代理",
     "addressLabel": "代理地址",
     "title": "网络代理",

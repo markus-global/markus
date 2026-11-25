@@ -341,6 +341,7 @@
     "restarting": "⏳ Markus is restarting; the page will refresh automatically…"
   },
   "networkProxy": {
+    "activeLabel": "Currently active",
     "enabledLabel": "Enable proxy",
     "addressLabel": "Proxy address",
     "title": "Network proxy",
