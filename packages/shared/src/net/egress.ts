@@ -194,6 +194,8 @@ export const EGRESS_PROBE_URL = 'https://api.ipify.org?format=json';
 
 interface UndiciLike {
   ProxyAgent: new (opts: Record<string, unknown>) => unknown;
+  /** Direct (un-proxied) dispatcher: the one we restore when the proxy is turned off. */
+  Agent: new () => unknown;
   setGlobalDispatcher: (dispatcher: unknown) => void;
   fetch: (url: string | URL, init?: Record<string, unknown>) => Promise<Response>;
 }
