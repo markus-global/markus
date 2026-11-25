@@ -10655,6 +10655,7 @@ EXPLANATION_END`;
         return;
       }
       const { installEgress, EGRESS_PROBE_URL } = await import('@markus/shared');
+      const { classifyFetchFailure } = await import('@markus/comms');
       const status = await installEgress({ force: true });
       const startedAt = Date.now();
       try {
@@ -10666,16 +10667,29 @@ EXPLANATION_END`;
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: probe.ok ? null : `probe returned HTTP ${probe.status}`,
+          probeUrl: EGRESS_PROBE_URL,
+          // The chain DID reach the probe, so a non-2xx here is not a routing
+          // failure — say that plainly instead of implying the proxy is broken.
+          failure: probe.ok ? null : { code: 'probe_http_error', detail: `HTTP ${probe.status}` },
         });
       } catch (err) {
+        // undici folds every transport failure into `TypeError: fetch failed` and
+        // hides the real errno on `cause`. Serialising String(err) to the UI made the
+        // settings page print that internal exception verbatim, which tells the user
+        // nothing and does not distinguish "proxy not running" from "bad host" from
+        // "timeout" — three different remedies. classifyFetchFailure recovers the
+        // errno here, once, so the UI can switch on a code instead of parsing prose.
+        const classified = classifyFetchFailure(err);
         this.json(res, 200, {
           ok: false,
           exitIp: null,
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: String(err),
+          probeUrl: EGRESS_PROBE_URL,
+          failure: classified
+            ? { code: classified.code, detail: classified.detail }
+            : { code: 'probe_failed', detail: err instanceof Error ? err.message : String(err) },
         });
       }
       return;

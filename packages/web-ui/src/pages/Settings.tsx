@@ -11,6 +11,7 @@ import { useIsMobile } from '../hooks/useIsMobile.ts';
 import { usePageActive } from '../hooks/usePageActive.ts';
 import { useLayout } from '../contexts/LayoutContext.tsx';
 import { isEditableTarget } from '../lib/keyboard-shortcuts.ts';
+import { proxyFailureMessage } from '../lib/proxyFailure.ts';
 import {
   CARD, TYPE, FG, FIELD_INPUT, BTN_PRIMARY, BTN_SECONDARY,
   Badge, SettingRow, Section, CollapsibleSection,
@@ -2417,15 +2418,27 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 setEgressTesting(true); setEgressTest(null);
                 fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
                   .then(async res => {
-                    const d = await res.json() as { ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean; error?: string | null };
-                    if (!res.ok) throw new Error(d.error ?? `HTTP ${res.status}`);
-                    setEgressTest({
-                      ok: !!d.ok,
-                      text: d.ok ? t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') })
-                        : t('networkProxy.testFailed', { error: d.error ?? 'unknown' }),
-                    });
+                    const d = await res.json() as {
+                      ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean;
+                      failure?: { code?: string | null; detail?: string | null } | null;
+                    };
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    if (d.ok) {
+                      setEgressTest({
+                        ok: true,
+                        text: t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') }),
+                      });
+                    } else {
+                      // The server already classified the failure into a code; render the
+                      // remedy it names. Never echo the raw exception here — `TypeError:
+                      // fetch failed` was shown to users verbatim and told them nothing.
+                      const m = proxyFailureMessage(d.failure);
+                      setEgressTest({ ok: false, text: t(m.key, m.params) });
+                    }
                   })
-                  .catch(err => setEgressTest({ ok: false, text: t('networkProxy.testFailed', { error: String(err) }) }))
+                  // Reaching this catch means the settings API itself was unreachable —
+                  // a different failure from "the proxy is down", so it gets its own text.
+                  .catch(err => setEgressTest({ ok: false, text: t('networkProxy.failClient', { detail: err instanceof Error ? err.message : String(err) }) }))
                   .finally(() => setEgressTesting(false));
               }}
               authHeaders={authHeaders}
