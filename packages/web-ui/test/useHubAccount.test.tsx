@@ -204,7 +204,7 @@ describe('useHubAccount — 多用户切换隔离（核心安全断言）', () =
 });
 
 describe('useHubAccount — active 开关', () => {
-  it('active=false 不请求 plan；active=true 才请求', async () => {
+  it('挂载即请求 plan（徽章不等弹窗）；active=true 时再刷新一次', async () => {
     mockIsAuth.mockReturnValue(true);
     mockGetUser.mockReturnValue(user('A'));
     mockValidate.mockResolvedValue(true);
@@ -213,11 +213,22 @@ describe('useHubAccount — active 开关', () => {
       initialProps: { active: false },
     });
     await flush();
-    expect(mockPlan).not.toHaveBeenCalled();
+    // The balance is shown in the sidebar, so it must exist before any interaction.
+    // Gating this on `active` left the badge blank until the menu had been opened once.
+    expect(mockPlan).toHaveBeenCalledTimes(1);
 
     rerender({ active: true });
     await flush();
-    expect(mockPlan).toHaveBeenCalledTimes(1);
+    // Opening the popover re-checks the number.
+    expect(mockPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('未认证时不请求 plan（无 token 拉不到，白跑一次请求）', async () => {
+    mockIsAuth.mockReturnValue(false);
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+    expect(mockPlan).not.toHaveBeenCalled();
   });
 });
 
@@ -275,5 +286,102 @@ describe('useHubAccount — 卸载清理', () => {
     window.dispatchEvent(new Event('focus'));
     expect(mockValidate.mock.calls.length).toBe(vBefore);
     expect(mockGetUser.mock.calls.length).toBe(gBefore);
+  });
+});
+
+/**
+ * 冷启动的「先给旧值、后台刷新」契约。
+ *
+ * 曾经的症状：打开侧栏账号弹窗，可用积分先显示 `—`，过一会才变成数字。请求早已
+ * 提到挂载时发起（上一轮修过），但 `credits` 初始恒为 null —— 冷启动永远没有旧值
+ * 可显示，只能干等网络。这组断言钉住：有缓存就能立刻出数，且缓存绝不跨账号。
+ *
+ * 关键手法：`plan` 返回一个永不 resolve 的 Promise。这样屏幕上出现的任何数字都
+ * 只可能来自缓存 —— 若把初始值改回 null，这些用例必红。
+ */
+describe('useHubAccount — 冷启动先显示上次读数', () => {
+  const CACHE_KEY = 'markus:hub:credits';
+
+  // happy-dom 的 localStorage 不可信（连 removeItem 都没有），必须自建 stub。
+  const store = new Map<string, string>();
+  const stub: Storage = {
+    getItem: (k: string) => store.get(k) ?? null,
+    setItem: (k: string, v: string) => { store.set(k, String(v)); },
+    removeItem: (k: string) => { store.delete(k); },
+    clear: () => { store.clear(); },
+    key: (i: number) => [...store.keys()][i] ?? null,
+    get length() { return store.size; },
+  };
+
+  beforeEach(() => {
+    store.clear();
+    vi.stubGlobal('localStorage', stub);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  const seed = (userId: string, total: number) =>
+    localStorage.setItem(CACHE_KEY, JSON.stringify({ userId, credits: summary(total) }));
+
+  it('有缓存且账号匹配时，plan 尚未返回就先给出余额', () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    seed('u1', 500);
+    mockPlan.mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useHubAccount(false));
+
+    expect(result.current.credits?.remaining).toBe(500);
+  });
+
+  it('缓存属于另一个账号时不显示（宁可空，也不给错数）', () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u2'));
+    seed('u1', 500);
+    mockPlan.mockImplementation(() => new Promise(() => {}));
+
+    const { result } = renderHook(() => useHubAccount(false));
+
+    expect(result.current.credits).toBeNull();
+  });
+
+  it('plan 成功后把读数写回缓存，供下次冷启动直接显示', async () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    mockPlan.mockResolvedValue({ total: 42 });
+    mockResolveSummary.mockReturnValue(summary(42));
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+
+    const raw = localStorage.getItem(CACHE_KEY);
+    expect(raw).toBeTruthy();
+    expect(JSON.parse(raw as string).userId).toBe('u1');
+    expect(JSON.parse(raw as string).credits.remaining).toBe(42);
+  });
+
+  it('刷新失败不抹掉缓存里的数字（旧值仍是最优答案）', async () => {
+    mockIsAuth.mockReturnValue(true);
+    mockGetUser.mockReturnValue(user('u1'));
+    seed('u1', 500);
+    mockPlan.mockRejectedValue(new Error('network down'));
+
+    const { result } = renderHook(() => useHubAccount(false));
+    await flush();
+
+    expect(result.current.credits?.remaining).toBe(500);
+  });
+
+  it('登出后清掉缓存，下一个账号不会看到它', async () => {
+    seed('u1', 500);
+    mockIsAuth.mockReturnValue(false);
+    mockGetUser.mockReturnValue(null);
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+
+    expect(localStorage.getItem(CACHE_KEY)).toBeNull();
   });
 });

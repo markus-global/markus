@@ -1690,11 +1690,12 @@ from any other org's instance. Revoking stamps `revoked_at`; rows are never dele
 checks the address's org segment — taken from the single parser, never a second split —
 against the binding org's declared slug: no declared slug ⇒ `bounced/org_slug_unset`
 (fail closed), mismatch ⇒ `bounced/org_slug_mismatch` (anti-squatting: the global unique
-index prevents collisions, not squatting). Slugs are assigned explicitly only:
+index prevents collisions, not squatting). Slugs are owned by markus.global:
 `createOrg` and the one-time upgrade backfill share the single derivation point
-`registryOrgSlug(id) = org_<id>` — **never derived from `name`**; the explicit
-declaration path is `SqliteOrgRepo.declareOrgSlug`, immutable after the first address
-issuance (revoked bindings count as history). `revoke()` deliberately has no ownership
+`registryOrgSlug(id) = local-<hash>` — **never derived from `name`** — and the real
+slug arrives from the Hub (`bindHubOrg` / `syncHubOrgIdentity`). There is deliberately
+no local write entry point: global uniqueness can only be adjudicated by the Hub's
+unique index. `revoke()` deliberately has no ownership
 gate: releasing your own historical binding must not be locked out by registry state.
 The `address_bindings` view is **recreated on every init** (`DROP VIEW IF EXISTS` +
 `CREATE VIEW`; a view holds zero rows, so this is non-destructive) and exposes `kind`

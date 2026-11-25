@@ -81,13 +81,18 @@ const C10A_OBJECTS = [
   'uq_channel_bindings_address_active',
 ];
 
-/** Two orgs with declared, bindable slugs (the fixture plays the registry). */
+/**
+ * Two orgs with assigned, bindable slugs.
+ *
+ * Slugs are owned by markus.global and mirrored down by syncHubOrgIdentity; the
+ * fixture stands in for that sync — there is no local write entry point to call.
+ */
 function orgsWithSlugs(db: DatabaseSync): SqliteOrgRepo {
   const orgs = new SqliteOrgRepo(db);
   orgs.createOrg({ id: 'orga', name: 'Alpha Org', ownerId: 'u1' });
   orgs.createOrg({ id: 'orgb', name: 'Beta Org', ownerId: 'u1' });
-  expect(orgs.declareOrgSlug('orga', 'alpha')).toMatchObject({ ok: true });
-  expect(orgs.declareOrgSlug('orgb', 'beta')).toMatchObject({ ok: true });
+  db.prepare("UPDATE organizations SET org_slug = 'alpha' WHERE id = 'orga'").run();
+  db.prepare("UPDATE organizations SET org_slug = 'beta' WHERE id = 'orgb'").run();
   return orgs;
 }
 
@@ -163,7 +168,7 @@ describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', 
     for (const r of rows) expect(r.org_slug).not.toContain('my-organization');
   });
 
-  it('backfill is one-time: a declared slug survives re-open untouched', () => {
+  it('backfill is one-time: a Hub-assigned slug survives re-open untouched', () => {
     const dbPath = join(tempDir, 'reopen.db');
     const seed = openSqlite(dbPath);
     seed
@@ -173,8 +178,8 @@ describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', 
     stripToLegacy(dbPath);
 
     let db = openSqlite(dbPath);
-    const orgs = new SqliteOrgRepo(db);
-    expect(orgs.declareOrgSlug('default', 'acme')).toMatchObject({ ok: true });
+    // Stands in for syncHubOrgIdentity: the slug arrives already set from markus.global.
+    db.prepare("UPDATE organizations SET org_slug = 'acme' WHERE id = 'default'").run();
     closeSqlite();
 
     db = openSqlite(dbPath);
@@ -188,59 +193,6 @@ describe('C10-A org_slug backfill: explicit org_<id>, never derived from name', 
     expect(org.orgSlug).toBe('local-a68c1385');
     expect(org.orgSlug).not.toBe('acme-corp');
     expect(org.orgSlug).not.toBe('acmecorp');
-  });
-});
-
-describe('C10-A declareOrgSlug: explicit registry write with immutability', () => {
-  it('accepts a valid slug and reads it back; re-declaration before issuance is allowed', () => {
-    const db = openSqlite(join(tempDir, 'declare.db'));
-    const orgs = orgsWithSlugs(db);
-    expect(orgs.findOrgById('orga')?.orgSlug).toBe('alpha');
-    expect(orgs.declareOrgSlug('orga', 'alpha-two')).toMatchObject({ ok: true, orgSlug: 'alpha-two' });
-    expect(orgs.findOrgById('orga')?.orgSlug).toBe('alpha-two');
-  });
-
-  it('rejects invalid / reserved slugs with an actionable reason (same rules as the address format)', () => {
-    const db = openSqlite(join(tempDir, 'invalid.db'));
-    const orgs = orgsWithSlugs(db);
-    for (const bad of ['Acme', 'a_b', 'www', '', 'a--b', 'x'.repeat(31), '-lead', 'trail-']) {
-      const res = orgs.declareOrgSlug('orga', bad);
-      expect(res.ok, `slug ${JSON.stringify(bad)} must be rejected`).toBe(false);
-      if (!res.ok) expect(res.reason).toBe('invalid_slug');
-    }
-    // The rejected attempts changed nothing.
-    expect(orgs.findOrgById('orga')?.orgSlug).toBe('alpha');
-  });
-
-  it('rejects a slug already owned by another org (unique index adjudicates)', () => {
-    const db = openSqlite(join(tempDir, 'collide.db'));
-    const orgs = orgsWithSlugs(db);
-    const res = orgs.declareOrgSlug('orgb', 'alpha');
-    expect(res).toMatchObject({ ok: false, reason: 'conflict' });
-    expect(orgs.findOrgById('orgb')?.orgSlug).toBe('beta');
-  });
-
-  it('is immutable after the first address issuance — even after that binding is revoked', () => {
-    const db = openSqlite(join(tempDir, 'immutable.db'));
-    const orgs = orgsWithSlugs(db);
-    const repo = new SqliteAddressBindingRepo(db);
-    expect(
-      repo.bind({ orgId: 'orga', agentId: 'agt_a', address: `x.alpha@${MARKUS}` }),
-    ).toMatchObject({ status: 'bound' });
-    expect(orgs.declareOrgSlug('orga', 'alpha-two')).toMatchObject({ ok: false, reason: 'immutable' });
-    // Revocation does not reopen the slug: issuance history is permanent.
-    expect(repo.revoke({ orgId: 'orga', agentId: 'agt_a', address: `x.alpha@${MARKUS}` })).toMatchObject({
-      status: 'revoked',
-    });
-    expect(orgs.declareOrgSlug('orga', 'alpha-two')).toMatchObject({ ok: false, reason: 'immutable' });
-    expect(orgs.findOrgById('orga')?.orgSlug).toBe('alpha');
-  });
-
-  it('unknown org is rejected, not silently created', () => {
-    const db = openSqlite(join(tempDir, 'unknown.db'));
-    orgsWithSlugs(db);
-    const orgs = new SqliteOrgRepo(db);
-    expect(orgs.declareOrgSlug('nope', 'gamma')).toMatchObject({ ok: false, reason: 'org_not_found' });
   });
 });
 
@@ -334,8 +286,8 @@ describe('C10-A address_bindings.kind', () => {
     closeSqlite();
     stripToLegacy(dbPath);
     const db = openSqlite(dbPath);
-    const orgs = new SqliteOrgRepo(db);
-    expect(orgs.declareOrgSlug('orga', 'alpha')).toMatchObject({ ok: true });
+    // Stands in for syncHubOrgIdentity: the slug arrives already set from markus.global.
+    db.prepare("UPDATE organizations SET org_slug = 'alpha' WHERE id = 'orga'").run();
     const repo = new SqliteAddressBindingRepo(db);
     const addr = `x.alpha@${MARKUS}`;
     expect(repo.bind({ orgId: 'orga', agentId: 'agt_a', address: addr })).toMatchObject({ status: 'bound' });

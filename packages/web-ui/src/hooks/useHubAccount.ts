@@ -39,13 +39,21 @@ export interface HubAccountState {
 export function useHubAccount(active: boolean): HubAccountState {
   const [connected, setConnected] = useState(() => hubApi.isAuthenticated());
   const [user, setUser] = useState<HubUser | null>(() => getHubUser());
-  const [credits, setCredits] = useState<CreditSummary | null>(null);
+  // Seed from the last known balance so the badge has a number to show before the
+  // network answers. Without this the popover opened on `—` and became a value a
+  // moment later, on every cold start, for a number that usually had not changed.
+  const [credits, setCredits] = useState<CreditSummary | null>(
+    () => readCachedCredits(getHubUser()?.id ?? null),
+  );
 
   const refresh = useCallback((opts?: { validate?: boolean }) => {
     setUser(getHubUser());
     if (!hubApi.isAuthenticated()) {
       setConnected(false);
       setCredits(null);
+      // Signed out: drop the cached balance rather than let it resurface for the
+      // next account that signs in on this machine.
+      writeCachedCredits(null, null);
       return;
     }
     if (!opts?.validate) {
@@ -74,13 +82,58 @@ export function useHubAccount(active: boolean): HubAccountState {
   }, [refresh]);
 
   useEffect(() => {
-    if (!active || !hubApi.isAuthenticated()) return;
+    if (!hubApi.isAuthenticated()) return;
+    // `active` used to gate the FIRST fetch (`if (!active) return`), which meant the
+    // balance existed only after the user opened the menu — the sidebar badge stayed
+    // blank until then. The number belongs on screen before any interaction, so the
+    // fetch runs on mount; flipping `active` re-runs this effect, which is exactly the
+    // "re-check when the popover opens" behaviour we want.
     let cancelled = false;
     hubApi.user.plan()
-      .then(p => { if (!cancelled) setCredits(resolveCreditSummary(p)); })
-      .catch(() => { if (!cancelled) setCredits(null); });
+      .then(p => {
+        if (cancelled) return;
+        const summary = resolveCreditSummary(p);
+        setCredits(summary);
+        writeCachedCredits(getHubUser()?.id ?? null, summary);
+      })
+      // A failed refresh must not blank a number that is still the best answer we
+      // have. Keep the cached value and let the next focus event retry.
+      .catch(() => {});
     return () => { cancelled = true; };
   }, [active, connected]);
 
   return { connected, user, credits, refresh };
+}
+
+/**
+ * Last known balance, so the sidebar badge can render a number before the network
+ * answers. Scoped by Hub user id: a balance cached under one account must never be
+ * rendered for another — that would be a *wrong* number, which is worse than a
+ * pending one.
+ */
+const CREDITS_CACHE_KEY = 'markus:hub:credits';
+
+function readCachedCredits(userId: string | null): CreditSummary | null {
+  if (!userId) return null;
+  try {
+    const raw = localStorage.getItem(CREDITS_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { userId?: string; credits?: CreditSummary };
+    if (parsed.userId !== userId || !parsed.credits) return null;
+    return parsed.credits;
+  } catch {
+    return null;
+  }
+}
+
+function writeCachedCredits(userId: string | null, credits: CreditSummary | null): void {
+  try {
+    if (!userId || !credits) {
+      localStorage.removeItem(CREDITS_CACHE_KEY);
+      return;
+    }
+    localStorage.setItem(CREDITS_CACHE_KEY, JSON.stringify({ userId, credits }));
+  } catch {
+    /* private mode / quota — caching is an optimisation, never a requirement */
+  }
 }

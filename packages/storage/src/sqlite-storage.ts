@@ -1538,7 +1538,8 @@ export function runInTransaction<T>(db: DatabaseSync, fn: () => T): T {
  * 地址根本解析不了 —— 占位就变成噪声。改成 `local-<hash>` 后：
  * - 仍然是**占位事实**而非声明：由 id 派生、不可挑选；
  * - hub 对齐时被真 slug 覆盖（SqliteOrgRepo.bindHubOrg），已签发地址则保持不动；
- * - 人显式声明 slug 仍然只有 declareOrgSlug 一条路径。
+ * - 人显式声明 slug 的路径不存在：slug 的唯一写者是 markus.global（全局唯一名字
+ *   只能在 hub 裁决），本机只镜像。
  * hash = sha256 前 8 位：同一 orgId 恒得同一 slug（幂等），不含随机/时序成分。
  */
 export function registryOrgSlug(orgId: string): string {
@@ -1573,7 +1574,7 @@ export class SqliteOrgRepo {
    * 2. **地址段跟 hub 走**：hub 的 slug 是全局唯一的地址段；不同步就会出现「hub 上
    *    看到的地址本机解析不了」两个世界。
    * 3. **已签发地址的组织不改 slug**：一旦有 channel_binding 指向旧 slug，改 slug 会让
-   *    已发出的地址悬空。此时只记 hub_org_id，slug 留给人显式声明（declareOrgSlug）。
+   *    已发出的地址悬空。此时只记 hub_org_id，slug 留待 hub 侧裁决。
    *
    * 幂等：同一 (hubOrgId, slug) 重复调用写入相同字节，不产生第二份历史。
    */
@@ -1615,7 +1616,7 @@ export class SqliteOrgRepo {
     } catch (err) {
       if (!isUniqueViolation(err)) throw err;
       // 本地另有组织占着这个 slug（hub 侧已保证唯一，只可能是本地先手写）。
-      // 记下身份即可，slug 交给 declareOrgSlug 显式裁决。
+      // 记下身份即可，slug 保持原值；改名只能在 hub 侧发起。
       slugSkipped = 'conflict';
       nextSlug = org.orgSlug;
       this.db
@@ -1687,52 +1688,6 @@ export class SqliteOrgRepo {
     this.db
       .prepare('UPDATE organizations SET cross_org_policy = ?, updated_at = ? WHERE id = ?')
       .run(policy, now(), orgId);
-  }
-
-  /**
-   * C10-A：org_slug 的显式声明路径（注册表写者，source:'registry'）。
-   *
-   * 三条纪律：
-   * 1. 校验走 shared 的 checkOrgSlug —— 与地址格式同一套段级规则，无第二份。
-   * 2. 首次签发地址后不可变（含已撤销的绑定：签发历史是永久事实）。
-   * 3. 跨组织冲突由 uq_organizations_org_slug 裁决，不做读-再-写。
-   * 绝不读 name：slug 只能来自显式声明或 registryOrgSlug 派生点。
-   */
-  declareOrgSlug(
-    orgId: string,
-    slug: string,
-  ): { ok: true; orgSlug: string } | { ok: false; reason: 'org_not_found' | 'invalid_slug' | 'immutable' | 'conflict'; hint: string } {
-    const org = this.findOrgById(orgId);
-    if (!org) {
-      return { ok: false, reason: 'org_not_found', hint: `Organisation ${orgId} does not exist; create it before declaring a slug.` };
-    }
-    const check = checkOrgSlug(slug);
-    if (!check.ok) {
-      return { ok: false, reason: 'invalid_slug', hint: check.hint };
-    }
-    const issued = this.db
-      .prepare('SELECT 1 FROM channel_bindings WHERE org_id = ? AND address IS NOT NULL LIMIT 1')
-      .get(orgId);
-    if (issued !== undefined) {
-      return {
-        ok: false,
-        reason: 'immutable',
-        hint: `org_slug is immutable after the first address issuance (organisation ${orgId} has issued addresses). Keep "${org.orgSlug}".`,
-      };
-    }
-    try {
-      this.db
-        .prepare('UPDATE organizations SET org_slug = ?, updated_at = ? WHERE id = ?')
-        .run(slug, now(), orgId);
-      return { ok: true, orgSlug: slug };
-    } catch (err) {
-      if (!isUniqueViolation(err)) throw err;
-      return {
-        ok: false,
-        reason: 'conflict',
-        hint: `Slug "${slug}" is already owned by another organisation. Pick a different slug; org slugs are globally unique.`,
-      };
-    }
   }
 
   private _mapOrg(r: Record<string, unknown>) {

@@ -6,11 +6,14 @@
  * dispatcher installation itself is process-global and not unit-testable in a
  * meaningful way, so it is exercised by the probe in Settings instead.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   buildEgressPolicy,
+  buildProxiedDispatcher,
   createPolicyDispatcher,
+  createSystemProxyWatcher,
   hostMatchesNoProxy,
+  isSocksProxy,
   maskProxyUrl,
   shouldBypassEgress,
   type EgressDispatcher,
@@ -178,5 +181,160 @@ describe('createPolicyDispatcher — the bypass list is actually enforced', () =
 
     expect(direct.calls).toEqual(['10.1.2.3', '192.168.1.5']);
     expect(proxied.calls).toEqual([]);
+  });
+});
+
+describe('SOCKS5 support', () => {
+  const makeUndici = (built: string[]) => ({
+    Agent: class { constructor() { /* direct */ } },
+    ProxyAgent: class {
+      constructor(o: Record<string, unknown>) { built.push(`http:${String(o['uri'])}`); }
+    },
+    Socks5ProxyAgent: class {
+      constructor(url: string) { built.push(`socks:${url}`); }
+    },
+    setGlobalDispatcher() { /* noop */ },
+    fetch: async () => ({} as Response),
+  });
+
+  it('recognises socks schemes and rejects http ones', () => {
+    expect(isSocksProxy('socks5://127.0.0.1:1080')).toBe(true);
+    expect(isSocksProxy('socks5h://127.0.0.1:1080')).toBe(true);
+    expect(isSocksProxy('socks4://1.2.3.4:1080')).toBe(true);
+    expect(isSocksProxy('SOCKS5://host:1')).toBe(true);
+    expect(isSocksProxy('http://127.0.0.1:7890')).toBe(false);
+    expect(isSocksProxy('https://proxy:443')).toBe(false);
+  });
+
+  it('constructs Socks5ProxyAgent for a socks url, never ProxyAgent', () => {
+    // ProxyAgent accepts a socks5:// uri without complaining and then fails every
+    // request — so the assertion has to be on WHICH agent was built, not that we
+    // returned something.
+    const built: string[] = [];
+    buildProxiedDispatcher(makeUndici(built) as never, 'socks5://127.0.0.1:1080');
+    expect(built).toEqual(['socks:socks5://127.0.0.1:1080']);
+  });
+
+  it('keeps the TLS workaround on the http path only', () => {
+    // The pin exists because some CDNs fingerprint the TLS stack. A SOCKS tunnel
+    // carries the handshake untouched, so applying it there would be meaningless.
+    let captured: Record<string, unknown> | undefined;
+    const undici = {
+      Agent: class { constructor() { /* direct */ } },
+      ProxyAgent: class { constructor(o: Record<string, unknown>) { captured = o; } },
+      setGlobalDispatcher() { /* noop */ },
+      fetch: async () => ({} as Response),
+    };
+    buildProxiedDispatcher(undici as never, 'http://127.0.0.1:7890');
+    expect(captured?.['requestTls']).toEqual({ maxVersion: 'TLSv1.2' });
+  });
+
+  it('throws instead of silently going direct when Socks5ProxyAgent is unavailable', () => {
+    // The whole point of this change: a SOCKS route that cannot be honoured must be
+    // loud. Falling back to "no proxy" would recreate the silent-direct bug that the
+    // system-proxy SOCKS detection was added to fix.
+    const undici = {
+      Agent: class { constructor() { /* direct */ } },
+      ProxyAgent: class { constructor() { /* would be wrong here */ } },
+      setGlobalDispatcher() { /* noop */ },
+      fetch: async () => ({} as Response),
+    };
+    expect(() => buildProxiedDispatcher(undici as never, 'socks5://127.0.0.1:1080'))
+      .toThrow(/no Socks5ProxyAgent/);
+  });
+});
+
+describe('createSystemProxyWatcher', () => {
+  it('fires only when the OS proxy actually changes', async () => {
+    vi.useFakeTimers();
+    try {
+      let current = 'http://a:1';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      // Three ticks with an unchanged value must not rebuild anything: re-installing
+      // an identical dispatcher would churn live connections every 30s for nothing.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fired).toBe(0);
+
+      current = 'socks5://b:2';
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+
+      // ...and exactly once, not once per subsequent tick.
+      await vi.advanceTimersByTimeAsync(3000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('treats undefined -> value as a change (user enables a proxy later)', async () => {
+    // This is the case the old boot-once behaviour could never handle: Markus started
+    // with no proxy, the user turned one on in System Settings, nothing happened.
+    vi.useFakeTimers();
+    try {
+      let current: string | undefined;
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(0);
+
+      current = 'http://127.0.0.1:7890';
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('also notices a proxy being turned off', async () => {
+    vi.useFakeTimers();
+    try {
+      let current: string | undefined = 'http://127.0.0.1:7890';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+
+      current = undefined;
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(fired).toBe(1);
+      stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops firing after the returned disposer runs', async () => {
+    vi.useFakeTimers();
+    try {
+      let current = 'a';
+      let fired = 0;
+      const stop = createSystemProxyWatcher({
+        read: () => current,
+        onChange: () => { fired += 1; },
+        intervalMs: 1000,
+      });
+      stop();
+      current = 'b';
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(fired).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

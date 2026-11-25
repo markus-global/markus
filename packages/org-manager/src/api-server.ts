@@ -76,7 +76,7 @@ import {
   type InstanceChannelBinding,
   type InstanceStoreDeps,
 } from './instance-integrations.js';
-import { bucketedDirUsage } from './storage-usage.js';
+import { bucketedDirUsage, dirSizeAsync } from './storage-usage.js';
 import { BuilderService } from './builder-service.js';
 import type { TaskService } from './task-service.js';
 import { assessResponseCompleteness, type HITLService } from './hitl-service.js';
@@ -6513,6 +6513,58 @@ export class APIServer {
       return;
     }
 
+    // ─── 组织标识（org slug）—— 只读镜像，写入在 markus.global ────────────
+    //
+    // slug 的唯一意义是 Hub 上的全局唯一命名空间（`hub_organizations.slug` 上有
+    // UNIQUE INDEX）。本机不提供写入口：离线时无法判断名字是否已被占，写了也会被
+    // 下次登录的 syncHubOrgIdentity 覆盖 —— 那是个会静默回滚用户的陷阱。
+    // 本端点只做读取，供 UI 展示 Hub 镜像下来的值。
+    const orgSlugMatch = path.match(/^\/api\/orgs\/([^/]+)\/slug$/);
+    if (orgSlugMatch) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const orgId = orgSlugMatch[1]!;
+      const repo = this.storage?.orgRepo as
+        | {
+            findOrgById?: (id: string) => { id: string; orgSlug: string | null; hubOrgId?: string | null } | undefined;
+            countBoundAddresses?: (id: string) => number;
+          }
+        | undefined;
+      if (!repo?.findOrgById) {
+        this.json(res, 503, { error: 'org repository not available', code: 'ORG_REPO_UNAVAILABLE' });
+        return;
+      }
+      const org = repo.findOrgById(orgId);
+      if (!org) {
+        this.json(res, 404, { error: 'Organization not found', code: 'ORG_NOT_FOUND' });
+        return;
+      }
+      // 仅本组织 owner 可声明：slug 是全局唯一的地址段，不能让成员改走别人的名字。
+      if (authUser.role !== 'owner' || authUser.orgId !== orgId) {
+        this.json(res, 403, {
+          error: 'Only the organization owner can set its address prefix',
+          code: 'NOT_ORG_OWNER',
+        });
+        return;
+      }
+
+      if (req.method === 'GET') {
+        const issuedAddresses = repo.countBoundAddresses?.(orgId) ?? 0;
+        this.json(res, 200, {
+          orgId,
+          orgSlug: org.orgSlug,
+          hubOrgId: org.hubOrgId ?? null,
+          // 已签发地址的组织不能改 slug（否则已发出的地址会变成悬空引用）。
+          issuedAddresses,
+          locked: issuedAddresses > 0,
+        });
+        return;
+      }
+
+      this.json(res, 405, { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
+      return;
+    }
+
     // C10-C: cross_org_policy elevation — human-only (owner/admin), audited.
     // The service re-validates the actor against the users table; this gate is
     // the role check, not a second source of the human/agent decision.
@@ -7007,7 +7059,7 @@ export class APIServer {
       const agentId = path.split('/')[3]!;
       try {
         const agentDataDir = join(this.orgService.getAgentManager().getDataDir(), agentId);
-        const usage = bucketedDirUsage(agentDataDir);
+        const usage = await bucketedDirUsage(agentDataDir);
         this.json(res, 200, {
           agentId,
           dataDir: agentDataDir,
@@ -10603,6 +10655,7 @@ EXPLANATION_END`;
         return;
       }
       const { installEgress, EGRESS_PROBE_URL } = await import('@markus/shared');
+      const { classifyFetchFailure } = await import('@markus/comms');
       const status = await installEgress({ force: true });
       const startedAt = Date.now();
       try {
@@ -10614,16 +10667,29 @@ EXPLANATION_END`;
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: probe.ok ? null : `probe returned HTTP ${probe.status}`,
+          probeUrl: EGRESS_PROBE_URL,
+          // The chain DID reach the probe, so a non-2xx here is not a routing
+          // failure — say that plainly instead of implying the proxy is broken.
+          failure: probe.ok ? null : { code: 'probe_http_error', detail: `HTTP ${probe.status}` },
         });
       } catch (err) {
+        // undici folds every transport failure into `TypeError: fetch failed` and
+        // hides the real errno on `cause`. Serialising String(err) to the UI made the
+        // settings page print that internal exception verbatim, which tells the user
+        // nothing and does not distinguish "proxy not running" from "bad host" from
+        // "timeout" — three different remedies. classifyFetchFailure recovers the
+        // errno here, once, so the UI can switch on a code instead of parsing prose.
+        const classified = classifyFetchFailure(err);
         this.json(res, 200, {
           ok: false,
           exitIp: null,
           latencyMs: Date.now() - startedAt,
           proxied: status.installed,
           source: status.policy.source,
-          error: String(err),
+          probeUrl: EGRESS_PROBE_URL,
+          failure: classified
+            ? { code: classified.code, detail: classified.detail }
+            : { code: 'probe_failed', detail: err instanceof Error ? err.message : String(err) },
         });
       }
       return;
@@ -14042,7 +14108,7 @@ EXPLANATION_END`;
     if (path === '/api/system/storage' && req.method === 'GET') {
       try {
         const dataDir = join(homedir(), '.markus');
-        const result = this.collectStorageInfo(dataDir);
+        const result = await this.collectStorageInfo(dataDir);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Storage scan failed: ${String(err)}` });
@@ -14052,7 +14118,7 @@ EXPLANATION_END`;
 
     if (path === '/api/system/storage/orphans' && req.method === 'GET') {
       try {
-        const result = this.detectOrphans();
+        const result = await this.detectOrphans();
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Orphan detection failed: ${String(err)}` });
@@ -14064,7 +14130,7 @@ EXPLANATION_END`;
       try {
         const body = await this.readBody(req);
         const ids = Array.isArray(body?.ids) ? body.ids as string[] : undefined;
-        const result = this.purgeOrphans(ids);
+        const result = await this.purgeOrphans(ids);
         this.json(res, 200, result);
       } catch (err) {
         this.json(res, 500, { error: `Orphan cleanup failed: ${String(err)}` });
@@ -16138,25 +16204,17 @@ EXPLANATION_END`;
     return null;
   }
 
-  private collectStorageInfo(dataDir: string): StorageScanResult {
+  private async collectStorageInfo(dataDir: string): Promise<StorageScanResult> {
     const cached = storageScanCache;
     if (cached && cached.key === dataDir && Date.now() - cached.at < STORAGE_SCAN_TTL_MS) {
       return cached.value;
     }
 
-    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
-      if (!existsSync(p)) return 0;
-      try {
-        const st = statSync(p);
-        if (st.isFile()) return st.size;
-        if (!st.isDirectory() || depth >= maxDepth) return 0;
-        let total = 0;
-        for (const entry of readdirSync(p, { withFileTypes: true })) {
-          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
-        }
-        return total;
-      } catch { return 0; }
-    };
+    // One walk implementation lives in storage-usage.ts. The inline copy that used to
+    // sit here called `readdirSync`/`statSync`, so the whole scan ran on the event loop:
+    // on a real org (100+ agents) that is a measured >60 s during which *every* other
+    // request in the app is frozen — which is why opening the data page appeared to
+    // hang the entire application, not just that page.
 
     const topLevelItems: Array<{ name: string; path: string; size: number; description: string }> = [
       { name: 'Database', path: join(dataDir, 'data.db'), size: 0, description: 'SQLite database (tasks, agents, chat, etc.)' },
@@ -16176,7 +16234,7 @@ EXPLANATION_END`;
           if (existsSync(f)) { try { item.size += statSync(f).size; } catch { /* */ } }
         }
       } else {
-        item.size = dirSize(item.path);
+        item.size = await dirSizeAsync(item.path);
       }
     }
 
@@ -16195,7 +16253,7 @@ EXPLANATION_END`;
         // `size` that was only the sum of those five picks (22% of the agent
         // directory missing) and a depth cap that bit silently. See
         // storage-usage.ts for the measurements.
-        const usage = bucketedDirUsage(agentDir);
+        const usage = await bucketedDirUsage(agentDir);
         agentInfos.push({
           id: entry.name,
           name: agent?.config?.name ?? entry.name,
@@ -16229,7 +16287,7 @@ EXPLANATION_END`;
     return value;
   }
 
-  private detectOrphans() {
+  private async detectOrphans() {
     const dataDir = join(homedir(), '.markus');
     const am = this.orgService.getAgentManager();
     const knownAgentIds = new Set(am.listAgents().map(a => a.id));
@@ -16239,27 +16297,13 @@ EXPLANATION_END`;
     const orphanAgents: Array<{ id: string; path: string; size: number }> = [];
     const orphanTeams: Array<{ id: string; path: string; size: number }> = [];
 
-    const dirSize = (p: string, maxDepth = 3, depth = 0): number => {
-      if (!existsSync(p)) return 0;
-      try {
-        const st = statSync(p);
-        if (st.isFile()) return st.size;
-        if (!st.isDirectory() || depth >= maxDepth) return 0;
-        let total = 0;
-        for (const entry of readdirSync(p, { withFileTypes: true })) {
-          total += dirSize(join(p, entry.name), maxDepth, depth + 1);
-        }
-        return total;
-      } catch { return 0; }
-    };
-
     const agentsDir = join(dataDir, 'agents');
     if (existsSync(agentsDir)) {
       for (const entry of readdirSync(agentsDir, { withFileTypes: true })) {
         if (!entry.isDirectory() || entry.name === 'vector-store') continue;
         if (!knownAgentIds.has(entry.name)) {
           const p = join(agentsDir, entry.name);
-          orphanAgents.push({ id: entry.name, path: p, size: dirSize(p) });
+          orphanAgents.push({ id: entry.name, path: p, size: await dirSizeAsync(p) });
         }
       }
     }
@@ -16270,7 +16314,7 @@ EXPLANATION_END`;
         if (!entry.isDirectory()) continue;
         if (!knownTeamIds.has(entry.name)) {
           const p = join(teamsDir, entry.name);
-          orphanTeams.push({ id: entry.name, path: p, size: dirSize(p) });
+          orphanTeams.push({ id: entry.name, path: p, size: await dirSizeAsync(p) });
         }
       }
     }
@@ -16282,10 +16326,10 @@ EXPLANATION_END`;
     };
   }
 
-  private purgeOrphans(ids?: string[]) {
+  private async purgeOrphans(ids?: string[]) {
     // Deleting directories invalidates the disk-usage cache.
     storageScanCache = null;
-    const orphans = this.detectOrphans();
+    const orphans = await this.detectOrphans();
     const filter = ids && ids.length > 0 ? new Set(ids) : null;
     const purgedAgents: string[] = [];
     const purgedTeams: string[] = [];
