@@ -115,3 +115,78 @@ first sight".
 > markus.global (`PUT /api/orgs/:id/slug`) and the local `declareOrgSlug` method and
 > its route were **deleted** rather than wired up. Kept as history because the gap
 > was real — only the fix direction was wrong.
+
+---
+
+## Webhook complement — the same chain without email (2026-11-25 21:16–21:21 CST)
+
+Owner asked for a non-email test. C10-D needs DNS, but the webhook entry is the one
+inbound channel that already carries a shared secret, so it can prove everything
+except the email auth chain.
+
+**Verdict: ingress, auth gate, identity, ceiling, idempotency and routing all pass on
+the live instance. The fifth L5 condition fails on a *running* agent too — so it is a
+structural gap, not the stopped content agent.**
+
+Venue: live instance `pid 83971`, `:8056`, `/Users/liuqian/.markus/data.db`.
+Probe rows are prefixed `src_probe_c10w_*` / `cb_probe_c10w_*`; the probe source is
+`enabled=0` and the probe binding `revoked_at` was set at the end of the run (rows are
+kept for auditability, not deleted).
+
+### Readings
+
+| # | Request | Result |
+|---|---|---|
+| 1 | POST, no token | `401 unauthorized`, **zero rows written** |
+| 2 | POST, wrong token | `401 unauthorized`, **zero rows written** |
+| 3 | POST, valid token, `intent=action_required` | `200 ingested` — `mbx_adad375d97f77f63a435c4d9`, `workUnitRef=external:src_probe_c10w_hook:probe-c10w-2`; stored `intent` capped to **`deliver`** (ceiling holds); `envelope.auth=null`, `fromVerified=false` (hard-coded until C10-D) |
+| 4 | Replay of #3 (same `messageId`) | `200 bounced / duplicate_message_id`, no new queued row |
+| 5 | POST to an RSS source id | `400 not_a_webhook_source` (kind gate) |
+| 6 | POST to an unknown source | `404 unknown_source` |
+
+Identity penetrates to the decision layer: `agent_decisions` holds a `pick` row for
+Secretary carrying the same `work_unit_ref` as the mailbox row.
+
+### The fifth condition fails on a running agent (the decisive finding)
+
+Two deliveries were routed to **Secretary (`agt_5f76…`, status `idle` — i.e. running,
+not human-stopped)** via a fresh binding `desk.jsyqrt@markus.global`. 120 s
+observation window after the second delivery:
+
+| Reading | Value |
+|---|---|
+| `work_units` row for the signal | created, but `status=idle`, `claimed_by=NULL`, `used=0` |
+| mailbox row | `completed` within ~1 ms of enqueue |
+| `agent_activities` for Secretary after 13:19Z | **0 rows** (last activity 13:01Z) |
+| `facts` | **73 → 73, unchanged** |
+| `agent_decisions` | `pick` row exists, but no turn ever ran |
+
+Structural evidence, not inference: `external_signal` has exactly **one** reference in
+`packages/core/src` + `packages/org-manager/src` — the `enqueue` call at
+`external-source-service.ts:113`. The wake/execution branches in `agent.ts` key on
+`sourceType === 'human_chat' | 'a2a_message' | 'callback_result'`; no branch consumes
+`external_signal`. `complete()` (`mailbox.ts:1890`) marks the row `completed` with
+`why:'turn-complete'` while no turn happened, so the row's terminal state says
+"finished" for a signal nothing ever worked on.
+
+**Consequence for the cut gate:** L5 condition 5 cannot be closed by starting the
+content agent. External signals need a consumer that starts a work turn (claim the
+`work_unit`, then the agent proposes the next step → a `fact`). That consumer does not
+exist today; until it does, "external signal arrives" means "row is filed", not "work
+begins".
+
+### Secondary finding — no backpressure for a stopped recipient
+
+While `中文内容写手` was `stopped_by_human`, the RSS source kept polling and piling
+`external_signal` rows into its mailbox: **27 rows `queued`** and growing, with no
+expiry and no drop path. The RSS source was set `enabled=0` to stop the bleed. An
+external source needs a budget/drop rule for a non-running target, otherwise a live
+feed turns into an unbounded mailbox.
+
+### What this run does NOT prove
+
+- `verified=true` / `envelope.auth`: never written for a webhook (hard-coded `false`).
+  A valid shared secret **is** a real authentication of the caller at the HTTP gate, so
+  the verified side could be exercised without DNS by recording the scheme on the
+  envelope — that is a trust-model decision, not a test detail.
+- Outbound, bounce/DSN, and `verified` promotion remain C10-D territory (needs DNS).
