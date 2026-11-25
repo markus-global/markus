@@ -2282,7 +2282,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                     setBindHostNotice({ text: t('accessScope.saveFailed'), warn: false });
                   }
                 }}
-                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-sm font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
+                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-[13px] font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
                   bindHostPendingRestart
                     ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
                     : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
@@ -2301,11 +2301,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </Section>
 
         {/* ───── Network / Proxy ───── */}
-        <Section title={t('networkProxy.title')}>
+        <Section title={t('networkProxy.title')} description={t('networkProxy.description')}>
           <div className={`${CARD} divide-y divide-border-default/40`}>
 
             {/* ① Row: description + toggle */}
-            <SettingRow label={t('networkProxy.enabledLabel')} hint={t('networkProxy.description')}>
+            <SettingRow label={t('networkProxy.enabledLabel')}>
               <button
                 onClick={async () => {
                   const newVal = !proxyEnabled;
@@ -2347,8 +2347,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                   <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
                     proxyEffective.source === 'config' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
                     proxyEffective.source === 'env' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
-                    proxyEffective.source === 'system' ? 'bg-blue-500/10 text-blue-500' :
-                    'bg-fg-muted/10 text-fg-muted'
+                    proxyEffective.source === 'system' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
+                    'bg-fg-tertiary/10 text-fg-tertiary'
                   }`}>
                     {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
                      proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
@@ -2357,7 +2357,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
                 <button
                   onClick={() => loadNetworkSettings()}
-                  className="flex items-center gap-1 text-[11px] text-fg-muted transition-colors hover:text-fg-secondary"
+                  className="flex items-center gap-1 text-[11px] text-fg-tertiary transition-colors hover:text-fg-secondary"
                   title={t('networkProxy.refresh')}
                 >
                   <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
@@ -3881,14 +3881,43 @@ function ProviderSection({ title, defaultCollapsed, configuredProviders, t, chil
 /** Base card surface — pair with a padding utility (usually `p-5`). */
 const CARD = 'bg-surface-elevated rounded-xl border border-border-default/40';
 
+/* ── 排版与颜色 token ──────────────────────────────────────────────────
+ * 设置界面只允许这六档字号、四种文字颜色。页面里**不写魔法值**。
+ *
+ * 为什么要有这层：这页曾经同时存在 21 种「字号/字重/颜色」组合，原因不是
+ * 谁写错了，而是每个块都自己写一句 `text-[13px] text-fg-muted` —— 没人看得见
+ * 漂移，也没人拦得住下一个人写出第 22 种。token 把可选值收窄到枚举，
+ * 要让字号多一档，必须先改这里，这就是拦截点。
+ *
+ * 层级只三级（页面 → 组 → 项）：pageTitle / groupTitle+groupDesc / label+hint。
+ */
+const TYPE = {
+  pageTitle:  'text-lg font-semibold',
+  groupTitle: 'text-[13px] font-semibold',
+  groupDesc:  'text-xs leading-relaxed',
+  label:      'text-[13px] font-medium',
+  body:       'text-[13px]',
+  hint:       'text-[11px] leading-relaxed',
+  badge:      'text-[11px] font-medium',
+} as const;
+
+const FG = {
+  strong: 'text-fg-primary',
+  desc:   'text-fg-tertiary',
+  ok:     'text-emerald-600 dark:text-emerald-400',
+  warn:   'text-amber-600 dark:text-amber-400',
+  brand:  'text-brand-600 dark:text-brand-400',
+  danger: 'text-red-500',
+} as const;
+
 /** Standard text input / number input. Add width utils at the call site. */
 const FIELD_INPUT = 'px-3 py-2 text-sm bg-surface-primary border border-border-default rounded-lg text-fg-primary placeholder:text-fg-tertiary/50 focus:border-brand-500 focus:ring-2 focus:ring-brand-500/15 outline-none transition-colors';
 
 /** Primary (commit) action. */
-const BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-sm font-medium bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-40 rounded-lg transition-colors';
+const BTN_PRIMARY = 'inline-flex items-center justify-center gap-1.5 px-3.5 py-2 text-[13px] font-medium bg-brand-600 hover:bg-brand-500 text-on-brand disabled:opacity-40 rounded-lg transition-colors';
 
 /** Secondary / neutral action. */
-const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium border border-border-default text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40 rounded-lg transition-colors';
+const BTN_SECONDARY = 'inline-flex items-center justify-center gap-1.5 px-3 py-2 text-[13px] font-medium border border-border-default text-fg-secondary hover:bg-surface-overlay hover:text-fg-primary disabled:opacity-40 rounded-lg transition-colors';
 
 /** Per-tab page header — the anchor every Settings panel was missing. */
 function PageHeader({ tab }: { tab: SettingsTab }) {
@@ -3902,8 +3931,8 @@ function PageHeader({ tab }: { tab: SettingsTab }) {
         <SettingsTabIcon id={tab} className="w-[18px] h-[18px]" />
       </span>
       <div className="min-w-0">
-        <h1 className="text-lg font-semibold text-fg-primary tracking-tight leading-tight">{title}</h1>
-        {desc && <p className="text-[13px] text-fg-tertiary mt-0.5 leading-snug">{desc}</p>}
+        <h1 className={`${TYPE.pageTitle} ${FG.strong} tracking-tight leading-tight`}>{title}</h1>
+        {desc && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc} leading-snug`}>{desc}</p>}
       </div>
     </header>
   );
@@ -3916,8 +3945,8 @@ function Field({ label, description, children }: {
   return (
     <div className="flex flex-col gap-2.5 md:flex-row md:items-center md:justify-between">
       <div className="min-w-0">
-        <div className="text-sm font-medium text-fg-primary">{label}</div>
-        {description && <div className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</div>}
+        <div className={`${TYPE.label} ${FG.strong}`}>{label}</div>
+        {description && <div className={`mt-0.5 ${TYPE.hint} ${FG.desc}`}>{description}</div>}
       </div>
       <div className="shrink-0">{children}</div>
     </div>
@@ -3948,7 +3977,7 @@ function SettingRow({ label, hint, children }: {
     <div className="flex items-start justify-between gap-6 px-5 py-3.5">
       <div className="min-w-0 flex-1">
         {label && <div className="text-[13px] font-medium text-fg-primary">{label}</div>}
-        {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-muted">{hint}</div>}
+        {hint && <div className="mt-0.5 text-[11px] leading-relaxed text-fg-tertiary">{hint}</div>}
       </div>
       {children && <div className="flex shrink-0 items-center gap-2">{children}</div>}
     </div>
@@ -3962,8 +3991,8 @@ function Section({ title, description, action, children }: {
     <section className="space-y-6">
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
-          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
+          <h3 className={`${TYPE.groupTitle} ${FG.strong}`}>{title}</h3>
+          {description && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc}`}>{description}</p>}
         </div>
         {action}
       </div>
@@ -3987,8 +4016,8 @@ function CollapsibleSection({ title, description, children, defaultOpen = true }
         className="flex items-start justify-between w-full group text-left"
       >
         <div className="min-w-0">
-          <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
-          {description && <p className="text-xs text-fg-tertiary mt-0.5 leading-relaxed">{description}</p>}
+          <h3 className={`${TYPE.groupTitle} ${FG.strong}`}>{title}</h3>
+          {description && <p className={`mt-0.5 ${TYPE.groupDesc} ${FG.desc}`}>{description}</p>}
         </div>
         <span className={`text-fg-tertiary mt-0.5 transition-transform group-hover:text-fg-secondary ${open ? '' : '-rotate-90'}`}>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="6 9 12 15 18 9" /></svg>
@@ -4183,14 +4212,14 @@ function ProxyBypassSection({
         >
           <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
           {t('networkProxy.noProxyTitle')}
-          <span className="text-[11px] tabular-nums text-fg-muted bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
+          <span className="text-[11px] tabular-nums text-fg-tertiary bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
         </button>
 
         {/* Test button — always visible */}
         <button
           onClick={onTest}
           disabled={egressTesting}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-md border border-border-default/60 text-fg-secondary hover:text-fg-primary hover:border-fg-muted transition-colors disabled:opacity-40"
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] rounded-md border border-border-default/60 text-fg-secondary hover:text-fg-primary hover:border-fg-muted transition-colors disabled:opacity-40"
         >
           {egressTesting && (
             <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
@@ -4235,7 +4264,7 @@ function ProxyBypassSection({
           )}
 
           {noProxyList.length === 0 && (
-            <p className="text-[11px] text-fg-muted italic">{t('networkProxy.noProxyEmpty')}</p>
+            <p className="text-[11px] text-fg-tertiary italic">{t('networkProxy.noProxyEmpty')}</p>
           )}
 
           {/* Add entry input */}
@@ -4254,7 +4283,7 @@ function ProxyBypassSection({
             className="w-full px-3 py-1.5 text-[13px] font-mono bg-surface-secondary/50 border border-border-default/50 rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 outline-none transition-colors"
           />
 
-          <p className="text-[11px] text-fg-muted leading-relaxed">{t('networkProxy.noProxyHint')}</p>
+          <p className="text-[11px] text-fg-tertiary leading-relaxed">{t('networkProxy.noProxyHint')}</p>
         </div>
       )}
     </div>

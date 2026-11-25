@@ -256,23 +256,26 @@ export function RemoteAccessSection() {
   const selfCommands = kind ? setupCommands(kind, platform) : null;
 
   return (
-    <Section title={t('settings:remoteAccess.title')}>
-      {/* Card container so this section has the same footprint as the two above it.
-          It used to render straight onto the page background at x=256 while its
-          siblings sat inside a card at x=277 — reading down, the content shifted
-          left and widened by 42px with no visual cue why. */}
+    <Section
+      title={t('settings:remoteAccess.title')}
+      description={
+        <>
+          {t('settings:remoteAccess.description')}
+          <br />
+          {t('settings:accessScope.remoteNote')}
+        </>
+      }
+    >
+      {/* Both paragraphs moved into the Section description slot. They were 14px and
+          12px *inside* the card while the two groups above put theirs at 12px
+          *outside* it — three groups, three different answers to "where does the
+          explanation go". One slot, one size, owned by the primitive. */}
       <div className="bg-surface-elevated rounded-xl border border-border-default/40 p-5 space-y-5">
-        <p className="text-sm text-fg-secondary">{t('settings:remoteAccess.description')}</p>
-        {/* Moved down from the access-scope block. It explains how remote access
-            behaves (the tunnel talks to 127.0.0.1, so you need not open the LAN),
-            so it belongs next to remote access itself rather than inside a
-            different section two blocks above. */}
-        <p className="text-[12px] text-fg-muted leading-relaxed">{t('settings:accessScope.remoteNote')}</p>
 
         {!isAuthed ? (
           <div className="flex items-center gap-3 p-3 rounded-xl bg-amber-500/10 border border-amber-500/20">
             <WarningIcon />
-            <span className="text-sm text-amber-600 dark:text-amber-400">
+            <span className="text-[13px] text-amber-600 dark:text-amber-400">
               {t('settings:remoteAccess.loginRequired')}
             </span>
             <button
@@ -283,10 +286,10 @@ export function RemoteAccessSection() {
             </button>
           </div>
         ) : (
-          <div className="flex items-center gap-2 text-sm text-fg-secondary">
+          <div className="flex items-center gap-2 text-[13px] text-fg-secondary">
             <span className="w-2 h-2 rounded-full bg-green-500" />
             {t('settings:remoteAccess.signedInAs')}{' '}
-            <strong>{hubUser?.username ?? hubUser?.displayName}</strong>
+            <strong className="font-semibold">{hubUser?.username ?? hubUser?.displayName}</strong>
           </div>
         )}
 
@@ -342,7 +345,7 @@ export function RemoteAccessSection() {
                     )}
 
                     {phase === 'reconnecting' && (
-                      <div className="flex items-center gap-3 p-3 rounded-xl bg-blue-500/10 border border-blue-500/20 text-sm text-blue-600 dark:text-blue-400">
+                      <div className="flex items-center gap-3 p-3 rounded-xl bg-brand-500/10 border border-brand-500/20 text-[13px] text-brand-600 dark:text-brand-400">
                         <Spinner />
                         <span>{t('settings:remoteAccess.wizard.reconnecting')}</span>
                       </div>
@@ -384,12 +387,12 @@ export function RemoteAccessSection() {
                     {wizard.path === 'agent' && (
                       <div className="space-y-3">
                         {targets && targets.agents.length > 0 ? (
-                          <label className="block text-sm">
+                          <label className="block text-[13px]">
                             <span className="text-fg-secondary">
                               {t('settings:remoteAccess.path.agent.pickAgent')}
                             </span>
                             <select
-                              className="mt-1 w-full rounded-lg border border-border-default bg-surface-primary px-3 py-2 text-sm"
+                              className="mt-1 w-full rounded-lg border border-border-default bg-surface-primary px-3 py-2 text-[13px]"
                               value={agentChoice}
                               onChange={(e) => {
                                 setAgentChoice(e.target.value);
@@ -407,12 +410,12 @@ export function RemoteAccessSection() {
                             </select>
                           </label>
                         ) : (
-                          <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-fg-secondary">
+                          <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-[13px] text-fg-secondary">
                             {t('settings:remoteAccess.path.agent.noTargets')}
                           </div>
                         )}
 
-                        <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-sm text-fg-secondary">
+                        <div className="p-3 rounded-xl bg-surface-secondary border border-border-default text-[13px] text-fg-secondary">
                           {wizard.handedToChat
                             ? t('settings:remoteAccess.path.agent.handed')
                             : t('settings:remoteAccess.path.agent.desc')}
@@ -439,7 +442,7 @@ export function RemoteAccessSection() {
                         {kind && (
                           <button
                             type="button"
-                            className="w-full rounded-lg bg-brand-600 px-4 py-2 text-sm font-medium text-on-brand hover:bg-brand-500 disabled:opacity-50"
+                            className="w-full rounded-lg bg-brand-600 px-4 py-2 text-[13px] font-medium text-on-brand hover:bg-brand-500 disabled:opacity-50"
                             disabled={busy || !targets || targets.agents.length === 0}
                             onClick={() => void handOffToAgentChat()}
                           >
@@ -450,7 +453,7 @@ export function RemoteAccessSection() {
                     )}
 
                     {actionError && (
-                      <div className="p-2 rounded-lg bg-red-500/10 text-red-500 text-sm">{actionError}</div>
+                      <div className="p-2 rounded-lg bg-red-500/10 text-red-500 text-[13px]">{actionError}</div>
                     )}
                   </div>
                 )}
@@ -467,14 +470,21 @@ export function RemoteAccessSection() {
 
 /* ── Small shared bits ─────────────────────────────────────────────────────── */
 
-function Section({ title, children }: { title: React.ReactNode; children: React.ReactNode }) {
+function Section({ title, description, children }: {
+  title: React.ReactNode; description?: React.ReactNode; children: React.ReactNode;
+}) {
   return (
-    <section>
-      {/* Same 13px semibold h3 the other settings groups use. It was text-sm
-          (14px) in uppercase — a step larger than its siblings, so this section
-          looked higher-ranked than 「访问范围」and 「网络代理」above it when it
-          is in fact their peer. */}
-      <h3 className="text-[13px] font-semibold text-fg-primary mb-4">{title}</h3>
+    <section className="space-y-6">
+      {/* Mirrors the Section in Settings.tsx: same 24px group gap, same 12px
+          tertiary description slot, same 13px/600 heading. This file used to
+          define its own variant that accepted only a title, so the only way to
+          explain the group was to put a paragraph inside the card — which is
+          exactly how remote access ended up with an explanation at 14px inside
+          the card while its two neighbours explained themselves at 12px outside. */}
+      <div>
+        <h3 className="text-[13px] font-semibold text-fg-primary">{title}</h3>
+        {description && <p className="mt-0.5 text-xs leading-relaxed text-fg-tertiary">{description}</p>}
+      </div>
       <div className="space-y-4">{children}</div>
     </section>
   );
@@ -638,7 +648,7 @@ function MethodChooser({
                   {t(METHOD_LABEL[m.kind].name)}
                 </span>
                 {m.recommended && (
-                  <span className="px-1.5 py-0.5 text-[10px] font-medium rounded bg-brand-500/15 text-brand-500">
+                  <span className="px-1.5 py-0.5 text-[11px] font-medium rounded bg-brand-500/15 text-brand-500">
                     ★ {t('settings:remoteAccess.badgeRecommended')}
                   </span>
                 )}
@@ -685,7 +695,7 @@ function Chip({ children, tone = 'default' }: { children: React.ReactNode; tone?
       : tone === 'warn'
         ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
         : 'bg-surface-secondary text-fg-tertiary';
-  return <span className={`px-1.5 py-0.5 text-[10px] rounded ${toneClass}`}>{children}</span>;
+  return <span className={`px-1.5 py-0.5 text-[11px] rounded ${toneClass}`}>{children}</span>;
 }
 
 /* ── 2. Progress wizard (six steps) ─────────────────────────────────────────── */
@@ -1047,7 +1057,7 @@ function ReadyPanel({
       </div>
 
       {reconnecting && (
-        <div className="flex items-center gap-2 text-xs text-blue-600 dark:text-blue-400">
+        <div className="flex items-center gap-2 text-[12px] text-brand-600 dark:text-brand-400">
           <Spinner />
           {t('settings:remoteAccess.wizard.reconnectingHint')}
         </div>
@@ -1142,7 +1152,7 @@ function HonestTips({ t }: { t: TFn }) {
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="flex items-center justify-between w-full px-3 py-2 text-sm text-fg-secondary hover:text-fg-primary"
+        className="flex items-center justify-between w-full px-3 py-2 text-[13px] text-fg-secondary hover:text-fg-primary"
       >
         <span>{t('settings:remoteAccess.tipsTitle')}</span>
         <span className={`transition-transform ${open ? '' : '-rotate-90'}`}>▾</span>
