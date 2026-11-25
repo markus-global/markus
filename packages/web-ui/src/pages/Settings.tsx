@@ -2323,143 +2323,151 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </button>
             </SettingRow>
 
-            {/* ② Current status — a strip, not a *card*. It used to be the only
-                tinted, bordered block on the page, so it outweighed the settings above
-                and below it — and a block that looks different reads as a different
-                kind of thing, which is what made this section feel jumbled. It is
-                information to read, so it takes the same row rhythm as everything
-                else and lets the green dot carry the state. */}
-            {proxyEffective && (
-              <SettingRow
-                label={t('networkProxy.activeLabel')}
-                hint={
-                  !proxyEnabled ? t('networkProxy.disabled')
-                    : proxyEffective.proxy ? undefined
-                    : t('networkProxy.noProxy')
-                }
-              >
-                <span className={`h-1.5 w-1.5 rounded-full ${proxyEnabled && proxyEffective.proxy ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
-                {proxyEnabled && proxyEffective.proxy && (
-                  <code className="font-mono text-[13px] font-medium text-brand-600 dark:text-brand-400">{proxyEffective.proxy}</code>
-                )}
-                {proxyEnabled && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
-                  <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                    proxyEffective.source === 'config' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
-                    proxyEffective.source === 'env' ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400' :
-                    proxyEffective.source === 'system' ? 'bg-brand-500/10 text-brand-600 dark:text-brand-400' :
-                    'bg-fg-tertiary/10 text-fg-tertiary'
-                  }`}>
-                    {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig') :
-                     proxyEffective.source === 'env' ? t('networkProxy.sourceEnv') :
-                     proxyEffective.source === 'system' ? t('networkProxy.sourceSystem') : ''}
+            {/* ② 代理地址 — one fact, one row.
+                This was two rows: 「当前生效」 (the resolved value) and 「代理地址」 (the
+                input that produces it). The same fact stated twice, with the input one
+                row away from the status it creates — answering "is it on, and is it the
+                URL I typed?" meant crossing the card twice. State is now a footnote
+                under the input, and the test action sits beside the address it actually
+                tests instead of inside the unrelated bypass list. */}
+            <SettingRow
+              label={t('networkProxy.addressLabel')}
+              hint={
+                <div className="space-y-1">
+                  <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                    <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${proxyEnabled && proxyEffective?.proxy ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                    <span>
+                      {!proxyEnabled ? t('networkProxy.disabled')
+                        : proxyEffective?.proxy ? t('networkProxy.active')
+                        : t('networkProxy.noProxy')}
+                    </span>
+                    {proxyEnabled && proxyEffective && proxyEffective.source !== 'none' && proxyEffective.source !== 'disabled' && (
+                      <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                        proxyEffective.source === 'env'
+                          ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+                          : 'bg-brand-500/10 text-brand-600 dark:text-brand-400'
+                      }`}>
+                        {proxyEffective.source === 'config' ? t('networkProxy.sourceConfig')
+                          : proxyEffective.source === 'env' ? t('networkProxy.sourceEnv')
+                          : t('networkProxy.sourceSystem')}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => loadNetworkSettings()}
+                      className="inline-flex items-center gap-1 text-[11px] text-fg-tertiary transition-colors hover:text-fg-secondary"
+                      title={t('networkProxy.refresh')}
+                    >
+                      <svg className="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                        <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                      </svg>
+                      {t('networkProxy.refresh')}
+                    </button>
                   </span>
-                )}
+                  {egressTest && (
+                    <div className={egressTest.ok ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}>
+                      {egressTest.text}
+                    </div>
+                  )}
+                  {proxyMsg && (
+                    <div className={proxyMsg.type === 'ok' ? 'text-emerald-600 dark:text-emerald-400' : 'text-red-500'}>
+                      {proxyMsg.text}
+                    </div>
+                  )}
+                </div>
+              }
+            >
+              <div className={`flex items-center gap-2 transition-opacity ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
+                <input
+                  type="text"
+                  value={proxyUrl}
+                  onChange={e => setProxyUrl(e.target.value)}
+                  placeholder={t('networkProxy.placeholder')}
+                  className="w-[250px] px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
+                />
                 <button
-                  onClick={() => loadNetworkSettings()}
-                  className="flex items-center gap-1 text-[11px] text-fg-tertiary transition-colors hover:text-fg-secondary"
-                  title={t('networkProxy.refresh')}
+                  onClick={async () => {
+                    setProxySaving(true); setProxyMsg(null);
+                    try {
+                      const res = await fetch('/api/settings/network', {
+                        method: 'POST', headers: authHeaders(),
+                        body: JSON.stringify({ proxy: proxyUrl.trim() }),
+                      });
+                      if (res.ok) {
+                        setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
+                        loadNetworkSettings();
+                      } else {
+                        const d = await res.json() as { error?: string };
+                        setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
+                      }
+                    } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
+                    finally { setProxySaving(false); }
+                  }}
+                  disabled={proxySaving}
+                  className={`${BTN_PRIMARY} min-w-[72px] shrink-0`}
                 >
-                  <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
-                  {t('networkProxy.refresh')}
+                  {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
                 </button>
-              </SettingRow>
-            )}
-
-            {/* ③ Primary action: Proxy URL input + Save — PROMINENT */}
-            <SettingRow label={t('networkProxy.addressLabel')}>
-              <div className={`flex items-center gap-2.5 transition-opacity ${!proxyEnabled ? 'pointer-events-none opacity-40' : ''}`}>
-              <input
-                type="text"
-                value={proxyUrl}
-                onChange={e => setProxyUrl(e.target.value)}
-                placeholder={t('networkProxy.placeholder')}
-                className="w-[300px] px-3 py-1.5 text-[13px] bg-surface-secondary/70 border border-border-default rounded-lg text-fg-primary placeholder:text-fg-muted/40 focus:border-brand-500 focus:bg-transparent outline-none transition-colors"
-              />
-              <button
-                onClick={async () => {
-                  setProxySaving(true); setProxyMsg(null);
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ proxy: proxyUrl.trim() }),
-                    });
-                    if (res.ok) {
-                      setProxyMsg({ type: 'ok', text: t('networkProxy.saved') });
-                      loadNetworkSettings();
-                    } else {
-                      const d = await res.json() as { error?: string };
-                      setProxyMsg({ type: 'err', text: d.error ?? t('networkProxy.saveFailed') });
-                    }
-                  } catch { setProxyMsg({ type: 'err', text: t('networkProxy.networkError') }); }
-                  finally { setProxySaving(false); }
-                }}
-                disabled={proxySaving}
-                className={`${BTN_PRIMARY} min-w-[88px] shrink-0`}
-              >
-                {proxySaving ? t('networkProxy.saving') : t('networkProxy.save')}
-              </button>
+                <button
+                  onClick={() => {
+                    setEgressTesting(true); setEgressTest(null);
+                    fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
+                      .then(async res => {
+                        const d = await res.json() as {
+                          ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean;
+                          failure?: { code?: string | null; detail?: string | null } | null;
+                        };
+                        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                        if (d.ok) {
+                          setEgressTest({
+                            ok: true,
+                            text: t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') }),
+                          });
+                        } else {
+                          // The server already classified the failure into a code; render
+                          // the remedy it names. Never echo the raw exception here —
+                          // `TypeError: fetch failed` told the user nothing.
+                          const m = proxyFailureMessage(d.failure);
+                          setEgressTest({ ok: false, text: t(m.key, m.params) });
+                        }
+                      })
+                      // Reaching this catch means the settings API itself was unreachable
+                      // — a different failure from "the proxy is down", so it says so.
+                      .catch(err => setEgressTest({ ok: false, text: t('networkProxy.failClient', { detail: err instanceof Error ? err.message : String(err) }) }))
+                      .finally(() => setEgressTesting(false));
+                  }}
+                  disabled={egressTesting}
+                  className={`${BTN_SECONDARY} shrink-0`}
+                  title={t('networkProxy.testHint')}
+                >
+                  {egressTesting ? (
+                    <svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                  ) : (
+                    <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                      <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                    </svg>
+                  )}
+                  {egressTesting ? t('networkProxy.testing') : t('networkProxy.test')}
+                </button>
               </div>
             </SettingRow>
-            {proxyMsg && <Msg type={proxyMsg.type} text={proxyMsg.text} />}
 
-            {/* ④ Bypass list — COLLAPSIBLE (default closed to reduce noise) */}
+            {/* ③ 不走代理的地址 — a pure list now. The test action moved up to the
+                address row: it verifies that address, so it belongs beside it, and the
+                bypass list has nothing to do with whether the chain works. */}
             <div className="px-5 py-3.5">
             <ProxyBypassSection
               noProxyList={noProxyList}
               setNoProxyList={setNoProxyList}
               noProxyEntry={noProxyEntry}
               setNoProxyEntry={setNoProxyEntry}
-              egressTesting={egressTesting}
-              egressTest={egressTest}
-              egressError={egressError}
-              onTest={() => {
-                setEgressTesting(true); setEgressTest(null);
-                fetch('/api/settings/network/test', { method: 'POST', headers: authHeaders(), body: JSON.stringify({}) })
-                  .then(async res => {
-                    const d = await res.json() as {
-                      ok?: boolean; exitIp?: string | null; latencyMs?: number; proxied?: boolean;
-                      failure?: { code?: string | null; detail?: string | null } | null;
-                    };
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    if (d.ok) {
-                      setEgressTest({
-                        ok: true,
-                        text: t('networkProxy.testResult', { ip: d.exitIp ?? '—', ms: d.latencyMs ?? 0, route: d.proxied ? t('networkProxy.viaProxy') : t('networkProxy.direct') }),
-                      });
-                    } else {
-                      // The server already classified the failure into a code; render the
-                      // remedy it names. Never echo the raw exception here — `TypeError:
-                      // fetch failed` was shown to users verbatim and told them nothing.
-                      const m = proxyFailureMessage(d.failure);
-                      setEgressTest({ ok: false, text: t(m.key, m.params) });
-                    }
-                  })
-                  // Reaching this catch means the settings API itself was unreachable —
-                  // a different failure from "the proxy is down", so it gets its own text.
-                  .catch(err => setEgressTest({ ok: false, text: t('networkProxy.failClient', { detail: err instanceof Error ? err.message : String(err) }) }))
-                  .finally(() => setEgressTesting(false));
-              }}
               authHeaders={authHeaders}
               loadNetworkSettings={loadNetworkSettings}
               t={t}
             />
             </div>
-
-            {/* Coverage is a row, not a paragraph block at the bottom. It describes
-                what this setting affects — a property of the setting — so it takes the
-                same label/hint rhythm instead of floating as three unowned 11px lines. */}
-            <SettingRow
-              label={t('networkProxy.coverageTitle')}
-              hint={
-                <>
-                  {t('networkProxy.coverageCovered')}
-                  <br />
-                  <span className="text-amber-500/80">{t('networkProxy.coverageNotCovered')}</span>
-                </>
-              }
-            />
 
           </div>
         </Section>
@@ -4073,13 +4081,10 @@ function InlineTierBadge({ modelId, tier: serverTier }: { modelId: string; tier?
 /* ── Proxy Bypass Section (collapsible, reduces visual noise) ─── */
 function ProxyBypassSection({
   noProxyList, setNoProxyList, noProxyEntry, setNoProxyEntry,
-  egressTesting, egressTest, egressError,
-  onTest, authHeaders, loadNetworkSettings, t,
+  authHeaders, loadNetworkSettings, t,
 }: {
   noProxyList: string[]; setNoProxyList: (v: string[]) => void;
   noProxyEntry: string; setNoProxyEntry: (v: string) => void;
-  egressTesting: boolean; egressTest: { ok: boolean; text: string } | null; egressError: string | null;
-  onTest: () => void;
   authHeaders: () => Record<string, string>;
   loadNetworkSettings: () => void;
   t: (key: string) => string;
@@ -4088,40 +4093,19 @@ function ProxyBypassSection({
 
   return (
     <div className="space-y-2">
-      {/* Header row: title + count + test button + expand toggle */}
-      <div className="flex items-center justify-between">
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="flex items-center gap-2 text-[13px] font-medium text-fg-primary hover:text-fg-secondary transition-colors"
-        >
-          <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
-          {t('networkProxy.noProxyTitle')}
-          <span className="text-[11px] tabular-nums text-fg-tertiary bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
-        </button>
-
-        {/* Test button — always visible */}
-        <button
-          onClick={onTest}
-          disabled={egressTesting}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-[11px] rounded-md border border-border-default/60 text-fg-secondary hover:text-fg-primary hover:border-fg-muted transition-colors disabled:opacity-40"
-        >
-          {egressTesting && (
-            <svg className="w-3 h-3 animate-spin" viewBox="0 0 24 24" fill="none">
-              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/>
-              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
-            </svg>
-          )}
-          {egressTesting ? t('networkProxy.testing') : t('networkProxy.test')}
-        </button>
-      </div>
-
-      {/* Test result — show below header */}
-      {egressTest && (
-        <span className={`text-[12px] ${egressTest.ok ? 'text-emerald-600' : 'text-red-400'}`}>{egressTest.text}</span>
-      )}
-      {egressError && (
-        <span className="text-[12px] text-amber-500">{egressError}</span>
-      )}
+      {/* Header row: title + count + expand toggle.
+          The test button used to live here. It verifies the proxy ADDRESS, so hanging
+          it off a list of hosts that bypass the proxy made two unrelated settings look
+          like one control — and the result appeared under the bypass header. Both moved
+          to the address row, which is what the test actually measures. */}
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="flex items-center gap-2 text-[13px] font-medium text-fg-primary hover:text-fg-secondary transition-colors"
+      >
+        <span className={`transition-transform ${expanded ? 'rotate-90' : ''}`}>▸</span>
+        {t('networkProxy.noProxyTitle')}
+        <span className="text-[11px] tabular-nums text-fg-tertiary bg-surface-secondary px-1.5 py-0.5 rounded">{noProxyList.length}</span>
+      </button>
 
       {/* Collapsible content */}
       {expanded && (

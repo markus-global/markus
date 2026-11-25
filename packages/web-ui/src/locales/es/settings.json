@@ -341,7 +341,7 @@
     "restarting": "⏳ Markus se está reiniciando; la página se actualizará automáticamente…"
   },
   "networkProxy": {
-    "activeLabel": "Activo actualmente",
+    "active": "Activo",
     "enabledLabel": "Activar proxy",
     "addressLabel": "Dirección del proxy",
     "title": "Proxy de red",
@@ -352,6 +352,7 @@
     "noProxyHint": "Loopback, rangos privados y .local se incluyen por defecto. Admite hosts exactos, sufijos .dominio y CIDR.",
     "remove": "Quitar",
     "test": "Probar ruta",
+    "testHint": "Verifique toda la ruta contra un punto de prueba: IP de salida y latencia",
     "testing": "Probando…",
     "testResult": "IP de salida {{ip}} · {{ms}}ms · {{route}}",
     "failRefused": "El proxy rechazó la conexión ({{detail}}). Puede que no esté en ejecución o el puerto sea incorrecto.",
@@ -363,10 +364,6 @@
     "failClient": "No se pudo llamar al endpoint de prueba ({{detail}}). Compruebe su sesión y que el backend esté en ejecución.",
     "viaProxy": "vía proxy",
     "direct": "directa",
-    "coverageTitle": "Qué cubre",
-    "coverageCovered": "Cubierto: llamadas fetch/undici de este proceso, procesos hijos (git, gh, npm, túneles) y el navegador integrado (panel derecho).",
-    "coverageNotCovered": "No cubierto: Chrome externo. Si la automatización del navegador recurre al puente de extensión o a chrome-devtools-mcp, ese navegador se ejecuta fuera de este proceso y usa su propia configuración de proxy.",
-    "active": "Activo:",
     "noProxy": "No se detecta ningún proxy",
     "sourceConfig": "markus.json",
     "sourceEnv": "env var",

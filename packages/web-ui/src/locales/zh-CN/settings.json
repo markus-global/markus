@@ -341,7 +341,7 @@
     "restarting": "⏳ Markus 正在重启，页面将自动刷新…"
   },
   "networkProxy": {
-    "activeLabel": "当前生效",
+    "active": "生效中",
     "enabledLabel": "启用代理",
     "addressLabel": "代理地址",
     "title": "网络代理",
@@ -352,6 +352,7 @@
     "noProxyHint": "回环、私有网段与 .local 默认已包含；支持精确主机名、.后缀 与 CIDR。",
     "remove": "移除",
     "test": "测试链路",
+    "testHint": "用探测端点验证整条链路：出口 IP 与耗时",
     "testing": "测试中…",
     "testResult": "出口 IP {{ip}} · {{ms}}ms · {{route}}",
     "failRefused": "代理拒绝连接（{{detail}}）。代理程序可能没在运行，或端口填错了。",
@@ -363,10 +364,6 @@
     "failClient": "无法调用测试接口（{{detail}}）。请检查登录状态，或后端是否在运行。",
     "viaProxy": "经代理",
     "direct": "直连",
-    "coverageTitle": "覆盖范围",
-    "coverageCovered": "已覆盖：本进程的 fetch/undici 调用、子进程（git、gh、npm、隧道），以及内置浏览器（右侧栏）。",
-    "coverageNotCovered": "未覆盖：外部 Chrome。浏览器自动化若落到扩展桥或 chrome-devtools-mcp，那个浏览器不归本进程控制，使用它自己的代理设置。",
-    "active": "生效中：",
     "noProxy": "未检测到代理",
     "sourceConfig": "markus.json",
     "sourceEnv": "环境变量",
