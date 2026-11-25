@@ -9,6 +9,7 @@
  * chrome-devtools-mcp / the Chrome extension bridge.
  */
 import { existsSync, mkdirSync, statSync, writeFileSync } from 'node:fs';
+import { toChromiumBypassRules } from './chromium-proxy.js';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -72,6 +73,42 @@ function ensureEmbeddedBrowserSession(): ReturnType<typeof session.fromPartition
   }
   return ses;
 }
+
+/**
+ * Apply the egress proxy to the embedded browser's session.
+ *
+ * Chromium's network stack is independent of undici's global dispatcher, so before
+ * this existed a "network proxy" setting only covered the agent's `fetch` calls
+ * while the right-panel browser kept going direct — one setting meaning two
+ * different things depending on who asked. The backend drives this through
+ * `setChromiumProxyApplier`, so both transports move together.
+ *
+ * Passing null (or a policy with no url) restores Chromium's own default, because
+ * "both off" must not leave a stale rule from a previous proxy in place.
+ */
+export async function applyEmbeddedBrowserProxy(
+  policy: { url?: string; noProxy: string[] } | null,
+): Promise<void> {
+  const ses = ensureEmbeddedBrowserSession();
+  if (!policy?.url) {
+    await ses.setProxy({ mode: 'system' });
+    return;
+  }
+  await ses.setProxy({
+    proxyRules: policy.url,
+    proxyBypassRules: toChromiumBypassRules(policy.noProxy),
+  });
+}
+
+/**
+ * Translate our documented noProxy syntax into Chromium's `proxyBypassRules`.
+ *
+ * Implemented in `chromium-proxy.ts` (Electron-free) so the translation itself is
+ * unit-tested — a wrong rule here silently mis-routes hosts and looks like a network
+ * fault rather than a typo.
+ */
+
+
 
 /**
  * In-app OAuth / login popups — Electron / Ferdium-style policy:

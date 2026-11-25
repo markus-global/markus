@@ -1,4 +1,6 @@
 import { app, BrowserWindow, shell, dialog, session } from 'electron';
+import { setChromiumProxyApplier } from '@markus/shared';
+import { applyEmbeddedBrowserProxy } from './embedded-browser.js';
 import { join } from 'node:path';
 import { startMarkusBackend, shutdownBackend } from './backend.js';
 import { createMainWindow, getMainWindow, restoreOrCreateWindow } from './window.js';
@@ -138,7 +140,12 @@ app.whenReady().then(async () => {
 
   registerProtocol();
   setupIpcHandlers();
-  // NSIS upgrades often skip desktop shortcuts — create them from the app.
+  // One "network proxy" setting, one meaning: drive the embedded browser's session
+  // from the same egress policy the backend installs for fetch/undici. Without this
+  // the right panel kept routing direct while every agent request went via proxy
+  // (and vice versa after a change) — the setting looked applied but only half was.
+  // Registered here, not at module load: setProxy needs `app` to be ready.
+  setChromiumProxyApplier(applyEmbeddedBrowserProxy);
   void ensureWindowsShortcuts();
 
   // Handle file downloads (e.g. Chrome extension zip from Settings)

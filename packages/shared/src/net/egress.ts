@@ -266,6 +266,46 @@ let cachedPolicy: EgressPolicy | undefined;
 /** True once we have written proxy vars into process.env (so we can take them back). */
 let envExported = false;
 
+/**
+ * Sink for the browser half of the same decision.
+ *
+ * undici's global dispatcher and Chromium's network stack are two independent
+ * transports. Installing only the dispatcher left the right-panel browser going
+ * direct while every `fetch` went through the proxy — one "network proxy" setting
+ * with two different meanings depending on who was asking. The setting is meant to
+ * be all-or-nothing, so the host injects a callback here and we drive both.
+ *
+ * shared/ cannot import Electron, so this stays a plain function reference.
+ */
+export type ChromiumProxyApplier = (
+  policy: { url?: string; noProxy: string[] } | null,
+) => void | Promise<void>;
+let chromiumProxyApplier: ChromiumProxyApplier | null = null;
+
+/**
+ * Register the browser-side applier. Replays the current policy immediately when one
+ * is already cached — the desktop registers this during startup, which can happen
+ * *after* the first {@link installEgress} has already run.
+ */
+export function setChromiumProxyApplier(applier: ChromiumProxyApplier | null): void {
+  chromiumProxyApplier = applier;
+  if (applier && cachedPolicy) {
+    void syncChromiumProxy(cachedPolicy);
+  }
+}
+
+async function syncChromiumProxy(policy: EgressPolicy): Promise<void> {
+  if (!chromiumProxyApplier) return;
+  try {
+    await chromiumProxyApplier({ url: policy.url, noProxy: policy.noProxy });
+  } catch (err) {
+    // A browser-side failure must never break the server's own proxy install: the
+    // agent's fetch calls still route correctly, and the panel keeps whatever
+    // proxy rule it had.
+    console.warn(`[egress] chromium proxy sync failed: ${String(err)}`);
+  }
+}
+
 async function loadUndici(): Promise<UndiciLike | null> {
   try {
     const id = 'undici';
@@ -299,6 +339,10 @@ export async function installEgress(options: { force?: boolean } = {}): Promise<
 
   const policy = resolveEgress();
   cachedPolicy = policy;
+  // Drive the browser side from the same resolved policy, before the early returns
+  // below: "either both on or both off" has to hold on every path, including the
+  // proxy-was-just-disabled one.
+  await syncChromiumProxy(policy);
 
   if (!policy.url) {
     // Take back the variables we exported, otherwise a disabled proxy keeps
