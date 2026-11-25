@@ -321,6 +321,9 @@
   },
   "accessScope": {
     "bindHost": "Dirección de escucha",
+    "scopeLabel": "Modo de acceso",
+    "remote": "Acceso remoto",
+    "remoteHint": "Accesible desde internet mediante un túnel, sin abrir la LAN",
     "title": "Alcance de acceso",
     "description": "Controla si la API de Markus puede alcanzarse desde fuera de este equipo. Para acceder desde internet usa Acceso remoto en lugar de abrir la red local.",
     "localOnly": "Solo este equipo",

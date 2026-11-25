@@ -321,6 +321,9 @@
   },
   "accessScope": {
     "bindHost": "监听地址",
+    "scopeLabel": "访问方式",
+    "remote": "远程访问",
+    "remoteHint": "通过隐道从外网访问，不需要开放局域网",
     "title": "访问范围",
     "description": "决定这台机器之外能否直接访问 Markus 的 API。需要从外网访问请用「远程访问」，不必开放局域网。",
     "localOnly": "仅本机",

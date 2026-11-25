@@ -293,6 +293,15 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const [bindHostNotice, setBindHostNotice] = useState<{ text: string; warn: boolean } | null>(null);
   const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
   const [bindHostApplying, setBindHostApplying] = useState(false);
+  /**
+   * 用户选的是「哪种访问方式」，不是某个 IP 字面量。
+   *
+   * 以前界面上只有「仅本机 / 局域网」两档，而「远程访问」是另一张永远显示的卡片
+   * —— 三者本来互斥、平级，却分住在两个地方，选「仅本机」的人照样被塞一整块
+   * 隧道向导。local/lan 驱动监听地址；remote 只切展示（隧道连的是 127.0.0.1，
+   * 不靠开放监听地址生效）。
+   */
+  const [accessMode, setAccessMode] = useState<'local' | 'lan' | 'remote'>('lan');
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
   const [proxyMsg, setProxyMsg] = useState<{ type: 'ok' | 'err'; text: string } | null>(null);
@@ -385,7 +394,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
           setEgressSource(egress.source ?? 'none');
           setEgressError(egress.error ?? null);
         }
-        setBindHostValue(d.server?.host ?? '0.0.0.0');
+        const host = d.server?.host ?? '0.0.0.0';
+        setBindHostValue(host);
+        // 首次加载按实际监听地址归位；已选「远程访问」时不覆盖用户的选择
+        // （隧道场景下监听地址本来就是 127.0.0.1）。
+        setAccessMode(prev => prev === 'remote' ? prev : (host === '0.0.0.0' ? 'lan' : 'local'));
         setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
         setBindHostFromEnv(d.server?.source === 'env');
         setBindHostPendingRestart(!!d.server?.pendingRestart);
@@ -2169,40 +2182,53 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               label={t('accessScope.bindHost')}
               hint={
                 <>
-                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${bindHostEffective === '0.0.0.0' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
+                  <span className={`mr-1.5 inline-block h-1.5 w-1.5 rounded-full align-middle ${accessMode !== 'local' ? 'bg-emerald-500' : 'bg-fg-muted'}`} />
                   {t('accessScope.current', { host: bindHostEffective })}
                   {' · '}
-                  <span className={bindHostEffective === '0.0.0.0' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
-                    {bindHostEffective === '0.0.0.0' ? t('accessScope.lanHint') : t('accessScope.localOnlyHint')}
+                  <span className={accessMode === 'lan' ? 'text-emerald-600 dark:text-emerald-400' : undefined}>
+                    {accessMode === 'local' ? t('accessScope.localOnlyHint')
+                      : accessMode === 'lan' ? t('accessScope.lanHint')
+                      : t('accessScope.remoteHint')}
                   </span>
                   {bindHostFromEnv && <span className="text-amber-500"> · ⚠ {t('accessScope.envControlled')}</span>}
                 </>
               }
             >
-              <div className="inline-flex gap-1 rounded-lg bg-surface-secondary/80 p-1">
+              <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
                 <button
                   disabled={bindHostFromEnv}
-                  onClick={() => setBindHostValue('127.0.0.1')}
+                  onClick={() => { setAccessMode('local'); setBindHostValue('127.0.0.1'); }}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
-                    bindHostValue === '127.0.0.1' && !bindHostFromEnv
+                    accessMode === 'local' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
                       : 'text-fg-secondary hover:text-fg-primary'
                   } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
                 >{t('accessScope.localOnly')}</button>
                 <button
                   disabled={bindHostFromEnv}
-                  onClick={() => setBindHostValue('0.0.0.0')}
+                  onClick={() => { setAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
-                    bindHostValue === '0.0.0.0' && !bindHostFromEnv
+                    accessMode === 'lan' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
                       : 'text-fg-secondary hover:text-fg-primary'
                   } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
                 >{t('accessScope.lan')}</button>
+                {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
+                    所以它的按钮不跟 local/lan 一起置灰。 */}
+                <button
+                  onClick={() => setAccessMode('remote')}
+                  className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
+                    accessMode === 'remote'
+                      ? 'bg-brand-600 text-on-brand shadow-sm'
+                      : 'text-fg-secondary hover:text-fg-primary'
+                  }`}
+                >{t('accessScope.remote')}</button>
               </div>
             </SettingRow>
 
-            {/* The group's single action, in a row of its own, so every block on this
-                page saves from the same place at the same right edge. */}
+            {/* 监听地址只在 local/lan 下有东西可存；远程访问不改监听地址
+                （隧道连的就是本机 127.0.0.1）。 */}
+            {accessMode !== 'remote' && (
             <SettingRow hint={bindHostNotice
               ? <span className={bindHostNotice.warn ? 'text-amber-500' : undefined}>{bindHostNotice.text}</span>
               : undefined}>
@@ -2296,6 +2322,7 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
                 )}
               </button>
             </SettingRow>
+            )}
           </div>
         </Section>
 
@@ -2471,7 +2498,9 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
 
           </div>
         </Section>
-        <RemoteAccessSection />
+        {/* 远程访问的详细设置只在选中它时出现：以前它是一张常驻卡片，
+            选「仅本机」的人也照样被塞一整块隐道向导。 */}
+        {accessMode === 'remote' && <RemoteAccessSection />}
 
         </>}
 
