@@ -332,16 +332,11 @@
     "localOnlyHint": "only browsers and the CLI on this computer can connect",
     "lanHint": "other devices on the same network can connect (login still required)",
     "envControlled": "Controlled by the MARKUS_HOST environment variable and read-only here",
-    "save": "Save",
-    "saved": "Saved",
-    "restartRequired": "Saved. Apply now switches right away (the connection drops for a few seconds); otherwise it takes effect at the next restart.",
-    "saveFailed": "Save failed",
-    "applyNow": "Apply now",
-    "applying": "Applying…",
-    "applied": "Applied — the listener moved",
-    "applyFailed": "Could not move the listener",
-    "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN.",
-    "restarting": "⏳ Markus is restarting; the page will refresh automatically…"
+    "saveFailed": "Switch failed — could not save the setting",
+    "applying": "Switching… (the connection drops for a few seconds)",
+    "applied": "Switched to the new listen address",
+    "applyFailed": "Switch timed out — the address may not have changed; refresh to check",
+    "remoteNote": "The remote-access tunnel connects to 127.0.0.1, so enabling remote access does not require opening the LAN."
   },
   "networkProxy": {
     "active": "Active",

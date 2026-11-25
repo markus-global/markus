@@ -291,7 +291,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
    * 现在 warn 由**设置提示的那一处**声明，文案只负责给人看。
    */
   const [bindHostNotice, setBindHostNotice] = useState<{ text: string; warn: boolean } | null>(null);
-  const [bindHostPendingRestart, setBindHostPendingRestart] = useState(false);
   const [bindHostApplying, setBindHostApplying] = useState(false);
   /**
    * 用户选的是「哪种访问方式」，不是某个 IP 字面量。
@@ -315,6 +314,63 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
   const chooseAccessMode = (mode: 'local' | 'lan' | 'remote') => {
     setAccessMode(mode);
     try { localStorage.setItem('markus.settings.accessMode', mode); } catch { /* ignore */ }
+  };
+  /**
+   * 切换即生效：一次点击 = 写配置 + 重绑定 + 等它回来。
+   *
+   * 以前是两步（「保存」写配置、「立即生效」才重绑），而用户点完保存看到的仍是
+   * 旧监听地址 —— 两个按钮描述的其实是同一个意图，中间那一步只是实现细节泄露
+   * 到了界面上。
+   *
+   * 代价是真实的：重绑定要关闭监听 socket，当前连接会断几秒。所以不能等 HTTP
+   * 响应（很可能永远等不到），而是轮询 /api/health 直到服务回来。
+   */
+  const applyAccessMode = async (mode: 'local' | 'lan') => {
+    if (bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner') return;
+    const host = mode === 'local' ? '127.0.0.1' : '0.0.0.0';
+    chooseAccessMode(mode);
+    setBindHostValue(host);
+    if (host === bindHostEffective) {
+      // 已经是这个地址：只切 UI，不必重绑（重绑会白断一次连接）。
+      setBindHostNotice(null);
+      return;
+    }
+    setBindHostApplying(true);
+    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
+    try {
+      const res = await fetch('/api/settings/network', {
+        method: 'POST', headers: authHeaders(), body: JSON.stringify({ host }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    } catch {
+      setBindHostApplying(false);
+      setBindHostNotice({ text: t('accessScope.saveFailed'), warn: true });
+      return;
+    }
+    // 重绑定会杀掉当前连接：不等响应，靠健康检查判断它什么时候回来。
+    void fetch('/api/settings/network/apply', {
+      method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
+    }).catch(() => { /* 连接被断开是预期行为 */ });
+
+    let retries = 0;
+    const poll = setInterval(async () => {
+      retries++;
+      try {
+        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
+        if (r.ok) {
+          clearInterval(poll);
+          setBindHostApplying(false);
+          setBindHostNotice({ text: t('accessScope.applied'), warn: false });
+          loadNetworkSettings();
+          return;
+        }
+      } catch { /* still down */ }
+      if (retries > 20) { // ~8s 超时（400ms * 20）
+        clearInterval(poll);
+        setBindHostApplying(false);
+        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
+      }
+    }, 400);
   };
   const [proxyEffective, setProxyEffective] = useState<{ proxy: string | null; source: string } | null>(null);
   const [proxySaving, setProxySaving] = useState(false);
@@ -417,7 +473,6 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         });
         setBindHostEffective(d.server?.effectiveHost ?? '0.0.0.0');
         setBindHostFromEnv(d.server?.source === 'env');
-        setBindHostPendingRestart(!!d.server?.pendingRestart);
         return true;
       })
       .catch(() => false);
@@ -2389,22 +2444,22 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
             >
               <div className="inline-flex flex-wrap gap-1 rounded-lg bg-surface-secondary/80 p-1">
                 <button
-                  disabled={bindHostFromEnv}
-                  onClick={() => { chooseAccessMode('local'); setBindHostValue('127.0.0.1'); }}
+                  disabled={bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner'}
+                  onClick={() => void applyAccessMode('local')}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
                     accessMode === 'local' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
                       : 'text-fg-secondary hover:text-fg-primary'
-                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                  } ${bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner' ? 'cursor-not-allowed opacity-40' : ''}`}
                 >{t('accessScope.localOnly')}</button>
                 <button
-                  disabled={bindHostFromEnv}
-                  onClick={() => { chooseAccessMode('lan'); setBindHostValue('0.0.0.0'); }}
+                  disabled={bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner'}
+                  onClick={() => void applyAccessMode('lan')}
                   className={`rounded-md px-3.5 py-1.5 text-[13px] font-medium transition-all ${
                     accessMode === 'lan' && !bindHostFromEnv
                       ? 'bg-brand-600 text-on-brand shadow-sm'
                       : 'text-fg-secondary hover:text-fg-primary'
-                  } ${bindHostFromEnv ? 'cursor-not-allowed opacity-40' : ''}`}
+                  } ${bindHostFromEnv || bindHostApplying || authUser?.role !== 'owner' ? 'cursor-not-allowed opacity-40' : ''}`}
                 >{t('accessScope.lan')}</button>
                 {/* 远程访问不受 MARKUS_HOST 控制（隧道连的是 127.0.0.1），
                     所以它的按钮不跟 local/lan 一起置灰。 */}
@@ -2419,102 +2474,11 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
               </div>
             </SettingRow>
 
-            {/* 监听地址只在 local/lan 下有东西可存；远程访问不改监听地址
-                （隧道连的就是本机 127.0.0.1）。 */}
-            {accessMode !== 'remote' && (
-            <SettingRow hint={bindHostNotice
-              ? <span className={bindHostNotice.warn ? 'text-amber-500' : undefined}>{bindHostNotice.text}</span>
-              : undefined}>
-              <button
-                disabled={authUser?.role !== 'owner' || bindHostFromEnv || bindHostApplying}
-                onClick={async () => {
-                  /* ── Phase A: user sees "立即生效" → fire-and-forget + poll for recovery ── */
-                  if (bindHostPendingRestart) {
-                    // Optimistic UI: show applying immediately, don't wait for response
-                    // (backend returns 202 then rebinds, which drops our connection)
-                    setBindHostApplying(true);
-                    setBindHostNotice({ text: t('accessScope.applying'), warn: true });
-                    try {
-                      const res = await fetch('/api/settings/network/apply', {
-                        method: 'POST', headers: authHeaders(), body: JSON.stringify({}),
-                      });
-                      // If we get here, server managed to respond — could be 200 or 202
-                      if (res.status === 202 || res.ok) {
-                        setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
-                      } else {
-                        throw new Error(`HTTP ${res.status}`);
-                      }
-                    } catch {
-                      // Expected: connection dropped during server rebind
-                      setBindHostNotice({ text: t('accessScope.restarting'), warn: true });
-                    }
-                    // Poll for the server to come back after the rebind. It now
-                    // resolves in well under a second (see applyBindHost), so poll
-                    // briskly and give up quickly instead of waiting 30s.
-                    let retries = 0;
-                    const poll = setInterval(async () => {
-                      retries++;
-                      try {
-                        const r = await fetch('/api/health', { signal: AbortSignal.timeout(1500) });
-                        if (r.ok) {
-                          clearInterval(poll);
-                          setBindHostApplying(false);
-                          setBindHostPendingRestart(false);
-                          setBindHostNotice({ text: t('accessScope.applied'), warn: true });
-                          loadNetworkSettings();
-                          return;
-                        }
-                      } catch { /* still down */ }
-                      if (retries > 20) { // ~8s timeout (400ms * 20)
-                        clearInterval(poll);
-                        setBindHostApplying(false);
-                        setBindHostNotice({ text: t('accessScope.applyFailed'), warn: true });
-                      }
-                    }, 400);
-                    return;
-                  }
-
-                  /* ── Phase B: user sees "保存" → clicking saves & may morph button ── */
-                  const prevEffective = bindHostEffective;
-                  try {
-                    const res = await fetch('/api/settings/network', {
-                      method: 'POST', headers: authHeaders(),
-                      body: JSON.stringify({ host: bindHostValue }),
-                    });
-                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                    const d = await res.json() as { restartRequired?: boolean };
-                    const serverSaysNeedsRestart = !!d.restartRequired;
-                    const valueDidChange = bindHostValue !== prevEffective;
-                    const shouldShowApply = serverSaysNeedsRestart || valueDidChange;
-
-                    setBindHostPendingRestart(shouldShowApply);
-                    setBindHostNotice({
-                      text: shouldShowApply ? t('accessScope.restartRequired') : t('accessScope.saved'),
-                      warn: shouldShowApply,
-                    });
-
-                    // ⚠ Do NOT call loadNetworkSettings() here — it clobbers bindHostPendingRestart
-                    // because server.pendingRestart is often false even when a restart IS needed.
-                    // We'll refresh after the user clicks "立即生效".
-                  } catch {
-                    setBindHostNotice({ text: t('accessScope.saveFailed'), warn: false });
-                  }
-                }}
-                className={`inline-flex items-center justify-center gap-1.5 px-5 py-2 text-[13px] font-semibold rounded-lg transition-all disabled:opacity-40 disabled:cursor-not-allowed min-w-[100px] ${
-                  bindHostPendingRestart
-                    ? 'bg-amber-500 text-on-brand hover:bg-amber-400 active:bg-amber-600'
-                    : 'bg-brand-600 text-on-brand hover:bg-brand-500 active:bg-brand-700'
-                }`}
-              >
-                {bindHostApplying ? (
-                  <><svg className="w-3.5 h-3.5 animate-spin" viewBox="0 0 24 24" fill="none"><circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"/><path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/></svg>{t('accessScope.applying')}</>
-                ) : bindHostPendingRestart ? (
-                  t('accessScope.applyNow')
-                ) : (
-                  t('accessScope.save')
-                )}
-              </button>
-            </SettingRow>
+            {/* 切换即生效：不再有「保存」+「立即生效」两步。结果就在这里反馈。 */}
+            {bindHostNotice && (
+              <div className={`px-5 py-3 text-[11px] ${bindHostNotice.warn ? 'text-amber-500' : 'text-emerald-600 dark:text-emerald-400'}`}>
+                {bindHostNotice.text}
+              </div>
             )}
           </div>
         </Section>

@@ -332,16 +332,11 @@
     "localOnlyHint": "只有这台电脑上的浏览器和 CLI 能连",
     "lanHint": "同一网络内的其他设备可以访问（需要登录）",
     "envControlled": "由环境变量 MARKUS_HOST 控制，此处不可修改",
-    "save": "保存",
-    "saved": "已保存",
-    "restartRequired": "已保存。点「立即生效」马上切换（会断开几秒）；不点则下次重启时生效。",
-    "saveFailed": "保存失败",
-    "applyNow": "立即生效",
-    "applying": "切换中…",
-    "applied": "已生效，监听地址已切换",
-    "applyFailed": "切换失败",
-    "remoteNote": "远程访问隧道连接的是本机 127.0.0.1，开启远程访问不需要开放局域网。",
-    "restarting": "⏳ Markus 正在重启，页面将自动刷新…"
+    "saveFailed": "切换失败：保存配置时出错",
+    "applying": "切换中…（连接会断开几秒）",
+    "applied": "已切换到新的监听地址",
+    "applyFailed": "切换超时，监听地址可能未变；请刷新确认",
+    "remoteNote": "远程访问隧道连接的是本机 127.0.0.1，开启远程访问不需要开放局域网。"
   },
   "networkProxy": {
     "active": "生效中",
