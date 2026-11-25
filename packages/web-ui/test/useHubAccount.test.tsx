@@ -204,7 +204,7 @@ describe('useHubAccount — 多用户切换隔离（核心安全断言）', () =
 });
 
 describe('useHubAccount — active 开关', () => {
-  it('active=false 不请求 plan；active=true 才请求', async () => {
+  it('挂载即请求 plan（徽章不等弹窗）；active=true 时再刷新一次', async () => {
     mockIsAuth.mockReturnValue(true);
     mockGetUser.mockReturnValue(user('A'));
     mockValidate.mockResolvedValue(true);
@@ -213,11 +213,22 @@ describe('useHubAccount — active 开关', () => {
       initialProps: { active: false },
     });
     await flush();
-    expect(mockPlan).not.toHaveBeenCalled();
+    // The balance is shown in the sidebar, so it must exist before any interaction.
+    // Gating this on `active` left the badge blank until the menu had been opened once.
+    expect(mockPlan).toHaveBeenCalledTimes(1);
 
     rerender({ active: true });
     await flush();
-    expect(mockPlan).toHaveBeenCalledTimes(1);
+    // Opening the popover re-checks the number.
+    expect(mockPlan).toHaveBeenCalledTimes(2);
+  });
+
+  it('未认证时不请求 plan（无 token 拉不到，白跑一次请求）', async () => {
+    mockIsAuth.mockReturnValue(false);
+
+    renderHook(() => useHubAccount(false));
+    await flush();
+    expect(mockPlan).not.toHaveBeenCalled();
   });
 });
 

@@ -245,10 +245,10 @@ export function WebSearchSettings() {
       <div className="space-y-3">
         <div className="text-xs text-fg-tertiary">{t('searchApi.description')}</div>
 
-        {loading ? (
-          <div className="text-sm text-fg-tertiary py-8 text-center">{t('common:loading')}</div>
-        ) : (
-          <>
+        {/* The cards below are static copy + a switch; only the switch state is data.
+            Rendering the "loading" placeholder instead would collapse the section and
+            grow it back once the keys arrive. */}
+        <>
             {/* Markus-hosted search — primary path */}
             <div className="rounded-xl border border-border-default px-4 py-3 space-y-2">
               <div className="flex items-center gap-3">
@@ -260,7 +260,11 @@ export function WebSearchSettings() {
                   <div className="text-xs text-fg-tertiary mt-0.5 truncate">{t('searchApi.markusHint')}</div>
                 </div>
                 {markus?.available && markus.enabled && <TestButton id="markus" />}
-                {markus?.available ? (
+                {loading ? (
+                  // Pending: hold the switch's footprint instead of rendering the
+                  // "unavailable" state, which would be a wrong answer, not a delay.
+                  <span className="inline-block h-5 w-9 shrink-0 animate-pulse rounded-full bg-surface-elevated" aria-hidden="true" />
+                ) : markus?.available ? (
                   <label className="inline-flex items-center gap-2 cursor-pointer shrink-0">
                     {markusSaving && <Spinner className="w-3 h-3 text-fg-tertiary" />}
                     <input
@@ -276,7 +280,7 @@ export function WebSearchSettings() {
                   <span className="text-[11px] text-amber-500 shrink-0">{t('searchApi.markusUnavailable')}</span>
                 )}
               </div>
-              {!markus?.available && (
+              {!loading && !markus?.available && (
                 <div className="text-[11px] text-amber-500/90">{t('searchApi.markusUnavailableHint')}</div>
               )}
               {markus?.available && markus.enabled && (
@@ -406,7 +410,6 @@ export function WebSearchSettings() {
               )}
             </div>
           </>
-        )}
       </div>
     </section>
   );

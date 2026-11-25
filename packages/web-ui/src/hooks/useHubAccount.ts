@@ -74,7 +74,12 @@ export function useHubAccount(active: boolean): HubAccountState {
   }, [refresh]);
 
   useEffect(() => {
-    if (!active || !hubApi.isAuthenticated()) return;
+    if (!hubApi.isAuthenticated()) return;
+    // `active` used to gate the FIRST fetch (`if (!active) return`), which meant the
+    // balance existed only after the user opened the menu — the sidebar badge stayed
+    // blank until then. The number belongs on screen before any interaction, so the
+    // fetch runs on mount; flipping `active` re-runs this effect, which is exactly the
+    // "re-check when the popover opens" behaviour we want.
     let cancelled = false;
     hubApi.user.plan()
       .then(p => { if (!cancelled) setCredits(resolveCreditSummary(p)); })
