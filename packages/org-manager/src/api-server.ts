@@ -6513,6 +6513,83 @@ export class APIServer {
       return;
     }
 
+    // ─── 组织地址前缀（org slug）—— C10-D 补上的"声明入口" ────────────────
+    //
+    // 为何需要这个端点：绑地址的格式是 `<local>.<org>@markus.global`，中段 `<org>`
+    // 必须是本组织**已声明**的合法 slug（C10-A 的防抢注门）。但 declareOrgSlug 之前
+    // 只有 storage 方法、没有任何 HTTP/UI 入口 —— 真实用户走不到这一步，地址永远
+    // 绑不上。这个端点就是那个缺失的写入口；校验/唯一性/不可变仍全在
+    // SqliteOrgRepo.declareOrgSlug（唯一写者，不在这里重实现）。
+    const orgSlugMatch = path.match(/^\/api\/orgs\/([^/]+)\/slug$/);
+    if (orgSlugMatch) {
+      const authUser = await this.requireAuth(req, res);
+      if (!authUser) return;
+      const orgId = orgSlugMatch[1]!;
+      const repo = this.storage?.orgRepo as
+        | {
+            findOrgById?: (id: string) => { id: string; orgSlug: string | null; hubOrgId?: string | null } | undefined;
+            declareOrgSlug?: (id: string, slug: string) =>
+              | { ok: true; orgSlug: string }
+              | { ok: false; reason: 'org_not_found' | 'invalid_slug' | 'immutable' | 'conflict'; hint: string };
+            countBoundAddresses?: (id: string) => number;
+          }
+        | undefined;
+      if (!repo?.findOrgById) {
+        this.json(res, 503, { error: 'org repository not available', code: 'ORG_REPO_UNAVAILABLE' });
+        return;
+      }
+      const org = repo.findOrgById(orgId);
+      if (!org) {
+        this.json(res, 404, { error: 'Organization not found', code: 'ORG_NOT_FOUND' });
+        return;
+      }
+      // 仅本组织 owner 可声明：slug 是全局唯一的地址段，不能让成员改走别人的名字。
+      if (authUser.role !== 'owner' || authUser.orgId !== orgId) {
+        this.json(res, 403, {
+          error: 'Only the organization owner can set its address prefix',
+          code: 'NOT_ORG_OWNER',
+        });
+        return;
+      }
+
+      if (req.method === 'GET') {
+        const issuedAddresses = repo.countBoundAddresses?.(orgId) ?? 0;
+        this.json(res, 200, {
+          orgId,
+          orgSlug: org.orgSlug,
+          hubOrgId: org.hubOrgId ?? null,
+          // 已签发地址的组织不能改 slug（否则已发出的地址会变成悬空引用）。
+          issuedAddresses,
+          locked: issuedAddresses > 0,
+        });
+        return;
+      }
+
+      if (req.method === 'PUT') {
+        if (!repo.declareOrgSlug) {
+          this.json(res, 503, { error: 'slug declaration unavailable', code: 'ORG_REPO_UNAVAILABLE' });
+          return;
+        }
+        const body = await this.readBody(req);
+        const slug = String(body['slug'] ?? '').trim();
+        if (!slug) {
+          this.json(res, 400, { error: 'slug is required', code: 'SLUG_REQUIRED' });
+          return;
+        }
+        const result = repo.declareOrgSlug(orgId, slug);
+        if (!result.ok) {
+          const status = result.reason === 'org_not_found' ? 404 : result.reason === 'conflict' ? 409 : 400;
+          this.json(res, status, { error: result.reason, code: result.reason.toUpperCase(), hint: result.hint });
+          return;
+        }
+        this.json(res, 200, { ok: true, orgId, orgSlug: result.orgSlug });
+        return;
+      }
+
+      this.json(res, 405, { error: 'Method not allowed', code: 'METHOD_NOT_ALLOWED' });
+      return;
+    }
+
     // C10-C: cross_org_policy elevation — human-only (owner/admin), audited.
     // The service re-validates the actor against the users table; this gate is
     // the role check, not a second source of the human/agent decision.

@@ -27,6 +27,7 @@
     "license": "许可证",
     "organization": "组织",
     "account": "账户",
+    "orgIdentity": "组织身份",
     "group": {
       "general": "偏好",
       "aiConfig": "AI 配置",
@@ -34,6 +35,35 @@
       "connections": "连接与集成",
       "account": "账户",
       "data": "数据与审计"
+    }
+  },
+  "orgIdentity": {
+    "title": "组织身份",
+    "desc": "你的邮箱地址格式是 <local>.<组织>@markus.global，这里设置中间那段。它决定你在 markus.global 上的身份。",
+    "current": "当前地址前缀",
+    "unset": "未设置",
+    "hosted": "已连接 markus.global",
+    "localOnly": "仅本地",
+    "preview": "地址示例",
+    "previewLocal": "chen",
+    "locked": "已签发 {{count}} 个地址，前缀已锁定——改动会让已发出的地址失效。",
+    "inputLabel": "地址前缀",
+    "placeholder": "例如 jsyqrt",
+    "rule": "只能用小写字母、数字和连字符，长度 2–30，且不能以数字或连字符开头。",
+    "ownerOnly": "只有组织所有者可以修改地址前缀。",
+    "save": "保存",
+    "saving": "保存中…",
+    "saved": "已保存",
+    "err": {
+      "INVALID_SLUG": "这个前缀不可用",
+      "CONFLICT": "该前缀已被其他组织占用",
+      "IMMUTABLE": "前缀已锁定",
+      "NOT_ORG_OWNER": "没有修改权限",
+      "ORG_REPO_UNAVAILABLE": "服务暂不可用，请重启后再试",
+      "SLUG_REQUIRED": "请填写地址前缀",
+      "ORG_NOT_FOUND": "组织不存在",
+      "NETWORK": "网络错误",
+      "ERROR": "保存失败"
     }
   },
   "appearance": {

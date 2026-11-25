@@ -15,6 +15,7 @@ import { isElectron } from '../hooks/useElectron.ts';
 import { BrowserTestPanel } from '../components/BrowserTestPanel.tsx';
 import { ModelPicker } from '../components/ModelPicker.tsx';
 import { ModelRoutingSection } from '../components/ModelRoutingSection.tsx';
+import { OrgIdentitySection } from '../components/OrgIdentitySection.tsx';
 import { PerAgentModelSection } from '../components/PerAgentModelSection.tsx';
 import { useProviderCatalog } from '../constants/providers.ts';
 import { InstancesSection } from '../components/integrations/InstancesSection.tsx';
@@ -56,7 +57,7 @@ interface OllamaDetectResult {
   models?: Array<{ name: string; fullName: string; size?: number; modifiedAt?: string; parameterSize?: string; family?: string; quantization?: string }>;
 }
 
-type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license';
+type SettingsTab = 'appearance' | 'providers' | 'execution' | 'browser' | 'search' | 'coding-tools' | 'storage' | 'facts' | 'users' | 'organization' | 'account' | 'remote' | 'network' | 'integrations' | 'license' | 'orgIdentity';
 
 interface SettingsTabDef { id: SettingsTab; labelKey: string; adminOnly?: boolean }
 
@@ -71,6 +72,10 @@ export const SETTINGS_TABS: SettingsTabDef[] = [
   { id: 'integrations', labelKey: 'nav.integrations', adminOnly: true },
   { id: 'network', labelKey: 'nav.network', adminOnly: true },
   { id: 'account', labelKey: 'nav.account' },
+  // C10-D：组织地址前缀。这是「绑地址」的唯一入口——org slug 决定
+  // `<local>.<org>@markus.global` 的中间段，之前只有 storage 方法没有 UI，
+  // 真实用户根本走不到“声明”这一步。adminOnly 因为只有 owner 能改。
+  { id: 'orgIdentity', labelKey: 'nav.orgIdentity', adminOnly: true },
   { id: 'storage', labelKey: 'nav.storage', adminOnly: true },
   { id: 'facts', labelKey: 'nav.facts', adminOnly: true },
 ];
@@ -81,7 +86,7 @@ export const SETTINGS_TAB_GROUPS: Array<{ labelKey: string; tabs: SettingsTab[] 
   { labelKey: 'nav.group.aiConfig', tabs: ['providers', 'execution'] },
   { labelKey: 'nav.group.tools', tabs: ['browser', 'search'] },
   { labelKey: 'nav.group.connections', tabs: ['integrations', 'network'] },
-  { labelKey: 'nav.group.account', tabs: ['account'] },
+  { labelKey: 'nav.group.account', tabs: ['account', 'orgIdentity'] },
   // 数据与审计放最后：这两个页面回答"平台存了什么、凭什么这么判断"，
   // 属于诊断/取证，不该夹在日常偏好设置中间（Owner 2026-11-15）。
   { labelKey: 'nav.group.data', tabs: ['storage', 'facts'] },
@@ -3101,6 +3106,8 @@ export function Settings({ theme, onThemeChange, authUser, onLogout, onUserUpdat
         </>}
 
         {resolvedTab === 'facts' && <AuditFactsPage role={authUser?.role} authUser={authUser} />}
+
+        {resolvedTab === 'orgIdentity' && <OrgIdentitySection authUser={authUser} />}
 
         {(resolvedTab === 'account' || resolvedTab === 'users' || resolvedTab === 'organization' || resolvedTab === 'license') && <AccountSection authUser={authUser} />}
 
