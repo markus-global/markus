@@ -19,6 +19,32 @@ export type AgentAutonomy = 'observe' | 'act';
 export type CrossOrgPolicy = 'observe' | 'auto';
 
 /**
+ * C10-F (2026-11-26, Owner ruling) — the org-level external ingress policy.
+ *
+ * Three states, not two booleans: "accept external input" and "let it drive the
+ * agent" are different questions, and collapsing them forces an admin who wants
+ * a quiet inbox to also cut the wire.
+ *
+ *   'off'     — inbound is refused at the single ingest point. Nothing is
+ *               stored, nothing owes a turn.
+ *   'observe' — inbound is accepted and recorded, but does not owe a turn
+ *               (intent floor `deliver`): the agent sees it on its next turn.
+ *   'accept'  — inbound is accepted and owes a turn (intent floor
+ *               `action_required`), i.e. the pre-policy behaviour.
+ *
+ * Default 'off': for an open-source product the default IS the configuration
+ * most users run, so the safe state has to be the one you get without asking.
+ * The single writer is OrganizationService.setExternalIngress (human + audit);
+ * the single reader is ExternalSourceService.ingest.
+ */
+export type ExternalIngressPolicy = 'off' | 'observe' | 'accept';
+
+/** Runtime guard for the closed set — parsing never invents a fourth state. */
+export function isExternalIngressPolicy(value: unknown): value is ExternalIngressPolicy {
+  return value === 'off' || value === 'observe' || value === 'accept';
+}
+
+/**
  * C10-C — the ONE predicate deciding whether an agent may self-initiate.
  *
  * Exactly one consumer: the patrol admission at the top of `handleHeartbeat`

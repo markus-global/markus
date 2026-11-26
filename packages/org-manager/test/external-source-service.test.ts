@@ -100,6 +100,12 @@ beforeEach(() => {
     findActive: (addr: string) => bindings.findActive(addr),
     mailboxOf,
     fetchText: async () => RSS_SAMPLE,
+    // C10-F: this suite describes ingest MECHANICS, so it declares the most
+    // permissive org policy explicitly ('accept' = pre-policy behaviour). The
+    // missing-port default is 'off', and every assertion below would then stop at
+    // the policy gate instead of reaching the ingest path it is about.
+    // The gate itself has its own suite: external-ingress-policy.test.ts.
+    ingressPolicy: () => 'accept' as const,
     now: () => new Date('2026-11-22T15:00:00Z'),
   });
 });
@@ -368,7 +374,16 @@ describe('C10-B：listSources 只列自己的源', () => {
     const out = service.listSources(ORG, OWNER);
 
     expect(out.map(s => s.id)).toEqual([mine]);
-    expect(out[0]).toEqual({ id: mine, kind: 'webhook', address: ADDR, enabled: true });
+    // C10-F: the list receipt gained the inbound path + secret status + last-event
+    // fields (the settings screen must be able to show what it manages). Deep
+    // equality is kept on purpose — a subset match would let a future writer drop
+    // a field silently and still pass.
+    expect(out[0]).toEqual({
+      id: mine, kind: 'webhook', address: ADDR, enabled: true,
+      urlPath: `/api/webhooks/${mine}`,
+      hasSecret: false, secretPreview: null, feedUrl: null,
+      lastEventAt: null, lastError: null,
+    });
     expect(out.map(s => s.id)).not.toContain(theirs);
     // 同一 agent 在别的 org 视角下也不是「自己的」：org 段参与裁决，不做单字段推断。
     expect(service.listSources('other_org', OWNER)).toEqual([]);

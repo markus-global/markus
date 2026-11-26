@@ -21,6 +21,10 @@ function fakeService(overrides: Partial<Record<keyof ExternalSourceService, unkn
   const svc = {
     receiveWebhook: vi.fn(() => ({ http: 200, body: { status: 'ingested', itemId: 'mbx_1' } })),
     listSources: vi.fn(() => [{ id: 'src_1', kind: 'webhook', address: 'hook.acme@markus.global', enabled: true }]),
+    // C10-F: the list route answers with the policy and the sources in one
+    // response, so the stub has to answer both — a stub missing this would make
+    // the route look broken rather than the fixture stale.
+    policyOf: vi.fn(() => 'accept'),
     registerSource: vi.fn(() => ({ status: 'registered', source: { id: 'src_1' } })),
     setSourceEnabled: vi.fn(() => ({ status: 'toggled', enabled: false })),
     deliverAsOperator: vi.fn(() => ({ status: 'ingested', itemId: 'mbx_9', workUnitRef: 'external:src_1:op-1' })),
@@ -118,7 +122,7 @@ describe('C10-B：/api/external-sources 自助面（member 门槛 + 会话身份
       ctx = createTestServer();
     });
 
-    it('GET 列表：orgId 取会话身份、agentId 取 query，服务回吐 {sources}', async () => {
+    it('GET 列表：orgId 取会话身份、agentId 取 query，服务回吐 {policy, sources}', async () => {
       const svc = fakeService();
       ctx.server.setExternalSourceService(svc);
 
@@ -126,7 +130,10 @@ describe('C10-B：/api/external-sources 自助面（member 门槛 + 会话身份
 
       expect(svc.listSources).toHaveBeenCalledWith('default', 'agent-a');
       expect(res.status).toBe(200);
-      expect(res.json).toEqual({ sources: [{ id: 'src_1', kind: 'webhook', address: 'hook.acme@markus.global', enabled: true }] });
+      expect(res.json).toEqual({
+        policy: 'accept',
+        sources: [{ id: 'src_1', kind: 'webhook', address: 'hook.acme@markus.global', enabled: true }],
+      });
     });
 
     it('GET 缺 agentId ⇒ 400（不静默回一个空列表）', async () => {

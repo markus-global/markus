@@ -184,6 +184,19 @@ export const DECLARATIONS = {
     witness: { type: 'reader', at: 'selfInitiationCeiling' },
     note: "Reader chain: api-server trust port (org/policy lookup) → Agent.selfInitiationCeiling (INPUT derivation) → the maySelfInitiate predicate, single. A (2026-11-25): unverified EXTERNAL origins also feed this input — they have no agent row, so the port decides them explicitly rather than by lookup.",
   },
+  'org.externalIngress': {
+    kind: 'policy',
+    declaredAt: 'packages/storage/src/sqlite-storage.ts:organizations.external_ingress',
+    // C10-F: the org-level answer to "do we take external input at all, and may
+    // it owe a turn?". Three states, one reader: the single ingest point
+    // (ExternalSourceService.ingest). Every external entry path (public webhook,
+    // RSS polling, operator delivery) goes through it, so no adapter can carry
+    // its own copy of this decision. The writer is
+    // OrganizationService.setExternalIngress (human actor + one audit row); the
+    // storage repo method is its instrument, not a public elevation path.
+    witness: { type: 'reader', at: 'ExternalSourceService.ingest' },
+    note: "Default 'off' — the state you get without asking is the safe one. 'observe' accepts and records without owing a turn; 'accept' owes a turn (pre-policy behaviour). Per-source enabled is ANDed with this, never a substitute.",
+  },
 } as const satisfies Record<string, Declaration>;
 
 export type DeclarationKey = keyof typeof DECLARATIONS;
