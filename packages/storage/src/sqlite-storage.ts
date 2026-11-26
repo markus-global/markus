@@ -5314,6 +5314,32 @@ export class SqliteMailboxRepo {
     }
   }
 
+  /**
+   * 工作记录：把「逻辑上不可能有实体归属」的遥测行一次性标记为已判定。
+   *
+   * 旧调度器的心跳节拍在任何版本里都不属于某个实体，而 0.12.4 升级上来的库里
+   * 它们的 `entity_id` 全是 NULL。逐条 `resolveEntity` 纯属浪费（真实库里单个
+   * agent 就有数百到上千行），一条 UPDATE 全部覆盖 —— 之后它们既不会出现在
+   * `getUnindexed()` 里，也不会进任何分组（工作记录的查询条件已排除 heartbeat）。
+   */
+  markUnresolvableTelemetryIndexed(agentId: string): number {
+    const res = this.db
+      .prepare(
+        `UPDATE mailbox_items SET entity_kind = 'none', entity_id = ''
+          WHERE agent_id = ? AND entity_id IS NULL AND source_type = 'heartbeat'`,
+      )
+      .run(agentId);
+    return Number((res as { changes?: number }).changes ?? 0);
+  }
+
+  /** 工作记录：仍未判定归属的行数（>0 = 还有历史没整理完，界面必须让它可见）。 */
+  countUnindexed(agentId: string): number {
+    const row = this.db
+      .prepare('SELECT COUNT(*) AS c FROM mailbox_items WHERE agent_id = ? AND entity_id IS NULL')
+      .get(agentId) as Record<string, unknown> | undefined;
+    return Number(row?.['c'] ?? 0);
+  }
+
   /** 工作记录：按实体键取（走 idx_mailbox_entity）。 */
   getByEntityKey(agentId: string, kind: string, entityId: string, limit = 2000): MailboxItemRow[] {
     const rows = this.db.prepare(

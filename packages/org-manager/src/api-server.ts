@@ -6850,8 +6850,17 @@ export class APIServer {
           // NULL、永远重算：打开概览、每点一次分组都要重扫整段历史并逐行查
           // tasks/chat_sessions。现在「判定为无归属」也落库（`entity_id = ''` 作哨兵），
           // NULL 只剩「未判定」：这个集合只减不增，第二次请求起就是纯 SQL 聚合。
+          // ① 逻辑上不可能有归属的遥测（旧调度器心跳）：一条 UPDATE 标记掉，不排队
+          //    进逐条解析 —— 0.12.4 升级上来的库里这类行有几百到几千条。
           try {
-            const pending = repo.getUnindexed(agentId, 500) as unknown as Array<Record<string, unknown>>;
+            repo.markUnresolvableTelemetryIndexed(agentId);
+          } catch {
+            /* 标记失败不影响本次返回 */
+          }
+          // ② 其余未判定行：解析并回填。上限覆盖绝大多数 agent 的全部历史；超出部分
+          //    不会被静默丢弃 —— 见下面把 `unresolvedRows` 并进「历史记录」桶。
+          try {
+            const pending = repo.getUnindexed(agentId, 2000) as unknown as Array<Record<string, unknown>>;
             if (pending.length > 0) {
               repo.setEntityKeys(
                 pending.map(row => {
@@ -6863,6 +6872,13 @@ export class APIServer {
           } catch {
             /* 回填失败不影响本次返回 */
           }
+          const unresolvedRows = (() => {
+            try {
+              return repo.countUnindexed(agentId);
+            } catch {
+              return 0;
+            }
+          })();
 
           const size = Math.min(Math.max(limit, 1), 200);
           // 计数与列表同源：都出自同一条索引查询（`idx_mailbox_entity`）。
@@ -6895,10 +6911,27 @@ export class APIServer {
               latestAt: g.latestAt,
             }))
             .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
+          // ③ 仍未判定的行（超过单次解析上限的老库）：实体未知，只能归「历史记录」。
+          //    它们必须出现在**数字**里 —— 让历史显示得比实际少，比卡顿更糟。
+          if (unresolvedRows > 0 && (!entityKindFilter || entityKindFilter === 'none')) {
+            const noneGroup = groups.find(g => g.kind === 'none');
+            if (noneGroup) noneGroup.count += unresolvedRows;
+            else
+              groups.push({
+                key: 'none:',
+                kind: 'none',
+                id: '',
+                name: '',
+                count: unresolvedRows,
+                units: 0,
+                latestAt: '',
+              });
+          }
           this.json(res, 200, {
             groups: groups.slice(offset, offset + size),
             totalGroups: kindScoped.length,
             scanned: 0,
+            unresolvedRows,
             kindCounts,
             statusCounts,
             staleProcessingCount,
