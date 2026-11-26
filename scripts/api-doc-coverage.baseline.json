@@ -1,7 +1,0 @@
-{
-  "documented": 95,
-  "routes": 400,
-  "dead": 0,
-  "note": "Coverage ratchet for docs/api/api.md. documented/routes may only grow/vanish together with docs. Regenerate with: node scripts/api-doc-coverage.mjs --write-baseline",
-  "updatedAt": "2026-11-26"
-}

@@ -15587,14 +15587,20 @@ EXPLANATION_END`;
       methods,
     });
 
-    return [
+    return [/** Login, returns JWT Cookie */
+
       // ── Auth ─────────────────────────────────────────────────────────────
       exact('/api/auth/login', 'POST'),
-      exact('/api/auth/hub-login', 'POST'),
-      exact('/api/auth/logout', 'POST'),
-      exact('/api/auth/me', 'GET'),
-      exact('/api/auth/change-password', 'POST'),
-      exact('/api/auth/setup', 'POST'),
+      exact('/api/auth/hub-login', 'POST'),/** Logout */
+
+      exact('/api/auth/logout', 'POST'),/** Get current user info */
+
+      exact('/api/auth/me', 'GET'),/** Change password */
+
+      exact('/api/auth/change-password', 'POST'),/** Complete registration `{ token, password }` */
+
+      exact('/api/auth/setup', 'POST'),/** Validate invite token — returns user info (name, email) */
+
       exact('/api/auth/invite-info', 'GET'),
       exact('/api/auth/profile', 'PUT'),
 
@@ -15606,19 +15612,24 @@ EXPLANATION_END`;
       exact('/api/uploads', 'POST'),
       startsWith('/api/uploads/', 'GET'),
       // 附件字节（内容寻址）。前端 <img src> 直接命中，需要登录态之外的可访问性。
-      startsWith('/api/attachments/', 'GET'),
+      startsWith('/api/attachments/', 'GET'),/** List all agents */
+
 
       // ── Agents ───────────────────────────────────────────────────────────
       exact('/api/agents', 'GET', 'POST'),
-      exact('/api/agents/role-updates', 'GET'),
+      exact('/api/agents/role-updates', 'GET'),/** List an agent's conversation sessions */
+
       regex(/^\/api\/agents\/[^/]+\/sessions$/, 'GET', 'POST'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/sessions\/[^/]+\/stream\/status$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/model-override$/, 'PUT'),
-      regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),
+      regex(/^\/api\/sessions\/[^/]+\/title$/, 'PATCH'),/** Start agent */
+
       regex(/^\/api\/agents\/[^/]+\/(start|stop|cancel-processing|daily-report|a2a|message|evolve-from-message)$/, 'POST'),
-      regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),
-      regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),
+      regex(/^\/api\/agents\/[^/]+\/evolve-from-message$/, 'POST'),/** Get agent details */
+
+      regex(/^\/api\/agents\/[^/]+$/, 'GET', 'DELETE'),/** Get agent mind state (attention, focus, mailbox, notebook) */
+
       regex(/^\/api\/agents\/[^/]+\/mind$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/mailbox\/[^/]+\/drop$/, 'POST'),
@@ -15645,23 +15656,32 @@ EXPLANATION_END`;
       regex(/^\/api\/agents\/[^/]+\/activity-logs$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat$/, 'GET'),
       regex(/^\/api\/agents\/[^/]+\/heartbeat\/trigger$/, 'POST'),
-      regex(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/, 'DELETE'),
-      regex(/^\/api\/agents\/[^/]+\/command$/, 'POST'),
+      regex(/^\/api\/agents\/[^/]+\/wakeups\/[^/]+$/, 'DELETE'),/** Dispatch slash command to agent */
+
+      regex(/^\/api\/agents\/[^/]+\/command$/, 'POST'),/** Get session message history */
+
 
       // ── Sessions / Channels ──────────────────────────────────────────────
       regex(/^\/api\/sessions\/[^/]+\/messages$/, 'GET'),
       regex(/^\/api\/sessions\/[^/]+\/messages\/[^/]+$/, 'GET'),
-      regex(/^\/api\/sessions\/[^/]+$/, 'DELETE'),
-      regex(/^\/api\/channels\/[^/]+\/messages$/, 'GET', 'POST'),
+      regex(/^\/api\/sessions\/[^/]+$/, 'DELETE'),/** Get channel history */
+
+      regex(/^\/api\/channels\/[^/]+\/messages$/, 'GET', 'POST'),/** List group chats for current user */
+
 
       // ── Group Chats ──────────────────────────────────────────────────────
-      exact('/api/group-chats', 'GET', 'POST'),
-      regex(/^\/api\/group-chats\/[^/]+$/, 'GET', 'PATCH', 'DELETE'),
-      regex(/^\/api\/group-chats\/[^/]+\/members$/, 'POST'),
-      regex(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/, 'DELETE'),
+      exact('/api/group-chats', 'GET', 'POST'),/** Get group chat details (includes members) */
+
+      regex(/^\/api\/group-chats\/[^/]+$/, 'GET', 'PATCH', 'DELETE'),/** Add member `{ userId, userType, userName }` */
+
+      regex(/^\/api\/group-chats\/[^/]+\/members$/, 'POST'),/** Remove member */
+
+      regex(/^\/api\/group-chats\/[^/]+\/members\/[^/]+$/, 'DELETE'),/** List teams */
+
 
       // ── Teams ────────────────────────────────────────────────────────────
-      exact('/api/teams', 'GET', 'POST'),
+      exact('/api/teams', 'GET', 'POST'),/** Update team */
+
       regex(/^\/api\/teams\/[^/]+$/, 'PATCH', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/members$/, 'POST'),
       regex(/^\/api\/teams\/[^/]+\/members\/[^/]+$/, 'DELETE'),
@@ -15669,43 +15689,61 @@ EXPLANATION_END`;
       regex(/^\/api\/teams\/[^/]+\/status$/, 'GET'),
       regex(/^\/api\/teams\/[^/]+\/files$/, 'GET'),
       regex(/^\/api\/teams\/[^/]+\/files\/[^/]+$/, 'GET', 'PUT'),
-      regex(/^\/api\/teams\/[^/]+\/export$/, 'GET'),
+      regex(/^\/api\/teams\/[^/]+\/export$/, 'GET'),/** List available role templates */
+
 
       // ── Roles ────────────────────────────────────────────────────────────
-      exact('/api/roles', 'GET'),
-      startsWith('/api/roles/', 'GET'),
+      exact('/api/roles', 'GET'),/** List available role templates */
+
+      startsWith('/api/roles/', 'GET'),/** List tasks (supports `?status=`, `?assignedAgentId=` filters) */
+
 
       // ── Tasks ───────────────────────────────────────────────────────────
       exact('/api/tasks', 'GET', 'POST'),
       exact('/api/tasks/scheduled', 'GET'),
       exact('/api/tasks/deliverables', 'GET'),
-      exact('/api/tasks/dashboard', 'GET'),
+      exact('/api/tasks/dashboard', 'GET'),/** Get Kanban board data */
+
       exact('/api/taskboard', 'GET'),
       exact('/api/taskboard/summary', 'GET'),
-      exact('/api/ops/dashboard', 'GET'),
-      regex(/^\/api\/tasks\/[^/]+$/, 'GET'),
-      regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),
-      regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),
+      exact('/api/ops/dashboard', 'GET'),/** Update task (status, assignedAgentId, or task fields) */
+
+      regex(/^\/api\/tasks\/[^/]+$/, 'GET'),/** Update task (status, assignedAgentId, or task fields) */
+
+      regex(/^\/api\/tasks\/[^/]+$/, 'PUT', 'DELETE'),/** Approve a pending task */
+
+      regex(/^\/api\/tasks\/[^/]+\/approve$/, 'POST'),/** Reject a pending task */
+
+      regex(/^\/api\/tasks\/[^/]+\/reject$/, 'POST'),/** Cancel a task (body: `{ cascade?: boolean }`) */
+
       regex(/^\/api\/tasks\/[^/]+\/cancel$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/context$/, 'GET'),
+      regex(/^\/api\/tasks\/[^/]+\/context$/, 'GET'),/** Count tasks blocked by this task */
+
       regex(/^\/api\/tasks\/[^/]+\/dependents$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/run$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/subtasks$/, 'GET', 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+$/, 'DELETE'),
-      regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+\/(complete|cancel)$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/subtasks\/[^/]+\/(complete|cancel)$/, 'POST'),/** Post a comment on a task. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. */
+
       regex(/^\/api\/tasks\/[^/]+\/comments$/, 'GET', 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/history$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/pause$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/resume$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/retry$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/revision$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/accept$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/retry$/, 'POST'),/** Request revision */
+
+      regex(/^\/api\/tasks\/[^/]+\/revision$/, 'POST'),/** Accept task delivery */
+
+      regex(/^\/api\/tasks\/[^/]+\/accept$/, 'POST'),/** Archive task */
+
       regex(/^\/api\/tasks\/[^/]+\/archive$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/request-approval$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/schedule$/, 'PUT'),
-      regex(/^\/api\/tasks\/[^/]+\/schedule\/pause$/, 'POST'),
-      regex(/^\/api\/tasks\/[^/]+\/schedule\/resume$/, 'POST'),
+      regex(/^\/api\/tasks\/[^/]+\/request-approval$/, 'POST'),/** Update schedule configuration `{ every?, cron?, maxRuns?, timezone? }` */
+
+      regex(/^\/api\/tasks\/[^/]+\/schedule$/, 'PUT'),/** Pause a scheduled task's recurring schedule */
+
+      regex(/^\/api\/tasks\/[^/]+\/schedule\/pause$/, 'POST'),/** Resume a paused scheduled task */
+
+      regex(/^\/api\/tasks\/[^/]+\/schedule\/resume$/, 'POST'),/** Trigger an immediate run of a scheduled task */
+
       regex(/^\/api\/tasks\/[^/]+\/schedule\/run-now$/, 'POST'),
       regex(/^\/api\/tasks\/[^/]+\/logs$/, 'GET'),
       regex(/^\/api\/tasks\/[^/]+\/logs\/summary$/, 'GET'),
@@ -15716,8 +15754,10 @@ EXPLANATION_END`;
       // ── Deliverables / Knowledge ─────────────────────────────────────────
       exact('/api/deliverables', 'GET', 'POST'),
       exact('/api/deliverables/health', 'GET'),
-      regex(/^\/api\/deliverables\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
-      exact('/api/knowledge', 'POST'),
+      regex(/^\/api\/deliverables\/[^/]+$/, 'GET', 'PUT', 'DELETE'),/** Contribute knowledge */
+
+      exact('/api/knowledge', 'POST'),/** Search knowledge base */
+
       exact('/api/knowledge/search', 'GET'),
       regex(/^\/api\/knowledge\/[^/]+$/, 'DELETE'),
       regex(/^\/api\/knowledge\/[^/]+\/flag-outdated$/, 'POST'),
@@ -15735,31 +15775,42 @@ EXPLANATION_END`;
       regex(/^\/api\/requirements\/[^/]+\/tasks\/approve-bulk$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/reject$/, 'POST'),
       regex(/^\/api\/requirements\/[^/]+\/cancel$/, 'POST'),
-      regex(/^\/api\/requirements\/[^/]+\/request-approval$/, 'POST'),
+      regex(/^\/api\/requirements\/[^/]+\/request-approval$/, 'POST'),/** Post a comment on a requirement. Body: `{ content, mentions?, authorId?, authorType?, replyTo? }`. `replyTo` is a comment ID for structural reply linking. */
+
       regex(/^\/api\/requirements\/[^/]+\/comments$/, 'GET', 'POST'),
-      regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),
+      regex(/^\/api\/requirements\/[^/]+\/history$/, 'GET'),/** List projects */
+
 
       // ── Projects ─────────────────────────────────────────────────────────
       exact('/api/projects', 'GET', 'POST'),
-      regex(/^\/api\/projects\/[^/]+\/knowledge\/sync$/, 'POST'),
-      regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
+      regex(/^\/api\/projects\/[^/]+\/knowledge\/sync$/, 'POST'),/** Get project */
+
+      regex(/^\/api\/projects\/[^/]+$/, 'GET', 'PUT', 'DELETE'),/** List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) */
+
 
       // ── Notifications ────────────────────────────────────────────────────
-      exact('/api/notifications', 'GET', 'POST'),
-      exact('/api/notifications/mark-all-read', 'POST'),
+      exact('/api/notifications', 'GET', 'POST'),/** Mark all notifications as read */
+
+      exact('/api/notifications/mark-all-read', 'POST'),/** List notifications for current user (supports `?unread=true&limit=N&offset=N&type=T`) */
+
       startsWith('/api/notifications/', 'POST'),
 
       // ── Message search ──────────────────────────────────────────────────
       exact('/api/messages/search', 'GET'),
 
       // ── Activity feed ─────────────────────────────────────────────────
-      exact('/api/activity', 'GET'),
+      exact('/api/activity', 'GET'),/** List human users (includes `hasJoined` flag) */
+
 
       // ── Users ────────────────────────────────────────────────────────────
-      exact('/api/users', 'GET', 'POST'),
-      regex(/^\/api\/users\/[^/]+$/, 'PATCH'),
-      regex(/^\/api\/users\/[^/]+\/reset-password$/, 'POST'),
-      regex(/^\/api\/users\/[^/]+\/reinvite$/, 'POST'),
+      exact('/api/users', 'GET', 'POST'),/** Update user (name, role, email) */
+
+      regex(/^\/api\/users\/[^/]+$/, 'PATCH'),/** Admin password reset */
+
+      regex(/^\/api\/users\/[^/]+\/reset-password$/, 'POST'),/** Re-issue an invite token — returns `{ inviteToken }` */
+
+      regex(/^\/api\/users\/[^/]+\/reinvite$/, 'POST'),/** List human users (includes `hasJoined` flag) */
+
       startsWith('/api/users/', 'DELETE'),
 
       // ── API Keys ─────────────────────────────────────────────────────────
@@ -15806,7 +15857,8 @@ EXPLANATION_END`;
       exact('/api/settings/llm/models', 'GET'),
       exact('/api/settings/llm/restore-recommended', 'POST'),
       exact('/api/settings/llm/sync-openrouter', 'POST'),
-      exact('/api/settings/llm/routing', 'GET'),
+      exact('/api/settings/llm/routing', 'GET'),/** Get agent runtime settings */
+
       exact('/api/settings/agent', 'GET', 'POST'),
       exact('/api/settings/network', 'GET', 'POST'),
       exact('/api/settings/browser', 'GET', 'POST'),
@@ -15864,19 +15916,26 @@ EXPLANATION_END`;
       // ── Audit ────────────────────────────────────────────────────────────
       exact('/api/audit', 'GET'),
       exact('/api/audit/summary', 'GET'),
-      exact('/api/audit/tokens', 'GET'),
+      exact('/api/audit/tokens', 'GET'),/** Read facts — active rows plus their verification state */
+
       // C9-E: facts audit trail (owner/admin, read-only).
       exact('/api/facts', 'GET'),
 
       // ── Plan ─────────────────────────────────────────────────────────────
-      exact('/api/plan', 'GET', 'POST'),
+      exact('/api/plan', 'GET', 'POST'),/** List reports */
+
 
       // ── Reports ──────────────────────────────────────────────────────────
-      exact('/api/reports', 'GET'),
-      exact('/api/reports/generate', 'POST'),
-      regex(/^\/api\/reports\/[^/]+$/, 'GET'),
-      regex(/^\/api\/reports\/[^/]+\/plan\/approve$/, 'POST'),
-      regex(/^\/api\/reports\/[^/]+\/plan\/reject$/, 'POST'),
+      exact('/api/reports', 'GET'),/** Trigger report generation */
+
+      exact('/api/reports/generate', 'POST'),/** Report details */
+
+      regex(/^\/api\/reports\/[^/]+$/, 'GET'),/** Approve plan */
+
+      regex(/^\/api\/reports\/[^/]+\/plan\/approve$/, 'POST'),/** Reject plan */
+
+      regex(/^\/api\/reports\/[^/]+\/plan\/reject$/, 'POST'),/** Get report feedback */
+
       regex(/^\/api\/reports\/[^/]+\/feedback$/, 'GET', 'POST'),
 
       // ── Gateway ──────────────────────────────────────────────────────────
@@ -15918,7 +15977,8 @@ EXPLANATION_END`;
 
       // ── Team Templates ───────────────────────────────────────────────────
       exact('/api/team-templates', 'GET', 'POST'),
-      startsWith('/api/team-templates/', 'GET', 'DELETE'),
+      startsWith('/api/team-templates/', 'GET', 'DELETE'),/** View governance policy */
+
 
       // ── Governance / Workflows ───────────────────────────────────────────
       exact('/api/governance/policy', 'GET', 'PUT'),
@@ -15926,18 +15986,24 @@ EXPLANATION_END`;
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+$/, 'GET', 'PUT', 'DELETE'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/roles$/, 'GET'),
       regex(/^\/api\/teams\/[^/]+\/workflows\/[^/]+\/runs$/, 'GET', 'POST'),
-      regex(/^\/api\/workflow-runs\/[^/]+$/, 'GET', 'DELETE'),
+      regex(/^\/api\/workflow-runs\/[^/]+$/, 'GET', 'DELETE'),/** Health check (returns `{ status, version, agents }`) */
+
 
       // ── System ───────────────────────────────────────────────────────────
       exact('/api/health', 'GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'),
-      exact('/api/evolution/metrics', 'GET'),
-      exact('/api/system/emergency-stop', 'POST'),
+      exact('/api/evolution/metrics', 'GET'),/** Emergency stop */
+
+      exact('/api/system/emergency-stop', 'POST'),/** Global status (paused/emergency mode) */
+
       exact('/api/system/status', 'GET'),
       exact('/api/browser/tab-ownership', 'GET'),
-      exact('/api/terminal/session-ownership', 'GET'),
+      exact('/api/terminal/session-ownership', 'GET'),/** Disk usage: org breakdown + per-agent buckets (see note) */
+
       exact('/api/system/storage', 'GET'),
-      exact('/api/system/info', 'GET'),
-      exact('/api/system/storage/orphans', 'GET', 'DELETE'),
+      exact('/api/system/info', 'GET'),/** Detect orphaned agent/team directories */
+
+      exact('/api/system/storage/orphans', 'GET', 'DELETE'),/** Get system announcements */
+
       exact('/api/system/announcements', 'GET', 'POST'),
       exact('/api/system/open-path', 'POST'),
 

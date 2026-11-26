@@ -68,7 +68,7 @@ Markus maintains detailed documentation about its architecture and subsystems, a
 | `docs/architecture/state-machines.md` | Task / requirement / mailbox state transitions and triggers |
 | `docs/architecture/tool-system.md` | Tool selection, result envelope, subagent budgets |
 | `docs/architecture/mailbox-system.md` | Priority queue, attention model, interrupts, stop / cancel |
-| `docs/api/api.md` | REST API endpoints and WebSocket events |
+| `docs/api/reference.md` | REST API endpoints — **generated** from `buildRouteTable()`, never edited by hand |
 | `docs/guides/guide.md` | Setup and usage guide |
 
 `docs/architecture/` describes **current** behaviour. `docs/records/` holds dated engineering records (audits, post-mortems, hardening logs) kept for the rationale behind changes that are already in the code — it is **historical and frozen**, so never read it as a description of how the platform behaves today.

@@ -69,7 +69,7 @@ The best way to start is with an issue explicitly sized for newcomers. Look for 
 **Not sure where to start?** Anything in our curated backlog is fair game:
 
 - **Add example workflows** to `examples/` — turn real use cases ("research a competitor", "write release notes") into runnable scripts.
-- **Expand API docs** — `docs/api/api.md` needs more endpoint examples, request/response shapes, and error codes.
+- **Document API routes** — `docs/api/reference.md` is **generated** from `APIServer.buildRouteTable()`. To describe an endpoint, put a comment above its declaration in the route table and run `pnpm api:docs`. Never edit the reference by hand.
 - **Add unit tests** — `packages/comms`, `packages/storage` and `packages/a2a` have untested paths. Pick a function, write deterministic tests, watch the coverage go up.
 - **Add a locale** — the Web UI ships `en` and `zh-CN`; adding `ja`, `es`, or `de` follows the same pattern (`packages/web-ui/src/locales/`).
 - **Build a communication adapter** — a Discord adapter following the Slack/Telegram/WhatsApp pattern in `packages/comms/` also unlocks our community plan.
@@ -328,7 +328,7 @@ git rebase --signoff HEAD~N
 
 - [Architecture](docs/architecture/architecture.md) — system design, agent runtime, memory, governance
 - [User Guide](docs/guides/guide.md) — setup, configuration, Web UI walkthrough
-- [API Reference](docs/api/api.md) — REST API endpoints and WebSocket events
+- [API Reference](docs/api/reference.md) — generated from the route table; [WebSocket events](docs/api/guides/websocket.md) — hand-written guide
 - [Skill Ecosystem](docs/guides/skill-ecosystem.md) — import/export external skill formats
 - [Development Guide](docs/guides/development.md) — local setup, dev scripts, debugging
 - [Release Notes](RELEASELOG.md) — what changed in each release
