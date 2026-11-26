@@ -6828,125 +6828,83 @@ export class APIServer {
         const SCAN = Math.min(Number.parseInt(url.searchParams.get('scan') ?? '5000', 10) || 5000, 50000);
         /** 状态的唯一读取归一：`status=bounced` 必须能命中历史 `dropped` 行（反之亦然）。 */
         const statusWanted = status ? normalizeSignalStatus(status) : undefined;
-        /**
-         * 扫描缓存。
-         *
-         * `groups` 和 `entity` 两条通路都需要在**整段历史**上做实体解析（实体是
-         * `workUnitRef` + payload 兼底解出来的，没法用 SQL 直接过滤）。
-         * 旧写法每点一个实体就把 5000 行重新拉一遍并逐行 resolve → 手感上就是「很卡」。
-         *
-         * 【为什么缓存键**不含**状态/类别筛选】筛选现在是**扫描后**在内存里做的：
-         * 同一批行要同时回答「左栏有几条 / 右栏有哪些 / 另一根轴各多少个」。
-         * 把筛选放进缓存键就会为同一个 agent 缓存多份几乎一样的行，而且
-         * 「按状态筛选后的计数」会把筛选自身当成事实来回答。
-         */
-        type ResolvedMailboxRow = { row: Record<string, unknown>; kind: string; key: string; name: string };
-        /**
-         * 工作记录**不收录**的执行流水/遥测：
-         *
-         *  - `heartbeat`：旧调度器的节拍器 tick（登记表 `producedBy: ['legacy']`）。
-         *    全库 169 233 条，不回答「这是哪件事」；它的去处是「心跳」页与运行态。
-         *  - **无实体归属**的 `callback_result`：后台命令回执（`[BACKGROUND PROCESS
-         *    COMPLETED] … tail -c 200 …`）。有实体归属（带 workUnitRef / taskId）的
-         *    回执照常进工作记录并落在那个实体上；没归属的只回答“命令跑完了”。
-         *
-         * 【为什么在扫描层统一滤】左栏实体、kindCounts、statusCounts、右栏记录必须
-         * 同一个宇宙；只滤一处就是同一条事实两种统计。数据一条不删，只不进这块面板。
-         */
-        const WORKLOG_ALWAYS_TELEMETRY = new Set(['heartbeat']);
-        const WORKLOG_TELEMETRY_WHEN_UNOWNED = new Set(['callback_result']);
-        const isWorkLogRow = (r: ResolvedMailboxRow): boolean => {
-          const t = String(r.row['sourceType'] ?? '');
-          if (WORKLOG_ALWAYS_TELEMETRY.has(t)) return false;
-          if (r.kind === 'none' && WORKLOG_TELEMETRY_WHEN_UNOWNED.has(t)) return false;
-          return true;
-        };
-        const scanCacheRef = this as unknown as { __wrScanCache?: Map<string, { at: number; rows: ResolvedMailboxRow[] }> };
-        const scanCache = (scanCacheRef.__wrScanCache ??= new Map());
-        const scanKey = JSON.stringify([agentId, SCAN]);
-        const scannedRows = (): ResolvedMailboxRow[] => {
-          const now = Date.now();
-          const hit = scanCache.get(scanKey);
-          if (hit && now - hit.at < 15000) return hit.rows;
-          const raw = this.storage!.mailboxRepo!.getHistory(agentId, { limit: SCAN, offset: 0 }) as unknown as Array<Record<string, unknown>>;
-          const rows: ResolvedMailboxRow[] = raw.map(row => {
-            const ent = resolveEntity(row as never);
-            return {
-              row,
-              kind: ent?.kind ?? 'none',
-              // 未归属桶用**非空哨兵键** `none:`：空串在客户端会被当成「没选实体」。
-              key: ent ? `${ent.kind}:${ent.id}` : 'none:',
-              name: ent?.name ?? '',
-            };
-          }).filter(isWorkLogRow);
-          if (scanCache.size > 32) scanCache.clear();
-          scanCache.set(scanKey, { at: now, rows });
-          return rows;
-        };
+        // ── 实体归属的读路径：SQL 索引，不是内存扫描 ──────────────────────
+        // 此处原为「拉最多 5000 行 → 逐行 resolveEntity → 内存分组 → 15s 缓存」。它把
+        // 「未判定归属」和「判定为无归属」都塞进 `entity_id IS NULL`，且回填时显式跳过
+        // `kind === 'none'`，于是「历史记录」这一桶每次打开概览、每点一次分组都要重扫
+        // 整段历史（每行还要查 tasks / chat_sessions 取标题）。
+        // 现在归属落在 `entity_kind/entity_id` 列上，由 `idx_mailbox_entity` 承担分组与
+        // 分页；未判定的行只解析一次就写回。工作记录不收的两类遥测（`heartbeat`、无归属
+        // 的 `callback_result`）在 storage 的查询条件里统一排除 —— 左栏计数与右栏列表
+        // 因此永远同一个宇宙。
         /** 当前 agent 里**陈旧** processing 行数（与「清理」按钮同一判据）。 */
         const staleProcessingCount = (() => {
           try { return agent.getMailbox().countStaleProcessing(); } catch { return 0; }
         })();
 
         if (wrmode === 'groups' && this.storage?.mailboxRepo) {
-          // 扫描结果 = 全量历史（无筛选）。两根轴（实体类别 / 状态）在这里**各筛一次**，
-          // 计数与列表从同一批行派生 —— 否则「筛选后的列表」与「筛选后的计数」会互相矛盾。
-          const base = scannedRows().filter(r => {
-            if (!sourceTypes || sourceTypes.length === 0) return true;
-            return sourceTypes.includes(String(r.row['sourceType'] ?? ''));
-          });
-          const kindCounts: Record<string, number> = {};
-          for (const r of base) kindCounts[r.kind] = (kindCounts[r.kind] ?? 0) + 1;
-          const kindScoped = entityKindFilter ? base.filter(r => r.kind === entityKindFilter) : base;
-          const statusCounts: Record<string, number> = {};
-          for (const r of kindScoped) {
-            const s = normalizeSignalStatus(String(r.row['status'] ?? ''));
-            statusCounts[s] = (statusCounts[s] ?? 0) + 1;
-          }
-          const all = statusWanted
-            ? kindScoped.filter(r => normalizeSignalStatus(String(r.row['status'] ?? '')) === statusWanted)
-            : kindScoped;
-          const agg = new Map<string, { kind: string; id: string; name: string; count: number; units: Set<string>; latestAt: string }>();
-          const toIndex: Array<{ id: string; kind: string; entityId: string }> = [];
-          for (const { row, kind, key, name } of all) {
-            // 顺手把解析结果回填到 entity_kind/entity_id（只填 NULL 行）。
-            // 旧库因此会在第一次扫描后自己完成迁移，不需要单独跑迁移脚本。
-            if (kind !== 'none' && row['entityId'] == null) {
-              toIndex.push({ id: String(row['id']), kind, entityId: key.slice(kind.length + 1) });
+          const repo = this.storage.mailboxRepo;
+          // ── 慢路径只留给「未判定」的行 ──────────────────────────────────
+          // `entity_id IS NULL` 原先同时表示「还没解析过」和「解析出来就是无归属」，
+          // 而回填时又显式跳过 `kind === 'none'` —— 于是「历史记录」这一桶永远保持
+          // NULL、永远重算：打开概览、每点一次分组都要重扫整段历史并逐行查
+          // tasks/chat_sessions。现在「判定为无归属」也落库（`entity_id = ''` 作哨兵），
+          // NULL 只剩「未判定」：这个集合只减不增，第二次请求起就是纯 SQL 聚合。
+          try {
+            const pending = repo.getUnindexed(agentId, 500) as unknown as Array<Record<string, unknown>>;
+            if (pending.length > 0) {
+              repo.setEntityKeys(
+                pending.map(row => {
+                  const ent = resolveEntity(row as never);
+                  return { id: String(row['id']), kind: ent ? ent.kind : 'none', entityId: ent ? ent.id : '' };
+                }),
+              );
             }
-            const at = String(row['queuedAt'] ?? row['createdAt'] ?? '');
-            const hit = agg.get(key);
-            const ref = row['workUnitRef'];
-            if (hit) {
-              hit.count++;
-              if (typeof ref === 'string') hit.units.add(ref);
-              if (at > hit.latestAt) hit.latestAt = at;
-            } else {
-              agg.set(key, {
-                kind,
-                id: kind === 'none' ? '' : key.slice(kind.length + 1),
-                name,
-                count: 1,
-                units: new Set<string>(typeof ref === 'string' ? [ref] : []),
-                latestAt: at,
-              });
-            }
+          } catch {
+            /* 回填失败不影响本次返回 */
           }
-          const sorted = [...agg.entries()]
-            .map(([key, g]) => ({ key, kind: g.kind, id: g.id, name: g.name, count: g.count, units: g.units.size, latestAt: g.latestAt }))
-            .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
-          try { this.storage.mailboxRepo.setEntityKeys(toIndex); } catch { /* 回填失败不影响本次返回 */ }
+
           const size = Math.min(Math.max(limit, 1), 200);
+          // 计数与列表同源：都出自同一条索引查询（`idx_mailbox_entity`）。
+          const kindCounts = repo.countWorklogByEntityKind(agentId) as Record<string, number>;
+          const rawStatus = repo.countWorklogByStatus(agentId) as Record<string, number>;
+          const statusCounts: Record<string, number> = {};
+          for (const [s, c] of Object.entries(rawStatus)) {
+            const n = normalizeSignalStatus(s);
+            statusCounts[n] = (statusCounts[n] ?? 0) + Number(c);
+          }
+          // 分组数 = 实体数（远小于行数）；一次取全（上限 500）再按类别筛 + 分页。
+          type EntityGroup = { kind: string; id: string; count: number; units: number; latestAt: string };
+          const allGroups = repo.getEntityGroups(agentId, { limit: 500, offset: 0, status: statusWanted }) as EntityGroup[];
+          const kindScoped = entityKindFilter ? allGroups.filter((g: EntityGroup) => g.kind === entityKindFilter) : allGroups;
+          const groups = kindScoped
+            .map((g: EntityGroup) => ({
+              key: g.kind === 'none' ? 'none:' : `${g.kind}:${g.id}`,
+              kind: g.kind,
+              id: g.id,
+              // 名字从实体表取，与 worklog-entity.ts 同一来源；取不到就留空，
+              // 前端用 key 生成标签 —— 不再逐行反解派生键。
+              name:
+                g.kind === 'task'
+                  ? (this.taskService?.getTask(g.id)?.title ?? '')
+                  : g.kind === 'requirement'
+                    ? ((this.storage?.requirementRepo?.findById?.(g.id) as { title?: string } | undefined)?.title ?? '')
+                    : '',
+              count: g.count,
+              units: g.units,
+              latestAt: g.latestAt,
+            }))
+            .sort((a, b) => (b.latestAt > a.latestAt ? 1 : b.latestAt < a.latestAt ? -1 : 0));
           this.json(res, 200, {
-            groups: sorted.slice(offset, offset + size),
-            totalGroups: sorted.length,
-            scanned: all.length,
+            groups: groups.slice(offset, offset + size),
+            totalGroups: kindScoped.length,
+            scanned: 0,
             kindCounts,
             statusCounts,
             staleProcessingCount,
             offset,
             limit: size,
-            hasNext: offset + size < sorted.length,
+            hasNext: offset + size < groups.length,
           });
           return;
         }
