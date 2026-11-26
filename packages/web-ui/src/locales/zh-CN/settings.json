@@ -10,7 +10,8 @@
     "integrations": "连接外部 IM 消息平台",
     "network": "访问范围、代理与出站路由",
     "account": "账户、组织与许可证",
-    "external-sources": "谁可以从外部触达你的 Agent，以及外部信号能做什么"
+    "external-sources": "谁可以从外部触达你的 Agent，以及外部信号能做什么",
+    "facts": "结论及其证据的审计轨迹"
   },
   "nav": {
     "appearance": "通用",
@@ -25,6 +26,7 @@
     "remote": "远程访问",
     "network": "网络与访问",
     "integrations": "外部IM集成",
+    "externalSignals": "外部信号",
     "license": "许可证",
     "organization": "组织",
     "account": "账户",
@@ -1567,6 +1569,7 @@
     "agentFilter": "Agent",
     "agentFilterHint": "选择一个 Agent，查看为它注册的入站路径。",
     "noTunnel": "当前没有配置隧道，下面的 URL 只是本机路径。在外部系统投递之前，先到「设置 → 账户 → 远程访问」开启隧道。",
+    "tunnelUnknown": "读不到隧道状态，下面的 URL 可能只是本机路径。交给外部系统之前，先到「设置 → 账户 → 远程访问」确认。",
     "empty": "这个 Agent 还没有外部源。它可以在对话里自己创建一个（webhook 或 RSS），创建后会出现在这里。",
     "state": {
       "delivering": "投递中",

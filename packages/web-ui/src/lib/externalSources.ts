@@ -61,6 +61,29 @@ export function externalIngressUrl(publicUrl: string | null, urlPath: string): E
   return { url: `${base}${urlPath}`, external: true };
 }
 
+/**
+ * Three answers, not two.
+ *
+ * `publicUrl === null` used to carry two different meanings — "no tunnel is
+ * configured" (a fact about the machine) and "we could not read the tunnel
+ * status" (the absence of a fact) — and the screen printed the first sentence
+ * for both. Telling someone "no tunnel is configured" because a request failed
+ * is worse than saying nothing: they go configure a tunnel they may already
+ * have, and they stop trusting the other warnings on the page.
+ */
+export type TunnelState =
+  | { kind: 'url'; url: string }
+  | { kind: 'none' }
+  | { kind: 'unknown' };
+
+export function tunnelStateFor(
+  status: { publicUrl: string | null } | null | undefined,
+): TunnelState {
+  if (!status) return { kind: 'unknown' };
+  const url = (status.publicUrl ?? '').trim();
+  return url ? { kind: 'url', url } : { kind: 'none' };
+}
+
 /** Whether a source can currently receive anything, and why not. */
 export function sourceDeliveryState(
   source: Pick<ExternalSourceView, 'enabled'>,

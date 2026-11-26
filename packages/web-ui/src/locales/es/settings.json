@@ -10,7 +10,8 @@
     "integrations": "Conecta plataformas de mensajería externas",
     "network": "Ámbito de acceso, proxy y enrutamiento de salida",
     "account": "Tu cuenta, organización y licencia",
-    "external-sources": "Quién puede llegar a tus agentes desde fuera, y qué puede hacer una señal externa"
+    "external-sources": "Quién puede llegar a tus agentes desde fuera, y qué puede hacer una señal externa",
+    "facts": "El rastro de auditoría de las conclusiones y su evidencia"
   },
   "nav": {
     "appearance": "General",
@@ -25,6 +26,7 @@
     "remote": "Acceso remoto",
     "network": "Red y acceso",
     "integrations": "Integración",
+    "externalSignals": "Señales externas",
     "license": "Licencia",
     "organization": "Organización",
     "account": "Cuenta",
@@ -1568,6 +1570,7 @@
     "agentFilter": "Agente",
     "agentFilterHint": "Elige un agente para ver las rutas entrantes registradas.",
     "noTunnel": "No hay túnel configurado: las URL de abajo son rutas locales. Activa el acceso remoto (Ajustes → Cuenta → Acceso remoto) antes de que un sistema externo intente entregar.",
+    "tunnelUnknown": "No se pudo leer el estado del túnel: las URL de abajo podrían ser solo locales. Confírmalo en Ajustes → Cuenta → Acceso remoto antes de entregar una a un sistema externo.",
     "empty": "Este agente aún no tiene fuentes externas. Puede crear una en el chat (webhook o RSS) y aparecerá aquí.",
     "state": {
       "delivering": "entregando",
