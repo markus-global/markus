@@ -715,7 +715,14 @@
     "hubUnsupported": "当前 Hub 版本不支持问题反馈，请先升级 Hub",
     "successTitle": "反馈已提交",
     "successDesc": "感谢反馈，我们会尽快处理。",
-    "successClose": "完成"
+    "successClose": "完成",
+    "draft": {
+      "autoFilled": "—— 以下为自动填入的错误诊断，可直接修改 ——",
+      "noRawError": "（该气泡没有保留错误原文，只有下面的界面提示）",
+      "myAction": "我当时的操作 / 期望的结果：（在这里补充）",
+      "unknownError": "未知错误",
+      "title": "聊天报错：{{reason}}"
+    }
   },
   "ambassador": {
     "entry": "成长大使",

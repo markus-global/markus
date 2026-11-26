@@ -715,7 +715,14 @@
     "hubUnsupported": "This Hub version doesn't support feedback yet. Please upgrade Hub.",
     "successTitle": "Feedback sent",
     "successDesc": "Thanks — we'll take a look soon.",
-    "successClose": "Done"
+    "successClose": "Done",
+    "draft": {
+      "autoFilled": "— Auto-filled error diagnostics below — edit freely —",
+      "noRawError": "(this bubble kept no raw error, only the UI message below)",
+      "myAction": "What I did / what I expected: (add here)",
+      "unknownError": "Unknown error",
+      "title": "Chat error: {{reason}}"
+    }
   },
   "ambassador": {
     "entry": "Growth Ambassador",

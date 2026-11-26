@@ -715,7 +715,14 @@
     "hubUnsupported": "Esta versión de Hub aún no admite comentarios. Actualiza Hub.",
     "successTitle": "Comentarios enviados",
     "successDesc": "Gracias, lo revisaremos pronto.",
-    "successClose": "Listo"
+    "successClose": "Listo",
+    "draft": {
+      "autoFilled": "— Diagnóstico de error rellenado automáticamente — puedes editarlo —",
+      "noRawError": "(este globo no conservó el error original, solo el mensaje de la interfaz)",
+      "myAction": "Lo que hice / lo que esperaba: (añádelo aquí)",
+      "unknownError": "Error desconocido",
+      "title": "Error de chat: {{reason}}"
+    }
   },
   "ambassador": {
     "entry": "Embajador",
