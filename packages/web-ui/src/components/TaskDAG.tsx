@@ -648,6 +648,10 @@ export function TaskDAG({ tasks, requirements = [], agents, showArchived: showAr
     const { source, target } = connection;
     if (!source || !target || source === target) return;
 
+    // Requirement nodes are containers, not connectable endpoints: they carry no
+    // handles, so a requirement never reaches this handler. If that guard is ever
+    // removed, a connection into a requirement has no meaning (dependencies live
+    // on tasks only) — do not resurrect it by accident.
     const targetTask = taskMap.get(target);
     if (!targetTask) return;
 
