@@ -1991,3 +1991,63 @@ the envelope `auth` slot stays `null` until an adapter verifies. Real-instance p
 readings (second instance, HOME redirect, port 18731) are recorded in the C10-B delivery
 report; the traffic gate (≥1 real event → envelope row → resolving work_unit_ref →
 overview visible) is satisfied for both webhook and RSS.
+
+### 29.8 Organization ingress policy (three states, one reader)
+
+`organizations.external_ingress ∈ {off, observe, accept}`, default **`off`**.
+
+| state | inbound | owes a turn | intent floor |
+|---|---|---|---|
+| `off` | refused (`403`, nothing stored) | no | — |
+| `observe` | accepted, recorded | no | `deliver` |
+| `accept` | accepted, recorded | yes | `action_required` |
+
+Why three states and not a boolean: "may outside systems reach us" and "may a received
+signal drive an agent" are different questions. A boolean forces an admin who wants a
+quiet inbox to also cut the wire, which loses the record they wanted.
+
+Why the default is `off`: for an open-source product the default **is** the configuration
+most installs run, so the safe state must be the one you get without asking. The `ALTER
+TABLE … DEFAULT 'off'` backfills existing rows at migration time — no data rewrite, and an
+upgrading install lands on the safe side (Owner ruling 2026-11-19: no data migration, no
+DROP).
+
+**One reader.** The only place the policy is consulted is the single ingest point
+(`ExternalSourceService.ingest`). The public webhook entry, RSS polling and the
+operator-delivery path all funnel through it, so no adapter can hold its own copy of the
+decision and no second gate can disagree with the first. Two consequences worth stating:
+
+- Per-source `enabled` is **ANDed** with the policy, never a substitute. A source switched
+  on under `off` is not delivering, and the settings UI reports it as `blocked_by_switch`
+  rather than `delivering` — an "on" badge under a closed door is exactly the misreading the
+  screen exists to prevent.
+- Operator delivery is gated too. It is a member-authenticated path, but its whole purpose
+  is to exercise the external-signal pipeline; letting it bypass the org switch would mean
+  the org's answer to "do we take outside input" has an exception nobody can see from the UI.
+
+**One writer.** `OrganizationService.setExternalIngress(orgId, policy, actorUserId)`:
+the actor must resolve to a `users` row (agents have none — so an agent id or ghost id is
+refused), and every successful change writes exactly one `audit_logs` row
+(`external_ingress_changed`, with `from`/`to`). Downgrades are audited too: "when did we
+close this" must be answerable from the audit log alone. The storage repo method
+(`setExternalIngress`) is this method's instrument, not a public elevation path.
+
+**Agents may register, humans open the door** (Owner ruling A, 2026-11-26). An agent keeps
+`external_source_register` / `_toggle` (RSS subscription is its job), and its receipts now
+carry the current policy plus an `ingressNote` when it is not `accept` — a silent success
+would let an agent believe it wired up something that can never fire. Changing the org
+policy is not on the tool surface at all.
+
+**Secret rotation.** `ExternalSourceService.rotateSecret` replaces `config.token` through
+the repo's single `setConfig` writer. The previous secret stops working immediately and the
+new one is returned once; the list receipt only ever exposes `hasSecret` + the last four
+characters. Rotation deliberately does not re-run the registration gate: ownership is
+decided once, not re-litigated because a secret changed.
+
+**Settings surface.** Settings → Connections → External signals: the policy selector and the
+per-agent source list (address, inbound URL, secret status, last event, last error) come from
+one response (`GET /api/external-sources` returns `{policy, sources}`) so the screen cannot
+render sources under a policy that has already changed. The URL is joined against the
+tunnel's `publicUrl`; with no tunnel it is shown as a local-only path with a warning, because
+a copyable `localhost` URL is indistinguishable from a working one until the first delivery
+fails.
